@@ -3,12 +3,29 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { buildOperationGraph } from "../spec";
-import { OpenApiSpecError, type OpenApiSpecErrorReason } from "../types";
+import {
+  OpenApiSpecError,
+  type OpenApiSchema,
+  type OpenApiSchemaInline,
+  type OpenApiSpecErrorReason,
+} from "../types";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures");
 
 function loadFixture(name: string): unknown {
   return JSON.parse(fs.readFileSync(path.join(FIXTURES, `${name}.json`), "utf8"));
+}
+
+/**
+ * Narrow a schema node to its inline arm, asserting it is NOT a `$ref` pointer.
+ * Doubles as a test assertion: every call site genuinely expects an inline
+ * schema, and the union forces the ref-vs-inline decision to be explicit.
+ */
+function inline(schema: OpenApiSchema | undefined): OpenApiSchemaInline {
+  if (!schema || schema.ref !== undefined) {
+    throw new Error(`expected an inline schema, got ${JSON.stringify(schema)}`);
+  }
+  return schema;
 }
 
 describe("buildOperationGraph — minimal corpus", () => {
@@ -31,11 +48,11 @@ describe("buildOperationGraph — minimal corpus", () => {
     // Widget.owner -> Gadget, Gadget.widgets[] -> Widget is a cycle. A pointer
     // model keeps the graph finite while letting a consumer follow the join.
     const widget = graph.schemas.get("Widget");
-    const ownerProp = widget?.properties?.get("owner");
+    const ownerProp = inline(widget).properties?.get("owner");
     expect(ownerProp).toEqual({ ref: "Gadget" });
 
     const gadget = graph.schemas.get(ownerProp!.ref!);
-    expect(gadget?.properties?.get("widgets")?.items).toEqual({ ref: "Widget" });
+    expect(inline(inline(gadget).properties?.get("widgets")).items).toEqual({ ref: "Widget" });
 
     // Following the cycle back to Widget terminates — same object, no recursion.
     expect(graph.schemas.get("Widget")).toBe(widget);
@@ -97,23 +114,23 @@ describe("buildOperationGraph — Twenty /rest/open-api/core corpus", () => {
   it("resolves the Person ↔ NoteTarget $ref relationship in both directions", () => {
     // Person → noteTargets[] → NoteTarget
     const person = graph.schemas.get("Person");
-    const noteTargetsItem = person?.properties?.get("noteTargets")?.items;
+    const noteTargetsItem = inline(inline(person).properties?.get("noteTargets")).items;
     expect(noteTargetsItem).toEqual({ ref: "NoteTarget" });
 
-    const noteTarget = graph.schemas.get(noteTargetsItem!.ref!);
+    const noteTarget = inline(graph.schemas.get(noteTargetsItem!.ref!));
     // NoteTarget → person → Person (back-reference completing the cycle)
-    expect(noteTarget?.properties?.get("person")).toEqual({ ref: "Person" });
+    expect(noteTarget.properties?.get("person")).toEqual({ ref: "Person" });
     // NoteTarget → note → Note
-    expect(noteTarget?.properties?.get("note")).toEqual({ ref: "Note" });
+    expect(noteTarget.properties?.get("note")).toEqual({ ref: "Note" });
     // The join column is targetPersonId (NOT personId — the jezweb trap).
-    expect(noteTarget?.properties?.has("targetPersonId")).toBe(true);
-    expect(noteTarget?.properties?.has("personId")).toBe(false);
+    expect(noteTarget.properties?.has("targetPersonId")).toBe(true);
+    expect(noteTarget.properties?.has("personId")).toBe(false);
   });
 
   it("inlines Atlas custom fields as siblings of standard fields (no customFields wrapper)", () => {
-    const person = graph.schemas.get("Person");
-    expect(person?.properties?.has("atlasFirstSource")).toBe(true);
-    expect(person?.properties?.has("customFields")).toBe(false);
+    const person = inline(graph.schemas.get("Person"));
+    expect(person.properties?.has("atlasFirstSource")).toBe(true);
+    expect(person.properties?.has("customFields")).toBe(false);
   });
 
   it("resolves the reusable filter parameter onto list operations", () => {
@@ -162,8 +179,9 @@ describe("buildOperationGraph — Stripe corpus", () => {
     const expand = graph.operations
       .get("GetCustomers")
       ?.parameters.find((p) => p.name === "expand");
-    expect(expand?.schema?.type).toBe("array");
-    expect(expand?.schema?.items?.type).toBe("string");
+    const expandSchema = inline(expand?.schema);
+    expect(expandSchema.type).toBe("array");
+    expect(inline(expandSchema.items).type).toBe("string");
   });
 
   it("keys request body content by media type, including non-JSON", () => {
@@ -172,10 +190,10 @@ describe("buildOperationGraph — Stripe corpus", () => {
   });
 
   it("walks anyOf composition with resolved $ref pointers", () => {
-    const customer = graph.schemas.get("customer");
-    const addressProp = customer?.properties?.get("address");
-    expect(addressProp?.nullable).toBe(true);
-    expect(addressProp?.anyOf).toEqual([{ ref: "address" }]);
+    const customer = inline(graph.schemas.get("customer"));
+    const addressProp = inline(customer.properties?.get("address"));
+    expect(addressProp.nullable).toBe(true);
+    expect(addressProp.anyOf).toEqual([{ ref: "address" }]);
   });
 });
 
@@ -289,6 +307,63 @@ describe("buildOperationGraph — fail-loud resilience (PRD risk R1)", () => {
     );
   });
 
+  it("rejects a malformed (non-object) schema node", () => {
+    expectSpecError(
+      { openapi: "3.0.0", components: { schemas: { A: { properties: { b: 42 } } } }, paths: {} },
+      "invalid-structure",
+    );
+  });
+
+  it("rejects a non-object operation under a method key", () => {
+    expectSpecError(
+      { openapi: "3.0.0", paths: { "/x": { get: "GET" } } },
+      "invalid-structure",
+    );
+  });
+
+  it("rejects a malformed (non-object) response node", () => {
+    expectSpecError(
+      { openapi: "3.0.0", paths: { "/x": { get: { operationId: "x", responses: { "200": 5 } } } } },
+      "invalid-structure",
+    );
+  });
+
+  it("rejects a malformed (non-object) media-type entry", () => {
+    expectSpecError(
+      {
+        openapi: "3.0.0",
+        paths: {
+          "/x": {
+            get: { operationId: "x", responses: { "200": { description: "ok", content: { "application/json": 5 } } } },
+          },
+        },
+      },
+      "invalid-structure",
+    );
+  });
+
+  it("rejects a non-object security requirement entry (string instead of object — a false-negative trap)", () => {
+    expectSpecError(
+      {
+        openapi: "3.0.0",
+        components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+        paths: { "/x": { get: { operationId: "x", security: ["bearerAuth"], responses: {} } } },
+      },
+      "invalid-structure",
+    );
+  });
+
+  it("rejects a non-object path item", () => {
+    expectSpecError({ openapi: "3.0.0", paths: { "/x": 5 } }, "invalid-structure");
+  });
+
+  it("rejects a path-item-level $ref (unsupported in this slice)", () => {
+    expectSpecError(
+      { openapi: "3.0.0", paths: { "/x": { $ref: "#/components/pathItems/Y" } } },
+      "unsupported-ref",
+    );
+  });
+
   it("ignores vendor extensions (x-*) rather than failing", () => {
     // Stripe / Twenty are full of x- keys; rejecting them would make those
     // corpora unparseable. They must be silently ignored.
@@ -305,5 +380,127 @@ describe("buildOperationGraph — fail-loud resilience (PRD risk R1)", () => {
       },
     });
     expect([...graph.operations.keys()]).toEqual(["x"]);
+  });
+});
+
+describe("buildOperationGraph — reference & edge normalization", () => {
+  it("resolves a requestBody $ref into components.requestBodies", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.0.0",
+      components: {
+        schemas: { Pet: { type: "object", properties: { id: { type: "string" } } } },
+        requestBodies: {
+          PetBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Pet" } } },
+          },
+        },
+      },
+      paths: {
+        "/pets": {
+          post: {
+            operationId: "createPet",
+            requestBody: { $ref: "#/components/requestBodies/PetBody" },
+            responses: { "201": { description: "created" } },
+          },
+        },
+      },
+    });
+    const body = graph.operations.get("createPet")?.requestBody;
+    expect(body?.required).toBe(true);
+    expect(body?.content.get("application/json")).toEqual({ ref: "Pet" });
+  });
+
+  it("resolves a response $ref into components.responses", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.0.0",
+      components: {
+        schemas: { Err: { type: "object", properties: { message: { type: "string" } } } },
+        responses: {
+          NotFound: {
+            description: "missing",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Err" } } },
+          },
+        },
+      },
+      paths: {
+        "/x": {
+          get: {
+            operationId: "x",
+            responses: { "404": { $ref: "#/components/responses/NotFound" } },
+          },
+        },
+      },
+    });
+    const resp = graph.operations.get("x")?.responses.get("404");
+    expect(resp?.description).toBe("missing");
+    expect(resp?.content.get("application/json")).toEqual({ ref: "Err" });
+  });
+
+  it("rejects a requestBody $ref pointing at the wrong component section", () => {
+    let caught: unknown;
+    try {
+      buildOperationGraph({
+        openapi: "3.0.0",
+        components: { schemas: { Pet: { type: "object" } } },
+        paths: {
+          "/pets": {
+            post: {
+              operationId: "createPet",
+              requestBody: { $ref: "#/components/schemas/Pet" },
+              responses: {},
+            },
+          },
+        },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenApiSpecError);
+    expect((caught as OpenApiSpecError).reason).toBe("unsupported-ref");
+  });
+
+  it("treats an explicit document-level security: [] as 'no auth' for inheriting operations", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.0.0",
+      security: [],
+      components: { securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } } },
+      paths: { "/x": { get: { operationId: "x", responses: {} } } },
+    });
+    expect(graph.operations.get("x")?.security).toEqual([]);
+  });
+
+  it("normalizes OpenAPI 3.1 type:[..,'null'] into type + nullable", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.1.0",
+      components: {
+        schemas: {
+          Thing: {
+            type: "object",
+            properties: { email: { type: ["string", "null"] } },
+          },
+        },
+      },
+      paths: {},
+    });
+    const thing = inline(graph.schemas.get("Thing"));
+    const email = inline(thing.properties?.get("email"));
+    expect(email.type).toBe("string");
+    expect(email.nullable).toBe(true);
+  });
+
+  it("normalizes oauth2 / openIdConnect schemes without throwing (flows deferred to slice 6)", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.0.0",
+      components: {
+        securitySchemes: {
+          oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "https://x/token", scopes: {} } } },
+          oidc: { type: "openIdConnect", openIdConnectUrl: "https://x/.well-known" },
+        },
+      },
+      paths: {},
+    });
+    expect(graph.security.get("oauth")?.kind).toBe("oauth2");
+    expect(graph.security.get("oidc")?.kind).toBe("openIdConnect");
   });
 });

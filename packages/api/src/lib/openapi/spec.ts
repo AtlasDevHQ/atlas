@@ -11,9 +11,11 @@
  * {@link OpenApiSpecError} — the function never returns a half-built graph.
  *
  * Deliberately NOT fail-loud on:
- *  - Vendor extensions (`x-*` keys). OpenAPI explicitly permits them anywhere;
- *    real specs (Stripe, Twenty) are full of them. We ignore them. Rejecting
- *    every `x-` key would make "normalize Stripe's spec" impossible.
+ *  - Vendor extensions (`x-*` keys). Object-internal `x-*` keys are ignored
+ *    because every walker reads only a known set of keys; the one place an
+ *    `x-*` *sibling entry* legally appears (the `paths` object) is explicitly
+ *    skipped. Real specs (Stripe, Twenty) are full of extensions — rejecting
+ *    them would make "normalize Stripe's spec" impossible.
  *  - Circular `$ref`s through named components (Twenty's Person ↔ NoteTarget).
  *    These are REQUIRED to resolve (acceptance criterion). We resolve a named
  *    `$ref` to a pointer node (`{ ref: "Name" }`) rather than inlining, so the
@@ -34,6 +36,7 @@ import {
   type OperationRequestBody,
   type OperationResponse,
   type OpenApiSchema,
+  type OpenApiSchemaInline,
   type ParameterLocation,
   type SecurityScheme,
   type ServerInfo,
@@ -170,14 +173,26 @@ class GraphBuilder {
       return { ref: name };
     }
 
-    const node: Mutable<OpenApiSchema> = {};
-    const type = asString(raw.type);
-    if (type !== undefined) node.type = type;
+    const node: Mutable<OpenApiSchemaInline> = {};
+    // `type` is a string in 3.0; in 3.1 it may be an array (e.g.
+    // ["string", "null"]). Normalize the array form: strip the "null" member
+    // into `nullable` and keep the single remaining type. A multi-type union
+    // (rare) leaves `type` absent rather than guessing.
+    const rawType = raw.type;
+    if (typeof rawType === "string") {
+      node.type = rawType;
+    } else if (Array.isArray(rawType)) {
+      const members = rawType.filter((t): t is string => typeof t === "string");
+      if (members.includes("null")) node.nullable = true;
+      const nonNull = members.filter((t) => t !== "null");
+      if (nonNull.length === 1) node.type = nonNull[0];
+    }
     const format = asString(raw.format);
     if (format !== undefined) node.format = format;
     const description = asString(raw.description);
     if (description !== undefined) node.description = description;
     if (Array.isArray(raw.enum)) node.enum = raw.enum as ReadonlyArray<unknown>;
+    // Explicit 3.0 `nullable` wins over the 3.1 array-derived value if both appear.
     const nullable = asBoolean(raw.nullable);
     if (nullable !== undefined) node.nullable = nullable;
     const required = asStringArray(raw.required);
@@ -301,7 +316,17 @@ class GraphBuilder {
     const out = new Map<string, OpenApiSchema>();
     if (!isObject(raw)) return out;
     for (const [mediaType, value] of Object.entries(raw)) {
-      if (!isObject(value)) continue;
+      if (!isObject(value)) {
+        // A present-but-malformed media-type entry must fail loud rather than
+        // silently vanish from `content` (R1) — every sibling builder throws.
+        throw new OpenApiSpecError({
+          reason: "invalid-structure",
+          location: `${location}.${mediaType}`,
+          message: `Expected a media-type object at ${location}.${mediaType}, got ${describe(value)}.`,
+        });
+      }
+      // A media type with no `schema` is legitimate ("schema not declared") —
+      // record nothing rather than failing.
       if (value.schema !== undefined) {
         out.set(mediaType, this.walkSchema(value.schema, `${location}.${mediaType}.schema`));
       }
@@ -361,7 +386,16 @@ class GraphBuilder {
           node = this.rawComponent("responses", name, `${location}.${status}`);
         }
       }
-      if (!isObject(node)) continue;
+      if (!isObject(node)) {
+        // Present-but-malformed response → fail loud. A silent skip would tell a
+        // downstream consumer "this operation has no <status> response" when the
+        // author actually wrote a broken one (R1).
+        throw new OpenApiSpecError({
+          reason: "invalid-structure",
+          location: `${location}.${status}`,
+          message: `Expected a response object at ${location}.${status}, got ${describe(node)}.`,
+        });
+      }
       const response: Mutable<OperationResponse> = {
         content: this.buildContent(node.content, `${location}.${status}.content`),
       };
@@ -378,13 +412,24 @@ class GraphBuilder {
    * Resolve a `security` requirement list (array of requirement objects) to a
    * deduped list of scheme names (OR-semantics). Every referenced name must be
    * a declared scheme, else `unknown-security-requirement`.
+   *
+   * A non-object requirement entry (e.g. the common `security: ["bearerAuth"]`
+   * string-instead-of-object mistake) fails loud rather than being skipped:
+   * silently dropping it could collapse the requirement set to `[]`, which the
+   * `Operation.security` contract reads as "no auth" — a security false-negative.
    */
   resolveSecurity(raw: unknown, location: string): string[] {
     if (!Array.isArray(raw)) return [];
     const names: string[] = [];
     const seen = new Set<string>();
     for (const requirement of raw) {
-      if (!isObject(requirement)) continue;
+      if (!isObject(requirement)) {
+        throw new OpenApiSpecError({
+          reason: "invalid-structure",
+          location,
+          message: `Security requirement at ${location} must be an object mapping scheme names to scopes, got ${describe(requirement)}.`,
+        });
+      }
       for (const name of Object.keys(requirement)) {
         if (!this.securityNames.has(name)) {
           throw new OpenApiSpecError({
@@ -411,8 +456,23 @@ class GraphBuilder {
   ): Map<string, Operation> {
     const out = new Map<string, Operation>();
     for (const [pathKey, pathItemRaw] of Object.entries(paths)) {
-      if (pathKey.startsWith("x-")) continue; // vendor extension at paths level
-      if (!isObject(pathItemRaw)) continue;
+      if (pathKey.startsWith("x-")) continue; // vendor extension sibling at paths level
+      if (!isObject(pathItemRaw)) {
+        throw new OpenApiSpecError({
+          reason: "invalid-structure",
+          location: `paths.${pathKey}`,
+          message: `Path item at paths.${pathKey} must be an object, got ${describe(pathItemRaw)}.`,
+        });
+      }
+      // A path-item-level `$ref` (legal OpenAPI) is not supported in this slice —
+      // fail loud rather than silently drop every operation under the path.
+      if (asString(pathItemRaw.$ref) !== undefined) {
+        throw new OpenApiSpecError({
+          reason: "unsupported-ref",
+          location: `paths.${pathKey}`,
+          message: `Path item at paths.${pathKey} uses a $ref; path-item references are not resolved in this slice.`,
+        });
+      }
       const pathLevelParams = pathItemRaw.parameters;
 
       for (const method of HTTP_METHODS) {

@@ -5,7 +5,7 @@ import { type AddressInfo } from "net";
 import * as path from "path";
 
 import { buildOperationGraph } from "../spec";
-import { executeOperation } from "../client";
+import { executeOperation, parseRetryAfterMs } from "../client";
 import { OpenApiClientError, type OperationGraph } from "../types";
 
 const FIXTURES = path.join(import.meta.dir, "fixtures");
@@ -85,6 +85,11 @@ function route(req: http.IncomingMessage, res: http.ServerResponse): void {
     res.end("{not valid json");
     return;
   }
+  if (pathname === "/vnd-json") {
+    res.writeHead(200, { "content-type": "application/vnd.api+json" });
+    res.end(JSON.stringify({ data: { id: "1" } }));
+    return;
+  }
   // Default: echo what we saw so assertions can inspect routing/auth/params.
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify({ seen: { method: req.method, url } }));
@@ -161,7 +166,7 @@ describe("executeOperation — auth application per securityScheme", () => {
       graph,
       "getPublic",
       {},
-      { kind: "apiKey", value: "ov", in: "header", name: "X-Custom-Key" },
+      { kind: "apiKey", value: "ov", placement: { in: "header", name: "X-Custom-Key" } },
       { baseUrl },
     );
     expect(captured?.headers["x-custom-key"]).toBe("ov");
@@ -276,5 +281,79 @@ describe("executeOperation — timeout & fail-loud faults", () => {
       err = e as OpenApiClientError;
     }
     expect(err?.reason).toBe("missing-path-param");
+  });
+
+  it("classifies a connection failure as a network error (not a timeout)", async () => {
+    // Port 1 on loopback refuses fast — a real transport failure, not a timeout.
+    const refusedGraph = buildOperationGraph({
+      openapi: "3.0.3",
+      info: { title: "t", version: "1" },
+      servers: [{ url: "http://127.0.0.1:1" }],
+      paths: { "/x": { get: { operationId: "x", security: [], responses: { "200": { description: "ok" } } } } },
+    });
+    let err: OpenApiClientError | undefined;
+    try {
+      await executeOperation(refusedGraph, "x", {}, { kind: "none" }, { timeoutMs: 2000 });
+    } catch (e) {
+      err = e as OpenApiClientError;
+    }
+    expect(err?.reason).toBe("network");
+    expect(err?.status).toBe(0);
+  });
+
+  it("fails loud when no base URL is available", async () => {
+    const noServerGraph = buildOperationGraph({
+      openapi: "3.0.3",
+      info: { title: "t", version: "1" },
+      paths: { "/x": { get: { operationId: "x", security: [], responses: { "200": { description: "ok" } } } } },
+    });
+    let err: OpenApiClientError | undefined;
+    try {
+      await executeOperation(noServerGraph, "x", {}, { kind: "none" });
+    } catch (e) {
+      err = e as OpenApiClientError;
+    }
+    expect(err?.reason).toBe("missing-base-url");
+  });
+});
+
+describe("executeOperation — content-type detection", () => {
+  it("parses a vendor +json content-type as JSON", async () => {
+    const vndGraph = buildOperationGraph({
+      openapi: "3.0.3",
+      info: { title: "t", version: "1" },
+      servers: [{ url: baseUrl }],
+      paths: { "/vnd-json": { get: { operationId: "getVnd", security: [], responses: { "200": { description: "ok" } } } } },
+    });
+    const result = await executeOperation(vndGraph, "getVnd", {}, { kind: "none" });
+    expect(result.bodyIsRaw).toBe(false);
+    expect(result.body).toEqual({ data: { id: "1" } });
+  });
+});
+
+describe("parseRetryAfterMs", () => {
+  it("parses delta-seconds", () => {
+    expect(parseRetryAfterMs("120")).toBe(120_000);
+    expect(parseRetryAfterMs("0")).toBe(0);
+  });
+
+  it("parses an HTTP-date in the future to a positive delay", () => {
+    const future = new Date(Date.now() + 60_000).toUTCString();
+    const ms = parseRetryAfterMs(future);
+    expect(ms).toBeGreaterThan(0);
+    expect(ms).toBeLessThanOrEqual(60_000);
+  });
+
+  it("clamps a past HTTP-date to zero (guards clock skew)", () => {
+    const past = new Date(Date.now() - 60_000).toUTCString();
+    expect(parseRetryAfterMs(past)).toBe(0);
+  });
+
+  it("returns undefined for absent or unparseable values", () => {
+    expect(parseRetryAfterMs(null)).toBeUndefined();
+    expect(parseRetryAfterMs(undefined)).toBeUndefined();
+    expect(parseRetryAfterMs("")).toBeUndefined();
+    expect(parseRetryAfterMs("   ")).toBeUndefined();
+    expect(parseRetryAfterMs("not-a-date")).toBeUndefined();
   });
 });

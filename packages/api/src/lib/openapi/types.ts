@@ -71,23 +71,37 @@ export type SecuritySchemeKind =
 
 /**
  * A normalized JSON-Schema node. We model only the fields downstream consumers
- * read; we deliberately do NOT mirror all of JSON Schema. Every `$ref` to a
- * named component is collapsed to {@link OpenApiSchema.ref}; a node therefore
- * never carries a raw `$ref` string.
+ * read; we deliberately do NOT mirror all of JSON Schema.
+ *
+ * It is a discriminated union on the presence of `ref`: a node is EITHER a
+ * pointer to a named component ({@link OpenApiSchemaRef}) OR an inline schema
+ * ({@link OpenApiSchemaInline}) — never both. Consumers narrow with
+ * `if (node.ref !== undefined)`; the inline arm then exposes `type`,
+ * `properties`, `items`, etc. with no need to re-check that `ref` is absent.
  */
-export interface OpenApiSchema {
+export type OpenApiSchema = OpenApiSchemaRef | OpenApiSchemaInline;
+
+/**
+ * A reference to the named component schema `graph.schemas.get(ref)`. The
+ * target is guaranteed to exist (parse fails loud otherwise). This is how
+ * Person → NoteTarget joins are traversed without re-walking `$ref` strings,
+ * and how cycles stay finite — a ref node carries no inline fields.
+ */
+export interface OpenApiSchemaRef {
+  readonly ref: string;
+  /** Set only when a top-level `components.schemas.*` entry IS itself a bare `$ref`. */
+  readonly name?: string;
+}
+
+/** An inline (anonymous or named-but-non-`$ref`) schema, walked in full. */
+export interface OpenApiSchemaInline {
+  /** Discriminant: an inline node never carries a `ref`. */
+  readonly ref?: undefined;
   /**
    * The component name when this node IS a `components.schemas.*` entry
    * (top-level registration). `undefined` for inline / anonymous schemas.
    */
   readonly name?: string;
-  /**
-   * When set, this node is a *reference* to the named component schema
-   * `graph.schemas.get(ref)`. The target is guaranteed to exist (parse fails
-   * loud otherwise). This is how Person → NoteTarget joins are traversed
-   * without re-walking `$ref` strings, and how cycles stay finite.
-   */
-  readonly ref?: string;
   /** JSON Schema `type` (e.g. "object", "array", "string"). May be absent. */
   readonly type?: string;
   /** JSON Schema `format` hint (e.g. "uuid", "date-time", "int64"). */
@@ -95,7 +109,11 @@ export interface OpenApiSchema {
   readonly description?: string;
   /** Allowed enumerated values, when the schema is an enum. */
   readonly enum?: ReadonlyArray<unknown>;
-  /** OpenAPI 3.0 `nullable` flag (3.1 uses `type: [..., "null"]` — see notes). */
+  /**
+   * Nullability. Set from OpenAPI 3.0's `nullable: true`, or normalized from
+   * OpenAPI 3.1's `type: [..., "null"]` array form (the "null" member is
+   * stripped from `type` and surfaced here).
+   */
   readonly nullable?: boolean;
   /** Required property names, for object schemas. */
   readonly required?: ReadonlyArray<string>;
@@ -103,7 +121,11 @@ export interface OpenApiSchema {
   readonly properties?: ReadonlyMap<string, OpenApiSchema>;
   /** Element schema, for array schemas. */
   readonly items?: OpenApiSchema;
-  /** Composition keywords, walked shallowly (not merged). */
+  /**
+   * Composition keywords. Each branch is normalized recursively (resolved
+   * `$ref`s become pointers), but the composition is NOT flattened/merged into
+   * a single effective schema — consumers see the branches as authored.
+   */
   readonly allOf?: ReadonlyArray<OpenApiSchema>;
   readonly oneOf?: ReadonlyArray<OpenApiSchema>;
   readonly anyOf?: ReadonlyArray<OpenApiSchema>;
@@ -113,20 +135,24 @@ export interface OpenApiSchema {
 //  Security
 // ─────────────────────────────────────────────────────────────────────
 
-/** A normalized `components.securitySchemes.*` entry. */
-export interface SecurityScheme {
-  /** The component key, e.g. "bearerAuth", that operations reference. */
-  readonly name: string;
-  readonly kind: SecuritySchemeKind;
-  /**
-   * The header or query-parameter name carrying the key, for `apiKey-header` /
-   * `apiKey-query` schemes (e.g. "X-API-Key", "api_key"). Undefined otherwise.
-   */
-  readonly parameterName?: string;
-  /** Bearer format hint for `bearer` schemes (e.g. "JWT"). */
-  readonly bearerFormat?: string;
-  readonly description?: string;
-}
+/**
+ * A normalized `components.securitySchemes.*` entry. Discriminated on `kind`
+ * so each scheme carries exactly the fields it needs — an `apiKey-*` scheme
+ * always has a `parameterName` (the parse boundary guarantees it), and a
+ * `bearer`/`basic` scheme never does. Consumers narrow on `kind` and access
+ * `parameterName` without a runtime presence check.
+ */
+export type SecurityScheme =
+  | { readonly kind: "bearer"; readonly name: string; readonly bearerFormat?: string; readonly description?: string }
+  | { readonly kind: "basic"; readonly name: string; readonly description?: string }
+  | {
+      readonly kind: "apiKey-header" | "apiKey-query";
+      readonly name: string;
+      /** The header or query-parameter name carrying the key (e.g. "X-API-Key", "api_key"). */
+      readonly parameterName: string;
+      readonly description?: string;
+    }
+  | { readonly kind: "oauth2" | "openIdConnect"; readonly name: string; readonly description?: string };
 
 // ─────────────────────────────────────────────────────────────────────
 //  Operations
@@ -223,9 +249,10 @@ export interface OperationGraph {
  * install layer reading encrypted config) resolves this; the client applies it.
  *
  * For `apiKey`, placement (header vs query, and the parameter name) is read from
- * the operation's apiKey security scheme by default. `in` / `name` are optional
- * overrides for callers that store placement in config (slice 2's form fields)
- * rather than relying on the spec.
+ * the operation's apiKey security scheme by default. `placement` is an
+ * all-or-nothing override for callers that store placement in config (slice 2's
+ * form fields) rather than relying on the spec — supplying it as a single unit
+ * makes a half-specified override (an `in` without a `name`) unrepresentable.
  */
 export type ResolvedAuth =
   | { readonly kind: "none" }
@@ -234,8 +261,7 @@ export type ResolvedAuth =
   | {
       readonly kind: "apiKey";
       readonly value: string;
-      readonly in?: "header" | "query";
-      readonly name?: string;
+      readonly placement?: { readonly in: "header" | "query"; readonly name: string };
     };
 
 /**

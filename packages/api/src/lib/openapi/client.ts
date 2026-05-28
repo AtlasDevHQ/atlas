@@ -228,27 +228,28 @@ function applyQueryAuth(
 }
 
 /**
- * Decide where an apiKey credential goes. Explicit `in` / `name` overrides win
- * (slice 2 stores placement in config); otherwise the placement is read from
- * the operation's apiKey security scheme. If neither is available, fail loud —
- * we will not guess a parameter name.
+ * Decide where an apiKey credential goes. An explicit `placement` override wins
+ * (slice 2 stores placement in config); otherwise the placement is read from the
+ * operation's apiKey security scheme — `parameterName` is guaranteed present on
+ * those scheme arms by the parse boundary, so no runtime presence check is
+ * needed. If neither is available, fail loud — we will not guess a name.
  */
 function resolveApiKeyPlacement(
   operation: Operation,
   graph: OperationGraph,
   auth: Extract<ResolvedAuth, { kind: "apiKey" }>,
 ): { in: "header" | "query"; name: string } {
-  if (auth.in !== undefined && auth.name !== undefined) {
-    return { in: auth.in, name: auth.name };
+  if (auth.placement !== undefined) {
+    return auth.placement;
   }
 
   for (const schemeName of operation.security) {
     const scheme = graph.security.get(schemeName);
-    if (scheme?.kind === "apiKey-header" && scheme.parameterName) {
-      return { in: auth.in ?? "header", name: auth.name ?? scheme.parameterName };
+    if (scheme?.kind === "apiKey-header") {
+      return { in: "header", name: scheme.parameterName };
     }
-    if (scheme?.kind === "apiKey-query" && scheme.parameterName) {
-      return { in: auth.in ?? "query", name: auth.name ?? scheme.parameterName };
+    if (scheme?.kind === "apiKey-query") {
+      return { in: "query", name: scheme.parameterName };
     }
   }
 
@@ -258,7 +259,7 @@ function resolveApiKeyPlacement(
     status: 0,
     message:
       `Cannot place the apiKey credential for "${operation.operationId}": the operation declares no ` +
-      `apiKey security scheme and no { in, name } override was supplied. Provide auth.in + auth.name.`,
+      `apiKey security scheme and no { placement } override was supplied.`,
   });
 }
 

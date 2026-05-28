@@ -489,6 +489,23 @@ describe("buildOperationGraph — reference & edge normalization", () => {
     expect(email.nullable).toBe(true);
   });
 
+  it("normalizes in:cookie parameters into the graph (execution deferred)", () => {
+    const graph = buildOperationGraph({
+      openapi: "3.0.0",
+      paths: {
+        "/x": {
+          get: {
+            operationId: "x",
+            parameters: [{ name: "sid", in: "cookie", required: false, schema: { type: "string" } }],
+            responses: {},
+          },
+        },
+      },
+    });
+    const param = graph.operations.get("x")?.parameters.find((p) => p.name === "sid");
+    expect(param?.in).toBe("cookie");
+  });
+
   it("normalizes oauth2 / openIdConnect schemes without throwing (flows deferred to slice 6)", () => {
     const graph = buildOperationGraph({
       openapi: "3.0.0",

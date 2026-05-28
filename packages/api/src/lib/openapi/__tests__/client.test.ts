@@ -161,6 +161,29 @@ describe("executeOperation — auth application per securityScheme", () => {
     expect(captured?.url).toContain("api_key=qsecret");
   });
 
+  it("query apiKey coexists with user array query params (auth set-once, array explodes)", async () => {
+    // Auth uses URLSearchParams.set (once); user array params use append (explode).
+    const coexistGraph = buildOperationGraph({
+      openapi: "3.0.3",
+      info: { title: "t", version: "1" },
+      servers: [{ url: baseUrl }],
+      components: { securitySchemes: { apiKeyQuery: { type: "apiKey", in: "query", name: "api_key" } } },
+      paths: {
+        "/public": {
+          get: {
+            operationId: "qCoexist",
+            security: [{ apiKeyQuery: [] }],
+            parameters: [{ name: "ids", in: "query", required: false, schema: { type: "array", items: { type: "string" } } }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    });
+    await executeOperation(coexistGraph, "qCoexist", { query: { ids: ["a", "b"] } }, { kind: "apiKey", value: "K" });
+    expect(captured?.url.match(/api_key=K/g)?.length).toBe(1);
+    expect(captured?.url.match(/ids=/g)?.length).toBe(2);
+  });
+
   it("honors an explicit apiKey placement override", async () => {
     await executeOperation(
       graph,

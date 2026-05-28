@@ -174,6 +174,9 @@ function buildHeaders(
     accept: "application/json",
   };
 
+  // `in: cookie` parameters are normalized into the graph but not emitted by
+  // this slice — there is no cookie bucket on OperationParams. A consumer that
+  // needs cookie auth must supply it via a header param for now.
   if (params.header) {
     for (const [key, value] of Object.entries(params.header)) {
       headers[key] = String(value);

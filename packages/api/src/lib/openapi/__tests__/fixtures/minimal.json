@@ -1,0 +1,121 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Minimal Widgets API", "version": "1.0.0" },
+  "servers": [{ "url": "https://api.widgets.example/v1", "description": "prod" }],
+  "security": [{ "bearerAuth": [] }],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" },
+      "apiKeyHeader": { "type": "apiKey", "in": "header", "name": "X-API-Key" },
+      "apiKeyQuery": { "type": "apiKey", "in": "query", "name": "api_key" }
+    },
+    "parameters": {
+      "LimitParam": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "description": "Max rows to return.",
+        "schema": { "type": "integer", "format": "int32" }
+      }
+    },
+    "schemas": {
+      "Widget": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "owner": { "$ref": "#/components/schemas/Gadget" }
+        }
+      },
+      "Gadget": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "widgets": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Widget" }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/widgets": {
+      "parameters": [{ "$ref": "#/components/parameters/LimitParam" }],
+      "get": {
+        "operationId": "listWidgets",
+        "summary": "List widgets",
+        "tags": ["widgets"],
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Widget" } }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createWidget",
+        "summary": "Create a widget",
+        "tags": ["widgets"],
+        "security": [{ "apiKeyHeader": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Widget" } }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Widget" } }
+            }
+          }
+        }
+      }
+    },
+    "/widgets/{id}": {
+      "get": {
+        "operationId": "getWidget",
+        "summary": "Get a widget by id",
+        "tags": ["widgets"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "X-Trace-Id",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Widget" } }
+            }
+          },
+          "404": { "description": "not found" }
+        }
+      }
+    }
+  }
+}

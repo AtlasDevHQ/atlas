@@ -1,0 +1,157 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Stripe API", "version": "2024-06-20" },
+  "servers": [{ "url": "https://api.stripe.com/" }],
+  "components": {
+    "securitySchemes": {
+      "basicAuth": { "type": "http", "scheme": "basic" },
+      "bearerAuth": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "customer": {
+        "type": "object",
+        "description": "A Stripe customer.",
+        "properties": {
+          "id": { "type": "string", "maxLength": 5000 },
+          "object": { "type": "string", "enum": ["customer"] },
+          "email": { "type": "string", "nullable": true },
+          "address": { "anyOf": [{ "$ref": "#/components/schemas/address" }], "nullable": true },
+          "created": { "type": "integer", "format": "unix-time" }
+        }
+      },
+      "address": {
+        "type": "object",
+        "properties": {
+          "city": { "type": "string", "nullable": true },
+          "country": { "type": "string", "nullable": true },
+          "line1": { "type": "string", "nullable": true },
+          "postal_code": { "type": "string", "nullable": true }
+        }
+      },
+      "deleted_customer": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "object": { "type": "string", "enum": ["customer"] },
+          "deleted": { "type": "boolean", "enum": [true] }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/customers": {
+      "get": {
+        "operationId": "GetCustomers",
+        "summary": "List all customers",
+        "tags": ["Customers"],
+        "security": [{ "basicAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "email",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer" }
+          },
+          {
+            "name": "expand",
+            "in": "query",
+            "required": false,
+            "style": "deepObject",
+            "explode": true,
+            "schema": { "type": "array", "items": { "type": "string" } }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of customers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "object": { "type": "string", "enum": ["list"] },
+                    "data": { "type": "array", "items": { "$ref": "#/components/schemas/customer" } },
+                    "has_more": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "PostCustomers",
+        "summary": "Create a customer",
+        "tags": ["Customers"],
+        "security": [{ "basicAuth": [] }, { "bearerAuth": [] }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": { "type": "string" },
+                  "name": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The created customer",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/customer" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/customers/{customer}": {
+      "get": {
+        "operationId": "GetCustomersCustomer",
+        "summary": "Retrieve a customer",
+        "tags": ["Customers"],
+        "security": [{ "basicAuth": [] }, { "bearerAuth": [] }],
+        "parameters": [
+          {
+            "name": "customer",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "expand",
+            "in": "query",
+            "required": false,
+            "style": "deepObject",
+            "explode": true,
+            "schema": { "type": "array", "items": { "type": "string" } }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The customer or a deleted customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    { "$ref": "#/components/schemas/customer" },
+                    { "$ref": "#/components/schemas/deleted_customer" }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

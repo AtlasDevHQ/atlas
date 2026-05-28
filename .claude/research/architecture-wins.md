@@ -2088,3 +2088,31 @@ The drift meant catalog rows could ship at `min_plan='team'` and silently deny e
 - **Listener test mock pinned** with `as const` so the discriminated-union return shape is satisfied.
 
 **Category:** Type-design deepening — five interlocking invariants moved from "documented and runtime-enforced" to "compile-time-enforced at the boundary." Same shape as win #69 (`WorkspaceInstallGate`) and win #70 (`PLAN_RANK`) — pushing the type narrowing down to one module per trust boundary means every other consumer in the project stops re-checking the invariant.
+
+---
+
+## 72. OpenAPI operation graph as the single parse boundary (`buildOperationGraph`)
+
+**Date:** 2026-05-28
+**Issue:** #2923 (parent PRD #2868)
+**Branch:** 2923-openapi-spec-client
+
+**Problem:** v0.2.0 turns Atlas from "text-to-SQL" into "text-to-any-API" by letting the agent read REST datasources from an OpenAPI 3.x document. The naive shape is for each consumer that v0.2.0 will grow — the semantic-YAML generator (slice 1b), the REST validator (slice 5), the prompt-context builder, and the executing client — to walk the raw OpenAPI doc independently: each re-resolving `$ref`s, each re-deciding how to handle a missing `operationId`, each independently choosing whether a circular Person ↔ NoteTarget reference is an error or a join. That repeats the spec's worst irregularities at every call site and guarantees the consumers drift (the same failure mode the chat-plugin extension-contract audits keep catching — happy-path walkers that quietly disagree on the edges).
+
+**Solution:** A single deep module, `buildOperationGraph(doc): OperationGraph`, is the *only* code that ever touches a `$ref` string or a raw `paths.*` object. It is a pure function (no I/O) that emits one normalized shape — `{ operations, schemas, security, servers, info }` — and every downstream consumer reads that shape. Two design moves make the boundary load-bearing:
+1. **`$ref` collapses to a pointer, not an inline.** A named-component `$ref` resolves to `{ ref: "Name" }` whose target is guaranteed present in `graph.schemas`. This keeps the graph *finite* under circular relationships (Twenty's Person → noteTargets[] → NoteTarget → person → Person cycle) while leaving the join *traversable* with a single `graph.schemas.get(node.ref)` — the exact relationship the acceptance criteria require to resolve. Inline (anonymous) schemas are walked in full because they cannot be circular without a named `$ref`, so recursion always terminates.
+2. **Fail-loud at the boundary, never a half-built graph (PRD risk R1).** Structural malformation, a missing `operationId`, a duplicate `operationId`, and an unresolvable/unsupported `$ref` throw a tagged `OpenApiSpecError` carrying a machine-readable `reason` and a JSON-pointer-ish `location`. Vendor extensions (`x-*`) are deliberately ignored (rejecting them would make Stripe/Twenty unparseable), and circular named refs deliberately resolve (the AC requires it) — the two cases the over-broad "fail on everything weird" reading would have gotten wrong.
+
+The executing client (`executeOperation`) is a sibling transport primitive that reads the same graph: it builds the request from the operation's parameters (encoding per `in: query|header|path`), applies auth per the operation's security scheme, and returns `{ status, headers, body }`. Non-2xx is returned, not thrown — interpreting status is the caller's job. Both modules live under `lib/openapi/`, sibling to the SQL Datasource layer (`lib/db/connection.ts`), never folded into `DBConnection` or `validateSQL` (PRD #2868 "Option B — parallel adapter, not subordinate").
+
+**Deep-module surface metrics:**
+- **Interface:** 2 entry points (`buildOperationGraph`, `executeOperation`) + one normalized type (`OperationGraph`) the whole milestone reads. ~20 exported types, all describing the one shape.
+- **Implementation:** OpenAPI 3.x walker (paths × 8 methods, components.schemas/parameters/securitySchemes/requestBodies/responses), RFC-6901 `$ref` decoding, OR-semantics security flattening, path/query/header encoding with array-explode, RFC 9110 `Retry-After` parsing, per-request `AbortSignal` timeout — all behind the two functions.
+- **Cost ceiling:** parse is pure and O(spec size); the pointer model means a cyclic spec is parsed once, not chased.
+
+**Impact:**
+- **2 deep modules, 0 folded into SQL** — the REST execution shape never leaks into the SQL validator or `DBConnection`.
+- **46 tests, 123 assertions, no mocks for the parser.** `openapi-spec` is unit-tested against three corpora (hand-crafted minimal, trimmed Twenty `/rest/open-api/core`, trimmed Stripe) asserting the normalized graph shape, plus 11 fail-loud cases each pinning a `reason`. `openapi-client` is integration-tested against a real local Node HTTP server (auth-per-scheme, param encoding, Retry-After, timeout, non-JSON/empty/bad-JSON bodies, fail-loud faults).
+- **The milestone's shared contract is set once.** Slices 1, 1b, 2, 3, 4, 5 all consume `OperationGraph` rather than re-parsing — the deepening is "one parse boundary, every consumer reads one type."
+
+**Category:** Deep module — narrow interface (one pure normalizer + one transport primitive), broad implementation (the whole irregular surface of OpenAPI 3.x). Same shape as win #58 (connection-mode resolver) and win #69 (`WorkspaceInstallGate`): pushing the irregularity down to one module means every later consumer stops re-deriving it — and here it is set *before* the consumers exist, so they are born reading the normalized shape rather than retrofitted onto it.

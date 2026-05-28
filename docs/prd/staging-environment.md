@@ -64,7 +64,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 15. As the maintainer, I want a `/staging` visual marker on the web app, so that I never confuse a staging tab with a prod tab during dogfood.
 16. As the maintainer, I want `atlas ops smoke-crm` to be runnable against the staging URLs out of the box, so that the post-deploy gate is one command not five.
 17. As the maintainer, I want staging to be a 4th region keyed `staging` and excluded from the residency router, so that no prod traffic gets misrouted to staging and staging never claims to be a residency target.
-18. As the maintainer, I want OAuth callback URLs for Slack/Linear/GitHub/Google staging apps to point to `staging.api.useatlas.dev`, so that real OAuth flows can be exercised against staging end-to-end.
+18. As the maintainer, I want OAuth callback URLs for Slack/Linear/GitHub/Google staging apps to point to `api.staging.useatlas.dev`, so that real OAuth flows can be exercised against staging end-to-end.
 19. As the maintainer, I want a Railway-level kill switch for the staging deploy trigger, so that if staging itself is broken I can disable it without blocking prod releases.
 20. As the maintainer, I want `bun run atlas -- ops wipe --confirm` to work against the staging DB, so that I can reset state when staging accumulates drift.
 
@@ -90,7 +90,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 - **The discriminator is the existing `ATLAS_API_REGION` env var, not a new one.** `packages/api/src/lib/residency/misrouting.ts:getApiRegion()` and `lib/effect/saas-guards.ts:RegionGuardLive` already read `ATLAS_API_REGION` (falling back to `residency.defaultRegion`). Introducing a parallel `ATLAS_DEPLOY_REGION` would leave those readers stuck on the default `us`, defeating the staging isolation. Staging deploys set `ATLAS_API_REGION=staging`; existing values `us | eu | apac` join the new `staging` arm.
 - The `DeployRegion` type union in `@useatlas/types` widens to `"us" | "eu" | "apac" | "staging"`. Type-only change; the runtime read remains via the existing `getApiRegion()` helper.
 - `ResidencyResolver` Tag in `ee/src/platform/residency/` gains a `staging` arm that returns `null` from `resolveRegionDatabaseUrl`, falling through to the local DB connection. Existing `us/eu/apac` paths untouched. A region-aware-connection test pins the staging arm against accidental routing changes.
-- The existing public `/api/v1/health` route already surfaces `region` from `getApiRegion()`. Staging's region appears there with no new wire fields. The auth'd `/api/v1/mode` route does NOT gain `deployRegion` — `/health` is sufficient and avoids needing to sign in to verify region during smoke tests.
+- The existing public `/api/health` route already surfaces `region` from `getApiRegion()`. Staging's region appears there with no new wire fields. The auth'd `/api/v1/mode` route does NOT gain `deployRegion` — `/health` is sufficient and avoids needing to sign in to verify region during smoke tests.
 
 ### Deep modules
 
@@ -116,9 +116,9 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
   - No staging docs service (docs deploys direct from `main`)
   - No staging sandbox sidecar — staging shares the prod Vercel Sandbox per existing `deploy/api/atlas.config.ts` priority (Vercel Sandbox is per-request Firecracker microVM with `networkPolicy: "deny-all"`, so cross-env contamination is structurally impossible)
 - CNAMEs:
-  - `staging.api.useatlas.dev` → `api-staging` (peer-symmetric with `api.useatlas.dev` / `api-eu.useatlas.dev` / `api-apac.useatlas.dev`)
-  - `app-staging.useatlas.dev` → `web-staging`
-  - `www-staging.useatlas.dev` → `www-staging`
+  - `api.staging.useatlas.dev` → `api-staging` (peer-symmetric with `api.useatlas.dev` / `api-eu.useatlas.dev` / `api-apac.useatlas.dev`)
+  - `app.staging.useatlas.dev` → `web-staging`
+  - `www.staging.useatlas.dev` → `www-staging`
 - Deploy triggers (path 2 — prod-branch tracker, see [release-process.md § Mental model](../development/release-process.md#mental-model)):
   - `api-staging` / `web-staging` / `www-staging` → watch `main` branch (autodeploy on merge)
   - `api` / `api-eu` / `api-apac` / `web` / `www` → watch `prod` branch (advanced by `/release` via `git push origin <tag-sha>^{}:prod --force-with-lease`)
@@ -138,7 +138,7 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 
 - `STRIPE_SECRET_KEY` = `sk_test_...` in staging
 - `STRIPE_WEBHOOK_SECRET` = `whsec_test_...` in staging (separate webhook endpoint registered)
-- `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` = staging Slack app credentials. New Slack app `atlas-staging` cloned from prod manifest; callback URL `https://staging.api.useatlas.dev/api/v1/integrations/slack/callback`.
+- `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` = staging Slack app credentials. New Slack app `atlas-staging` cloned from prod manifest; callback URL `https://api.staging.useatlas.dev/api/v1/integrations/slack/callback`.
 - `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` = staging Linear app
 - `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` = staging GitHub App (separate App, separate webhook URL)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` = staging OAuth client in same GCP project as prod, separate client
@@ -153,14 +153,14 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 ### Smoke-test harness
 
 - New `.github/workflows/staging-smoke.yml`. Triggers on Railway staging-deploy success webhook. Runs:
-  - `curl -fsS https://staging.api.useatlas.dev/api/v1/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
+  - `curl -fsS https://api.staging.useatlas.dev/api/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
   - `bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
 - Posts pass/fail to maintainer's Slack via the existing chat plugin (re-uses the `#sandbox-atlas` channel pattern from the proactive dogfood loop).
 
 ### Observability
 
 - All OTel spans gain a `deploy.region` attribute (`"us" | "eu" | "apac" | "staging"`). Rate-limit middleware already includes `deploy.mode`; the region attr makes staging traffic filterable in dashboards.
-- The web client renders the staging banner by reading `region` from the public `/api/v1/health` endpoint — pre-auth, no sign-in required. `/api/v1/mode` is NOT touched; it stays auth-gated for the in-app developer-mode UX.
+- The web client renders the staging banner by reading `region` from the public `/api/health` endpoint — pre-auth, no sign-in required. `/api/v1/mode` is NOT touched; it stays auth-gated for the in-app developer-mode UX.
 
 ### Operator documentation
 
@@ -225,7 +225,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 - **ROADMAP.md restructure** — see handoff item 6. The staging build can be tracked in the current ROADMAP shape as a single line item under "Active" until restructure lands.
 - **Stability Contract docs page** — customer-facing, see handoff item 4.
 - **v0.1.0 — July Launch milestone scoping** — see handoff item 7.
-- **Cross-DB validation from staging against prod regional DBs** — deferred. The risk inversion (unvalidated staging code reading prod data) makes this dangerous. If ever needed, the correct shape is read-replica + contract tests against `/api/v1/health`, not direct DB access.
+- **Cross-DB validation from staging against prod regional DBs** — deferred. The risk inversion (unvalidated staging code reading prod data) makes this dangerous. If ever needed, the correct shape is read-replica + contract tests against `/api/health`, not direct DB access.
 - **Twenty self-hosting in staging** — deferred until the 1.7.0 Generic REST / Non-SQL Datasources work begins. Today staging uses Twenty Cloud separate workspace, same as prod's Twenty Cloud usage.
 - **Pre-release tags** (`v0.1.0-rc.1`, `v0.1.0-canary.1`) — deferred until first enterprise customer requests an RC channel. KISS for now.
 - **PR-preview environments** (one staging instance per open PR) — Railway is not designed for this; cost is prohibitive and Vercel-style preview envs would require a different platform.

@@ -45,6 +45,7 @@ mock.module("@/lib/auth/two-factor-client", () => ({
 }));
 
 const routerPushMock = mock((_path: string) => {});
+const navigatePostAuthMock = mock((_path: string) => {});
 const searchParamsGetMock = mock<(_key: string) => string | null>(() => null);
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
@@ -53,6 +54,11 @@ mock.module("next/navigation", () => ({
   // when re-authing for passkey enrollment). Tests assert the safe path
   // policy is enforced.
   useSearchParams: () => ({ get: searchParamsGetMock }),
+}));
+// 2FA exits go through navigatePostAuth (hard nav). One mock point keeps
+// the policy assertions readable.
+mock.module("@/lib/auth/post-auth-nav", () => ({
+  navigatePostAuth: navigatePostAuthMock,
 }));
 
 const signInPasskeyMock = mock(
@@ -89,6 +95,7 @@ beforeEach(() => {
   verifyTotpMock.mockReset();
   verifyBackupCodeMock.mockReset();
   routerPushMock.mockReset();
+  navigatePostAuthMock.mockReset();
   searchParamsGetMock.mockReset();
   searchParamsGetMock.mockImplementation(() => null);
   getTwoFactorClientMock.mockReset();
@@ -180,7 +187,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
     ];
     expect(call[0]).toEqual({ code: "123456", trustDevice: false });
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
   });
 
@@ -202,7 +209,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
     });
 
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/admin/account-security");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/admin/account-security");
     });
   });
 
@@ -228,7 +235,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
     });
 
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
   });
 
@@ -269,6 +276,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
       expect(document.body.textContent).toContain("That code is wrong.");
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 
   test("network failure (TypeError) surfaces friendly copy and does NOT navigate", async () => {
@@ -286,6 +294,7 @@ describe("TwoFactorChallengePage — verifyTotp wiring", () => {
       expect(document.body.textContent).toContain("Can't reach the server");
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 
   test("double-click within the same tick fires verifyTotp only once (would burn backup codes otherwise)", async () => {
@@ -397,6 +406,7 @@ describe("TwoFactorChallengePage — plugin guard", () => {
     });
     expect(verifyTotpMock).not.toHaveBeenCalled();
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 });
 
@@ -438,7 +448,7 @@ describe("TwoFactorChallengePage — passkey alternative", () => {
     expect(call[0]).toBeUndefined();
 
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
     // The TOTP path must NOT have fired — passkey is the alternative, not
     // a parallel verification.
@@ -460,6 +470,7 @@ describe("TwoFactorChallengePage — passkey alternative", () => {
       expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain("NotAllowedError");
     // The TOTP input should remain usable after a cancelled passkey attempt.
     expect(getCodeInput().disabled).toBe(false);
@@ -482,6 +493,7 @@ describe("TwoFactorChallengePage — passkey alternative", () => {
       );
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 
   test("missing passkey plugin surfaces actionable banner instead of silent no-op", async () => {
@@ -522,6 +534,7 @@ describe("TwoFactorChallengePage — passkey alternative", () => {
       );
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
     // The TOTP path remains usable after the failed passkey attempt.
     expect(getCodeInput().disabled).toBe(false);
   });

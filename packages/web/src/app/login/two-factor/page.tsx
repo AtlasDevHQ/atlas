@@ -16,7 +16,7 @@
  */
 
 import { Suspense, useRef, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,6 +30,7 @@ import {
   type TwoFactorApiError,
 } from "@/lib/auth/two-factor-client";
 import { getPasskeySignIn } from "@/lib/auth/passkey-client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
 import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
 
@@ -121,7 +122,6 @@ export default function TwoFactorChallengePage() {
 }
 
 function TwoFactorChallengeForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const callbackPath = safeCallbackPath(searchParams.get("callbackURL"));
   const webAuthnSupport = useWebAuthnSupported();
@@ -177,7 +177,7 @@ function TwoFactorChallengeForm() {
         );
         return;
       }
-      router.push(callbackPath);
+      navigatePostAuth(callbackPath);
     } catch (err) {
       console.warn(
         "[two-factor:sign-in] passkey sign-in threw:",
@@ -229,7 +229,7 @@ function TwoFactorChallengeForm() {
         submittingRef.current = false;
         return;
       }
-      router.push(callbackPath);
+      navigatePostAuth(callbackPath);
     } catch (err) {
       console.warn(
         "[two-factor:sign-in] verify threw:",

@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +29,6 @@ function getApiBase(): string {
 }
 
 export default function SignupPage() {
-  const router = useRouter();
   // `?invitationId=…` is set when the user clicks an org-invitation
   // email link while signed out and picks "Create account". Threading it
   // through the signup + OTP flow lets us route to /accept-invitation
@@ -96,7 +96,9 @@ export default function SignupPage() {
       // dev), the response carries a token and we can push directly.
       const token = (res.data as { token?: string | null } | undefined)?.token;
       if (token) {
-        router.push(postSignupPath);
+        // Hard nav after auth — see post-auth-nav for the rationale. Same
+        // applies on the OTP-verified branch below.
+        navigatePostAuth(postSignupPath);
       } else {
         setPendingEmail(email);
       }
@@ -148,7 +150,7 @@ export default function SignupPage() {
           <CardContent className="space-y-4">
             <VerifyEmailOTPForm
               email={pendingEmail}
-              onVerified={() => router.push(postSignupPath)}
+              onVerified={() => navigatePostAuth(postSignupPath)}
             />
             <p className="text-center text-xs text-muted-foreground">
               <button

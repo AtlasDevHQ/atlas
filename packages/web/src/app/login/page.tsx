@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,7 +28,7 @@ import {
   MicrosoftIcon,
 } from "@/ui/components/social-icons";
 import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
-import { getPostSignInRoute } from "./post-sign-in-route";
+import { getPostSignInRoute, requiresRouterPushAfterSignIn } from "./post-sign-in-route";
 import { getPasskeySignIn } from "@/lib/auth/passkey-client";
 import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
 import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
@@ -164,7 +165,9 @@ export default function LoginPage() {
           return;
         }
         if (res.data) {
-          router.push(
+          // Hard nav out of the auth boundary — see post-auth-nav for why
+          // router.push would replay a stale 307 → /login from the cache.
+          navigatePostAuth(
             invitationId
               ? `/accept-invitation/${encodeURIComponent(invitationId)}`
               : "/",
@@ -228,7 +231,7 @@ export default function LoginPage() {
         );
         return;
       }
-      router.push(
+      navigatePostAuth(
         invitationId
           ? `/accept-invitation/${encodeURIComponent(invitationId)}`
           : "/",
@@ -272,7 +275,13 @@ export default function LoginPage() {
           );
         });
       }
-      router.push(next);
+      // 2FA challenge stays on router.push; every other exit is hard nav.
+      // Decision lives in post-sign-in-route so the policy is unit-tested.
+      if (requiresRouterPushAfterSignIn(next)) {
+        router.push(next);
+      } else {
+        navigatePostAuth(next);
+      }
     } catch (err) {
       console.debug(
         "Sign in failed:",
@@ -330,7 +339,7 @@ export default function LoginPage() {
           <CardContent className="space-y-4 pt-6">
             <VerifyEmailOTPForm
               email={error.attemptedEmail}
-              onVerified={() => router.push(
+              onVerified={() => navigatePostAuth(
                 invitationId
                   ? `/accept-invitation/${encodeURIComponent(invitationId)}`
                   : "/",

@@ -33,3 +33,25 @@ export function getPostSignInRoute(data: unknown, invitationId?: string | null):
   }
   return acceptPath ?? "/";
 }
+
+/**
+ * Should a post-sign-in destination be reached via `router.push` (SPA nav)
+ * instead of `navigatePostAuth` (hard nav)?
+ *
+ * `true` only for the /login/two-factor branch. The `twoFactorRedirect`
+ * response doesn't set a session_token cookie — only a short-lived two-
+ * factor cookie identifying the pending user. A hard nav to /login/two-
+ * factor would hit proxy.ts as "no session", and /login/two-factor isn't
+ * in the exact-match authRoutes list, so the proxy would 307 to /login
+ * and the user would never reach the challenge.
+ *
+ * Prefix match (not exact equality) because the invited+2FA path appends
+ * `?callbackURL=…` — and that was the exact bug Codex caught on PR #2888.
+ *
+ * Every other branch (`/`, `/accept-invitation/…`) is an exit out of the
+ * auth gate where a real session cookie exists, so hard nav is correct
+ * (and necessary, to dodge Router Cache poisoning).
+ */
+export function requiresRouterPushAfterSignIn(next: string): boolean {
+  return next === "/login/two-factor" || next.startsWith("/login/two-factor?");
+}

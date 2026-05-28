@@ -63,9 +63,17 @@ COPY . .
 RUN cd packages/types && bun run build
 RUN cd packages/sdk && bun run build
 RUN cd packages/react && bun run build
-# Bake build-time env vars into the client JS bundle
-ENV NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev
-ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=managed
+# Bake build-time env vars into the client JS bundle.
+# ARG-with-default lets Railway pass a per-service override via build args
+# (Railway maps service env vars to `--build-arg` automatically) without
+# forking the Dockerfile for each environment. Prod keeps the default;
+# staging overrides via `NEXT_PUBLIC_ATLAS_API_URL=https://staging.api.useatlas.dev`
+# on the web-staging service. Without ARG, the ENV literal would always win
+# and bake the prod URL into staging's bundle.
+ARG NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev
+ARG NEXT_PUBLIC_ATLAS_AUTH_MODE=managed
+ENV NEXT_PUBLIC_ATLAS_API_URL=$NEXT_PUBLIC_ATLAS_API_URL
+ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=$NEXT_PUBLIC_ATLAS_AUTH_MODE
 RUN cd packages/web && bun run build
 
 # --- runner ---

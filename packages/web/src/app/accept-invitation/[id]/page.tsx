@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Database, Mail, AlertTriangle, LogOut } from "lucide-react";
 import { authClient, type OrgInvitationDetail } from "@/lib/auth/client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -121,7 +122,8 @@ export default function AcceptInvitationPage({ params }: PageProps) {
             );
           });
       }
-      router.push("/");
+      // Hard nav out of the auth boundary — see post-auth-nav for why.
+      navigatePostAuth("/");
     } catch (err) {
       setAcceptError(err instanceof Error ? err.message : "Failed to accept invitation.");
     } finally {

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -164,7 +165,9 @@ export default function LoginPage() {
           return;
         }
         if (res.data) {
-          router.push(
+          // Hard nav out of the auth boundary — see post-auth-nav for why
+          // router.push would replay a stale 307 → /login from the cache.
+          navigatePostAuth(
             invitationId
               ? `/accept-invitation/${encodeURIComponent(invitationId)}`
               : "/",
@@ -228,7 +231,7 @@ export default function LoginPage() {
         );
         return;
       }
-      router.push(
+      navigatePostAuth(
         invitationId
           ? `/accept-invitation/${encodeURIComponent(invitationId)}`
           : "/",
@@ -272,7 +275,14 @@ export default function LoginPage() {
           );
         });
       }
-      router.push(next);
+      // 2FA branch (/login/two-factor) stays on the router so the prefilled
+      // form state survives the transition. Every other branch is an exit
+      // out of the auth gate — hard nav to dodge stale Router Cache.
+      if (next === "/login/two-factor") {
+        router.push(next);
+      } else {
+        navigatePostAuth(next);
+      }
     } catch (err) {
       console.debug(
         "Sign in failed:",
@@ -330,7 +340,7 @@ export default function LoginPage() {
           <CardContent className="space-y-4 pt-6">
             <VerifyEmailOTPForm
               email={error.attemptedEmail}
-              onVerified={() => router.push(
+              onVerified={() => navigatePostAuth(
                 invitationId
                   ? `/accept-invitation/${encodeURIComponent(invitationId)}`
                   : "/",

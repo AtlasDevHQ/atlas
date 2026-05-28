@@ -44,12 +44,18 @@ mock.module("@/ui/hooks/use-webauthn-supported", () => ({
 }));
 
 const routerPushMock = mock((_path: string) => {});
+const navigatePostAuthMock = mock((_path: string) => {});
 // Per-test mutable search params so tests can drive the `?invitationId=…`
 // branch without re-mocking the whole module.
 const searchParamsStore: Record<string, string | null> = { invitationId: null };
 mock.module("next/navigation", () => ({
   useRouter: () => ({ push: routerPushMock, replace: () => {}, back: () => {} }),
   useSearchParams: () => ({ get: (k: string) => searchParamsStore[k] ?? null }),
+}));
+// Sign-in exits go through navigatePostAuth (hard nav) — keep one mock
+// point so tests don't have to spy on `window.location.assign` per-case.
+mock.module("@/lib/auth/post-auth-nav", () => ({
+  navigatePostAuth: navigatePostAuthMock,
 }));
 
 // `LoginPage` fetches the social-provider list + password-reset status
@@ -79,6 +85,7 @@ import LoginPage from "./page";
 beforeEach(() => {
   signInPasskeyMock.mockReset();
   routerPushMock.mockReset();
+  navigatePostAuthMock.mockReset();
   webAuthnSupportMock.mockReset();
   fetchMock.mockClear();
   searchParamsStore.invitationId = null;
@@ -169,7 +176,7 @@ describe("LoginPage — passkey button click", () => {
     expect(explicitCall[0]).toBeUndefined();
 
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
   });
 
@@ -188,6 +195,7 @@ describe("LoginPage — passkey button click", () => {
       expect(signInPasskeyMock).toHaveBeenCalledTimes(2);
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
     // Crucial: no NotAllowedError leak. The renderer must NOT show the
     // raw cancellation message.
     expect(document.body.textContent).not.toContain("NotAllowedError");
@@ -215,6 +223,7 @@ describe("LoginPage — passkey button click", () => {
     });
     expect(document.body.textContent).not.toContain("raw NotAllowedError verbose blob");
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 
   test("network failure (TypeError) surfaces 'can't reach the server' copy", async () => {
@@ -231,6 +240,7 @@ describe("LoginPage — passkey button click", () => {
       expect(document.body.textContent).toContain("Can't reach the server");
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 });
 
@@ -249,7 +259,7 @@ describe("LoginPage — conditional UI autofill on mount", () => {
   test("autofill success navigates the user — no need for a button click", async () => {
     render(<LoginPage />);
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
   });
 
@@ -298,7 +308,7 @@ describe("LoginPage — invitationId deep-link threading", () => {
     searchParamsStore.invitationId = "inv-abc-123";
     render(<LoginPage />);
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/accept-invitation/inv-abc-123");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/accept-invitation/inv-abc-123");
     });
   });
 
@@ -306,7 +316,7 @@ describe("LoginPage — invitationId deep-link threading", () => {
     searchParamsStore.invitationId = "a/b?c";
     render(<LoginPage />);
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/accept-invitation/a%2Fb%3Fc");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/accept-invitation/a%2Fb%3Fc");
     });
   });
 
@@ -314,7 +324,7 @@ describe("LoginPage — invitationId deep-link threading", () => {
     searchParamsStore.invitationId = null;
     render(<LoginPage />);
     await waitFor(() => {
-      expect(routerPushMock).toHaveBeenCalledWith("/");
+      expect(navigatePostAuthMock).toHaveBeenCalledWith("/");
     });
   });
 });
@@ -337,5 +347,6 @@ describe("LoginPage — empty envelope on click", () => {
       );
     });
     expect(routerPushMock).not.toHaveBeenCalled();
+    expect(navigatePostAuthMock).not.toHaveBeenCalled();
   });
 });

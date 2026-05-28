@@ -33,6 +33,7 @@ import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { getEnvProfile } from "@atlas/api/lib/env-profile";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
@@ -2424,13 +2425,24 @@ export function getAuthInstance(): AuthInstance {
     );
   }
 
-  // Derive parent domain for cross-subdomain cookies (e.g. "useatlas.dev" from
-  // BETTER_AUTH_URL="https://api.useatlas.dev"). Only enabled when CORS origin
-  // is set (i.e. cross-origin deployment). Without this, cookies are scoped to
-  // the API subdomain and won't be sent from the frontend subdomain.
+  // Cookie Domain strategy is profile-driven (env-profile.ts).
+  //
+  // `parent`: derive parent domain (e.g. "useatlas.dev" from BETTER_AUTH_URL
+  //   "https://api.useatlas.dev") and set `Domain=.<parent>`. Span every
+  //   subdomain of the parent. Used by prod where the SaaS subdomain family
+  //   was set up with this assumption.
+  //
+  // `host-only`: omit the Domain attribute. Cookie binds to the exact host
+  //   that set it (e.g. `staging.api.useatlas.dev`). Cross-origin fetch
+  //   from a sibling subdomain still works via `credentials: "include"` +
+  //   `SameSite=None; Secure`. Required for staging so its cookies don't
+  //   leak to/from prod's `.useatlas.dev` space.
+  //
+  // Either strategy still requires `ATLAS_CORS_ORIGIN` to be set (cross-origin
+  // deployment); same-origin deploys don't need a Domain attribute at all.
   const corsOrigin = process.env.ATLAS_CORS_ORIGIN;
   let cookieDomain: string | undefined;
-  if (corsOrigin && process.env.BETTER_AUTH_URL) {
+  if (corsOrigin && process.env.BETTER_AUTH_URL && getEnvProfile().cookieDomainStrategy === "parent") {
     try {
       const host = new URL(process.env.BETTER_AUTH_URL).hostname;
       const parts = host.split(".");

@@ -1793,21 +1793,30 @@ export function buildPlugins() {
     }
   }
 
+  // customSession — surface the org-merged effective role on the session
+  // for both client (gear icon, sidebar) and server (validateManaged
+  // reads `user.effectiveRole` straight off the session payload, avoiding
+  // a second member-table SELECT per request).
+  //
+  // The native `user.role` (admin plugin, system-wide) is left untouched
+  // so Better Auth's own admin endpoints still gate on system role.
+  //
+  // Per Better Auth docs, customSession bypasses cookie-cache: this
+  // callback runs on every `getSession`. The single member-table SELECT
+  // here replaces the one validateManaged used to run — net DB load is
+  // unchanged.
+  //
+  // Inside the same `any[]` plugin array as every other plugin above —
+  // adding it here means we don't need any new casts at the call site.
+  plugins.push(customSession(buildCustomSessionPayload));
+
   return plugins;
 }
 
 /**
- * customSession callback — surface the org-merged effective role on the
- * session for the client. The native `user.role` (admin plugin,
- * system-wide) is left untouched so Better Auth's own admin endpoints
- * still gate on system role; client consumers read `effectiveRole` via
- * `useUserRole` to decide whether to render admin chrome (gear icon,
- * sidebar, pending-changes pill).
- *
- * Per Better Auth docs, customSession bypasses cookie-cache: this
- * callback runs on every `getSession`. That's already the cost
- * `validateManaged` pays via `resolveEffectiveRole` on every authenticated
- * request, so net DB load is unchanged.
+ * customSession callback — see the {@link buildPlugins} push site for
+ * the architectural rationale (why `effectiveRole` and not `role`, why
+ * the cookie-cache bypass is fine).
  *
  * Exported for the tiny unit test that pins the role-merge contract; not
  * a public API.
@@ -2386,15 +2395,6 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       },
     },
   };
-
-  // Append customSession last so it wraps every other plugin's session
-  // contributions. Passing `options` as the 2nd arg propagates plugin
-  // field types (admin's `user.role`, organization's `activeOrganizationId`,
-  // etc.) into the callback's inputs — see better-auth/docs §
-  // "Customizing Session with Plugin Field Inference".
-  //
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- type erasure mirrors the cast on options below
-  (options.plugins as any[]).push(customSession(buildCustomSessionPayload, options as Parameters<typeof customSession>[1]));
 
   return options as unknown as Parameters<typeof betterAuth>[0];
 }

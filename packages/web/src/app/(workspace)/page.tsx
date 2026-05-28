@@ -14,6 +14,7 @@ import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { useDefaultLanding } from "@/ui/hooks/use-default-landing";
+import { useIsAdmin } from "@/ui/hooks/use-platform-admin-guard";
 import { authClient } from "@/lib/auth/client";
 import { IncidentBanner } from "@/ui/components/incident-banner";
 import { AssistantTurn } from "@/ui/components/chat/assistant-turn";
@@ -89,13 +90,12 @@ function ChatPage() {
   const lastLoadedIdRef = useRef<string | null>(null);
 
   // Client-side role check for nav display only — actual admin access is
-  // enforced by the backend (which resolves org member roles).
+  // enforced by the backend. `useIsAdmin` reads the merged effective role
+  // (system-wide + active-org member) stamped by customSession server-side,
+  // so org admins whose user.role defaulted to "user" still match.
   const session = authClient.useSession();
-  const user = session.data?.user as
-    | { email?: string; role?: string }
-    | undefined;
-  const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
-  const isSignedIn = !!user;
+  const isAdmin = useIsAdmin();
+  const isSignedIn = !!session.data?.user;
 
   // Wait for the session to resolve before fetching the landing preference —
   // a 401 here silently falls through to chat and the admin opt-out never

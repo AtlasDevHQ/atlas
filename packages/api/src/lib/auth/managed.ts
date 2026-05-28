@@ -15,7 +15,6 @@ import { getAuthInstance } from "@atlas/api/lib/auth/server";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 
 const log = createLogger("auth:managed");
 
@@ -36,12 +35,17 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
     return { authenticated: false, mode: "managed", status: 500, error: "Session data is incomplete" };
   }
 
-  // Extract role from session user (set by Better Auth admin plugin, stored in the `role` column).
-  // Falls back to default (member) when not present — see permissions.ts.
+  // Extract the merged effective role from the session user. Set by the
+  // `customSession` plugin in `server.ts`, which already runs
+  // `resolveEffectiveRole(user.role, member.role)` on every getSession.
+  // Reading the stamped field here avoids a second identical member-table
+  // SELECT per request. Falls back to the raw `role` (system-wide,
+  // admin plugin) for unit tests that mock auth.api.getSession without
+  // routing through the customSession callback.
   const sessionUser = session.user as Record<string, unknown>;
-  // Better Auth can store multiple roles as comma-separated strings; Atlas uses only the first.
-  const rawRoleField = sessionUser?.role;
-  const rawRole = typeof rawRoleField === "string" ? rawRoleField.split(",")[0].trim() : rawRoleField;
+  const stampedRole = sessionUser?.effectiveRole ?? sessionUser?.role;
+  // Better Auth can store roles as comma-separated strings; Atlas uses only the first.
+  const rawRole = typeof stampedRole === "string" ? stampedRole.split(",")[0].trim() : stampedRole;
   let role: ReturnType<typeof parseRole>;
   if (typeof rawRole === "string") {
     role = parseRole(rawRole);
@@ -93,12 +97,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // via POST /organization/set-active.
   const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
-  // Both queries hit the internal DB but are independent — parallelize so
-  // every authenticated request doesn't pay two sequential round-trips.
-  const [effectiveRole, passkeyCount] = await Promise.all([
-    resolveEffectiveRole(role, userId, activeOrganizationId),
-    resolvePasskeyCount(userId),
-  ]);
+  const passkeyCount = await resolvePasskeyCount(userId);
 
   // Computed fields land AFTER the spread so a session-user field can't
   // shadow our authoritative claims (asserted in managed.test.ts).
@@ -110,7 +109,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   return {
     authenticated: true,
     mode: "managed",
-    user: createAtlasUser(userId, "managed", email || userId, { role: effectiveRole, activeOrganizationId, claims }),
+    user: createAtlasUser(userId, "managed", email || userId, { role, activeOrganizationId, claims }),
   };
 }
 

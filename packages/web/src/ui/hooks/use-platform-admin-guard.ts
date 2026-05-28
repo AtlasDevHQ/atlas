@@ -2,7 +2,10 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { ADMIN_ROLES, type AdminRole } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
+
+const ADMIN_ROLES_SET: ReadonlySet<string> = new Set<AdminRole>(ADMIN_ROLES);
 
 /**
  * Returns the user's effective role for client-side admin gating.
@@ -25,6 +28,23 @@ export function useUserRole(): string | undefined {
   const session = authClient.useSession();
   const user = session.data?.user;
   return user?.effectiveRole ?? user?.role;
+}
+
+/**
+ * Boolean form of {@link useUserRole} — `true` when the caller has any
+ * admin-grade role (`admin` / `owner` / `platform_admin`). Use this
+ * everywhere admin chrome is gated; the underlying source-of-truth set
+ * is `ADMIN_ROLES` from `@useatlas/types`, so adding a new admin tier
+ * lights up every consumer at once.
+ *
+ * Direct `user.role === "admin" || ...` chains miss the org-merged role
+ * and silently underreport for org admins whose `user.role` is the
+ * signup-default "user" — see the customSession plugin in
+ * `packages/api/src/lib/auth/server.ts`.
+ */
+export function useIsAdmin(): boolean {
+  const role = useUserRole();
+  return role !== undefined && ADMIN_ROLES_SET.has(role);
 }
 
 /**

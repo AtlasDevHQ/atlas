@@ -11,6 +11,7 @@ import { useConversations, transformMessages } from "@/ui/hooks/use-conversation
 import { useDatasourceSummary } from "@/ui/hooks/use-datasource-summary";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
+import { useIsAdmin } from "@/ui/hooks/use-platform-admin-guard";
 import { authClient } from "@/lib/auth/client";
 import { Button } from "@/components/ui/button";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
@@ -43,13 +44,12 @@ function NotebookContent() {
   const [error, setError] = useState<string | null>(null);
   const tempIdRef = useRef(`temp:${Date.now()}`);
 
-  // Auth for tour
+  // Auth for tour. `useIsAdmin` reads the merged effective role from
+  // customSession so org admins (system role "user", org member.role
+  // "admin") still match.
   const session = authClient.useSession();
-  const user = session.data?.user as
-    | { email?: string; role?: string }
-    | undefined;
-  const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
-  const isSignedIn = !!user;
+  const isAdmin = useIsAdmin();
+  const isSignedIn = !!session.data?.user;
 
   // Server-side notebook state
   const [serverNotebookState, setServerNotebookState] = useState<NotebookStateWire | null>(null);

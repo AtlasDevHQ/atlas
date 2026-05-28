@@ -361,12 +361,16 @@ function classifyTransportError(
   timeoutMs: number,
 ): OpenApiClientError {
   const name = err instanceof Error ? err.name : "";
+  // `AbortSignal.timeout()` aborts with a `TimeoutError`; the `AbortError` arm
+  // is defensive (future caller-supplied signals / runtime variance). The
+  // message stays accurate for both — it does not assert the limit was
+  // definitely reached, only what the per-request limit was.
   if (name === "TimeoutError" || name === "AbortError") {
     return new OpenApiClientError({
       reason: "timeout",
       operationId,
       status: 0,
-      message: `Operation "${operationId}" timed out after ${timeoutMs}ms.`,
+      message: `Operation "${operationId}" was aborted (per-request timeout ${timeoutMs}ms).`,
     });
   }
   return new OpenApiClientError({

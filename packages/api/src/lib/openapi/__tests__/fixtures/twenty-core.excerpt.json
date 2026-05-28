@@ -1,0 +1,307 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Twenty Core REST API", "version": "0.41.0" },
+  "servers": [{ "url": "https://crm.useatlas.dev/rest", "description": "workspace" }],
+  "security": [{ "bearer": [] }],
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "filter": {
+        "name": "filter",
+        "in": "query",
+        "required": false,
+        "description": "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine with comma. Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is.",
+        "schema": { "type": "string" }
+      },
+      "orderBy": {
+        "name": "order_by",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "format": "int32" }
+      },
+      "depth": {
+        "name": "depth",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "enum": [0, 1, 2] }
+      },
+      "startingAfter": {
+        "name": "starting_after",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "endingBefore": {
+        "name": "ending_before",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      }
+    },
+    "schemas": {
+      "Person": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": {
+            "type": "object",
+            "properties": {
+              "firstName": { "type": "string" },
+              "lastName": { "type": "string" }
+            }
+          },
+          "emails": {
+            "type": "object",
+            "properties": {
+              "primaryEmail": { "type": "string" },
+              "additionalEmails": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "atlasFirstSource": { "type": "string", "description": "Atlas custom field — inline, not nested under customFields." },
+          "atlasLastSource": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "noteTargets": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/NoteTarget" }
+          }
+        }
+      },
+      "NoteTarget": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "noteId": { "type": "string", "format": "uuid" },
+          "targetPersonId": { "type": "string", "format": "uuid" },
+          "note": { "$ref": "#/components/schemas/Note" },
+          "person": { "$ref": "#/components/schemas/Person" }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "bodyV2": {
+            "type": "object",
+            "properties": { "markdown": { "type": "string" } }
+          },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Company": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "domainName": {
+            "type": "object",
+            "properties": { "primaryLinkUrl": { "type": "string" } }
+          }
+        }
+      },
+      "PersonListResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "people": { "type": "array", "items": { "$ref": "#/components/schemas/Person" } }
+            }
+          }
+        }
+      },
+      "PersonResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": { "person": { "$ref": "#/components/schemas/Person" } }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/people": {
+      "get": {
+        "operationId": "findManyPeople",
+        "summary": "List people",
+        "tags": ["People"],
+        "parameters": [
+          { "$ref": "#/components/parameters/filter" },
+          { "$ref": "#/components/parameters/orderBy" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/depth" },
+          { "$ref": "#/components/parameters/startingAfter" },
+          { "$ref": "#/components/parameters/endingBefore" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of people",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonListResponse" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOnePerson",
+        "summary": "Create one person",
+        "tags": ["People"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Person" } }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/people/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string", "format": "uuid" }
+        }
+      ],
+      "get": {
+        "operationId": "findOnePerson",
+        "summary": "Get one person",
+        "tags": ["People"],
+        "parameters": [{ "$ref": "#/components/parameters/depth" }],
+        "responses": {
+          "200": {
+            "description": "One person",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateOnePerson",
+        "summary": "Update one person",
+        "tags": ["People"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Person" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteOnePerson",
+        "summary": "Delete one person",
+        "tags": ["People"],
+        "parameters": [
+          {
+            "name": "soft_delete",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "boolean" }
+          }
+        ],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/noteTargets": {
+      "get": {
+        "operationId": "findManyNoteTargets",
+        "summary": "List note targets",
+        "tags": ["NoteTargets"],
+        "parameters": [{ "$ref": "#/components/parameters/filter" }],
+        "responses": {
+          "200": {
+            "description": "A list of note targets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "noteTargets": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/NoteTarget" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOneNoteTarget",
+        "summary": "Create one note target",
+        "tags": ["NoteTargets"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/NoteTarget" } }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/notes": {
+      "get": {
+        "operationId": "findManyNotes",
+        "summary": "List notes",
+        "tags": ["Notes"],
+        "parameters": [{ "$ref": "#/components/parameters/filter" }],
+        "responses": { "200": { "description": "A list of notes" } }
+      },
+      "post": {
+        "operationId": "createOneNote",
+        "summary": "Create one note",
+        "tags": ["Notes"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Note" } }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/companies": {
+      "get": {
+        "operationId": "findManyCompanies",
+        "summary": "List companies",
+        "tags": ["Companies"],
+        "parameters": [{ "$ref": "#/components/parameters/filter" }],
+        "responses": { "200": { "description": "A list of companies" } }
+      }
+    }
+  }
+}

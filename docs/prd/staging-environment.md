@@ -36,7 +36,7 @@ User-visible promotion model:
 
 - **`main` push** → staging deploys automatically (api + web + www, no docs)
 - **Eyeball staging** — via `atlas ops smoke-crm`, click-through, or the `/verify` skill
-- **Tag a release** — `git tag -a v0.x.y && git push --tags` triggers production deploy across all three regions in parallel
+- **Tag a release** — `git tag -a v0.x.y && git push origin v0.x.y` triggers production deploy across all three regions in parallel. Pushing the explicit tag ref (not `--tags`) prevents accidentally publishing stale local tags into the prod trigger.
 - **Hotfix** — push fix to `main`, tag immediately. Don't wait for staging soak. Both deploys fire on the same commit; if prod's health check fails, Railway auto-rolls-back the bad region while staging keeps the failed code for reproduction.
 
 Docs (`docs.useatlas.dev`) continues to deploy direct from `main`. The static-export + Caddy posture (PR #2879) means docs has no runtime surface to gate. `apps/www` IS gated despite the user's initial prior to leave it direct — the empirical evidence from #2856 + #2857 was that CSP / embed / origin changes in www are exactly the class staging catches, and the marginal cost is one small Railway service.
@@ -87,15 +87,17 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 ### Region-keying and deploy mode
 
 - `ATLAS_DEPLOY_MODE` stays `"saas"` for staging so that the SaaS code paths (enterprise gating, residency Tag, encryption keyset enforcement) are all exercised identically to prod.
-- `ATLAS_DEPLOY_REGION` becomes the discriminator. Existing values `us | eu | apac` join a new `staging` arm. The four are treated as a closed enum at the residency-routing boundary; everywhere else the region is opaque.
+- **The discriminator is the existing `ATLAS_API_REGION` env var, not a new one.** `packages/api/src/lib/residency/misrouting.ts:getApiRegion()` and `lib/effect/saas-guards.ts:RegionGuardLive` already read `ATLAS_API_REGION` (falling back to `residency.defaultRegion`). Introducing a parallel `ATLAS_DEPLOY_REGION` would leave those readers stuck on the default `us`, defeating the staging isolation. Staging deploys set `ATLAS_API_REGION=staging`; existing values `us | eu | apac` join the new `staging` arm.
+- The `DeployRegion` type union in `@useatlas/types` widens to `"us" | "eu" | "apac" | "staging"`. Type-only change; the runtime read remains via the existing `getApiRegion()` helper.
 - `ResidencyResolver` Tag in `ee/src/platform/residency/` gains a `staging` arm that returns `null` from `resolveRegionDatabaseUrl`, falling through to the local DB connection. Existing `us/eu/apac` paths untouched. A region-aware-connection test pins the staging arm against accidental routing changes.
+- The existing public `/api/v1/health` route already surfaces `region` from `getApiRegion()`. Staging's region appears there with no new wire fields. The auth'd `/api/v1/mode` route does NOT gain `deployRegion` — `/health` is sufficient and avoids needing to sign in to verify region during smoke tests.
 
 ### Deep modules
 
 - **`StagingClamp` (new, deep)** at `packages/api/src/lib/staging/clamp.ts`. Pure transform: `clampOutbound(region: DeployRegion, sendable: T): T`. Identity transform for non-staging regions. For staging:
   - Email payloads — rewrite `to` field to `STAGING_MAIL_SINK` env var (default `staging-mail@useatlas.dev`). Preserve `subject`, `body`, `from`, headers.
   - Future expansion (out of scope today): Stripe customer creation mirror, Slack webhook destination overrides, etc.
-- **`StagingSeed` (new, deep)** at `packages/api/src/lib/staging/seed.ts`. Idempotent boot-time bootstrap: `ensureStagingSeed(): Effect<void>`. Runs in `lib/startup.ts` when `ATLAS_DEPLOY_REGION === "staging"`. On first boot creates:
+- **`StagingSeed` (new, deep)** at `packages/api/src/lib/staging/seed.ts`. Idempotent boot-time bootstrap: `ensureStagingSeed(): Effect<void>`. Runs in `lib/startup.ts` when `getApiRegion() === "staging"` (reading the same env source as residency). On first boot creates:
   - 1 organization `staging-internal`
   - 1 admin user (deterministic email `admin@staging.useatlas.dev`, password from `STAGING_ADMIN_PASSWORD`)
   - 1 datasource pointing at the shared `__demo__` NovaMart connection
@@ -119,12 +121,14 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
   - `www-staging.useatlas.dev` → `www-staging`
 - Deploy triggers:
   - `api-staging` / `web-staging` / `www-staging` → watch `main` branch
-  - `api` / `api-eu` / `api-apac` / `web` → watch tag pattern `v*.*.*`
-  - `docs` / `www` → continue watching `main` (direct-to-prod)
+  - `api` / `api-eu` / `api-apac` / `web` / `www` → watch tag pattern `v*.*.*`
+  - `docs` → continues watching `main` (direct-to-prod; static export + Caddy, no runtime surface)
+
+  Prod `www` joins the tag-pattern group because `apps/www` IS gated per Q2 — leaving prod www on `main` push would let CSP/embed changes like #2856/#2857 ship without ever transiting staging, contradicting the design.
 
 ### Configuration file
 
-- New `deploy/api-staging/atlas.config.ts`, structurally identical to `deploy/api/atlas.config.ts`. Same plugin set, same proactive runtime wiring. Per-service env vars carry the staging-specific OAuth credentials and the `ATLAS_DEPLOY_REGION=staging` discriminator. Justification for not just reusing the prod file: prod config imports from absolute `/app/` paths in the SaaS container and embeds prod-only assumptions; a separate file keeps regional drift explicit and reviewable.
+- New `deploy/api-staging/atlas.config.ts`, structurally identical to `deploy/api/atlas.config.ts`. Same plugin set, same proactive runtime wiring. Per-service env vars carry the staging-specific OAuth credentials and the `ATLAS_API_REGION=staging` discriminator. Justification for not just reusing the prod file: prod config imports from absolute `/app/` paths in the SaaS container and embeds prod-only assumptions; a separate file keeps regional drift explicit and reviewable.
 
 ### Credentials hard wall
 
@@ -140,21 +144,21 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 - `RESEND_API_KEY` = staging Resend API key + verified sender domain `staging.useatlas.dev`
 - `BETTER_AUTH_SECRET` = staging-specific 32-byte random
 - `ATLAS_ENCRYPTION_KEYS` = staging-specific versioned keyset (so a staging DB dump can't decrypt prod-shape integration credentials)
+- `ATLAS_API_REGION` = `staging` (the canonical region discriminator — see Region-keying section)
 - `STAGING_MAIL_SINK` = `staging-mail@useatlas.dev` (consumed by `StagingClamp`)
 - `STAGING_ADMIN_PASSWORD` = deterministic credential for the seeded admin
 
 ### Smoke-test harness
 
 - New `.github/workflows/staging-smoke.yml`. Triggers on Railway staging-deploy success webhook. Runs:
-  - `curl -fsS https://staging.useatlas.dev/api/v1/health`
-  - `curl -fsS https://staging.useatlas.dev/api/v1/mode` (verifies `deployRegion === "staging"`)
-  - `bun run atlas -- ops smoke-crm --base-url https://staging.useatlas.dev`
+  - `curl -fsS https://staging.useatlas.dev/api/v1/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
+  - `bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
 - Posts pass/fail to maintainer's Slack via the existing chat plugin (re-uses the `#sandbox-atlas` channel pattern from the proactive dogfood loop).
 
 ### Observability
 
 - All OTel spans gain a `deploy.region` attribute (`"us" | "eu" | "apac" | "staging"`). Rate-limit middleware already includes `deploy.mode`; the region attr makes staging traffic filterable in dashboards.
-- `/api/v1/mode` response gains a `deployRegion: "staging" | "us" | "eu" | "apac"` field so the web client can render the staging banner.
+- The web client renders the staging banner by reading `region` from the public `/api/v1/health` endpoint — pre-auth, no sign-in required. `/api/v1/mode` is NOT touched; it stays auth-gated for the in-app developer-mode UX.
 
 ### Operator documentation
 
@@ -187,7 +191,7 @@ Module: `packages/api/src/lib/staging/__tests__/seed.test.ts`. Runs against `TES
 - `ensureStagingSeed` second call is idempotent — no duplicate rows
 - Admin user's password hash verifies against `STAGING_ADMIN_PASSWORD`
 - Datasource's `connection_id` resolves to the `__demo__` connection
-- `ensureStagingSeed` on `ATLAS_DEPLOY_REGION=us` is a no-op (early-return without DB touch)
+- `ensureStagingSeed` on `ATLAS_API_REGION=us` is a no-op (early-return without DB touch)
 
 Prior art: `packages/api/src/lib/db/__tests__/migrate-pg.test.ts` — real-PG integration test pattern, including the `MANAGED_AUTH_MIGRATIONS` opt-in for Better Auth tables.
 
@@ -219,7 +223,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 - **ROADMAP.md restructure** — see handoff item 6. The staging build can be tracked in the current ROADMAP shape as a single line item under "Active" until restructure lands.
 - **Stability Contract docs page** — customer-facing, see handoff item 4.
 - **v0.1.0 — July Launch milestone scoping** — see handoff item 7.
-- **Cross-DB validation from staging against prod regional DBs** — deferred. The risk inversion (unvalidated staging code reading prod data) makes this dangerous. If ever needed, the correct shape is read-replica + contract tests against `/api/v1/health` and `/api/v1/mode`, not direct DB access.
+- **Cross-DB validation from staging against prod regional DBs** — deferred. The risk inversion (unvalidated staging code reading prod data) makes this dangerous. If ever needed, the correct shape is read-replica + contract tests against `/api/v1/health`, not direct DB access.
 - **Twenty self-hosting in staging** — deferred until the 1.7.0 Generic REST / Non-SQL Datasources work begins. Today staging uses Twenty Cloud separate workspace, same as prod's Twenty Cloud usage.
 - **Pre-release tags** (`v0.1.0-rc.1`, `v0.1.0-canary.1`) — deferred until first enterprise customer requests an RC channel. KISS for now.
 - **PR-preview environments** (one staging instance per open PR) — Railway is not designed for this; cost is prohibitive and Vercel-style preview envs would require a different platform.

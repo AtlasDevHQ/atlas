@@ -2,12 +2,14 @@
 
 **Status:** Accepted
 **Date:** 2026-05-28
-**Context milestone:** v0.1.0 — Release Process Bootstrap
+**Context milestone:** v0.0.1 — Release Process Bootstrap
 **Depends on:** [ADR-0008](./0008-versioning-and-release-tags.md)
+
+> **Amendment (2026-05-28, same day):** Per the same-day amendment to [ADR-0008](./0008-versioning-and-release-tags.md), the tag train starts at `v0.0.1` (not `v0.1.0`), and `v0.1.0` is reserved for the public launch (July 2026). The milestone names and migration table below were updated to the `v0.0.x` scheme: `v0.0.1 — Release Process Bootstrap`, `v0.0.2 — REST Datasources`. The roadmap *structure* this ADR establishes (five sections, tag-organized) is unchanged.
 
 ## Context
 
-[ADR-0008](./0008-versioning-and-release-tags.md) establishes git tags (`v0.1.0`, `v0.2.0`, …) as the third version train and the gate for prod deploys. Once tags become the unit of release, two adjacent structures are misshaped against them:
+[ADR-0008](./0008-versioning-and-release-tags.md) establishes git tags (`v0.0.1`, `v0.0.2`, …) as the third version train and the gate for prod deploys. Once tags become the unit of release, two adjacent structures are misshaped against them:
 
 1. **GitHub milestones** are numbered against the internal `1.5.4` / `1.6.0` / `1.7.0` series. The numbers are unanchored from any deploy event and don't map to anything customer-facing. As of 2026-05-28, four open milestones: `1.5.4 — Test Suite Self-Containment`, `1.6.1 — CRM Lead Capture Hotfixes` (empty: 0 open / 8 closed), `1.7.0 — Generic REST / Non-SQL Datasources`, `Architecture Backlog`.
 2. **`.claude/research/ROADMAP.md`** mirrors the milestone numbering with sections like `## Shipped Milestones (0.6.0 → 1.6.0)`, `## Active`, `## Planned`, `## Parked`, `## Closed parallel tracks`. The structure has accumulated five top-level groupings over 22 months of edits, with overlap between Active/Planned/Closed and the milestone list itself.
@@ -20,8 +22,8 @@ Both structures answer "what's the architectural roadmap" but neither answers "w
 
 ### GitHub milestone shape going forward
 
-- **Milestones are named after minor tags.** `v0.1.0 — Release Process Bootstrap`, `v0.2.0 — REST Datasources`. The title prefix is the tag this milestone groups; the suffix is a short human label.
-- **Only minor tags get milestones.** Patches (`v0.1.1`, `v0.1.2`) don't — they ship under the prior milestone's umbrella and inherit its issue list, or they ship pure-hotfix with no milestone at all.
+- **Milestones are named after tags.** `v0.0.1 — Release Process Bootstrap`, `v0.0.2 — REST Datasources`. The title prefix is the tag this milestone groups; the suffix is a short human label. Each pre-launch `v0.0.x` development tag gets a milestone (per ADR-0008, the `v0.0.x` series is the unit of pre-launch scope), as do post-launch minor tags (`v0.1.0`, `v0.2.0`, …).
+- **True patches don't get milestones.** Patches of a launched minor (`v0.1.1`, `v0.1.2`) don't — they ship under the prior milestone's umbrella and inherit its issue list, or they ship pure-hotfix with no milestone at all.
 - **One non-tag milestone persists: `Architecture Backlog`.** This is the holding pen for "we want to do this, no tag yet." Issues graduate out by being moved to a `v0.x.0` milestone when work begins.
 - **Empty milestones get closed.** A milestone with 0 open issues and a stable tag-shipped state is closed; the issues remain searchable via the `milestone:` qualifier.
 
@@ -30,8 +32,8 @@ Both structures answer "what's the architectural roadmap" but neither answers "w
 Five sections, in order:
 
 1. **`## Today`** — 1–2 paragraph snapshot of the product as it exists right now. No version numbers, no roadmap. Updated whenever the product shape changes materially. Audience: someone landing here cold who wants to know "what is Atlas, today?"
-2. **`## Next: v<MINOR>.0 — <Label>`** — the current in-flight minor tag. Bullet list mirroring the milestone scope. One section, one tag.
-3. **`## Planned tags`** — lightweight forward-look: "v0.2.0 likely includes REST datasources (#2868)." One line per tag, no committed scope. Updated as conviction firms up.
+2. **`## Next: v<TAG> — <Label>`** — the current in-flight tag (`v0.0.1` today). Bullet list mirroring the milestone scope. One section, one tag.
+3. **`## Planned tags`** — lightweight forward-look: "v0.0.2 likely includes REST datasources (#2868)." One line per tag, no committed scope. Updated as conviction firms up.
 4. **`## Backlog`** — one-line pointer to the `Architecture Backlog` milestone. Detail lives in GitHub, not here.
 5. **`## History`** — one-line pointer to `ROADMAP-archive.md`. All shipped milestone scope (currently `## Shipped Milestones (0.6.0 → 1.6.0)` + `## Shipped` collapsible + `## Closed parallel tracks`) moves to the archive verbatim.
 
@@ -41,13 +43,13 @@ The existing `## Active`, `## Planned`, `## Parked`, `## Closed parallel tracks`
 
 | Current title | Action | New title |
 |---------------|--------|-----------|
-| `1.5.4 — Test Suite Self-Containment` | Move single open issue (#2802) into `v0.1.0`, close | (closed) |
+| `1.5.4 — Test Suite Self-Containment` | Move single open issue (#2802) into `v0.0.1`, close | (closed) |
 | `1.6.1 — CRM Lead Capture Hotfixes` | Already empty — close | (closed) |
-| `1.7.0 — Generic REST / Non-SQL Datasources` | Rename via milestone ID (preserves issue links) | `v0.2.0 — REST Datasources` |
+| `1.7.0 — Generic REST / Non-SQL Datasources` | Rename via milestone ID (preserves issue links) | `v0.0.2 — REST Datasources` |
 | `Architecture Backlog` | Unchanged | `Architecture Backlog` |
-| (new) | Create | `v0.1.0 — Release Process Bootstrap` |
+| (new) | Create | `v0.0.1 — Release Process Bootstrap` |
 
-`v0.1.0 — Release Process Bootstrap` scope:
+`v0.0.1 — Release Process Bootstrap` scope:
 - #2802 (slice 6 cutover, parked on bun 1.4.0 GA)
 - Stability Contract docs (new issue, per ADR-0008)
 - ROADMAP restructure (this ADR's implementation)
@@ -56,19 +58,19 @@ The existing `## Active`, `## Planned`, `## Parked`, `## Closed parallel tracks`
 
 ### Patches don't get milestones (restated)
 
-Per ADR-0008, only minor tags get milestones. A `v0.1.1` hotfix tag does not create a `v0.1.1` milestone — the fix's PR references `v0.1.0` as the milestone if it's tracked at all, or no milestone if it's a one-shot.
+Per ADR-0008, milestones exist for tags-that-scope-work — pre-launch `v0.0.x` development tags and post-launch minor tags. A post-launch `v0.1.1` hotfix tag does not create a `v0.1.1` milestone — the fix's PR references `v0.1.0` as the milestone if it's tracked at all, or no milestone if it's a one-shot.
 
 ### Two more decoupling moves
 
-**Staging env build is NOT a v0.1.0 launch gate.** The grilling session also produced a staging-environment design (Q1–Q4), captured separately in a PRD at `docs/prd/staging-environment.md`. Staging is on its own work track with a late-June target. `v0.1.0` ships when its bundle is ready (Stability Contract docs + #2802 + ROADMAP restructure + `/prod-audit` pass + `/release` skill); staging may or may not be live by then. The tag-gated Railway trigger (push tag → prod) needs staging to be useful; until staging lands, the trigger is "tag → prod" with no soak environment. That's acceptable for the v0.1.0 ship because everything in the v0.1.0 scope is docs + tooling, not runtime code.
+**Staging env build is NOT a v0.0.1 tag-cut gate.** The grilling session also produced a staging-environment design (Q1–Q4), captured separately in a PRD at `docs/prd/staging-environment.md`. Staging is on its own work track with a late-June target. `v0.0.1` ships when its bundle is ready (Stability Contract docs + #2802 + ROADMAP restructure + `/prod-audit` pass + `/release` skill); staging may or may not be live by then. The tag-gated Railway trigger (push tag → prod) needs staging to be useful; until staging lands, the trigger is "tag → prod" with no soak environment. That's acceptable for the v0.0.1 ship because everything in the v0.0.1 scope is docs + tooling, not runtime code.
 
-**Tag-cut is decoupled from the public launch announcement.** `v0.1.0` cuts as soon as the bundle is ready — likely within a week of this ADR. The public launch event (target: July 2026) is a separate moment that points at a banked changelog: `v0.1.x` patches, possibly `v0.2.0` REST datasources, staging live, etc. Cutting the tag early gives weeks of staging-soak data and finds rough edges in the release-process plumbing before any customer is watching. The launch event is tracked outside the tag train.
+**The `v0.0.x` train is decoupled from the public launch (`v0.1.0`).** `v0.0.1` cuts as soon as the bundle is ready. The public launch event (target: July 2026) is the `v0.1.0` tag — a separate moment that points at the banked changelog accumulated under the `v0.0.x` train: release-process plumbing, REST datasources (`v0.0.2`), staging live, etc. Cutting `v0.0.x` tags early gives weeks of staging-soak data and finds rough edges in the release-process plumbing before any customer is watching, while reserving `v0.1.0` to mean "publicly launched."
 
 ## Alternatives considered
 
 ### Keep internal milestone numbering, add git tags as a parallel namespace (rejected)
 
-`1.7.0 — Generic REST / Non-SQL Datasources` ships under git tag `v0.2.0`; the milestone number and tag number drift independently. Tempting because it's the path of least disruption — nothing renames.
+`1.7.0 — Generic REST / Non-SQL Datasources` ships under git tag `v0.0.2`; the milestone number and tag number drift independently. Tempting because it's the path of least disruption — nothing renames.
 
 Rejected because the two-namespace world is exactly what we have today and it's confusing. The merge with `1.0.0 — SaaS Launch` ≠ `v1.0.0` collision (per ADR-0008) shows the cost. The shipped milestones (which can't be renamed without churning issue links) keep their numbers in the archive; new milestones use the tag name as the title.
 
@@ -83,8 +85,8 @@ The five-section shape has organic context — "Parked" means "we'd build this i
 ## Consequences
 
 **For GitHub:**
-- One `gh api PATCH` to rename `1.7.0 — Generic REST / Non-SQL Datasources` → `v0.2.0 — REST Datasources` (milestone ID stays the same, so issue references survive).
-- Three milestone ops: close `1.5.4` (after moving #2802 to `v0.1.0`), close `1.6.1` (empty), create `v0.1.0 — Release Process Bootstrap`.
+- One `gh api PATCH` to rename `1.7.0 — Generic REST / Non-SQL Datasources` → `v0.0.2 — REST Datasources` (milestone ID stays the same, so issue references survive).
+- Three milestone ops: close `1.5.4` (after moving #2802 to `v0.0.1`), close `1.6.1` (empty), create `v0.0.1 — Release Process Bootstrap`.
 - Going forward, new milestones use `v<MAJOR>.<MINOR>.0 — <Label>` shape.
 
 **For `.claude/research/ROADMAP.md`:**

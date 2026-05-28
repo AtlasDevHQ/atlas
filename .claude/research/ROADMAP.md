@@ -4,7 +4,7 @@
 >
 > **How this file is organized:** Tag-shaped per [ADR-0009](../../docs/adr/0009-tag-organized-roadmap.md). The current in-flight tag lives in `## Next`; lightweight forward-look lives in `## Planned tags`; shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md).
 >
-> **Versioning:** Git tags gate prod deploys ([ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md)). First public tag is `v0.1.0`, cut once the release-process bundle is ready (tag-cut decoupled from the public launch announcement, target July 2026). The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — that's reserved for frozen REST + MCP + plugin SDK contracts.
+> **Versioning:** Git tags gate prod deploys ([ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md)). The tag train starts at `v0.0.1` — a pre-launch development train, cut once the release-process bundle is ready. `v0.1.0` is reserved for the public launch (target July 2026, [#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)). The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — that's reserved for frozen REST + MCP + plugin SDK contracts.
 
 ---
 
@@ -18,9 +18,9 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ---
 
-## Next: v0.1.0 — Release Process Bootstrap
+## Next: v0.0.1 — Release Process Bootstrap
 
-First public git tag. Establishes the tag-gated release process and the customer-facing stability contract. Scope is docs + tooling — no runtime feature ships under this tag. Tag-cut as soon as the bundle below is ready; the public launch announcement is a separate event (target: July 2026) that points at the banked changelog accumulated under the tag train.
+First git tag (`v0.0.1`) — the start of the pre-launch `v0.0.x` development train. Establishes the tag-gated release process and the customer-facing stability contract. Scope is docs + tooling — no runtime feature ships under this tag. Tag-cut as soon as the bundle below is ready; the public launch is a separate event (`v0.1.0`, target July 2026) that points at the banked changelog accumulated under the `v0.0.x` train.
 
 - [ ] **Slice 6 cutover** ([#2802](https://github.com/AtlasDevHQ/atlas/issues/2802)) — replace the custom `scripts/test-isolated.ts` subprocess-per-file runner with native `bun test --parallel`. Mechanical diff prepared on `claude/practical-hamilton-Ycwto`. Parked on bun 1.4.0 GA — under the `>=1.3.13 <1.3.14` engine pin the full `packages/api/` suite passes 3020/3020 in 19.58s. Re-apply once bun 1.4.0 ships and lift the engine pin in the same PR.
 - [x] **Stability Contract docs page** ([`apps/docs/content/docs/reference/stability.mdx`](../../apps/docs/content/docs/reference/stability.mdx)) — customer-facing commitments for REST API (`/api/v1/*`), MCP tool surface, plugin SDK, semantic layer wire format. Shipped with ADR-0008/0009 in [#2920](https://github.com/AtlasDevHQ/atlas/pull/2920).
@@ -28,7 +28,7 @@ First public git tag. Establishes the tag-gated release process and the customer
 - [ ] **`/prod-audit` pre-launch pass** ([#2896](https://github.com/AtlasDevHQ/atlas/issues/2896)) — fresh sweep of `/prod-audit` + `/www-audit` + `/docs-audit` against current main; fix anything that surfaces before the first tag.
 - [x] **`/release` skill** ([`.claude/commands/release.md`](../../.claude/commands/release.md)) — bundles `/ci` + annotated tag + push + `prod`-branch advance + `gh release create --generate-notes`. Shipped in [#2920](https://github.com/AtlasDevHQ/atlas/pull/2920).
 
-Decoupled from this bundle: the **staging environment build track**. The grilling session captured a staging design ([PRD #2893](https://github.com/AtlasDevHQ/atlas/issues/2893), landed at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md)) broken into 22 slices ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) with a late-June target. Staging is not a v0.1.0 launch gate. The tag-gated Railway trigger advances a dedicated `prod` branch on tag ([#2922](https://github.com/AtlasDevHQ/atlas/pull/2922)); `main → staging` auto-deploys.
+Decoupled from this bundle: the **staging environment build track**. The grilling session captured a staging design ([PRD #2893](https://github.com/AtlasDevHQ/atlas/issues/2893), landed at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md)) broken into 22 slices ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) with a late-June target. Staging is not a v0.0.1 tag-cut gate. The tag-gated Railway trigger advances a dedicated `prod` branch on tag ([#2922](https://github.com/AtlasDevHQ/atlas/pull/2922)); `main → staging` auto-deploys.
 
 ---
 
@@ -36,9 +36,11 @@ Decoupled from this bundle: the **staging environment build track**. The grillin
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-- **`v0.2.0` — REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54)) — extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) become first-class read-side datasources via a generic OpenAPI primitive (GraphQL / OpenSearch are out-of-scope follow-up PRDs). Motivated by 1.6.0 Slice 6 ([#2728](https://github.com/AtlasDevHQ/atlas/issues/2728)) — Twenty Cloud doesn't expose Postgres. PRD [#2868](https://github.com/AtlasDevHQ/atlas/issues/2868) broken into 8 tracer-bullet slices ([#2923](https://github.com/AtlasDevHQ/atlas/issues/2923)–[#2931](https://github.com/AtlasDevHQ/atlas/issues/2931)); slice 0 (openapi-spec + openapi-client deep modules) shipped ([#2935](https://github.com/AtlasDevHQ/atlas/pull/2935), arch-win #72), slice 1b runs a representation bake-off (raw operation-graph context vs generated semantic YAML) against the Twenty acceptance suite to pick slice 2's default, slice 6 (expansion targets) is HITL.
+- **`v0.0.2` — REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54)) — extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) become first-class read-side datasources via a generic OpenAPI primitive (GraphQL / OpenSearch are out-of-scope follow-up PRDs). Motivated by 1.6.0 Slice 6 ([#2728](https://github.com/AtlasDevHQ/atlas/issues/2728)) — Twenty Cloud doesn't expose Postgres. PRD [#2868](https://github.com/AtlasDevHQ/atlas/issues/2868) broken into 8 tracer-bullet slices ([#2923](https://github.com/AtlasDevHQ/atlas/issues/2923)–[#2931](https://github.com/AtlasDevHQ/atlas/issues/2931)); slice 0 (openapi-spec + openapi-client deep modules) shipped ([#2935](https://github.com/AtlasDevHQ/atlas/pull/2935), arch-win #72), slice 1b runs a representation bake-off (raw operation-graph context vs generated semantic YAML) against the Twenty acceptance suite to pick slice 2's default, slice 6 (expansion targets) is HITL.
 
-- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (2/22 landed). May land before or after `v0.2.0` depending on adoption signal.
+- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (2/22 landed). May land before or after `v0.0.2` depending on adoption signal.
+
+- **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 
 ---
 

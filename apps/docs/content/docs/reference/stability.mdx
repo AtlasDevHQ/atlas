@@ -5,7 +5,7 @@ description: Which Atlas surfaces are stable, which evolve within a major versio
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas releases under semver via git tags (`v0.1.0`, `v0.2.0`, …). Not every surface evolves at the same pace — some are frozen contracts, some may change within a minor tag, and some carry no contract until v1.0. This page is the source of truth for what each customer-facing surface commits to.
+Atlas releases under semver via git tags (`v0.0.1`, `v0.0.2`, …). Not every surface evolves at the same pace — some are frozen contracts, some may change within a minor tag, and some carry no contract until v1.0. This page is the source of truth for what each customer-facing surface commits to.
 
 <Callout type="info">
 **Current track:** Atlas is in `v0.x`. The contracts below describe what will be frozen at `v1.0.0` and what each surface commits to **today** within `v0.x`.
@@ -115,7 +115,7 @@ Files under `semantic/` — entity YAMLs, metric YAMLs, glossary, query patterns
 
 - New optional fields may be added to entity / metric / glossary schemas.
 - Existing fields, their types, and their semantics do not change.
-- The semantic layer is round-trippable across tags — a YAML written against `v0.1.0` parses cleanly against `v0.2.0`.
+- The semantic layer is round-trippable across tags — a YAML written against `v0.0.1` parses cleanly against `v0.0.2`.
 
 The semantic layer is what the agent reads to write SQL, so this contract matters: a YAML you author today still works after a tag bump. Breaking changes to the wire format would follow the same v2 rollout as the REST API.
 

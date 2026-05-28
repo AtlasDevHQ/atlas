@@ -2,12 +2,12 @@
 
 How Atlas ships to prod. Two flows: **normal release** (merge → soak → tag) and **hotfix** (merge → tag immediately).
 
-> **Status as of 2026-05-28:** This doc describes the target shape that ships with `v0.1.0`, cut as soon as the bundle is ready. Until that point, `main` continues to auto-deploy to prod on every push (status quo). The dual Railway trigger described below replaces that flow at `v0.1.0`. Tag-cut is decoupled from the public launch announcement — the launch event (target: July 2026) is tracked separately and points at the banked changelog accumulated under the tag train.
+> **Status as of 2026-05-28:** This doc describes the target shape that ships with `v0.0.1` — the first tag of the pre-launch `v0.0.x` development train — cut as soon as the bundle is ready. Until that point, `main` continues to auto-deploy to prod on every push (status quo). The dual Railway trigger described below replaces that flow at `v0.0.1`. The public launch (`v0.1.0`, target July 2026) is tracked separately and points at the banked changelog accumulated under the `v0.0.x` train.
 
 ## Mental model
 
 - **`main`** is the single integration branch. Every merge to `main` triggers a deploy to **staging** across 3 services (`api-staging`, `web-staging`, `www-staging`). `docs` continues to deploy direct from `main` to its production service — static export + Caddy, no runtime surface to gate.
-- **Annotated git tags** (`v0.1.0`, `v0.1.1`, `v0.2.0`) gate **prod**. The wiring: `/release` creates the tag, then fast-forwards a dedicated `prod` branch to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`. The 5 prod services (`api` / `api-eu` / `api-apac` / `web` / `www`) watch the `prod` branch; the branch push triggers their Railway autodeploys.
+- **Annotated git tags** (`v0.0.1`, `v0.0.2`, `v0.1.0`) gate **prod**. The wiring: `/release` creates the tag, then fast-forwards a dedicated `prod` branch to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`. The 5 prod services (`api` / `api-eu` / `api-apac` / `web` / `www`) watch the `prod` branch; the branch push triggers their Railway autodeploys.
 - **Tags are the prod gate.** A merge to `main` does not reach customers until `/release` advances `prod`.
 
 Why a `prod` branch instead of a direct tag trigger: Railway has no native git-tag trigger and the Railway CLI cannot deploy an arbitrary SHA on a GitHub-linked service (`railway up` ships a local tarball and severs the GitHub Deployments link). The prod-branch tracker is the simplest composable primitive that preserves Railway's branch-driven autodeploy semantics, the GitHub Deployments integration, and the option to layer "Wait for CI" on prod services. The `prod` branch is a Railway-tracking artifact, not an integration branch — no PR ever targets it, no work happens on it. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none) for the longer reasoning.
@@ -56,15 +56,15 @@ There is no fixed soak time. Tag when you're confident; rollback (via the next t
 ### 3. Tag with `/release`
 
 ```
-/release v0.1.0
+/release v0.0.1
 ```
 
 The skill runs:
 1. **`/ci`** — refuses to tag if any gate fails. Tags are immutable; don't tag broken code.
-2. **`git tag -a v0.1.0 -m "<auto-summary>"`** — annotated tag with author/timestamp/message. Never lightweight tags.
+2. **`git tag -a v0.0.1 -m "<auto-summary>"`** — annotated tag with author/timestamp/message. Never lightweight tags.
 3. **`git push origin <version>`** — pushes the single tag to GitHub. Don't use `--tags` — that pushes every local tag and can leak experimental ones.
 4. **`git push origin <version>^{}:prod --force-with-lease`** — fast-forwards the `prod` branch to the tagged commit. This is what Railway watches; the prod-side deploy fires from this push. `--force-with-lease` (never `--force`) refuses to rewind if someone else has advanced `prod` since the local fetch — a safety net against concurrent `/release` runs.
-5. **`gh release create v0.1.0 --generate-notes`** — creates a GitHub Release with auto-generated commit + PR list.
+5. **`gh release create v0.0.1 --generate-notes`** — creates a GitHub Release with auto-generated commit + PR list.
 
 The `--generate-notes` output is the customer-facing changelog for that tag. Edit it on GitHub afterward if it needs polish.
 
@@ -115,7 +115,7 @@ The `/release` skill infers the bump from the previous tag if you don't pass one
 - Will not deploy to prod outside the prod-branch push. The skill's only side-effects on remote state are: push the tag, fast-forward `prod` to the tag SHA with `--force-with-lease`, create the GitHub Release. Railway's autodeploy on `prod` does the rest.
 - Will not skip the annotated-tag rule. Lightweight tags don't carry author/timestamp; the skill always uses `git tag -a`.
 - Will not `--force` the `prod` branch push. Only `--force-with-lease` — refuses to rewind if someone else has advanced `prod` since the local fetch.
-- Will not retag an existing version. If `v0.1.0` already exists and you re-run `/release v0.1.0`, the skill refuses. Use the next patch.
+- Will not retag an existing version. If `v0.0.1` already exists and you re-run `/release v0.0.1`, the skill refuses. Use the next patch.
 
 ## Common pitfalls
 

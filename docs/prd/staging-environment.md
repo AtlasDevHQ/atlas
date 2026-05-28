@@ -218,7 +218,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 
 ## Out of Scope
 
-- **`/release` skill creation** — separate work item, tracked via handoff doc, lands as part of the v0.1.0 milestone.
+- **`/release` skill creation** — separate work item, tracked via handoff doc, lands as part of the v0.0.1 (Release Process Bootstrap) milestone.
 - **`docs/adr/0008-versioning-and-release-tags.md`** — Q6 (versioning policy + Stability Contract) gets its own ADR, see handoff item 1.
 - **`docs/adr/0009-tag-organized-roadmap.md`** — Q7 (roadmap restructure) gets its own ADR, see handoff item 2.
 - **`docs/development/release-process.md`** — operational doc for the dual-trigger release flow, see handoff item 3. The PRD assumes this exists; the staging implementation can ship before it but Day 1 docs should be in place.
@@ -236,7 +236,7 @@ Prior art: the existing test file's pattern for asserting Tag behavior under var
 ## Further Notes
 
 - **Cost estimate.** Railway services run roughly $5–10/mo each at small scale; three new services plus a managed Postgres totals ~$30–50/mo. Sleep schedules can reduce idle cost further. Compared against the engineering cost of the post-1.6.0 fix-in-prod burst (5 PRs × ~30 min mean turnaround = 2.5 hours of context-switched maintainer time, plus ~1 day of broken `/pricing` form lead-loss), staging pays for itself within ~2 months at any reasonable hourly rate.
-- **Cutover risk.** The day staging is wired, the Railway prod deploy trigger changes from "main branch push" to "tag pattern match." Any PR merged on cutover day but before the first prod tag fires won't ship to prod until the first tag is pushed. Coordinate the cutover with an immediate tag push (`v0.1.0-pre` or the first regular tag) to bridge the gap. Document this in the operator runbook.
+- **Cutover risk.** The day staging is wired, the Railway prod deploy trigger changes from "main branch push" to "tag pattern match." Any PR merged on cutover day but before the first prod tag fires won't ship to prod until the first tag is pushed. Coordinate the cutover with an immediate tag push (the first regular tag, `v0.0.1`) to bridge the gap. Document this in the operator runbook.
 - **Solo-maintainer caveat.** The 5-min staging soak adds friction for the current "merge → prod in 5 min" cadence. The `/release` skill + muscle memory will absorb most of it within a week. Worst case, the maintainer treats staging soak as "background tab while I context-switch to the next PR."
 - **Customer trust posture.** Atlas is currently SaaS-launched in 3 regions but has no paying tenants at risk. Cutover does not require customer communication. Once paying tenants exist, future deploy-gate changes will need a comms plan; staging itself is invisible to customers.
 - **`feedback_no_staging_env.md` memory.** The user memory entry capturing "no staging env — infra runs against prod" gets updated post-implementation to "staging shipped (PR #XYZ), see docs/development/staging-environment.md." The lesson stays banked rather than being deleted.

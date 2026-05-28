@@ -1,4 +1,4 @@
-Tag the current `main` SHA for a prod deploy. Bundles `/ci` + annotated tag + push + `prod`-branch fast-forward + GitHub Release. Usage: `/release v0.1.0` (explicit) or `/release` (auto-bump patch from last tag).
+Tag the current `main` SHA for a prod deploy. Bundles `/ci` + annotated tag + push + `prod`-branch fast-forward + GitHub Release. Usage: `/release v0.0.1` (explicit) or `/release` (auto-bump patch from last tag).
 
 See [docs/development/release-process.md](../../docs/development/release-process.md) for the operational flow and [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md) for the versioning rules this skill enforces.
 
@@ -21,10 +21,10 @@ If an argument is passed, validate it:
 If no argument is passed, infer the next patch from the most recent tag:
 ```bash
 git tag -l 'v*.*.*' --sort=-v:refname | head -1
-# e.g. last=v0.1.3 → next=v0.1.4
+# e.g. last=v0.0.1 → next=v0.0.2
 ```
 
-If no tag exists yet (first release), default to `v0.1.0`. Confirm with the user before tagging.
+If no tag exists yet (first release), default to `v0.0.1` — the start of the pre-launch `v0.0.x` development train (per ADR-0008; `v0.1.0` is reserved for the public launch). Confirm with the user before tagging.
 
 **Step 3: Run `/ci` — refuse to tag if anything fails**
 
@@ -38,9 +38,9 @@ If any local gate fails, fix it and re-run `/release`. If a remote check is yell
 
 **Step 4: Draft the tag message**
 
-Summarize what's in this tag. For minor tags, pull from the milestone scope (substitute the target version — don't hard-code `v0.1.0`):
+Summarize what's in this tag. For tags with a milestone, pull from the milestone scope (substitute the target version — don't hard-code `v0.0.1`):
 ```bash
-VERSION=v0.1.0  # the tag being cut
+VERSION=v0.0.1  # the tag being cut
 gh api 'repos/AtlasDevHQ/atlas/milestones?state=open' \
   --jq ".[] | select(.title | startswith(\"$VERSION\")) | .description"
 ```
@@ -52,9 +52,9 @@ git log <prev-tag>..HEAD --pretty=format:'%s' --no-merges | head -20
 
 Draft a 1–3 line summary suitable for an annotated tag message. Example:
 ```
-v0.1.0 — Release Process Bootstrap
+v0.0.1 — Release Process Bootstrap
 
-First public release. Establishes tag-gated prod deploys, stability contract,
+First dev tag. Establishes tag-gated prod deploys, stability contract,
 and the /release flow. Slice 6 bun-test-parallel cutover; docs polish.
 ```
 
@@ -110,11 +110,11 @@ Tell the user where the GitHub Release lives, and that prod deploy is in flight.
 **Step 9: Output summary**
 
 ```
-Tagged: v0.1.0
+Tagged: v0.0.1
 SHA: <abbrev>
 prod branch advanced to: <abbrev>
-Release: https://github.com/AtlasDevHQ/atlas/releases/tag/v0.1.0
-Milestone: v0.1.0 — Release Process Bootstrap (if minor)
+Release: https://github.com/AtlasDevHQ/atlas/releases/tag/v0.0.1
+Milestone: v0.0.1 — Release Process Bootstrap (if one exists)
 Next: watch Railway prod deploy (~5 min)
 ```
 
@@ -124,7 +124,7 @@ Next: watch Railway prod deploy (~5 min)
 - No pre-release tags (`-rc.1`, `-beta`). Use staging as the soak environment. See [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md#no-pre-release-tags).
 - No release branches. Hotfixes land on `main` and tag immediately. See [release-process.md § Hotfix flow](../../docs/development/release-process.md#hotfix-flow). The `prod` branch is not a release branch — it's a Railway-tracking artifact, single-pointer, no PRs.
 - The `prod` branch push always uses `--force-with-lease`. Never bare `--force` — that would let concurrent releases silently rewind each other.
-- Patches don't get milestones. Only minor tags do.
+- Milestones exist for pre-launch `v0.0.x` dev tags and post-launch minor tags. True patches of a launched minor (`v0.1.1`) don't get milestones.
 - If a milestone exists matching the tag name, the auto-notes will reference it. If not, no milestone — that's fine for patches.
 - Always use `-R AtlasDevHQ/atlas` with `gh` commands.
 

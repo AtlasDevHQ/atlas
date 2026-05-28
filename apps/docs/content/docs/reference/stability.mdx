@@ -1,0 +1,144 @@
+---
+title: Stability Contract
+description: Which Atlas surfaces are stable, which evolve within a major version, and what changes require a deprecation window.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas releases under semver via git tags (`v0.1.0`, `v0.2.0`, …). Not every surface evolves at the same pace — some are frozen contracts, some may change within a minor tag, and some carry no contract until v1.0. This page is the source of truth for what each customer-facing surface commits to.
+
+<Callout type="info">
+**Current track:** Atlas is in `v0.x`. The contracts below describe what will be frozen at `v1.0.0` and what each surface commits to **today** within `v0.x`.
+</Callout>
+
+## At a glance
+
+| Surface | Today (v0.x) | At v1.0.0 |
+|---------|--------------|-----------|
+| REST API (`/api/v1/*`) | Stable wire format; additive changes only within `v0.x` | Frozen — breaks require `/api/v2/*` + 12-month deprecation window |
+| MCP tool surface | Stable tool names + parameter shapes; additive only within `v0.x` | Frozen — breaks bump the tool name (`executeSQL` → `executeSQL2`) |
+| Plugin SDK (`@useatlas/plugin-sdk`) | Stable for in-tree plugins; minor evolution possible | Frozen at `@useatlas/plugin-sdk@1.0.0` |
+| Agent behavior + prompts | No contract | No contract |
+| Chat UI + Dashboards UI | No contract | No contract |
+| Semantic layer wire format (`semantic/*.yml`) | Stable for entity / metric / glossary; additive only | Stable, governed by the REST contract |
+| Admin Console (`/admin/*`) | No contract — UI evolves freely | No contract |
+
+The rest of this page expands each row.
+
+## REST API — `/api/v1/*`
+
+**Within `v0.x` minor tags:** the wire format of every documented `/api/v1/*` endpoint is stable. New endpoints may be added. New optional fields may be added to existing request/response shapes. Existing fields, status codes, and required parameters do not change between minor tags.
+
+**Breaking changes** — any change that an existing well-formed client would observe as incompatible — happen only across major version boundaries via the v2 rollout policy below.
+
+**At `v1.0.0` and beyond:**
+
+- Breaking changes to `/api/v1/*` require shipping the new shape under `/api/v2/*`.
+- The old `/api/v1/*` endpoint remains available for **12 months** after `/api/v2/*` ships.
+- Deprecation is announced via:
+  - `Deprecation: <RFC 9745 date>` and `Sunset: <RFC 8594 date>` headers on the v1 response
+  - A docs notice on the affected endpoint(s)
+  - A release-notes entry on the tag that ships the v2 surface
+
+What counts as a breaking change:
+
+- Removing an endpoint, a field, or a status code
+- Tightening a request schema (new required field, narrowed enum)
+- Loosening a response schema (removing a field, widening to a less specific type)
+- Changing the semantics of an existing parameter (default value, validation rule)
+- Changing authentication or authorization requirements on an existing endpoint
+
+What does **not** count as a breaking change:
+
+- Adding a new endpoint
+- Adding a new optional request field
+- Adding a new field to a response
+- Adding a new enum value (clients must tolerate unknown enum values per the [SDK reference](/reference/sdk))
+- Performance improvements, error message wording, internal refactors
+
+The OpenAPI specification at `/api/v1/openapi.json` is the precise contract; this page is the prose summary.
+
+## MCP tool surface
+
+The Model Context Protocol surface (the `@useatlas/mcp` package and the hosted `mcp.useatlas.dev` endpoint) commits to the same shape as the REST API but with one specific rule for breaking changes.
+
+**Within `v0.x` minor tags:**
+
+- The set of tools, their names, and their parameter shapes are stable.
+- New tools may be added. New optional parameters may be added to existing tools.
+- Tool descriptions and behavior may improve (agents tolerate this; description changes are not breaks).
+
+**Breaking changes — tool name bump:**
+
+If a tool's parameter shape needs to break (rename required parameters, change semantics, change return shape), the tool ships under a **new name**:
+
+```
+executeSQL  →  executeSQL2
+```
+
+The original tool name remains exposed for the deprecation window so existing agent prompts and workflow integrations continue to resolve. This avoids the "MCP client cached the old schema" failure mode that would happen if we mutated the tool definition in place.
+
+The deprecation window is the same 12 months as REST. New tool name → docs + release notes → 12 months → old name removed in the next major.
+
+## Plugin SDK — `@useatlas/plugin-sdk`
+
+In-tree plugins (the ones in `plugins/` in the Atlas repo) follow the Atlas tag train and are validated against every change. Out-of-tree plugins target the published `@useatlas/plugin-sdk` package.
+
+**Within `v0.x` minor tags:**
+
+- The `definePlugin()` helper, the core plugin lifecycle hooks, and the `AtlasPlugin` type signature are stable.
+- New optional hooks may be added. New plugin capabilities (e.g., `mcpTools()`) may be added.
+- The `0.0.x` exact-pin npm convention applies — `^0.0.2` resolves to exactly `0.0.2`, not `0.0.3`. Out-of-tree plugin authors pin explicitly.
+
+**At `v1.0.0` (frozen):**
+
+- `@useatlas/plugin-sdk@1.0.0` ships alongside the Atlas `v1.0.0` tag.
+- After that point, plugin SDK breaking changes follow the same major-rollout rule as REST.
+
+See [`docs/architecture/chat-plugin-atlas-contract.md`](https://github.com/AtlasDevHQ/atlas/blob/main/docs/architecture/chat-plugin-atlas-contract.md) for the chat-plugin-specific contract that backs the live `@useatlas/chat` adapters.
+
+## Agent behavior, chat UI, dashboards — no contract
+
+The agent's prompt, tool selection, response shape, the chat UI layout, the dashboard rendering, and the admin console all evolve between minor tags without backwards-compatibility commitments. Customers should expect:
+
+- Agent answers may change format between minor tags as the prompt is tuned.
+- New chart types, new chat affordances, and new dashboard primitives may be added without notice.
+- The admin console may relayout, add/remove pages, and change URLs (route changes are reflected in browser redirects when feasible).
+
+This is intentional — the value Atlas provides is the agent + chat experience, and freezing the UX would freeze the product. The contract surfaces (REST, MCP, plugin SDK, semantic layer wire format) are the ones third-party integrations build against; the UI layer evolves to serve customers directly.
+
+## Semantic layer wire format
+
+Files under `semantic/` — entity YAMLs, metric YAMLs, glossary, query patterns — have a stable schema for the documented fields (see [`packages/api/src/lib/semantic/types.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/api/src/lib/semantic/types.ts)).
+
+**Within `v0.x` minor tags:**
+
+- New optional fields may be added to entity / metric / glossary schemas.
+- Existing fields, their types, and their semantics do not change.
+- The semantic layer is round-trippable across tags — a YAML written against `v0.1.0` parses cleanly against `v0.2.0`.
+
+The semantic layer is what the agent reads to write SQL, so this contract matters: a YAML you author today still works after a tag bump. Breaking changes to the wire format would follow the same v2 rollout as the REST API.
+
+## How to read release notes
+
+Every git tag ships a GitHub Release with auto-generated notes (commit + PR list). Notes are labeled by kind:
+
+- **Breaking** — only appears on a major tag bump. Always paired with a deprecation window.
+- **Added** — new endpoints, new fields, new tools, new features. Safe to adopt or ignore.
+- **Fixed** — bug fix. Adopt by upgrading.
+- **Changed** — behavior change that doesn't break the contract (e.g., performance improvement, error message wording). Safe.
+- **Deprecated** — old surface still works, new surface preferred. Migrate before the sunset date.
+
+The [CHANGELOG.md](https://github.com/AtlasDevHQ/atlas/blob/main/CHANGELOG.md) in the repo mirrors the release notes for searchability.
+
+## Out-of-scope surfaces
+
+These are explicitly **not** covered by the stability contract:
+
+- `/api/internal/*` and `/api/platform/*` — operator-facing routes, may change without notice
+- `@atlas/*` packages (vs `@useatlas/*`) — internal monorepo packages, not published for external consumption
+- Database schema (`packages/api/src/lib/db/schema.ts`) — operators may inspect but should not write
+- Anything under `ee/` (enterprise features) — covered by the commercial license terms, not this page
+- The `atlas` CLI commands not documented in [the CLI reference](/reference/cli) — internal/operator tooling
+
+If you depend on something not listed here and not in the contract surfaces above, the safest assumption is **no contract** — file an issue and we'll discuss whether to commit to it.

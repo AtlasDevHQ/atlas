@@ -2,212 +2,62 @@
 
 > Public repo: [AtlasDevHQ/atlas](https://github.com/AtlasDevHQ/atlas). Tracking lives in [GitHub Issues](https://github.com/AtlasDevHQ/atlas/issues) and [Milestones](https://github.com/AtlasDevHQ/atlas/milestones).
 >
-> Previous internal milestones (v0.1–v1.3) archived in `ROADMAP-archive.md`.
+> **How this file is organized:** Tag-shaped per [ADR-0009](../../docs/adr/0009-tag-organized-roadmap.md). The current in-flight tag lives in `## Next`; lightweight forward-look lives in `## Planned tags`; shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md).
 >
-> **Versioning**: Public semver starts at 0.0.x. Internal milestones (v0.1–v1.3) were pre-public. The numbers below are public semver. 1.0.0 is the hosted SaaS launch at app.useatlas.dev.
->
-> **License**: AGPL-3.0. The hosted SaaS is the primary commercial offering. Commercial embedding requires a separate license.
+> **Versioning:** Git tags gate prod deploys ([ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md)). First public tag is `v0.1.0`, cut once the release-process bundle is ready (tag-cut decoupled from the public launch announcement, target July 2026). The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0` — that's reserved for frozen REST + MCP + plugin SDK contracts.
 
 ---
 
-## North Star: 1.0.0 — SaaS Launch
+## Today
 
-Atlas 1.0.0 = hosted SaaS at **app.useatlas.dev**. Target: later 2026. Every milestone below is a stepping stone toward a production multi-tenant SaaS that teams sign up for, connect their database, and start querying — no deploy step.
+Atlas is a deploy-anywhere text-to-SQL data analyst agent that connects to a customer's database, reads a YAML-defined semantic layer, and answers data questions in chat. The hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev) runs across three regions (US/EU/APAC) with per-region data residency, per-workspace BYOT model configuration, and Vercel-sandbox-isolated explore/python tools.
 
-The AGPL license makes the SaaS the natural path for commercial users. Self-hosted remains free and fully functional. The hosted product adds managed infrastructure, onboarding, monitoring, and support.
+The product spans a chat UI, an embeddable React widget, an OAuth-2.1 MCP server at [mcp.useatlas.dev](https://mcp.useatlas.dev), a notebook surface, a dashboard surface with draft/published mode, multi-environment query routing across connection groups, and eight chat-platform adapters (Slack live; Teams/Discord/Telegram/WhatsApp/Linear/GitHub/Google Chat wired). Proactive chat (reaction-first answers to natural questions) ships behind an enterprise gate. CRM lead capture pipes demo/signup/sales-form/Stripe-conversion events to a Twenty CRM at crm.useatlas.dev via a durable outbox. The CLI ships an operator surface for tenant data ops, a profiler, and a migrate tool.
 
----
-
-## Shipped
-
-<details>
-<summary>Work completed since public repo launch (click to expand)</summary>
-
-### Public Launch (#1–#10)
-- [x] Initial public release
-- [x] Admin user management + default password enforcement (#1)
-- [x] Vercel deploy button with Neon + AI Gateway (#2, #3)
-- [x] `@useatlas` packages published to npm (0.0.2)
-- [x] CI: template drift check (#9, #10)
-- [x] CI: automate starter repo sync (#7, #8, #34, #35)
-
-### Adapter Plugin Refactor (#11–#32)
-- [x] Plugin SDK: `parserDialect` and `forbiddenPatterns` on datasource plugins (#14, #23)
-- [x] `validateSQL` and `ConnectionRegistry` made plugin-aware (#15, #25)
-- [x] Agent dialect system made plugin-driven (#16, #24)
-- [x] ClickHouse, Snowflake, DuckDB, Salesforce plugins created (#17–#20, #26–#28, #31)
-- [x] Adapter code stripped from core — plugins own their adapters (#21, #32)
-- [x] Adapter tests moved to plugins (#22)
-- [x] Fix: anchor forbidden patterns to avoid false positives (#29, #30)
-
-### Starter Automation (#33–#38)
-- [x] Platform-specific READMEs with deploy buttons (#12, #33)
-- [x] Sync starters post adapter strip (#36, #37, #38)
-
-### Python Data Science Sandbox (#39–#51)
-- [x] `executePython` tool with import guard (#43, #46)
-- [x] Sidecar Python backend (#40, #47)
-- [x] Chart rendering in chat UI (#41, #48)
-- [x] Agent prompt tuning for Python tool usage (#44, #49)
-- [x] nsjail Python sandbox backend (#42, #50)
-- [x] Vercel sandbox Python backend (#45, #51)
-
-### Infra & Cleanup (#52–#55)
-- [x] Fix missing deps and files in starter templates (#52)
-- [x] Drop Render as deploy target (#53, #54)
-- [x] Sandbox architecture design doc (#55)
-
-### 0.1.0 — Documentation & Developer Experience
-- [x] Docs site (docs.useatlas.dev) — Fumadocs, API reference from OpenAPI, 24+ pages
-- [x] DX polish — `atlas doctor`, `atlas validate`, shell completions, better first-run errors
-- [x] Test coverage — web UI, SDK integration, E2E expansion
-- [x] Project hygiene — CHANGELOG, CONTRIBUTING, issue/PR templates, brand unification
-
-### 0.2.0 — Plugin Ecosystem
-- [x] Plugin SDK stable — `definePlugin`, Zod config schemas, multi-type plugins, testing utilities
-- [x] 18 npm packages published under `@useatlas/*` scope
-- [x] Plugin scaffold (`bun create @useatlas/plugin`), cookbook, composition docs, health checks
-
-### 0.3.0 — Admin Console & Operations
-- [x] Admin phase 2 — connections, users, plugins, settings with live runtime wiring
-- [x] Observability — query analytics, token usage, OpenTelemetry traces, health dashboard
-- [x] Scheduled tasks v2 — create/edit UI, history, delivery channels
-
-### 0.4.0 — Chat Experience
-- [x] Chat polish — theming, follow-ups, Excel export, mobile-responsive, saved queries
-- [x] Discovery — visual schema explorer, area/stacked bar/scatter charts
-
-### 0.5.0 — Launch
-- [x] Embeddable widget — `@useatlas/react`, widget host, script tag loader, programmatic JS API
-- [x] Distribution — BigQuery plugin, conversation sharing with OG tags and embed mode
-- [x] SDK streaming — `streamQuery()` async iterator with abort support
-- [x] Launch prep — onboarding hardening, README overhaul, landing page refresh, launch content
-- [x] Quality — `@useatlas/types` extraction, error handling hardening, CLI test fixes
-
-### 0.5.1 — Agent-Friendly Docs
-- [x] Frances Liu docs framework — tutorials, how-to guides, reference, explanation pages
-- [x] 119 MDX pages audited for agent optimization, llms.txt
-
-### 0.5.2 — Onboarding & CLI Polish
-- [x] Pattern-matched errors, progress indicators, CLI help, first-run detection
-- [x] Pool exhaustion handling, schema suggestions, transient vs permanent error hints
-
-### 0.5.3 — UI & Accessibility Polish
-- [x] ARIA, Lighthouse audit, keyboard navigation, error boundaries
-- [x] Loading states, empty states, mobile polish, chart responsiveness
-- [x] Widget types, error states, CSS customization docs
-
-### 0.5.4 — SDK & Integration Polish
-- [x] SDK `listTables()`, error code catalog, streaming docs
-- [x] Integration tests (widget, SDK, MCP), docs cross-cuts, Obsidian plugin
-
-</details>
+The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, organized as a 9-package monorepo with 20 plugins and three deploy modes (Docker, Vercel standalone, Railway). Enterprise features live under `ee/` behind a Context.Tag inversion that lets core compile and ship standalone. AGPL for self-host + commercial license for `ee/`; the hosted SaaS is the primary commercial offering.
 
 ---
 
-## Shipped Milestones (0.6.0 → 1.6.0)
+## Next: v0.1.0 — Release Process Bootstrap
 
-Full detail archived in [`ROADMAP-archive.md`](./ROADMAP-archive.md). Issues + PR bodies remain the source of truth; one-liners below are hooks, not commitments.
+First public git tag. Establishes the tag-gated release process and the customer-facing stability contract. Scope is docs + tooling — no runtime feature ships under this tag. Tag-cut as soon as the bundle below is ready; the public launch announcement is a separate event (target: July 2026) that points at the banked changelog accumulated under the tag train.
 
-- [x] **0.6.0 — Governance & Operational Hardening** (#7, 44 issues) — action timeout + rollback, configurable step/import limits, RLS multi-column/array/OR, session management, audit CSV + search + classification, typed plugin peer deps, tool hooks, custom SQL validation, semantic diff UI, Teams + webhook + email-digest plugins.
-- [x] **0.7.0 — Performance & Multi-Tenancy** (#8, 27 issues) — Better Auth org plugin, tenant-scoped connection pooling, query result caching, semantic layer indexing, streaming Python, `atlas learn` CLI.
-- [x] **0.7.x Refinement Arc** (#15–#19) — five point releases across cleanup, type safety, error handling, test hardening, docs completeness.
-- [x] **0.8.0 — Intelligence & Learning** (#9, 12 issues) — dynamic learning (proposals + injection + admin UI), self-hosted models, auth refactor, prompt library, query suggestions, notebook UI phase 1.
-- [x] **0.8.1 — Notebook Refinement** (#20, 36 issues) — fork/branch + DnD reorder + markdown cells + Markdown/HTML export, keyboard nav tests, error-code docs.
-- [x] **0.9.0 — SaaS Infrastructure** (#21, 86 issues) — tenant provisioning, billing, enterprise auth (SSO/SCIM/IP/custom roles/approval), compliance (audit retention/PII/reporting), 8-platform Chat SDK, platform ops (SLA/abuse/backups/residency), onboarding.
-- [x] **0.9.1 — Docs & Polish** (#22, 94 issues) — docs for every SaaS feature, OpenAPI auto-gen (4,300 → 230 lines), enterprise hardening, 8 architecture refactors, react-hook-form + `useAdminMutation` across all 26 admin pages.
-- [x] **0.9.2 — Docs Persona Audit** (#23, 8 issues) — classified all 354 docs pages by persona; reframed deployment + enterprise guides.
-- [x] **0.9.3 — Architecture Deepening** (#25, 6 + 2 superseded) — 13 architecture-wins entries: auth error dedup, `extractFetchError`, `AdminContentWrapper` (-302 lines), route error wrapper (-852 lines), `ResultCardBase`, OpenAPI schema factories, conversation fetch client.
-- [x] **0.9.4 — Effect.ts Migration** (#26, 23 issues) — every backend service became a `Context.Tag`, `@effect/ai` + `@effect/sql` adopted across the API server, all route handlers migrated from `c.get()` to Effect Context.
-- [x] **0.9.5 — Post-Effect Validation** (#27, 7 + 1 deferred) — no regressions: 250 unit + 434 EE + 44 browser tests green; 3 env-isolation PRs.
-- [x] **0.9.6 — SaaS Customer Experience** (#28, 24 issues) — org-context enforcement on every route, workspace-level settings overrides, API key management UI, integrations hub, custom domain, billing, per-workspace sandbox + residency, Drizzle Kit migrations.
-- [x] **0.9.7 — SaaS-First Admin Experience** (#29, 53 issues) — deploy mode flag, hot-reloadable settings, OAuth-first connect flows for 7 platforms, plugin marketplace, semantic layer web editor, BYOT dual-mode, deploy validation CI, sandbox BYOC library.
-- [x] **0.9.8 — Docs & Polish** (#30, 27 issues) — docs for 0.9.7, integration type safety, data residency (signup + migration phases 1–2), periodic settings refresh, deploy-validation CI fixes, npm publishing fixes.
-- [x] **1.0.0 — SaaS Launch** (#24, 40 issues) — 3 regions live (US/EU/APAC), cross-region migration, pre-launch smoke test, competitive refresh, legal pages, SLA, OpenStatus, hosted docs.
-- [x] **1.1.0 — Notebook Evolution** (#33, 11 issues) — chat-to-notebook, dashboard bridge, report route, execution metadata, fork UX ("What if?" button + gutter indicators), `transformMessages` extraction.
-- [x] **1.2.0 — Developer/Published Mode** (#34, 31 issues) — draft/published content model, mode middleware, overlay queries, atomic publish endpoint, agent isolation, connect redesign, `__demo__` onboarding identity.
-- [x] **1.2.1 — Adaptive Starter Prompts** (#35, 15 issues) — adaptive starter surface end-to-end with favorites + popular + library + cold-start, admin moderation, `atlas learn` CLI, widget + SDK + notebook surfaces, mode participation.
-- [x] **1.2.2 — Admin Console Polish & Schema Consolidation** (#36, 70+ issues) — admin final-pass buckets 1+2+4, `@useatlas/schemas` wire consolidation (`admin-schemas.ts` 542 → 241 lines), `@useatlas/types` 0.0.11 → 0.0.14 with `Percentage` / `Ratio` branded types + 4 discriminated-union migrations, `MutationErrorSurface` + branded `FeatureName` registry across ~40 admin pages.
-- [x] **1.2.3 — Security Sweep** (#37, 7 phases, 90+ findings, 23 PRs) — 7-phase audit-and-fix across auth/middleware (F-01..F-07), org-scoping + ContentMode (F-08..F-16), SQL validator fuzz (F-17..F-21), audit-log coverage on 201 write routes (F-22..F-36), secret/error surfaces + plugin credentials (F-41..F-52), rate limiting + timeouts + DoS (F-73..F-92), EE governance bypasses (F-53..F-72). Headline ships: plaintext-column drop on all 10 integration tables (#1832), `ATLAS_ENCRYPTION_KEYS` versioned keyset rotation (F-47), webhook replay + per-channel rate limit (F-75/F-76), atomic per-conversation step budget (F-77), residue audit script with `ATLAS_STRICT_PLUGIN_SECRETS` opt-in (#1835). Remediation tail closed in **1.2.4 — Security Cleanup Tail**: F-53 (custom-role route-layer enforcement, #1849), F-56 + F-59 (SSO bypass on `byot` + test debt, #1852), MCP actor binding (#1858), and F-57 (SCIM provenance gate on admin user mutations, #1853). Findings + step-by-step shipped notes in `.claude/research/security-audit-1-2-3.md`.
-- [x] **1.3.0 — End-User UI Design Pass** (#38, 28 issues + tracker #1719) — critique → distill → colorize → polish across 8 buckets covering chat, notebook, dashboards, public views (shared/embed/report), onboarding (login/signup/create-org/wizard), demo, landing page, and apps/www legal. Shared primitives extracted: `<OnboardingShell>` + `<StepTrack>` for onboarding chrome, `<AssistantTurn>` (#1888) for the chat-and-notebook gutter rail, `LegalSection` for legal pages. Post-bucket public-page audit caught license/region/retention/MFA drift and shipped TOTP MFA (#1925) + 365-day audit retention default (#1927).
-- [x] **1.3.1 — Post-Launch Production Audit** — `/prod-audit` + `/www-audit` + `/docs-audit` passes shipped ~30 fixes: SaaS boot-guard family covering 9 misconfigs (#1978/#1983/#1988), OTel coverage on scheduler+plugin+abuse (#1979), security headers across api/web/www (#1984), chat Retry-After + degradation warning frames (#1980 + #2005), sub-processor change feed via Atom + signed webhooks (#1924), Lighthouse CI budget for marketing surfaces (#2009), legal/sitemap/docs refresh. Architecture wins #45–#47.
-- [x] **1.4.0 — MCP & Agent-First DX** (#40, 21 issues) — closed the agent-first install/discovery surface end-to-end. `bunx @useatlas/mcp init` (zero-config local + `--hosted` OAuth 2.1 loopback) #2018, hosted MCP endpoint per-region (us/eu/apac) with DCR + PKCE + RFC 9728 protected-resource metadata + `421 Misdirected Request` residency enforcement #2024 (PRs #2054/#2056/#2057/#2059/#2062), admin Settings → OAuth Clients revocation surface, typed semantic-layer MCP tools (`listEntities`/`describeEntity`/`searchGlossary`/`runMetric`) #2020 with structured `AtlasMcpToolError` envelope #2030, OTel coverage for MCP tool calls #2029, eval harness with 20 canonical questions #2025, NovaMart canonical seed (three seeds collapsed to one) #2021, README/docs/landing leading with the moat sentence + YAML-first story #2026, `@useatlas/mcp` published to npm #2042, listed on `registry.modelcontextprotocol.io` as `io.github.AtlasDevHQ/atlas` (auto-published via OIDC on every `mcp-v*` tag) #2027, path-A standalone-serve decision (hosted-only) #2052, scaffolder rename to `bun create atlas-agent`/`bun create atlas-plugin`. Backlog deferred: `/agent-mode` view (#2022), `runbooks-context` plugin (#2023). Architecture debt tracked separately: `/ee` decoupling (#2017).
-- [x] **1.4.1 — MCP: Bringing It All Together** (#41, 34 issues) — closed the post-1.4.0 follow-up themes end-to-end across workspace-native UX, brand + production hygiene, governance, eval + tool quality, distribution + extensibility, and a 9-item Theme F closeout sweep. Headline ships: Settings → AI Agents per-user MCP wizard (#2065/#2066/#2067), `mcp.useatlas.dev` brand-first hostname (#2068), measured perf profile + 100-session cap validation (#2070), per-OAuth-client rate limiting (#2071), surface-scoped approval rules (#2072), cross-workspace agent identity (#2073), MCP-path eval + tool description rubric + canonical-prompt exposure (#2074/#2119/#2075/#2076/#2179), Claude Desktop catalog in-repo deliverables (#2077), `AtlasPlugin.mcpTools()` extension point (#2078), `@useatlas/sdk/mcp` programmatic onboarding (#2079), CI-driven manual MCP load-test workflow (#2129/#2235), shared OAuth 2.1 helper extraction (#2203), live MCP usage chip (#2216). Spawned to backlog: durable session store (#2109, trigger-gated), explore tool refactor (#2123, post-multi-source), Claude Desktop catalog form submission (#2200, operator-side).
-- [x] **1.4.2 — End-user shakeout** (#42, 42 issues) — admin chrome lift to top-level `/platform/*` (#2305/#2307), chat-first front door for non-admins (#2022) + per-user default landing (#2325), BYOT direct-provider discovery on Anthropic / OpenAI / Bedrock with Postgres L2 cache + graceful unknown-model handling (#2174 rolling up #2271–#2275), Vercel AI Gateway model catalog picker (#2173), `__demo__` collapsed to one global row (#2304), `/settings/profile` self-serve page (#2255), shared primitives extracted (`<MfaPanel>` #2257 / `AdminBreadcrumb` discriminated union #2258 / canonical DatePicker #2171), dev-mode discoverability via `PendingChangesPill` (#2177), persistent admin top bar (#2176), and a long platform-admin / bug pass. Closed 2026-05-12.
-- [x] **1.4.3 — Agent-first front door + BYOT polish** (#44, 12 issues) — closed the post-#2174 BYOT review tail: typed `WorkspaceCredentials` union + parameterized `ByotAdapter<Cred>` (#2282), scheduler-driven catalog refresh (#2284), `encryptUrl`→`encryptSecret` rename (#2285) with branded `URLSecret`/`OpaqueSecret` return types (#2370), L1↔L2 wiring test (#2287), Bedrock IAM + direct-provider picker docs (#2286/#2351); SDK 0.0.14 multi-workspace MCP shape (#2196); `useSession()` widening (#2334). Architecture-wins #54–#57. Closed 2026-05-12.
-- [x] **1.4.4 — Multi-environment semantic layer** (#45, 64 issues — biggest schema shift since 1.0, closed 2026-05-17) — connection groups foundation + group-scoped semantic/PII/dashboards/scheduled-tasks/approvals + group-aware chat routing + admin merge-into-group wizard + Phase 4 archive cascade + `/admin/semantic` drift drawer (retires `/admin/schema-diff`) + Group-by [Type|Env] toggle + SaaS trial onboarding (PRD #2464). Legacy `connection_id` dropped; `@useatlas/types` → 0.1.x. 17-finding closeout audit (#2407) + three rounds of 2026-05-16 dogfood verification fixes. Arch-wins #58–#60.
-- [x] **1.4.5 — Cross-environment querying** (#47, 6 issues, closed 2026-05-17) — Agent-routed Auto/Pin/All-envs scope on `executeSQL`; `conversations.routing_mode`; `query_audit.parent_audit_id` rollup; `envContributions` wire type; `atlas.routing_mode` OTel attr. Deep modules `environment-routing` + `multi-env-result-merger` (arch-wins #61/#62). PRD #2515.
-- [x] **1.4.6 — Chat as dashboard editor** (#46, 9 issues, closed 2026-05-17) — Bound chat editor + per-user drafts + atomic three-way-merge Publish + stage tracker + `screenshotDashboard` vision tool + History tab. `ATLAS_DASHBOARD_DRAFTS_ENABLED` default-ON. Deep modules `dashboard-versioning` / `stage-tracker` / `boundChatContext` (arch-wins #63/#64 + stage-tracker + screenshot pipeline entries). PRD #2362.
-- [x] **1.5.0 — Proactive Chat** (#43, 11 issues, closed 2026-05-17) — `/ee`-gated, Slack-first. Reaction-first tracer → answer pull on tap; three-layer kill switch (`@atlas pause` / admin toggle / DM `unsubscribe`); meter + audit + monthly quota cap. Awaiting design-partner adoption to hit <5% misfire / ≥70% acceptance before promoting beyond Slack. Opens "1.5.x = Atlas Everywhere". PRD #2291.
-- [x] **1.5.1 — Architecture Deepening** (#48, 11 slices + 8-PR cleanup trail, closed 2026-05-18) — Inverted `core → ee` per #2017: every enterprise subsystem now sits behind a `Context.Tag` with a fail-closed no-op default; `lib/effect/enterprise-layer.ts` is the single allowed `@atlas/ee` import in core (locked by `check-ee-imports.sh` + `ee-stub-build` job). Detail in archive.
-- [x] **1.5.2 — Multi-Adapter SaaS Readiness** ([milestone #50](https://github.com/AtlasDevHQ/atlas/milestone/50), 33 issues + [PRD #2649](https://github.com/AtlasDevHQ/atlas/issues/2649), closed 2026-05-23) — established the operator/customer seam for chat Platforms + integration plugins. Slack end-to-end (slices 1–7 + Disconnect #2695), form-based install + Email (#2697), Webhook + Obsidian (#2699), Salesforce + `integration_credentials` table + [ADR-0005](../../docs/adr/0005-integration-credentials-table.md) (#2700), Jira lazy OAuth (#2707, ~54% fewer files than #2700 — pattern proven), Slack proactive UX threading + conversational mode + disclosure buttons (#2709), and entitlement bundle (#2713 — unified `PLAN_RANK` + `is_operator_workspace` bypass + 4-layer gating + throttled gate-deny log, arch-win #70). Cleanup tail closed in one burst (#2718/#2719/#2720/#2721/#2717/#2722 + #2723 via publish-first split #2724 for `@useatlas/types@0.1.6` catalog literal exports). Closed with the chat-plugin × Atlas extension-contract audit (#2677 / #2725) — new `docs/architecture/chat-plugin-atlas-contract.md` + read-side fail-loud warn in `workspace-id-resolver` + CLAUDE.md "Plugin migrations" checklist locking future PRs to update the contract doc; structural prevention is the pg-adapter JSONB-merge already shipped in #2676. See [`docs/prd/multi-adapter-saas-readiness.md`](../../docs/prd/multi-adapter-saas-readiness.md).
-- [x] **1.5.3 — Multi-Platform Install Models** ([milestone #51](https://github.com/AtlasDevHQ/atlas/milestone/51), 32 issues + [PRD #2738](https://github.com/AtlasDevHQ/atlas/issues/2738) supersedes [#2662](https://github.com/AtlasDevHQ/atlas/issues/2662), closed 2026-05-26) — Three-pillar taxonomy ([ADR-0006](../../docs/adr/0006-three-pillar-integration-taxonomy.md)) + unified install pipeline ([ADR-0007](../../docs/adr/0007-unified-install-pipeline.md)). `workspace_plugins` becomes the universal install record; the `connections` table drops in a one-shot migration (slice 6, #2744 + 0097 hotfix #2788). Seven non-Slack chat install models shipped across three handler shapes — OAuth (Linear #2750, GitHub App #2818), Form/StaticBot (Telegram #2748, Discord #2749, WhatsApp #2753, Linear-apikey, GitHub-PAT #2807), Service-account (Google Chat #2754, Teams manifest #2752). UX consolidation: Salesforce moves to `/admin/connections` (#2745), `/admin/integrations` dedup + Chat/Actions split (#2746), `coming_soon` catalog state + `atlas.config.ts` operator override (#2747). Email `sendEmail` agent tool via LazyPluginLoader (#2698). Closeout: encryption rule narrowed to two surviving legacy non-`workspace_plugins` columns, `encryptUrl`/`decryptUrl` retired per #2285 schedule (#2755/#2819), operator-surface docs sweep (10 gaps: #2766–#2775). The #2677 chat-plugin extension-contract audit picked up its 4th instance (#2680 reaction-back hotfix) with brand-typed `ChannelId`/`ThreadId`/`WorkspaceId`.
-- [x] **1.6.0 — CRM & Lead Capture** ([milestone #52](https://github.com/AtlasDevHQ/atlas/milestone/52), 11 issues + [PRD #2726](https://github.com/AtlasDevHQ/atlas/issues/2726), closed 2026-05-26) — Demo / signup / sales-form / Stripe-conversion leads land in Twenty at crm.useatlas.dev via a durable `crm_outbox` + Scheduler-backed flusher. Talk-to-sales dialog replaces mailto on `/pricing` + `/sla` + `/dpa` + `/terms` (Turnstile-protected). General-purpose `@useatlas/twenty` plugin (admin UI + `atlas.config.ts` install paths) + SaaS wiring in `ee/src/saas-crm/` gated behind the `SaasCrm` Tag. Closeout `scripts/check-twenty-resolver-imports.sh` splits operator env-var path from per-workspace DB path — two leak directions structurally impossible (#2850). Slice 6 (Twenty-as-datasource) deferred to 1.7.0 because Twenty Cloud doesn't expose Postgres.
+- [ ] **Slice 6 cutover** ([#2802](https://github.com/AtlasDevHQ/atlas/issues/2802)) — replace the custom `scripts/test-isolated.ts` subprocess-per-file runner with native `bun test --parallel`. Mechanical diff prepared on `claude/practical-hamilton-Ycwto`. Parked on bun 1.4.0 GA — under the `>=1.3.13 <1.3.14` engine pin the full `packages/api/` suite passes 3020/3020 in 19.58s. Re-apply once bun 1.4.0 ships and lift the engine pin in the same PR.
+- [ ] **Stability Contract docs page** ([`apps/docs/content/docs/reference/stability.mdx`](../../apps/docs/content/docs/reference/stability.mdx)) — customer-facing commitments for REST API (`/api/v1/*`), MCP tool surface, plugin SDK, semantic layer wire format. Referenced from ADR-0008.
+- [ ] **ROADMAP restructure** — this file. Five-section shape per ADR-0009; shipped milestones consolidated to [`ROADMAP-archive.md`](./ROADMAP-archive.md).
+- [ ] **`/prod-audit` pre-launch pass** — fresh sweep of `/prod-audit` + `/www-audit` + `/docs-audit` against current main; fix anything that surfaces before the first tag.
+- [ ] **`/release` skill** ([`.claude/commands/release.md`](../../.claude/commands/release.md)) — bundles `/ci` + `git tag -a` + `git push --tags` + `gh release create --generate-notes`. The mechanism that makes tag-gated prod deploys ergonomic.
+
+Decoupled from this bundle: the **staging environment build track**. Q1–Q4 of the grilling session captured a staging design (PRD at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md), forthcoming) with a late-June target. Staging is not a v0.1.0 launch gate — until it lands, the tag-gated Railway trigger is "tag → prod" with no soak environment, which is acceptable because v0.1.0 ships docs + tooling only.
 
 ---
 
-## Active
+## Planned tags
 
-- [ ] **1.5.4 — Test Suite Self-Containment** ([parent #2796](https://github.com/AtlasDevHQ/atlas/issues/2796)) — Make test files self-contained so the custom subprocess-per-file runner (`scripts/test-isolated.ts`) can be retired in favor of native `bun test --parallel`. Slices 0–5b shipped via [PR #2813](https://github.com/AtlasDevHQ/atlas/pull/2813): test-discipline gate (#2796 slice 0) + 48 top-level env hoists (#2797) + cli chdir hoist (#2798) + `createPluginRegistryTestLayer` (#2799) + `connections._reset` afterAll (#2800) + bun `--isolate` empirical fixture (#2801) + mock-rule allowlist drop after the 5a verdict (#2801 slice 5b).
-  - [x] Slices 0–5b — discipline gate + state-leak fixes + mock-rule cleanup (PR #2813)
-  - [x] **Upstream bun bug resolved** (#2811) — re-diagnosed slice 6 blocker as a 1.3.14 TLA-under-`--isolate` regression (TDZ), not a `mock.module()` issue. Bisected to [oven-sh/bun@73e8889f8c](https://github.com/oven-sh/bun/commit/73e8889f8c) (WebKit module-loader rewrite, oven-sh/bun#29393); filed [oven-sh/bun#31410](https://github.com/oven-sh/bun/issues/31410); verified fixed on current bun canary `1.4.0-canary.1+0974d031c` via oven-sh/bun#30656 + oven-sh/WebKit#230 (`dep == dynamic-import-initiator` discriminator in `innerModuleEvaluation` 11.c.v). #2812 closed as not-needed.
-  - [ ] **Slice 6 cutover (#2802) unblocked** — under the `>=1.3.13 <1.3.14` engine pin the full `packages/api/` suite passes `bun test --parallel` (3020/3020 tests across 120 files in 19.58s). Mechanical diff already prepared on `claude/practical-hamilton-Ycwto` and reverted; ready to re-apply. Landing waits on bun 1.4.0 GA so the engine pin lifts in the same PR (no `bun-v1.4.0` GitHub release tag yet — latest is still 1.3.14). Prerequisite parallel-load flake sweep landed via PR #2831 (closes #2710 #2776 #2716 #2694) — `api/index.ts` discord/teams routes no longer gated at import time, DuckDB + rate-limit test timeouts bumped to match contended-shard reality.
-  - [ ] **Wall-clock optimization on top of the cutover** (tracked in [#2802 thread](https://github.com/AtlasDevHQ/atlas/issues/2802#issuecomment-4538669191)) — keep the 4-shard matrix (collapsing to one job is *slower*: sequential test work exceeds the current ~95s slowest-shard critical path). Real wins, by impact: `--changed=origin/main` for PR runs (~95s → ~20s on typical PRs, biggest single lever), duration-balanced sharding to flatten the current 25% skew on the matrix critical path, native `--parallel` worker pool replacing per-file subprocess spawns. After this, the CI floor is set by `test-others` (117s), `Symlink Stub Build` (111s), and `build` (103s) — those are the follow-up after the cutover lands.
+Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-## Planned
+- **`v0.2.0` — REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54)) — extend Atlas's datasource model beyond SQL so REST/GraphQL services (Twenty, Stripe) and search engines (OpenSearch / Elasticsearch) can be first-class read-side datasources. Motivated by 1.6.0 Slice 6 ([#2728](https://github.com/AtlasDevHQ/atlas/issues/2728)) — Twenty Cloud doesn't expose Postgres, so the lightweight "plug it in as a regular Atlas connection" path isn't available. PRD + slice breakdown deferred until v0.1.0 launches; architecture exploration against the current SQL-only datasource layer is the first step.
 
-- [ ] **1.7.0 — Generic REST / Non-SQL Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54)) — placeholder. Extend Atlas's datasource model beyond SQL so REST/GraphQL services (Twenty, Stripe) and search engines (OpenSearch / Elasticsearch) can be first-class read-side datasources. Motivated by 1.6.0 Slice 6 ([#2728](https://github.com/AtlasDevHQ/atlas/issues/2728)) — Twenty Cloud doesn't expose Postgres, so the lightweight "plug it in as a regular Atlas connection" path isn't available. PRD + slice breakdown deferred until 1.6.0 closes; architecture exploration against the current SQL-only datasource layer is the first step.
-
-## Parked
-
-- **SaaS Trust & Compliance** — clustered candidate ([#1928](https://github.com/AtlasDevHQ/atlas/issues/1928) SOC 2 + ISO 27001 + pen test + IR drills, [#1922](https://github.com/AtlasDevHQ/atlas/issues/1922) DPA PDF, [#1936](https://github.com/AtlasDevHQ/atlas/issues/1936) OpenStatus Starter). Not milestoned yet — promote when enterprise pipeline signals adoption pressure.
+- **Staging environment** — separate work track on a late-June target; ships independently of the tag train. PRD at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). May land before or after `v0.2.0` depending on adoption signal.
 
 ---
 
-## Closed parallel tracks
+## Backlog
 
-- [x] **Multi-method MFA hardening** (6 issues #2082/#2090/#2091/#2092/#2093/#2094) — WebAuthn passkeys + TOTP + trusted-device 30d shipped end-to-end across enrollment, sign-in, governance, telemetry, and recovery. Full detail in `ROADMAP-archive.md`.
-- [x] **Post-1.4.2 security + polish hygiene** (PRs #2353–#2358) — npm supply-chain worm hardening (#2353), CodeQL ReDoS/sanitization/URL/shell sweep (#2355 + #2357 + #2358), rail collapse-trigger + hover scoping (#2354), dashboards-rail remount flash (#2356).
-- [x] **SaaS sandbox = Vercel Sandbox exclusive** (#2382, #2383, #2387, #2389) — `deploy/api/atlas.config.ts` pins `["vercel-sandbox"]`; sidecar fallback removed so a Vercel outage hard-fails the explore tool rather than degrading isolation. Hardening tail (#2389) brands the Vercel token as `OpaqueSecret`, surfaces a SaaS hard-fail error when sandbox.priority backends all fail, and adds detector + credential-handoff tests — closes #2384/#2385/#2386.
-- [x] **Post-1.4.3 bug pass** (PRs #2388, #2390) — semantic-layer whitelist now accepts dialect-quoted reserved-keyword tables (`"user"`, `` `events` ``, `[Order]`); SaaS abuse-detector escalation ladder gated by per-step dwell time (`ATLAS_ABUSE_ESCALATION_COOLDOWN_SECONDS`, default 60s) and short-circuited entirely on self-hosted (operator IS the user).
-- [x] **Post-1.4.4 multi-env tracer + page guard** (#2441, PR #2445) — real-API e2e against three local Postgres on 5433/5434/5435 with divergent seeds (10/100/1000 customers, prod-only `vip_tier`), shared `e2e/browser/lib/{totp,admin-auth}.ts` helpers, MFA-aware seed script, and an `Array.isArray()` defensive guard on `/admin/connections` for the prod render crash tracked at #2444 (root cause still open).
-- [x] **Post-1.5.0 marketing-pass + dogfood** (PRs #2553, #2560, #2561, #2562) — marketing-pass sweep bundled all 9 docs/landing issues into one PR (#2114, #2550–#2559). Dogfood caught two routing bugs: chat env picker defaulted to alphabetical-first instead of group primary (#2560), and admin semantic listed 46 entities (DB + disk dupes) instead of 23 (#2561 — boot reconciliation now GCs orphan YAMLs).
-- [x] **Post-1.5.0 proactive listener wiring** (parent #2607, 11 PRs + 11 follow-up PRs, closed 2026-05-19) — `@useatlas/chat` listener wired into SaaS deploy + Slack `@mention`/thread migrated off `slack.ts`; dogfood-verified in `#sandbox-atlas`. Same-day follow-ups: #2622/#2624/#2633/#2634/#2635/#2637/#2638/#2641 shipped + #2623 all 6 items (item 1 became milestone 1.5.2 slice 1 via #2663); arch-win #66 banked + #2634/#2641/#2663 candidates open.
-- [x] **Post-1.5.2 slice 6 dogfood hotfix** (#2676/#2678, closed 2026-05-20) — `#sandbox-atlas` proactive stopped firing after a Slack OAuth re-install; two-stage cause: (1) `SLACK_ENCRYPTION_KEY` unset on api/api-eu/api-apac left the chat-adapter uninstantiated, (2) `@chat-adapter/slack:setInstallation` overwrote the `chat_cache` row and dropped Atlas's `orgId` extension. `pg-adapter.set()` now JSONB-merges for `slack:installation:*` keys so the chat-adapter's overwrite preserves host-extension fields. Follow-ups all shipped: #2672 (SaaS boot guard for `SLACK_ENCRYPTION_KEY`), #2673 (AdapterRegistry log severity), #2677 / #2725 (Atlas-extension contract audit — closes the 3-of-3 pattern with #2628/#2630/#2676; new `docs/architecture/chat-plugin-atlas-contract.md` plus read-side fail-loud warn).
-- [x] **Post-1.5.2 reaction-back hotfix** (#2680, closed 2026-05-20) — proactive reaction-back silently skipped since #2607: `pending` recorded under bare `channelId`, looked up under encoded `threadId`. `ThreadId`/`ChannelId` brands in `@useatlas/types@0.1.5` make the divergence compile-uncheckable; 4th instance of the #2677 chat-plugin extension-contract audit pattern.
-- [x] **Global Cmd+K palette + admin nav consolidation** (#2706, closed 2026-05-23) — extracted reusable `palette/` primitives (palette-items, settings-palette-items, global-command-palette); collapsed admin/action-log, admin/token-usage, admin/settings/mcp pages into tab modules; tightened admin nav + deploy-mode hook. Foundation for keyboard-first admin nav.
-- [x] **Post-1.6.0 stabilization burst** (PRs #2856–#2882, closed 2026-05-27) — dogfood + closeout fixes after the 1.6.0 merge: Cloudflare Turnstile CSP (#2856), `www.useatlas.dev` origin + Insights beacon (#2857), catalog-seeder pillar (#2858), REST OpenAPI probe for SaasCrm Twenty schema (#2860), `Effect.fork → Effect.forkScoped` for periodic Layer fibers (#2864 — leaked scope on shutdown), Twenty `findPersonByEmail` filter syntax (#2865), outbox flusher heartbeat + stall watchdog (#2861), per-email serialization in `crm_outbox` CLAIM_SQL (#2872 — fixes attribution swap on demo→signup pairs, closes #2870), `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED` region gate (#2873), in-repo Twenty MCP (#2867, closes #2843), `atlas ops smoke-crm` (#2869, closes #2866), per-tenant `crm_outbox` dispatch via `workspace_id` (#2878, closes #2849), client-level regression-guard mock for the #2865 filter bug (#2877, closes #2871), `@useatlas/twenty` 0.0.6 publish + template ref bump (#2881/#2882). Surfaced one residual Architecture Backlog item: #2874 (eventize the flusher).
-- [x] **Better Auth invitations cutover** (#2875 + #2876, closed 2026-05-27) — replaced the custom `org_invitations` table + hand-rolled token flow with Better Auth's native invitation system. Phase 1 (#2875) ships the pure-native flow with `databaseHooks` for seat-limit + audit + email; migration 0105 drops the legacy table; new `/accept-invitation/[id]` page. Phase 2 (#2876, PR #2883) — platform_admin cross-org invite — shipped via a custom Hono route at `POST /api/v1/platform/invitations` that bypasses Better Auth's caller org-membership gate; shared seat-limit/audit/email helpers extracted to `lib/auth/invitations.ts` so cross-org invites are indistinguishable from native-flow invites in the action log. Production dogfood tail (#2885 invite email URL + signed-out accept page, #2886 platform-admin revoke/cancel, #2888 hard-nav after sign-in to dodge stale Next Router Cache /login bounce, #2889 org-admin sees `/admin/*` gear icon) shipped 2026-05-27/28.
-- [x] **Docs static export + Caddy proxy** (#2879, closed 2026-05-27) — `apps/docs` switched from `output: 'standalone'` (~906 MB avg / 1.59 GB max idle RAM) to `output: 'export'` + Caddy serving `out/`. Railway cost drops ~$10/mo → ~$0.30/mo (~96%). All public surfaces preserved via Caddy: Link header, markdown twins, Accept negotiation, `.well-known/*`, static Orama `/api/search`, build-time `/docs-og/*`, legacy `/guides/mcp-hosted/*` 308. fumadocs-mdx 14→15 + lucide-react 1.7→1.16 deferred to bisectable follow-up PRs (#2880). Follow-up #2884 marks `llms.txt` / `llms-full.txt` sidebar links as `external: true` so Caddy serves them directly under static export; #2887 quiets the Caddy access log + fixes a broken `/architecture/audit` cross-link surfaced during dogfood.
+Untracked-but-noted work lives in the [Architecture Backlog milestone](https://github.com/AtlasDevHQ/atlas/milestone/49). Issues graduate out by being moved to a `v0.x.0` milestone when work begins.
+
+Persistent candidate clusters (not milestoned):
+
+- **SaaS Trust & Compliance** — [#1928](https://github.com/AtlasDevHQ/atlas/issues/1928) SOC 2 + ISO 27001 + pen test + IR drills, [#1922](https://github.com/AtlasDevHQ/atlas/issues/1922) DPA PDF, [#1936](https://github.com/AtlasDevHQ/atlas/issues/1936) OpenStatus Starter. Promote when enterprise pipeline signals adoption pressure.
 
 ---
 
-## Ideas / Backlog
+## History
 
-_Untracked ideas. Create issues when committing to work._
+Shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md):
 
-### Expand Reach (build when demand signals appear)
-- ~~Python SDK~~ — **closed** (#1181). No demand signal. Reopen when a Python user asks
-- ~~MongoDB + GraphQL datasource plugins~~ — **closed** (#1182). Non-SQL needs major architecture work. No demand signal
-- ~~Multi-seed selection in `create-atlas`~~ — **shipped** (#1188), then **reverted** in 1.4.0 (#2021). Atlas now ships a single canonical demo seed (NovaMart e-commerce); the `--seed` flag was removed and `--demo cybersec` / `--demo simple` error with a migration message. The cybersec and simple seed files are gone — git history preserves them if demand resurfaces
+- `v0.1` → `v1.3` — pre-public-tag internal milestones (foundation, deploy-anywhere, semantic layer, Better Auth, Hono API, MCP, Python sandbox, integration builder, plugin refactor)
+- `0.6.0` → `1.6.0` — post-public-repo internal milestones (governance, performance, intelligence, SaaS infrastructure, launch, Effect.ts, MCP DX, multi-env, proactive chat, architecture deepening, multi-platform integrations, CRM lead capture)
+- Closed parallel tracks — MFA hardening, security sweeps, sandbox exclusivity, dogfood-driven hotfixes, palette consolidation, Better Auth invitations cutover, docs static export
 
-### Competitive Positioning
-- ~~Benchmark participation~~ — **closed** (#1183). Lower priority post-launch. Revisit if needed for credibility
-- ~~"Powered by Atlas" badge on embedded widgets~~ — **shipped** (PR #1265). Opt-out badge on @useatlas/react and script tag widget
-- ~~OSI (Open Semantic Interchange) compatibility~~ — **closed** (#1184). Standard isn't stable yet. Adopt when it solidifies
-
-### Product Extensions
-- ~~Dashboard persistence~~ — **shipped** (#1246, PRs #1253–#1258). DB schema + CRUD API, add-to-dashboard from chat, list/view pages with DnD reorder, sharing + public view, auto-refresh via scheduler, AI-driven card suggestions
-- Voice input / natural language voice queries — wait for Web Speech API maturity
-- Multi-agent collaboration — specialist agents per domain with coordinator routing (#1178, deferred)
-- ~~`atlas migrate`~~ — **shipped** (#1185, PR #1303). Snapshot, diff, log, rollback, auto-snapshot on `atlas improve` and `atlas init`
-- ~~A/B testing for agent prompts~~ — **closed** (#1186). Needs replay infra, eval metrics, comparison UI. No demand signal
-
-### MCP Enhancements
-- WebSocket transport — enables real-time bidirectional communication
-- ~~Prompt templates~~ — **shipped** (PR #1296). 5 built-in patterns + semantic layer query_patterns + prompt library
-- Resource subscriptions — notify connected clients when semantic layer changes
-
-### Plugin Ecosystem
-- ~~Agent error recovery hooks~~ — **closed** (#1187). Speculative. Build when plugin authors request specific hooks
-- ~~Streaming action approval~~ — **closed** (#1187). Same — build on demand
+Issues + PR bodies remain the source of truth; archive entries are hooks, not commitments. The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is the SaaS-launch event in 2026-03, separate from the future git tag `v1.0.0`.

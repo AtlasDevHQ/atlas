@@ -947,6 +947,16 @@ export default defineConfig({
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
       },
+      // Staging arm — single-region soak environment. Per PRD #2894 it shares
+      // the prod NovaMart datasource but its own Postgres (DATABASE_URL). No
+      // real cross-region traffic ever claims residency="staging"; this arm
+      // exists so the SaaS region guard at saas-guards.ts:570 accepts
+      // ATLAS_API_REGION=staging without a hard-fail boot.
+      "staging": {
+        label: "Staging",
+        databaseUrl: process.env.DATABASE_URL!,
+        apiUrl: "https://staging.api.useatlas.dev",
+      },
     },
   },
 });

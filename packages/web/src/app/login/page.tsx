@@ -28,7 +28,7 @@ import {
   MicrosoftIcon,
 } from "@/ui/components/social-icons";
 import { parseSignInError, type SignInErrorState } from "./parse-sign-in-error";
-import { getPostSignInRoute } from "./post-sign-in-route";
+import { getPostSignInRoute, requiresRouterPushAfterSignIn } from "./post-sign-in-route";
 import { getPasskeySignIn } from "@/lib/auth/passkey-client";
 import { parsePasskeySignInError } from "@/lib/auth/parse-passkey-sign-in-error";
 import { useWebAuthnSupported } from "@/ui/hooks/use-webauthn-supported";
@@ -275,10 +275,9 @@ export default function LoginPage() {
           );
         });
       }
-      // 2FA branch (/login/two-factor) stays on the router so the prefilled
-      // form state survives the transition. Every other branch is an exit
-      // out of the auth gate — hard nav to dodge stale Router Cache.
-      if (next === "/login/two-factor") {
+      // 2FA challenge stays on router.push; every other exit is hard nav.
+      // Decision lives in post-sign-in-route so the policy is unit-tested.
+      if (requiresRouterPushAfterSignIn(next)) {
         router.push(next);
       } else {
         navigatePostAuth(next);

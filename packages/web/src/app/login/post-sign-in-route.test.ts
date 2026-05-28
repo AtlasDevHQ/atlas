@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { getPostSignInRoute } from "./post-sign-in-route";
+import { getPostSignInRoute, requiresRouterPushAfterSignIn } from "./post-sign-in-route";
 
 describe("getPostSignInRoute", () => {
   test("routes to /login/two-factor on { twoFactorRedirect: true }", () => {
@@ -75,5 +75,40 @@ describe("getPostSignInRoute", () => {
         "/accept-invitation/a%2Fb%3Fc",
       );
     });
+  });
+});
+
+describe("requiresRouterPushAfterSignIn", () => {
+  test("true for the bare 2FA route", () => {
+    expect(requiresRouterPushAfterSignIn("/login/two-factor")).toBe(true);
+  });
+
+  test("true for the 2FA route with a callbackURL — regression: Codex catch on #2888", () => {
+    // The invited-2FA path appends `?callbackURL=…`; the bug was that an
+    // exact-equality check missed this case and hard-nav'd the user, which
+    // proxy.ts then 307'd back to /login because /login/two-factor isn't
+    // in the exact-match authRoutes list.
+    expect(
+      requiresRouterPushAfterSignIn(
+        "/login/two-factor?callbackURL=%2Faccept-invitation%2Finv-123",
+      ),
+    ).toBe(true);
+  });
+
+  test("false for the workspace home", () => {
+    expect(requiresRouterPushAfterSignIn("/")).toBe(false);
+  });
+
+  test("false for /accept-invitation deep links", () => {
+    expect(requiresRouterPushAfterSignIn("/accept-invitation/inv-123")).toBe(false);
+  });
+
+  test("false for anything that just happens to start with /login (not /login/two-factor)", () => {
+    // Defense-in-depth: a future /login/sso or /login/passkey would NOT
+    // share the partial-auth-cookie semantics of /login/two-factor and so
+    // should not be treated like one.
+    expect(requiresRouterPushAfterSignIn("/login")).toBe(false);
+    expect(requiresRouterPushAfterSignIn("/login/sso")).toBe(false);
+    expect(requiresRouterPushAfterSignIn("/login/two-factor-other")).toBe(false);
   });
 });

@@ -9,6 +9,7 @@
     "sdk",
     "react",
     "api",
+    "stability",
     "error-codes"
   ]
 }

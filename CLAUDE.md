@@ -114,9 +114,19 @@ Guidance for Claude Code when working in this repository.
 
 **Atlas** — Deploy-anywhere text-to-SQL data analyst agent. Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun.
 
-### Versioning
+### Versioning & releases
 
-Internal milestones (v0.1–v1.0) track architectural progress. Public semver starts fresh post-v1.0 as beta `0.0.1`. Don't confuse internal milestones with public version numbers in user-facing copy.
+Three independent version trains, none coordinate. See [ADR-0008](docs/adr/0008-versioning-and-release-tags.md) for the full rules and [docs/development/release-process.md](docs/development/release-process.md) for the operational flow:
+
+- **Git tags** (`v0.1.0`, `v0.2.0`, …) — release identifiers that gate prod deploys. Semver discipline: contract break → major (reserved for `v1.0.0`), customer-visible workflow change → minor, bug/perf/docs → patch, hotfix → tag immediately don't batch. No pre-release tags, no release branches. Annotated tags only (`git tag -a`). First public tag is `v0.1.0` (cut once the release-process bundle is ready — tag-cut is decoupled from the public launch announcement).
+- **GitHub milestones** — tag-named going forward (`v0.2.0 — REST Datasources`). Only minor tags get milestones; patches don't. One non-tag milestone persists (`Architecture Backlog`). See [ADR-0009](docs/adr/0009-tag-organized-roadmap.md).
+- **`@useatlas/*` npm packages** — independent semver per package. 0.0.x exact-pin rule (`^0.0.2` ≠ `0.0.3`) — see "Publishing `@useatlas/*` packages" below.
+
+The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0`. Reference it as "internal milestone 1.0.0" to disambiguate. `v1.0.0` is reserved for the moment REST + MCP + plugin SDK contracts freeze.
+
+The `/release` skill bundles `/ci` + annotated tag + push + `gh release create --generate-notes`. Customer-facing stability commitments live at [apps/docs/content/docs/reference/stability.mdx](apps/docs/content/docs/reference/stability.mdx).
+
+**Operational rule:** when adding a new integration (chat platform, action target, datasource), create the staging app/credentials first — staging is the soak environment for tag-gated prod deploys. Don't OAuth-register a new platform straight against prod.
 
 ## Commands
 

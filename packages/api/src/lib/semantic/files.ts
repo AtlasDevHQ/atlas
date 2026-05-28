@@ -58,6 +58,22 @@ export function readYamlFile(filePath: string): unknown {
 }
 
 export interface EntitySummary {
+  /**
+   * Storage key — the YAML file stem (`audit_log` for `audit_log.yml`).
+   * This is the identifier the detail/edit/delete routes look up by
+   * (`getAdminEntity` → `findEntityFile` on disk, `getEntity` against the
+   * `semantic_entities.name` column in the DB). #2891: keeping this
+   * distinct from `displayName` so URL routing can't drift from the
+   * stored row whenever a YAML's `name:` field disagrees with its filename.
+   */
+  name: string;
+  /**
+   * Display label — the YAML `name:` field if present, otherwise the
+   * `table:` value. Pre-#2891 this was the only "name" surfaced and
+   * doubled as the URL routing key, which 404'd on every YAML whose
+   * `name:` differed from the filename. Now strictly for rendering.
+   */
+  displayName: string;
   table: string;
   description: string;
   columnCount: number;
@@ -95,7 +111,12 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
     const joins = Array.isArray(raw.joins) ? raw.joins : (raw.joins && typeof raw.joins === "object" ? Object.keys(raw.joins) : []);
     const measures = Array.isArray(raw.measures) ? raw.measures : (raw.measures && typeof raw.measures === "object" ? Object.keys(raw.measures) : []);
 
+    const fileStem = path.basename(filePath, ".yml");
+    const displayName =
+      typeof raw.name === "string" && raw.name ? raw.name : String(raw.table);
     entities.push({
+      name: fileStem,
+      displayName,
       table: String(raw.table),
       description: typeof raw.description === "string" ? raw.description : "",
       columnCount: dimensions.length,

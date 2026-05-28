@@ -66,8 +66,16 @@ import { driftDrawerTargetFor } from "./drift-routing";
 // ── Types ─────────────────────────────────────────────────────────
 
 interface EntitySummary {
-  /** Display name — the YAML `name:` if present, otherwise the table. */
+  /**
+   * Storage key (#2891) — the DB row's `name` column or the disk file
+   * stem. The detail / edit / delete handlers look up by this exact
+   * value, so all URLs and `SemanticSelection.name` must roundtrip it
+   * unchanged. Previously `name` doubled as the display label; that
+   * 404'd every entity whose YAML `name:` differed from the file stem.
+   */
   name: string;
+  /** Display label — the YAML `name:` field if present, otherwise the table. */
+  displayName: string;
   table: string;
   description: string;
   columnCount: number;
@@ -528,6 +536,16 @@ export default function SemanticPage() {
             typeof e.name === "string" && e.name
               ? e.name
               : tableField;
+          // #2891: `displayName` is the new server-side field. Pre-#2891
+          // (and any older mirror) only sends `name`, which was already
+          // the display label — fall back to it so the tree keeps
+          // rendering CamelCase even before the API rolls out the new
+          // field. The `name` we routed by used to be display too, so
+          // the fallback URL still works on those mirrors.
+          const displayField =
+            typeof e.displayName === "string" && e.displayName
+              ? e.displayName
+              : nameField;
           // `connectionId` is the server's group-id slot (named that way
           // because the response shape predates the rename). `null` /
           // missing → legacy unscoped row. (#2412)
@@ -536,6 +554,7 @@ export default function SemanticPage() {
             typeof rawGroup === "string" && rawGroup.length > 0 ? rawGroup : null;
           return {
             name: nameField,
+            displayName: displayField,
             table: tableField || nameField,
             description: typeof e.description === "string" ? e.description : "",
             columnCount: typeof e.columnCount === "number" ? e.columnCount : 0,
@@ -752,16 +771,20 @@ export default function SemanticPage() {
   };
 
   // Sort matches the backend's mergeAdminEntities order so paging is
-  // stable across server/client (#2412).
+  // stable across server/client (#2412). #2891: tree rows expose both
+  // `name` (storage key — used for selection roundtrip + URL) and
+  // `displayName` (rendered label). Sorted by display so the file-tree
+  // alphabet matches what the user reads.
   const treeEntities = entities
     .map((e) => ({
       name: e.name,
+      displayName: e.displayName,
       connectionGroupId: e.connectionGroupId,
       draft: e.draft,
       drift: e.drift,
     }))
     .toSorted((a, b) => {
-      const byName = a.name.localeCompare(b.name);
+      const byName = a.displayName.localeCompare(b.displayName);
       if (byName !== 0) return byName;
       const ag = a.connectionGroupId ?? "";
       const bg = b.connectionGroupId ?? "";

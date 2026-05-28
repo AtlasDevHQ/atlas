@@ -20,6 +20,12 @@ const dbRow = (over: Partial<SemanticEntityRow> & Pick<SemanticEntityRow, "name"
 });
 
 const diskSummary = (over: Partial<EntitySummary> & Pick<EntitySummary, "table">): EntitySummary => ({
+  // #2891: `name` is the file stem (storage key). Default to `table` so
+  // existing fixtures that only specify `table` keep working — that
+  // matches the convention in the rest of the suite where filename ≡
+  // table.
+  name: over.name ?? over.table,
+  displayName: over.displayName ?? over.table,
   table: over.table,
   description: over.description ?? "",
   columnCount: over.columnCount ?? 0,
@@ -58,6 +64,7 @@ measures:
     expect(summary).not.toBeNull();
     expect(summary).toEqual({
       name: "users",
+      displayName: "users",
       table: "users",
       description: "User accounts",
       columnCount: 2,
@@ -73,18 +80,25 @@ measures:
     } satisfies AdminEntitySummary);
   });
 
-  it("uses the entity's `name` field when distinct from `table`", () => {
+  it("`displayName` is the YAML `name:` field, `name` is the row storage key (#2891)", () => {
+    // The headline bug: pre-#2891 the wire `name` was the YAML's `name:`
+    // field, but the detail handler queries by `row.name` (file stem /
+    // table name). Every CamelCase entity 404'd. Post-fix `name` is the
+    // storage key — the value the detail route uses for lookup.
     const row = dbRow({
-      name: "user_accounts",
-      yaml_content: "table: users\nname: user_accounts\n",
+      name: "audit_log",
+      yaml_content: "table: audit_log\nname: AuditLog\n",
     });
-    expect(parseRowToAdminSummary(row)?.name).toBe("user_accounts");
-    expect(parseRowToAdminSummary(row)?.table).toBe("users");
+    const summary = parseRowToAdminSummary(row);
+    expect(summary?.name).toBe("audit_log");
+    expect(summary?.displayName).toBe("AuditLog");
+    expect(summary?.table).toBe("audit_log");
   });
 
-  it("falls back to the row name when the YAML has no `name` field", () => {
+  it("falls back `displayName` to the table when the YAML has no `name` field", () => {
     const row = dbRow({ name: "orders", yaml_content: "table: orders\n" });
     expect(parseRowToAdminSummary(row)?.name).toBe("orders");
+    expect(parseRowToAdminSummary(row)?.displayName).toBe("orders");
   });
 
   it("returns null and skips rows with unparseable YAML", () => {
@@ -189,6 +203,7 @@ describe("mergeAdminEntities", () => {
     // every consumer of the shape, not just `toMatchObject` subsets.
     expect(result.entities[0]).toEqual({
       name: "users",
+      displayName: "users",
       table: "users",
       description: "From DB",
       columnCount: 0,
@@ -225,10 +240,12 @@ describe("mergeAdminEntities", () => {
     expect(result.entities[0].description).toBe("From DB draft");
   });
 
-  it("dedup key is summary `name`, not DB row `name` — divergent names produce two entries", () => {
-    // A DB row with display name "user_accounts" over `table: users` and a
-    // disk entity with `table: users` are genuinely different things and
-    // should both appear. Collapsing them would hide one from the file tree.
+  it("dedup keys on the storage `name` — divergent storage keys produce two entries", () => {
+    // A DB row stored as `user_accounts` (with `table: users`) and a
+    // disk entity stored as `users.yml` are genuinely different things
+    // and should both appear. Collapsing them would hide one from the
+    // file tree. #2891 codified that `summary.name` is the storage key,
+    // so this also pins the dedup semantic to it explicitly.
     const result = mergeAdminEntities({
       dbRows: [
         dbRow({

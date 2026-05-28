@@ -72,6 +72,23 @@ dimensions:
 `,
   );
 
+  // #2891 fixture — YAML's `name:` ("AuditLog") deliberately differs
+  // from the file stem ("audit_log") so list→detail roundtrip tests
+  // exercise the storage-key path. Pre-fix this was the production
+  // failure mode reported on app.useatlas.dev: clicking the entity
+  // hit `/api/v1/admin/semantic/entities/AuditLog` and 404'd because
+  // the DB row / file stem stored `audit_log`.
+  fs.writeFileSync(
+    path.join(tmpRoot, "entities", "audit_log.yml"),
+    `name: AuditLog
+table: audit_log
+description: Audit trail rows
+dimensions:
+  id:
+    type: integer
+`,
+  );
+
   fs.writeFileSync(
     path.join(tmpRoot, "metrics", "total_companies.yml"),
     `name: total_companies
@@ -756,8 +773,10 @@ describe("GET /api/v1/admin/overview", () => {
     // an org context the helper falls through to runtime `default` (which
     // exists in the test mock), so we still see 1.
     expect(body.connections).toBe(1);
-    // 2 disk entities (companies + warehouse/orders) via `listAdminEntities`.
-    expect(body.entities).toBe(2);
+    // 3 disk entities (companies + warehouse/orders + audit_log) via
+    // `listAdminEntities`. `audit_log` is the #2891 fixture whose YAML
+    // `name:` deliberately differs from its file stem.
+    expect(body.entities).toBe(3);
     expect(body.plugins).toBe(1);
     // Deployment-scaffold tiles (metrics, glossaryTerms, pluginHealth)
     // moved to /api/v1/platform/overview per #2489 — assert they're gone
@@ -879,7 +898,8 @@ describe("GET /api/v1/admin/semantic/entities", () => {
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { entities: Array<Record<string, unknown>> };
-    expect(body.entities.length).toBe(2);
+    // Count covers all three fixtures (companies, orders, audit_log).
+    expect(body.entities.length).toBe(3);
 
     const companies = body.entities.find((e) => e.table === "companies");
     expect(companies).toBeDefined();
@@ -892,6 +912,15 @@ describe("GET /api/v1/admin/semantic/entities", () => {
     expect(orders).toBeDefined();
     expect(orders!.source).toBe("warehouse");
     expect(orders!.connection).toBe("warehouse");
+
+    // #2891: list response must carry both the storage `name` (file
+    // stem) and the YAML's `displayName`. The frontend routes URLs by
+    // `name` (so detail lookup matches the DB / disk key), but
+    // renders the file tree off `displayName`.
+    const auditLog = body.entities.find((e) => e.table === "audit_log");
+    expect(auditLog).toBeDefined();
+    expect(auditLog!.name).toBe("audit_log");
+    expect(auditLog!.displayName).toBe("AuditLog");
   });
 });
 
@@ -1232,6 +1261,29 @@ describe("GET /api/v1/admin/semantic/entities/:name", () => {
 
     const body = (await res.json()) as { entity: Record<string, unknown> };
     expect(body.entity.table).toBe("orders");
+  });
+
+  // #2891: every storage `name` returned by the list endpoint must
+  // resolve to a 200 on the detail endpoint. Pre-fix the list was
+  // returning the YAML's display `name:` while the detail handler keyed
+  // on the file stem / DB row `name`, so the click-to-load path 404'd
+  // for any entity whose YAML name differed from its filename. Iterates
+  // every row instead of pinning a single fixture so a future
+  // entity that drifts on display vs. storage trips this immediately.
+  it("every name from the list endpoint resolves on the detail endpoint (#2891)", async () => {
+    const listRes = await app.fetch(adminRequest("/api/v1/admin/semantic/entities"));
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as { entities: Array<Record<string, unknown>> };
+    expect(listBody.entities.length).toBeGreaterThan(0);
+
+    for (const entry of listBody.entities) {
+      const name = entry.name;
+      expect(typeof name).toBe("string");
+      const detailRes = await app.fetch(
+        adminRequest(`/api/v1/admin/semantic/entities/${encodeURIComponent(String(name))}`),
+      );
+      expect(detailRes.status).toBe(200);
+    }
   });
 });
 
@@ -1714,9 +1766,9 @@ describe("GET /api/v1/admin/semantic/stats", () => {
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as Record<string, unknown>;
-    // 2 entities: companies (3 cols) + orders (2 cols) = 5 total columns
-    expect(body.totalEntities).toBe(2);
-    expect(body.totalColumns).toBe(5);
+    // 3 entities: companies (3 cols) + orders (2 cols) + audit_log (1 col) = 6 total columns
+    expect(body.totalEntities).toBe(3);
+    expect(body.totalColumns).toBe(6);
     expect(body.totalJoins).toBe(1);
     expect(body.totalMeasures).toBe(1);
     expect(body.coverageGaps).toBeDefined();

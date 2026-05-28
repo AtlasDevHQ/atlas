@@ -8,6 +8,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { resolveOnboardingEmailsEnabled } from "@atlas/api/lib/env-profile";
 import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, OnboardingEmailStatus } from "@useatlas/types";
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
@@ -18,9 +19,20 @@ import { normalizeError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("onboarding-email");
 
-/** Check whether the onboarding email feature is enabled. */
+/**
+ * Check whether the onboarding email feature is enabled.
+ *
+ * Per-env default lives in {@link import("@atlas/api/lib/env-profile").EnvProfile}
+ * — `production` defaults to enabled, `staging`/`development` default to
+ * disabled. The `ATLAS_ONBOARDING_EMAILS_ENABLED` env var still
+ * overrides the profile default when set.
+ *
+ * The `hasInternalDB()` gate is independent of the env-var/profile
+ * decision — onboarding scheduler tasks need the internal DB to persist
+ * dispatch state, so even an enabled profile is a no-op without it.
+ */
 export function isOnboardingEmailEnabled(): boolean {
-  return process.env.ATLAS_ONBOARDING_EMAILS_ENABLED === "true" && hasInternalDB();
+  return resolveOnboardingEmailsEnabled() && hasInternalDB();
 }
 
 // ── Branding resolution ─────────────────────────────────────────────

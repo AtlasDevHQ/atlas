@@ -46,9 +46,31 @@ describe("isOnboardingEmailEnabled", () => {
     mockHasDB = true;
   });
 
-  it("returns false when env var not set", () => {
+  it("returns false in staging/dev profile when env var not set", () => {
+    // Migrated to env-profile (env-profile.ts): production defaults to
+    // enabled, staging/dev default to disabled. The "env var unset → false"
+    // semantic is now profile-driven; assert against the staging profile.
     delete process.env.ATLAS_ONBOARDING_EMAILS_ENABLED;
-    expect(isOnboardingEmailEnabled()).toBe(false);
+    const origDeployEnv = process.env.ATLAS_DEPLOY_ENV;
+    process.env.ATLAS_DEPLOY_ENV = "staging";
+    try {
+      expect(isOnboardingEmailEnabled()).toBe(false);
+    } finally {
+      if (origDeployEnv === undefined) delete process.env.ATLAS_DEPLOY_ENV;
+      else process.env.ATLAS_DEPLOY_ENV = origDeployEnv;
+    }
+  });
+
+  it("returns false when env var explicitly disabled even in production profile", () => {
+    process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "false";
+    const origDeployEnv = process.env.ATLAS_DEPLOY_ENV;
+    process.env.ATLAS_DEPLOY_ENV = "production";
+    try {
+      expect(isOnboardingEmailEnabled()).toBe(false);
+    } finally {
+      if (origDeployEnv === undefined) delete process.env.ATLAS_DEPLOY_ENV;
+      else process.env.ATLAS_DEPLOY_ENV = origDeployEnv;
+    }
   });
 
   it("returns false when no internal DB", () => {
@@ -72,8 +94,13 @@ describe("sendOnboardingEmail", () => {
     mockDeliveryResult = { success: true, provider: "log" };
   });
 
-  it("skips when feature disabled", async () => {
-    delete process.env.ATLAS_ONBOARDING_EMAILS_ENABLED;
+  it("skips when feature disabled (env var explicit false beats production profile default)", async () => {
+    // Pre-migration: deleting the env var was enough — undefined meant
+    // "feature off". Post-migration the env-profile production default
+    // says "on", so we must explicitly set the env var to false to
+    // disable. The check we want here is the disable path, not the
+    // unset-default behavior (covered in isOnboardingEmailEnabled tests).
+    process.env.ATLAS_ONBOARDING_EMAILS_ENABLED = "false";
     const sent = await sendOnboardingEmail("u1", "test@example.com", "org1", "welcome", "signup_completed");
     expect(sent).toBe(false);
   });

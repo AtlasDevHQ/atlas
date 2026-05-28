@@ -33,6 +33,7 @@ import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { resolveRequireEmailVerification as envProfileResolveRequireEmailVerification } from "@atlas/api/lib/env-profile";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
@@ -741,11 +742,16 @@ export function resolveSessionCookieCacheMaxAge(env: NodeJS.ProcessEnv): number 
  * Self-hosted single-tenant deployments that run without an email
  * provider can opt out with `ATLAS_REQUIRE_EMAIL_VERIFICATION=false`.
  * Accepts `false`, `0`, `no`, `off` (case-insensitive) as opt-out.
+ *
+ * Per-env defaults live in {@link import("@atlas/api/lib/env-profile").EnvProfile}
+ * — `production` defaults to `true`, `staging`/`development` default to
+ * `false`. The env var still overrides the profile default when set.
  */
 export function resolveRequireEmailVerification(env: NodeJS.ProcessEnv): boolean {
-  const raw = env.ATLAS_REQUIRE_EMAIL_VERIFICATION?.trim().toLowerCase();
-  if (raw === undefined) return true;
-  return !["false", "0", "no", "off"].includes(raw);
+  // Delegate to the env-profile resolver — same env-var-override
+  // semantics, plus a per-env default that lets us drop the explicit
+  // `ATLAS_REQUIRE_EMAIL_VERIFICATION=false` on staging/dev.
+  return envProfileResolveRequireEmailVerification(env);
 }
 
 /**

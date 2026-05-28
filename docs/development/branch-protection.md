@@ -1,3 +1,7 @@
+# Branch Protection
+
+Two branches carry protection rules — `main` (the integration branch) and `prod` (the Railway-tracking artifact advanced by `/release`).
+
 # Branch Protection (`main`)
 
 ## What's protected
@@ -110,3 +114,55 @@ Remove a context when:
 - The check has been a source of unfixable flakes for so long that requiring it does more harm than good (in which case fix the flake first; removal is a last resort)
 
 PRs that change the required-checks list should reference the incident or motivation in the description.
+
+# Branch Protection (`prod`)
+
+The `prod` branch is the Railway-tracking artifact: each `/release` fast-forwards it to the tagged SHA via `git push origin <tag-sha>^{}:prod --force-with-lease`, and the 5 prod services (`api`, `api-eu`, `api-apac`, `web`, `www`) deploy from it. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none) and [release-process.md § Mental model](./release-process.md#mental-model).
+
+## What's protected
+
+| Setting | Value |
+| --- | --- |
+| Required status checks | none |
+| Required pull request reviews | none |
+| Enforce on admins | `false` |
+| Force pushes | **allowed** (required so `/release` can fast-forward with `--force-with-lease`) |
+| Branch deletion | blocked |
+
+The protection here is intentionally minimal — `prod` is not a code review surface, and the integrity property we care about is "advanced only by `/release`", which is enforced by convention + the `--force-with-lease` semantic rather than by GitHub.
+
+## Why force pushes are allowed
+
+`/release` fast-forwards `prod` from any SHA (the latest tag), which is a force-push from GitHub's perspective even though it advances the branch monotonically in practice. `--force-with-lease` (never bare `--force`) provides concurrency safety: a second `/release` running against an out-of-date local view of `origin/prod` is refused.
+
+## Why no required checks
+
+The `/ci` gate has already passed on the SHA being released — `/release` refuses to tag if `/ci` fails. Layering a GitHub-side required-check on `prod` would duplicate that gate and slow tag-pushes for no risk reduction. If "Wait for CI" is enabled on the Railway side (the optional belt-and-braces in `release-process.md`), CI runs on `prod` get the same treatment as `main` runs.
+
+## Why no required reviews
+
+Same reasoning as `main` — solo developer, parallel-Claude workflow. Revisit if the team grows.
+
+## What's NOT enforced by GitHub
+
+- **"No PRs target `prod`"** — there is no GitHub setting that disallows PR creation against a specific branch. The convention is: only `/release` ever pushes to `prod`. If someone opens a PR targeting `prod` by mistake, close it; don't merge.
+- **"Only `/release` advances `prod`"** — also a convention. The skill is the canonical path; manual `git push origin <sha>^{}:prod --force-with-lease` is permitted for rollbacks (documented in `.claude/commands/release.md`).
+
+If the team grows beyond solo, both can be tightened via `restrictions.users` (push allowlist) and a CODEOWNERS rule that fails PRs targeting `prod`.
+
+## Reproducing the configuration
+
+```bash
+gh api PUT repos/AtlasDevHQ/atlas/branches/prod/protection -F enforce_admins=false \
+  -F required_pull_request_reviews=null \
+  -F restrictions=null \
+  -F allow_force_pushes=true \
+  -F allow_deletions=false \
+  -F required_status_checks=null
+```
+
+The branch must exist before protection can be applied. Either let `/release` create it on first run and apply protection immediately after, or create an empty `prod` branch preemptively:
+
+```bash
+git push origin main:prod  # initial fast-forward; subsequent /release calls force-with-lease
+```

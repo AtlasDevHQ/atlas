@@ -64,7 +64,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 15. As the maintainer, I want a `/staging` visual marker on the web app, so that I never confuse a staging tab with a prod tab during dogfood.
 16. As the maintainer, I want `atlas ops smoke-crm` to be runnable against the staging URLs out of the box, so that the post-deploy gate is one command not five.
 17. As the maintainer, I want staging to be a 4th region keyed `staging` and excluded from the residency router, so that no prod traffic gets misrouted to staging and staging never claims to be a residency target.
-18. As the maintainer, I want OAuth callback URLs for Slack/Linear/GitHub/Google staging apps to point to `staging.useatlas.dev`, so that real OAuth flows can be exercised against staging end-to-end.
+18. As the maintainer, I want OAuth callback URLs for Slack/Linear/GitHub/Google staging apps to point to `staging.api.useatlas.dev`, so that real OAuth flows can be exercised against staging end-to-end.
 19. As the maintainer, I want a Railway-level kill switch for the staging deploy trigger, so that if staging itself is broken I can disable it without blocking prod releases.
 20. As the maintainer, I want `bun run atlas -- ops wipe --confirm` to work against the staging DB, so that I can reset state when staging accumulates drift.
 
@@ -108,7 +108,7 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
 ### Railway topology
 
 - Same Railway project (`satisfied-creation`), new environment `staging`.
-- Six new resources:
+- Four new resources in the staging env:
   - `api-staging` (Hono API service)
   - `web-staging` (Next.js)
   - `www-staging` (Caddy static)
@@ -116,15 +116,17 @@ The maintainer's daily loop changes by exactly two steps: (1) wait ~5 min for st
   - No staging docs service (docs deploys direct from `main`)
   - No staging sandbox sidecar — staging shares the prod Vercel Sandbox per existing `deploy/api/atlas.config.ts` priority (Vercel Sandbox is per-request Firecracker microVM with `networkPolicy: "deny-all"`, so cross-env contamination is structurally impossible)
 - CNAMEs:
-  - `staging.useatlas.dev` → `api-staging` (separate from `api.useatlas.dev`)
+  - `staging.api.useatlas.dev` → `api-staging` (peer-symmetric with `api.useatlas.dev` / `api-eu.useatlas.dev` / `api-apac.useatlas.dev`)
   - `app-staging.useatlas.dev` → `web-staging`
   - `www-staging.useatlas.dev` → `www-staging`
-- Deploy triggers:
-  - `api-staging` / `web-staging` / `www-staging` → watch `main` branch
-  - `api` / `api-eu` / `api-apac` / `web` / `www` → watch tag pattern `v*.*.*`
+- Deploy triggers (path 2 — prod-branch tracker, see [release-process.md § Mental model](../development/release-process.md#mental-model)):
+  - `api-staging` / `web-staging` / `www-staging` → watch `main` branch (autodeploy on merge)
+  - `api` / `api-eu` / `api-apac` / `web` / `www` → watch `prod` branch (advanced by `/release` via `git push origin <tag-sha>^{}:prod --force-with-lease`)
   - `docs` → continues watching `main` (direct-to-prod; static export + Caddy, no runtime surface)
 
-  Prod `www` joins the tag-pattern group because `apps/www` IS gated per Q2 — leaving prod www on `main` push would let CSP/embed changes like #2856/#2857 ship without ever transiting staging, contradicting the design.
+  Prod `www` joins the `prod`-branch group because `apps/www` IS gated per Q2 — leaving prod www on `main` push would let CSP/embed changes like #2856/#2857 ship without ever transiting staging, contradicting the design.
+
+  This shape was originally drafted as "Railway tag-pattern `v*.*.*`". Railway has no native tag trigger and the Railway CLI cannot deploy an arbitrary SHA on a GitHub-linked service (`railway up` ships a local tarball, severing the GitHub Deployments link). The `prod`-branch tracker is the simplest composable primitive that preserves Railway's branch-driven autodeploy semantics. The `prod` branch is a Railway-tracking artifact, not an integration branch — no PRs target it, only `/release` advances it. Branch protection enforces this. See [ADR-0008 § Release branches: none](../adr/0008-versioning-and-release-tags.md#release-branches-none).
 
 ### Configuration file
 
@@ -136,7 +138,7 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 
 - `STRIPE_SECRET_KEY` = `sk_test_...` in staging
 - `STRIPE_WEBHOOK_SECRET` = `whsec_test_...` in staging (separate webhook endpoint registered)
-- `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` = staging Slack app credentials. New Slack app `atlas-staging` cloned from prod manifest; callback URL `https://staging.useatlas.dev/api/v1/integrations/slack/callback`.
+- `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` = staging Slack app credentials. New Slack app `atlas-staging` cloned from prod manifest; callback URL `https://staging.api.useatlas.dev/api/v1/integrations/slack/callback`.
 - `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` = staging Linear app
 - `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY` = staging GitHub App (separate App, separate webhook URL)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` = staging OAuth client in same GCP project as prod, separate client
@@ -151,7 +153,7 @@ Per-env Railway env vars for every secret in `.env.example`. No inheritance betw
 ### Smoke-test harness
 
 - New `.github/workflows/staging-smoke.yml`. Triggers on Railway staging-deploy success webhook. Runs:
-  - `curl -fsS https://staging.useatlas.dev/api/v1/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
+  - `curl -fsS https://staging.api.useatlas.dev/api/v1/health | jq -e '.region == "staging"'` — verifies the deploy actually landed and the region discriminator is set. `/health` is public, no auth; the existing route already surfaces `region` from `getApiRegion()`, so no API code change is needed for this check.
   - `bun run atlas -- ops smoke-crm --personas ./scripts/staging-smoke-personas.yml` with `TWENTY_API_KEY=$STAGING_TWENTY_API_KEY`, `TWENTY_BASE_URL=$STAGING_TWENTY_BASE_URL`, `DATABASE_URL=$STAGING_DATABASE_URL` env vars. The CLI talks directly to Twenty + Postgres — no `--base-url` against the staging API host. A small personas fixture lives in `scripts/staging-smoke-personas.yml` and is committed to the repo.
 - Posts pass/fail to maintainer's Slack via the existing chat plugin (re-uses the `#sandbox-atlas` channel pattern from the proactive dogfood loop).
 

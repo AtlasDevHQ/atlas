@@ -37,13 +37,15 @@ Standard PR flow — `/ci` to pass gates, `/pr` to open the PR, review, merge. T
 ### 2. Soak on staging
 
 Staging URLs:
-- API: `https://staging.api.useatlas.dev` (health: `https://staging.api.useatlas.dev/api/v1/health`)
-- Web: `https://app-staging.useatlas.dev`
-- www: `https://www-staging.useatlas.dev`
+- API: `https://api.staging.useatlas.dev` (health: `https://api.staging.useatlas.dev/api/health`)
+- Web: `https://app.staging.useatlas.dev`
+- www: `https://www.staging.useatlas.dev`
+
+All three share the `.staging.useatlas.dev` parent so cross-subdomain session cookies stay isolated from prod's `.useatlas.dev` namespace (issue caught in Codex review of #2933).
 
 What to check before tagging:
 - All 3 staging Railway services (`api-staging`, `web-staging`, `www-staging`) are green.
-- `https://staging.api.useatlas.dev/api/v1/health` returns OK with `region: "staging"`.
+- `https://api.staging.useatlas.dev/api/health` returns OK with `region: "staging"`.
 - Any user-visible changes shipped since the last tag work as expected. Run the change yourself; don't infer from a green CI.
 - For risky changes (new migration, new agent tool, new admin surface), monitor staging logs for ~30 min before tagging.
 

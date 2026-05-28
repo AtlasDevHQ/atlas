@@ -102,7 +102,14 @@ export type AdminEntitySummary =
   | (AdminEntitySummaryShared & {
       readonly sourceKind: "disk";
       readonly status: "published";
-      readonly connectionId: null;
+      /**
+       * `null` for the default `entities/` dir. Per-source disk dirs
+       * (`semantic/<source>/entities/`) lift their source name into
+       * `connectionId` (#2891) — same-stem files under different sources
+       * would otherwise collide on the `(name, connectionId)` dedup key.
+       * Read-only for the file tree's env badge.
+       */
+      readonly connectionId: string | null;
       readonly updatedAt: null;
     });
 
@@ -255,10 +262,20 @@ export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySumma
 }
 
 function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
+  // #2891: disk lookups go through `findEntityFile(root, name)` which
+  // expects the file stem — so `name` must be the file stem, not the
+  // table. `displayName` keeps the existing UX label.
+  //
+  // Per-source disk dirs (`semantic/<source>/entities/<stem>.yml`) can
+  // hold the same file stem under different sources — the merge dedup
+  // is `(name, connectionId)`, so leaving `connectionId: null` for
+  // every disk row would collapse them. Treating `source` as a virtual
+  // group keeps both rows in the list and surfaces the source label as
+  // the file-tree env badge (which is what the admin actually wants to
+  // see for multi-source self-hosted layouts). "default" stays null so
+  // single-source orgs keep the unchanged badge-free rendering.
+  const groupAsSource = e.source !== "default" ? e.source : null;
   return {
-    // #2891: disk lookups go through `findEntityFile(root, name)` which
-    // expects the file stem — so `name` must be the file stem, not the
-    // table. `displayName` keeps the existing UX label.
     name: e.name,
     displayName: e.displayName,
     table: e.table,
@@ -271,7 +288,7 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
     type: e.type,
     status: "published",
     sourceKind: "disk",
-    connectionId: null,
+    connectionId: groupAsSource,
     updatedAt: null,
   };
 }

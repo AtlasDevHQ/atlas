@@ -391,6 +391,37 @@ describe("mergeAdminEntities", () => {
     expect(result.entities[0].description).toBe("From DB null");
   });
 
+  it("preserves both disk rows when the same stem lives in two source dirs (#2891)", () => {
+    // Pre-#2891 the disk dedup was `(table, null)` — different tables
+    // surfaced both rows. Post-#2891 the storage `name` is the file
+    // stem, so same-stem files would collide if `connectionId` weren't
+    // populated. The disk projector lifts `source` into `connectionId`
+    // (when not "default") so per-source variants stay distinct.
+    const result = mergeAdminEntities({
+      dbRows: [],
+      diskEntities: [
+        diskSummary({ name: "orders", table: "shopify_orders", source: "shopify" }),
+        diskSummary({ name: "orders", table: "stripe_orders", source: "stripe" }),
+      ],
+      diskWarnings: [],
+    });
+
+    expect(result.entities).toHaveLength(2);
+    const byGroup = new Map(result.entities.map((e) => [e.connectionId, e]));
+    expect(byGroup.get("shopify")?.table).toBe("shopify_orders");
+    expect(byGroup.get("stripe")?.table).toBe("stripe_orders");
+  });
+
+  it("default-source disk rows keep `connectionId: null` (badge-free rendering)", () => {
+    const result = mergeAdminEntities({
+      dbRows: [],
+      diskEntities: [diskSummary({ name: "users", table: "users", source: "default" })],
+      diskWarnings: [],
+    });
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0].connectionId).toBeNull();
+  });
+
   it("sort is deterministic — same name across groups orders by name then group", () => {
     // Two `users` (g_prod_eu, g_prod_us) and one `orders` (g_prod_us)
     // — name asc, then group asc. Without a stable secondary key the

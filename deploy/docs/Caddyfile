@@ -102,8 +102,13 @@
 		file_server
 	}
 
+	# Per-request access logs were drowning real signal — every Googlebot
+	# crawl hit a structured INFO line with full headers. ERROR-level keeps
+	# Caddy startup / runtime errors visible; bump to INFO if you need to
+	# debug a specific request path.
 	log {
 		output stdout
 		format console
+		level ERROR
 	}
 }

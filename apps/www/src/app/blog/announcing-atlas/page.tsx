@@ -8,11 +8,11 @@ import { StickyNav } from "../../../components/sticky-nav";
 export const metadata: Metadata = {
   title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
   description:
-    "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data. Self-hosted or on Atlas Cloud.",
+    "Atlas is in open beta. Connect your database, auto-generate a semantic layer, and let an AI agent query your data. Self-hosted or on Atlas Cloud.",
   openGraph: {
     title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
     description:
-      "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data.",
+      "Atlas is in open beta. Connect your database, auto-generate a semantic layer, and let an AI agent query your data.",
     url: "https://www.useatlas.dev/blog/announcing-atlas",
     siteName: "Atlas",
     type: "article",
@@ -185,7 +185,7 @@ $ cd my-app && bun run dev
         </Paragraph>
 
         {/* ── What ships today ── */}
-        <SectionHeading>What ships in 1.0</SectionHeading>
+        <SectionHeading>What ships today</SectionHeading>
         <ul className="mb-6 list-none space-y-1 text-[15px]">
           <FeatureBullet title="7 databases">
             PostgreSQL, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and

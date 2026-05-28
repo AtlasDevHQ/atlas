@@ -63,7 +63,7 @@ const TIERS: Tier[] = [
     monthlyPrice: null,
     tagline: "Your infra. Your data.",
     cta: "Deploy now",
-    ctaHref: "https://docs.useatlas.dev/getting-started",
+    ctaHref: "https://docs.useatlas.dev/getting-started/quick-start",
     ctaSecondary: "Free, AGPL-3.0",
     features: [
       "BYOK — unlimited queries",

@@ -89,7 +89,7 @@ function SelfHostCard() {
       </ul>
 
       <a
-        href="https://docs.useatlas.dev/getting-started"
+        href="https://docs.useatlas.dev/getting-started/quick-start"
         className="mt-auto inline-flex items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-3 text-[13.5px] font-medium text-zinc-50 transition-colors hover:border-white/30"
       >
         read the docs →

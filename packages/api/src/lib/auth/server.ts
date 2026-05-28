@@ -12,7 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
-import { bearer, admin, organization, jwt } from "better-auth/plugins";
+import { bearer, admin, organization, jwt, customSession } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
 // @better-auth/* plugins must match the better-auth core version line.
@@ -44,6 +44,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
+import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
@@ -1792,7 +1793,57 @@ export function buildPlugins() {
     }
   }
 
+  // customSession — surface the org-merged effective role on the session
+  // for both client (gear icon, sidebar) and server (validateManaged
+  // reads `user.effectiveRole` straight off the session payload, avoiding
+  // a second member-table SELECT per request).
+  //
+  // The native `user.role` (admin plugin, system-wide) is left untouched
+  // so Better Auth's own admin endpoints still gate on system role.
+  //
+  // Per Better Auth docs, customSession bypasses cookie-cache: this
+  // callback runs on every `getSession`. The single member-table SELECT
+  // here replaces the one validateManaged used to run — net DB load is
+  // unchanged.
+  //
+  // Inside the same `any[]` plugin array as every other plugin above —
+  // adding it here means we don't need any new casts at the call site.
+  plugins.push(customSession(buildCustomSessionPayload));
+
   return plugins;
+}
+
+/**
+ * customSession callback — see the {@link buildPlugins} push site for
+ * the architectural rationale (why `effectiveRole` and not `role`, why
+ * the cookie-cache bypass is fine).
+ *
+ * Exported for the tiny unit test that pins the role-merge contract; not
+ * a public API.
+ *
+ * @internal
+ */
+export async function buildCustomSessionPayload({
+  user,
+  session,
+}: {
+  user: User & Record<string, unknown>;
+  session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>;
+}) {
+  const rawRole = user.role;
+  const userRole =
+    typeof rawRole === "string"
+      ? (rawRole.split(",")[0].trim() as Parameters<typeof resolveEffectiveRole>[0])
+      : undefined;
+  const activeOrganizationId =
+    typeof session.activeOrganizationId === "string"
+      ? session.activeOrganizationId
+      : undefined;
+  const effectiveRole = await resolveEffectiveRole(userRole, user.id, activeOrganizationId);
+  return {
+    user: { ...user, effectiveRole: effectiveRole ?? null },
+    session,
+  };
 }
 
 /**

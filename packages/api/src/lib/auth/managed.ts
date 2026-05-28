@@ -9,7 +9,6 @@
  */
 
 import type { AuthResult } from "@atlas/api/lib/auth/types";
-import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
@@ -36,12 +35,17 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
     return { authenticated: false, mode: "managed", status: 500, error: "Session data is incomplete" };
   }
 
-  // Extract role from session user (set by Better Auth admin plugin, stored in the `role` column).
-  // Falls back to default (member) when not present — see permissions.ts.
+  // Extract the merged effective role from the session user. Set by the
+  // `customSession` plugin in `server.ts`, which already runs
+  // `resolveEffectiveRole(user.role, member.role)` on every getSession.
+  // Reading the stamped field here avoids a second identical member-table
+  // SELECT per request. Falls back to the raw `role` (system-wide,
+  // admin plugin) for unit tests that mock auth.api.getSession without
+  // routing through the customSession callback.
   const sessionUser = session.user as Record<string, unknown>;
-  // Better Auth can store multiple roles as comma-separated strings; Atlas uses only the first.
-  const rawRoleField = sessionUser?.role;
-  const rawRole = typeof rawRoleField === "string" ? rawRoleField.split(",")[0].trim() : rawRoleField;
+  const stampedRole = sessionUser?.effectiveRole ?? sessionUser?.role;
+  // Better Auth can store roles as comma-separated strings; Atlas uses only the first.
+  const rawRole = typeof stampedRole === "string" ? stampedRole.split(",")[0].trim() : stampedRole;
   let role: ReturnType<typeof parseRole>;
   if (typeof rawRole === "string") {
     role = parseRole(rawRole);
@@ -93,12 +97,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // via POST /organization/set-active.
   const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
-  // Both queries hit the internal DB but are independent — parallelize so
-  // every authenticated request doesn't pay two sequential round-trips.
-  const [effectiveRole, passkeyCount] = await Promise.all([
-    resolveEffectiveRole(role, userId, activeOrganizationId),
-    resolvePasskeyCount(userId),
-  ]);
+  const passkeyCount = await resolvePasskeyCount(userId);
 
   // Computed fields land AFTER the spread so a session-user field can't
   // shadow our authoritative claims (asserted in managed.test.ts).
@@ -110,58 +109,8 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   return {
     authenticated: true,
     mode: "managed",
-    user: createAtlasUser(userId, "managed", email || userId, { role: effectiveRole, activeOrganizationId, claims }),
+    user: createAtlasUser(userId, "managed", email || userId, { role, activeOrganizationId, claims }),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Org member role resolution
-// ---------------------------------------------------------------------------
-
-/** Role precedence — higher number wins. */
-const ROLE_LEVEL: Record<string, number> = {
-  member: 0,
-  admin: 1,
-  owner: 2,
-  platform_admin: 3,
-};
-
-/**
- * Resolve the effective role by comparing the user-level role (from
- * Better Auth's admin plugin, stored in the `user.role` column) with the
- * org-level role (from the `member` table). Returns the higher of the two.
- *
- * This is necessary because Better Auth stores org membership roles
- * separately from user-level roles, so an org owner whose user-level role
- * is "member" would otherwise be locked out of the admin console.
- */
-async function resolveEffectiveRole(
-  userRole: AtlasRole | undefined,
-  userId: string,
-  activeOrganizationId: string | undefined,
-): Promise<AtlasRole | undefined> {
-  if (!activeOrganizationId || !hasInternalDB()) return userRole;
-
-  try {
-    const rows = await internalQuery<{ role: string }>(
-      `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-      [userId, activeOrganizationId],
-    );
-    if (rows.length === 0) return userRole;
-
-    const orgRole = parseRole(rows[0].role);
-    if (!orgRole) return userRole;
-
-    const userLevel = ROLE_LEVEL[userRole ?? "member"] ?? 0;
-    const orgLevel = ROLE_LEVEL[orgRole] ?? 0;
-    return orgLevel > userLevel ? orgRole : (userRole ?? "member");
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },
-      "Failed to look up org member role — falling back to user-level role",
-    );
-    return userRole;
-  }
 }
 
 // `::int` cast keeps PG's bigint COUNT(*) as a JS number — pg surfaces

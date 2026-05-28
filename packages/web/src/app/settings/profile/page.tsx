@@ -14,15 +14,19 @@ import { IdentitySection } from "@/ui/components/settings/identity-section";
 import { InterfaceSection } from "@/ui/components/settings/interface-section";
 import { PasswordSection } from "@/ui/components/settings/password-section";
 import { SessionsSection } from "@/ui/components/settings/sessions-section";
+import { useIsAdmin } from "@/ui/hooks/use-platform-admin-guard";
 
 interface SessionUser {
   email: string;
-  role?: string;
 }
 
 export default function ProfilePage() {
   const session = authClient.useSession();
   const user = (session.data?.user ?? null) as SessionUser | null;
+  // Reads the merged effective role from customSession; an org admin
+  // whose user.role defaulted to "user" still sees the admin landing
+  // option in InterfaceSection.
+  const isAdmin = useIsAdmin();
 
   if (!user) {
     return (
@@ -46,13 +50,7 @@ export default function ProfilePage() {
       </header>
 
       <div className="space-y-10">
-        <InterfaceSection
-          isAdmin={
-            user.role === "admin" ||
-            user.role === "owner" ||
-            user.role === "platform_admin"
-          }
-        />
+        <InterfaceSection isAdmin={isAdmin} />
 
         <IdentitySection />
 

@@ -78,6 +78,14 @@ export interface AtlasAuthClient {
       user?: {
         email?: string;
         role?: string;
+        /**
+         * Org-merged effective role — `max(user.role, active-org member.role)`.
+         * Stamped by the server's `customSession` plugin so an org admin
+         * whose `user.role` defaulted to "user" still sees admin chrome.
+         * Optional for back-compat with older sessions; consumers
+         * (`useUserRole`) fall back to `role`.
+         */
+        effectiveRole?: string | null;
         /** Display name — present at runtime, not always populated. */
         name?: string;
         /** True when TOTP is enrolled — surfaced by the two-factor plugin. */

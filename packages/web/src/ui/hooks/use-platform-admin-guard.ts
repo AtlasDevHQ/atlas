@@ -2,22 +2,49 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { ADMIN_ROLES, type AdminRole } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 
+const ADMIN_ROLES_SET: ReadonlySet<string> = new Set<AdminRole>(ADMIN_ROLES);
+
 /**
- * Returns the user's role from the Better Auth session.
- * Used by the sidebar for item-level visibility and by page guards.
+ * Returns the user's effective role for client-side admin gating.
  *
- * Better Auth's public session type doesn't include `role` on the user object
- * (it's added by the admin/organization plugins at runtime), so we cast through
- * `Record<string, unknown>` to access it. This is the single source of truth
- * for role extraction — all call sites should use this hook rather than
- * duplicating the cast.
+ * Better Auth keeps two role surfaces separate by design: `user.role`
+ * (admin plugin, system-wide — `platform_admin` / `admin` / `user`) and
+ * `member.role` (organization plugin, per-org — `owner` / `admin` /
+ * `member`). The server's `customSession` callback merges them and
+ * exposes the max as `user.effectiveRole` — read that here so an org
+ * admin whose `user.role` defaulted to "user" (the standard signup →
+ * accept-invite flow) still sees admin chrome.
+ *
+ * Falls back to `user.role` for older sessions issued before
+ * customSession landed; both fields disappear gracefully when missing.
+ * This is the single source of truth for role extraction — all call
+ * sites should use this hook.
  */
 export function useUserRole(): string | undefined {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
-  return session.data?.user?.role;
+  const user = session.data?.user;
+  return user?.effectiveRole ?? user?.role;
+}
+
+/**
+ * Boolean form of {@link useUserRole} — `true` when the caller has any
+ * admin-grade role (`admin` / `owner` / `platform_admin`). Use this
+ * everywhere admin chrome is gated; the underlying source-of-truth set
+ * is `ADMIN_ROLES` from `@useatlas/types`, so adding a new admin tier
+ * lights up every consumer at once.
+ *
+ * Direct `user.role === "admin" || ...` chains miss the org-merged role
+ * and silently underreport for org admins whose `user.role` is the
+ * signup-default "user" — see the customSession plugin in
+ * `packages/api/src/lib/auth/server.ts`.
+ */
+export function useIsAdmin(): boolean {
+  const role = useUserRole();
+  return role !== undefined && ADMIN_ROLES_SET.has(role);
 }
 
 /**

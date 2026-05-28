@@ -50,8 +50,10 @@ let detailResult: { entity: Record<string, unknown>; status: string; source: str
 let detailThrow: Error | null = null;
 
 function makeDbSummary(over: Partial<AdminEntitySummary> & Pick<AdminEntitySummary, "table">): AdminEntitySummary {
+  const name = over.name ?? over.table;
   return {
-    name: over.name ?? over.table,
+    name,
+    displayName: over.displayName ?? name,
     table: over.table,
     description: over.description ?? "",
     columnCount: over.columnCount ?? 0,
@@ -68,8 +70,10 @@ function makeDbSummary(over: Partial<AdminEntitySummary> & Pick<AdminEntitySumma
 }
 
 function makeDiskSummary(over: Partial<AdminEntitySummary> & Pick<AdminEntitySummary, "table">): AdminEntitySummary {
+  const name = over.name ?? over.table;
   return {
-    name: over.name ?? over.table,
+    name,
+    displayName: over.displayName ?? name,
     table: over.table,
     description: over.description ?? "",
     columnCount: over.columnCount ?? 0,

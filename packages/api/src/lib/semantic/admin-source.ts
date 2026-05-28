@@ -62,14 +62,24 @@ export type AdminEntityStatus = "published" | "draft";
  * `status === "published"` at the type level — invariants that hold by
  * construction but used to be expressible only in comments.
  *
- * `name` is the display name (the YAML `name:` field if present, otherwise
- * the table). `table` is always the SQL table. Some entities deliberately
- * differ (e.g. a metric `name: mrr` over `table: subscription_events`).
+ * `name` is the storage key — the DB row's `name` column (DB branch) or
+ * the YAML file stem (disk branch). The detail / edit / delete routes
+ * look up by this exact value, so the frontend must roundtrip it through
+ * URLs unchanged. #2891.
+ *
+ * `displayName` is what the file tree renders — the YAML `name:` field
+ * if present, otherwise the `table:` value. Pre-#2891 this was overloaded
+ * onto `name` and 404'd every detail lookup whose YAML name didn't match
+ * the storage key.
+ *
+ * `table` is always the SQL table. Some entities deliberately differ on
+ * `name` / `table` (e.g. a metric `name: mrr` over `table: subscription_events`).
  * Collapsing the two was the conflation bug the frontend shape-normalizer
  * was masking before #2312.
  */
 interface AdminEntitySummaryShared {
   readonly name: string;
+  readonly displayName: string;
   readonly table: string;
   readonly description: string;
   readonly columnCount: number;
@@ -92,7 +102,14 @@ export type AdminEntitySummary =
   | (AdminEntitySummaryShared & {
       readonly sourceKind: "disk";
       readonly status: "published";
-      readonly connectionId: null;
+      /**
+       * `null` for the default `entities/` dir. Per-source disk dirs
+       * (`semantic/<source>/entities/`) lift their source name into
+       * `connectionId` (#2891) — same-stem files under different sources
+       * would otherwise collide on the `(name, connectionId)` dedup key.
+       * Read-only for the file tree's env badge.
+       */
+      readonly connectionId: string | null;
       readonly updatedAt: null;
     });
 
@@ -223,7 +240,12 @@ export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySumma
   const status: AdminEntityStatus = row.status === "draft" ? "draft" : "published";
 
   return {
-    name: nameField ?? parsed.data.table,
+    // #2891: `name` is the storage key (`row.name`) so the URL the
+    // frontend builds from this response roundtrips to a successful
+    // `getEntity(... name)` lookup. `displayName` carries what the file
+    // tree used to render off `name` (YAML `name:` field or table).
+    name: row.name,
+    displayName: nameField ?? parsed.data.table,
     table: parsed.data.table,
     description: typeof data.description === "string" ? data.description : "",
     columnCount: sectionLength(data.dimensions),
@@ -240,8 +262,22 @@ export function parseRowToAdminSummary(row: SemanticEntityRow): AdminEntitySumma
 }
 
 function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
+  // #2891: disk lookups go through `findEntityFile(root, name)` which
+  // expects the file stem — so `name` must be the file stem, not the
+  // table. `displayName` keeps the existing UX label.
+  //
+  // Per-source disk dirs (`semantic/<source>/entities/<stem>.yml`) can
+  // hold the same file stem under different sources — the merge dedup
+  // is `(name, connectionId)`, so leaving `connectionId: null` for
+  // every disk row would collapse them. Treating `source` as a virtual
+  // group keeps both rows in the list and surfaces the source label as
+  // the file-tree env badge (which is what the admin actually wants to
+  // see for multi-source self-hosted layouts). "default" stays null so
+  // single-source orgs keep the unchanged badge-free rendering.
+  const groupAsSource = e.source !== "default" ? e.source : null;
   return {
-    name: e.table,
+    name: e.name,
+    displayName: e.displayName,
     table: e.table,
     description: e.description,
     columnCount: e.columnCount,
@@ -252,7 +288,7 @@ function diskToAdminSummary(e: EntitySummary): AdminEntitySummary {
     type: e.type,
     status: "published",
     sourceKind: "disk",
-    connectionId: null,
+    connectionId: groupAsSource,
     updatedAt: null,
   };
 }

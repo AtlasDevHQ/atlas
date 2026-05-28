@@ -8,12 +8,17 @@ import { describe, expect, test } from "bun:test";
 import { driftDrawerTargetFor } from "../drift-routing";
 
 const entities = [
-  { name: "orders", connectionGroupId: null, drift: { state: "changed" as const, changeCount: 2 } },
-  { name: "users", connectionGroupId: null, drift: { state: "in-sync" as const } },
-  { name: "legacy", connectionGroupId: null, drift: { state: "removed" as const } },
-  { name: "dbonly", connectionGroupId: null, drift: { state: "new" as const } },
-  { name: "no_drift_data", connectionGroupId: null, drift: null },
-  { name: "orders", connectionGroupId: "g_prod", drift: { state: "changed" as const, changeCount: 1 } },
+  { name: "orders", table: "orders", connectionGroupId: null, drift: { state: "changed" as const, changeCount: 2 } },
+  { name: "users", table: "users", connectionGroupId: null, drift: { state: "in-sync" as const } },
+  { name: "legacy", table: "legacy", connectionGroupId: null, drift: { state: "removed" as const } },
+  { name: "dbonly", table: "dbonly", connectionGroupId: null, drift: { state: "new" as const } },
+  { name: "no_drift_data", table: "no_drift_data", connectionGroupId: null, drift: null },
+  { name: "orders", table: "orders", connectionGroupId: "g_prod", drift: { state: "changed" as const, changeCount: 1 } },
+  // #2891: storage `name` deliberately differs from SQL `table`. Drift
+  // is keyed by table both server-side (`attachDrift`) and in the
+  // drawer body (`tableDiffs[].table`), so the predicate must surface
+  // the table — not the name — to keep the drawer's lookup working.
+  { name: "audit_log_v2", table: "audit_log", connectionGroupId: null, drift: { state: "changed" as const, changeCount: 1 } },
 ];
 
 describe("driftDrawerTargetFor", () => {
@@ -89,5 +94,17 @@ describe("driftDrawerTargetFor", () => {
     expect(
       driftDrawerTargetFor({ type: "entity", name: "orders" }, entities),
     ).toBe("orders");
+  });
+
+  test("returns the matched entity's table — not the selection's storage name (#2891)", () => {
+    // When the storage `name` differs from the SQL `table` (e.g. a
+    // DB-backed entity stored under `audit_log_v2` whose YAML declares
+    // `table: audit_log`), routing the drawer by the storage name
+    // would land on `tableDiffs[].table === "audit_log_v2"` and miss.
+    // The drawer keys diff lookups by table, so the predicate must
+    // return the table.
+    expect(
+      driftDrawerTargetFor({ type: "entity", name: "audit_log_v2" }, entities),
+    ).toBe("audit_log");
   });
 });

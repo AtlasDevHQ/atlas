@@ -45,9 +45,16 @@ export type SemanticTreeDrift =
  * same `name` under multiple `connectionGroupId`s — keying off the pair
  * keeps React keys unique and lets the badge tell the admin which
  * environment a row belongs to (#2412).
+ *
+ * #2891: `name` is the storage key the detail / edit / delete handlers
+ * look up by — `SemanticSelection.name` and the URL `?file=` param
+ * must roundtrip it unchanged. `displayName` is the label rendered as
+ * `<name>.yml`; falls back to `name` when missing so older API
+ * responses keep rendering.
  */
 export interface SemanticTreeEntity {
   readonly name: string;
+  readonly displayName?: string;
   /** Group id (e.g. `g_prod_us`) or `null` for the legacy / unscoped row. */
   readonly connectionGroupId: string | null;
   /** `true` when the row carries a draft overlay; renders the amber accent. */
@@ -260,10 +267,12 @@ export function SemanticFileTree({
                   name: entry.name,
                   connectionGroupId: entry.connectionGroupId,
                 };
+                // #2891: render display label, route by storage key.
+                const label = entry.displayName ?? entry.name;
                 return (
                   <FileItem
                     key={key}
-                    name={`${entry.name}.yml`}
+                    name={`${label}.yml`}
                     selected={isSelected(selection, target)}
                     onClick={() => onSelect(target)}
                     indent={1}

@@ -12,7 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
-import { bearer, admin, organization, jwt } from "better-auth/plugins";
+import { bearer, admin, organization, jwt, customSession } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
 // @better-auth/* plugins must match the better-auth core version line.
@@ -44,6 +44,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
+import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
@@ -1796,6 +1797,47 @@ export function buildPlugins() {
 }
 
 /**
+ * customSession callback — surface the org-merged effective role on the
+ * session for the client. The native `user.role` (admin plugin,
+ * system-wide) is left untouched so Better Auth's own admin endpoints
+ * still gate on system role; client consumers read `effectiveRole` via
+ * `useUserRole` to decide whether to render admin chrome (gear icon,
+ * sidebar, pending-changes pill).
+ *
+ * Per Better Auth docs, customSession bypasses cookie-cache: this
+ * callback runs on every `getSession`. That's already the cost
+ * `validateManaged` pays via `resolveEffectiveRole` on every authenticated
+ * request, so net DB load is unchanged.
+ *
+ * Exported for the tiny unit test that pins the role-merge contract; not
+ * a public API.
+ *
+ * @internal
+ */
+export async function buildCustomSessionPayload({
+  user,
+  session,
+}: {
+  user: User & Record<string, unknown>;
+  session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>;
+}) {
+  const rawRole = user.role;
+  const userRole =
+    typeof rawRole === "string"
+      ? (rawRole.split(",")[0].trim() as Parameters<typeof resolveEffectiveRole>[0])
+      : undefined;
+  const activeOrganizationId =
+    typeof session.activeOrganizationId === "string"
+      ? session.activeOrganizationId
+      : undefined;
+  const effectiveRole = await resolveEffectiveRole(userRole, user.id, activeOrganizationId);
+  return {
+    user: { ...user, effectiveRole: effectiveRole ?? null },
+    session,
+  };
+}
+
+/**
  * Intentionally typed as the base Auth type (without plugin extensions).
  * The codebase only uses .handler, .api.getSession, and .$context — all of
  * which exist on the base type. Plugin-specific API methods (e.g.
@@ -2344,6 +2386,15 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       },
     },
   };
+
+  // Append customSession last so it wraps every other plugin's session
+  // contributions. Passing `options` as the 2nd arg propagates plugin
+  // field types (admin's `user.role`, organization's `activeOrganizationId`,
+  // etc.) into the callback's inputs — see better-auth/docs §
+  // "Customizing Session with Plugin Field Inference".
+  //
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- type erasure mirrors the cast on options below
+  (options.plugins as any[]).push(customSession(buildCustomSessionPayload, options as Parameters<typeof customSession>[1]));
 
   return options as unknown as Parameters<typeof betterAuth>[0];
 }

@@ -159,12 +159,21 @@ type SessionFieldExtras = {
   activeOrganizationName?: string;
 };
 
+// User extras the server's `customSession` plugin stamps on every
+// `getSession`. `effectiveRole` is max(user.role, active-org member.role)
+// — read by `useUserRole` so org-admins (whose `user.role` is the default
+// "user") see admin chrome.
+type UserFieldExtras = {
+  effectiveRole?: string | null;
+};
+
 type BaseUseSessionReturn = ReturnType<typeof _authClient.useSession>;
 type BaseUseSessionData = NonNullable<BaseUseSessionReturn["data"]>;
 type WidenedUseSessionReturn = Omit<BaseUseSessionReturn, "data"> & {
   data:
-    | (Omit<BaseUseSessionData, "session"> & {
+    | (Omit<BaseUseSessionData, "session" | "user"> & {
         session: BaseUseSessionData["session"] & SessionFieldExtras;
+        user: BaseUseSessionData["user"] & UserFieldExtras;
       })
     | null;
 };

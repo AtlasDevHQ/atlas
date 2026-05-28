@@ -5,19 +5,26 @@ import { useRouter } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
 
 /**
- * Returns the user's role from the Better Auth session.
- * Used by the sidebar for item-level visibility and by page guards.
+ * Returns the user's effective role for client-side admin gating.
  *
- * Better Auth's public session type doesn't include `role` on the user object
- * (it's added by the admin/organization plugins at runtime), so we cast through
- * `Record<string, unknown>` to access it. This is the single source of truth
- * for role extraction — all call sites should use this hook rather than
- * duplicating the cast.
+ * Better Auth keeps two role surfaces separate by design: `user.role`
+ * (admin plugin, system-wide — `platform_admin` / `admin` / `user`) and
+ * `member.role` (organization plugin, per-org — `owner` / `admin` /
+ * `member`). The server's `customSession` callback merges them and
+ * exposes the max as `user.effectiveRole` — read that here so an org
+ * admin whose `user.role` defaulted to "user" (the standard signup →
+ * accept-invite flow) still sees admin chrome.
+ *
+ * Falls back to `user.role` for older sessions issued before
+ * customSession landed; both fields disappear gracefully when missing.
+ * This is the single source of truth for role extraction — all call
+ * sites should use this hook.
  */
 export function useUserRole(): string | undefined {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
-  return session.data?.user?.role;
+  const user = session.data?.user;
+  return user?.effectiveRole ?? user?.role;
 }
 
 /**

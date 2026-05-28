@@ -38,9 +38,11 @@ If any local gate fails, fix it and re-run `/release`. If a remote check is yell
 
 **Step 4: Draft the tag message**
 
-Summarize what's in this tag. For minor tags, pull from the milestone scope:
+Summarize what's in this tag. For minor tags, pull from the milestone scope (substitute the target version — don't hard-code `v0.1.0`):
 ```bash
-gh api 'repos/AtlasDevHQ/atlas/milestones?state=open' -q '.[] | select(.title | startswith("v0.1.0")) | .description'
+VERSION=v0.1.0  # the tag being cut
+gh api 'repos/AtlasDevHQ/atlas/milestones?state=open' \
+  --jq ".[] | select(.title | startswith(\"$VERSION\")) | .description"
 ```
 
 For patches, use commit subjects since the previous tag:

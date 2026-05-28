@@ -135,7 +135,7 @@ The [CHANGELOG.md](https://github.com/AtlasDevHQ/atlas/blob/main/CHANGELOG.md) i
 
 These are explicitly **not** covered by the stability contract:
 
-- `/api/internal/*` and `/api/platform/*` — operator-facing routes, may change without notice
+- `/api/v1/internal/*` and `/api/v1/platform/*` — operator-facing routes (despite the `v1` prefix), may change without notice. The `v1` contract applies to customer-facing endpoints only.
 - `@atlas/*` packages (vs `@useatlas/*`) — internal monorepo packages, not published for external consumption
 - Database schema (`packages/api/src/lib/db/schema.ts`) — operators may inspect but should not write
 - Anything under `ee/` (enterprise features) — covered by the commercial license terms, not this page

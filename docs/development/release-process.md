@@ -37,8 +37,8 @@ Standard PR flow — `/ci` to pass gates, `/pr` to open the PR, review, merge. T
 Staging URL: TBD (filled in once the staging build track lands per `docs/prd/staging-environment.md`).
 
 What to check before tagging:
-- All 6 Railway services on staging are green (`api` / `web` / `docs` / `www` / `sidecar` and any staging-specific peers).
-- `/api/health` returns OK on each region.
+- All 6 Railway services on staging are green: `api` + `api-eu` + `api-apac` (three regional API instances) + `web` + `docs` + `www`. The `sidecar` deploys independently and is checked separately.
+- `/api/health` returns OK on each of the three regional API instances (US/EU/APAC).
 - Any user-visible changes shipped since the last tag work as expected. Run the change yourself; don't infer from a green CI.
 - For risky changes (new migration, new agent tool, new admin surface), monitor staging logs for ~30 min before tagging.
 
@@ -53,7 +53,7 @@ There is no fixed soak time. Tag when you're confident; rollback (via the next t
 The skill runs:
 1. **`/ci`** — refuses to tag if any gate fails. Tags are immutable; don't tag broken code.
 2. **`git tag -a v0.1.0 -m "<auto-summary>"`** — annotated tag with author/timestamp/message. Never lightweight tags.
-3. **`git push --tags`** — pushes the new tag to GitHub.
+3. **`git push origin <version>`** — pushes the single tag to GitHub. Don't use `--tags` — that pushes every local tag and can leak experimental ones.
 4. **`gh release create v0.1.0 --generate-notes`** — creates a GitHub Release with auto-generated commit + PR list.
 
 The `--generate-notes` output is the customer-facing changelog for that tag. Edit it on GitHub afterward if it needs polish.
@@ -62,7 +62,7 @@ The `--generate-notes` output is the customer-facing changelog for that tag. Edi
 
 The tag push triggers a Railway prod deploy of all 6 services. Monitor via:
 - Railway dashboard (manual)
-- `gh api repos/AtlasDevHQ/atlas/commits/main/statuses` for commit-status mirrors
+- `gh api repos/AtlasDevHQ/atlas/commits/$(git rev-list -n 1 <version>)/statuses` for commit-status mirrors on the tagged SHA (not `main` — they diverge during rollback, where the new patch tag points at the previous good SHA)
 - Customer-visible incident reports
 
 If prod boots cleanly, the release is done. If not, hotfix flow below.

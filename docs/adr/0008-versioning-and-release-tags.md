@@ -52,7 +52,7 @@ The contract-vs-not-contract distinction is the load-bearing one. Git-tag `v1.0.
 2. MCP tool surface — additive only within a major; breaking changes bump the tool name (`executeSQL` → `executeSQL2`)
 3. Plugin SDK — `@useatlas/plugin-sdk` 1.0 stable
 
-Customer-facing details for these contracts live at [docs/reference/stability](../../apps/docs/content/docs/reference/stability.mdx). Everything else (agent behavior, chat UI, dashboards, semantic layer wire format, admin console) may evolve within `v0.x` git tags without bumping major.
+Customer-facing details for these contracts live at [docs/reference/stability](../../apps/docs/content/docs/reference/stability.mdx). The semantic layer wire format (`semantic/*.yml` entity / metric / glossary schemas) is also a stable contract — customer-authored YAML must round-trip across tags — and breaking changes follow the same v2-style rollout as REST. Everything else (agent behavior, chat UI, dashboards, admin console) may evolve within `v0.x` git tags without bumping major.
 
 ### No pre-release tags
 

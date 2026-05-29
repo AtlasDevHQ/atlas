@@ -1018,9 +1018,13 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       //   • Webhook subscriptions registered with external platforms (Slack,
       //     GitHub, Stripe, …) are invisible to Atlas — the plugin author's
       //     `teardown()` is the only place to unsubscribe, but that runs at
-      //     server shutdown, not on a per-workspace uninstall. Plugin
-      //     authors who need workspace-scoped external cleanup must wire it
-      //     into the route or hook that owns the resource.
+      //     server shutdown, not on a per-workspace uninstall. EXPECTATION:
+      //     a plugin that subscribes an external webhook MUST revoke it from
+      //     the route or hook that owns the resource (uninstall is a DB-row
+      //     removal, not a process event). Atlas cannot revoke it for you;
+      //     an un-revoked webhook keeps delivering events to a workspace that
+      //     no longer has the plugin installed. Documented in the uninstall
+      //     contract (apps/docs/.../authoring-guide.mdx#uninstall-contract).
       //
       // Failure mode: the two DELETEs are deliberately NOT atomic. If this
       // cleanup rejects after workspace_plugins has already committed, the
@@ -1034,8 +1038,12 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // We chose best-effort cleanup over a multi-statement transaction
       // because making the cleanup load-bearing would block uninstall on
       // internal-DB hiccups and surface partial-failure to admins as a 500.
-      // Audit + log is the operator surface; there is no /health dashboard
-      // signal for orphan-task accumulation today (potential follow-up).
+      // Audit + log is the per-request operator surface. Accumulation across
+      // requests is caught by the `orphan_task_reconcile` scheduler fiber
+      // (#2944, lib/scheduler/orphan-task-reconcile.ts): it counts orphaned
+      // plugin tasks every tick, rides the count on an OTel span, and warns
+      // when > 0 — and, when ATLAS_ORPHAN_TASK_RECONCILE=true, sweeps them
+      // using this same (plugin_id, org_id) predicate.
       let scheduledTasksDeleted: number;
       try {
         const taskRows = yield* queryEffect<{ id: string }>(

@@ -55,11 +55,13 @@ Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drif
 
 **After local gates pass, check remote CI and deployments:**
 
+A merge to `main` deploys to **staging** (`api-staging` / `web-staging` / `www-staging`) plus the `docs` prod service (direct-from-main). Production (`api` / `api-eu` / `api-apac` / `web` / `www`) is gated behind `/release` advancing the `prod` branch — so the `main` deploy statuses below are about **staging health**, not prod. See [release-process.md § Mental model](../../docs/development/release-process.md#mental-model).
+
 ```bash
 # GitHub Actions CI + Sync Starters (last 5 runs on main)
 gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
 
-# Railway deployment status (all 5 services — uses commit statuses, not check-runs)
+# Railway deployment status on main (staging services + docs — uses commit statuses, not check-runs)
 gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
 ```
 
@@ -67,14 +69,15 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 |-------|------------------|
 | `CI` (GitHub Actions) | Must be `success` |
 | `Sync Starters` (GitHub Actions) | Must be `success` |
-| `satisfied-creation - api` | Must be `Success`. If `Deployment failed`, check Railway dashboard for build/startup errors |
-| `satisfied-creation - web` | Must be `Success` |
-| `satisfied-creation - docs` | Must be `Success` |
-| `satisfied-creation - www` | `No deployment needed` is fine (only deploys on `apps/www/` changes) |
+| `satisfied-creation - api-staging` | Must be `Success`. If `Deployment failed`, check Railway dashboard for build/startup errors |
+| `satisfied-creation - web-staging` | Must be `Success` |
+| `satisfied-creation - www-staging` | `No deployment needed` is fine (only deploys on `apps/www/` changes) |
+| `satisfied-creation - docs` | Must be `Success` (deploys direct-from-main) |
 | `satisfied-creation - sidecar` | `No deployment needed` is fine (only deploys on sandbox changes) |
+| `satisfied-creation - api` / `web` / `www` | Prod — only updates when `/release` advances `prod`; stale relative to `main` is expected |
 
 **If a Railway deployment fails:**
-1. Check which service failed (api, web, docs)
+1. Check which service failed (api-staging, web-staging, docs)
 2. Common causes:
    - **Build failure**: new dependency not in `serverExternalPackages`, TypeScript error in production build
    - **Startup crash**: missing env var on Railway, DB migration error, new table requires `DATABASE_URL`
@@ -84,7 +87,7 @@ gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state
 
 **If all checks pass:**
 
-Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass. Remote: CI, Sync Starters, Railway (api/web/docs) — all green.`
+Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drift — all pass. Remote: CI, Sync Starters, Railway staging (api-staging/web-staging/docs) — all green.`
 
 ---
 
@@ -92,4 +95,4 @@ Report: `CI gates: lint, type, test, syncpack, drift, railway-watch, schema-drif
 - Never skip a gate or mark it as "probably fine"
 - If a gate fails on code you didn't write (pre-existing), still fix it — CI won't distinguish
 - If a test is flaky (passes on retry), note it but don't ignore it
-- Railway deployments are as important as CI — a green CI with a failed deploy means main is broken in production
+- Railway deployments are as important as CI — a green CI with a failed staging deploy means `main` is broken on staging, which blocks the next `/release` to prod

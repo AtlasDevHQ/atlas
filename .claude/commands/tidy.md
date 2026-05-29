@@ -43,7 +43,9 @@ Run these in parallel:
    # GitHub Actions (CI + Sync Starters)
    gh run list -R AtlasDevHQ/atlas --branch main --limit 5 --json status,conclusion,name,createdAt,databaseId
 
-   # Railway deployments (api, web, docs, www, sidecar — uses commit statuses, not check-runs)
+   # Railway deployments — on a main commit these are the staging services (api-staging, web-staging,
+   # www-staging) + docs (direct-from-main). Prod (api/api-eu/api-apac/web/www) tracks the `prod` branch,
+   # advanced only by /release tags. Uses commit statuses, not check-runs.
    gh api repos/AtlasDevHQ/atlas/commits/main/statuses --jq '[.[] | {context, state, description}] | unique_by(.context) | .[] | "\(.context)\t\(.state)\t\(.description)"'
    ```
    If any CI runs are failing, get the failure details:
@@ -84,7 +86,7 @@ For each category, build a list of actions needed:
 
 ### 2c. CI + deployment health
 - If CI is failing on main, this is **urgent** — diagnose the failure and fix it before other tidy work
-- If any Railway deployment is failing (api, web, docs), this is equally urgent — main is broken in production
+- If a Railway **staging** deployment is failing (api-staging, web-staging, docs), this is urgent — `main` is broken on staging, which blocks the next `/release` to prod. If a **prod** service (api/api-eu/api-apac/web/www) is failing, that's a customer-facing P1 — the last `/release` tag is bad; roll forward via the next patch tag (see `/release` rollback note)
 - Check if failures are from recently merged PRs (regressions) or pre-existing
 - Common CI causes: type errors in new code, missing test mocks, dependency drift
 - Common Railway causes: missing env var, new dependency not in `serverExternalPackages`, DB migration error, health check timeout

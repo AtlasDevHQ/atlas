@@ -103,7 +103,7 @@ Bump every train together — npm package versions match the git tag, milestone 
 
 **For deploys:**
 - The dual Railway trigger (Q5) hangs off this ADR. `main` push → staging autodeploy (3 services: api/web/www). Annotated tag → `/release` fast-forwards `prod` branch to the tag SHA → prod autodeploy across 5 services (api/api-eu/api-apac/web/www). `docs` continues watching `main` directly. See `docs/development/release-process.md`.
-- The first prod deploy under tag-gating is `v0.0.1`, cut as soon as the bundle is ready. Until then, `main` continues to auto-deploy prod (status quo). The public launch (`v0.1.0`, July 2026) is a separate event, tracked independently.
+- The first prod deploy under tag-gating was `v0.0.1`, cut 2026-05-29 (`9c68fc17`). The prior "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, July 2026) is a separate event, tracked independently.
 
 **For CHANGELOG.md:**
 - The existing `CHANGELOG.md` link to `CLAUDE.md#versioning--release-strategy` resolves to this ADR going forward. CHANGELOG sections will be reorganized around git tags (`## v0.0.1 — 2026-05-XX`) once tagging starts; internal-milestone-labeled sections remain in place as historical record.

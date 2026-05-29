@@ -2,7 +2,7 @@
 
 How Atlas ships to prod. Two flows: **normal release** (merge → soak → tag) and **hotfix** (merge → tag immediately).
 
-> **Status as of 2026-05-28:** This doc describes the target shape that ships with `v0.0.1` — the first tag of the pre-launch `v0.0.x` development train — cut as soon as the bundle is ready. Until that point, `main` continues to auto-deploy to prod on every push (status quo). The dual Railway trigger described below replaces that flow at `v0.0.1`. The public launch (`v0.1.0`, target July 2026) is tracked separately and points at the banked changelog accumulated under the `v0.0.x` train.
+> **Live as of `v0.0.1`** (first tag of the pre-launch `v0.0.x` train, cut 2026-05-29 at `9c68fc17`): the dual Railway trigger described below is the active flow — `main` → staging, annotated tag → `prod` branch → prod. The pre-`v0.0.1` "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, target July 2026) is tracked separately and points at the banked changelog accumulated under the `v0.0.x` train.
 
 ## Mental model
 

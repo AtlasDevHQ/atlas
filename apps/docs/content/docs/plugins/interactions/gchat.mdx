@@ -171,7 +171,7 @@ When a response includes approval buttons (e.g., for pending actions), button cl
 | `GCHAT_PROJECT_NUMBER` | Optional. Google Cloud project **number** (not ID), used to verify direct-webhook JWTs Google signs with the project identity. Without it, direct-webhook signature verification is silently disabled (one warn line per inbound webhook). Set this on SaaS deploys. |
 | `GCHAT_PUBSUB_AUDIENCE` | Optional. Expected `aud` claim for Pub/Sub push-message JWTs — typically the operator's API origin (e.g. `https://api.useatlas.dev`). Without it, Pub/Sub push verification is silently disabled (one warn per message). Set this on SaaS deploys. |
 
-Both required vars must be present for the adapter to activate; there is no Application Default Credentials (ADC) path — the adapter requires the inline service-account JSON.
+Both required vars must be present for the adapter to activate; there is no Application Default Credentials (ADC) path through Atlas's install flow — activation requires the inline service-account JSON.
 
 ## Troubleshooting
 

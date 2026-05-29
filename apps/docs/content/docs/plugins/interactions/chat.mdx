@@ -483,12 +483,13 @@ When proactive mode is first enabled for a workspace, Atlas posts a one-time ann
 | `TEAMS_APP_PASSWORD` | Microsoft App Password |
 | `TEAMS_TENANT_ID` | Microsoft Entra ID tenant ID (optional) |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_APPLICATION_ID` | Discord application ID |
+| `DISCORD_CLIENT_ID` | Discord application ID (labeled "Application ID" in the Developer Portal; same value as the OAuth client ID) |
 | `DISCORD_PUBLIC_KEY` | Discord application public key (64-char hex, Ed25519) |
-| `GOOGLE_CHAT_CREDENTIALS` | Google Chat service account key JSON (stringified) |
-| `GOOGLE_CHAT_USE_ADC` | Set to `"true"` for Application Default Credentials |
-| `GOOGLE_CHAT_PUBSUB_TOPIC` | Pub/Sub topic for Workspace Events |
-| `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation |
+| `GCHAT_SERVICE_ACCOUNT_JSON` | Service account key JSON (raw contents, parsed with `JSON.parse()`) — required |
+| `GCHAT_PUBSUB_TOPIC` | Fully-qualified Pub/Sub topic path for Workspace Events — required |
+| `GCHAT_IMPERSONATE_USER` | User email for domain-wide delegation (optional) |
+| `GCHAT_PROJECT_NUMBER` | Google Cloud project number for direct-webhook JWT verification (optional) |
+| `GCHAT_PUBSUB_AUDIENCE` | Expected `aud` claim for Pub/Sub push JWTs (optional) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
 | `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
 | `GITHUB_APP_ID` | GitHub App ID (for App-based auth) |
@@ -501,10 +502,11 @@ When proactive mode is first enabled for a workspace, Atlas posts a one-time ann
 | `LINEAR_CLIENT_ID` | Linear OAuth application client ID (for OAuth App auth) |
 | `LINEAR_CLIENT_SECRET` | Linear OAuth application client secret (for OAuth App auth) |
 | `LINEAR_WEBHOOK_SECRET` | Linear webhook signing secret for HMAC-SHA256 verification |
-| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business phone number ID |
-| `WHATSAPP_ACCESS_TOKEN` | System User access token for Cloud API |
-| `WHATSAPP_VERIFY_TOKEN` | Verify token for webhook challenge-response |
+| `META_BUSINESS_ACCESS_TOKEN` | System User access token for Meta Cloud API calls |
+| `META_BUSINESS_APP_ID` | Operator's Meta App ID |
 | `WHATSAPP_APP_SECRET` | Meta App Secret for HMAC-SHA256 signature verification |
+| `WHATSAPP_VERIFY_TOKEN` | Verify token for webhook challenge-response |
+| `WHATSAPP_DEFAULT_PHONE_NUMBER_ID` | Single-tenant phone number ID (optional; multi-tenant routes from the inbound envelope's `metadata.phone_number_id`) |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing

@@ -73,12 +73,12 @@ For personal bots or testing, you can use a PAT instead of a GitHub App.
 ## Configuration
 
 <Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. GitHub ships two install models — the OAuth-style App row landed in 1.5.3 ([#2818](https://github.com/AtlasDevHQ/atlas/pull/2818)) and the static-bot PAT row landed alongside it ([#2807](https://github.com/AtlasDevHQ/atlas/pull/2807)). Pick exactly one row per workspace. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. GitHub ships **three** install rows — a multi-tenant App (`github`) and a single-tenant App (`github-single-tenant`), both OAuth-style and landed in 1.5.3 ([#2818](https://github.com/AtlasDevHQ/atlas/pull/2818)), plus the static-bot PAT row (`github-pat`) that landed alongside them ([#2807](https://github.com/AtlasDevHQ/atlas/pull/2807)). Enable exactly one row per workspace. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ### GitHub App (Recommended)
 
-The App row covers both multi-tenant (auto-detect installation from webhook payloads) and single-tenant (fixed `GITHUB_APP_INSTALLATION_ID`) modes — set the env var to lock to one installation, or leave it unset for multi-tenant.
+There are two separate App catalog rows. The multi-tenant `github` row auto-detects the installation from webhook payloads. The single-tenant `github-single-tenant` row (self-host only, `saas_eligible: false`) locks to one operator-baked installation via `GITHUB_APP_INSTALLATION_ID`. Enable the row that matches your deployment — `GITHUB_APP_INSTALLATION_ID` is read **only** by the single-tenant handler, never by the multi-tenant `github` row.
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -101,7 +101,7 @@ export default defineConfig({
 });
 ```
 
-App ID, slug, private key, OAuth client credentials, and webhook secret come from env vars — see [Environment Variables](#environment-variables) below. Single-tenant mode is selected by also setting `GITHUB_APP_INSTALLATION_ID` to a fixed installation; leave it unset for multi-tenant.
+App ID, slug, private key, OAuth client credentials, and webhook secret come from env vars — see [Environment Variables](#environment-variables) below. The example above enables the multi-tenant `github` row. For single-tenant mode, enable the `github-single-tenant` row instead (`{ slug: "github-single-tenant", install_model: "oauth", enabled: true, saas_eligible: false }`) and set `GITHUB_APP_INSTALLATION_ID`; that handler reads only the App ID / slug / private key + installation ID — no OAuth client credentials.
 
 ### Personal Access Token
 
@@ -130,10 +130,11 @@ The PAT itself is entered through the admin-UI install form (stored encrypted in
 
 | Row | `slug` | `install_model` | Auth mode | Notes |
 |-----|--------|-----------------|-----------|-------|
-| GitHub App | `"github"` | `"oauth"` | App ID + private key | Recommended; covers single- and multi-tenant via env-var presence of `GITHUB_APP_INSTALLATION_ID`. |
-| PAT | `"github-pat"` | `"static-bot"` | Fine-grained PAT | Single-account; not surfaced in the SaaS admin UI (`saas_eligible: false`). |
+| GitHub App (multi-tenant) | `"github"` | `"oauth"` | App ID + slug + private key + OAuth client ID/secret | Recommended; installation auto-detected from webhook payloads. Does **not** read `GITHUB_APP_INSTALLATION_ID`. |
+| GitHub App (single-tenant) | `"github-single-tenant"` | `"oauth"` | App ID + slug + private key + `GITHUB_APP_INSTALLATION_ID` | Self-host only (`saas_eligible: false`); operator-baked installation. No OAuth client credentials. |
+| PAT | `"github-pat"` | `"static-bot"` | Fine-grained PAT (admin-UI form) | Single-account; not surfaced in the SaaS admin UI (`saas_eligible: false`). |
 
-Don't enable both rows in the same deploy — pick the auth mode that matches the workspace.
+Don't enable more than one of these rows in the same deploy — pick the install model that matches the workspace.
 
 ## Mounted Routes
 
@@ -200,7 +201,7 @@ Atlas's catalog-driven install handlers (1.5.3+) gate activation on the `GITHUB_
 | `GITHUB_APP_PRIVATE_KEY` | App (both modes) | App private key (`.pem` contents). For multi-line values, escape newlines as `\n` or base64-encode. |
 | `GITHUB_APP_CLIENT_ID` | Multi-tenant App (`github`) | App OAuth client ID — required for the install-ownership verification step. |
 | `GITHUB_APP_CLIENT_SECRET` | Multi-tenant App (`github`) | App OAuth client secret. |
-| `GITHUB_APP_INSTALLATION_ID` | Single-tenant App (`github-single-tenant`) | The operator's baked-in installation ID. Its presence selects single-tenant mode; leave unset for multi-tenant auto-detection. |
+| `GITHUB_APP_INSTALLATION_ID` | Single-tenant App (`github-single-tenant`) | The operator's baked-in installation ID. Read **only** by the single-tenant handler — setting it on a `github` (multi-tenant) deploy has no effect; the multi-tenant row auto-detects the installation from webhook payloads. |
 | `GITHUB_WEBHOOK_SECRET` | All | Webhook secret for HMAC-SHA256 payload verification. Read by the underlying `@chat-adapter/github` adapter — it refuses to initialize without it (or a `webhookSecret` in config). |
 | `GITHUB_BOT_USERNAME` | Optional | Bot username for @-mention detection. Read by the adapter; defaults to `github-bot`. |
 

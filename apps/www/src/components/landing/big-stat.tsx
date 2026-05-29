@@ -12,7 +12,7 @@ export function BigStat() {
           of AI-generated SQL fails at least one Atlas validator.
         </p>
         <p className="m-0 font-mono text-[12px] tracking-[0.04em] text-zinc-400">
-          // sample of 12,481 queries · gpt-4o, claude-sonnet, llama-3.1 · against 18 production schemas
+          // sample of thousands of queries · gpt-4o, claude-sonnet, llama-3.1 · against 18 production schemas
         </p>
       </div>
     </section>

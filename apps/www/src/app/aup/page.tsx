@@ -129,10 +129,9 @@ const SECTIONS: LegalSectionData[] = [
     legal: [
       "If Atlas reasonably believes Customer has violated this AUP, Atlas may, in proportion to the violation: (a) issue a written warning and request remediation within a stated period; (b) restrict the affected feature or rate-limit the affected account; (c) suspend the account, in whole or in part, with notice where reasonably possible; (d) terminate the Agreement for cause under the Terms.",
       "For violations that materially threaten the security or availability of the Service for other customers, or that involve illegal content, Atlas may suspend access immediately and without prior notice, and will provide notice as soon as practicable.",
-      "Suspension or termination for AUP violation is not subject to the SLA credit obligations at useatlas.dev/sla.",
     ],
     plain:
-      "Minor issues: warning + chance to fix. Serious issues (security, illegal content): immediate suspension. Repeat or material violations: termination for cause. SLA credits don’t apply when we suspend you for AUP violations.",
+      "Minor issues: warning + chance to fix. Serious issues (security, illegal content): immediate suspension. Repeat or material violations: termination for cause.",
   },
   {
     id: "changes",

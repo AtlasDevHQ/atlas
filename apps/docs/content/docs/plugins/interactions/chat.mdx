@@ -70,8 +70,8 @@ Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate 
 
 ## Configuration
 
-<Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is now driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. **You must pass the chat-relevant catalog entries through to `chatPlugin({ catalog })`** — the plugin's route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of the `chatPlugin(...)` call itself (not from the top-level `atlas.config.ts`). Credentials are read from `process.env`.
+<Callout type="info" title="Catalog-driven activation">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is now driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. **You must pass the chat-relevant catalog entries through to `chatPlugin({ catalog })`** — the plugin's route gate, webhook mounts, and `AdapterRegistry` all read from `config.catalog` of the `chatPlugin(...)` call itself (not from the top-level `atlas.config.ts`). Credentials are read from `process.env`.
 </Callout>
 
 ```typescript
@@ -158,6 +158,8 @@ Per-Platform credentials come from environment variables — see [Environment Va
 | `reactions` | `object` | No | Status reaction configuration. See [Status Reactions](#status-reactions). |
 | `reactions.enabled` | `boolean` | No | Enable emoji reactions on user messages. Default: `true`. |
 | `reactions.customEmoji` | `object` | No | Override default emoji for each lifecycle stage (`received`, `processing`, `complete`, `error`). |
+| `ephemeral` | `EphemeralConfig` | No | Post errors and debug info as ephemeral messages (visible only to the requesting user). See [Ephemeral Messages](#ephemeral-messages). |
+| `proactive` | `ProactiveConfig` | No | Reaction-first proactive chat (enterprise-gated; the host wires `isEnabled`/`classify`). When enabled, the bridge reacts to high-confidence data questions. See [Proactive Direct Messages](#proactive-direct-messages). |
 
 <Callout type="info">
 At least one `catalog` row with `type: "chat"`, `enabled: true`, and a supported `install_model` must be present (and threaded through to `chatPlugin({ catalog })`) — otherwise no adapter activates and the plugin's health check reports unhealthy. Per-Platform credentials come from env vars (see [Environment Variables](#environment-variables)). For Slack OAuth specifically you need **all four**: `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, and `SLACK_ENCRYPTION_KEY` — the install will be skipped (and the chat plugin reported unhealthy) if any one is missing.
@@ -550,7 +552,7 @@ Set `errorsAsEphemeral: false` to post errors publicly in the thread.
 
 ## Proactive Direct Messages
 
-<Callout type="info" title="Configuring the 1.5.0 proactive chat tier?">
+<Callout type="info" title="Configuring the proactive chat tier?">
 This section documents the plugin-level `sendDirectMessage()` mechanic. For the **operator-facing** controls — workspace kill switch, channel allowlist, monthly quota, sensitivity preset, public-dataset HITL workflow, and the activation announcement — see the [Proactive Chat admin guide](/guides/proactive-chat).
 </Callout>
 

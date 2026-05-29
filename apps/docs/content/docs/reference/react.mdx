@@ -475,7 +475,7 @@ const AUTH_MODES: readonly ["none", "simple-key", "managed", "byot"];
 
 ## useMcpConnect
 
-Wraps the SDK's `beginConnect` + `completeConnect` with a popup-or-redirect lifecycle so React embedders can drop a "Connect your AI agent" button into their app without owning OAuth bookkeeping. Exported from the root entry point (`@useatlas/react`), not the `/hooks` subpath.
+Wraps the SDK's `beginConnect` + `completeConnect` with a popup-or-redirect lifecycle so React embedders can drop a "Connect your AI agent" button into their app without owning OAuth bookkeeping. Exported from both `@useatlas/react` and the `@useatlas/react/hooks` subpath.
 
 ```tsx
 "use client";
@@ -937,8 +937,10 @@ interface Conversation {
   id: string;
   userId: string | null;
   title: string | null;                        // Auto-generated from first message, or null
-  surface: "web" | "api" | "mcp" | "slack";
-  connectionId: string | null;                 // Datasource used for this conversation
+  surface: "web" | "api" | "mcp" | "slack" | "notebook";
+  connectionId: string | null;                 // Datasource (replica) SQL runs against
+  connectionGroupId: string | null;            // Connection group whose content resolves
+  routingMode?: ConversationRoutingMode | null; // "auto" | "pin" | "all"
   starred: boolean;                            // Pinned by user
   createdAt: string;                           // ISO 8601 timestamp
   updatedAt: string;                           // ISO 8601 timestamp
@@ -1099,7 +1101,7 @@ import type {
   ThemeMode,
 } from "@useatlas/react/hooks";
 
-// Root entry point exports (not available from /hooks subpath)
+// Root entry point exports — the MCP onboarding hook + its types are also re-exported from /hooks; the rest are root-only
 import type {
   UseConversationsOptions,
   UseConversationsReturn,
@@ -1130,7 +1132,7 @@ When a conversation runs against a multi-member connection group, the `executeSQ
 | `ExecuteSqlResult` | Discriminated union of success/failure — `success: true` carries `columns`, `rows`, `truncated`, `envContributions`; `success: false` carries `error` plus the partial `envContributions` that did execute |
 | `ConversationRoutingMode` | `"auto"` / `"pin"` / `"all"` — the persisted routing mode for the conversation. Embedders that render the env/member picker should branch on this to show the right active state |
 
-See the [Cross-Environment Scope](/deployment/multi-datasource#cross-environment-scope-routing-145) guide for the partial-failure rendering pattern and the conversation-routing semantics.
+See the [Cross-Environment Scope](/deployment/multi-datasource#cross-environment-scope-routing) guide for the partial-failure rendering pattern and the conversation-routing semantics.
 
 ### Starter-prompt types
 

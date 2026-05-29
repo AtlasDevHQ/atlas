@@ -3,11 +3,11 @@ title: Content Mode Registry
 description: The draft/published mode system — how to add a new mode-participating content table in one line, and the type-level drift detection that keeps the wire contract honest.
 ---
 
-> Design doc for the `ContentModeRegistry` library (#1515) that drives the 1.2.0 developer/published mode system. Covers the static-tuple architecture, the type derivation, and the end-to-end flow for adding a new mode-participating table.
+> Design doc for the `ContentModeRegistry` library (#1515) that drives the developer/published mode system. Covers the static-tuple architecture, the type derivation, and the end-to-end flow for adding a new mode-participating table.
 
 ## Problem
 
-The 1.2.0 mode system worked but was shallow. Four content tables participated — `connections`, `prompt_collections`, `query_suggestions`, and `semantic_entities` — and each surface (read filter, draft counts, publish path) had its own hand-written policy:
+The original mode system worked but was shallow. Four content tables participated — `connections`, `prompt_collections`, `query_suggestions`, and `semantic_entities` — and each surface (read filter, draft counts, publish path) had its own hand-written policy:
 
 | Concern | Pre-registry state |
 |---------|--------------------|

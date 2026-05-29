@@ -266,9 +266,9 @@ These hints are surfaced in the agent's system prompt so it knows to query each 
 Cross-source join hints are informational — they tell the agent which tables are related across datasources, but the agent still needs to execute separate queries and combine results. There is no automatic query federation.
 </Callout>
 
-### Cross-environment scope routing (1.4.5+)
+### Cross-environment scope routing
 
-When a workspace has multiple **connection groups** (environments — e.g. `us-int`, `eu`, `us-prod` all running the same schema; see [Dashboards → Environment](/guides/dashboards#environment-144)), the agent can fan a single question out across more than one member of the active group. Each chat conversation has a **routing mode** the user controls from the picker in the chat header:
+When a workspace has multiple **connection groups** (environments — e.g. `us-int`, `eu`, `us-prod` all running the same schema; see [Dashboards → Environment](/guides/dashboards#environment)), the agent can fan a single question out across more than one member of the active group. Each chat conversation has a **routing mode** the user controls from the picker in the chat header:
 
 | Mode | Behavior |
 |------|----------|

@@ -117,6 +117,22 @@ describe("Email agent-tool — install-present path through the real lazy loader
       buffer: true,
     });
 
+    // Capture the RFC-822 buffer streamTransport produces (buffer:true →
+    // `info.message` is a Buffer) so the test can read back what the real
+    // nodemailer serializer wrote. The unit test mocks `createTransport`,
+    // so this wrapper is the only place a serializer regression across a
+    // nodemailer major bump would surface.
+    let serializedMessage = "";
+    const realSendMail = capturedTransport.sendMail.bind(capturedTransport);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    capturedTransport.sendMail = (async (message: any) => {
+      const info = await realSendMail(message);
+      const raw = (info as { message?: Buffer | string }).message;
+      serializedMessage = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw ?? "");
+      return info;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
     loaderMod.lazyPluginLoader.registerBuilder(
       EMAIL_CATALOG_ID,
       toolMod.createEmailLazyBuilder({
@@ -151,9 +167,10 @@ describe("Email agent-tool — install-present path through the real lazy loader
     expect(result1.status).toBe("sent");
     expect(result1.messageId).toBeTruthy();
     // The streamTransport's last-message buffer carries the RFC-822
-    // serialization; the recipient + subject lines must be present.
-    // `info.envelope` already captures the outer addressing, but
-    // sniffing the raw buffer pins the message body shape too.
+    // serialization; assert the recipient + subject the tool was handed
+    // survived message construction through nodemailer's real serializer.
+    expect(serializedMessage).toContain("dest@example.com");
+    expect(serializedMessage).toContain("Q1 revenue summary");
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
 
     // Second send re-uses the cached instance — the loader memoizes

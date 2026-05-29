@@ -57,8 +57,8 @@ The client secret grants full access to your Linear OAuth application's permissi
 
 ## Configuration
 
-<Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Linear's OAuth install handler landed in 1.5.3 ([#2750](https://github.com/AtlasDevHQ/atlas/pull/2750)); a separate `linear-apikey` static-bot row covers personal-API-key deploys. Pick exactly one row per workspace — the OAuth row reads `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET`, the API-key row reads `LINEAR_API_KEY`. Both share `LINEAR_WEBHOOK_SECRET`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+<Callout type="info" title="Catalog-driven activation">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Linear's OAuth install handler landed in [#2750](https://github.com/AtlasDevHQ/atlas/pull/2750); a separate `linear-apikey` static-bot row covers personal-API-key deploys. Pick exactly one row per workspace — the OAuth row reads `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET`, the API-key row reads `LINEAR_API_KEY`. Both share `LINEAR_WEBHOOK_SECRET`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ### OAuth App (Recommended)

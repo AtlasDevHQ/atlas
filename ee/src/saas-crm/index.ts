@@ -78,6 +78,7 @@ import {
   TwentyClientError,
   TwentyCredentialError,
   isTwentyDecryptError,
+  type AtlasLeadEvent,
   type DbCredentialLookup,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
@@ -388,6 +389,44 @@ async function verifyCustomFields(
 const outboxDb: OutboxDB = {
   query: internalQuery,
 };
+
+/**
+ * Compile-time bridge between the two intentionally-duplicated lead-event
+ * unions: `SaasCrmLeadInput` (the `SaasCrm` Tag's `upsertLead` contract, in
+ * `@atlas/api`) and `AtlasLeadEvent` (the Twenty normalizer's input, in
+ * `@useatlas/twenty`). They are mirrored by hand — see the "Adding a
+ * variant" note on `SaasCrmLeadInput` — never merged, because that would
+ * drag `@useatlas/twenty` into `@atlas/api`'s public contract surface.
+ *
+ * This `ee/src/saas-crm/` file is the one place that legitimately depends on
+ * both sides (the EE inversion rule), and the `row.payload as SaasCrmLeadInput`
+ * → `normalizeLead(...)` cast in `dispatchOutboxRow` below relies on the two
+ * unions being interchangeable.
+ *
+ * `ExactType<A, B>` is the standard exact-equality check (the
+ * function-parameter-bivariance idiom): it resolves to `true` only when A and
+ * B are structurally *identical* — same variants, same fields, same
+ * optionality and `readonly`-ness — and to `false` on any asymmetry. That's
+ * stricter than mutual assignability (`[A] extends [B]` both ways), which
+ * would silently tolerate, e.g., one side dropping `readonly` or flipping a
+ * field optional. "Mirror" means identical, so equality is the right tool.
+ *
+ * Asserting `= true` (rather than a bare `T extends true` helper) is
+ * load-bearing: on drift the check resolves to `false`/`never`, and `never`
+ * *is* assignable to a `T extends true` constraint — so a naked helper would
+ * fail open. `const _x: ExactType<…> = true` instead forbids the drift result.
+ * Add a variant to one union but not the other — or change a field's shape on
+ * just one side — and this line goes red in `tsgo` HERE, instead of
+ * dead-lettering at flush with `normalizeLead`'s runtime `Unknown lead source`
+ * throw.
+ */
+type ExactType<A, B> = (<T>() => T extends A ? 1 : 2) extends <
+  T,
+>() => T extends B ? 1 : 2
+  ? true
+  : false;
+const _leadUnionsAreMirrors: ExactType<SaasCrmLeadInput, AtlasLeadEvent> = true;
+void _leadUnionsAreMirrors;
 
 /**
  * Dispatch one claimed outbox row through the Twenty client. Each

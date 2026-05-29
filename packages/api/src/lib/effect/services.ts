@@ -2418,13 +2418,18 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
 
 /**
  * Inputs to `SaasCrm.upsertLead`. Mirrors the discriminated union in
- * `plugins/twenty/src/lead-normalizer.ts:AtlasLeadEvent`. The normalizer's
- * exhaustiveness switch is the drift gate — when the two unions diverge,
- * the next dispatch dead-letters with `Unknown lead source` rather than
- * silently swallowing.
+ * `plugins/twenty/src/lead-normalizer.ts:AtlasLeadEvent`. Drift between the
+ * two is caught at compile time by the `_leadUnionsAreMirrors` bridge in
+ * `ee/src/saas-crm/index.ts` (the EE layer is the only place allowed to
+ * depend on both unions) — an exact-type-equality assertion that fails
+ * `tsgo` if the unions diverge in any way (a variant added on one side, or
+ * a field's shape changed on just one side). The normalizer's
+ * exhaustiveness switch is the runtime backstop: were a divergence to slip
+ * past the bridge, the next dispatch dead-letters with `Unknown lead source`
+ * rather than silently swallowing.
  *
- * Adding a variant: extend BOTH this union AND `AtlasLeadEvent`. The
- * two-place duplication exists because the runtime queue
+ * Adding a variant: extend BOTH this union AND `AtlasLeadEvent`, or the
+ * bridge goes red. The two-place duplication exists because the runtime queue
  * (`lib/lead-outbox/`) and the route layer (the `SaasCrm` Tag's
  * `upsertLead` contract surface) intentionally stay free of any
  * `@useatlas/twenty` import — the EE dispatcher is the only allowed

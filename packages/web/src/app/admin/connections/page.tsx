@@ -100,6 +100,7 @@ import {
 } from "@/ui/lib/types";
 import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 import { SalesforceProviderBlock } from "./salesforce-block";
+import { OpenApiProviderBlock } from "./openapi-block";
 import { useRouter, useSearchParams } from "next/navigation";
 
 // ── Connection Form Dialog ───────────────────────────────────────
@@ -1395,6 +1396,17 @@ export default function ConnectionsPage() {
                       />
                     );
                   })}
+                  {/*
+                    OpenAPI (generic REST) datasources (#2926). Multi-instance
+                    and plugin-resolved (not in ConnectionRegistry.describe()),
+                    so — like Salesforce — they get a dedicated block rather
+                    than a `ProviderBlock` row. Always rendered so the install
+                    affordance shows even with zero REST datasources.
+                  */}
+                  <OpenApiProviderBlock
+                    demoReadOnly={demoReadOnly}
+                    onChange={handleMutationSuccess}
+                  />
                 </div>
               </section>
             </AdminContentWrapper>

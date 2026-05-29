@@ -103,6 +103,13 @@ export interface BuildRepresentationOptions {
    */
   readonly displayName?: string;
   /**
+   * The datasource's stable id (slice 2, #2926). When set, the header tells the
+   * agent to pass it as `executeRestOperation`'s `datasourceId` — surfaced only
+   * when a workspace has more than one REST datasource connected, so a single-
+   * datasource prompt (and the slice-1 acceptance baseline) is unchanged.
+   */
+  readonly datasourceId?: string;
+  /**
    * Whether the sandbox-Python composition path is live. Slice 1 ships
    * read-only single-operation execution via `executeRestOperation`; the Python
    * path (multi-call composition over the upstream) is gated behind slice 3's
@@ -184,6 +191,12 @@ function renderDatasourceHeader(
       `It is NOT a SQL database — there are no tables to \`executeSQL\` against. ` +
       `Instead, call \`executeRestOperation\` with an \`operationId\` from the list below and its parameters.`,
   );
+  if (options.datasourceId) {
+    out.push(
+      `When calling \`executeRestOperation\` for this datasource, pass \`datasourceId: "${options.datasourceId}"\` ` +
+        `(more than one REST datasource is connected).`,
+    );
+  }
   out.push(
     `**Read-only in this release.** Only GET operations execute; write operations ` +
       `(POST/PATCH/PUT/DELETE) are described so you can plan, but \`executeRestOperation\` ` +

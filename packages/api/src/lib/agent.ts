@@ -28,9 +28,9 @@ import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
-import { resolveTwentyDatasource } from "./openapi/datasource";
+import { resolveWorkspaceRestDatasources } from "./openapi/workspace-datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
-import { REST_OPERATION_DESCRIPTION, executeRestOperationTool } from "./tools/rest-operation";
+import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
@@ -874,38 +874,53 @@ export async function runAgent({
   // Resolve async work before entering otelContext.with() (sync callback).
   const modelMessages = await convertToModelMessages(messages);
 
-  // #2924 — REST datasource (slice 1: Twenty behind ATLAS_OPENAPI_TWENTY).
-  // When a datasource resolves, merge the `executeRestOperation` tool and append
-  // the Path A operation-graph representation to the system prompt. The resolve
-  // is a no-op returning null when the flag is off, so SQL-only workspaces pay
-  // nothing and see no behavioural change. Fail-soft: a preflight error degrades
-  // to "no REST datasource" rather than breaking the chat turn.
+  // #2926 — REST datasources (slice 2: per-workspace `openapi-generic` installs).
+  // Resolve every REST datasource the workspace has installed (Twenty, Stripe,
+  // an internal service…) from `workspace_plugins`, merge the
+  // `executeRestOperation` tool bound to exactly that set, and append each one's
+  // representation to the system prompt. Workspaces with no REST datasource (the
+  // common case) resolve `[]` and pay nothing. The slice-1 `ATLAS_OPENAPI_TWENTY*`
+  // env path is retired. Fail-soft: a preflight error degrades to "no REST
+  // datasource" rather than breaking the chat turn.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
   try {
-    const restDatasource = await resolveTwentyDatasource();
-    if (restDatasource) {
+    const restDatasources = orgId ? await resolveWorkspaceRestDatasources(orgId) : [];
+    if (restDatasources.length > 0) {
       const restRegistry = new ToolRegistry();
       restRegistry.register({
         name: "executeRestOperation",
         description: REST_OPERATION_DESCRIPTION,
-        tool: executeRestOperationTool,
+        // Bind the tool to exactly the datasources rendered into the prompt, so
+        // the agent's `datasourceId` choice resolves against the same set the
+        // representation described (no per-execute re-resolution / drift).
+        tool: createExecuteRestOperationTool({
+          resolveDatasources: async () => restDatasources,
+        }),
       });
       activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
-      // Representation mode is the #2931 bake-off knob, resolved per datasource
-      // (env today, per-install config in slice 2). Path A vs Path B differ only
-      // in how the surface is described; both drive the same executeRestOperation.
-      const restRep = buildAgentRepresentation(restDatasource.graph, restDatasource.representationMode, {
-        displayName: restDatasource.displayName,
-      });
-      restRepresentation = restRep.promptContext;
-      if (restRep.unresolvedResources.length > 0) {
-        log.warn(
-          { datasource: restDatasource.id, resources: restRep.unresolvedResources },
-          `REST datasource "${restDatasource.id}": ${restRep.unresolvedResources.length} resource(s) ` +
-            `resolved to no record schema — the agent sees their operations but no field surface.`,
-        );
+      // Representation mode is the #2931 bake-off knob, resolved per install from
+      // its `workspace_plugins.config`. Path A vs Path B differ only in how the
+      // surface is described; both drive the same executeRestOperation. With more
+      // than one datasource, surface each one's `datasourceId` so the agent can
+      // route; a single datasource keeps the slice-1 prompt shape unchanged.
+      const multiple = restDatasources.length > 1;
+      const sections: string[] = [];
+      for (const ds of restDatasources) {
+        const rep = buildAgentRepresentation(ds.graph, ds.representationMode, {
+          displayName: ds.displayName,
+          ...(multiple ? { datasourceId: ds.id } : {}),
+        });
+        sections.push(rep.promptContext);
+        if (rep.unresolvedResources.length > 0) {
+          log.warn(
+            { datasource: ds.id, resources: rep.unresolvedResources },
+            `REST datasource "${ds.id}": ${rep.unresolvedResources.length} resource(s) ` +
+              `resolved to no record schema — the agent sees their operations but no field surface.`,
+          );
+        }
       }
+      restRepresentation = sections.join("\n\n");
     }
   } catch (err) {
     log.warn(

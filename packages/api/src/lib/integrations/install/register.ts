@@ -25,6 +25,8 @@ import {
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
+import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
+import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
 import { TwentyFormInstallHandler, TWENTY_SLUG } from "./twenty-form-handler";
 import {
@@ -145,6 +147,13 @@ export function registerBuiltinInstallHandlers(): void {
   log.info("Registered EmailFormInstallHandler + LazyPluginLoader builder");
   registerFormHandler("obsidian", new ObsidianFormInstallHandler());
   log.info("Registered ObsidianFormInstallHandler");
+  // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance
+  // (a workspace installs Twenty, Stripe, an internal service side by side).
+  // No env gate — the customer admin supplies the spec URL + credential at
+  // install time, same as every other form handler. Retires the slice-1
+  // `ATLAS_OPENAPI_TWENTY*` env shortcut.
+  registerFormHandler(OPENAPI_GENERIC_SLUG, new OpenApiGenericFormInstallHandler());
+  log.info("Registered OpenApiGenericFormInstallHandler");
   registerFormHandler("webhook", new WebhookFormInstallHandler());
   log.info("Registered WebhookFormInstallHandler");
   // Twenty CRM form-install. Per-workspace credentials land in the

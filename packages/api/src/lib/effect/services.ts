@@ -1481,6 +1481,8 @@ export type BackupRowShape = {
   readonly storage_path: string;
   readonly retention_expires_at: string;
   readonly error_message: string | null;
+  /** Depth of the last verification ('full-restore' | 'header-only') or null if never verified. */
+  readonly verify_level: string | null;
 };
 
 export type CreateBackupResult = {
@@ -1505,7 +1507,10 @@ export interface BackupsManagerShape {
   readonly purgeExpiredBackups: () => Effect.Effect<number, Error>;
   readonly verifyBackup: (
     backupId: string,
-  ) => Effect.Effect<{ verified: boolean; message: string }, Error>;
+  ) => Effect.Effect<
+    { verified: boolean; message: string; level: "full-restore" | "header-only" },
+    Error
+  >;
   readonly requestRestore: (
     backupId: string,
   ) => Effect.Effect<{ confirmationToken: string; message: string }, Error>;

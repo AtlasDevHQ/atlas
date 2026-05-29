@@ -217,8 +217,39 @@ jobs:
       - name: Build SDK packages
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build && bun run --filter '@useatlas/react' build
 
+      # Dedicated, throwaway scratch DB for the @atlas/ee backup-restorability
+      # smoke (#2941). verifyBackup's full-restore path DROPs the scratch DB's
+      # public schema on every run, so it MUST be its own isolated database —
+      # never the service's default `atlas` DB. We create it here and point ONLY
+      # ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST at it on the test step below. We do
+      # NOT set a global TEST_DATABASE_URL on test-others — that would flip other
+      # packages' real-PG-gated tests and risk side effects.
+      - name: Create backup-verify scratch database
+        env:
+          PGPASSWORD: atlas
+        run: psql -h localhost -p 5432 -U atlas -d atlas -c "CREATE DATABASE atlas_backup_scratch"
+
       - name: Test (non-api packages)
+        env:
+          ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST: postgresql://atlas:atlas@localhost:5432/atlas_backup_scratch
         run: bun run test:others
+    services:
+      # Postgres for the @atlas/ee backup-restorability real-PG smoke (#2941).
+      # The backup-verify tests skip cleanly when ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST
+      # is unset, so a future runner without this service degrades gracefully.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: atlas
+          POSTGRES_PASSWORD: atlas
+          POSTGRES_DB: atlas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atlas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
   test-e2e-integration:
     name: test-e2e-integration

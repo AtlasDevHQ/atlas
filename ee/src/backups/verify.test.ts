@@ -59,6 +59,19 @@ mock.module("zlib", () => ({
     return gunzip;
   },
   createGzip: mock(() => ({ on: mock(), pipe: mock() })),
+  // Mock all exports — partial zlib mocks cause `SyntaxError: Export named 'X'
+  // not found in module 'node:zlib'` in OTHER files that share a bun worker and
+  // import the real zlib (e.g. verify-restore.test.ts imports `gzipSync`).
+  // CLAUDE.md: "mock all exports".
+  gzipSync: mock((buf: Buffer | string) => Buffer.from(buf)),
+  gunzipSync: mock((buf: Buffer | string) => Buffer.from(buf)),
+  gzip: mock(),
+  gunzip: mock(),
+  deflateSync: mock((buf: Buffer | string) => Buffer.from(buf)),
+  inflateSync: mock((buf: Buffer | string) => Buffer.from(buf)),
+  createDeflate: mock(() => ({ on: mock(), pipe: mock() })),
+  createInflate: mock(() => ({ on: mock(), pipe: mock() })),
+  constants: {},
 }));
 
 // Mock engine exports that verify.ts imports
@@ -101,15 +114,18 @@ const validBackup = {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-describe("verifyBackup", () => {
+describe("verifyBackup (header-only fallback — no scratch URL)", () => {
   beforeEach(() => {
     ee.reset();
     mockGetBackupById = null;
     mockReadStreamChunks = [Buffer.from("-- PostgreSQL database dump\n-- Dumped from")];
     mockReadStreamError = null;
+    // These tests cover the degraded path — ensure no scratch URL is set so
+    // we exercise the header-only branch deterministically.
+    delete process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL;
   });
 
-  it("verifies a valid backup with pg_dump header", async () => {
+  it("verifies a valid backup with pg_dump header (header-only level)", async () => {
     mockGetBackupById = () => validBackup;
     // UPDATE to 'verified'
     ee.queueMockRows([]);
@@ -117,6 +133,15 @@ describe("verifyBackup", () => {
     const result = await run(verifyBackup("b1"));
     expect(result.verified).toBe(true);
     expect(result.message).toContain("verified");
+    expect(result.level).toBe("header-only");
+    // The degraded path is honest about NOT proving restorability.
+    expect(result.message).toContain("NOT proven restorable");
+
+    // The backup row is STAMPED verified + header-only (the column this PR adds).
+    const update = ee.capturedQueries.find((q) => q.sql.includes("UPDATE backups"));
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("status = 'verified'");
+    expect(update!.sql).toContain("verify_level = 'header-only'");
   });
 
   it("returns false for invalid header", async () => {
@@ -128,6 +153,13 @@ describe("verifyBackup", () => {
     const result = await run(verifyBackup("b1"));
     expect(result.verified).toBe(false);
     expect(result.message).toContain("pg_dump header not found");
+    expect(result.level).toBe("header-only");
+
+    // The backup row is STAMPED failed + header-only.
+    const update = ee.capturedQueries.find((q) => q.sql.includes("UPDATE backups"));
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("status = 'failed'");
+    expect(update!.sql).toContain("verify_level = 'header-only'");
   });
 
   it("fails when backup not found", async () => {
@@ -158,12 +190,23 @@ describe("verifyBackup", () => {
     await expect(run(verifyBackup("b1"))).rejects.toThrow("Internal database required");
   });
 
-  it("returns verified:false on decompression error (catchAll)", async () => {
+  it("returns verified:false on decompression error (catchAll) with a generic message", async () => {
     mockGetBackupById = () => validBackup;
     mockReadStreamError = new Error("corrupt gzip data");
 
     const result = await run(verifyBackup("b1"));
     expect(result.verified).toBe(false);
+    expect(result.level).toBe("header-only");
     expect(result.message).toContain("Verification failed");
+    // Generic message — the raw underlying error stays in the server log only.
+    expect(result.message).toContain("could not read or decompress");
+    expect(result.message).not.toContain("corrupt gzip data");
+
+    // The outer-catch failure UPDATE stamps verify_level (item 5).
+    const update = ee.capturedQueries.find((q) => q.sql.includes("UPDATE backups"));
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("status = 'failed'");
+    expect(update!.sql).toContain("verify_level = $1");
+    expect(update!.params[0]).toBe("header-only");
   });
 });

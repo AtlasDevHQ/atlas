@@ -10,6 +10,7 @@ const validEntry = {
   storagePath: "./backups/bkp_1.sql.gz",
   retentionExpiresAt: "2026-05-19T03:00:00.000Z",
   errorMessage: null,
+  verifyLevel: "full-restore" as const,
 };
 
 const inProgressEntry = {
@@ -96,5 +97,29 @@ describe("structural rejection", () => {
   test("BackupConfigSchema rejects non-numeric retentionDays", () => {
     const drifted = { ...validConfig, retentionDays: "30" };
     expect(BackupConfigSchema.safeParse(drifted).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyLevel — restorability verification depth (#2941). full-restore means
+// the dump was restored into a scratch DB and counted; header-only is the
+// degraded fallback; null means never verified.
+// ---------------------------------------------------------------------------
+
+describe("verifyLevel", () => {
+  test("accepts full-restore, header-only, and null", () => {
+    for (const verifyLevel of ["full-restore", "header-only", null] as const) {
+      expect(BackupEntrySchema.parse({ ...validEntry, verifyLevel }).verifyLevel).toBe(verifyLevel);
+    }
+  });
+
+  test("rejects an unknown verifyLevel value", () => {
+    const drifted = { ...validEntry, verifyLevel: "checksum-only" };
+    expect(BackupEntrySchema.safeParse(drifted).success).toBe(false);
+  });
+
+  test("rejects missing verifyLevel (field is required, may be null)", () => {
+    const { verifyLevel: _v, ...missing } = validEntry;
+    expect(BackupEntrySchema.safeParse(missing).success).toBe(false);
   });
 });

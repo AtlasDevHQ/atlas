@@ -66727,6 +66727,17 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "verifyLevel": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "full-restore",
+                              "header-only",
+                              null
+                            ]
                           }
                         },
                         "required": [
@@ -66736,7 +66747,8 @@
                           "status",
                           "storagePath",
                           "retentionExpiresAt",
-                          "errorMessage"
+                          "errorMessage",
+                          "verifyLevel"
                         ]
                       }
                     }
@@ -66875,6 +66887,17 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "verifyLevel": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "full-restore",
+                            "header-only",
+                            null
+                          ]
                         }
                       },
                       "required": [
@@ -66884,7 +66907,8 @@
                         "status",
                         "storagePath",
                         "retentionExpiresAt",
-                        "errorMessage"
+                        "errorMessage",
+                        "verifyLevel"
                       ]
                     }
                   },
@@ -66977,8 +67001,8 @@
         "tags": [
           "Platform Admin — Backups"
         ],
-        "summary": "Verify backup integrity",
-        "description": "SaaS only. Decompress and validate the pg_dump header of a backup file.",
+        "summary": "Verify backup restorability",
+        "description": "SaaS only. When ATLAS_BACKUP_VERIFY_SCRATCH_URL is configured, restores the dump into a disposable scratch DB and counts tables (full-restore). Otherwise degrades to a pg_dump header check (header-only).",
         "responses": {
           "200": {
             "description": "Verification result",
@@ -66992,11 +67016,19 @@
                     },
                     "message": {
                       "type": "string"
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": [
+                        "full-restore",
+                        "header-only"
+                      ]
                     }
                   },
                   "required": [
                     "verified",
-                    "message"
+                    "message",
+                    "level"
                   ]
                 }
               }

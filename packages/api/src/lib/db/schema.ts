@@ -1146,6 +1146,12 @@ export const backups = pgTable(
     storagePath: text("storage_path").notNull(),
     retentionExpiresAt: timestamp("retention_expires_at", { withTimezone: true }).notNull(),
     errorMessage: text("error_message"),
+    // Depth of the last verification — 'full-restore' (restored into a scratch
+    // DB and counted base tables) vs 'header-only' (degraded fallback), or null
+    // if never verified. Added by #2941. The ee/ runtime DDL adds this via an
+    // idempotent ALTER in ensureTable(); this mirror keeps drizzle-kit from
+    // emitting a DROP COLUMN on the next generate.
+    verifyLevel: text("verify_level"),
   },
   (t) => [
     index("idx_backups_status").on(t.status, sql`created_at DESC`),

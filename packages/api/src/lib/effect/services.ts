@@ -2419,10 +2419,11 @@ export const NoopDeployModeResolverLayer: Layer.Layer<DeployModeResolver> =
 /**
  * Inputs to `SaasCrm.upsertLead`. Mirrors the discriminated union in
  * `plugins/twenty/src/lead-normalizer.ts:AtlasLeadEvent`. Drift between the
- * two is caught at compile time by the `_LeadUnionsAreMirrors` bridge in
+ * two is caught at compile time by the `_leadUnionsAreMirrors` bridge in
  * `ee/src/saas-crm/index.ts` (the EE layer is the only place allowed to
- * depend on both unions) — a mutual-assignability assertion that fails
- * `tsgo` if either union gains a variant the other lacks. The normalizer's
+ * depend on both unions) — an exact-type-equality assertion that fails
+ * `tsgo` if the unions diverge in any way (a variant added on one side, or
+ * a field's shape changed on just one side). The normalizer's
  * exhaustiveness switch is the runtime backstop: were a divergence to slip
  * past the bridge, the next dispatch dead-letters with `Unknown lead source`
  * rather than silently swallowing.

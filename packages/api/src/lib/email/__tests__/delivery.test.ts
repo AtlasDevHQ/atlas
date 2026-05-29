@@ -23,7 +23,15 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { sendEmail, isAuthEmailDeliveryConfigured } = await import("../delivery");
+const {
+  sendEmail,
+  isAuthEmailDeliveryConfigured,
+  sendTransactionalEmail,
+  shouldEnqueueFailedSend,
+  enqueueFailedTransactionalEmail,
+} = await import("../delivery");
+type DeliveryResult = import("../delivery").DeliveryResult;
+type EmailMessage = import("../delivery").EmailMessage;
 
 // ---------------------------------------------------------------------------
 // Env snapshot + fetch mock
@@ -238,5 +246,106 @@ describe("isAuthEmailDeliveryConfigured", () => {
     // sends email into a black hole.
     settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
     expect(isAuthEmailDeliveryConfigured()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable transactional email — sendTransactionalEmail (#2942)
+// ---------------------------------------------------------------------------
+
+const MSG: EmailMessage = { to: "user@example.com", subject: "Reset", html: "<p>x</p>" };
+
+describe("shouldEnqueueFailedSend", () => {
+  it("enqueues a real-transport failure", () => {
+    expect(
+      shouldEnqueueFailedSend({ success: false, provider: "resend", error: "503" } as DeliveryResult),
+    ).toBe(true);
+  });
+
+  it("does NOT enqueue a success", () => {
+    expect(shouldEnqueueFailedSend({ success: true, provider: "resend" } as DeliveryResult)).toBe(false);
+  });
+
+  it("does NOT enqueue the log/no-transport fallback (nowhere to deliver)", () => {
+    expect(
+      shouldEnqueueFailedSend({ success: false, provider: "log", error: "none" } as DeliveryResult),
+    ).toBe(false);
+  });
+});
+
+describe("sendTransactionalEmail", () => {
+  it("returns the send result and does NOT enqueue on success", async () => {
+    let enqueued = 0;
+    const result = await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset" },
+      {
+        send: async () => ({ success: true, provider: "resend", messageId: "m1" }),
+        enqueueFailed: async () => {
+          enqueued++;
+        },
+      },
+    );
+    expect(result.success).toBe(true);
+    expect(enqueued).toBe(0);
+  });
+
+  it("enqueues for durable retry when a real transport fails (sustained outage)", async () => {
+    const enqueuedWith: Array<{ to: string; emailType: string }> = [];
+    const result = await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset", orgId: "org-1" },
+      {
+        send: async () => ({ success: false, provider: "resend", error: "Resend 503" }),
+        enqueueFailed: async (m, o) => {
+          enqueuedWith.push({ to: m.to, emailType: o.emailType });
+        },
+      },
+    );
+    // Caller still sees the original failed result (it stays 200-safe).
+    expect(result.success).toBe(false);
+    expect(enqueuedWith).toEqual([{ to: "user@example.com", emailType: "password-reset" }]);
+  });
+
+  it("does NOT enqueue when no transport is configured (provider=log)", async () => {
+    let enqueued = 0;
+    await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset" },
+      {
+        send: async () => ({ success: false, provider: "log", error: "no backend" }),
+        enqueueFailed: async () => {
+          enqueued++;
+        },
+      },
+    );
+    expect(enqueued).toBe(0);
+  });
+
+  it("never throws even if enqueue throws — preserves the enumeration-safe 200 (F-09)", async () => {
+    const result = await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset" },
+      {
+        send: async () => ({ success: false, provider: "resend", error: "503" }),
+        enqueueFailed: async () => {
+          throw new Error("DB exploded");
+        },
+      },
+    );
+    // Resolved (not rejected) with the original result.
+    expect(result.success).toBe(false);
+    expect(result.provider).toBe("resend");
+  });
+});
+
+describe("enqueueFailedTransactionalEmail", () => {
+  it("does not throw and skips enqueue when no internal DB is configured", async () => {
+    // No DATABASE_URL in the unit-test env → hasInternalDB() is false →
+    // the function warns and returns rather than throwing. This pins the
+    // F-09 no-throw contract on the real (non-injected) path.
+    await expect(
+      enqueueFailedTransactionalEmail(MSG, { emailType: "password-reset" }),
+    ).resolves.toBeUndefined();
   });
 });

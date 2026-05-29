@@ -217,6 +217,135 @@ export async function sendEmailWithTransport(
   return deliverViaTransport(message, transport);
 }
 
+// ---------------------------------------------------------------------------
+// Durable transactional email (#2942)
+// ---------------------------------------------------------------------------
+
+export interface TransactionalEmailOptions {
+  /**
+   * Send classification stamped on the outbox row for observability
+   * (e.g. "password-reset", "verification-otp"). Never used for routing.
+   */
+  emailType: string;
+  /** Optional org scope, threaded to `sendEmail` and the outbox row. */
+  orgId?: string;
+}
+
+/**
+ * Should a failed send be enqueued to the durable outbox? Pure so the
+ * decision is unit-testable in isolation.
+ *
+ * `provider === "log"` means NO transport is configured — the send went
+ * to the dev/log fallback, so there is nowhere to deliver and a durable
+ * queue would just dead-letter the row after exhausting the budget.
+ * Only enqueue when a REAL transport was attempted and failed (the
+ * in-process `fetchWithRetry` retry path, #2949, is already exhausted by
+ * the time we see `success: false`).
+ */
+export function shouldEnqueueFailedSend(result: DeliveryResult): boolean {
+  return !result.success && result.provider !== "log";
+}
+
+/**
+ * Enqueue a failed transactional send to `email_outbox` for durable
+ * at-least-once retry. CONTRACT: never throws — the caller's response
+ * must stay 200 to preserve signup-enumeration protection (F-09). Skips
+ * silently (with a warn) when no internal DB is configured (nowhere to
+ * queue). Dynamic imports keep delivery.ts's static module graph
+ * unchanged (no cycle with email-outbox, which the flusher's dispatcher
+ * wires back to `sendEmail`).
+ *
+ * @internal — exported for testing.
+ */
+export async function enqueueFailedTransactionalEmail(
+  message: EmailMessage,
+  opts: TransactionalEmailOptions,
+): Promise<void> {
+  try {
+    const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
+    if (!hasInternalDB()) {
+      log.warn(
+        { to: message.to, emailType: opts.emailType },
+        "Failed transactional email NOT enqueued — no internal DB configured for the durable outbox; send is lost",
+      );
+      return;
+    }
+    const { enqueue } = await import("@atlas/api/lib/email-outbox");
+    const outboxId = await enqueue(
+      { query: internalQuery },
+      { emailType: opts.emailType, message, orgId: opts.orgId ?? null },
+    );
+    log.info(
+      { to: message.to, emailType: opts.emailType, outboxId },
+      "Transactional email send failed — enqueued to email_outbox for durable retry",
+    );
+  } catch (err) {
+    // Never rethrow — a failure to even queue the row must not break the
+    // enumeration-safe 200. Loud error so the lost send is observable.
+    log.error(
+      {
+        to: message.to,
+        emailType: opts.emailType,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "Failed to enqueue transactional email to the outbox — send is lost",
+    );
+  }
+}
+
+/** Injection seam for {@link sendTransactionalEmail} — test-only. */
+export interface TransactionalEmailDeps {
+  send?: (message: EmailMessage, orgId?: string) => Promise<DeliveryResult>;
+  enqueueFailed?: (message: EmailMessage, opts: TransactionalEmailOptions) => Promise<void>;
+}
+
+/**
+ * Send a transactional email (password reset, signup verification OTP)
+ * with DURABLE at-least-once delivery.
+ *
+ * Calls {@link sendEmail}; if the in-process retry path (#2949) is
+ * exhausted and a real transport failed, the rendered message is
+ * enqueued to `email_outbox` so a SUSTAINED provider outage no longer
+ * permanently drops the send — the Scheduler-backed flusher
+ * (`lib/email-outbox/`) re-sends it on a later tick.
+ *
+ * This is the opt-in wrapper for transactional auth emails. Bulk /
+ * agent / admin-test callers keep using the raw {@link sendEmail} so
+ * they don't accidentally fan failures into the outbox. The flusher's
+ * dispatcher also re-sends via raw `sendEmail`, so a re-send failure
+ * does NOT re-enqueue (no duplication loop).
+ *
+ * Enumeration safety (F-09): never throws and always returns the
+ * original `DeliveryResult`. The caller's response stays 200 whether the
+ * send succeeded, failed-then-queued, or failed-then-couldn't-queue.
+ */
+export async function sendTransactionalEmail(
+  message: EmailMessage,
+  opts: TransactionalEmailOptions,
+  deps: TransactionalEmailDeps = {},
+): Promise<DeliveryResult> {
+  const send = deps.send ?? sendEmail;
+  const enqueueFailed = deps.enqueueFailed ?? enqueueFailedTransactionalEmail;
+  const result = await send(message, opts.orgId);
+  if (shouldEnqueueFailedSend(result)) {
+    try {
+      await enqueueFailed(message, opts);
+    } catch (err) {
+      // `enqueueFailed` already swallows; this is defense-in-depth so a
+      // future refactor that drops its try/catch can't break the 200.
+      log.error(
+        {
+          to: message.to,
+          emailType: opts.emailType,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Transactional email outbox enqueue threw — send is lost but response stays 200",
+      );
+    }
+  }
+  return result;
+}
+
 /**
  * Deliver an email using a transport config (DB-stored or platform settings).
  */

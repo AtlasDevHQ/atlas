@@ -361,6 +361,14 @@ describe("_sendVerificationOTP", () => {
   ): void => {
     mock.module("@atlas/api/lib/email/delivery", () => ({
       sendEmail,
+      // _sendVerificationOTP now sends via the durable wrapper (#2942).
+      // Delegate to the captured `sendEmail` so the message-capture and
+      // fire-and-forget assertions below are unchanged; the wrapper's
+      // outbox-enqueue side effect is exercised in delivery.test.ts.
+      sendTransactionalEmail: async (
+        msg: { to: string; subject: string; html: string },
+        _opts: { emailType: string; orgId?: string },
+      ) => sendEmail(msg),
       sendEmailWithTransport: async () => ({ success: true, provider: "resend" as const }),
       getEmailTransport: async () => null,
     }));

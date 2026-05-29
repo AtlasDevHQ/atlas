@@ -231,3 +231,34 @@ export const crmOutboxDeadCount: Gauge = meter.createGauge(
       "Current crm_outbox rows in dead status, observed per flusher tick (#2734)",
   },
 );
+
+/**
+ * `atlas.email_outbox.pending_count` — current `email_outbox` rows in
+ * `pending` status. Updated by the transactional-email outbox flusher
+ * (#2942) on every tick, BEFORE dispatch, so the value reflects the
+ * queue depth an operator sees between ticks. A sustained value past
+ * `ATLAS_EMAIL_OUTBOX_WARN_THRESHOLD` (default 50) also fires a
+ * rate-limited `log.warn` — pair the two signals in dashboards.
+ */
+export const emailOutboxPendingCount: Gauge = meter.createGauge(
+  "atlas.email_outbox.pending_count",
+  {
+    description:
+      "Current email_outbox rows in pending status, observed per flusher tick (#2942)",
+  },
+);
+
+/**
+ * `atlas.email_outbox.dead_count` — current `email_outbox` rows in
+ * `dead` status. A growing value means transactional sends are
+ * exhausting the retry budget across a sustained provider outage (or a
+ * permanent misconfig). Join with the `email_outbox.dead_letter_*` log
+ * events for per-row triage.
+ */
+export const emailOutboxDeadCount: Gauge = meter.createGauge(
+  "atlas.email_outbox.dead_count",
+  {
+    description:
+      "Current email_outbox rows in dead status, observed per flusher tick (#2942)",
+  },
+);

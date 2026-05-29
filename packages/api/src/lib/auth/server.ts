@@ -906,10 +906,15 @@ export function resolveBootstrapAdminConfig(
  */
 export async function _sendVerificationOTP(opts: { to: string; otp: string }): Promise<void> {
   try {
-    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
-    const result = await sendEmail({
-      to: opts.to,
-      subject: "Your Atlas verification code",
+    const { sendTransactionalEmail } = await import("@atlas/api/lib/email/delivery");
+    // Durable send (#2942): if the in-process retry path is exhausted on
+    // a sustained provider outage, the message lands in email_outbox and
+    // the flusher re-sends it — rather than being lost. The response
+    // stays 200 either way (enumeration-safe, fire-and-forget).
+    const result = await sendTransactionalEmail(
+      {
+        to: opts.to,
+        subject: "Your Atlas verification code",
       html: `<!doctype html>
 <html>
   <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
@@ -919,7 +924,9 @@ export async function _sendVerificationOTP(opts: { to: string; otp: string }): P
     <p>— Atlas</p>
   </body>
 </html>`,
-    });
+      },
+      { emailType: "verification-otp" },
+    );
     if (!result.success) {
       log.warn(
         { to: opts.to, provider: result.provider, error: result.error },
@@ -951,11 +958,17 @@ export async function _sendPasswordResetEmail(opts: {
   url: string;
 }): Promise<void> {
   try {
-    const { sendEmail } = await import("@atlas/api/lib/email/delivery");
-    const result = await sendEmail({
-      to: opts.to,
-      subject: "Reset your Atlas password",
-      html: `<!doctype html>
+    const { sendTransactionalEmail } = await import("@atlas/api/lib/email/delivery");
+    // Durable send (#2942): password reset is the sole self-serve
+    // recovery path, so a sustained provider outage must not silently
+    // drop it. sendTransactionalEmail enqueues to email_outbox when the
+    // in-process retry path is exhausted; the flusher re-sends later. The
+    // request still returns 200 regardless (enumeration-safe, F-09).
+    const result = await sendTransactionalEmail(
+      {
+        to: opts.to,
+        subject: "Reset your Atlas password",
+        html: `<!doctype html>
 <html>
   <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 24px; color: #222;">
     <p>We received a request to reset the password for your Atlas account.</p>
@@ -964,7 +977,9 @@ export async function _sendPasswordResetEmail(opts: {
     <p>— Atlas</p>
   </body>
 </html>`,
-    });
+      },
+      { emailType: "password-reset" },
+    );
     if (!result.success) {
       log.warn(
         { to: opts.to, provider: result.provider, error: result.error },

@@ -123,8 +123,9 @@ describe("runMigrations", () => {
     // + 0105 (drop legacy invitations table after better-auth-invitations
     //   cutover — invitations now live in Better Auth's `invitation`
     //   table; see lib/auth/server.ts:organizationHooks) = 106. Plus
-    //   #2849 (workspace_id on crm_outbox) = 107.
-    expect(count).toBe(107);
+    //   #2849 (workspace_id on crm_outbox) = 107. Plus
+    //   0107 (email_outbox durable queue for transactional email, #2942) = 108.
+    expect(count).toBe(108);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -260,6 +261,7 @@ describe("runMigrations", () => {
         "0104_crm_outbox_email_key.sql",
         "0105_drop_legacy_invitations.sql",
         "0106_crm_outbox_workspace_id.sql",
+        "0107_email_outbox.sql",
       ],
     });
 

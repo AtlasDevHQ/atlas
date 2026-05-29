@@ -10,6 +10,7 @@
  */
 
 import type { OutboxStatus } from "../lead-outbox/outbox";
+import type { EmailOutboxStatus } from "../email-outbox/outbox";
 import {
   pgTable,
   uuid,
@@ -2268,6 +2269,52 @@ export const crmOutbox = pgTable(
       .where(sql`status IN ('pending', 'in_flight')`),
     index("idx_crm_outbox_workspace_status_created")
       .on(t.workspaceId, t.status, t.createdAt)
+      .where(sql`status IN ('pending', 'in_flight')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// email_outbox (0107) — durable queue for transactional email (password reset,
+// signup verification OTP). Slice for #2942 residual scope. Owned by
+// `lib/email-outbox/`. A stripped-down mirror of `crm_outbox`: no email_key
+// serialization, no workspace_id routing, no sub-step resource-id columns —
+// transactional sends are single, independent, at-least-once operations.
+//
+// `status` here is the OUTBOX LIFECYCLE status, NOT the content-mode status
+// (draft/published/archived). email_outbox is an operational queue, not
+// user-surfaced content, so it is intentionally OUTSIDE the content-mode
+// system (CLAUDE.md § Content Mode System carve-out). It stores no credentials
+// (the reset-link token is single-use + short-TTL), so it is NOT a member of
+// `INTEGRATION_TABLES`.
+// ---------------------------------------------------------------------------
+
+export const emailOutbox = pgTable(
+  "email_outbox",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Send classification for observability / metrics bucketing
+    // (e.g. 'password-reset', 'verification-otp'). Never used for routing.
+    emailType: text("email_type").notNull(),
+    // Rendered EmailMessage: { to, subject, html }. Handed straight to sendEmail.
+    payload: jsonb("payload").notNull(),
+    // Optional org scope so the flusher re-resolves a per-org transport
+    // override on re-send. NULL for session-less flows (password reset).
+    orgId: text("org_id"),
+    status: text("status").$type<EmailOutboxStatus>().notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    retryAfter: timestamp("retry_after", { withTimezone: true }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check(
+      "email_outbox_status_chk",
+      sql`status IN ('pending', 'in_flight', 'done', 'dead')`,
+    ),
+    index("idx_email_outbox_pending_created")
+      .on(t.status, t.createdAt)
       .where(sql`status IN ('pending', 'in_flight')`),
   ],
 );

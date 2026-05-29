@@ -1,0 +1,594 @@
+/**
+ * Email outbox — durable queue for transactional email (#2942).
+ *
+ * This is a STRIPPED-DOWN mirror of `lib/lead-outbox/`. It owns the
+ * queue mechanics (enqueue, claim, backoff, dead-letter, startup
+ * recovery) and delegates the actual send to a pluggable
+ * `EmailDispatcher` (wired to `email/delivery.ts:sendEmail` in
+ * `lib/email-outbox/dispatch.ts`). Keeping the dispatcher injectable
+ * makes `flushBatch` trivial to unit-test with a fake.
+ *
+ * What it DOESN'T carry, vs `crm_outbox`, and why:
+ *   - No `email_key` per-email serialization: transactional sends have
+ *     no cross-row ordering contract, and an at-least-once duplicate
+ *     send is acceptable. Rows dispatch independently.
+ *   - No `workspace_id` routing / advisory locks: these are
+ *     operator-level transactional sends, not per-tenant plugin
+ *     dispatches. `orgId` is carried only so the flusher re-resolves a
+ *     per-org transport override on re-send.
+ *   - No sub-step resource IDs (`twenty_person_id` etc.): a send is a
+ *     single operation; there is no partial-success sub-step.
+ *
+ * Concurrency: the claim is a single `UPDATE … WHERE id IN (SELECT …
+ * FOR UPDATE SKIP LOCKED) RETURNING *` statement, so multiple flusher
+ * workers (one per pod) cannot double-claim a row.
+ *
+ * Retry-After: when a transient outcome carries a `retryAfterMs`, the
+ * flusher stamps `retry_after = now() + delay` and the claim WHERE
+ * prefers it over the tier-based backoff via
+ * `COALESCE(retry_after, created_at + tier)`.
+ */
+
+import { createLogger } from "@atlas/api/lib/logger";
+import { CLAIM_DELAY_SQL, DEAD_AFTER_ATTEMPTS } from "./backoff";
+
+/**
+ * Narrow DB surface the outbox needs. Matches the `query` method on
+ * `InternalDBShape` and the module-level `internalQuery` standalone, so
+ * the layers.ts wiring can hand in either. Keeping the dependency narrow
+ * makes unit tests trivial (pass any object with a `query` method).
+ */
+export interface EmailOutboxDB {
+  query<T extends Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<T[]>;
+}
+
+const log = createLogger("email-outbox");
+
+// ─────────────────────────────────────────────────────────────────────
+//  Public types
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Outbox lifecycle states. Mirrors the `email_outbox_status_chk` CHECK
+ * constraint exactly. This is the QUEUE lifecycle status, NOT the
+ * content-mode status (draft/published/archived) — email_outbox is an
+ * operational queue, deliberately outside the content-mode system.
+ */
+export type EmailOutboxStatus = "pending" | "in_flight" | "done" | "dead";
+
+/**
+ * The rendered message stored in a row's `payload`. Structurally an
+ * `EmailMessage` (`email/delivery.ts`); kept local so the outbox module
+ * has no static dependency on the delivery layer (the concrete
+ * dispatcher in `dispatch.ts` bridges the two).
+ */
+export interface EmailOutboxMessage {
+  readonly to: string;
+  readonly subject: string;
+  readonly html: string;
+}
+
+/** What a freshly-enqueued row looks like before any send attempt. */
+export interface EnqueueEmailInput {
+  /** Send classification for observability (e.g. "password-reset"). */
+  readonly emailType: string;
+  /** The rendered message to deliver. */
+  readonly message: EmailOutboxMessage;
+  /**
+   * Optional org scope so the flusher re-resolves a per-org transport
+   * override on re-send. Session-less flows (password reset) pass null.
+   */
+  readonly orgId?: string | null;
+}
+
+/** Snapshot of a row at the moment the flusher claimed it. */
+export interface ClaimedEmailRow {
+  readonly id: string;
+  readonly emailType: string;
+  readonly message: EmailOutboxMessage;
+  readonly orgId: string | null;
+  readonly attempts: number;
+}
+
+/**
+ * Dispatcher classification of a send outcome. The outbox uses this to
+ * decide dead-letter vs retry without knowing anything about HTTP
+ * status codes or provider specifics.
+ *
+ * `transient.retryAfterMs` lets the dispatcher honour an upstream
+ * delay (e.g. a 429 `Retry-After`). When set, the flusher stamps
+ * `retry_after = now() + retryAfterMs` and the claim WHERE prefers it.
+ */
+export type EmailDispatchOutcome =
+  | { readonly kind: "ok" }
+  | {
+      readonly kind: "transient";
+      readonly message: string;
+      readonly retryAfterMs?: number;
+    }
+  | { readonly kind: "permanent"; readonly message: string };
+
+/**
+ * Pluggable dispatcher. The implementation owns the send and the
+ * decision of whether a failure is transient or permanent. The concrete
+ * dispatcher (`dispatch.ts`) wraps `sendEmail`.
+ */
+export type EmailDispatcher = (row: ClaimedEmailRow) => Promise<EmailDispatchOutcome>;
+
+export interface FlushResult {
+  readonly claimed: number;
+  readonly ok: number;
+  readonly transient: number;
+  readonly permanent: number;
+}
+
+export interface RecoveryResult {
+  readonly deadLettered: number;
+  readonly reset: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  SQL — hoisted as top-level constants so each statement is greppable.
+// ─────────────────────────────────────────────────────────────────────
+
+const ENQUEUE_SQL = `
+  INSERT INTO email_outbox (email_type, payload, org_id, status)
+  VALUES ($1, $2::jsonb, $3, 'pending')
+  RETURNING id
+`;
+
+/**
+ * Single-statement claim. The inner SELECT uses `FOR UPDATE SKIP
+ * LOCKED` so concurrent flushers walk disjoint sets of pending rows
+ * without blocking each other. The outer UPDATE atomically flips status
+ * and bumps `attempts`.
+ *
+ * Backoff gate: `COALESCE(retry_after, created_at + tier) <= now()`.
+ * When a prior failure surfaced a delay, the absolute `retry_after`
+ * wins; otherwise the tier-based delay (CLAIM_DELAY_SQL) applies.
+ *
+ * No per-email serialization / advisory locks (cf. crm_outbox) — each
+ * transactional send is independent and an at-least-once duplicate is
+ * acceptable, so the claim is a plain age-ordered batch.
+ */
+const CLAIM_SQL = `
+  UPDATE email_outbox
+  SET status = 'in_flight',
+      attempts = attempts + 1,
+      claimed_at = now()
+  WHERE id IN (
+    SELECT id FROM email_outbox
+    WHERE status = 'pending'
+      AND attempts < ${DEAD_AFTER_ATTEMPTS}
+      AND COALESCE(retry_after, created_at + (${CLAIM_DELAY_SQL})) <= now()
+    ORDER BY created_at, id
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+  )
+  RETURNING id, email_type, payload, org_id, attempts
+`;
+
+const MARK_DONE_SQL = `
+  UPDATE email_outbox
+  SET status = 'done',
+      processed_at = now(),
+      last_error = NULL,
+      retry_after = NULL,
+      claimed_at = NULL
+  WHERE id = $1
+`;
+
+/**
+ * Transient mark. `$3` is either an absolute timestamp (when the send
+ * outcome supplied a parseable delay) or NULL (clears any previous
+ * retry_after so the row falls back to the tier-based gate on the next
+ * claim). `claimed_at` is cleared so the recovery sweep's staleness
+ * gate doesn't trip on a row that's already back to pending.
+ */
+const MARK_TRANSIENT_FAIL_SQL = `
+  UPDATE email_outbox
+  SET status = 'pending',
+      last_error = $1,
+      retry_after = $3,
+      claimed_at = NULL
+  WHERE id = $2
+`;
+
+const MARK_DEAD_SQL = `
+  UPDATE email_outbox
+  SET status = 'dead',
+      processed_at = now(),
+      last_error = $1,
+      retry_after = NULL,
+      claimed_at = NULL
+  WHERE id = $2
+`;
+
+/**
+ * Recovery sweep — splits the in_flight set into two buckets:
+ *
+ *  1. **Exhausted carcasses** (`attempts >= DEAD_AFTER_ATTEMPTS`) move
+ *     straight to `status = 'dead'`. Without this they'd land in
+ *     `pending` and never re-claim (the claim WHERE filters them out),
+ *     hiding terminal failures from a `status = 'dead'` triage query.
+ *  2. **Stale carcasses** (claimed > `$1` ms ago, OR never stamped)
+ *     return to `pending` for re-claim. The age threshold protects a
+ *     concurrent peer pod in a multi-pod deployment — a sibling that
+ *     claimed the row seconds ago is NOT reset out from under its
+ *     still-running send.
+ *
+ * `retry_after` is preserved across both branches.
+ */
+const MARK_EXHAUSTED_IN_FLIGHT_DEAD_SQL = `
+  UPDATE email_outbox
+  SET status = 'dead', processed_at = now(),
+      last_error = CASE
+        WHEN last_error IS NULL OR last_error = ''
+          THEN 'crashed mid-send at attempts=' || attempts || ' (recovery)'
+        ELSE last_error || ' [crashed mid-send at attempts=' || attempts || ', recovery dead-lettered]'
+      END
+  WHERE status = 'in_flight'
+    AND attempts >= ${DEAD_AFTER_ATTEMPTS}
+  RETURNING id
+`;
+
+const RECOVER_STALE_IN_FLIGHT_SQL = `
+  UPDATE email_outbox
+  SET status = 'pending'
+  WHERE status = 'in_flight'
+    AND attempts < ${DEAD_AFTER_ATTEMPTS}
+    AND (claimed_at IS NULL OR claimed_at < now() - ($1::int * INTERVAL '1 millisecond'))
+  RETURNING id
+`;
+
+/**
+ * Recovery age thresholds. Startup uses a generous window so any
+ * still-running peer pod's send finishes before we'd interfere;
+ * shutdown can use a shorter window since the dying pod's OWN send has
+ * just been interrupted.
+ */
+export const STARTUP_RECOVERY_STALE_MS = 5 * 60_000; // 5 min
+export const SHUTDOWN_RECOVERY_STALE_MS = 30_000; // 30 s
+
+// ─────────────────────────────────────────────────────────────────────
+//  Public API
+// ─────────────────────────────────────────────────────────────────────
+
+/** Insert a row in `pending` status. Returns the new row id. */
+export async function enqueue(
+  db: EmailOutboxDB,
+  input: EnqueueEmailInput,
+): Promise<string> {
+  // Fail loud on an empty recipient. A row whose payload has no `to`
+  // can never deliver — it would just burn the retry budget and
+  // dead-letter. Reject at the seam so the bug surfaces where it
+  // originates, not six attempts later in the dead-letter log.
+  if (input.message.to.trim().length === 0) {
+    throw new Error(
+      "email_outbox enqueue: message.to must be a non-empty recipient address",
+    );
+  }
+  const rows = await db.query<{ id: string }>(ENQUEUE_SQL, [
+    input.emailType,
+    JSON.stringify(input.message),
+    input.orgId ?? null,
+  ]);
+  const id = rows[0]?.id;
+  if (!id) {
+    // INSERT … RETURNING with no row back is a driver-level invariant
+    // violation — fail loud rather than silently drop the enqueue.
+    throw new Error("email_outbox enqueue returned no row");
+  }
+  return id;
+}
+
+/**
+ * Reset stale `in_flight` rows. Call at Layer init AND from the shutdown
+ * finalizer. Returns a per-bucket count for logging.
+ */
+export async function recoverInFlight(
+  db: EmailOutboxDB,
+  staleAgeMs: number = STARTUP_RECOVERY_STALE_MS,
+): Promise<RecoveryResult> {
+  // Dead-letter exhausted rows first — these don't care about staleness
+  // (a row claimed 1s ago that's already exhausted is still terminally
+  // failed and should not retry).
+  const dead = await db.query<{ id: string }>(MARK_EXHAUSTED_IN_FLIGHT_DEAD_SQL);
+  const reset = await db.query<{ id: string }>(RECOVER_STALE_IN_FLIGHT_SQL, [staleAgeMs]);
+  return { deadLettered: dead.length, reset: reset.length };
+}
+
+/**
+ * Claim a batch of pending-and-due rows, dispatch each, and stamp final
+ * status. Returns counts so the caller can log / surface metrics.
+ *
+ * Errors from the dispatcher are NEVER re-thrown — they're caught and
+ * the row's status is updated per `EmailDispatchOutcome`. An uncaught
+ * defect (the dispatcher itself throwing) is logged and treated as
+ * transient (will retry with backoff) — anything else would leak
+ * `in_flight` rows that `recoverInFlight` would need to mop up.
+ */
+export async function flushBatch(
+  db: EmailOutboxDB,
+  dispatcher: EmailDispatcher,
+  batchLimit: number,
+): Promise<FlushResult> {
+  if (batchLimit <= 0) return { claimed: 0, ok: 0, transient: 0, permanent: 0 };
+
+  type ClaimedRow = {
+    id: string;
+    email_type: string;
+    payload: unknown;
+    org_id: string | null;
+    attempts: number;
+  };
+  const claimed = await db.query<ClaimedRow>(CLAIM_SQL, [batchLimit]);
+  let ok = 0;
+  let transient = 0;
+  let permanent = 0;
+
+  for (const raw of claimed) {
+    const message = coerceMessage(raw.payload);
+    if (message === null) {
+      // A row whose payload can't be read as an EmailMessage is
+      // unrecoverable — re-sending will never succeed. Dead-letter it
+      // immediately with an actionable error rather than burning the
+      // retry budget on a malformed row.
+      await markStatusWithRetry(
+        db,
+        MARK_DEAD_SQL,
+        ["email_outbox payload is not a valid EmailMessage (missing to/subject/html)", raw.id],
+        raw.id,
+        "dead",
+      );
+      log.error(
+        { rowId: raw.id, event: "email_outbox.dead_letter_malformed" },
+        "Email outbox row dead-lettered — payload is not a valid EmailMessage",
+      );
+      permanent++;
+      continue;
+    }
+
+    const row: ClaimedEmailRow = {
+      id: raw.id,
+      emailType: raw.email_type,
+      message,
+      orgId: raw.org_id,
+      attempts: raw.attempts,
+    };
+
+    let outcome: EmailDispatchOutcome;
+    try {
+      outcome = await dispatcher(row);
+    } catch (err) {
+      // Dispatcher contract violation: it should classify and return,
+      // never throw. Treat as transient so we don't dead-letter on a
+      // bug in the dispatcher's error handling.
+      log.error(
+        {
+          rowId: row.id,
+          attempts: row.attempts,
+          err: err instanceof Error ? err.message : String(err),
+          event: "email_outbox.dispatcher_threw",
+        },
+        "Dispatcher threw — classifying as transient so the row will retry",
+      );
+      outcome = {
+        kind: "transient",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    if (outcome.kind === "ok") {
+      await markStatusWithRetry(db, MARK_DONE_SQL, [row.id], row.id, "done");
+      ok++;
+      continue;
+    }
+
+    if (outcome.kind === "permanent") {
+      await markStatusWithRetry(db, MARK_DEAD_SQL, [outcome.message, row.id], row.id, "dead");
+      log.error(
+        {
+          rowId: row.id,
+          attempts: row.attempts,
+          err: outcome.message,
+          emailType: row.emailType,
+          event: "email_outbox.dead_letter_permanent",
+        },
+        "Transactional email dead-lettered (permanent failure) — operator intervention required",
+      );
+      permanent++;
+      continue;
+    }
+
+    // Transient. If we've already burned through the retry budget the
+    // row dies here — the claim WHERE wouldn't let us pick it up again,
+    // so leaving it `pending` would be a silent stuck-forever row.
+    if (row.attempts >= DEAD_AFTER_ATTEMPTS) {
+      await markStatusWithRetry(
+        db,
+        MARK_DEAD_SQL,
+        [`transient failure after ${DEAD_AFTER_ATTEMPTS} attempts: ${outcome.message}`, row.id],
+        row.id,
+        "dead",
+      );
+      log.error(
+        {
+          rowId: row.id,
+          attempts: row.attempts,
+          err: outcome.message,
+          emailType: row.emailType,
+          event: "email_outbox.dead_letter_exhausted",
+        },
+        "Transactional email dead-lettered (retry budget exhausted)",
+      );
+      permanent++;
+      continue;
+    }
+
+    const retryAfter = computeRetryAfterTimestamp(outcome.retryAfterMs);
+    await markStatusWithRetry(
+      db,
+      MARK_TRANSIENT_FAIL_SQL,
+      [outcome.message, row.id, retryAfter],
+      row.id,
+      "pending",
+    );
+    log.warn(
+      {
+        rowId: row.id,
+        attempts: row.attempts,
+        err: outcome.message,
+        retryAfterMs: outcome.retryAfterMs ?? null,
+        emailType: row.emailType,
+        event: "email_outbox.transient_failure",
+      },
+      "Transactional email send failed (transient) — will retry with backoff",
+    );
+    transient++;
+  }
+
+  return { claimed: claimed.length, ok, transient, permanent };
+}
+
+/**
+ * Read a claimed row's `payload` column back into an
+ * `EmailOutboxMessage`. The pg driver may hand the JSONB column back as
+ * an already-parsed object (normal path) or as a string (some pool
+ * configs); accept both. Returns `null` when the value isn't a usable
+ * message so `flushBatch` can dead-letter it rather than crash.
+ */
+function coerceMessage(payload: unknown): EmailOutboxMessage | null {
+  let obj: unknown = payload;
+  if (typeof payload === "string") {
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      return null;
+    }
+  }
+  if (obj === null || typeof obj !== "object") return null;
+  const rec = obj as Record<string, unknown>;
+  if (
+    typeof rec.to !== "string" ||
+    typeof rec.subject !== "string" ||
+    typeof rec.html !== "string" ||
+    rec.to.trim().length === 0
+  ) {
+    return null;
+  }
+  return { to: rec.to, subject: rec.subject, html: rec.html };
+}
+
+/**
+ * Compute the absolute `retry_after` timestamp for a transient outcome
+ * with an upstream-specified delay. Returns `null` when the outcome
+ * carries no delay (the SQL clears the column on every transient mark
+ * so a prior Retry-After can't strand a row). Exported for tests.
+ */
+export function computeRetryAfterTimestamp(retryAfterMs: number | undefined): Date | null {
+  if (retryAfterMs == null) return null;
+  if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) return null;
+  return new Date(Date.now() + retryAfterMs);
+}
+
+/**
+ * Single-retry wrapper around a terminal-status UPDATE. If the first
+ * write fails (a Postgres blip between dispatch return and status
+ * stamp), wait briefly and try once more. If both fail, log loudly and
+ * re-throw so the tick's outer catch records the tick as failed — the
+ * row stays `in_flight` and `recoverInFlight` mops it up on the next
+ * boot. Without this, an isolated network hiccup at the wrong moment
+ * strands the row until restart.
+ */
+async function markStatusWithRetry(
+  db: EmailOutboxDB,
+  sql: string,
+  params: unknown[],
+  rowId: string,
+  intent: EmailOutboxStatus,
+): Promise<void> {
+  try {
+    await db.query(sql, params);
+    return;
+  } catch (err) {
+    log.warn(
+      {
+        rowId,
+        intent,
+        err: err instanceof Error ? err.message : String(err),
+        event: "email_outbox.status_update_retrying",
+      },
+      "Email outbox terminal-status UPDATE failed — retrying once before letting the row strand",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await db.query(sql, params);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Configuration
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Tick interval. Default 5s; configurable via
+ * `ATLAS_EMAIL_OUTBOX_TICK_SECONDS`. Clamped to `[1, 3600]` seconds —
+ * the upper bound avoids a Bun timer overflow and the lower bound
+ * prevents an accidental sub-second tick from hammering Postgres.
+ * Out-of-range inputs warn-and-clamp rather than silently default so
+ * the operator's intent (faster / slower) is preserved at the boundary.
+ */
+export const MIN_TICK_SECONDS = 1;
+export const MAX_TICK_SECONDS = 3600;
+export const DEFAULT_TICK_SECONDS = 5;
+
+export function getTickIntervalMs(): number {
+  const raw = process.env.ATLAS_EMAIL_OUTBOX_TICK_SECONDS;
+  if (!raw) return DEFAULT_TICK_SECONDS * 1_000;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TICK_SECONDS * 1_000;
+  if (parsed < MIN_TICK_SECONDS) {
+    log.warn(
+      { requested: parsed, clamped: MIN_TICK_SECONDS, event: "email_outbox.tick_clamped" },
+      `ATLAS_EMAIL_OUTBOX_TICK_SECONDS=${parsed} is below ${MIN_TICK_SECONDS}s minimum — clamping`,
+    );
+    return MIN_TICK_SECONDS * 1_000;
+  }
+  if (parsed > MAX_TICK_SECONDS) {
+    log.warn(
+      { requested: parsed, clamped: MAX_TICK_SECONDS, event: "email_outbox.tick_clamped" },
+      `ATLAS_EMAIL_OUTBOX_TICK_SECONDS=${parsed} exceeds ${MAX_TICK_SECONDS}s maximum — clamping`,
+    );
+    return MAX_TICK_SECONDS * 1_000;
+  }
+  return parsed * 1_000;
+}
+
+/**
+ * Per-tick claim batch size. Transactional email is low-volume; 25 is
+ * plenty to drain a backlog after an outage without a single tick
+ * fanning out an unbounded number of provider calls.
+ */
+export const FLUSH_BATCH_LIMIT = 25;
+
+/**
+ * Flusher region gate. Default `true` — every API instance with an
+ * internal DB runs the flusher. Set `ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED=false`
+ * on pods whose internal DB never accumulates email_outbox rows (e.g. a
+ * regional read replica that doesn't serve auth) to skip the idle poll.
+ * Disabling the flusher does NOT skip the boot/shutdown recovery sweep.
+ */
+export function isFlusherEnabled(): boolean {
+  const raw = process.env.ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED;
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  return !(
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "no" ||
+    normalized === "off"
+  );
+}

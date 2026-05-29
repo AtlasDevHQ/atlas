@@ -110,8 +110,13 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // Each recoverInFlight call runs TWO statements: dead-letter
     // exhausted rows, then reset stale rows. So one boot + one
     // finalizer = 4 SQL invocations that target in_flight.
-    const recoveryCalls = sqlLog.filter((q) =>
-      /WHERE status = 'in_flight'/i.test(q.sql),
+    // CRM-specific canary: the email_outbox flusher (#2942) also runs an
+    // in_flight recovery sweep and mounts independently (gated on
+    // hasInternalDB, not SaasCrm), so the bare `WHERE status =
+    // 'in_flight'` predicate now matches both. Scope to `crm_outbox` so
+    // this test still counts only the CRM sweeps it's asserting about.
+    const recoveryCalls = sqlLog.filter(
+      (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
     );
     expect(recoveryCalls.length).toBe(4);
   });
@@ -132,8 +137,13 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     await Effect.runPromise(rt.runtimeEffect);
     await rt.dispose();
 
-    const recoveryCalls = sqlLog.filter((q) =>
-      /WHERE status = 'in_flight'/i.test(q.sql),
+    // CRM-specific canary: the email_outbox flusher (#2942) also runs an
+    // in_flight recovery sweep and mounts independently (gated on
+    // hasInternalDB, not SaasCrm), so the bare `WHERE status =
+    // 'in_flight'` predicate now matches both. Scope to `crm_outbox` so
+    // this test still counts only the CRM sweeps it's asserting about.
+    const recoveryCalls = sqlLog.filter(
+      (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
     );
     // Neither boot nor finalizer touch the DB when the flusher is unwired.
     expect(recoveryCalls.length).toBe(0);
@@ -219,8 +229,10 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
 
       // Recovery sweeps must still have fired: one boot + one shutdown
       // = 2 × 2 statements (dead-letter + reset) = 4 in_flight queries.
-      const recoveryCalls = sqlLog.filter((q) =>
-        /WHERE status = 'in_flight'/i.test(q.sql),
+      // CRM-specific (see note above) — the email_outbox flusher's own
+      // recovery sweep must not inflate this CRM-gate assertion.
+      const recoveryCalls = sqlLog.filter(
+        (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
       );
       expect(recoveryCalls.length).toBe(4);
     } finally {
@@ -253,8 +265,13 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     await Effect.runPromise(rt.runtimeEffect);
     await rt.dispose();
 
-    const recoveryCalls = sqlLog.filter((q) =>
-      /WHERE status = 'in_flight'/i.test(q.sql),
+    // CRM-specific canary: the email_outbox flusher (#2942) also runs an
+    // in_flight recovery sweep and mounts independently (gated on
+    // hasInternalDB, not SaasCrm), so the bare `WHERE status =
+    // 'in_flight'` predicate now matches both. Scope to `crm_outbox` so
+    // this test still counts only the CRM sweeps it's asserting about.
+    const recoveryCalls = sqlLog.filter(
+      (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
     );
     expect(recoveryCalls.length).toBe(0);
   });
@@ -286,8 +303,13 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // Recovery sweep is the canary — it only runs when the flusher
     // mounts. Presence of any in_flight reset/mark statement proves
     // the dispatcher-gated mount took effect.
-    const recoveryCalls = sqlLog.filter((q) =>
-      /WHERE status = 'in_flight'/i.test(q.sql),
+    // CRM-specific canary: the email_outbox flusher (#2942) also runs an
+    // in_flight recovery sweep and mounts independently (gated on
+    // hasInternalDB, not SaasCrm), so the bare `WHERE status =
+    // 'in_flight'` predicate now matches both. Scope to `crm_outbox` so
+    // this test still counts only the CRM sweeps it's asserting about.
+    const recoveryCalls = sqlLog.filter(
+      (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
     );
     expect(recoveryCalls.length).toBeGreaterThan(0);
   });

@@ -90,6 +90,11 @@ function translateInstallError(platform: string, reason: string | null): string 
       return `The ${label} install session expired or was tampered with. Click Connect to start a fresh install.`;
     case "upstream_error":
       return `${label} rejected the OAuth handshake. Check the app's redirect URL matches this deploy, then retry.`;
+    case "plan_limit_reached":
+      // #2953 — workspace at its plan's chat-integration cap. The API
+      // refused the install before writing anything; the fix is to upgrade,
+      // not retry.
+      return `Your plan's chat-integration limit is reached, so ${label} couldn't be connected. Upgrade your plan or remove another integration, then try again.`;
     default:
       if (reason && process.env.NODE_ENV !== "production") {
         console.warn(

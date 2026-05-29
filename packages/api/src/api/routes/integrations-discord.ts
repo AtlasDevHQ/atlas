@@ -46,6 +46,7 @@ import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
 import {
+  ChatIntegrationLimitError,
   DiscordApiUnavailableError,
   DiscordGuildIdInvalidError,
   DiscordReachabilityError,
@@ -663,6 +664,23 @@ discordIntegrations.openapi(callbackRoute, async (c) =>
         return c.json(
           { error: "upstream_error", message: err.message, requestId },
           502,
+        );
+      }
+      // Workspace at its plan's chat-integration cap. Browser callers get
+      // the friendly upgrade redirect; JSON callers fall through to the 429
+      // `plan_limit_exceeded` mapping in runHandler. (A `BillingCheckFailedError`
+      // is intentionally left to the 503 JSON mapper — transient "try again".)
+      if (err instanceof ChatIntegrationLimitError) {
+        log.info(
+          { workspaceId, limit: err.limit },
+          "Discord install blocked — workspace at chat-integration cap",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildAdminIntegrationsUrl("error", { reason: "plan_limit_reached" }));
+        }
+        return c.json(
+          { error: "plan_limit_exceeded", message: err.message, requestId, limit: err.limit },
+          429,
         );
       }
       throw err;

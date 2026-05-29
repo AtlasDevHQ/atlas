@@ -35,6 +35,7 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  BillingCheckFailedError,
   ChatIntegrationLimitError,
   DiscordApiUnavailableError,
   DiscordGuildIdInvalidError,
@@ -230,6 +231,18 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // never blocked — the check excludes Discord's own row.
     const capCheck = await checkChatIntegrationLimit(workspaceId, DISCORD_CATALOG_ID);
     if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Count couldn't be determined — fail closed, but as a transient
+        // 503 "try again", not a misleading 429 "upgrade your plan".
+        log.error(
+          { workspaceId },
+          "Discord install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
       log.info(
         { workspaceId, limit: capCheck.limit },
         "Discord install blocked — workspace at chat-integration cap",

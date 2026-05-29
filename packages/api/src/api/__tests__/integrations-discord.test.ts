@@ -403,6 +403,13 @@ describe("/api/v1/integrations/discord", () => {
         if (sql.includes("FROM organization")) {
           return Promise.resolve(entitlementRowResponse);
         }
+        if (sql.includes("COUNT(*) FILTER")) {
+          // Chat-integration cap count (#2953) — no existing chat installs,
+          // so the cap check allows this net-new Discord install. The
+          // aggregate must return exactly one row; an empty result now
+          // fails closed (BillingCheckFailedError → 503).
+          return Promise.resolve([{ others: 0, this_count: 0 }]);
+        }
         if (sql.includes("INSERT INTO workspace_plugins")) {
           return Promise.resolve([{ id: "install-row-1" }]);
         }

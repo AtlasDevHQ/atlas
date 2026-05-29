@@ -16,7 +16,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
-import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import {
   MockInternalDB,
   makeMockInternalDBShimLayer,
@@ -502,6 +502,67 @@ describe("GET /api/v1/integrations/slack/callback — upstream Slack failure", (
     );
 
     expect(res.status).toBe(502);
+  });
+});
+
+describe("GET /api/v1/integrations/slack/callback — chat-integration cap (#2953)", () => {
+  it("redirects to ?error=slack&reason=plan_limit_reached for browser callers when at cap", async () => {
+    callbackImpl = async () => {
+      throw new ChatIntegrationLimitError({
+        message: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        workspaceId: "org-1",
+        limit: 1,
+      });
+    };
+
+    const res = await request(
+      "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("error=slack");
+    expect(location).toContain("reason=plan_limit_reached");
+  });
+
+  it("returns 429 plan_limit_exceeded JSON (with limit) for application/json callers", async () => {
+    callbackImpl = async () => {
+      throw new ChatIntegrationLimitError({
+        message: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        workspaceId: "org-1",
+        limit: 1,
+      });
+    };
+
+    const res = await request(
+      "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error?: string; limit?: number };
+    expect(body.error).toBe("plan_limit_exceeded");
+    expect(body.limit).toBe(1);
+  });
+
+  it("returns 503 billing_check_failed (NOT a redirect / not 429) when the count check fails closed", async () => {
+    // A count-check failure must surface as a transient 503 "try again",
+    // never a misleading 429/upgrade redirect.
+    callbackImpl = async () => {
+      throw new BillingCheckFailedError({
+        message: "Unable to verify plan limits. Please try again.",
+        workspaceId: "org-1",
+      });
+    };
+
+    const res = await request(
+      "/api/v1/integrations/slack/callback?code=auth-abc&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).not.toBe(302);
+    expect(res.status).toBe(503);
   });
 });
 

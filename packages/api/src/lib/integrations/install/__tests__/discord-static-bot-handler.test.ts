@@ -49,7 +49,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // cap" test below overrides it via `mockImplementationOnce`.
 const mockCheckChatLimit: Mock<
   (orgId: string | undefined, catalogId: string) =>
-    Promise<{ allowed: true } | { allowed: false; errorMessage: string; limit: number }>
+    Promise<
+      | { allowed: true }
+      | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+      | { allowed: false; reason: "check_failed"; errorMessage: string }
+    >
 > = mock(() => Promise.resolve({ allowed: true as const }));
 
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
@@ -255,6 +259,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap
     mockCheckChatLimit.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
+        reason: "cap_reached" as const,
         errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
         limit: 1,
       }),
@@ -268,6 +273,24 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap
 
     // Cap is checked after reachability but before the UPSERT.
     expect(mockCheckChatLimit).toHaveBeenCalledWith(wsid, DISCORD_CATALOG_ID);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
+
+    await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+
+    // Still fail closed — no install row written.
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });

@@ -87,6 +87,7 @@ type HttpErrorCode =
   | "rate_limited"
   | "conversation_budget_exceeded"
   | "plan_limit_exceeded"
+  | "billing_check_failed"
   | "upstream_error"
   | "service_unavailable"
   | "enterprise_load_failed"
@@ -359,6 +360,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         code: "plan_limit_exceeded",
         message: error.message,
         body: { limit: error.limit },
+      };
+    // #2953 — the chat-integration count could not be determined (DB error
+    // / missing row), so the cap check failed closed. This is a transient
+    // infra fault, NOT a plan-cap hit: 503 + `billing_check_failed` (same
+    // code the token-budget check surfaces) so the user sees "try again",
+    // not a misleading "upgrade your plan".
+    case "BillingCheckFailedError":
+      return {
+        status: 503,
+        code: "billing_check_failed",
+        message: error.message,
       };
 
     // ── 502 Bad Gateway — upstream DB error ──────────────────────

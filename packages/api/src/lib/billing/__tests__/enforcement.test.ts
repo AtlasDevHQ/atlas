@@ -422,10 +422,22 @@ describe("billing/enforcement", () => {
 // checkResourceLimit — seat / connection plan enforcement
 // ===========================================================================
 
-/** Narrow a denied resource limit result for type-safe assertion access. */
-function expectResourceDenied(result: ResourceLimitResult): Extract<ResourceLimitResult, { allowed: false }> {
+/** Narrow a cap-reached (vs check-failed) denial for type-safe `.limit` access. */
+function expectResourceDenied(
+  result: ResourceLimitResult,
+): Extract<ResourceLimitResult, { allowed: false; reason: "cap_reached" }> {
   expect(result.allowed).toBe(false);
-  return result as Extract<ResourceLimitResult, { allowed: false }>;
+  if (!result.allowed) expect(result.reason).toBe("cap_reached");
+  return result as Extract<ResourceLimitResult, { allowed: false; reason: "cap_reached" }>;
+}
+
+/** Narrow a fail-closed (check_failed) denial. */
+function expectCheckFailed(
+  result: ResourceLimitResult,
+): Extract<ResourceLimitResult, { allowed: false; reason: "check_failed" }> {
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toBe("check_failed");
+  return result as Extract<ResourceLimitResult, { allowed: false; reason: "check_failed" }>;
 }
 
 describe("checkResourceLimit", () => {
@@ -457,10 +469,11 @@ describe("checkResourceLimit", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("blocks when workspace details fetch fails (fail closed)", async () => {
+  it("blocks when workspace details fetch fails (fail closed, check_failed)", async () => {
     mockWorkspaceDetailsShouldThrow = true;
-    const result = await checkResourceLimit("org-1", "seats", 100);
-    expect(result.allowed).toBe(false);
+    const denied = expectCheckFailed(await checkResourceLimit("org-1", "seats", 100));
+    // check_failed carries no `limit` — there's no meaningful cap to report.
+    expect(denied.errorMessage).toContain("Unable to verify plan limits");
   });
 
   // ── Free tier ─────────────────────────────────────────────────────
@@ -680,16 +693,22 @@ describe("checkChatIntegrationLimit", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("blocks (fail closed) when the count query throws", async () => {
+  it("blocks (fail closed, check_failed) when the count query throws", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
     mockInternalQueryShouldThrow = true;
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
-    expect(result.allowed).toBe(false);
-    // Distinct fail-closed contract — not the normal cap message.
-    if (!result.allowed) {
-      expect(result.errorMessage).toContain("Unable to verify plan limits");
-      expect(result.limit).toBe(0);
-    }
+    // Distinct fail-closed contract — check_failed (→ 503 "try again"), not
+    // cap_reached (→ 429 "upgrade"). No `limit` field.
+    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.errorMessage).toContain("Unable to verify plan limits");
+  });
+
+  it("blocks (fail closed, check_failed) when the count query returns no row", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // The aggregate SQL always returns one row; an empty result means a
+    // driver/query contract violation. Must NOT coerce to 0 (fail open).
+    mockInternalQueryResult = [];
+    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.errorMessage).toContain("Unable to verify plan limits");
   });
 
   it("allows free tier regardless of count", async () => {
@@ -717,12 +736,9 @@ describe("checkChatIntegrationLimit", () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
     // One other chat platform already installed; Slack is net-new → cap=1 hit.
     counts(1, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
-    expect(result.allowed).toBe(false);
-    if (!result.allowed) {
-      expect(result.limit).toBe(1);
-      expect(result.errorMessage).toContain("1 chat integration");
-    }
+    const denied = expectResourceDenied(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.limit).toBe(1);
+    expect(denied.errorMessage).toContain("1 chat integration");
   });
 
   it("allows reconnecting an already-installed platform at the cap", async () => {

@@ -92,7 +92,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // "blocks when at cap" test below overrides it via `mockImplementationOnce`.
 const mockCheckChatLimit: Mock<
   (orgId: string | undefined, catalogId: string) =>
-    Promise<{ allowed: true } | { allowed: false; errorMessage: string; limit: number }>
+    Promise<
+      | { allowed: true }
+      | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+      | { allowed: false; reason: "check_failed"; errorMessage: string }
+    >
 > = mock(() => Promise.resolve({ allowed: true as const }));
 
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
@@ -358,6 +362,7 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
     mockCheckChatLimit.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
+        reason: "cap_reached" as const,
         errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
         limit: 1,
       }),
@@ -374,6 +379,28 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
     expect(mockCheckChatLimit).toHaveBeenCalledWith(WSID, "catalog:slack");
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    // A DB blip means we can't read the count → fail closed, but as a
+    // transient 503 "try again", not a 429 "upgrade your plan".
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await expect(handler.handleCallback("auth-code", stateToken)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+
+    // Still fail closed — neither store is written.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 });
 

@@ -181,6 +181,7 @@ describe("_autoProvisionSsoMember", () => {
     setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 10 });
     mockCheckResourceLimit.mockImplementation(async () => ({
       allowed: false,
+      reason: "cap_reached",
       errorMessage: "Your starter plan allows up to 10 seats. Upgrade to add more.",
       limit: 10,
     }));
@@ -198,6 +199,7 @@ describe("_autoProvisionSsoMember", () => {
     setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 5 });
     mockCheckResourceLimit.mockImplementation(async () => ({
       allowed: false,
+      reason: "cap_reached",
       errorMessage: "Limit reached",
       limit: 5,
     }));
@@ -219,17 +221,17 @@ describe("_autoProvisionSsoMember", () => {
     expect(mockLogWarn).toHaveBeenCalled();
   });
 
-  it("fails open when checkResourceLimit returns limit=0 (infra error)", async () => {
+  it("fails open when checkResourceLimit returns reason=check_failed (infra error)", async () => {
     setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 5 });
     mockCheckResourceLimit.mockImplementation(async () => ({
       allowed: false,
+      reason: "check_failed",
       errorMessage: "Unable to verify plan limits. Please try again.",
-      limit: 0,
     }));
 
     await _autoProvisionSsoMember({ id: "user-9", email: "iris@acme.com" });
 
-    // limit=0 is the infra-error sentinel — should still insert (fail open)
+    // check_failed is the infra-error signal — should still insert (fail open)
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
     // Should log warning about infra error
     expect(mockLogWarn).toHaveBeenCalled();

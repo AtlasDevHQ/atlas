@@ -43,7 +43,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler, runEffect } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
-import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
@@ -1090,6 +1090,21 @@ integrations.openapi(callbackRoute, async (c) =>
         );
         if (prefersHtml(c.req.raw)) {
           return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "upstream_error" }));
+        }
+      }
+      // Workspace at its plan's chat-integration cap. Browser callers get
+      // the friendly upgrade redirect (mirrors the min_plan deny path
+      // above); JSON callers fall through to the 429 `plan_limit_exceeded`
+      // mapping in runHandler. (A `BillingCheckFailedError` — count couldn't
+      // be read — is intentionally left to the 503 JSON mapper: it's a
+      // transient "try again", not an upgrade prompt.)
+      if (err instanceof ChatIntegrationLimitError) {
+        log.info(
+          { platform, workspaceId: err.workspaceId, limit: err.limit },
+          "Install callback blocked — workspace at chat-integration cap",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "plan_limit_reached" }));
         }
       }
       throw err;

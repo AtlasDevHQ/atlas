@@ -40,7 +40,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { slackAPI } from "@atlas/api/lib/slack/api";
 import { saveInstallation } from "@atlas/api/lib/slack/store";
-import { ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { checkChatIntegrationLimit } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import {
@@ -218,6 +218,20 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // installed) is never blocked — the check excludes Slack's own row.
     const capCheck = await checkChatIntegrationLimit(workspaceId, SLACK_CATALOG_ID);
     if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // We couldn't read the workspace's chat-integration count, so the
+        // cap check failed closed. Surface this as a transient 503 "try
+        // again" — NOT a 429 "upgrade your plan", which would be wrong and
+        // non-actionable when the block is an internal-DB blip.
+        log.error(
+          { workspaceId },
+          "Slack install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
       log.info(
         { workspaceId, limit: capCheck.limit },
         "Slack install blocked — workspace at chat-integration cap",

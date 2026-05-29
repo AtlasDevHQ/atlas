@@ -19,6 +19,7 @@ const ROW: ClaimedEmailRow = {
   message: { to: "user@example.com", subject: "Reset", html: "<p>x</p>" },
   orgId: null,
   attempts: 1,
+  expiresAt: null,
 };
 
 describe("makeEmailDispatcher", () => {

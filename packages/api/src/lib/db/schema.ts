@@ -2295,11 +2295,17 @@ export const emailOutbox = pgTable(
     // Send classification for observability / metrics bucketing
     // (e.g. 'password-reset', 'verification-otp'). Never used for routing.
     emailType: text("email_type").notNull(),
-    // Rendered EmailMessage: { to, subject, html }. Handed straight to sendEmail.
-    payload: jsonb("payload").notNull(),
+    // Rendered EmailMessage { to, subject, html }, JSON-serialized then
+    // encrypted via encryptSecret (enc:v<N>:... AES-256-GCM) — TEXT, not
+    // JSONB, because the stored value is opaque ciphertext. Holds a live
+    // reset link / OTP for the TTL window, hence encryption at rest.
+    payload: text("payload").notNull(),
     // Optional org scope so the flusher re-resolves a per-org transport
     // override on re-send. NULL for session-less flows (password reset).
     orgId: text("org_id"),
+    // Hard delivery deadline (per-type TTL). The flusher dead-letters a
+    // row past this rather than delivering an expired token. NULL = none.
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     status: text("status").$type<EmailOutboxStatus>().notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),

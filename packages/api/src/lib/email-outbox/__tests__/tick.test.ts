@@ -128,7 +128,16 @@ describe("runEmailOutboxTick", () => {
 
   test("dispatches claimed rows through flushBatch", async () => {
     const { db } = makeDb([
-      { id: "row-1", email_type: "password-reset", payload: { to: "a@b.co", subject: "s", html: "h" }, org_id: null, attempts: 1 },
+      {
+        id: "row-1",
+        email_type: "password-reset",
+        // payload is stored as a string (encryptSecret output; plaintext
+        // passthrough with no key) and decrypted+parsed by coerceMessage.
+        payload: JSON.stringify({ to: "a@b.co", subject: "s", html: "h" }),
+        org_id: null,
+        expires_at: null,
+        attempts: 1,
+      },
     ]);
     const result = await runEmailOutboxTick({
       db,

@@ -100,21 +100,22 @@ describeIfPg("email-outbox (real Postgres)", () => {
       const db = dbFor();
       const id = await enqueue(db, { emailType: "password-reset", message: MSG });
 
-      // First flush fails transiently → attempts=1, tier=30s from created_at.
+      // First flush fails transiently → MARK_TRANSIENT stamps
+      // retry_after = now() + tier(1) = now()+30s (measured from the
+      // failure moment, via the GREATEST(now() + CASE..., $3) SQL).
       const first = await flushBatch(db, transient, 10);
       expect(first.transient).toBe(1);
       expect((await statusOf(id)).status).toBe("pending");
 
-      // Immediately: created_at ≈ now, so created_at + 30s > now → the
-      // real CLAIM_SQL WHERE excludes it.
+      // Immediately: retry_after (now+30s) > now → CLAIM_SQL excludes it.
       const second = await flushBatch(db, transient, 10);
       expect(second.claimed).toBe(0);
 
-      // Backdate created_at past the 30s tier — now the COALESCE gate
-      // admits it. Proves the CASE-based CLAIM_DELAY_SQL actually
-      // evaluates in Postgres.
+      // Backdate retry_after into the past — now the COALESCE gate admits
+      // it. Proves the real `GREATEST(now() + CASE..., $3)` retry_after was
+      // stamped and the claim WHERE honors it.
       await pool.query(
-        "UPDATE email_outbox SET created_at = now() - interval '31 seconds' WHERE id = $1",
+        "UPDATE email_outbox SET retry_after = now() - interval '1 second' WHERE id = $1",
         [id],
       );
       const third = await flushBatch(db, ok, 10);
@@ -159,22 +160,29 @@ describeIfPg("email-outbox (real Postgres)", () => {
   );
 
   it(
-    "recoverInFlight resets a stale in_flight row and dead-letters an exhausted one",
+    "recoverInFlight resets a stale in_flight row and dead-letters a stale exhausted one, but leaves a fresh exhausted row for the active sender",
     async () => {
       await truncate();
       const db = dbFor();
       const staleId = await enqueue(db, { emailType: "password-reset", message: MSG });
       const exhaustedId = await enqueue(db, { emailType: "verification-otp", message: MSG });
+      const freshExhaustedId = await enqueue(db, { emailType: "password-reset", message: MSG });
 
       // Stale: in_flight, claimed long ago, attempts under budget → reset.
       await pool.query(
         "UPDATE email_outbox SET status='in_flight', attempts=1, claimed_at = now() - interval '10 minutes' WHERE id = $1",
         [staleId],
       );
-      // Exhausted: in_flight at the budget, freshly claimed → dead.
+      // Stale + exhausted: in_flight at budget, claimed long ago → dead.
+      await pool.query(
+        "UPDATE email_outbox SET status='in_flight', attempts=6, claimed_at = now() - interval '10 minutes' WHERE id = $1",
+        [exhaustedId],
+      );
+      // Fresh + exhausted: a peer just claimed it for its final attempt and
+      // is mid-send → recovery must NOT dead-letter it (codex #2972).
       await pool.query(
         "UPDATE email_outbox SET status='in_flight', attempts=6, claimed_at = now() WHERE id = $1",
-        [exhaustedId],
+        [freshExhaustedId],
       );
 
       const result = await recoverInFlight(db);
@@ -182,6 +190,7 @@ describeIfPg("email-outbox (real Postgres)", () => {
       expect(result.deadLettered).toBe(1);
       expect((await statusOf(staleId)).status).toBe("pending");
       expect((await statusOf(exhaustedId)).status).toBe("dead");
+      expect((await statusOf(freshExhaustedId)).status).toBe("in_flight");
     },
     PG_TIMEOUT_MS,
   );
@@ -198,6 +207,53 @@ describeIfPg("email-outbox (real Postgres)", () => {
       expect(result.claimed).toBe(2);
       const pending = await pool.query("SELECT count(*)::int AS n FROM email_outbox WHERE status='pending'");
       expect(pending.rows[0].n).toBe(2);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "round-trips the message through the encrypt-at-rest path (decrypt yields the original)",
+    async () => {
+      await truncate();
+      const db = dbFor();
+      const secret = { ...MSG, html: "<a href='https://x/reset?token=SECRET123'>reset</a>" };
+      await enqueue(db, { emailType: "password-reset", message: secret });
+
+      // The flusher decrypts before dispatch — the dispatched message
+      // equals the original even though the stored column is opaque.
+      const delivered: Array<{ to: string; subject: string; html: string }> = [];
+      const capturing: EmailDispatcher = async (row) => {
+        delivered.push(row.message);
+        return { kind: "ok" };
+      };
+      const result = await flushBatch(db, capturing, 10);
+      expect(result.ok).toBe(1);
+      expect(delivered[0]).toEqual(secret);
+    },
+    PG_TIMEOUT_MS,
+  );
+
+  it(
+    "dead-letters an expired row WITHOUT dispatching it",
+    async () => {
+      await truncate();
+      const db = dbFor();
+      const id = await enqueue(db, {
+        emailType: "password-reset",
+        message: MSG,
+        expiresAt: new Date(Date.now() - 1_000), // already past
+      });
+      let dispatched = false;
+      const dispatcher: EmailDispatcher = async () => {
+        dispatched = true;
+        return { kind: "ok" };
+      };
+      const result = await flushBatch(db, dispatcher, 10);
+      expect(dispatched).toBe(false);
+      expect(result.permanent).toBe(1);
+      const row = await statusOf(id);
+      expect(row.status).toBe("dead");
+      expect(row.last_error).toMatch(/expired before delivery/);
     },
     PG_TIMEOUT_MS,
   );

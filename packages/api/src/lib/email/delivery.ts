@@ -229,6 +229,15 @@ export interface TransactionalEmailOptions {
   emailType: string;
   /** Optional org scope, threaded to `sendEmail` and the outbox row. */
   orgId?: string;
+  /**
+   * Time-to-live (ms) for the embedded token/OTP, used to stamp the
+   * outbox row's `expires_at`. The flusher dead-letters (does NOT send) a
+   * row past its deadline so a sustained outage can't deliver a dead reset
+   * link / expired code (#2942 codex review). Pass the SAME value the
+   * email body states (reset link 1h, OTP 10m). Omit for non-expiring
+   * sends.
+   */
+  ttlMs?: number;
 }
 
 /**
@@ -271,9 +280,13 @@ export async function enqueueFailedTransactionalEmail(
       return;
     }
     const { enqueue } = await import("@atlas/api/lib/email-outbox");
+    const expiresAt =
+      opts.ttlMs != null && Number.isFinite(opts.ttlMs)
+        ? new Date(Date.now() + opts.ttlMs)
+        : null;
     const outboxId = await enqueue(
       { query: internalQuery },
-      { emailType: opts.emailType, message, orgId: opts.orgId ?? null },
+      { emailType: opts.emailType, message, orgId: opts.orgId ?? null, expiresAt },
     );
     log.info(
       { to: message.to, emailType: opts.emailType, outboxId },

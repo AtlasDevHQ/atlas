@@ -925,7 +925,9 @@ export async function _sendVerificationOTP(opts: { to: string; otp: string }): P
   </body>
 </html>`,
       },
-      { emailType: "verification-otp" },
+      // 10m TTL matches the "expires in 10 minutes" copy above — the
+      // flusher won't deliver a dead code after a long outage (#2942).
+      { emailType: "verification-otp", ttlMs: 10 * 60_000 },
     );
     if (!result.success) {
       log.warn(
@@ -978,7 +980,9 @@ export async function _sendPasswordResetEmail(opts: {
   </body>
 </html>`,
       },
-      { emailType: "password-reset" },
+      // 1h TTL matches the "expires in one hour" copy above — the flusher
+      // won't deliver a dead reset link after a long outage (#2942).
+      { emailType: "password-reset", ttlMs: 60 * 60_000 },
     );
     if (!result.success) {
       log.warn(

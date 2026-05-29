@@ -42,26 +42,41 @@
 -- publish-transaction promotion). See CLAUDE.md § Content Mode System
 -- for the carve-out rule.
 --
--- Credentials: the `payload` JSONB stores the rendered message
--- (to/subject/html). The password-reset html embeds a SINGLE-USE,
--- one-hour-expiry reset URL token — an ephemeral capability, not a
--- long-lived credential — so it is NOT encrypted at rest (encryptSecret
--- is reserved for durable secrets; a short-TTL one-time token in a
--- short-lived queue row does not qualify). No API keys, connection
--- strings, or provider secrets are ever written here. The table is
--- therefore intentionally NOT a member of `INTEGRATION_TABLES`.
+-- Credentials: the `payload` TEXT stores the rendered message
+-- (to/subject/html) ENCRYPTED AT REST via `encryptSecret` (versioned
+-- AES-256-GCM `enc:v<N>:...`). The password-reset html embeds a
+-- single-use reset URL token and the verification html embeds an OTP —
+-- both are live bearer capabilities for the TTL window, so anyone with
+-- read access to the internal DB or a backup could replay them. The
+-- queue therefore encrypts the payload (codex review on #2972). When no
+-- encryption key is configured (self-hosted dev), `encryptSecret`
+-- degrades to plaintext passthrough and `decryptSecret` round-trips it
+-- unchanged. Still NOT a member of `INTEGRATION_TABLES` (no long-lived
+-- provider credential; nothing for F-47 rotation to re-key).
+--
+-- `expires_at`: the reset link expires in 1h and the OTP in 10m, so a
+-- send that can't go out before then would deliver a dead token. The
+-- enqueue stamps a per-type TTL; the flusher dead-letters (does NOT
+-- send) a row past its `expires_at` rather than delivering an unusable
+-- link/code (codex review on #2972).
 
 CREATE TABLE IF NOT EXISTS email_outbox (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   -- Send classification for observability / metrics bucketing
   -- (e.g. 'password-reset', 'verification-otp'). Never used for routing.
   email_type    TEXT NOT NULL,
-  -- Rendered EmailMessage: { to, subject, html }. The flusher hands this
-  -- straight to `sendEmail`.
-  payload       JSONB NOT NULL,
+  -- Rendered EmailMessage { to, subject, html }, JSON-serialized then
+  -- encrypted via encryptSecret (enc:v<N>:... AES-256-GCM). TEXT, not
+  -- JSONB, because the stored value is opaque ciphertext. The flusher
+  -- decrypts before handing it to `sendEmail`.
+  payload       TEXT NOT NULL,
   -- Optional org scope so the flusher re-resolves a per-org transport
   -- override on re-send. NULL for session-less flows (password reset).
   org_id        TEXT,
+  -- Hard delivery deadline: past this the embedded token/OTP is dead, so
+  -- the flusher dead-letters rather than sending a useless email. NULL =
+  -- no deadline (non-expiring sends).
+  expires_at    TIMESTAMPTZ,
   status        TEXT NOT NULL DEFAULT 'pending',
   attempts      INTEGER NOT NULL DEFAULT 0,
   last_error    TEXT,
@@ -88,7 +103,13 @@ CREATE INDEX IF NOT EXISTS idx_email_outbox_pending_created
   WHERE status IN ('pending', 'in_flight');
 
 COMMENT ON TABLE email_outbox IS
-  'Durable outbox for transactional email (password reset, signup verification OTP). sendTransactionalEmail enqueues a pending row when the in-process retry path is exhausted; the Scheduler-backed flusher claims, re-sends via sendEmail, and stamps terminal status. Stripped-down mirror of crm_outbox — no email_key/workspace_id/sub-step columns. Stores no credentials (the reset-link token is single-use + short-TTL). See packages/api/src/lib/email-outbox/ (#2942).';
+  'Durable outbox for transactional email (password reset, signup verification OTP). sendTransactionalEmail enqueues a pending row when the in-process retry path is exhausted; the Scheduler-backed flusher claims, re-sends via sendEmail, and stamps terminal status. Stripped-down mirror of crm_outbox — no email_key/workspace_id/sub-step columns; adds expires_at (TTL) + encrypted payload because the body carries a live reset link / OTP. payload is encryptSecret-encrypted at rest. See packages/api/src/lib/email-outbox/ (#2942).';
+
+COMMENT ON COLUMN email_outbox.payload IS
+  'JSON-serialized rendered EmailMessage { to, subject, html }, encrypted at rest via encryptSecret (enc:v<N>:... AES-256-GCM; plaintext passthrough when no key is configured). Holds a live reset link / OTP for the TTL window, hence encryption. Decrypted by the flusher before sendEmail.';
+
+COMMENT ON COLUMN email_outbox.expires_at IS
+  'Hard delivery deadline derived from the email type TTL at enqueue (reset link 1h, OTP 10m). The flusher dead-letters a row past this instead of delivering a dead token. NULL = no deadline.';
 
 COMMENT ON COLUMN email_outbox.retry_after IS
   'Absolute timestamp before which the row must not be re-claimed. Set when a transient outcome carried an upstream-requested delay; NULL means the tier-based backoff applies. Cleared on the next transient outcome that lacks a delay.';

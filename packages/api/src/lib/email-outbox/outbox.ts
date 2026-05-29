@@ -30,6 +30,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { encryptSecret, decryptSecret, type RawSecret } from "@atlas/api/lib/db/secret-encryption";
 import { CLAIM_DELAY_SQL, DEAD_AFTER_ATTEMPTS } from "./backoff";
 
 /**
@@ -82,6 +83,13 @@ export interface EnqueueEmailInput {
    * override on re-send. Session-less flows (password reset) pass null.
    */
   readonly orgId?: string | null;
+  /**
+   * Hard delivery deadline. Past this the embedded token/OTP is dead, so
+   * the flusher dead-letters the row instead of delivering an unusable
+   * link/code. Omit / null for non-expiring sends. The caller derives
+   * this from the email type's TTL (reset link 1h, OTP 10m).
+   */
+  readonly expiresAt?: Date | null;
 }
 
 /** Snapshot of a row at the moment the flusher claimed it. */
@@ -91,6 +99,8 @@ export interface ClaimedEmailRow {
   readonly message: EmailOutboxMessage;
   readonly orgId: string | null;
   readonly attempts: number;
+  /** Hard delivery deadline (see EnqueueEmailInput.expiresAt); null = none. */
+  readonly expiresAt: Date | null;
 }
 
 /**
@@ -143,8 +153,8 @@ export interface RecoveryResult {
 // ─────────────────────────────────────────────────────────────────────
 
 const ENQUEUE_SQL = `
-  INSERT INTO email_outbox (email_type, payload, org_id, status)
-  VALUES ($1, $2::jsonb, $3, 'pending')
+  INSERT INTO email_outbox (email_type, payload, org_id, expires_at, status)
+  VALUES ($1, $2, $3, $4, 'pending')
   RETURNING id
 `;
 
@@ -176,7 +186,7 @@ const CLAIM_SQL = `
     FOR UPDATE SKIP LOCKED
     LIMIT $1
   )
-  RETURNING id, email_type, payload, org_id, attempts
+  RETURNING id, email_type, payload, org_id, expires_at, attempts
 `;
 
 const MARK_DONE_SQL = `
@@ -190,17 +200,23 @@ const MARK_DONE_SQL = `
 `;
 
 /**
- * Transient mark. `$3` is either an absolute timestamp (when the send
- * outcome supplied a parseable delay) or NULL (clears any previous
- * retry_after so the row falls back to the tier-based gate on the next
- * claim). `claimed_at` is cleared so the recovery sweep's staleness
- * gate doesn't trip on a row that's already back to pending.
+ * Transient mark. Stamps `retry_after` on EVERY transient failure as
+ * `GREATEST(now() + tier(attempts), $3)` — the next-due time is measured
+ * from the FAILURE moment (`now()`), not from `created_at`. This closes
+ * the codex #2972 finding: a row that sat pending a long time before its
+ * first claim (flusher disabled, app down, delayed migrations) would
+ * otherwise have `created_at + tier` already in the past for every tier
+ * and burn its whole retry budget in a back-to-back burst. `$3` is the
+ * optional upstream-requested delay (a 429 `Retry-After`); GREATEST lets
+ * a longer upstream window win and ignores NULL when there's none.
+ * `claimed_at` is cleared so the recovery sweep's staleness gate doesn't
+ * trip on a row that's already back to pending.
  */
 const MARK_TRANSIENT_FAIL_SQL = `
   UPDATE email_outbox
   SET status = 'pending',
       last_error = $1,
-      retry_after = $3,
+      retry_after = GREATEST(now() + (${CLAIM_DELAY_SQL}), $3),
       claimed_at = NULL
   WHERE id = $2
 `;
@@ -216,17 +232,22 @@ const MARK_DEAD_SQL = `
 `;
 
 /**
- * Recovery sweep — splits the in_flight set into two buckets:
+ * Recovery sweep — splits the STALE in_flight set into two buckets
+ * (both gated on `claimed > $1 ms ago OR never stamped`, so a peer pod
+ * that just claimed a row is never touched mid-send):
  *
  *  1. **Exhausted carcasses** (`attempts >= DEAD_AFTER_ATTEMPTS`) move
  *     straight to `status = 'dead'`. Without this they'd land in
  *     `pending` and never re-claim (the claim WHERE filters them out),
  *     hiding terminal failures from a `status = 'dead'` triage query.
- *  2. **Stale carcasses** (claimed > `$1` ms ago, OR never stamped)
- *     return to `pending` for re-claim. The age threshold protects a
- *     concurrent peer pod in a multi-pod deployment — a sibling that
- *     claimed the row seconds ago is NOT reset out from under its
- *     still-running send.
+ *     The staleness gate here is the codex #2972 fix: in a multi-pod
+ *     deploy a peer that just claimed a row for its LAST allowed attempt
+ *     (attempts already incremented to the budget, mid-send) must NOT be
+ *     dead-lettered out from under the active sender — that would race
+ *     its final status write and emit a false dead-letter. An abandoned
+ *     exhausted row is still dead-lettered once it goes stale.
+ *  2. **Stale carcasses** (under budget) return to `pending` for
+ *     re-claim. Same age threshold, same multi-pod protection.
  *
  * `retry_after` is preserved across both branches.
  */
@@ -240,6 +261,7 @@ const MARK_EXHAUSTED_IN_FLIGHT_DEAD_SQL = `
       END
   WHERE status = 'in_flight'
     AND attempts >= ${DEAD_AFTER_ATTEMPTS}
+    AND (claimed_at IS NULL OR claimed_at < now() - ($1::int * INTERVAL '1 millisecond'))
   RETURNING id
 `;
 
@@ -279,10 +301,15 @@ export async function enqueue(
       "email_outbox enqueue: message.to must be a non-empty recipient address",
     );
   }
+  // Encrypt the rendered body at rest: it carries a live reset link / OTP
+  // for the TTL window (codex #2972). encryptSecret degrades to plaintext
+  // passthrough when no key is configured; decryptSecret round-trips it.
+  const encryptedPayload = encryptSecret(JSON.stringify(input.message));
   const rows = await db.query<{ id: string }>(ENQUEUE_SQL, [
     input.emailType,
-    JSON.stringify(input.message),
+    encryptedPayload,
     input.orgId ?? null,
+    input.expiresAt ?? null,
   ]);
   const id = rows[0]?.id;
   if (!id) {
@@ -301,10 +328,11 @@ export async function recoverInFlight(
   db: EmailOutboxDB,
   staleAgeMs: number = STARTUP_RECOVERY_STALE_MS,
 ): Promise<RecoveryResult> {
-  // Dead-letter exhausted rows first — these don't care about staleness
-  // (a row claimed 1s ago that's already exhausted is still terminally
-  // failed and should not retry).
-  const dead = await db.query<{ id: string }>(MARK_EXHAUSTED_IN_FLIGHT_DEAD_SQL);
+  // Dead-letter exhausted rows that are ALSO stale — a peer pod actively
+  // sending its final attempt (claimed within the window) is left alone
+  // so we don't race its terminal write (codex #2972). Both sweeps share
+  // the same staleness threshold.
+  const dead = await db.query<{ id: string }>(MARK_EXHAUSTED_IN_FLIGHT_DEAD_SQL, [staleAgeMs]);
   const reset = await db.query<{ id: string }>(RECOVER_STALE_IN_FLIGHT_SQL, [staleAgeMs]);
   return { deadLettered: dead.length, reset: reset.length };
 }
@@ -331,6 +359,7 @@ export async function flushBatch(
     email_type: string;
     payload: unknown;
     org_id: string | null;
+    expires_at: Date | string | null;
     attempts: number;
   };
   const claimed = await db.query<ClaimedRow>(CLAIM_SQL, [batchLimit]);
@@ -341,20 +370,47 @@ export async function flushBatch(
   for (const raw of claimed) {
     const message = coerceMessage(raw.payload);
     if (message === null) {
-      // A row whose payload can't be read as an EmailMessage is
-      // unrecoverable — re-sending will never succeed. Dead-letter it
-      // immediately with an actionable error rather than burning the
-      // retry budget on a malformed row.
+      // A row whose payload can't be decrypted/parsed into an
+      // EmailMessage is unrecoverable — re-sending will never succeed.
+      // Dead-letter it immediately rather than burning the retry budget.
+      // (coerceMessage already logs the specific decrypt/parse cause.)
       await markStatusWithRetry(
         db,
         MARK_DEAD_SQL,
-        ["email_outbox payload is not a valid EmailMessage (missing to/subject/html)", raw.id],
+        ["email_outbox payload could not be decrypted/parsed into an EmailMessage", raw.id],
         raw.id,
         "dead",
       );
       log.error(
         { rowId: raw.id, event: "email_outbox.dead_letter_malformed" },
-        "Email outbox row dead-lettered — payload is not a valid EmailMessage",
+        "Email outbox row dead-lettered — payload is not a recoverable EmailMessage",
+      );
+      permanent++;
+      continue;
+    }
+
+    // Expiry gate (codex #2972): the body embeds a live reset link / OTP
+    // that dies at `expires_at`. If a sustained outage outlasted the TTL,
+    // delivering it would just give the user a dead link — dead-letter
+    // instead of sending. Checked AFTER decrypt so a malformed row gets
+    // the more-actionable malformed error.
+    const expiresAt = coerceDate(raw.expires_at);
+    if (expiresAt !== null && Date.now() >= expiresAt.getTime()) {
+      await markStatusWithRetry(
+        db,
+        MARK_DEAD_SQL,
+        [`expired before delivery (expires_at=${expiresAt.toISOString()})`, raw.id],
+        raw.id,
+        "dead",
+      );
+      log.warn(
+        {
+          rowId: raw.id,
+          emailType: raw.email_type,
+          expiresAt: expiresAt.toISOString(),
+          event: "email_outbox.dead_letter_expired",
+        },
+        "Transactional email dead-lettered — embedded token/OTP expired before delivery (outage outlasted the TTL); not sending a dead link",
       );
       permanent++;
       continue;
@@ -366,6 +422,7 @@ export async function flushBatch(
       message,
       orgId: raw.org_id,
       attempts: raw.attempts,
+      expiresAt,
     };
 
     let outcome: EmailDispatchOutcome;
@@ -464,22 +521,36 @@ export async function flushBatch(
 
 /**
  * Read a claimed row's `payload` column back into an
- * `EmailOutboxMessage`. The pg driver may hand the JSONB column back as
- * an already-parsed object (normal path) or as a string (some pool
- * configs); accept both. Returns `null` when the value isn't a usable
+ * `EmailOutboxMessage`: decrypt (encryptSecret round-trip; plaintext
+ * passthrough when no key is configured) then JSON-parse and validate.
+ * The `payload` TEXT column is always a string; a non-string indicates a
+ * driver/schema regression. Returns `null` when the value isn't a usable
  * message so `flushBatch` can dead-letter it rather than crash.
  */
 function coerceMessage(payload: unknown): EmailOutboxMessage | null {
-  let obj: unknown = payload;
-  if (typeof payload === "string") {
-    try {
-      obj = JSON.parse(payload);
-    } catch {
-      // intentionally ignored: an unparseable payload is unrecoverable;
-      // returning null routes the row to flushBatch's dead-letter branch
-      // (which logs email_outbox.dead_letter_malformed at error level).
-      return null;
-    }
+  if (typeof payload !== "string") return null;
+  let json: string;
+  try {
+    json = decryptSecret(payload as RawSecret);
+  } catch (err) {
+    // decryptSecret throws when an enc:v<N>: row references a key version
+    // that's no longer configured (rotation drift). Unrecoverable without
+    // the key — log loudly and let flushBatch dead-letter rather than
+    // crash the tick or retry forever.
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), event: "email_outbox.decrypt_failed" },
+      "email_outbox payload decrypt failed (missing key version?) — dead-lettering row",
+    );
+    return null;
+  }
+  let obj: unknown;
+  try {
+    obj = JSON.parse(json);
+  } catch {
+    // intentionally ignored: an unparseable payload is unrecoverable;
+    // returning null routes the row to flushBatch's dead-letter branch
+    // (which logs email_outbox.dead_letter_malformed at error level).
+    return null;
   }
   if (obj === null || typeof obj !== "object") return null;
   const rec = obj as Record<string, unknown>;
@@ -492,6 +563,18 @@ function coerceMessage(payload: unknown): EmailOutboxMessage | null {
     return null;
   }
   return { to: rec.to, subject: rec.subject, html: rec.html };
+}
+
+/**
+ * Coerce a claimed row's `expires_at` (Date from the pg driver, or a
+ * string under some pool configs) into a Date. Returns `null` for an
+ * absent or unparseable deadline (treated as "no deadline").
+ */
+function coerceDate(v: Date | string | null): Date | null {
+  if (v == null) return null;
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /**

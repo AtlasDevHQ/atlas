@@ -51,8 +51,10 @@ type EmailOutboxDB = import("../outbox").EmailOutboxDB;
 type Row = {
   id: string;
   email_type: string;
-  payload: unknown;
+  /** Raw stored payload string (encryptSecret output; plaintext JSON when no key). */
+  payload: string;
   org_id: string | null;
+  expires_at: number | null;
   status: "pending" | "in_flight" | "done" | "dead";
   attempts: number;
   last_error: string | null;
@@ -110,12 +112,14 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
     }
 
     if (/^\s*INSERT INTO email_outbox/i.test(sql)) {
+      // params: [email_type, payload(string), org_id, expires_at(Date|null)]
       const id = `row-${this.nextId++}`;
       this.rows.push({
         id,
         email_type: String(p[0]),
-        payload: typeof p[1] === "string" ? JSON.parse(p[1] as string) : p[1],
+        payload: String(p[1]),
         org_id: (p[2] as string | null) ?? null,
+        expires_at: p[3] instanceof Date ? (p[3] as Date).getTime() : null,
         status: "pending",
         attempts: 0,
         last_error: null,
@@ -153,6 +157,7 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
         email_type: r.email_type,
         payload: r.payload,
         org_id: r.org_id,
+        expires_at: r.expires_at === null ? null : new Date(r.expires_at),
         attempts: r.attempts,
       })) as unknown as T[];
     }
@@ -170,12 +175,17 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
     }
 
     if (/SET status = 'pending',\s*last_error/i.test(sql)) {
-      // MARK_TRANSIENT_FAIL: [last_error, id, retry_after(Date|null)]
+      // MARK_TRANSIENT_FAIL: [last_error, id, upstreamRetryAfter(Date|null)].
+      // Mirrors `retry_after = GREATEST(now() + tier(attempts), $3)` — the
+      // next-due time is measured from the failure moment (`this.now`),
+      // taking the max with any upstream-requested delay.
       const r = this.byId(String(p[1]));
       if (r) {
         r.status = "pending";
         r.last_error = (p[0] as string) ?? null;
-        r.retry_after = p[2] instanceof Date ? (p[2] as Date).getTime() : null;
+        const tierDue = this.now + nextDelayMs(r.attempts);
+        const upstreamDue = p[2] instanceof Date ? (p[2] as Date).getTime() : 0;
+        r.retry_after = Math.max(tierDue, upstreamDue);
         r.claimed_at = null;
       }
       return [] as unknown as T[];
@@ -195,9 +205,15 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
     }
 
     if (/SET status = 'dead', processed_at = now\(\),\s*\n?\s*last_error = CASE/i.test(sql)) {
-      // MARK_EXHAUSTED_IN_FLIGHT_DEAD (no params)
+      // MARK_EXHAUSTED_IN_FLIGHT_DEAD: [staleAgeMs]. Only dead-letters
+      // exhausted in_flight rows that are ALSO stale, so a peer mid-send on
+      // its final attempt is left alone (codex #2972).
+      const staleMs = Number(p[0]);
       const hit = this.rows.filter(
-        (r) => r.status === "in_flight" && r.attempts >= DEAD_AFTER_ATTEMPTS,
+        (r) =>
+          r.status === "in_flight" &&
+          r.attempts >= DEAD_AFTER_ATTEMPTS &&
+          (r.claimed_at === null || r.claimed_at < this.now - staleMs),
       );
       for (const r of hit) {
         r.status = "dead";
@@ -244,8 +260,33 @@ describe("enqueue", () => {
     expect(row.status).toBe("pending");
     expect(row.attempts).toBe(0);
     expect(row.email_type).toBe("password-reset");
-    expect(row.payload).toEqual(MSG);
+    // payload is stored as an opaque (encrypted-or-passthrough) string;
+    // the round-trip back to MSG is asserted in the decrypt test below.
+    expect(typeof row.payload).toBe("string");
     expect(row.org_id).toBeNull();
+    expect(row.expires_at).toBeNull();
+  });
+
+  test("encrypts the payload at rest and flush decrypts it back to the original message", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, { emailType: "password-reset", message: MSG });
+    const delivered: Array<{ to: string; subject: string; html: string }> = [];
+    const capturing: EmailDispatcher = async (row) => {
+      delivered.push(row.message);
+      return { kind: "ok" };
+    };
+    await flushBatch(db, capturing, 10);
+    // The dispatcher receives the message coerceMessage decrypted+parsed
+    // out of the stored payload — proving the enqueue→store→claim→decrypt
+    // round-trip is lossless.
+    expect(delivered[0]).toEqual(MSG);
+  });
+
+  test("stamps expires_at from the enqueue input", async () => {
+    const db = new FakeEmailOutboxDB();
+    const exp = new Date(Date.now() + 3_600_000);
+    const id = await enqueue(db, { emailType: "password-reset", message: MSG, expiresAt: exp });
+    expect(db.byId(id)!.expires_at).toBe(exp.getTime());
   });
 
   test("threads orgId through when provided", async () => {
@@ -282,7 +323,9 @@ describe("flushBatch", () => {
     expect(row.status).toBe("pending");
     expect(row.attempts).toBe(1);
     expect(row.last_error).toBe("Resend 503");
-    expect(row.retry_after).toBeNull();
+    // retry_after is now ALWAYS stamped from the failure moment (tier 1 =
+    // 30s), so a long-pending row can't burst through its budget.
+    expect(row.retry_after).toBe(db.now + nextDelayMs(1));
   });
 
   test("a transient failure with a retryAfterMs stamps retry_after", async () => {
@@ -355,8 +398,9 @@ describe("flushBatch", () => {
   test("a malformed payload dead-letters without burning the retry budget", async () => {
     const db = new FakeEmailOutboxDB();
     await enqueue(db, { emailType: "password-reset", message: MSG });
-    // Corrupt the stored payload as if it were written by a buggy path.
-    db.rows[0].payload = { subject: "no recipient" };
+    // Corrupt the stored payload as if it were written by a buggy path:
+    // valid JSON (decrypt passthrough) but missing the required fields.
+    db.rows[0].payload = JSON.stringify({ subject: "no recipient" });
     let dispatched = false;
     const dispatcher: EmailDispatcher = async () => {
       dispatched = true;
@@ -366,6 +410,38 @@ describe("flushBatch", () => {
     expect(dispatched).toBe(false); // never handed to the dispatcher
     expect(result.permanent).toBe(1);
     expect(db.rows[0].status).toBe("dead");
+  });
+
+  test("dead-letters an expired row WITHOUT dispatching it (no dead-token delivery)", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, {
+      emailType: "password-reset",
+      message: MSG,
+      expiresAt: new Date(Date.now() - 1_000), // already past
+    });
+    let dispatched = false;
+    const dispatcher: EmailDispatcher = async () => {
+      dispatched = true;
+      return { kind: "ok" };
+    };
+    const result = await flushBatch(db, dispatcher, 10);
+    expect(dispatched).toBe(false); // never sent a dead link
+    expect(result.permanent).toBe(1);
+    expect(db.byId("row-1")!.status).toBe("dead");
+    expect(db.byId("row-1")!.last_error).toMatch(/expired before delivery/);
+    expect(loggerCalls.warn.some((c) => c.data.event === "email_outbox.dead_letter_expired")).toBe(true);
+  });
+
+  test("delivers a not-yet-expired row normally", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, {
+      emailType: "password-reset",
+      message: MSG,
+      expiresAt: new Date(Date.now() + 3_600_000), // 1h out
+    });
+    const result = await flushBatch(db, okDispatcher, 10);
+    expect(result.ok).toBe(1);
+    expect(db.byId("row-1")!.status).toBe("done");
   });
 
   test("claims up to the batch limit and no more", async () => {
@@ -443,15 +519,27 @@ describe("recoverInFlight", () => {
     expect(db.byId("row-1")!.status).toBe("in_flight");
   });
 
-  test("dead-letters an exhausted in_flight carcass regardless of staleness", async () => {
+  test("dead-letters a STALE exhausted in_flight carcass", async () => {
     const db = new FakeEmailOutboxDB();
     await enqueue(db, { emailType: "password-reset", message: MSG });
     db.rows[0].status = "in_flight";
     db.rows[0].attempts = DEAD_AFTER_ATTEMPTS;
-    db.rows[0].claimed_at = db.now; // fresh, but exhausted
+    db.rows[0].claimed_at = db.now;
+    db.advance(10 * 60_000); // 10 min — past the 5 min startup window
     const result = await recoverInFlight(db);
     expect(result.deadLettered).toBe(1);
     expect(db.byId("row-1")!.status).toBe("dead");
+  });
+
+  test("leaves a FRESH exhausted in_flight row alone — a peer may be mid-final-send (codex #2972)", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, { emailType: "password-reset", message: MSG });
+    db.rows[0].status = "in_flight";
+    db.rows[0].attempts = DEAD_AFTER_ATTEMPTS;
+    db.rows[0].claimed_at = db.now; // just claimed → NOT stale
+    const result = await recoverInFlight(db);
+    expect(result.deadLettered).toBe(0);
+    expect(db.byId("row-1")!.status).toBe("in_flight");
   });
 });
 

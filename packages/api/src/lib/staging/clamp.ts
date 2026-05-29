@@ -62,9 +62,10 @@ interface OutboundClamp {
  *
  * This structural check (rather than importing `EmailMessage` from
  * `lib/email/delivery.ts`) keeps the clamp dependency-free of the email
- * subsystem and tolerant of richer payloads — multi-recipient `to`, plus
- * `from` / custom headers the delivery layer may grow. Only the recipient
- * field is inspected; every other field rides through the shallow copy.
+ * subsystem. Today `EmailMessage.to` is a single `string`; the array arm is
+ * forward-looking — IF the delivery layer later grows a multi-recipient `to`,
+ * this check already tolerates it. Only the `to` field is inspected; every
+ * other field rides through the shallow copy untouched.
  */
 function isRecipientField(to: unknown): to is string | string[] {
   return typeof to === "string" || (Array.isArray(to) && to.every((x) => typeof x === "string"));
@@ -72,9 +73,18 @@ function isRecipientField(to: unknown): to is string | string[] {
 
 /**
  * Email recipient redirect: rewrite `to` (single or array) to the single
- * staging sink address, preserving subject, body, from, headers, and any
- * other field. A multi-recipient array collapses to the one sink address —
- * staging never needs to fan out, and one sink keeps the soak inbox simple.
+ * staging sink address, preserving every non-recipient field — `subject`,
+ * the body, `from`, headers, and anything else — via the shallow copy. A
+ * multi-recipient array collapses to the one sink address: staging never
+ * needs to fan out, and one sink keeps the soak inbox simple.
+ *
+ * SCOPE — `to` is the ONLY recipient field redirected, because the current
+ * `EmailMessage` (`lib/email/delivery.ts`: `{ to, subject, html }`) has no
+ * other recipient field. If the email layer ever grows `cc` / `bcc` /
+ * `replyTo`, they are recipient fields too and MUST be redirected here as
+ * well — otherwise a staging soak would deliver to those real addresses
+ * while `to` looks correctly clamped (tracked as a follow-up). The
+ * non-recipient fields above are intentionally preserved, not leaked.
  */
 const EMAIL_CLAMP: OutboundClamp = {
   name: "email",
@@ -100,7 +110,11 @@ const OUTBOUND_CLAMPS: readonly OutboundClamp[] = [EMAIL_CLAMP];
  *   primitive or `null`) passes through unchanged.
  *
  * @param region   the deploy region — ALWAYS an explicit argument, never read
- *                 from the environment here (callers pass `getApiRegion()`).
+ *                 from the environment here. The wiring slice derives it from
+ *                 `getApiRegion()` (which returns `string | null`), NARROWED
+ *                 to a `DeployRegion` first — a raw unrecognized string takes
+ *                 the prod identity path (fail-open), so the caller must pin
+ *                 the narrowing rather than pass the raw env read.
  * @param sendable the outbound payload (email message, future: Stripe/Slack).
  * @returns the same `sendable` outside staging; a staging-safe copy inside.
  */

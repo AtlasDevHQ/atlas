@@ -8,12 +8,21 @@
  * (Resend sender-reputation risk, PRD user story 13).
  *
  * The 7 canonical cases come straight from the PRD "Testing Decisions"
- * section. Two further cases lock the documented-env-var override and the
+ * section. Further cases lock the documented-env-var override (default and
+ * empty fallback), the recipient-classifier boundary, and the
  * future-transform passthrough seam.
  *
- * Prior art: `packages/api/src/api/__tests__/cors-origin.test.ts` — pure
- * allowlist tests that fail iff a prod-vs-staging policy is violated, not
- * iff a refactor moved the implementation.
+ * The fixtures carry `body` / `from` / `headers` to assert the
+ * preserve-everything-else guarantee. Those field names track the PRD's
+ * anticipated email shape — today's concrete `EmailMessage`
+ * (`lib/email/delivery.ts`) is just `{ to, subject, html }`. Because the
+ * clamp is intentionally structural (it only reads `to` and shallow-copies
+ * the rest), exercising extra fields is exactly the point: any field the
+ * delivery layer grows must ride through untouched.
+ *
+ * Prior art: `packages/api/src/api/__tests__/cors-origin.test.ts` — a
+ * prod-vs-staging policy-boundary test (it asserts the allowlist contract,
+ * though it does so over a mocked HTTP route rather than a pure function).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -133,6 +142,17 @@ describe("clampOutbound — documented sink env var", () => {
     const result = clampOutbound("staging", emailWithRealTo());
     expect(result.to).toBe("soak-inbox@staging.useatlas.dev");
   });
+
+  // The clamp resolves the sink with `||`, not `??`, on purpose: an
+  // explicitly-empty STAGING_MAIL_SINK must fall back to the default rather
+  // than blank the recipient (a blank `to` would error in the transport or
+  // let mail escape). A regression to `??` would silently pass every other
+  // test — this is the one that locks the anti-footgun.
+  it("falls back to the default sink when STAGING_MAIL_SINK is empty", () => {
+    process.env.STAGING_MAIL_SINK = "";
+    const result = clampOutbound("staging", emailWithRealTo());
+    expect(result.to).toBe(DEFAULT_SINK);
+  });
 });
 
 describe("clampOutbound — future-transform seam", () => {
@@ -151,5 +171,19 @@ describe("clampOutbound — future-transform seam", () => {
     expect(clampOutbound("staging", "not-an-object")).toBe("not-an-object");
     expect(clampOutbound("staging", 42)).toBe(42);
     expect(clampOutbound("staging", null)).toBe(null);
+  });
+
+  // `isRecipientField` only classifies a `to` that is a string OR an array of
+  // ALL strings. A `to` of the wrong type — a non-string scalar, or an array
+  // with a non-string element — is NOT a recipient field, so the payload is
+  // left untouched (no spurious sink stamped on it). This locks the
+  // `typeof`/`.every` checks against a future loosening that would mis-stamp
+  // a malformed payload.
+  it("does not clamp a payload whose `to` is not a string-or-string[]", () => {
+    const numericTo = { to: 42, subject: "weird" };
+    expect(clampOutbound("staging", numericTo)).toBe(numericTo);
+
+    const mixedArrayTo = { to: ["alice@example.com", 42], subject: "weird" };
+    expect(clampOutbound("staging", mixedArrayTo)).toBe(mixedArrayTo);
   });
 });

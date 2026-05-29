@@ -1,17 +1,20 @@
 /**
- * Tests for the inlined #1983 SaaS pool-defaults boot warning.
+ * Tests for the SaaS pool-sizing boot log (#1983, recalibrated by #2943).
  *
- * The warning lives in `applyDeployMode()` in `lib/config.ts`, alongside
- * the #1978 deploy-mode silent-downgrade warning. It fires when:
+ * The log lives in `applyDeployMode()` in `lib/config.ts`, alongside the
+ * #1978 deploy-mode silent-downgrade warning. Severity depends on intent:
  *
- *   - resolved deployMode === "saas", AND
- *   - either no `pool.perOrg` block is configured (env-var deploy with
- *     no per-org pool isolation), OR `pool.perOrg.maxConnections` is
- *     at the dev-tier floor (10).
+ *   - resolved deployMode === "saas" AND no `pool.perOrg` block → CRITICAL
+ *     `error` (the genuine forgot-to-size mistake; isolation is off).
+ *   - resolved deployMode === "saas" AND `pool.perOrg` explicitly set →
+ *     INFO, regardless of `maxConnections` value (an explicit value is an
+ *     intentional sizing decision, not a misconfiguration — #2943 stopped
+ *     this from firing CRITICAL on every boot of the deliberately-sized
+ *     prod config).
+ *   - self-hosted → silent (no log at all).
  *
- * Self-hosted is silent regardless. The warning carries the `#1983`
- * marker + `pool-defaults` label so an operator can grep boot logs and
- * find the contract.
+ * The CRITICAL carries `#1983` + `reason: "pool-defaults"`; the INFO
+ * carries `#2943` + `reason: "pool-sizing"` so operators can grep either.
  *
  * Spy is installed via `mock.module("@atlas/api/lib/logger", ...)`
  * before the dynamic `await import("../config")`.
@@ -65,6 +68,16 @@ function findPoolWarning() {
   return logCalls
     .filter((c) => c.level === "error")
     .find((c) => c.message.includes("CRITICAL") && c.message.includes("#1983"));
+}
+
+/**
+ * Find the INFO pool-sizing emission (the #2943 explicit-config path).
+ * Returns undefined if absent.
+ */
+function findPoolInfo() {
+  return logCalls
+    .filter((c) => c.level === "info")
+    .find((c) => (c.payload as Record<string, unknown> | undefined)?.reason === "pool-sizing");
 }
 
 describe("applyDeployMode: pool-defaults SaaS warning (#1983)", () => {
@@ -142,12 +155,16 @@ describe("warnPoolDefaultsInSaaS (#1983) — direct helper unit test", () => {
     const warning = findPoolWarning();
     expect(warning).toBeDefined();
     expect((warning!.payload as Record<string, unknown>).reason).toBe("pool-defaults");
-    // The "no per-org config" sub-state should be visible in the payload
-    // so an operator can disambiguate from the "at-floor" sub-state.
+    // The unset case is the only CRITICAL path — `perOrgConfigured: false`
+    // distinguishes it from the explicit-config INFO path.
     expect((warning!.payload as Record<string, unknown>).perOrgConfigured).toBe(false);
+    // And it must NOT also emit the explicit-config INFO.
+    expect(findPoolInfo()).toBeUndefined();
   });
 
-  it("emits CRITICAL when SaaS + pool.perOrg.maxConnections at the dev floor", async () => {
+  it("emits INFO (not CRITICAL) when SaaS + pool.perOrg explicitly sized at the realistic prod value (5)", async () => {
+    // This is the exact deploy/api/atlas.config.ts shape — the #2943
+    // regression was that an intentional 5 fired a permanent CRITICAL.
     const { _warnPoolDefaultsInSaaS } = await import("../config");
     _warnPoolDefaultsInSaaS({
       deployMode: "saas",
@@ -158,7 +175,7 @@ describe("warnPoolDefaultsInSaaS (#1983) — direct helper unit test", () => {
       maxTotalConnections: 100,
       pool: {
         perOrg: {
-          maxConnections: 10,
+          maxConnections: 5,
           idleTimeoutMs: 30000,
           maxOrgs: 50,
           warmupProbes: 2,
@@ -168,13 +185,16 @@ describe("warnPoolDefaultsInSaaS (#1983) — direct helper unit test", () => {
       source: "file",
     });
 
-    const warning = findPoolWarning();
-    expect(warning).toBeDefined();
-    expect((warning!.payload as Record<string, unknown>).perOrgConfigured).toBe(true);
-    expect((warning!.payload as Record<string, unknown>).maxConnections).toBe(10);
+    // No CRITICAL — an explicit value is an intentional sizing decision.
+    expect(findPoolWarning()).toBeUndefined();
+    // An INFO log surfaces the sizing for visibility.
+    const info = findPoolInfo();
+    expect(info).toBeDefined();
+    expect((info!.payload as Record<string, unknown>).perOrgConfigured).toBe(true);
+    expect((info!.payload as Record<string, unknown>).maxConnections).toBe(5);
   });
 
-  it("does NOT emit when SaaS + pool.perOrg.maxConnections above dev floor", async () => {
+  it("emits INFO (not CRITICAL) when SaaS + pool.perOrg explicitly sized higher (50)", async () => {
     const { _warnPoolDefaultsInSaaS } = await import("../config");
     _warnPoolDefaultsInSaaS({
       deployMode: "saas",
@@ -196,9 +216,10 @@ describe("warnPoolDefaultsInSaaS (#1983) — direct helper unit test", () => {
     });
 
     expect(findPoolWarning()).toBeUndefined();
+    expect((findPoolInfo()!.payload as Record<string, unknown>).maxConnections).toBe(50);
   });
 
-  it("does NOT emit when self-hosted regardless of pool config", async () => {
+  it("emits nothing (neither CRITICAL nor INFO) when self-hosted regardless of pool config", async () => {
     const { _warnPoolDefaultsInSaaS } = await import("../config");
     _warnPoolDefaultsInSaaS({
       deployMode: "self-hosted",
@@ -212,5 +233,6 @@ describe("warnPoolDefaultsInSaaS (#1983) — direct helper unit test", () => {
     });
 
     expect(findPoolWarning()).toBeUndefined();
+    expect(findPoolInfo()).toBeUndefined();
   });
 });

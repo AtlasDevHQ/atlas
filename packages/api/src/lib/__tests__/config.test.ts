@@ -690,11 +690,12 @@ describe("pool.perOrg validation", () => {
       datasources: { default: { url: "postgresql://host/db" } },
       pool: { perOrg: {} },
     });
-    // #1983 — dev floor bumped 5 → 10 so a single Business-tier org's
-    // dashboards + chat + scheduled tasks don't immediately queue. The
-    // companion `_warnPoolDefaultsInSaaS()` boot warning fires when a
-    // SaaS deploy is at this floor.
-    expect(resolved.pool!.perOrg!.maxConnections).toBe(10);
+    // #2943 — schema default realigned 10 → 5 to match the runtime
+    // registry default (DEFAULT_ORG_POOL_SETTINGS in db/connection.ts).
+    // Connections are borrowed per in-flight SQL statement, so 5 is ample
+    // for conversational load; the schema and registry defaults must agree
+    // so neither trips the other's expectations.
+    expect(resolved.pool!.perOrg!.maxConnections).toBe(5);
     expect(resolved.pool!.perOrg!.idleTimeoutMs).toBe(30000);
     expect(resolved.pool!.perOrg!.maxOrgs).toBe(50);
     expect(resolved.pool!.perOrg!.warmupProbes).toBe(2);

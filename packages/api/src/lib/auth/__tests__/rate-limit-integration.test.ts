@@ -478,3 +478,54 @@ describe("signup enumeration response parity — /sign-up/email", () => {
     expect(normalize(firstBody)).toBe(normalize(secondBody));
   });
 });
+
+describe("session cookie name reflects cookiePrefix — prod↔staging isolation contract", () => {
+  // The whole fix rests on a string convention split across two packages the
+  // type system can't connect: the API names the cookie `${cookiePrefix}.session_token`
+  // and the web proxy reads it back by the same name. The unit tests pin the
+  // prefix resolution and the `advanced.cookiePrefix` wiring separately, but
+  // only a live signup proves Better Auth actually NAMES the issued cookie with
+  // our prefix. A better-auth bump that renamed the suffix, or a regression that
+  // dropped `cookiePrefix` back to the `"better-auth"` default, would keep every
+  // unit test green while prod and staging silently re-collapse onto one slot.
+
+  /** Sign up through the live handler (autoSignIn on) and return the joined Set-Cookie header(s). */
+  async function signUpSetCookie(cookiePrefix: string, ip: string): Promise<string> {
+    const auth = makeAuth({
+      cookiePrefix,
+      // requireEmailVerification=false → autoSignIn issues a session cookie on signup.
+      env: {
+        ATLAS_AUTH_RATE_LIMIT_ENABLED: "true",
+        ATLAS_REQUIRE_EMAIL_VERIFICATION: "false",
+      } as NodeJS.ProcessEnv,
+    });
+    const req = authRequest(
+      "/sign-up/email",
+      { name: "Cookie Name", email: `cookie-${cookiePrefix}-${Date.now()}@example.com`, password: "correct horse battery staple" },
+      ip,
+    );
+    const res = await auth.handler(req);
+    expect(res.status).toBe(200);
+    const cookies =
+      typeof res.headers.getSetCookie === "function"
+        ? res.headers.getSetCookie()
+        : [res.headers.get("set-cookie") ?? ""];
+    return cookies.join("\n");
+  }
+
+  it("issues `<prefix>.session_token` and never the better-auth default", async () => {
+    const setCookie = await signUpSetCookie("atlas-staging", "192.0.2.50");
+    expect(setCookie).toContain("atlas-staging.session_token");
+    // The slot prod & staging used to share. A regression to the default
+    // prefix would re-open the cross-env bleed this PR closes.
+    expect(setCookie).not.toContain("better-auth.session_token");
+  });
+
+  it("distinct prefixes yield distinct cookie names (prod and staging don't share a slot)", async () => {
+    const prod = await signUpSetCookie("atlas", "192.0.2.51");
+    const staging = await signUpSetCookie("atlas-staging", "192.0.2.52");
+    expect(prod).toContain("atlas.session_token");
+    expect(prod).not.toContain("atlas-staging.session_token");
+    expect(staging).toContain("atlas-staging.session_token");
+  });
+});

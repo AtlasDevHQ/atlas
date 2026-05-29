@@ -319,6 +319,34 @@ describe("deriveCookieDomain", () => {
       ),
     ).toBe("staging.useatlas.dev");
   });
+
+  it("derives the apex when a CORS origin IS the bare apex (real prod shape)", () => {
+    // prod ATLAS_CORS_ORIGIN includes https://useatlas.dev alongside the subdomains.
+    expect(
+      deriveCookieDomain(
+        "https://api.useatlas.dev",
+        "https://app.useatlas.dev,https://useatlas.dev",
+      ),
+    ).toBe("useatlas.dev");
+  });
+
+  it("returns undefined for IPv6 literals (host-only, via the <2-label guard)", () => {
+    expect(deriveCookieDomain("http://[::1]:3001", "http://[::1]:3000")).toBeUndefined();
+  });
+
+  it("documents the public-suffix limitation: no PSL, so same-2-label-suffix hosts collapse to it", () => {
+    // KNOWN LIMITATION (no public-suffix-list awareness). Two *different*
+    // registrable domains under a 2-label public suffix collapse to that
+    // suffix; browsers then reject `.co.uk` via the PSL so the cookie fails
+    // to set (no leak). Atlas's own hosts are always one registrable domain.
+    expect(
+      deriveCookieDomain("https://api.acme.co.uk", "https://app.other.co.uk"),
+    ).toBe("co.uk");
+    // Same-tenant multi-label TLD works correctly (3-label common suffix).
+    expect(
+      deriveCookieDomain("https://api.acme.co.uk", "https://app.acme.co.uk"),
+    ).toBe("acme.co.uk");
+  });
 });
 
 describe("_sendVerificationOTP", () => {

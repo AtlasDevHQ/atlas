@@ -2,7 +2,7 @@
  * Next.js 16 proxy (replaces the middleware.ts convention from Next.js 15).
  *
  * Two responsibilities:
- * 1. Auth redirects — redirects unauthenticated users to /signup and
+ * 1. Auth redirects — redirects unauthenticated users to /login and
  *    authenticated users away from auth pages. Only active when
  *    NEXT_PUBLIC_ATLAS_AUTH_MODE is "managed" (Better Auth).
  * 2. Mode forwarding — reads the `atlas-mode` cookie and forwards it as

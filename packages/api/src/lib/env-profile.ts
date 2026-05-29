@@ -69,8 +69,9 @@ export interface EnvProfile {
    * session cookie is named `${cookiePrefix}.session_token`. A distinct
    * prefix per deployment env is what isolates prod from staging: both live
    * under the shared `.useatlas.dev` parent (staging is `*.staging.useatlas.dev`,
-   * a *subdomain* of the prod cookie domain), so the browser delivers each
-   * env's cookie to the other no matter how the cookie *domain* is scoped.
+   * a *subdomain* of the prod cookie domain), so prod's broadly-scoped
+   * `.useatlas.dev` cookie reaches staging hosts regardless of how staging's
+   * own cookie domain is scoped — the prefix, not the domain, is what isolates.
    * A different name means each env's optimistic proxy gate
    * (`packages/web/src/proxy.ts` → `getSessionCookie`) and Better Auth ignore
    * the other env's cookie instead of being fooled by its mere presence.

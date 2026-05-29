@@ -694,9 +694,17 @@ export function buildAdvancedConfig(
  * prod — which is exactly the cross-env cookie bleed this fixes.
  *
  * Returns `undefined` (host-only cookies) when either env var is absent
- * (single-origin / self-hosted), when a URL is malformed, when the common
- * suffix is fewer than 2 labels (different sites — never widen to a public
- * suffix), or when it looks like a bare IPv4 (cookie domains can't be IPs).
+ * (single-origin / self-hosted), when the **auth URL** is malformed (a
+ * malformed CORS entry is skipped, not fatal), when the common suffix is
+ * fewer than 2 labels (different sites), or when it looks like a bare IPv4
+ * (cookie domains can't be IPs).
+ *
+ * NOTE: there is no public-suffix-list awareness. Two *different* registrable
+ * domains under a 2-label public suffix (`a.co.uk` + `b.co.uk`) resolve to
+ * `co.uk`; browsers reject that via the PSL so the cookie simply fails to set
+ * (no leak), and Atlas's own BETTER_AUTH_URL / ATLAS_CORS_ORIGIN are always
+ * the same registrable domain. Same-tenant multi-label TLDs
+ * (`api.acme.co.uk` + `app.acme.co.uk` → `acme.co.uk`) work correctly.
  */
 export function deriveCookieDomain(
   authUrl: string | undefined,
@@ -2514,6 +2522,20 @@ export function getAuthInstance(): AuthInstance {
     process.env.BETTER_AUTH_URL,
     process.env.ATLAS_CORS_ORIGIN,
   );
+  // Fail loud on the silent footgun: a cross-origin deploy (CORS origin set)
+  // that yields no shared domain — usually a malformed BETTER_AUTH_URL or
+  // hosts with no common 2+ label suffix — leaves session cookies host-only,
+  // so the frontend subdomain never receives them and auth breaks with no
+  // other signal. Hostnames aren't secrets (CLAUDE.md), so log them.
+  if (process.env.BETTER_AUTH_URL && process.env.ATLAS_CORS_ORIGIN && !cookieDomain) {
+    log.warn(
+      { authUrl: process.env.BETTER_AUTH_URL, corsOrigin: process.env.ATLAS_CORS_ORIGIN },
+      "Cross-origin deploy (ATLAS_CORS_ORIGIN set) but no shared cookie domain could be "
+        + "derived — session cookies will be host-only and won't reach the frontend "
+        + "subdomain. Verify BETTER_AUTH_URL and ATLAS_CORS_ORIGIN are valid URLs sharing "
+        + "a 2+ label suffix.",
+    );
+  }
 
   // Session-cookie name prefix — distinct per deployment env so prod and
   // staging (which share the `.useatlas.dev` cookie zone) don't collide on a

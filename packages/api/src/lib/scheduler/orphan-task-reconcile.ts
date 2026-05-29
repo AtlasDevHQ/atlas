@@ -84,8 +84,11 @@ export interface OrphanTaskReport {
   /**
    * Distinct `(plugin_id, org_id)` pairs with orphans — i.e. how many
    * uninstalls left tasks behind. Coarse: computed via a `plugin_id || ':' ||
-   * org_id` key, which is exact for the catalog-id / org-id values Atlas
-   * writes (no `:` in either).
+   * org_id` key. `plugin_id` is a catalog id (`catalog:<slug>` — a
+   * fixed-position colon over a colon-free slug) and `org_id` is colon-free
+   * (enforced at write — see the `orgId` guard in `db/connection.ts`), so the
+   * concatenation is unambiguous and the DISTINCT count is exact. It's a
+   * coarse metric, not a correctness-critical value.
    */
   readonly orphanedInstalls: number;
 }
@@ -146,9 +149,24 @@ export async function countOrphanedPluginTasks(
     COUNT_ORPHANED_TASKS_SQL,
   );
   const row = rows[0];
+  // A COUNT(*) aggregate always returns exactly one row with numeric columns
+  // (0/0 when nothing matches). A missing row or a non-numeric column means a
+  // structural failure — driver returned nothing, column-alias drift, etc.
+  // Surface it as an error (the fiber wrap in `layers.ts` records it on the
+  // span + logs, keeping the loop alive) rather than coalescing to a
+  // false-healthy `0 orphans`, which is indistinguishable from a clean scan.
+  if (
+    !row ||
+    typeof row.orphaned_tasks !== "number" ||
+    typeof row.orphaned_installs !== "number"
+  ) {
+    throw new Error(
+      "Orphan-task count query returned an unexpected shape (expected one row with numeric orphaned_tasks/orphaned_installs)",
+    );
+  }
   return {
-    orphanedTasks: row?.orphaned_tasks ?? 0,
-    orphanedInstalls: row?.orphaned_installs ?? 0,
+    orphanedTasks: row.orphaned_tasks,
+    orphanedInstalls: row.orphaned_installs,
   };
 }
 
@@ -187,20 +205,33 @@ export interface OrphanReconcileDeps {
 }
 
 /**
+ * The canonical zero/no-op result: no orphans, sweep not run. Returned when
+ * the tick can't do work (no internal DB). Centralized so the only
+ * internally-consistent "did nothing" shape — `reconcileEnabled: false` paired
+ * with `deleted: 0` — lives in one place rather than being hand-written at
+ * each no-op site (`OrphanReconcileResult` is a flat record, so the
+ * `reconcileEnabled`/`deleted` pairing is an invariant held by construction).
+ */
+function emptyReconcileResult(): OrphanReconcileResult {
+  return { orphanedTasks: 0, orphanedInstalls: 0, reconcileEnabled: false, deleted: 0 };
+}
+
+/**
  * One reconcile tick: count (always) → optionally delete (when enabled) →
  * emit the drift signal. Returns the result so the `withEffectSpan` wrap in
  * `layers.ts` can attach the counts as span attributes.
  *
  * No-ops to a zero report when the internal DB is not configured (self-hosted
  * without `DATABASE_URL` has no `scheduled_tasks` / `workspace_plugins`
- * tables). DB errors propagate — the fiber wrap in `layers.ts` logs and
- * recovers, keeping the loop alive while still recording the failure.
+ * tables). DB errors propagate — the fiber wrap in `layers.ts` records the
+ * failure on the span and recovers, keeping the loop alive while the trace
+ * shows ERROR (never a false-healthy zero).
  */
 export async function reconcileOrphanTasks(
   deps: OrphanReconcileDeps,
 ): Promise<OrphanReconcileResult> {
   if (!deps.hasInternalDB()) {
-    return { orphanedTasks: 0, orphanedInstalls: 0, reconcileEnabled: false, deleted: 0 };
+    return emptyReconcileResult();
   }
 
   const reconcileEnabled = deps.reconcileEnabled();

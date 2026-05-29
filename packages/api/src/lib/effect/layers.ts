@@ -129,9 +129,11 @@ function withFiberDeathLog<A, E, R>(
 // Membership: 9 cleanup fibers. Eight were retrofitted with a span by
 // #2945 (the TTL/ratelimit/state sweeps below); the ninth,
 // `orphan_task_reconcile` (#2944), shipped with its span from day one and
-// additionally attaches the orphan count as a result attribute (the only
-// member that uses `withEffectSpan`'s 4th arg). The other periodic fibers
-// forked in `makeSchedulerLive` remain out of scope —
+// additionally attaches the orphan count as a result attribute (the only one
+// of these nine cleanup fibers that passes `setResultAttributes` — the BYOT
+// catalog-refresh fiber and the scheduler engine use that 4th arg elsewhere).
+// The other periodic fibers forked in `makeSchedulerLive` remain out of
+// scope —
 // `sub_processor_publisher`, `settings_refresh`, `onboarding_email`, and
 // `expert_scheduler` still lack a per-tick span, while the CRM/email
 // outbox flushers already have their own heartbeat + stall-watchdog
@@ -1645,38 +1647,50 @@ export function makeSchedulerLive(
       // Counts `scheduled_tasks` whose `plugin_id` has no live
       // `workspace_plugins` row — the residue a non-atomic plugin uninstall
       // leaves when the post-DELETE task cleanup fails. The count rides the
-      // per-tick span as a result attribute (the only cleanup fiber that
-      // attaches one), so an operator querying traces sees orphan
+      // per-tick span as a result attribute (the only one of these cleanup
+      // fibers that attaches one), so an operator querying traces sees orphan
       // accumulation; a `log.warn` fires on the same tick when > 0. The
       // destructive sweep is gated behind `ATLAS_ORPHAN_TASK_RECONCILE`
       // (default off — measure-only); the module no-ops when the internal DB
-      // is absent. catchAll keeps the loop alive on a DB blip and reports a
-      // zero result so the span still emits (liveness preserved).
+      // is absent.
+      //
+      // Error ordering matters: `withEffectSpan` wraps the RAW tick, so a
+      // failed tick records span status ERROR + the exception (rather than a
+      // misleading status-OK span carrying a fabricated `count=0`). The
+      // loop-liveness `catchAll` is applied OUTSIDE the span — it logs the
+      // failure and lets the hourly fiber survive a DB blip without painting
+      // the failed tick green or asserting a false-healthy zero into traces.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { ORPHAN_TASK_RECONCILE_INTERVAL_MS } = require("@atlas/api/lib/scheduler/orphan-task-reconcile") as {
         ORPHAN_TASK_RECONCILE_INTERVAL_MS: number;
       };
-      const orphanReconcileTick = Effect.tryPromise({
-        try: async () => {
-          const { runOrphanTaskReconcileTick } = await import(
-            "@atlas/api/lib/scheduler/orphan-task-reconcile"
-          );
-          return runOrphanTaskReconcileTick();
-        },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
+      const orphanReconcileTick = withEffectSpan(
+        SCHEDULER_CLEANUP_SPAN_NAMES.orphan_task_reconcile,
+        {},
+        Effect.tryPromise({
+          try: async () => {
+            const { runOrphanTaskReconcileTick } = await import(
+              "@atlas/api/lib/scheduler/orphan-task-reconcile"
+            );
+            return runOrphanTaskReconcileTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        (result) => ({
+          "atlas.orphan_tasks.count": result.orphanedTasks,
+          "atlas.orphan_tasks.installs": result.orphanedInstalls,
+          "atlas.orphan_tasks.reconcile_enabled": result.reconcileEnabled,
+          "atlas.orphan_tasks.deleted": result.deleted,
+        }),
+      ).pipe(
+        // Recover AFTER the span has recorded any error, so the trace shows
+        // ERROR (not OK-with-zero) while the loop stays alive.
         Effect.catchAll((err) =>
           Effect.sync(() => {
             log.warn(
               { err: errorMessage(err) },
               "Orphan plugin-task reconcile tick failed",
             );
-            return {
-              orphanedTasks: 0,
-              orphanedInstalls: 0,
-              reconcileEnabled: false,
-              deleted: 0,
-            };
           }),
         ),
       );
@@ -1684,17 +1698,7 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "orphan_task_reconcile",
-          withEffectSpan(
-            SCHEDULER_CLEANUP_SPAN_NAMES.orphan_task_reconcile,
-            {},
-            orphanReconcileTick,
-            (result) => ({
-              "atlas.orphan_tasks.count": result.orphanedTasks,
-              "atlas.orphan_tasks.installs": result.orphanedInstalls,
-              "atlas.orphan_tasks.reconcile_enabled": result.reconcileEnabled,
-              "atlas.orphan_tasks.deleted": result.deleted,
-            }),
-          ).pipe(
+          orphanReconcileTick.pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(ORPHAN_TASK_RECONCILE_INTERVAL_MS))),
           ),
         ),

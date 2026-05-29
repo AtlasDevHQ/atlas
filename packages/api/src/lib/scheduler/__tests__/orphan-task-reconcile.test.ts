@@ -90,12 +90,22 @@ describe("countOrphanedPluginTasks", () => {
     expect(calls).toHaveLength(1);
   });
 
-  test("defaults missing/empty result rows to zero", async () => {
-    const { query } = fakeQuery(() => []);
-    expect(await countOrphanedPluginTasks(query)).toEqual({
-      orphanedTasks: 0,
-      orphanedInstalls: 0,
-    });
+  test("throws on an unexpected result shape (empty / non-numeric) instead of reporting a false-healthy zero", async () => {
+    // A COUNT(*) aggregate always returns one row with numeric columns, so an
+    // empty result (or a column-alias drift) is a structural failure — it must
+    // surface as an error (recorded on the fiber span) rather than silently
+    // coalescing to `0 orphans`, which reads identical to a clean scan.
+    const empty = fakeQuery(() => []);
+    await expect(countOrphanedPluginTasks(empty.query)).rejects.toThrow(
+      /unexpected shape/,
+    );
+
+    const nonNumeric = fakeQuery(() => [
+      { orphaned_tasks: null, orphaned_installs: null },
+    ]);
+    await expect(countOrphanedPluginTasks(nonNumeric.query)).rejects.toThrow(
+      /unexpected shape/,
+    );
   });
 });
 
@@ -202,6 +212,30 @@ describe("reconcileOrphanTasks", () => {
     });
     expect(msg).toContain("clean manually");
     expect(debug).not.toHaveBeenCalled();
+  });
+
+  test("propagates a count-query failure (so the fiber span records ERROR, never a false-healthy zero)", async () => {
+    // Locks in the contract the `layers.ts` wrap depends on: when the count
+    // query rejects (internal-DB circuit open, statement timeout, …),
+    // reconcileOrphanTasks must REJECT so `withEffectSpan` records span status
+    // ERROR + the exception. The fiber's OUTER catchAll (in layers.ts, applied
+    // after the span) is what keeps the hourly loop alive — but the error must
+    // reach the span first, not be swallowed into a zeroed report here.
+    const { query, calls } = fakeQuery((sql) => {
+      if (isCountSql(sql)) throw new Error("internal DB circuit open");
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const { log, warn, debug } = recordingLogger();
+
+    await expect(reconcileOrphanTasks(deps({ query, log }))).rejects.toThrow(
+      "internal DB circuit open",
+    );
+
+    // No drift signal is fabricated on failure — neither the warn nor the
+    // clean-scan debug fired, and no DELETE was attempted.
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug).not.toHaveBeenCalled();
+    expect(calls.some((c) => isDeleteSql(c.sql))).toBe(false);
   });
 
   test("sweeps the orphan when ATLAS_ORPHAN_TASK_RECONCILE is on", async () => {

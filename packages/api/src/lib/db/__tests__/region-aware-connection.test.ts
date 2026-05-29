@@ -194,6 +194,32 @@ describe("getRegionAwareConnection", () => {
     expect(connections.hasOrgPool("org-1", "default")).toBe(true);
   });
 
+  it("null route falls through to local DB and never registers a residency pool (no region leak on metrics)", async () => {
+    // Pins the *consumer-side* null-route contract that the EE staging arm
+    // (#2908) relies on: when resolveRegionDatabaseUrl returns null — as it
+    // does for a "staging"-keyed workspace — getRegionAwareConnection must fall
+    // through to the default/local pool, register no `region:*` connection, and
+    // leave the org pool untagged. This does NOT exercise the staging arm
+    // itself (that lives in residency.test.ts); the trigger is the generic null
+    // route. Its delta over the line-132 "no region configured" test is the two
+    // assertions below — no leaked region pool, and no region on the metrics.
+    mockResolveFn = () => null;
+
+    const { db, resolvedConnId } = await getRegionAwareConnection("staging-workspace", "default");
+    expect(db).toBeDefined();
+    expect(resolvedConnId).toBe("default");
+
+    // No residency-mapped region connection registered…
+    expect(connections.list().some((id) => id.startsWith("region:"))).toBe(false);
+    // …and the org uses the default (local) pool.
+    expect(connections.hasOrgPool("staging-workspace", "default")).toBe(true);
+
+    // Org pool carries no region — it was not routed to any residency target.
+    const metrics = connections.getOrgPoolMetrics("staging-workspace");
+    expect(metrics).toHaveLength(1);
+    expect(metrics[0].region).toBeUndefined();
+  });
+
   it("different orgs in different regions get separate pools", async () => {
     // org-1 → us-east-1
     mockResolveFn = (orgId: string) => {

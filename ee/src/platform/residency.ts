@@ -22,6 +22,7 @@ import {
   setWorkspaceRegion,
 } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
 import {
   ResidencyResolver,
   type ResidencyResolverShape,
@@ -30,9 +31,21 @@ import {
   ResidencyError,
   type ResidencyErrorCode,
 } from "@atlas/api/lib/residency/errors";
-import type { RegionStatus, WorkspaceRegion } from "@useatlas/types";
+import type { DeployRegion, RegionStatus, WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
+
+/**
+ * The pre-prod soak deploy region (#2897 / #2908). Staging is a
+ * `DeployRegion` keyed `"staging"` (under `*.staging.useatlas.dev`) but is
+ * deliberately *excluded* from the residency router: a workspace keyed here
+ * resolves to a `null` region route and falls through to the local DB
+ * connection rather than any residency-mapped pool — see
+ * `resolveRegionDatabaseUrl`. `satisfies DeployRegion` anchors the literal to
+ * the union so dropping `"staging"` from `@useatlas/types` fails compilation
+ * here rather than silently re-enabling routing.
+ */
+const STAGING_REGION = "staging" satisfies DeployRegion;
 
 // ── Typed errors ────────────────────────────────────────────────────
 
@@ -205,6 +218,44 @@ export const resolveRegionDatabaseUrl = (
 
     const region = yield* Effect.promise(() => getWorkspaceRegion(workspaceId));
     if (!region) return null;
+
+    // Staging arm (#2908): the staging deploy region is never a residency
+    // target. Return null *before* the regionConfig lookup so a staging-keyed
+    // workspace falls through to the local DB connection — without tripping
+    // the "region no longer configured / contract may be violated" error path
+    // below. Short-circuiting here also wins over any accidental `staging`
+    // entry in residency.regions, so staging can never claim to be a
+    // residency-mapped region. us|eu|apac are untouched.
+    //
+    // Observability is deploy-aware. `region === "staging"` is only routine on
+    // the staging deploy itself (every residency-configured request lands
+    // here) — there it's debug-level noise. On any other deploy it is an
+    // impossible-by-policy state: `assignWorkspaceRegion` rejects `"staging"`
+    // via `isValidRegion`, so the only way a workspace carries it is an
+    // unguarded write (direct DB / backfill / region migration). That means a
+    // workspace believed residency-pinned is being silently served the default
+    // pool — a compliance signal that must be loud + alertable in prod, not a
+    // debug whisper. Likewise, a `staging` entry in residency.regions is dead
+    // config (it is never routed): flag it (`stagingInResidencyConfig`) and
+    // warn even on the staging deploy so the operator learns it is ignored.
+    if (region === STAGING_REGION) {
+      const stagingInResidencyConfig = STAGING_REGION in config.residency.regions;
+      const routineOnStagingDeploy = resolveDeployEnv() === "staging" && !stagingInResidencyConfig;
+      const event = {
+        workspaceId,
+        region,
+        event: "residency.staging_excluded",
+        stagingInResidencyConfig,
+      };
+      const message =
+        "Workspace keyed to staging region — excluded from residency routing, falling through to local DB";
+      if (routineOnStagingDeploy) {
+        log.debug(event, message);
+      } else {
+        log.warn(event, message);
+      }
+      return null;
+    }
 
     const regionConfig = config.residency.regions[region];
     if (!regionConfig) {

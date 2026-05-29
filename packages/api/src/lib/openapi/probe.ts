@@ -4,9 +4,11 @@
  * `/admin/openapi-datasources/:id/rediscover` route (re-probe), so both produce
  * an identical {@link OpenApiSnapshot}.
  *
- * Generalizes the slice-1 `datasource.ts::probeGraph` (which hardcoded Twenty's
- * `/rest/open-api/core` path + bearer auth) to any `(openapi_url, auth_kind,
- * auth_value)` install form. The snapshot caches the *raw document* — the
+ * Generalizes slice-1's hardcoded Twenty probe (formerly
+ * `datasource.ts::probeGraph`, removed when `datasource.ts` collapsed to a pure
+ * type module — it hardcoded Twenty's `/rest/open-api/core` path + bearer auth)
+ * to any `(openapi_url, auth_kind, auth_value)` install form. The snapshot
+ * caches the *raw document* — the
  * canonical `buildOperationGraph` rebuilds the graph from it on resolve, so
  * there's exactly one graph encoding (avoids the "serialized-graph drifts from
  * the doc" failure mode).
@@ -16,6 +18,7 @@
  * the route layer maps them to actionable 4xx/5xx envelopes instead of a 500.
  */
 
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import { buildOperationGraph } from "./spec";
 import {
   OpenApiSpecError,
@@ -23,7 +26,7 @@ import {
   type ResolvedAuth,
 } from "./types";
 import {
-  type OpenApiAuthKind,
+  type SupportedAuthKind,
   type OpenApiSnapshot,
   type DiscoveredOperationSummary,
 } from "./catalog";
@@ -42,6 +45,15 @@ export type OpenApiProbeErrorReason =
   | "unparseable" // body wasn't valid JSON / not an OpenAPI 3.x doc
   | "no_operations"; // parsed, but the graph has zero operations
 
+/**
+ * A plain `Error` subclass, not a `Data.TaggedError`: the probe is plain-async
+ * machinery (no Effect pipeline), and every consumer branches on `instanceof
+ * OpenApiProbeError` + the `reason` discriminant outside Effect (the install
+ * handler, the rediscover route). It never flows through `runHandler` /
+ * `mapTaggedError`, so the `Data.TaggedError` convention (which exists for
+ * Effect's typed-error channel) doesn't apply here — convert only if this ever
+ * becomes an Effect failure.
+ */
 export class OpenApiProbeError extends Error {
   readonly reason: OpenApiProbeErrorReason;
   /** HTTP status when `reason === "http_error"`. */
@@ -54,6 +66,32 @@ export class OpenApiProbeError extends Error {
   }
 }
 
+/**
+ * SaaS SSRF guard for the host-side spec fetch. The spec URL is admin-supplied
+ * and fetched by the API server itself at install + rediscover, so on
+ * multi-tenant SaaS it must point at a public HTTPS host — otherwise a workspace
+ * admin could aim it at cloud-metadata (`169.254.169.254`) or internal services
+ * (classic SSRF). Self-hosted operators legitimately connect internal OpenAPI
+ * services, so the guard is SaaS-only — mirrors the `ATLAS_DEPLOY_MODE === "saas"`
+ * credential gates in the install handlers. Throws {@link OpenApiProbeError}
+ * `unreachable` so callers surface the same actionable 400 they already map
+ * probe failures to.
+ *
+ * Hostname-based (reuses {@link isSafeExternalUrl}): it does not resolve DNS, so
+ * a public name that resolves to a private IP is out of scope — the same bar the
+ * shared guard sets for the codebase's other store-then-fetch URL surfaces.
+ */
+export function assertSpecUrlAllowed(specUrl: string): void {
+  if (process.env.ATLAS_DEPLOY_MODE !== "saas") return;
+  if (!isSafeExternalUrl(specUrl)) {
+    throw new OpenApiProbeError(
+      "unreachable",
+      "The spec URL must use HTTPS and resolve to a public host — private or internal " +
+        "addresses are blocked in hosted mode.",
+    );
+  }
+}
+
 export interface ProbeOptions {
   /** `fetch` override for tests. Defaults to `globalThis.fetch`. */
   readonly fetchImpl?: typeof globalThis.fetch;
@@ -63,12 +101,13 @@ export interface ProbeOptions {
  * Build the {@link ResolvedAuth} the slice-0 client applies, from the install
  * form's `auth_kind` + `auth_value` (+ optional header/param name).
  *
- * `oauth2` is intentionally unhandled — slice 6 owns its flow; callers validate
- * the kind is supported before reaching here (the handler rejects oauth2 with a
- * field error). `basic` splits `auth_value` on the first `:` into user:pass.
+ * Total over {@link SupportedAuthKind}: `oauth2` is excluded at the type level
+ * (slice 6 owns its flow), so callers narrow via `narrowSupportedAuthKind`
+ * before reaching here and there is no runtime "unsupported kind" throw. `basic`
+ * splits `auth_value` on the first `:` into user:pass.
  */
 export function buildResolvedAuth(
-  authKind: OpenApiAuthKind,
+  authKind: SupportedAuthKind,
   authValue: string | undefined,
   authHeaderName: string | undefined,
   authParamName: string | undefined,
@@ -97,14 +136,11 @@ export function buildResolvedAuth(
         value: authValue ?? "",
         placement: { in: "query", name: authParamName || "api_key" },
       };
-    case "oauth2":
-      // Deferred to slice 6. Reaching here is a caller bug (the handler must
-      // reject oauth2 before probing) — fail loud rather than silently
-      // dispatch an unauthenticated request.
-      throw new OpenApiProbeError(
-        "unparseable",
-        "oauth2 auth is not supported until slice 6 — reject before probing.",
-      );
+    default: {
+      // Exhaustiveness guard: a new SupportedAuthKind must grow a case here.
+      const _exhaustive: never = authKind;
+      throw new OpenApiProbeError("unparseable", `Unhandled auth kind: ${String(_exhaustive)}`);
+    }
   }
 }
 
@@ -142,6 +178,10 @@ export async function probeSpec(
   options: ProbeOptions = {},
 ): Promise<{ readonly doc: unknown; readonly graph: OperationGraph }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+
+  // SSRF guard (SaaS only): the spec URL is admin-supplied and fetched here,
+  // host-side — block private/internal targets before the fetch.
+  assertSpecUrlAllowed(openapiUrl);
 
   // apiKey-query placement: the spec endpoint may itself need the key in the
   // query string. Append it without clobbering an existing query.

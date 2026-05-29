@@ -152,6 +152,29 @@ describe("resolveWorkspaceRestDatasources", () => {
     expect(result).toEqual([]);
   });
 
+  it("skips an install with a malformed snapshot (drifted/older builder), not the whole set", async () => {
+    // A snapshot missing required fields (here: no `title`) must be treated as
+    // "no snapshot" by isValidSnapshot — not built into a RestDatasource with
+    // undefined denormalized fields. The sibling healthy install survives.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "drifted", config: config({ openapi_snapshot: { probedAt: "t", version: "1", openapiVersion: "3.1.0", operationCount: 1, doc: {} } }) },
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-29T08:00:00.000Z") }) },
+      ]),
+    });
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
+  });
+
+  it("skips an install using the deferred oauth2 auth kind (slice 6), not the whole set", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "oauth", config: config({ auth_kind: "oauth2", openapi_snapshot: snapshot("2026-05-29T09:00:00.000Z") }) },
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-29T10:00:00.000Z") }) },
+      ]),
+    });
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
+  });
+
   it("falls back to the snapshot title when display_name is absent", async () => {
     const result = await resolveWorkspaceRestDatasources("org-1", {
       query: queryReturning([{ install_id: "ds-1", config: config({ display_name: undefined }) }]),

@@ -41,6 +41,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   OPENAPI_GENERIC_SLUG,
@@ -49,6 +50,7 @@ import {
   OPENAPI_AUTH_KINDS,
   OPENAPI_SUPPORTED_AUTH_KINDS,
   DEFAULT_REPRESENTATION_MODE,
+  narrowSupportedAuthKind,
 } from "@atlas/api/lib/openapi/catalog";
 import {
   buildResolvedAuth,
@@ -219,12 +221,46 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
       );
     }
 
+    // ── 2b. SaaS SSRF guard for base_url_override ───────────────────
+    // The override becomes the operations base URL the agent later POSTs to,
+    // host-side, via `executeRestOperation`. It's admin-supplied, so on
+    // multi-tenant SaaS block private/internal targets (the spec URL itself is
+    // guarded inside `probeSpec`). Self-hosted may point at internal services.
+    if (
+      process.env.ATLAS_DEPLOY_MODE === "saas" &&
+      data.base_url_override &&
+      !isSafeExternalUrl(data.base_url_override)
+    ) {
+      throw FormInstallValidationError.fromZodFlatten({
+        fieldErrors: {
+          base_url_override: [
+            "Base URL must use HTTPS and resolve to a public host — private or " +
+              "internal addresses are blocked in hosted mode.",
+          ],
+        },
+        formErrors: [],
+      });
+    }
+
     // ── 3. Probe the spec (slice-0) → snapshot ──────────────────────
     // The credential is needed because some specs (Twenty) require auth to read
     // `/open-api/core`. A probe failure is a user-fixable input error → 400 on
     // the offending field, not a 500.
+    //
+    // `data.auth_kind` is guaranteed non-oauth2 here (the schema's superRefine
+    // fails the parse for oauth2 above); narrow to SupportedAuthKind so
+    // buildResolvedAuth is called total. The `null` arm is unreachable.
+    const supportedKind = narrowSupportedAuthKind(data.auth_kind);
+    if (!supportedKind) {
+      throw FormInstallValidationError.fromZodFlatten({
+        fieldErrors: {
+          auth_kind: [`"${data.auth_kind}" auth is not supported yet (coming in a later release).`],
+        },
+        formErrors: [],
+      });
+    }
     const auth = buildResolvedAuth(
-      data.auth_kind,
+      supportedKind,
       data.auth_value,
       data.auth_header_name,
       data.auth_param_name,

@@ -108,6 +108,32 @@ describe("buildAgentRepresentation — Path A (operation-graph)", () => {
   });
 });
 
+describe("buildAgentRepresentation — multi-datasource disambiguation (datasourceId header)", () => {
+  // The agent loop (agent.ts) sets `datasourceId` only when a workspace has >1
+  // REST datasource, so the prompt teaches `executeRestOperation`'s routing key.
+  // Without it the tool's id-routing is unreachable by the model. Pin both branches.
+  it("injects the datasourceId routing instruction when a datasourceId is given", () => {
+    const rep = buildAgentRepresentation(graph, "operation-graph", {
+      displayName: "Twenty",
+      datasourceId: "twenty-1",
+    });
+    expect(rep.promptContext).toContain('datasourceId: "twenty-1"');
+    expect(rep.promptContext).toContain("more than one REST datasource is connected");
+  });
+
+  it("omits the datasourceId instruction for a single datasource (slice-1 prompt shape unchanged)", () => {
+    const rep = buildAgentRepresentation(graph, "operation-graph", { displayName: "Twenty" });
+    expect(rep.promptContext).not.toContain("datasourceId:");
+  });
+
+  it("surfaces the datasourceId header in both representation modes", () => {
+    for (const mode of REPRESENTATION_MODES) {
+      const rep = buildAgentRepresentation(graph, mode, { displayName: "Twenty", datasourceId: "ds-x" });
+      expect(rep.promptContext, mode).toContain('datasourceId: "ds-x"');
+    }
+  });
+});
+
 describe("buildAgentRepresentation — composed schemas (allOf/oneOf/anyOf)", () => {
   // Generated specs (Stripe etc.) define schemas purely via composition with no
   // direct properties; spec.ts preserves the branches and the representation

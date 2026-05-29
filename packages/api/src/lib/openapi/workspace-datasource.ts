@@ -31,7 +31,8 @@ import {
   OPENAPI_GENERIC_CATALOG_ID,
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
-  type OpenApiSnapshot,
+  isValidSnapshot,
+  narrowSupportedAuthKind,
   type OpenApiAuthKind,
 } from "./catalog";
 import { buildResolvedAuth, snapshotToGraph } from "./probe";
@@ -123,17 +124,30 @@ function buildDatasource(
   installId: string,
   decrypted: Record<string, unknown>,
 ): RestDatasource | null {
-  const snapshot = decrypted.openapi_snapshot as OpenApiSnapshot | undefined;
-  if (!snapshot || typeof snapshot !== "object" || snapshot.doc === undefined) {
+  // Validate the snapshot read back from JSONB, rather than an unchecked cast: a
+  // drifted / older-builder row is treated as "no snapshot" (skip), not a
+  // RestDatasource with undefined/NaN denormalized fields in the prompt.
+  const snapshot = decrypted.openapi_snapshot;
+  if (!isValidSnapshot(snapshot)) {
     log.warn(
       { installId },
-      "OpenAPI install has no cached snapshot — skipping (rediscover the schema)",
+      "OpenAPI install has no valid cached snapshot — skipping (rediscover the schema)",
     );
     return null;
   }
 
   const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
-  const authKind = (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind;
+  const rawAuthKind = (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind;
+  // A drifted row could carry the deferred `oauth2` kind — skip it explicitly
+  // (slice 6 #2930) rather than relying on buildResolvedAuth to throw.
+  const authKind = narrowSupportedAuthKind(rawAuthKind);
+  if (!authKind) {
+    log.warn(
+      { installId, authKind: rawAuthKind },
+      "OpenAPI install uses a deferred auth kind (oauth2) — skipping until slice 6",
+    );
+    return null;
+  }
   const authValue = typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined;
   const authHeaderName = typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined;
   const authParamName = typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined;

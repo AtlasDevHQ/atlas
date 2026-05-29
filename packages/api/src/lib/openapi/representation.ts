@@ -52,14 +52,20 @@ export const REPRESENTATION_MODES = ["operation-graph", "semantic-yaml"] as cons
  */
 export type RepresentationMode = (typeof REPRESENTATION_MODES)[number];
 
-/** Thrown when a representation mode is recognized but not yet implemented. */
+/**
+ * Thrown when a mode is in {@link REPRESENTATION_MODES} but has no renderer arm
+ * in {@link buildAgentRepresentation} — i.e. a future mode added to the list
+ * before it grows a `case`. Both current modes (operation-graph, semantic-yaml)
+ * are implemented, so this is unreachable today; it's the runtime companion to
+ * the compile-time `never` exhaustiveness guard.
+ *
+ * Plain `Error`, not `Data.TaggedError`: pure, plain-async rendering with no
+ * Effect pipeline — it never flows through `runHandler` / `mapTaggedError`.
+ */
 export class RepresentationNotImplementedError extends Error {
   readonly mode: RepresentationMode;
   constructor(mode: RepresentationMode) {
-    super(
-      `Representation mode "${mode}" is recognized but not implemented in this slice. ` +
-        `Path A ("operation-graph") ships in #2924; Path B ("semantic-yaml") lands in #2931.`,
-    );
+    super(`Representation mode "${mode}" has no renderer — add a case arm in buildAgentRepresentation.`);
     this.name = "RepresentationNotImplementedError";
     this.mode = mode;
   }
@@ -110,11 +116,12 @@ export interface BuildRepresentationOptions {
    */
   readonly datasourceId?: string;
   /**
-   * Whether the sandbox-Python composition path is live. Slice 1 ships
-   * read-only single-operation execution via `executeRestOperation`; the Python
-   * path (multi-call composition over the upstream) is gated behind slice 3's
-   * `networkPolicy` threading, so the prompt does NOT advertise it yet when
-   * this is false (the default). Slice 3 (#2927) flips it on.
+   * Whether the sandbox-Python composition path is live. Atlas ships read-only
+   * single-operation execution via `executeRestOperation`; the Python path
+   * (multi-call composition over the upstream) needs the sandbox to authenticate
+   * read-only host-side, which isn't wired yet — so no caller sets this today
+   * (it defaults false and the prompt does NOT advertise `executePython`). Kept
+   * as the seam for when in-sandbox composition lands (pairs with slice 5).
    */
   readonly pythonCompositionEnabled?: boolean;
 }

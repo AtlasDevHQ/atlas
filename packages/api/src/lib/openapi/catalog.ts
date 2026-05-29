@@ -67,6 +67,28 @@ export const OPENAPI_SUPPORTED_AUTH_KINDS: ReadonlyArray<OpenApiAuthKind> = [
   "apikey-query",
 ];
 
+/**
+ * The auth kinds an install can actually execute with — the {@link
+ * OpenApiAuthKind} enum minus the declared-but-deferred `oauth2`. Modeling the
+ * execution surface as its own type makes `buildResolvedAuth` total over it (no
+ * runtime "unsupported kind" throw): callers narrow a form/DB-read kind through
+ * {@link narrowSupportedAuthKind} first and handle the deferred case explicitly,
+ * so an `oauth2` value is unrepresentable downstream of validation.
+ */
+export type SupportedAuthKind = Exclude<OpenApiAuthKind, "oauth2">;
+
+/**
+ * Narrow a raw {@link OpenApiAuthKind} to the executable subset, or `null` for a
+ * declared-but-deferred kind (`oauth2`, slice 6 #2930). The install form rejects
+ * oauth2 at submit; the rediscover/resolve read paths (which read the kind back
+ * from the DB, where a drifted row could carry oauth2) skip or 400 on `null`
+ * rather than relying on a thrown-and-caught error. Keep in lockstep with
+ * {@link OPENAPI_SUPPORTED_AUTH_KINDS} if more kinds defer.
+ */
+export function narrowSupportedAuthKind(kind: OpenApiAuthKind): SupportedAuthKind | null {
+  return kind === "oauth2" ? null : kind;
+}
+
 /** Default representation mode — the #2931 bake-off winner (Path A). */
 export const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph";
 
@@ -163,6 +185,29 @@ export interface OpenApiSnapshot {
   readonly operationCount: number;
   /** The raw OpenAPI document the resolver rebuilds the graph from. */
   readonly doc: unknown;
+}
+
+/**
+ * Runtime guard for a snapshot read back from `workspace_plugins.config` JSONB.
+ * The config round-trips through JSONB as `Record<string, unknown>`, so the
+ * `openapi_snapshot` field is untyped at the trust boundary — an older builder
+ * or a drifted row could yield missing / wrong-typed fields that would otherwise
+ * flow into the prompt header and admin card as `undefined` / `NaN`. Validate
+ * the load-bearing fields here so a malformed snapshot is treated as "missing"
+ * (skip / prompt a rediscover) — the same fail-soft posture as a row that has no
+ * snapshot at all, instead of an unchecked `as OpenApiSnapshot` cast.
+ */
+export function isValidSnapshot(value: unknown): value is OpenApiSnapshot {
+  if (typeof value !== "object" || value === null) return false;
+  const s = value as Record<string, unknown>;
+  return (
+    typeof s.probedAt === "string" &&
+    typeof s.title === "string" &&
+    typeof s.version === "string" &&
+    typeof s.openapiVersion === "string" &&
+    typeof s.operationCount === "number" &&
+    s.doc !== undefined
+  );
 }
 
 /** A single discovered operation, for the detail page's operations table. */

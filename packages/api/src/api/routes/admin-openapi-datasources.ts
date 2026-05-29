@@ -1,7 +1,7 @@
 /**
  * `admin-openapi-datasources` — management surface for installed generic OpenAPI
  * REST datasources (PRD #2868 slice 2, #2926). The install itself goes through
- * the integrations form-install pipeline (`POST /api/v1/integrations/openapi-generic/install`
+ * the integrations form-install pipeline (`POST /api/v1/integrations/openapi-generic/install-form`
  * → `OpenApiGenericFormInstallHandler`); this router owns the post-install
  * lifecycle the `/admin/connections` UI drives:
  *
@@ -29,6 +29,8 @@ import {
   OPENAPI_GENERIC_CATALOG_ID,
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
+  isValidSnapshot,
+  narrowSupportedAuthKind,
   type OpenApiSnapshot,
   type OpenApiAuthKind,
 } from "@atlas/api/lib/openapi/catalog";
@@ -61,7 +63,10 @@ type InstallRow = {
 /** Project the non-secret summary fields for a list/detail card from a config blob. */
 function summarizeInstall(installId: string, config: Record<string, unknown> | null, status: string) {
   const c = config ?? {};
-  const snapshot = c.openapi_snapshot as OpenApiSnapshot | undefined;
+  // Validate the JSONB read-back rather than an unchecked cast — a drifted row
+  // surfaces as `snapshot: null` (prompting a rediscover) instead of a card with
+  // undefined title / NaN operationCount.
+  const snapshot = isValidSnapshot(c.openapi_snapshot) ? c.openapi_snapshot : undefined;
   return {
     id: installId,
     displayName:
@@ -226,7 +231,8 @@ adminOpenApiDatasources.openapi(detailRoute, async (c) =>
     }
 
     const summary = summarizeInstall(row.install_id, row.config, row.status);
-    const snapshot = (row.config ?? {}).openapi_snapshot as OpenApiSnapshot | undefined;
+    const rawSnapshot = (row.config ?? {}).openapi_snapshot;
+    const snapshot = isValidSnapshot(rawSnapshot) ? rawSnapshot : undefined;
 
     // Rebuild the graph from the cached snapshot to list operations. A corrupt /
     // missing snapshot surfaces as an empty list + a flag so the UI prompts a
@@ -235,7 +241,7 @@ adminOpenApiDatasources.openapi(detailRoute, async (c) =>
     // response satisfies the typed-response `JSONValue` shape.
     let operations: Array<{ operationId: string; method: string; path: string; summary: string | null }> = [];
     let snapshotError = false;
-    if (snapshot && snapshot.doc !== undefined) {
+    if (snapshot) {
       try {
         operations = summarizeOperations(snapshotToGraph(installId, snapshot)).map((o) => ({
           operationId: o.operationId,
@@ -269,14 +275,44 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
 
     // Decrypt ONLY to read the credential + URL for the upstream probe; the
     // snapshot we write back is non-secret, merged via JSONB || so the encrypted
-    // auth_value never round-trips through this layer.
-    const decrypted = decryptSecretFields(row.config ?? {}, SECRET_SCHEMA);
+    // auth_value never round-trips through this layer. A decrypt failure (e.g. a
+    // rotated-away key version) is surfaced as an actionable 400, not a generic 500.
+    let decrypted: Record<string, unknown>;
+    try {
+      decrypted = decryptSecretFields(row.config ?? {}, SECRET_SCHEMA);
+    } catch (err) {
+      log.warn({ installId, err: errorMessage(err) }, "Rediscover credential decrypt failed");
+      return c.json(
+        {
+          error: "decrypt_failed",
+          message:
+            "Could not decrypt the stored credential (the encryption key may have rotated). " +
+            "Reinstall the datasource with a fresh credential.",
+          requestId,
+        },
+        400,
+      );
+    }
     const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
     if (!openapiUrl) {
       return c.json({ error: "bad_request", message: "Datasource has no spec URL to rediscover.", requestId }, 400);
     }
+    // A drifted row could carry the deferred oauth2 kind — surface an actionable
+    // 400 rather than letting buildResolvedAuth's exhaustiveness guard 500.
+    const rawAuthKind = (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind;
+    const authKind = narrowSupportedAuthKind(rawAuthKind);
+    if (!authKind) {
+      return c.json(
+        {
+          error: "bad_request",
+          message: "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable.",
+          requestId,
+        },
+        400,
+      );
+    }
     const auth = buildResolvedAuth(
-      (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind,
+      authKind,
       typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined,
       typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined,
       typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined,

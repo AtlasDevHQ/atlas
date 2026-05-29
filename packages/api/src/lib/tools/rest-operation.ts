@@ -231,6 +231,3 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
     },
   });
 }
-
-/** Production tool instance, registered when a REST datasource is active. */
-export const executeRestOperationTool = createExecuteRestOperationTool();

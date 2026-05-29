@@ -13,10 +13,12 @@ import {
   buildSnapshot,
   summarizeOperations,
   snapshotToGraph,
+  assertSpecUrlAllowed,
   OpenApiProbeError,
   __resetSnapshotGraphCacheForTests,
 } from "../probe";
 import { buildOperationGraph } from "../spec";
+import { narrowSupportedAuthKind } from "../catalog";
 import { MOCK_OPENAPI_SPEC } from "@atlas/api/testing/openapi-datasource";
 
 function fetchReturning(spec: unknown, status = 200): typeof globalThis.fetch {
@@ -59,8 +61,12 @@ describe("buildResolvedAuth", () => {
     });
   });
 
-  it("throws on oauth2 (deferred to slice 6)", () => {
-    expect(() => buildResolvedAuth("oauth2", "x", undefined, undefined)).toThrow(OpenApiProbeError);
+  it("excludes oauth2 from the executable kinds (narrowed away before buildResolvedAuth)", () => {
+    // oauth2 (slice 6) is unrepresentable in buildResolvedAuth's SupportedAuthKind
+    // param — callers narrow first; the deferred kind resolves to null.
+    expect(narrowSupportedAuthKind("oauth2")).toBeNull();
+    expect(narrowSupportedAuthKind("bearer")).toBe("bearer");
+    expect(narrowSupportedAuthKind("apikey-query")).toBe("apikey-query");
   });
 });
 
@@ -114,6 +120,52 @@ describe("probeSpec", () => {
       fetchImpl: fetchReturning(empty),
     }).catch((e) => e);
     expect((err as OpenApiProbeError).reason).toBe("no_operations");
+  });
+});
+
+describe("assertSpecUrlAllowed (SaaS SSRF guard)", () => {
+  const ORIGINAL = process.env.ATLAS_DEPLOY_MODE;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.ATLAS_DEPLOY_MODE;
+    else process.env.ATLAS_DEPLOY_MODE = ORIGINAL;
+  });
+
+  it("is a no-op off SaaS (self-hosted may connect internal hosts)", () => {
+    delete process.env.ATLAS_DEPLOY_MODE;
+    expect(() => assertSpecUrlAllowed("http://localhost:9000/openapi.json")).not.toThrow();
+    expect(() => assertSpecUrlAllowed("http://10.0.0.5/openapi.json")).not.toThrow();
+  });
+
+  it("rejects private/internal spec URLs in SaaS mode (metadata, localhost, RFC1918)", () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    for (const url of [
+      "http://169.254.169.254/latest/meta-data/", // cloud metadata
+      "https://localhost/openapi.json",
+      "https://127.0.0.1/openapi.json",
+      "https://10.0.0.5/openapi.json",
+      "https://192.168.1.10/openapi.json",
+      "http://crm.example.com/openapi.json", // non-HTTPS
+    ]) {
+      expect(() => assertSpecUrlAllowed(url), url).toThrow(OpenApiProbeError);
+    }
+  });
+
+  it("allows a public HTTPS spec URL in SaaS mode", () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    expect(() => assertSpecUrlAllowed("https://crm.example.com/rest/open-api/core")).not.toThrow();
+  });
+
+  it("probeSpec fires the guard before the host-side fetch (SaaS)", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    let fetched = false;
+    const fetchImpl = (async () => {
+      fetched = true;
+      return new Response(JSON.stringify(MOCK_OPENAPI_SPEC), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const err = await probeSpec("https://127.0.0.1/o.json", { kind: "none" }, { fetchImpl }).catch((e) => e);
+    expect(err).toBeInstanceOf(OpenApiProbeError);
+    expect((err as OpenApiProbeError).reason).toBe("unreachable");
+    expect(fetched).toBe(false); // guard rejected before any request left the box
   });
 });
 

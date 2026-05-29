@@ -39,7 +39,7 @@ const SECTIONS: LegalSectionData[] = [
     legal: [
       "Atlas provides a hosted text-to-SQL platform. Customer authenticates against its own data warehouse and identity provider; Atlas executes queries on Customer’s behalf in read-only mode (or write mode where Customer has explicitly granted such permission).",
       "Atlas may modify, add, or remove features at any time, but will not materially reduce the functionality of any feature included in Customer’s plan during the current paid term without 30 days’ notice.",
-      'Beta and "Labs" features are provided as-is, may be removed at any time, and are excluded from the SLA.',
+      'Beta and "Labs" features are provided as-is and may be removed at any time.',
     ],
     plain:
       "We provide the hosted Atlas service. Improvements ship continuously, but we won’t materially reduce features in your plan during the paid term without 30 days’ notice.",
@@ -135,7 +135,7 @@ const SECTIONS: LegalSectionData[] = [
     id: "term",
     title: "Term & Termination",
     legal: [
-      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice. Customer may terminate for cause with 30 days’ written notice if Atlas misses its SLA targets in any three consecutive calendar months, or in any four months within a rolling twelve-month period (see useatlas.dev/sla), and receive a pro-rata refund of any prepaid fees for the remaining term.",
+      "These Terms remain in effect while Customer has an active subscription. Either party may terminate for material breach uncured 30 days after written notice.",
       "On termination, Atlas will, on request, make Customer Data available for export for 30 days, after which it will be deleted from production systems within 30 days and from backups within 90 days.",
       "Sections that by nature should survive termination (Confidentiality, IP, Warranty disclaimers, Liability limits, Indemnification, Governing Law) survive.",
     ],

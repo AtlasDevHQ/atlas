@@ -9,7 +9,6 @@ import { TalkToSalesDialog } from "../../components/talk-to-sales-dialog";
 // ---------------------------------------------------------------------------
 
 type BillingPeriod = "monthly" | "annual";
-type Currency = "USD" | "EUR" | "GBP";
 
 interface Tier {
   kind: string;
@@ -46,13 +45,6 @@ interface FAQ {
 }
 
 // ---------------------------------------------------------------------------
-// FX rates — display-only courtesy conversion. Stripe billing is in USD.
-// ---------------------------------------------------------------------------
-
-const CURRENCY_SYMBOL: Record<Currency, string> = { USD: "$", EUR: "€", GBP: "£" };
-const CURRENCY_RATE: Record<Currency, number> = { USD: 1, EUR: 0.92, GBP: 0.79 };
-
-// ---------------------------------------------------------------------------
 // Data
 // ---------------------------------------------------------------------------
 
@@ -63,7 +55,7 @@ const TIERS: Tier[] = [
     monthlyPrice: null,
     tagline: "Your infra. Your data.",
     cta: "Deploy now",
-    ctaHref: "https://docs.useatlas.dev/getting-started",
+    ctaHref: "https://docs.useatlas.dev/getting-started/quick-start",
     ctaSecondary: "Free, AGPL-3.0",
     features: [
       "BYOK — unlimited queries",
@@ -139,7 +131,6 @@ const TIERS: Tier[] = [
       "White-label branding",
       "Custom domain",
       "Data residency (3 regions)",
-      "99.9% uptime SLA",
       "Priority + Slack support",
     ],
   },
@@ -170,7 +161,6 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
       { feature: "Custom domain", selfHosted: false, starter: false, pro: true, business: true },
       { feature: "White-label branding", selfHosted: false, starter: false, pro: false, business: true },
       { feature: "Data residency", selfHosted: false, starter: false, pro: false, business: "3 regions" },
-      { feature: "Uptime SLA", selfHosted: false, starter: false, pro: false, business: "99.9%" },
       { feature: "Automated backups", selfHosted: false, starter: false, pro: false, business: true },
     ],
   },
@@ -253,29 +243,25 @@ const TIER_LABELS: Record<TierKey, string> = {
 function formatPrice(
   monthlyPrice: number | null,
   billing: BillingPeriod,
-  currency: Currency,
 ): { price: string; suffix: string; annualTotal?: string } {
   if (monthlyPrice === null) {
     return { price: "Free", suffix: "forever" };
   }
-  const symbol = CURRENCY_SYMBOL[currency];
-  const rate = CURRENCY_RATE[currency];
+  // All prices are shown and billed in USD.
   if (billing === "annual") {
     // ASSUMPTION: STRIPE_*_ANNUAL_PRICE_ID products are configured as
     // exactly 10 × monthly (≈17% off, "10 months for 12"). The toggle copy
     // and FAQ both depend on this. If you change Stripe's annual prices,
     // update this multiplier and the "save 17%" / FAQ copy together.
-    // Round the annual total first so the displayed amount matches the
-    // post-FX charge; the per-month figure below is derived for display only.
-    const annual = Math.round(monthlyPrice * 10 * rate);
+    const annual = monthlyPrice * 10;
     const effectiveMonthly = Math.round(annual / 12);
     return {
-      price: `${symbol}${effectiveMonthly}`,
+      price: `$${effectiveMonthly}`,
       suffix: "/ seat / mo",
-      annualTotal: `${symbol}${annual} per seat, billed yearly`,
+      annualTotal: `$${annual} per seat, billed yearly`,
     };
   }
-  return { price: `${symbol}${Math.round(monthlyPrice * rate)}`, suffix: "/ seat / mo" };
+  return { price: `$${monthlyPrice}`, suffix: "/ seat / mo" };
 }
 
 // ---------------------------------------------------------------------------
@@ -297,19 +283,15 @@ function DashIcon() {
   );
 }
 
-function BillingCurrencyToggle({
+function BillingToggle({
   billing,
-  currency,
   onBillingChange,
-  onCurrencyChange,
 }: {
   billing: BillingPeriod;
-  currency: Currency;
   onBillingChange: (period: BillingPeriod) => void;
-  onCurrencyChange: (c: Currency) => void;
 }) {
   return (
-    <div className="animate-fade-in-up delay-300 mb-8 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-6">
+    <div className="animate-fade-in-up delay-300 mb-8 flex items-center justify-center">
       <div
         role="group"
         aria-label="Billing period"
@@ -342,24 +324,6 @@ function BillingCurrencyToggle({
           </button>
         ))}
       </div>
-
-      <div role="group" aria-label="Display currency" className="flex gap-1">
-        {(Object.keys(CURRENCY_SYMBOL) as Currency[]).map((c) => (
-          <button
-            key={c}
-            type="button"
-            aria-pressed={currency === c}
-            onClick={() => onCurrencyChange(c)}
-            className={`rounded-md border px-2.5 py-1 font-mono text-[11px] tracking-wider transition-colors ${
-              currency === c
-                ? "border-brand/40 text-brand"
-                : "border-zinc-800 text-zinc-400 hover:text-zinc-200"
-            }`}
-          >
-            {CURRENCY_SYMBOL[c]} {c}
-          </button>
-        ))}
-      </div>
     </div>
   );
 }
@@ -375,7 +339,7 @@ function StatCard() {
           of AI-generated SQL fails at least one Atlas validator.
         </p>
         <p className="font-mono text-[11.5px] leading-relaxed tracking-wider text-zinc-400">
-          Sample: 12,418 queries across our beta cohort. Every tier ships the same
+          Sample: thousands of queries across our beta cohort. Every tier ships the same
           7 gates — the difference is who runs the servers.
         </p>
       </div>
@@ -386,13 +350,11 @@ function StatCard() {
 function TierCard({
   tier,
   billing,
-  currency,
 }: {
   tier: Tier;
   billing: BillingPeriod;
-  currency: Currency;
 }) {
-  const { price, suffix, annualTotal } = formatPrice(tier.monthlyPrice, billing, currency);
+  const { price, suffix, annualTotal } = formatPrice(tier.monthlyPrice, billing);
 
   let ctaStyle: string;
   if (tier.highlighted) {
@@ -496,32 +458,20 @@ function FAQCard({ faq }: { faq: FAQ }) {
 
 export function PricingContent() {
   const [billing, setBilling] = useState<BillingPeriod>("annual");
-  const [currency, setCurrency] = useState<Currency>("USD");
 
   return (
     <>
-      {/* Toggles + stat card + tier cards */}
+      {/* Toggle + stat card + tier cards */}
       <section className="mx-auto max-w-6xl px-6 pb-16 md:pb-24">
-        <BillingCurrencyToggle
-          billing={billing}
-          currency={currency}
-          onBillingChange={setBilling}
-          onCurrencyChange={setCurrency}
-        />
+        <BillingToggle billing={billing} onBillingChange={setBilling} />
 
         <StatCard />
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {TIERS.map((tier) => (
-            <TierCard key={tier.name} tier={tier} billing={billing} currency={currency} />
+            <TierCard key={tier.name} tier={tier} billing={billing} />
           ))}
         </div>
-
-        {currency !== "USD" && (
-          <p className="mt-5 text-center font-mono text-[10.5px] tracking-wider text-zinc-400">
-            Billed in USD; {currency} shown at indicative rates for reference.
-          </p>
-        )}
       </section>
 
       {/* Feature comparison */}

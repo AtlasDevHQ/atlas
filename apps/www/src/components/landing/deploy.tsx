@@ -89,7 +89,7 @@ function SelfHostCard() {
       </ul>
 
       <a
-        href="https://docs.useatlas.dev/getting-started"
+        href="https://docs.useatlas.dev/getting-started/quick-start"
         className="mt-auto inline-flex items-center justify-center rounded-lg border border-white/15 bg-transparent px-4 py-3 text-[13.5px] font-medium text-zinc-50 transition-colors hover:border-white/30"
       >
         read the docs →
@@ -117,7 +117,7 @@ function CloudCard() {
             // atlas cloud
           </p>
           <p className="text-[38px] font-semibold leading-none tracking-[-0.03em] text-zinc-50">
-            $29
+            <span className="text-base font-normal text-zinc-400">from </span>$29
             <span className="ml-1 text-base font-normal text-zinc-400">/ seat</span>
           </p>
           <p className="mt-2 text-sm text-zinc-200">Hosted. Zero ops.</p>
@@ -128,7 +128,7 @@ function CloudCard() {
       </header>
 
       <p className="m-0 mb-5 text-sm leading-[1.6] text-zinc-400">
-        We run it. Weekly updates, monitored connections, SLA.
+        We run it. Weekly updates, monitored connections.
         <br />
         Live in 3 minutes.
       </p>
@@ -158,7 +158,6 @@ function CloudCard() {
       <ul className="m-0 mb-6 flex list-none flex-col gap-2 p-0">
         {[
           "SSO · SAML · SCIM",
-          "99.9% uptime SLA",
           "Audit log export",
           "Priority support",
         ].map((item) => (

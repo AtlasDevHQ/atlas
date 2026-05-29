@@ -24,12 +24,14 @@ Extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) bec
 
 - [x] **Slice 0 — openapi-spec + openapi-client deep modules** ([#2923](https://github.com/AtlasDevHQ/atlas/issues/2923)) — OpenAPI 3.x → operation graph + single-op execute. Shipped in [#2935](https://github.com/AtlasDevHQ/atlas/pull/2935) (arch-win #72).
 - [x] **Slice 1 — Twenty acceptance suite** ([#2924](https://github.com/AtlasDevHQ/atlas/issues/2924)) — read-only generic agent + `executeRestOperation` tool, Path A operation-graph representation. Shipped in [#2971](https://github.com/AtlasDevHQ/atlas/pull/2971) (arch-win #73); writes deferred to slice 5.
-- [ ] **Slice 1b — representation bake-off** ([#2931](https://github.com/AtlasDevHQ/atlas/issues/2931)) — generated semantic YAML (Path B) vs raw operation-graph context (Path A) against the Twenty suite; picks slice 2's default representation.
+- [x] **Slice 1b — representation bake-off** ([#2931](https://github.com/AtlasDevHQ/atlas/issues/2931)) — generated semantic YAML (Path B) vs raw operation-graph context (Path A) against the Twenty suite; picks slice 2's default representation. Shipped in [#2974](https://github.com/AtlasDevHQ/atlas/pull/2974) (arch-win #75).
 - [ ] **Slice 2 — install surface** ([#2926](https://github.com/AtlasDevHQ/atlas/issues/2926)) — `openapi-generic` catalog row + `FormBasedInstallHandler` + `/admin/connections` + representation toggle.
-- [ ] **Slice 3 — sandbox networkPolicy threading** ([#2927](https://github.com/AtlasDevHQ/atlas/issues/2927)) — per-tenant base-URL allowlist (SaaS) + sidecar pass-through.
-- [ ] **Slice 4 — openapi-paginator registry** ([#2928](https://github.com/AtlasDevHQ/atlas/issues/2928)) — cursor/offset/page/link-header strategies + page-level L2 cache.
+- [x] **Slice 3 — sandbox networkPolicy threading** ([#2927](https://github.com/AtlasDevHQ/atlas/issues/2927)) — per-tenant base-URL allowlist (SaaS) + sidecar pass-through. Shipped in [#2975](https://github.com/AtlasDevHQ/atlas/pull/2975).
+- [x] **Slice 4 — openapi-paginator registry** ([#2928](https://github.com/AtlasDevHQ/atlas/issues/2928)) — cursor/offset/page/link-header strategies + page-level L2 cache. Shipped in [#2973](https://github.com/AtlasDevHQ/atlas/pull/2973) (arch-win #74).
 - [ ] **Slice 5 — write-side opt-in** ([#2929](https://github.com/AtlasDevHQ/atlas/issues/2929)) — `validateRestOperation` safety stack + `write_allowlist` + confirm-before-write banner.
 - [ ] **Slice 6 — expansion targets** ([#2930](https://github.com/AtlasDevHQ/atlas/issues/2930), HITL) — stripe-data + 2 REST candidates thin-wrapping the primitive.
+
+Spec-lifecycle follow-ups (net-new v0.0.2 scope, milestone-tracked): scheduler-driven re-discovery ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)), customer-configurable refresh interval ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977)), structured drift diff ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) + breaking-change signal ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)), and a shared cross-workspace spec/graph cache ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)).
 
 ---
 

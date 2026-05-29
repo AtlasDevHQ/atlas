@@ -208,24 +208,31 @@ const PythonConfigSchema = z.object({
 export type PythonConfig = z.infer<typeof PythonConfigSchema>;
 
 /**
- * The dev-tier floor for per-org pool `maxConnections`. The schema
- * default below uses this value, and `_warnPoolDefaultsInSaaS()` warns
- * when a SaaS deploy boots at or below it. Single source of truth so
- * a future bump (e.g. 10 → 15) doesn't drift the floor and the default
- * out of step. See `deploy.mdx` for the operator-facing tier sizing
- * reference (Dev / Team / Business / Enterprise).
+ * Default per-org pool `maxConnections` — the value the schema fills when
+ * a `pool.perOrg` block is present but omits `maxConnections`. Held in
+ * lockstep with `DEFAULT_ORG_POOL_SETTINGS.maxConnections` in
+ * `db/connection.ts` (the runtime registry default used when no
+ * `pool.perOrg` is configured at all) so the schema-resolved default and
+ * the registry default can't drift — they previously split 10 vs 5, which
+ * made an intentional `5` config trip a phantom "below floor" alarm (#2943).
+ *
+ * A connection is borrowed per in-flight SQL statement and released
+ * immediately (chat turns hold zero during LLM thinking; dashboard refresh
+ * is sequential), so 5 simultaneous statements per org is ample for
+ * conversational load. Raise it (per tier) only once pool-wait latency
+ * actually shows up in metrics. See `deploy.mdx#pool-default-warning`.
  */
-const POOL_DEV_FLOOR_MAX_CONNECTIONS = 10;
+const DEFAULT_ORG_POOL_MAX_CONNECTIONS = 5;
 
 /**
- * Per-org pool sizing defaults. The dev floor is sized for trial /
- * evaluation workloads. Production SaaS regions should configure
- * higher limits via `atlas.config.ts`; the boot warning surfaces
- * deploys still on the floor.
+ * Per-org pool sizing defaults, sized for conversational load. Production
+ * SaaS regions can configure higher limits via `atlas.config.ts` if
+ * pool-wait latency appears; `_warnPoolDefaultsInSaaS()` only flags the
+ * genuine mistake of omitting `pool.perOrg` entirely (isolation off).
  */
 const OrgPoolConfigSchema = z.object({
   /** Max connections per pool per org. */
-  maxConnections: z.number().int().positive().default(POOL_DEV_FLOOR_MAX_CONNECTIONS),
+  maxConnections: z.number().int().positive().default(DEFAULT_ORG_POOL_MAX_CONNECTIONS),
   /** Idle timeout in ms for per-org pool connections. Default 30000. */
   idleTimeoutMs: z.number().int().positive().default(30000),
   /** Max org pool sets before LRU eviction. Default 50. */
@@ -1399,22 +1406,25 @@ async function applyDeployMode(
 }
 
 /**
- * Boot-time CRITICAL log when a SaaS deploy is running on dev-tier pool
- * defaults. Two emission paths:
+ * Boot-time pool-sizing log for SaaS deploys. Two emission paths,
+ * deliberately at different severities (#2943):
  *
- *   1. `pool.perOrg` is undefined — operator never opted into per-org
- *      pooling; SaaS noisy-neighbor isolation is off.
- *   2. `pool.perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS`
- *      — at or below the dev floor; a single Business-tier org will
- *      queue on concurrent dashboards + chat + scheduled tasks. The
- *      `<=` (not `<`) is deliberate: the floor is the trial-tier
- *      *default*, not a "safe" value — an operator who explicitly
- *      sets the floor in a SaaS region is still misconfigured and
- *      should see the warning.
+ *   1. `pool.perOrg` is undefined → **CRITICAL**. The operator never
+ *      opted into per-org pooling, so SaaS noisy-neighbor isolation is
+ *      off and a single tenant can starve every other org's connections.
+ *      This is the genuine forgot-to-size mistake worth alerting on.
+ *   2. `pool.perOrg` is explicitly configured → **INFO**, regardless of
+ *      the value. An explicit `maxConnections` is an intentional sizing
+ *      decision, not a misconfiguration — a connection is borrowed per
+ *      in-flight SQL statement and released immediately, so a small value
+ *      is ample for conversational load. Flagging it CRITICAL was alert
+ *      fatigue (it fired on every boot of the deliberately-sized prod
+ *      config). If the value is genuinely too low, pool-wait latency will
+ *      surface in metrics (now exported via #2940) — raise it then.
  *
  * Self-hosted is silent (returns early) — every AGPL operator is
- * presumptively at trial / evaluation scale where the dev floor is
- * intentional.
+ * presumptively at trial / evaluation scale where per-org pooling is
+ * optional.
  *
  * Exported because the `loadConfig()` e2e path can't easily reach the
  * SaaS-resolved branch in tests (no `@atlas/ee` build).
@@ -1431,29 +1441,26 @@ export function _warnPoolDefaultsInSaaS(resolved: ResolvedConfig): void {
       {
         reason: "pool-defaults",
         perOrgConfigured: false,
-        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
       },
       `CRITICAL: SaaS deploy booted without pool.perOrg configured — per-org pool isolation is off, ` +
         `so a single noisy tenant can starve every other org's connections. Add pool.perOrg in ` +
-        `atlas.config.ts with tier-appropriate sizing (see deploy.mdx#pool-default-warning). ` +
-        `See #1983.`,
+        `atlas.config.ts (see deploy.mdx#pool-default-warning). See #1983.`,
     );
     return;
   }
 
-  if (perOrg.maxConnections <= POOL_DEV_FLOOR_MAX_CONNECTIONS) {
-    log.error(
-      {
-        reason: "pool-defaults",
-        perOrgConfigured: true,
-        maxConnections: perOrg.maxConnections,
-        devFloor: POOL_DEV_FLOOR_MAX_CONNECTIONS,
-      },
-      `CRITICAL: SaaS deploy booted with pool.perOrg.maxConnections=${perOrg.maxConnections} — at or below ` +
-        `the dev-tier floor of ${POOL_DEV_FLOOR_MAX_CONNECTIONS}. A Business-tier org running concurrent dashboards + chat + ` +
-        `scheduled tasks will queue. See deploy.mdx#pool-default-warning for tier sizing. See #1983.`,
-    );
-  }
+  // Explicitly configured → intentional sizing. INFO, not CRITICAL.
+  log.info(
+    {
+      reason: "pool-sizing",
+      perOrgConfigured: true,
+      maxConnections: perOrg.maxConnections,
+      maxOrgs: perOrg.maxOrgs,
+    },
+    `Per-org pool sized at ${perOrg.maxConnections} connection(s) × up to ${perOrg.maxOrgs} org(s) — ` +
+      `ample for conversational load (connections are borrowed per in-flight SQL statement). Raise it if ` +
+      `pool-wait latency appears in metrics. See deploy.mdx#pool-default-warning. See #2943.`,
+  );
 }
 
 export async function loadConfig(

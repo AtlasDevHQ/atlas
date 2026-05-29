@@ -78,6 +78,7 @@ import {
   TwentyClientError,
   TwentyCredentialError,
   isTwentyDecryptError,
+  type AtlasLeadEvent,
   type DbCredentialLookup,
   type ResolvedTwentyCredentials,
   type TwentyClientConfig,
@@ -388,6 +389,33 @@ async function verifyCustomFields(
 const outboxDb: OutboxDB = {
   query: internalQuery,
 };
+
+/**
+ * Compile-time bridge between the two intentionally-duplicated lead-event
+ * unions: `SaasCrmLeadInput` (the `SaasCrm` Tag's `upsertLead` contract, in
+ * `@atlas/api`) and `AtlasLeadEvent` (the Twenty normalizer's input, in
+ * `@useatlas/twenty`). They are mirrored by hand — see the "Adding a
+ * variant" note on `SaasCrmLeadInput` — never merged, because that would
+ * drag `@useatlas/twenty` into `@atlas/api`'s public contract surface.
+ *
+ * This `ee/src/saas-crm/` file is the one place that legitimately depends on
+ * both sides (the EE inversion rule), and the `row.payload as SaasCrmLeadInput`
+ * → `normalizeLead(...)` cast in `dispatchOutboxRow` below relies on the two
+ * unions being interchangeable. Tuple-wrapped (`[A] extends [B]`) so the
+ * conditionals compare the unions whole rather than distributing member-wise;
+ * the mutual-assignability check resolves to `true` only while every variant
+ * of each union is present in the other. Add a variant to one union but not
+ * the other and `_LeadUnionsAreMirrors` collapses to `never`, so the `= true`
+ * below fails `tsgo` HERE — instead of dead-lettering at flush with the
+ * runtime `Unknown lead source` throw in `normalizeLead`.
+ */
+type _LeadUnionsAreMirrors = [SaasCrmLeadInput] extends [AtlasLeadEvent]
+  ? [AtlasLeadEvent] extends [SaasCrmLeadInput]
+    ? true
+    : never
+  : never;
+const _leadUnionsAreMirrors: _LeadUnionsAreMirrors = true;
+void _leadUnionsAreMirrors;
 
 /**
  * Dispatch one claimed outbox row through the Twenty client. Each

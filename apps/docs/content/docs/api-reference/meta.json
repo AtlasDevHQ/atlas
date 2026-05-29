@@ -29,6 +29,7 @@
     "admin-model-config",
     "admin-oauth-clients",
     "admin-onboarding-emails",
+    "admin-openapi-datasources",
     "admin-organizations",
     "admin-overview",
     "admin-password",

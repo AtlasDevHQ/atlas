@@ -23,7 +23,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 Extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) become first-class read-side datasources via a generic OpenAPI primitive. Motivated by 1.6.0 Slice 6 ([#2728](https://github.com/AtlasDevHQ/atlas/issues/2728)) — Twenty Cloud doesn't expose Postgres. PRD [#2868](https://github.com/AtlasDevHQ/atlas/issues/2868) broken into tracer-bullet slices ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54)). GraphQL / OpenSearch are out-of-scope follow-up PRDs.
 
 - [x] **Slice 0 — openapi-spec + openapi-client deep modules** ([#2923](https://github.com/AtlasDevHQ/atlas/issues/2923)) — OpenAPI 3.x → operation graph + single-op execute. Shipped in [#2935](https://github.com/AtlasDevHQ/atlas/pull/2935) (arch-win #72).
-- [ ] **Slice 1 — Twenty acceptance suite** ([#2924](https://github.com/AtlasDevHQ/atlas/issues/2924)) — generic OpenAPI agent matches `scripts/twenty-mcp.ts` against crm.useatlas.dev.
+- [x] **Slice 1 — Twenty acceptance suite** ([#2924](https://github.com/AtlasDevHQ/atlas/issues/2924)) — read-only generic agent + `executeRestOperation` tool, Path A operation-graph representation. Shipped in [#2971](https://github.com/AtlasDevHQ/atlas/pull/2971) (arch-win #73); writes deferred to slice 5.
 - [ ] **Slice 1b — representation bake-off** ([#2931](https://github.com/AtlasDevHQ/atlas/issues/2931)) — generated semantic YAML (Path B) vs raw operation-graph context (Path A) against the Twenty suite; picks slice 2's default representation.
 - [ ] **Slice 2 — install surface** ([#2926](https://github.com/AtlasDevHQ/atlas/issues/2926)) — `openapi-generic` catalog row + `FormBasedInstallHandler` + `/admin/connections` + representation toggle.
 - [ ] **Slice 3 — sandbox networkPolicy threading** ([#2927](https://github.com/AtlasDevHQ/atlas/issues/2927)) — per-tenant base-URL allowlist (SaaS) + sidecar pass-through.
@@ -37,7 +37,7 @@ Extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) bec
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (slice 3 + Railway dual-trigger [#2921](https://github.com/AtlasDevHQ/atlas/issues/2921) landed). May land before or after `v0.0.2` depending on adoption signal.
+- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (slices 1, 3 + Railway dual-trigger [#2921](https://github.com/AtlasDevHQ/atlas/issues/2921) landed). May land before or after `v0.0.2` depending on adoption signal.
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

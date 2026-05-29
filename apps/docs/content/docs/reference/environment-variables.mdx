@@ -247,7 +247,7 @@ ATLAS_API_KEY_ROLE=member
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
 | `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin only when `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true` |
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | `false` | Opt-in fallback: when `ATLAS_ADMIN_EMAIL` is unset and no admin user exists, the first signup is promoted to `platform_admin`. Accepts `true`/`1`/`yes`/`on` (case-insensitive). **Do not enable in production** — any unauthenticated visitor could race the operator and claim admin with a single signup |
-| `ATLAS_REQUIRE_EMAIL_VERIFICATION` | `true` | Require email verification on signup. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
+| `ATLAS_REQUIRE_EMAIL_VERIFICATION` | `true` (prod) | Require email verification on signup. Default resolves from the `ATLAS_DEPLOY_ENV` profile — production `true`, staging/development `false`; an explicit value overrides the profile. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
 | `ATLAS_MFA_ISSUER` | `Atlas` | Issuer label shown in TOTP authenticator apps (Google Authenticator, 1Password, etc.) when users enroll an MFA device |
 | `ATLAS_RPID` | `app.useatlas.dev` | WebAuthn relying-party ID used during passkey enrollment and assertion. Set explicitly to the production hostname when self-hosting under a custom domain — mismatched RP IDs reject every authenticator response |
 | `ATLAS_RPNAME` | `Atlas` | Human-readable relying-party name shown to users in passkey enrollment prompts |
@@ -646,7 +646,7 @@ See [Python Tool](/guides/python) for the full guide.
 | `POSTMARK_SERVER_TOKEN` | — | Postmark server token. Used when `ATLAS_EMAIL_PROVIDER=postmark` |
 | `ATLAS_EMAIL_FROM` | `Atlas <noreply@ship.useatlas.dev>` | From address for scheduled task and onboarding emails |
 | `ATLAS_SMTP_URL` | — | Webhook URL for email delivery (POST JSON with `from`, `to`, `subject`, `html`). Alternative to Resend |
-| `ATLAS_ONBOARDING_EMAILS_ENABLED` | `false` | Enable automated onboarding drip campaign for new signups. Requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
+| `ATLAS_ONBOARDING_EMAILS_ENABLED` | `true` (prod) | Enable automated onboarding drip campaign for new signups. Default resolves from the `ATLAS_DEPLOY_ENV` profile — production `true`, staging/development `false`; an explicit value overrides the profile. Additionally requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
 | `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS` | `2592000000` (30d) | TTL for signed unsubscribe links. Accepts `60000` (60s) to `31536000000` (1y); invalid values fall back to the default |
 
 ---
@@ -784,6 +784,7 @@ Operator-only. These env vars wire Atlas-the-company's own lead pipeline (`ee/sr
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_DEPLOY_MODE` | `auto` | Deployment mode: `saas` (hosted product features, enterprise-gated), `self-hosted`, or `auto` (detect from environment). When `auto`, resolves to `saas` if enterprise is enabled and an internal database is configured |
+| `ATLAS_DEPLOY_ENV` | `production` | Deployment shape: `production`, `staging`, or `development` (unset → `production`). Drives non-secret per-env defaults via `packages/api/src/lib/env-profile.ts` — production defaults email-verification and onboarding-emails ON; staging/development default both OFF. The per-var legacy overrides (`ATLAS_REQUIRE_EMAIL_VERIFICATION`, `ATLAS_ONBOARDING_EMAILS_ENABLED`) still win when explicitly set |
 | `ATLAS_ENTERPRISE_ENABLED` | `false` | Set `true` to enable enterprise features (SSO, SCIM, PII detection, custom roles). Requires a valid license key for production use |
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | License key for enterprise features. Obtain from [useatlas.dev/enterprise](https://www.useatlas.dev/enterprise) |
 | `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |

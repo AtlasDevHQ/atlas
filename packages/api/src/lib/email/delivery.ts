@@ -273,13 +273,63 @@ async function deliverViaTransport(
 }
 
 /**
+ * `fetch` with bounded exponential-backoff retry on transient failures
+ * (network throw, HTTP 429, or 5xx). Permanent 4xx responses (bad key,
+ * malformed payload) are returned immediately without retry. A fresh
+ * timeout signal is built per attempt because `AbortSignal.timeout()` is
+ * one-shot and can't be reused across fetches.
+ *
+ * Without this, a single upstream blip permanently dropped a transactional
+ * email (notably the password-reset, the sole self-serve recovery path —
+ * #2942). Transactional sends are low-volume, so a few retries are cheap.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  opts: { label: string; attempts?: number; timeoutMs?: number },
+): Promise<Response> {
+  const attempts = opts.attempts ?? 3;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1) {
+      // 250ms, 500ms, … exponential backoff between attempts.
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** (attempt - 2)));
+    }
+    try {
+      const resp = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      if ((resp.status === 429 || resp.status >= 500) && attempt < attempts) {
+        log.warn(
+          { label: opts.label, status: resp.status, attempt },
+          "Email transport transient failure — retrying",
+        );
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < attempts) {
+        log.warn(
+          { label: opts.label, attempt, err: err instanceof Error ? err.message : String(err) },
+          "Email transport network error — retrying",
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+  // Unreachable — the loop always returns or throws — but TS needs a terminator.
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
  * Webhook delivery — POST JSON payload to ATLAS_SMTP_URL.
  * Compatible with any email service that accepts JSON webhooks.
  */
 async function deliverWebhook(message: EmailMessage, from: string): Promise<DeliveryResult> {
   const url = process.env.ATLAS_SMTP_URL!;
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithRetry(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -288,8 +338,7 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
         subject: message.subject,
         html: message.html,
       }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, { label: "webhook" });
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -310,7 +359,7 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
 async function deliverResend(message: EmailMessage, from: string, apiKey?: string): Promise<DeliveryResult> {
   const key = apiKey ?? process.env.RESEND_API_KEY;
   try {
-    const resp = await fetch("https://api.resend.com/emails", {
+    const resp = await fetchWithRetry("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -322,8 +371,7 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
         subject: message.subject,
         html: message.html,
       }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, { label: "resend" });
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -344,7 +392,7 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
 
 async function deliverSendGrid(message: EmailMessage, from: string, apiKey: string): Promise<DeliveryResult> {
   try {
-    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+    const res = await fetchWithRetry("https://api.sendgrid.com/v3/mail/send", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -353,8 +401,7 @@ async function deliverSendGrid(message: EmailMessage, from: string, apiKey: stri
         subject: message.subject,
         content: [{ type: "text/html", value: message.html }],
       }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, { label: "sendgrid" });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       log.error({ to: message.to, status: res.status }, "SendGrid delivery failed");
@@ -371,12 +418,11 @@ async function deliverSendGrid(message: EmailMessage, from: string, apiKey: stri
 
 async function deliverPostmark(message: EmailMessage, from: string, serverToken: string): Promise<DeliveryResult> {
   try {
-    const res = await fetch("https://api.postmarkapp.com/email", {
+    const res = await fetchWithRetry("https://api.postmarkapp.com/email", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Postmark-Server-Token": serverToken },
       body: JSON.stringify({ From: from, To: message.to, Subject: message.subject, HtmlBody: message.html }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, { label: "postmark" });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       log.error({ to: message.to, status: res.status }, "Postmark delivery failed");

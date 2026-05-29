@@ -72,6 +72,21 @@ describe("parseFeedbackSlashArgs", () => {
       text: "this answer is wrong",
     });
   });
+
+  it("requires a separator after the keyword", () => {
+    // No word boundary after `feedback` — not a feedback invocation.
+    expect(parseFeedbackSlashArgs("feedbackhello")).toEqual({ kind: "not-feedback" });
+    expect(parseFeedbackSlashArgs("feedback123")).toEqual({ kind: "not-feedback" });
+  });
+
+  it("matches a pathological whitespace-heavy input in linear time", () => {
+    // Regression for the polynomial-ReDoS shape (js/polynomial-redos):
+    // `feedback` + a long run of tabs must resolve instantly, not blow up.
+    const input = `feedback${"\t".repeat(100_000)}x`;
+    const start = performance.now();
+    expect(parseFeedbackSlashArgs(input)).toEqual({ kind: "feedback", text: "x" });
+    expect(performance.now() - start).toBeLessThan(100);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -100,16 +100,27 @@ export function parseFeedbackSlashArgs(args: string | undefined | null): Feedbac
   if (typeof args !== "string") return { kind: "not-feedback" };
   const trimmed = args.trim();
   if (trimmed.length === 0) return { kind: "not-feedback" };
-  const match = trimmed.match(/^feedback(?:\s*[:-]\s*|\s+)(.+)$/i);
-  if (!match) {
-    // `/atlas feedback` alone (no body) still counts as a feedback
-    // invocation — host may want to prompt for text. We surface this
-    // as a feedback parse with empty text so the listener can choose
-    // to open a modal or post a hint.
-    if (/^feedback\s*$/i.test(trimmed)) return { kind: "feedback", text: "" };
-    return { kind: "not-feedback" };
-  }
-  return { kind: "feedback", text: match[1].trim() };
+
+  // The keyword must be followed by a word boundary so `feedbackhello`
+  // is not mistaken for a feedback invocation. Each pattern below has a
+  // single anchored quantifier and nothing that can fail after it, so
+  // matching is linear — no backtracking ambiguity (avoids the
+  // polynomial-ReDoS shape CodeQL flagged on the prior combined regex).
+  if (!/^feedback\b/i.test(trimmed)) return { kind: "not-feedback" };
+
+  // Strip the keyword, then the separator: leading whitespace and an
+  // optional single `:`/`-` with its trailing whitespace.
+  const body = trimmed
+    .slice("feedback".length)
+    .replace(/^\s+/, "")
+    .replace(/^[:-]\s*/, "")
+    .trim();
+
+  // `/atlas feedback` alone (no body) still counts as a feedback
+  // invocation — host may want to prompt for text. We surface it as a
+  // feedback parse with empty text so the listener can choose to open a
+  // modal or post a hint.
+  return { kind: "feedback", text: body };
 }
 
 // ---------------------------------------------------------------------------

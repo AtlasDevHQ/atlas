@@ -6,7 +6,7 @@
  * (not declared in `atlas.config.ts`), so every Atlas deployment ships the
  * `openapi-generic` row available with no operator config edit. This module is
  * the one place its `slug` / `name` / `config_schema` live; the boot seed
- * (`seed-openapi-datasource-catalog.ts`), migration 0108, the form install
+ * (`catalog-seed.ts`), migration 0108, the form install
  * handler, and the workspace resolver all import from here so a field change
  * propagates to every surface at compile time instead of drifting.
  *
@@ -69,20 +69,6 @@ export const OPENAPI_SUPPORTED_AUTH_KINDS: ReadonlyArray<OpenApiAuthKind> = [
 
 /** Default representation mode — the #2931 bake-off winner (Path A). */
 export const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph";
-
-/**
- * Config keys Atlas writes to `workspace_plugins.config` that are NOT part of
- * the install form (set by the handler / management routes). Kept here so the
- * admin-read mask logic and the resolver agree on what's operational metadata
- * vs a form field.
- *
- * - `representation_mode` — the per-install bake-off toggle (PATCH endpoint).
- * - `openapi_snapshot` — the probed spec cache (see {@link OpenApiSnapshot}).
- */
-export const OPENAPI_INTERNAL_CONFIG_KEYS = [
-  "representation_mode",
-  "openapi_snapshot",
-] as const;
 
 /**
  * The install form's `config_schema`, exactly as the PRD specifies. The

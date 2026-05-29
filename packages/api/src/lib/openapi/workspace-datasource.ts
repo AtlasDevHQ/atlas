@@ -208,10 +208,10 @@ export async function resolveWorkspaceRestDatasources(
 
 /**
  * Resolve the workspace's single "primary" REST datasource (the
- * earliest-installed), or `null`. Adapter for the slice-1-shaped single-
- * datasource thunk both `executeRestOperation` and the Python sandbox egress
- * allowlist still expect; the multi-datasource fan-out is the agent loop's job
- * via {@link resolveWorkspaceRestDatasources}.
+ * earliest-installed), or `null`. Adapter for the single-datasource thunk the
+ * Python sandbox egress allowlist (`tools/python.ts`) still expects; the
+ * multi-datasource fan-out (the agent loop + `executeRestOperation`) uses
+ * {@link resolveWorkspaceRestDatasources} directly.
  */
 export async function resolveWorkspacePrimaryRestDatasource(
   workspaceId: string,

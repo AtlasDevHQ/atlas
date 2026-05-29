@@ -79,6 +79,37 @@ describe("resolveWorkspaceRestDatasources", () => {
     expect(result[0].baseUrl).toBe("https://staging.example.com/v1"); // trailing slash stripped
   });
 
+  it("resolves a relative spec server against the spec URL", async () => {
+    const relDoc = {
+      openapi: "3.1.0",
+      info: { title: "Rel", version: "1.0.0" },
+      servers: [{ url: "/rest" }],
+      paths: { "/things": { get: { operationId: "listThings", responses: { "200": { description: "OK" } } } } },
+    };
+    const relSnap = buildSnapshot(relDoc, buildOperationGraph(relDoc), "2026-05-29T06:00:00.000Z");
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-rel", config: config({ openapi_url: "https://api.example.com/openapi.json", openapi_snapshot: relSnap }) },
+      ]),
+    });
+    expect(result[0].baseUrl).toBe("https://api.example.com/rest");
+  });
+
+  it("falls back to the spec URL origin when the doc declares no servers", async () => {
+    const noSrvDoc = {
+      openapi: "3.1.0",
+      info: { title: "NoSrv", version: "1.0.0" },
+      paths: { "/things": { get: { operationId: "listThings", responses: { "200": { description: "OK" } } } } },
+    };
+    const noSrvSnap = buildSnapshot(noSrvDoc, buildOperationGraph(noSrvDoc), "2026-05-29T07:00:00.000Z");
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-nosrv", config: config({ openapi_url: "https://api.example.com/v3/openapi.json", openapi_snapshot: noSrvSnap }) },
+      ]),
+    });
+    expect(result[0].baseUrl).toBe("https://api.example.com");
+  });
+
   it("builds apikey-header auth with the configured header name", async () => {
     const result = await resolveWorkspaceRestDatasources("org-1", {
       query: queryReturning([

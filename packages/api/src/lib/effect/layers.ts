@@ -637,7 +637,7 @@ export class OpenApiDatasourceCatalogSeed extends Context.Tag(
 /**
  * Idempotent boot-time seed of the built-in `openapi-generic` Datasource
  * catalog row (PRD #2868 slice 2, #2926). Code-seeded per ADR-0007, re-asserted
- * every boot via `ON CONFLICT (slug) DO NOTHING`. Parallel peer of
+ * every boot via a bare `ON CONFLICT DO NOTHING`. Parallel peer of
  * `BuiltinDatasourceCatalogSeedLive` — the two touch disjoint slugs, and this
  * one is kept SEPARATE so the REST datasource never enters the SQL slug
  * allowlist / pool resolver (see `lib/openapi/catalog-seed.ts` header).

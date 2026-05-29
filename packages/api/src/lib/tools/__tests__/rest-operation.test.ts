@@ -12,6 +12,7 @@ import {
   startTwentyMockServer,
   type TwentyMock,
 } from "@atlas/api/lib/openapi/__tests__/twenty-acceptance/mock-server";
+import { createOpenApiDatasourceMock } from "@atlas/api/testing/openapi-datasource";
 
 const SPEC = JSON.parse(
   fs.readFileSync(
@@ -153,5 +154,64 @@ describe("executeRestOperation tool", () => {
     expect(result.status).toBe("http_error");
     if (result.status !== "http_error") return;
     expect(result.httpStatus).toBe(404);
+  });
+});
+
+// ── Multi-datasource routing (slice 2, #2926) ────────────────────────────────
+// The agent-facing disambiguation when a workspace has more than one REST
+// datasource. `widgets` is a non-live mock (never executed in these cases — we
+// only assert which datasource is picked / which error branch fires).
+describe("executeRestOperation — multi-datasource routing", () => {
+  /** Invoke with the slice-2 multi-datasource resolver seam. */
+  async function callMany(
+    input: Record<string, unknown>,
+    datasources: RestDatasource[],
+  ): Promise<ExecuteRestOperationResult> {
+    const t = createExecuteRestOperationTool({ resolveDatasources: async () => datasources });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+    return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
+  }
+
+  const widgets = () => createOpenApiDatasourceMock({ id: "widgets", displayName: "Widgets" });
+
+  it("routes to the datasource named by datasourceId (not datasources[0])", async () => {
+    // widgets is first, but the call names twenty → executes against the live
+    // twenty mock, proving id-routing rather than first-wins.
+    const result = await callMany(
+      { operationId: "findManyPeople", datasourceId: "twenty" },
+      [widgets(), datasource()],
+    );
+    expect(result.status).toBe("ok");
+    expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
+  });
+
+  it("returns datasource_not_found + availableDatasources for an unknown datasourceId", async () => {
+    const result = await callMany(
+      { operationId: "findManyPeople", datasourceId: "ghost" },
+      [datasource(), widgets()],
+    );
+    expect(result.status).toBe("datasource_not_found");
+    if (result.status !== "datasource_not_found") return;
+    expect(result.availableDatasources).toEqual(["twenty", "widgets"]);
+    expect(mock.requests).toHaveLength(0); // nothing dispatched
+  });
+
+  it("requires datasourceId when more than one datasource is connected", async () => {
+    const result = await callMany({ operationId: "findManyPeople" }, [datasource(), widgets()]);
+    expect(result.status).toBe("datasource_not_found");
+    if (result.status !== "datasource_not_found") return;
+    expect(result.message).toContain("More than one");
+    expect(result.availableDatasources).toEqual(["twenty", "widgets"]);
+    expect(mock.requests).toHaveLength(0); // never silently picks the first
+  });
+
+  it("resolves the sole datasource without a datasourceId (single-install shape)", async () => {
+    const result = await callMany({ operationId: "findManyPeople" }, [datasource()]);
+    expect(result.status).toBe("ok");
+  });
+
+  it("returns no_datasource when the workspace has none installed", async () => {
+    const result = await callMany({ operationId: "findManyPeople" }, []);
+    expect(result.status).toBe("no_datasource");
   });
 });

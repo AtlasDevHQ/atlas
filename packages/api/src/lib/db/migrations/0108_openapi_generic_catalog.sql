@@ -7,7 +7,7 @@
 -- (`lib/openapi/catalog-seed.ts`); this migration inserts it on fresh + already
 -- migrated DBs. The two share `OPENAPI_GENERIC_CONFIG_SCHEMA` (lib/openapi/
 -- catalog.ts) as the single source of truth — keep this JSON in lockstep with
--- that array (the `openapi-generic catalog seed` test asserts they match).
+-- that array (the `migration 0108 ↔ code alignment` test asserts they match).
 --
 -- This row is INTENTIONALLY NOT in `BUILTIN_DATASOURCE_CATALOG_SLUGS`
 -- (datasource-pool-resolver.ts): a REST datasource has no SQL pool, so the

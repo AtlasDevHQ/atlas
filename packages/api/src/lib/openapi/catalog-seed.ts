@@ -13,9 +13,10 @@
  *   - Keeping it out means the SQL boot loader's `pc.slug = ANY(...)` filter
  *     skips `openapi-generic` installs for free — the fork stays clean.
  *
- * Re-asserts the same row migration 0108 inserts on fresh DBs, with
- * `ON CONFLICT (slug) DO NOTHING` so a re-boot on a populated catalog is a
- * no-op (and an operator's out-of-band edits to `name`/`description` survive).
+ * Re-asserts the same row migration 0108 inserts on fresh DBs, with a bare
+ * `ON CONFLICT DO NOTHING` (covers both the `slug` unique index and the `id`
+ * primary key) so a re-boot on a populated catalog is a no-op (and an
+ * operator's out-of-band edits to `name`/`description` survive).
  * The migration and this seed share {@link OPENAPI_GENERIC_CATALOG_ID} /
  * {@link OPENAPI_GENERIC_CONFIG_SCHEMA} as the single source of truth.
  */

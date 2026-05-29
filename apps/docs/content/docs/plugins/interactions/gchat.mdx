@@ -12,7 +12,7 @@ The Chat SDK adapter supports two message delivery modes: direct webhooks (for @
 ## Prerequisites
 
 - A Google Cloud project with the **Google Chat API** enabled
-- A service account with a JSON key file (or Application Default Credentials)
+- A service account with a JSON key file
 - The Chat app configured in the [Google Cloud Console](https://console.cloud.google.com/apis/api/chat.googleapis.com)
 - For all-message delivery: a Pub/Sub topic and the **Google Workspace Events API** enabled
 
@@ -115,7 +115,7 @@ export default defineConfig({
 });
 ```
 
-Service-account credentials, Pub/Sub topic, and optional impersonation come from env vars — see [Environment Variables](#environment-variables) below.
+Service-account credentials and the Pub/Sub topic (required), plus optional impersonation, project number, and Pub/Sub audience, come from env vars — see [Environment Variables](#environment-variables) below.
 
 ### Catalog entry
 
@@ -165,10 +165,13 @@ When a response includes approval buttons (e.g., for pending actions), button cl
 
 | Variable | Description |
 |----------|-------------|
-| `GOOGLE_CHAT_CREDENTIALS` | Service account key JSON (stringified). Parsed with `JSON.parse()`. |
-| `GOOGLE_CHAT_USE_ADC` | Set to `"true"` for Application Default Credentials. |
-| `GOOGLE_CHAT_PUBSUB_TOPIC` | Pub/Sub topic for Workspace Events (fallback if not in config). |
-| `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation (fallback if not in config). |
+| `GCHAT_SERVICE_ACCOUNT_JSON` | **Required.** Raw JSON contents of the operator's GCP service-account key. Parsed with `JSON.parse()`; must contain non-empty `client_email` and `private_key`. Used both to mint Pub/Sub access tokens and to authenticate outbound Google Chat API calls. |
+| `GCHAT_PUBSUB_TOPIC` | **Required.** Fully-qualified Workspace Events topic path (`projects/<project>/topics/<topic>`) the subscription publishes to. |
+| `GCHAT_IMPERSONATE_USER` | Optional. User email for domain-wide delegation on the Workspace Events subscription. |
+| `GCHAT_PROJECT_NUMBER` | Optional. Google Cloud project **number** (not ID), used to verify direct-webhook JWTs Google signs with the project identity. Without it, direct-webhook signature verification is silently disabled (one warn line per inbound webhook). Set this on SaaS deploys. |
+| `GCHAT_PUBSUB_AUDIENCE` | Optional. Expected `aud` claim for Pub/Sub push-message JWTs — typically the operator's API origin (e.g. `https://api.useatlas.dev`). Without it, Pub/Sub push verification is silently disabled (one warn per message). Set this on SaaS deploys. |
+
+Both required vars must be present for the adapter to activate; there is no Application Default Credentials (ADC) path through Atlas's install flow — activation requires the inline service-account JSON.
 
 ## Troubleshooting
 
@@ -193,8 +196,7 @@ By default, Google Chat only sends @mentions and DMs to webhook endpoints. To re
 
 ### Authentication errors
 
-- **Service Account**: Verify the JSON key contains valid `client_email` and `private_key` fields
-- **ADC**: Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to a valid key file, or you're running on a GCP service with default credentials
+- **Service Account**: Verify the `GCHAT_SERVICE_ACCOUNT_JSON` value parses as JSON and contains non-empty `client_email` and `private_key` fields — the adapter refuses to activate otherwise
 - **Impersonation**: The service account needs domain-wide delegation configured in Google Workspace Admin
 
 ### Workspace Events subscription failures

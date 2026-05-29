@@ -28,10 +28,14 @@ All WhatsApp conversations are 1:1 DMs between the business phone number and the
 
 From the **WhatsApp** > **API Setup** page in your Meta App dashboard:
 
-1. Note the **Phone number ID** (not the phone number itself) — save as `WHATSAPP_PHONE_NUMBER_ID`
-2. Generate a **Permanent System User access token** with `whatsapp_business_messaging` permission — save as `WHATSAPP_ACCESS_TOKEN`
-3. Choose a **Verify token** (any secret string you define) — save as `WHATSAPP_VERIFY_TOKEN`
-4. From **App Settings** > **Basic**, copy the **App Secret** — save as `WHATSAPP_APP_SECRET`
+1. Generate a **Permanent System User access token** with `whatsapp_business_management` + `whatsapp_business_messaging` permissions — save as `META_BUSINESS_ACCESS_TOKEN`
+2. Choose a **Verify token** (any secret string you define) — save as `WHATSAPP_VERIFY_TOKEN`
+3. _(Optional — single-tenant deploys only)_ Note the **Phone number ID** (not the phone number itself) — save as `WHATSAPP_DEFAULT_PHONE_NUMBER_ID`. Multi-tenant deploys leave this unset and route per-workspace from the inbound webhook's `metadata.phone_number_id`.
+
+From **App Settings** > **Basic** in your Meta App dashboard:
+
+4. Copy the **App ID** — save as `META_BUSINESS_APP_ID`
+5. Copy the **App Secret** — save as `WHATSAPP_APP_SECRET`
 
 <Callout type="warn">
 The access token and app secret grant full access to your WhatsApp Business API. Store them securely and never commit them to source control. Use a System User token (not a temporary token) for production.
@@ -57,7 +61,7 @@ The webhook URL must be publicly accessible over HTTPS before you configure it i
 ## Configuration
 
 <Callout type="info" title="Catalog-driven activation">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. WhatsApp's static-bot install handler landed in [#2753](https://github.com/AtlasDevHQ/atlas/pull/2753) — the catalog row carries `install_model: "static-bot"`, and Cloud API credentials are read from `WHATSAPP_*` env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. WhatsApp's static-bot install handler landed in [#2753](https://github.com/AtlasDevHQ/atlas/pull/2753) — the catalog row carries `install_model: "static-bot"`, and Cloud API credentials are read from `META_BUSINESS_*` / `WHATSAPP_*` env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ```typescript
@@ -150,12 +154,14 @@ If a user asks a question but the agent takes longer than 24 hours to respond (u
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business phone number ID |
-| `WHATSAPP_ACCESS_TOKEN` | System User access token for Cloud API calls |
-| `WHATSAPP_VERIFY_TOKEN` | Verify token for webhook challenge-response |
-| `WHATSAPP_APP_SECRET` | Meta App Secret for HMAC-SHA256 signature verification |
+| Variable | Required? | Description |
+|----------|-----------|-------------|
+| `META_BUSINESS_ACCESS_TOKEN` | Yes | Operator's System User access token for Meta Cloud API calls (`whatsapp_business_management` + `whatsapp_business_messaging` scopes). |
+| `META_BUSINESS_APP_ID` | Yes | Operator's Meta App ID. Gating activation on it keeps boot semantics consistent with the install handler. |
+| `WHATSAPP_APP_SECRET` | Yes | Meta App Secret for HMAC-SHA256 webhook signature verification (`X-Hub-Signature-256`). |
+| `WHATSAPP_VERIFY_TOKEN` | Yes | The verify token mirrored back in the GET challenge handshake. |
+| `WHATSAPP_DEFAULT_PHONE_NUMBER_ID` | No | Single-tenant convenience — the one phone number ID on the operator's Business Account. Multi-tenant deploys leave it unset and route per-workspace from the inbound `metadata.phone_number_id`. |
+| `WHATSAPP_API_VERSION` | No | Override the Meta Graph API version the adapter targets (defaults to the adapter's pinned version). |
 
 ## Troubleshooting
 

@@ -33,7 +33,10 @@ import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit
 import Stripe from "stripe";
 import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
-import { resolveRequireEmailVerification as envProfileResolveRequireEmailVerification } from "@atlas/api/lib/env-profile";
+import {
+  resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
+  resolveCookiePrefix,
+} from "@atlas/api/lib/env-profile";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
@@ -650,19 +653,89 @@ export function buildEmailAndPasswordConfig(deps: BuildEmailAndPasswordConfigDep
  *
  * `cookieDomain` is optional; when present the returned block also sets
  * the shared-subdomain cookie attribute for SaaS deployments.
+ *
+ * `cookiePrefix` names the session cookie (`${cookiePrefix}.session_token`)
+ * and is resolved per deployment env (`resolveCookiePrefix`). It MUST match
+ * the web proxy's `getSessionCookie({ cookiePrefix })` read — see
+ * {@link import("@atlas/api/lib/env-profile").EnvProfile.cookiePrefix}.
  */
-export function buildAdvancedConfig(cookieDomain: string | undefined): {
+export function buildAdvancedConfig(
+  cookieDomain: string | undefined,
+  cookiePrefix: string,
+): {
   ipAddress: { ipAddressHeaders: string[] };
+  cookiePrefix: string;
   defaultCookieAttributes?: { domain: string };
 } {
   return {
     ipAddress: {
       ipAddressHeaders: ["x-atlas-client-ip"],
     },
+    cookiePrefix,
     ...(cookieDomain
       ? { defaultCookieAttributes: { domain: `.${cookieDomain}` } }
       : {}),
   };
+}
+
+/**
+ * Derive the parent domain for cross-subdomain session cookies, scoped as
+ * tightly as the deployment allows.
+ *
+ * The cookie must be valid for both the API host (`BETTER_AUTH_URL`) and the
+ * frontend origin(s) (`ATLAS_CORS_ORIGIN`), so the correct domain is the
+ * **longest dotted suffix common to all of them** — e.g.
+ *   - prod:    `api.useatlas.dev` + `app.useatlas.dev` → `useatlas.dev`
+ *   - staging: `api.staging.useatlas.dev` + `app.staging.useatlas.dev`
+ *              → `staging.useatlas.dev` (NOT `useatlas.dev`)
+ *
+ * The previous `host.split(".").slice(-2)` heuristic always collapsed to the
+ * last two labels, so staging resolved to `useatlas.dev` — the same slot as
+ * prod — which is exactly the cross-env cookie bleed this fixes.
+ *
+ * Returns `undefined` (host-only cookies) when either env var is absent
+ * (single-origin / self-hosted), when a URL is malformed, when the common
+ * suffix is fewer than 2 labels (different sites — never widen to a public
+ * suffix), or when it looks like a bare IPv4 (cookie domains can't be IPs).
+ */
+export function deriveCookieDomain(
+  authUrl: string | undefined,
+  corsOrigin: string | undefined,
+): string | undefined {
+  if (!authUrl || !corsOrigin) return undefined;
+
+  const hosts: string[] = [];
+  try {
+    hosts.push(new URL(authUrl).hostname);
+  } catch {
+    return undefined;
+  }
+  for (const origin of corsOrigin.split(",")) {
+    const trimmed = origin.trim();
+    if (!trimmed) continue;
+    try {
+      hosts.push(new URL(trimmed).hostname);
+    } catch {
+      // Skip a malformed CORS entry rather than abandoning the whole
+      // derivation — other entries may still yield a valid common suffix.
+    }
+  }
+  if (hosts.length < 2) return undefined;
+
+  // Longest common dotted suffix: compare label arrays from the right.
+  const reversed = hosts.map((h) => h.split(".").reverse());
+  const common: string[] = [];
+  for (let i = 0; ; i++) {
+    const label = reversed[0][i];
+    if (label === undefined || !reversed.every((labels) => labels[i] === label)) {
+      break;
+    }
+    common.push(label);
+  }
+  if (common.length < 2) return undefined;
+  if (common.every((label) => /^\d+$/.test(label))) return undefined; // bare IPv4
+
+  return common.reverse().join(".");
 }
 
 /**
@@ -2067,6 +2140,8 @@ export interface BuildAuthOptionsDeps {
    */
   database: InternalPool | undefined;
   cookieDomain: string | undefined;
+  /** Better Auth session-cookie prefix; see {@link buildAdvancedConfig}. */
+  cookiePrefix: string;
   socialProviders: ReturnType<typeof buildSocialProviders>;
   plugins: ReturnType<typeof buildPlugins>;
   trustedOrigins: string[];
@@ -2207,7 +2282,7 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     // F-06: the `advanced` block wires Better Auth's rate limiter to
     // read only the trusted `x-atlas-client-ip` header that our
     // middleware injects. See `buildAdvancedConfig` for the invariant.
-    advanced: buildAdvancedConfig(deps.cookieDomain),
+    advanced: buildAdvancedConfig(deps.cookieDomain, deps.cookiePrefix),
     databaseHooks: {
       session: {
         create: {
@@ -2430,21 +2505,20 @@ export function getAuthInstance(): AuthInstance {
     );
   }
 
-  // Derive parent domain for cross-subdomain cookies (e.g. "useatlas.dev" from
-  // BETTER_AUTH_URL="https://api.useatlas.dev"). Only enabled when CORS origin
-  // is set (i.e. cross-origin deployment). Without this, cookies are scoped to
-  // the API subdomain and won't be sent from the frontend subdomain.
-  const corsOrigin = process.env.ATLAS_CORS_ORIGIN;
-  let cookieDomain: string | undefined;
-  if (corsOrigin && process.env.BETTER_AUTH_URL) {
-    try {
-      const host = new URL(process.env.BETTER_AUTH_URL).hostname;
-      const parts = host.split(".");
-      if (parts.length >= 2) {
-        cookieDomain = parts.slice(-2).join(".");
-      }
-    } catch { /* ignore malformed URL */ }
-  }
+  // Derive parent domain for cross-subdomain cookies — the longest dotted
+  // suffix common to the API host (BETTER_AUTH_URL) and the frontend origin(s)
+  // (ATLAS_CORS_ORIGIN). Only set for cross-origin deployments; without it,
+  // cookies are host-scoped and won't be sent from the frontend subdomain.
+  // See `deriveCookieDomain` for why the env-specific suffix matters.
+  const cookieDomain = deriveCookieDomain(
+    process.env.BETTER_AUTH_URL,
+    process.env.ATLAS_CORS_ORIGIN,
+  );
+
+  // Session-cookie name prefix — distinct per deployment env so prod and
+  // staging (which share the `.useatlas.dev` cookie zone) don't collide on a
+  // single cookie slot. MUST match web's NEXT_PUBLIC_ATLAS_COOKIE_PREFIX.
+  const cookiePrefix = resolveCookiePrefix(process.env);
 
   // Resolve base URL: explicit env var > Vercel auto-detect > undefined (Better Auth auto-detect).
   // On Vercel, VERCEL_PROJECT_PRODUCTION_URL or VERCEL_URL are always set.
@@ -2494,6 +2568,7 @@ export function getAuthInstance(): AuthInstance {
     baseURL,
     database: internalDbAvailable ? getInternalDB() : undefined,
     cookieDomain,
+    cookiePrefix,
     socialProviders,
     plugins: buildPlugins(),
     trustedOrigins:

@@ -22,6 +22,17 @@ import { PUBLIC_ROUTE_PREFIXES } from "./lib/public-routes";
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
 
+// Session-cookie name prefix — MUST match the API's `advanced.cookiePrefix`
+// (resolved per deploy env in `@atlas/api/lib/env-profile`). The frontend
+// can't import that module, so the value is mirrored here via env. Defaults
+// to "atlas" to match the API's `production` profile, so unconfigured
+// self-hosted deploys agree without extra wiring. Atlas staging sets
+// NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging; local dev sets atlas-dev.
+// Without this, prod's `.useatlas.dev` cookie (delivered to staging because
+// staging is a subdomain) would satisfy this optimistic presence check and
+// suppress the /login redirect on a different environment.
+const cookiePrefix = process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX || "atlas";
+
 /** Routes that only unauthenticated users should see (exact match). */
 const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];
 
@@ -65,7 +76,7 @@ export function proxy(request: NextRequest) {
   }
 
   try {
-    const sessionToken = getSessionCookie(request);
+    const sessionToken = getSessionCookie(request, { cookiePrefix });
 
     // Authenticated user on an auth page → redirect to home
     if (sessionToken && isAuthRoute(pathname)) {

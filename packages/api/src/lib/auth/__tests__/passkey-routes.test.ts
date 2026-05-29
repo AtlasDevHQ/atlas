@@ -39,6 +39,7 @@ function makeDeps(overrides: Partial<BuildAuthOptionsDeps> = {}): BuildAuthOptio
     baseURL: "http://localhost:3000",
     database: undefined,
     cookieDomain: undefined,
+    cookiePrefix: "atlas",
     socialProviders: undefined,
     // Mirror the production wiring in `buildPlugins()` — passkey is loaded
     // unconditionally next to twoFactor. The rpID fallback matches the

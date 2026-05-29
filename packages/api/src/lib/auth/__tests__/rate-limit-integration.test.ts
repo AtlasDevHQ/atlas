@@ -82,6 +82,7 @@ function makeDeps(overrides: Partial<BuildAuthOptionsDeps> = {}): BuildAuthOptio
     // the builder also derives `internalDbAvailable: false` from this.
     database: undefined,
     cookieDomain: undefined,
+    cookiePrefix: "atlas",
     socialProviders: undefined,
     plugins: [],
     trustedOrigins: ["http://localhost:3000"],
@@ -180,7 +181,7 @@ function authRequest(
 describe("config wiring snapshot — buildAuthOptions", () => {
   it("wires `advanced` to buildAdvancedConfig (F-06 IP header pin)", () => {
     const options = buildAuthOptions(makeDeps({ cookieDomain: "useatlas.dev" }));
-    expect(options.advanced).toEqual(buildAdvancedConfig("useatlas.dev"));
+    expect(options.advanced).toEqual(buildAdvancedConfig("useatlas.dev", "atlas"));
     // The ipAddressHeaders list MUST be exactly [`x-atlas-client-ip`].
     // Adding `x-forwarded-for` here reopens F-06 — attackers spoof the
     // rate-limit bucket by sending the header themselves.

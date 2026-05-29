@@ -8,6 +8,7 @@ import {
   SESSION_COOKIE_CACHE_MAX_SEC,
   buildEmailAndPasswordConfig,
   buildAdvancedConfig,
+  deriveCookieDomain,
   _sendVerificationOTP,
 } from "../server";
 
@@ -235,7 +236,7 @@ describe("buildEmailAndPasswordConfig", () => {
 
 describe("buildAdvancedConfig", () => {
   it("pins ipAddressHeaders to exactly ['x-atlas-client-ip'] (F-06 invariant)", () => {
-    const config = buildAdvancedConfig(undefined);
+    const config = buildAdvancedConfig(undefined, "atlas");
     // Adding 'x-forwarded-for' here would make the IP bucket client-
     // spoofable and reopen F-06. Removing the list entirely would
     // fall back to Better Auth's default (x-forwarded-for) — same
@@ -244,13 +245,79 @@ describe("buildAdvancedConfig", () => {
   });
 
   it("omits defaultCookieAttributes when cookieDomain is undefined", () => {
-    const config = buildAdvancedConfig(undefined);
+    const config = buildAdvancedConfig(undefined, "atlas");
     expect(config.defaultCookieAttributes).toBeUndefined();
   });
 
   it("sets a subdomain cookie when cookieDomain is provided", () => {
-    const config = buildAdvancedConfig("useatlas.dev");
+    const config = buildAdvancedConfig("useatlas.dev", "atlas");
     expect(config.defaultCookieAttributes).toEqual({ domain: ".useatlas.dev" });
+  });
+
+  it("threads cookiePrefix through verbatim (env-isolation knob)", () => {
+    expect(buildAdvancedConfig(undefined, "atlas-staging").cookiePrefix).toBe("atlas-staging");
+    expect(buildAdvancedConfig("staging.useatlas.dev", "atlas-staging")).toEqual({
+      ipAddress: { ipAddressHeaders: ["x-atlas-client-ip"] },
+      cookiePrefix: "atlas-staging",
+      defaultCookieAttributes: { domain: ".staging.useatlas.dev" },
+    });
+  });
+});
+
+describe("deriveCookieDomain", () => {
+  it("returns undefined when either env var is absent (host-only cookies / self-hosted single-origin)", () => {
+    expect(deriveCookieDomain(undefined, "https://app.useatlas.dev")).toBeUndefined();
+    expect(deriveCookieDomain("https://api.useatlas.dev", undefined)).toBeUndefined();
+    expect(deriveCookieDomain(undefined, undefined)).toBeUndefined();
+  });
+
+  it("prod: api + app under useatlas.dev → useatlas.dev", () => {
+    expect(
+      deriveCookieDomain(
+        "https://api.useatlas.dev",
+        "https://app.useatlas.dev,https://www.useatlas.dev,https://useatlas.dev",
+      ),
+    ).toBe("useatlas.dev");
+  });
+
+  it("staging: keeps the env-specific parent (regression for the slice(-2) bleed)", () => {
+    // The old `host.split('.').slice(-2)` collapsed this to `useatlas.dev`,
+    // the same slot as prod. The common-suffix derivation keeps it scoped.
+    expect(
+      deriveCookieDomain(
+        "https://api.staging.useatlas.dev",
+        "https://app.staging.useatlas.dev,https://www.staging.useatlas.dev",
+      ),
+    ).toBe("staging.useatlas.dev");
+  });
+
+  it("self-hosted on a custom domain derives that domain (not hardcoded)", () => {
+    expect(
+      deriveCookieDomain("https://api.acme.example.com", "https://app.acme.example.com"),
+    ).toBe("acme.example.com");
+  });
+
+  it("returns undefined when the hosts share no 2+ label suffix (different sites — never widen)", () => {
+    expect(
+      deriveCookieDomain("https://api.useatlas.dev", "https://app.example.org"),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for single-label hosts (localhost)", () => {
+    expect(deriveCookieDomain("http://localhost:3001", "http://localhost:3000")).toBeUndefined();
+  });
+
+  it("returns undefined for bare IPv4 (cookie domains can't be IPs)", () => {
+    expect(deriveCookieDomain("http://127.0.0.1:3001", "http://127.0.0.1:3000")).toBeUndefined();
+  });
+
+  it("skips a malformed CORS entry but still derives from the valid ones", () => {
+    expect(
+      deriveCookieDomain(
+        "https://api.staging.useatlas.dev",
+        "not-a-url, https://app.staging.useatlas.dev",
+      ),
+    ).toBe("staging.useatlas.dev");
   });
 });
 

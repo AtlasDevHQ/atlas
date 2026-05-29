@@ -8,9 +8,10 @@
  * (Resend sender-reputation risk, PRD user story 13).
  *
  * The 7 canonical cases come straight from the PRD "Testing Decisions"
- * section. Further cases lock the documented-env-var override (default and
- * empty fallback), the recipient-classifier boundary, and the
- * future-transform passthrough seam.
+ * section. Further cases lock the documented-env-var override (default,
+ * empty, and whitespace-only fallback), the recipient-classifier boundary
+ * (including the empty-array edge), and the future-transform passthrough
+ * seam.
  *
  * The fixtures carry `body` / `from` / `headers` to assert the
  * preserve-everything-else guarantee. Those field names track the PRD's
@@ -21,8 +22,9 @@
  * delivery layer grows must ride through untouched.
  *
  * Prior art: `packages/api/src/api/__tests__/cors-origin.test.ts` — a
- * prod-vs-staging policy-boundary test (it asserts the allowlist contract,
- * though it does so over a mocked HTTP route rather than a pure function).
+ * security policy-boundary test asserting an allow/deny contract (the origin
+ * allowlist), though it does so over a mocked HTTP route rather than a pure
+ * function.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
@@ -123,16 +125,27 @@ describe("clampOutbound — staging redirects email to the sink", () => {
     expect(result.subject).toBe("Empty recipient");
   });
 
-  // Case 7: an array `to` collapses to the single sink address.
-  it("rewrites an array `to` to a single sink address", () => {
+  // Case 7: an array `to` is redirected to a one-element `[sink]` array. The
+  // shape is preserved (an array stays an array), so `clampOutbound`'s
+  // `(T) => T` signature is type-honest — a caller declaring `to: string[]`
+  // gets a real `string[]` back, not a bare string masquerading as one.
+  // There is still exactly one recipient: the sink.
+  it("rewrites an array `to` to a one-element sink array", () => {
     const result = clampOutbound("staging", emailWithArrayTo());
-    // `clampOutbound`'s `(T) => T` signature keeps `to`'s declared `string[]`
-    // type, but at runtime the array collapses to a single sink string —
-    // read through `unknown` to assert the real runtime value honestly.
-    const to: unknown = result.to;
-    expect(to).toBe(DEFAULT_SINK);
-    // Not an array of one — a single address string.
-    expect(Array.isArray(to)).toBe(false);
+    expect(result.to).toEqual([DEFAULT_SINK]);
+    expect(Array.isArray(result.to)).toBe(true);
+  });
+
+  // Edge case: an empty-array `to` (`[]`) is still a recipient field
+  // (`[].every(...)` is vacuously true), so it is redirected to `[sink]` like
+  // any other array rather than passed through unclamped. This pins the
+  // vacuous-`.every` behavior the staging branch silently relies on: a future
+  // "harden" to `to.length > 0 && to.every(...)` would drop `[]` through the
+  // clamp unredirected, and this test would catch it.
+  it("rewrites an empty-array `to` to the one-element sink array", () => {
+    const result = clampOutbound("staging", { to: [] as string[], subject: "empty array" });
+    expect(result.to).toEqual([DEFAULT_SINK]);
+    expect(result.subject).toBe("empty array");
   });
 });
 
@@ -150,6 +163,16 @@ describe("clampOutbound — documented sink env var", () => {
   // test — this is the one that locks the anti-footgun.
   it("falls back to the default sink when STAGING_MAIL_SINK is empty", () => {
     process.env.STAGING_MAIL_SINK = "";
+    const result = clampOutbound("staging", emailWithRealTo());
+    expect(result.to).toBe(DEFAULT_SINK);
+  });
+
+  // A whitespace-only value is the empty-string footgun one step further: it
+  // is truthy, so a bare `||` would stamp `" "` on as the recipient — a
+  // blank-ish address that bounces silently or lets mail escape. `resolveMailSink`
+  // `.trim()`s before the `||`, so whitespace collapses to the default.
+  it("falls back to the default sink when STAGING_MAIL_SINK is whitespace-only", () => {
+    process.env.STAGING_MAIL_SINK = "   ";
     const result = clampOutbound("staging", emailWithRealTo());
     expect(result.to).toBe(DEFAULT_SINK);
   });

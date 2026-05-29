@@ -37,12 +37,15 @@ import type { DeployRegion } from "@useatlas/types";
 const DEFAULT_MAIL_SINK = "staging-mail@useatlas.dev";
 
 /**
- * Resolve the staging email sink. Reads the one documented env var, falling
- * back to the default. An empty/unset value uses the default (`||`, not
- * `??`, so an explicitly-empty var doesn't blank the recipient).
+ * Resolve the staging email sink. Reads the one documented env var, trims it,
+ * and falls back to the default for any empty/unset/whitespace-only value
+ * (`||`, not `??`, so an explicitly-empty var doesn't blank the recipient;
+ * the `.trim()` extends that guard to a whitespace-only var like `" "`, which
+ * is truthy and would otherwise be stamped on as a blank-ish recipient —
+ * bouncing silently in the transport or letting mail escape).
  */
 function resolveMailSink(): string {
-  return process.env.STAGING_MAIL_SINK || DEFAULT_MAIL_SINK;
+  return process.env.STAGING_MAIL_SINK?.trim() || DEFAULT_MAIL_SINK;
 }
 
 /**
@@ -72,24 +75,36 @@ function isRecipientField(to: unknown): to is string | string[] {
 }
 
 /**
- * Email recipient redirect: rewrite `to` (single or array) to the single
- * staging sink address, preserving every non-recipient field — `subject`,
- * the body, `from`, headers, and anything else — via the shallow copy. A
- * multi-recipient array collapses to the one sink address: staging never
- * needs to fan out, and one sink keeps the soak inbox simple.
+ * Email recipient redirect: rewrite `to` to the single staging sink address,
+ * preserving every non-recipient field — `subject`, the body, `from`,
+ * headers, and anything else — via the shallow copy. The `to` field's SHAPE
+ * is preserved so the `(T) => T` contract stays type-honest: a single-string
+ * `to` becomes the sink string; an array `to` becomes a one-element array
+ * `[sink]`. Either way there is exactly one recipient — staging never needs
+ * to fan out, and one sink keeps the soak inbox simple — but collapsing an
+ * array to a bare string would make `to`'s runtime value diverge from its
+ * declared `string[]` type, an unsound `(T) => T` a typed caller (e.g. one
+ * doing `result.to.map(...)`) would trip over.
  *
  * SCOPE — `to` is the ONLY recipient field redirected, because the current
  * `EmailMessage` (`lib/email/delivery.ts`: `{ to, subject, html }`) has no
  * other recipient field. If the email layer ever grows `cc` / `bcc` /
  * `replyTo`, they are recipient fields too and MUST be redirected here as
  * well — otherwise a staging soak would deliver to those real addresses
- * while `to` looks correctly clamped (tracked as a follow-up). The
- * non-recipient fields above are intentionally preserved, not leaked.
+ * while `to` looks correctly clamped (tracked as #2984). The non-recipient
+ * fields above are intentionally preserved, not leaked.
  */
 const EMAIL_CLAMP: OutboundClamp = {
   name: "email",
   appliesTo: (sendable) => isRecipientField((sendable as { to?: unknown }).to),
-  rewrite: (sendable) => ({ ...sendable, to: resolveMailSink() }),
+  rewrite: (sendable) => {
+    const sink = resolveMailSink();
+    // Preserve `to`'s shape (string -> sink string; array -> `[sink]`) so the
+    // returned object honestly matches its declared `T` — see the doc above.
+    const currentTo = (sendable as { to?: unknown }).to;
+    const to = Array.isArray(currentTo) ? [sink] : sink;
+    return { ...sendable, to };
+  },
 };
 
 /**
@@ -110,11 +125,16 @@ const OUTBOUND_CLAMPS: readonly OutboundClamp[] = [EMAIL_CLAMP];
  *   primitive or `null`) passes through unchanged.
  *
  * @param region   the deploy region — ALWAYS an explicit argument, never read
- *                 from the environment here. The wiring slice derives it from
- *                 `getApiRegion()` (which returns `string | null`), NARROWED
- *                 to a `DeployRegion` first — a raw unrecognized string takes
- *                 the prod identity path (fail-open), so the caller must pin
- *                 the narrowing rather than pass the raw env read.
+ *                 from the environment here. The wiring slice (#2985) derives
+ *                 it from `getApiRegion()` (which returns `string | null`,
+ *                 with GRANULAR values like `"us-west"`/`"eu-west"`) and MUST
+ *                 MAP that to a `DeployRegion` (e.g. `"us-west"` -> `"us"`) —
+ *                 a plain type-narrow is insufficient, because the env values
+ *                 are finer-grained than this union, so `"us-west"` is not
+ *                 itself a `DeployRegion`. Any unrecognized value takes the
+ *                 prod identity path (fail-OPEN), so passing a raw
+ *                 `getApiRegion()` result here is a customer-email-leak bug:
+ *                 the caller MUST pin the mapping, not pass the raw env read.
  * @param sendable the outbound payload (email message, future: Stripe/Slack).
  * @returns the same `sendable` outside staging; a staging-safe copy inside.
  */

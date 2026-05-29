@@ -1,13 +1,19 @@
 /**
- * `openapi-client` — executes a single normalized operation over HTTP.
+ * `openapi-client` — executes normalized operations over HTTP. Two layers:
  *
- * `executeOperation(graph, operationId, params, resolvedAuth, opts)` builds the
- * request from the {@link OperationGraph} (path/query/header encoding per the
- * parameter's location, auth applied per the operation's security scheme),
- * fires one `fetch`, and returns `{ status, headers, body }`. It is a transport
- * primitive: NO agent logic, NO caching, NO pagination, NO retry. A non-2xx
- * response is returned as an {@link OperationResult}, not thrown — interpreting
- * status is the caller's job.
+ *  - `executeOperation(graph, operationId, params, resolvedAuth, opts)` — the
+ *    transport PRIMITIVE. Builds the request from the {@link OperationGraph}
+ *    (path/query/header encoding per the parameter's location, auth applied per
+ *    the operation's security scheme), fires one `fetch`, returns `{ status,
+ *    headers, body }`. NO agent logic, NO caching, NO pagination, NO retry. A
+ *    non-2xx response is returned as an {@link OperationResult}, not thrown —
+ *    interpreting status is the caller's job.
+ *  - `executeOperationPaged(...)` — the paginating COMPOSER (slice 4, #2928). A
+ *    thin driver that repeats the primitive across pages following a
+ *    {@link PaginationStrategy} and merges them into one {@link MergedPages},
+ *    with an optional page-level cache. It binds `executeOperation` as the page
+ *    fetcher and delegates the loop/merge/cache to `openapi-paginator`; the
+ *    primitive itself stays pure.
  *
  * Per-request timeout is enforced via `AbortSignal.timeout`. `Retry-After` is
  * parsed per RFC 9110 §10.2.3 and surfaced on the result (the client honors it
@@ -20,6 +26,12 @@
  * deferred to slice 6 — pass `{ kind: "bearer", token }` once a token is
  * obtained out of band.
  */
+import {
+  paginate,
+  type MergedPages,
+  type PageCacheBinding,
+  type PaginationStrategy,
+} from "./paginator";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
   OpenApiClientError,
@@ -94,6 +106,81 @@ export async function executeOperation(
   }
 
   return readResult(response, operationId);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Paginating composer (slice 4, #2928)
+// ─────────────────────────────────────────────────────────────────────
+
+/** Options for {@link executeOperationPaged}: the transport options plus the
+ * resolved pagination strategy and the optional page cache. */
+export interface PagedExecuteOptions extends ExecuteOptions {
+  /** The strategy resolved from install config / x-pagination auto-detect. */
+  readonly pagination: PaginationStrategy;
+  /** Hard page cap (safety). Defaults to the paginator's `DEFAULT_MAX_PAGES`. */
+  readonly maxPages?: number;
+  /** Optional hard cap on merged item count. */
+  readonly maxItems?: number;
+  /**
+   * Optional page cache. The method-derived read gate is dominant: a write
+   * (non-GET/HEAD) is NEVER cacheable regardless of caller, and on a read the
+   * caller may only opt OUT (pass `cacheable: false`) — it can never force a
+   * write into the cache. Any `onCacheFault` hook on the binding passes through.
+   */
+  readonly cache?: PageCacheBinding;
+}
+
+/**
+ * Execute an operation as a paginated walk: repeat the slice-0 primitive across
+ * pages following `opts.pagination`, merging into one {@link MergedPages} so the
+ * agent loop sees a single result. A non-paginated response (the strategy
+ * decides `done` after page one) comes back as a one-page merge — safe for any
+ * GET.
+ *
+ * @throws {OpenApiClientError} `unknown-operation` when `operationId` isn't in
+ *   the graph (matching the primitive). Per-page transport faults propagate from
+ *   {@link executeOperation}.
+ */
+export async function executeOperationPaged(
+  graph: OperationGraph,
+  operationId: string,
+  params: OperationParams,
+  resolvedAuth: ResolvedAuth,
+  opts: PagedExecuteOptions,
+): Promise<MergedPages> {
+  const operation = graph.operations.get(operationId);
+  if (operation === undefined) {
+    throw new OpenApiClientError({
+      reason: "unknown-operation",
+      operationId,
+      status: 0,
+      message:
+        `Unknown operationId "${operationId}". It is not present in the probed operation graph ` +
+        `(${graph.operations.size} operations available). Refusing to paginate a fabricated operation.`,
+    });
+  }
+
+  // Only reads are cacheable — this is the structural "writes are never cached".
+  const cacheable = operation.method === "GET" || operation.method === "HEAD";
+  const execOpts: ExecuteOptions = {
+    ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+  };
+
+  return paginate(
+    { operationId, params },
+    (request) =>
+      executeOperation(graph, request.operationId, request.params, resolvedAuth, execOpts),
+    {
+      strategy: opts.pagination,
+      ...(opts.maxPages !== undefined ? { maxPages: opts.maxPages } : {}),
+      ...(opts.maxItems !== undefined ? { maxItems: opts.maxItems } : {}),
+      ...(opts.cache !== undefined
+        ? { cache: { ...opts.cache, cacheable: cacheable && (opts.cache.cacheable ?? true) } }
+        : {}),
+    },
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────

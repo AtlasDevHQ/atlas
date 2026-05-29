@@ -24,6 +24,7 @@
 
 import { Effect, Data, Duration, Schedule } from "effect";
 import type { PythonBackend, PythonResult } from "./python";
+import type { SandboxNetworkPolicy } from "./backends/network-allowlist";
 import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
 import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
@@ -31,6 +32,24 @@ import { randomUUID } from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("python-sandbox");
+
+/**
+ * Per-request configuration for the Vercel Python sandbox. Derived server-side
+ * from the request's resolved REST datasource (see `python.ts`); none of it
+ * comes from the agent's `code`. Absent fields preserve the pre-#2927
+ * behavior: `deny-all` network.
+ */
+export interface PythonSandboxOptions {
+  /**
+   * Network policy to lock down to AFTER the package-install step (which needs
+   * `allow-all`). Defaults to `"deny-all"` — the safe baseline for SQL-only
+   * (non-REST) workloads. For a REST datasource this is the per-tenant host
+   * allowlist from {@link networkPolicyFromAllowlist} (layer 0, #2927): egress
+   * is bounded to the datasource host(s), with NO credential injected (the
+   * authenticated read path stays the host-side `executeRestOperation` tool).
+   */
+  readonly networkPolicy?: SandboxNetworkPolicy;
+}
 
 /** Default Python execution timeout in ms. */
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -120,8 +139,16 @@ const CREATION_RETRY = Schedule.intersect(
  * subsequent calls. If the sandbox errors, the cached promise is discarded
  * (and the old sandbox stopped) so a fresh one is created on the next call.
  */
-export function createPythonSandboxBackend(): PythonBackend {
+export function createPythonSandboxBackend(
+  options: PythonSandboxOptions = {},
+): PythonBackend {
   let sandboxPromise: Promise<SandboxInstance> | null = null;
+
+  // The network policy this per-request backend locks down to. Captured here
+  // (not read from any shared/global state) so the egress allowlist is scoped
+  // to exactly the request that created this backend — tenant A's backend can
+  // never carry tenant B's host (#2927, layer 0).
+  const lockdownPolicy: SandboxNetworkPolicy = options.networkPolicy ?? "deny-all";
 
   interface SandboxInstance {
     sandbox: InstanceType<(typeof import("@vercel/sandbox"))["Sandbox"]>;
@@ -208,17 +235,36 @@ export function createPythonSandboxBackend(): PythonBackend {
         Effect.catchAll(() => Effect.void),
       );
 
-      // 4. Lock network — stop sandbox on failure via Effect.tapError
+      // 4. Lock network — narrow from the install-time allow-all to the
+      // per-request policy (deny-all by default; the REST datasource host
+      // allowlist when a datasource is active — #2927 layer 0). Stop sandbox on
+      // failure via Effect.tapError. The policy carries no credential (egress is
+      // opened, auth is not — see network-allowlist.ts), and the log emits only
+      // the non-secret shape (mode + host count).
       yield* Effect.tryPromise({
-        try: () => sandbox.updateNetworkPolicy("deny-all"),
+        try: () => sandbox.updateNetworkPolicy(lockdownPolicy),
         catch: (err) => {
           const detail = sandboxErrorDetail(err);
-          log.error({ err: detail }, "Failed to set deny-all network policy");
+          log.error({ err: detail }, "Failed to set sandbox network policy");
           return new SandboxInfraError({
             message: `Failed to lock down sandbox network: ${safeError(detail)}.`,
           });
         },
       }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() =>
+            log.info(
+              {
+                mode: typeof lockdownPolicy === "string" ? lockdownPolicy : "allowlist",
+                allowedHosts:
+                  typeof lockdownPolicy === "string"
+                    ? 0
+                    : Object.keys(lockdownPolicy.allow ?? {}).length,
+              },
+              "Python sandbox network policy locked down",
+            ),
+          ),
+        ),
         Effect.tapError(() =>
           Effect.tryPromise({
             try: () => sandbox.stop(),

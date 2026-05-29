@@ -23,9 +23,12 @@
  *    count is script-determined here, not a model-quality signal.
  *
  * OQ1 (Python-vs-tool routing): see the trace observations logged at the end of
- * the run and the note in the PR. Slice 1's live execution shape is
- * `executeRestOperation` (single op) + sequential calls (composition); the
- * sandbox-Python path is generated + proven here but gated to slice 3.
+ * the run and the note in the PR. This hermetic suite always exercises the
+ * `executeRestOperation` (single op) + sequential-call shape. Slice 3 (#2927)
+ * landed the sandbox network boundary that the in-sandbox composition path
+ * depends on (proven by `tools/backends/__tests__/network-allowlist.test.ts`), but the
+ * live in-sandbox `AtlasRestClient` composition path itself stays deferred —
+ * see the python-preamble.ts header for why (read-only enforcement).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
 import { MockLanguageModelV3, convertArrayToReadableStream } from "ai/test";
@@ -241,7 +244,8 @@ function emitMetricsTable(): void {
     "\nOQ1 trace observation: single-lookup actions resolve in 1 executeRestOperation call; " +
       "the multi-endpoint $ref chain resolves as a sequence of executeRestOperation calls in one turn. " +
       "No misrouting observed; routing stays prompt-guided (no hard-coding needed). " +
-      "Live sandbox-Python composition is gated to slice 3 (#2927).",
+      "Slice 3 (#2927) landed the sandbox network boundary; the live in-sandbox " +
+      "Python composition path remains deferred (read-only enforcement).",
   );
 }
 
@@ -515,8 +519,10 @@ describe("Twenty acceptance — write-shape guards (primitive, ahead of slice 5)
 //
 //  Generates the real preamble + a representative agent body and runs it via
 //  python3 against the mock. Proves the generated client composes the $ref
-//  chain end-to-end. Gated on python3 availability (loud skip, never silent) —
-//  the live executePython wiring itself is slice 3 (#2927).
+//  chain end-to-end. Gated on python3 availability (loud skip, never silent).
+//  Slice 3 (#2927) landed the sandbox network boundary, but the live
+//  executePython wiring of this preamble remains deferred (read-only
+//  enforcement) — see the python-preamble.ts header.
 // ─────────────────────────────────────────────────────────────────────────
 describe("Twenty acceptance — sandbox-Python proof (generated client, gated)", () => {
   async function runPython(source: string, env: Record<string, string>) {

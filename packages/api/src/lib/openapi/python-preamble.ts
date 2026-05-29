@@ -10,20 +10,27 @@
  * {@link OperationGraph} so the client dispatches by `operationId` exactly like
  * the TypeScript {@link executeOperation} primitive — no per-operation code.
  *
- * Execution status (slice 1, #2924): this preamble is GENERATED and unit-tested
- * (it compiles, and the acceptance suite runs it against a local mock to prove
- * "prompt -> Python -> API call -> answer"). It is NOT yet wired into the live
- * agent's `executePython` path, because that path's import guard blocks all
- * network modules (`urllib`/`http`/`httpx`/`socket`) and the SaaS sandbox runs
- * `networkPolicy: "deny-all"`. Threading the per-tenant base URL into the
- * sandbox network allowlist + unblocking the REST client's stdlib HTTP is
- * slice 3's job (#2927). Until then the live execution shape is
- * `executeRestOperation` (single op) and sequential tool calls (composition).
+ * Execution status: slice 1 (#2924) GENERATED + unit-tested this preamble (it
+ * compiles, and the acceptance suite runs it against a local mock to prove
+ * "prompt -> Python -> API call -> answer"). Slice 3 (#2927) landed the network
+ * boundary it depends on — the Vercel sandbox's egress is now narrowed
+ * per-request to the datasource host (`tools/backends/network-allowlist.ts`) —
+ * but this preamble is STILL not wired into the live `executePython` path. The
+ * blocker is read-only: an in-sandbox HTTP client that can authenticate to the
+ * upstream lets untrusted agent code issue *any* method (the per-host network
+ * credential injection is method-agnostic, and Python introspection can reach
+ * an exposed client's transport), which would break "read-only in this
+ * release". Enabling it safely needs read-only enforced at a method-aware
+ * host-side mediation point — deferred to a later slice (pairs with the slice-5
+ * write-allowlist, #2929). Until then the live shape stays `executeRestOperation`
+ * (single op) + sequential tool calls, where the credential and read-only guard
+ * live server-side, never in the sandbox.
  *
- * Credentials are injected by env-var NAME (never inlined): the caller seeds
+ * Credentials are injected by env-var NAME (never inlined): a caller would seed
  * `process.env[authEnv]` / `process.env[baseUrlEnv]` into the sandbox
  * environment, and the generated code reads them at runtime. A token never
- * appears in the generated source.
+ * appears in the generated source. (Today only the hermetic acceptance harness
+ * exercises this; the live path does not run the preamble.)
  */
 import type { OperationGraph } from "./types";
 

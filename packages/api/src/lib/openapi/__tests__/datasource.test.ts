@@ -176,4 +176,52 @@ describe("resolveTwentyDatasource", () => {
     expect(second!.representationMode).toBe("semantic-yaml");
     expect(specRequests).toHaveLength(1);
   });
+
+  it("negative-caches a failed probe — repeated calls do NOT re-probe (#2975)", async () => {
+    // A failed probe is never graph-cached, so without the negative cache every
+    // call would re-run the (up to 30s) probe — hanging unrelated executePython
+    // analysis when the REST datasource is misconfigured.
+    enable();
+    specHandler = (res) => {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "upstream down" }));
+    };
+    expect(await resolveTwentyDatasource()).toBeNull();
+    expect(await resolveTwentyDatasource()).toBeNull();
+    expect(await resolveTwentyDatasource()).toBeNull();
+    // Only the first call probed; the next two were short-circuited by the cache.
+    expect(specRequests).toHaveLength(1);
+  });
+
+  it("reload bypasses the negative cache (forces a fresh probe after a failure)", async () => {
+    enable();
+    specHandler = (res) => {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "upstream down" }));
+    };
+    expect(await resolveTwentyDatasource()).toBeNull(); // probe #1 (fails, negative-cached)
+    expect(await resolveTwentyDatasource({ reload: true })).toBeNull(); // probe #2 (reload bypasses)
+    expect(specRequests).toHaveLength(2);
+  });
+
+  it("a successful probe clears the negative cache (recovered datasource resolves)", async () => {
+    enable();
+    // First the spec is down → negative-cached.
+    specHandler = (res) => {
+      res.writeHead(503, {});
+      res.end("down");
+    };
+    expect(await resolveTwentyDatasource()).toBeNull();
+    // It recovers; `reload` forces a real probe past the negative window, which
+    // succeeds and clears the negative entry…
+    specHandler = (res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(SPEC_TEXT);
+    };
+    expect(await resolveTwentyDatasource({ reload: true })).not.toBeNull();
+    // …so a subsequent normal call serves the now-cached graph (no re-probe, and
+    // crucially not a stale negative-cache null).
+    expect(await resolveTwentyDatasource()).not.toBeNull();
+    expect(specRequests).toHaveLength(2);
+  });
 });

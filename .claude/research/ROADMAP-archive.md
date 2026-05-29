@@ -7,6 +7,24 @@
 
 ---
 
+# Public-semver archive
+
+Git-tag releases off the `v0.0.x` train. Most recent first. See [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md) (versioning) and [ADR-0009](../../docs/adr/0009-tag-organized-roadmap.md) (roadmap shape).
+
+## v0.0.1 — Release Process Bootstrap (Shipped)
+
+First git tag (`v0.0.1`) — the start of the pre-launch `v0.0.x` development train. Established the tag-gated release process and the customer-facing stability contract. Scope was docs + tooling — no runtime feature shipped under this tag. The public launch is a separate event (`v0.1.0`, target July 2026) that points at the banked changelog accumulated under the `v0.0.x` train.
+
+- [ ] **Slice 6 cutover** ([#2802](https://github.com/AtlasDevHQ/atlas/issues/2802)) — replace the custom `scripts/test-isolated.ts` subprocess-per-file runner with native `bun test --parallel`. Mechanical diff prepared on `claude/practical-hamilton-Ycwto`. Parked on bun 1.4.0 GA — under the `>=1.3.13 <1.3.14` engine pin the full `packages/api/` suite passes 3020/3020 in 19.58s. Deferred to Architecture Backlog; re-apply once bun 1.4.0 ships and lift the engine pin in the same PR.
+- [x] **Stability Contract docs page** ([`apps/docs/content/docs/reference/stability.mdx`](../../apps/docs/content/docs/reference/stability.mdx)) — customer-facing commitments for REST API (`/api/v1/*`), MCP tool surface, plugin SDK, semantic layer wire format. Shipped with ADR-0008/0009 in [#2920](https://github.com/AtlasDevHQ/atlas/pull/2920).
+- [x] **ROADMAP restructure** — five-section shape per ADR-0009; shipped milestones consolidated to this archive. Shipped in [#2920](https://github.com/AtlasDevHQ/atlas/pull/2920).
+- [x] **`/prod-audit` pre-launch pass** ([#2896](https://github.com/AtlasDevHQ/atlas/issues/2896)) — all three legs ran clean (0 CRITICAL, ✅ gate pass); inline fixes in [#2949](https://github.com/AtlasDevHQ/atlas/pull/2949)/[#2948](https://github.com/AtlasDevHQ/atlas/pull/2948)/[#2957](https://github.com/AtlasDevHQ/atlas/pull/2957)/[#2962](https://github.com/AtlasDevHQ/atlas/pull/2962).
+- [x] **`/release` skill** ([`.claude/commands/release.md`](../../.claude/commands/release.md)) — bundles `/ci` + annotated tag + push + `prod`-branch advance + `gh release create --generate-notes`. Shipped in [#2920](https://github.com/AtlasDevHQ/atlas/pull/2920).
+
+Tag cut at `9c68fc17`, released 2026-05-29. The tag-gated Railway trigger advances a dedicated `prod` branch on tag ([#2922](https://github.com/AtlasDevHQ/atlas/pull/2922)); `main → staging` auto-deploys. The **staging environment build track** ([PRD #2893](https://github.com/AtlasDevHQ/atlas/issues/2893), [milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) was decoupled from this bundle and ships independently on a late-June target.
+
+---
+
 ## v0.1 — Foundation (Shipped)
 
 The core text-to-SQL agent, end to end.

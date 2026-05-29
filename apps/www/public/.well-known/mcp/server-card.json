@@ -15,10 +15,10 @@
   "transports": [
     {
       "type": "http",
-      "endpoint": "https://api.useatlas.dev/api/v1/mcp/sse",
+      "endpoint": "https://mcp.useatlas.dev/mcp/{workspace_id}/sse",
       "authentication": {
         "scheme": "bearer",
-        "tokenSource": "https://app.useatlas.dev/admin/api-keys"
+        "tokenSource": "https://app.useatlas.dev/settings/ai-agents"
       }
     }
   ],

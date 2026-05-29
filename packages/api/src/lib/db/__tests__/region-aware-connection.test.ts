@@ -194,12 +194,15 @@ describe("getRegionAwareConnection", () => {
     expect(connections.hasOrgPool("org-1", "default")).toBe(true);
   });
 
-  it("staging-keyed workspace falls through to local DB and never registers a residency pool", async () => {
-    // The live EE staging arm (#2908) returns null from
-    // resolveRegionDatabaseUrl for a workspace keyed to the "staging" deploy
-    // region. Simulate that contract here: a null route must fall through to
-    // the default/local pool and never register a `region:*` connection, so
-    // staging traffic can never be mis-routed to a residency-mapped region.
+  it("null route falls through to local DB and never registers a residency pool (no region leak on metrics)", async () => {
+    // Pins the *consumer-side* null-route contract that the EE staging arm
+    // (#2908) relies on: when resolveRegionDatabaseUrl returns null — as it
+    // does for a "staging"-keyed workspace — getRegionAwareConnection must fall
+    // through to the default/local pool, register no `region:*` connection, and
+    // leave the org pool untagged. This does NOT exercise the staging arm
+    // itself (that lives in residency.test.ts); the trigger is the generic null
+    // route. Its delta over the line-132 "no region configured" test is the two
+    // assertions below — no leaked region pool, and no region on the metrics.
     mockResolveFn = () => null;
 
     const { db, resolvedConnId } = await getRegionAwareConnection("staging-workspace", "default");

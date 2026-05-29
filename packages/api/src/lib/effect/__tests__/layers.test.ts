@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Effect, Layer, Exit, ManagedRuntime } from "effect";
 import {
   Telemetry,
@@ -21,6 +23,7 @@ import {
   ImplementationStatusOverrideLive,
   CatalogSeed,
   BuiltinDatasourceCatalogSeed,
+  SCHEDULER_CLEANUP_SPAN_NAMES,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
@@ -311,6 +314,94 @@ describe("makeSchedulerLive", () => {
 
     // Disposing should not throw
     await rt.dispose();
+  });
+
+  // ── Per-tick observability spans on the cleanup fibers (#2945) ──────
+  // The 8 periodic cleanup fibers are forked internally and not exposed
+  // through the `Scheduler` Tag, so the span wrapping can't be asserted by
+  // introspecting OTel without standing up an in-memory trace exporter
+  // (would add `@opentelemetry/sdk-trace-base` to @atlas/api devDeps — out
+  // of scope). Instead:
+  //   (a) the production wrap sites derive their span name from the
+  //       `SCHEDULER_CLEANUP_SPAN_NAMES` record, and the derivation/prefix
+  //       guard below pins that record's shape; and
+  //   (b) a structural source-scan guard asserts each of the 8 keys is
+  //       actually referenced by a `withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.<key>`
+  //       call site, and that there are exactly 8 such call sites.
+  // Together these make "rename a span" AND "delete a wrap at a call site"
+  // (the precise regression #2945 exists to prevent) both fail here.
+  describe("cleanup-fiber observability spans (#2945)", () => {
+    // The 8 fiber keys are the real contract — these are the cleanup fibers
+    // named in #2945 that each must emit a per-tick span.
+    const EXPECTED_FIBER_KEYS = [
+      "oauth_state_cleanup",
+      "rate_limit_cleanup",
+      "demo_rate_limit_cleanup",
+      "contact_rate_limit_cleanup",
+      "abuse_cleanup",
+      "dashboard_rate_limit_cleanup",
+      "conversation_rate_sweep",
+      "share_token_cleanup",
+    ] as const;
+
+    test("covers exactly the 8 named cleanup fibers", () => {
+      expect(Object.keys(SCHEDULER_CLEANUP_SPAN_NAMES).toSorted()).toEqual(
+        [...EXPECTED_FIBER_KEYS].toSorted(),
+      );
+    });
+
+    test("derives each span name as dotted atlas.scheduler.<fiber> (no bare snake_case label)", () => {
+      const entries: ReadonlyArray<[string, string]> = Object.entries(
+        SCHEDULER_CLEANUP_SPAN_NAMES,
+      );
+      for (const [fiber, span] of entries) {
+        // Convention guard from the #2945 LOW finding: the dotted prefix
+        // must survive; the op segment intentionally mirrors the fiber's
+        // `withFiberDeathLog` label (underscores within the op are fine).
+        expect(span).toBe(`atlas.scheduler.${fiber}`);
+        expect(span.startsWith("atlas.scheduler.")).toBe(true);
+        expect(span).not.toBe(fiber);
+      }
+    });
+
+    // Structural wiring guard: the name-set tests above prove the const is
+    // correct, but a wrap site can be deleted while every other test stays
+    // green — re-hiding the exact regression #2945 prevents. Scan the
+    // `layers.ts` source and assert each of the 8 keys is referenced by a
+    // `withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.<key>` call AND that there
+    // are exactly 8 such call sites, so deleting/adding a wrap fails here.
+    // (A full in-memory OTel exporter test was rejected as too heavy — see
+    // the block comment above; this source scan is the pragmatic guard.)
+    describe("wrap-site wiring guard", () => {
+      const layersSource = readFileSync(
+        fileURLToPath(new URL("../layers.ts", import.meta.url)),
+        "utf8",
+      );
+      // Matches `withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.<key>` tolerating
+      // arbitrary whitespace/newlines around the call paren and the dot.
+      const wrapCallRegex =
+        /withEffectSpan\s*\(\s*SCHEDULER_CLEANUP_SPAN_NAMES\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)/g;
+
+      test("each of the 8 fibers has a withEffectSpan wrap site", () => {
+        for (const key of EXPECTED_FIBER_KEYS) {
+          const perKey = new RegExp(
+            `withEffectSpan\\s*\\(\\s*SCHEDULER_CLEANUP_SPAN_NAMES\\s*\\.\\s*${key}\\b`,
+          );
+          expect(layersSource).toMatch(perKey);
+        }
+      });
+
+      test("there are exactly 8 SCHEDULER_CLEANUP_SPAN_NAMES wrap sites", () => {
+        const matchedKeys = [...layersSource.matchAll(wrapCallRegex)].map(
+          (m) => m[1],
+        );
+        expect(matchedKeys).toHaveLength(8);
+        // Every matched call site references a known fiber key — guards
+        // against a typo'd `.foo` reference that wouldn't type-check anyway
+        // but keeps the scan honest if the const is widened later.
+        expect(matchedKeys.toSorted()).toEqual([...EXPECTED_FIBER_KEYS].toSorted());
+      });
+    });
   });
 });
 

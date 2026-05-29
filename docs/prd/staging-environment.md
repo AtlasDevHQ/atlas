@@ -181,7 +181,7 @@ Module: `packages/api/src/lib/staging/__tests__/clamp.test.ts`. Cases:
 - `clampOutbound("staging", emailWithRealTo)` rewrites `to` to sink
 - `clampOutbound("staging", emailWithRealTo)` preserves `subject`, `body`, `from`, custom headers
 - `clampOutbound("staging", emailWithEmptyTo)` returns sink-targeted email (not crash)
-- `clampOutbound("staging", emailWithArrayTo)` rewrites array to single sink address
+- `clampOutbound("staging", emailWithArrayTo)` rewrites an array `to` to a one-element `[sink]` array — one recipient (the sink), with the array shape preserved so `clampOutbound`'s `(T) => T` signature stays type-honest (collapsing to a bare string would make the runtime value diverge from the declared `string[]`)
 
 Prior art: `packages/api/src/lib/__tests__/cors-origin.test.ts` — pure-function allowlist tests.
 

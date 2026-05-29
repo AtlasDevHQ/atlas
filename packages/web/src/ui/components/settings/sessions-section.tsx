@@ -91,10 +91,7 @@ export function summarizeUserAgent(ua: string | null): string {
 
 export function SessionsSection() {
   const session = authClient.useSession();
-  // Better Auth's typed session covers `id` as a base field, but the
-  // plugin-wrapped client occasionally erases the inferred shape — narrow
-  // here without leaking the cast across the file.
-  const currentSessionId = (session.data?.session as { id?: string } | undefined)?.id;
+  const currentSessionId = session.data?.session?.id;
 
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/sessions", {
     schema: SessionsResponseSchema,

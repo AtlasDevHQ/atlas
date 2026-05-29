@@ -24,7 +24,26 @@
  */
 
 import type { DeliveryResult, EmailMessage } from "@atlas/api/lib/email/delivery";
-import type { ClaimedEmailRow, EmailDispatcher, EmailDispatchOutcome } from "./outbox";
+import type {
+  ClaimedEmailRow,
+  EmailDispatcher,
+  EmailDispatchOutcome,
+  EmailOutboxMessage,
+} from "./outbox";
+
+/**
+ * Compile-time lockstep guard: `EmailOutboxMessage` (the locally-defined
+ * row payload shape, kept decoupled from the delivery layer) must carry
+ * every field `EmailMessage` does. If someone adds a field to
+ * `EmailMessage` (e.g. `cc`, `replyTo`, `text`) without also adding it to
+ * `EmailOutboxMessage` + `coerceMessage`, the outbox would silently drop
+ * it on the enqueue→re-send round-trip. This turns that silent field-drop
+ * into a red build. (`Exclude<...> extends never` is `true` only when
+ * EmailOutboxMessage's keys are a superset of EmailMessage's.)
+ */
+type _EmailOutboxMessageCoversEmailMessage =
+  Exclude<keyof EmailMessage, keyof EmailOutboxMessage> extends never ? true : never;
+const _emailOutboxMessageLockstep: _EmailOutboxMessageCoversEmailMessage = true;
 
 /**
  * Shape of `email/delivery.ts:sendEmail`. Declared structurally so

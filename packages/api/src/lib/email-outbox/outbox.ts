@@ -109,6 +109,14 @@ export type EmailDispatchOutcome =
       readonly message: string;
       readonly retryAfterMs?: number;
     }
+  // NOTE: the current concrete dispatcher (`makeEmailDispatcher`) never
+  // emits `permanent` — `sendEmail` surfaces no HTTP status, so every
+  // live failure is classified `transient` and dead-letters via budget
+  // exhaustion instead. This arm is retained for queue-mechanic
+  // completeness and for a future status-aware dispatcher (cf. the
+  // lead-outbox dispatcher, which distinguishes 4xx-permanent). The
+  // `flushBatch` permanent branch is exercised by tests via a synthetic
+  // dispatcher.
   | { readonly kind: "permanent"; readonly message: string };
 
 /**
@@ -467,6 +475,9 @@ function coerceMessage(payload: unknown): EmailOutboxMessage | null {
     try {
       obj = JSON.parse(payload);
     } catch {
+      // intentionally ignored: an unparseable payload is unrecoverable;
+      // returning null routes the row to flushBatch's dead-letter branch
+      // (which logs email_outbox.dead_letter_malformed at error level).
       return null;
     }
   }

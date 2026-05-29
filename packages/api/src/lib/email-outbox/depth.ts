@@ -37,8 +37,11 @@ export interface OutboxDepthSnapshot {
  * Single aggregate row — keeps the snapshot to one round-trip. The
  * outer `WHERE status IN ('pending', 'dead')` scopes the scan to the
  * two statuses we report on, so cost doesn't scale with the unbounded
- * history of `done` rows. The `pending` side hits the
- * `idx_email_outbox_pending_created` partial index (mig 0107).
+ * history of `done` rows. The `idx_email_outbox_pending_created`
+ * partial index (mig 0107) can accelerate the `pending` predicate; the
+ * `dead` count falls outside that index (it's filtered to
+ * pending/in_flight) and is a small bounded scan absent a sustained
+ * outage.
  */
 const SNAPSHOT_SQL = `
   SELECT

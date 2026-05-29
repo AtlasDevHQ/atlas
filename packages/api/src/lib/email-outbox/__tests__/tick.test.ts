@@ -98,6 +98,34 @@ describe("runEmailOutboxTick", () => {
     expect(warnings[0].data.event).toBe("email_outbox.depth_threshold_warn");
   });
 
+  test("propagates a snapshot failure and does NOT record gauges (no-silent-zero invariant)", async () => {
+    // If the depth snapshot throws (e.g. a sticky pool failure), the tick
+    // must propagate so the caller records tick_failed and the gauges keep
+    // their last value — resetting them to 0 would make a broken queue
+    // look healthy. Assert the throw propagates and neither gauge fired.
+    const pendingGauge = gauge();
+    const deadGauge = gauge();
+    const db: EmailOutboxDB = {
+      async query<T extends Record<string, unknown>>(sql: string): Promise<T[]> {
+        if (/COUNT\(\*\) FILTER/i.test(sql)) throw new Error("pool exploded");
+        return [] as unknown as T[];
+      },
+    };
+    await expect(
+      runEmailOutboxTick({
+        db,
+        dispatcher: okDispatcher,
+        batchLimit: 10,
+        limiter: new OutboxWarnRateLimiter(100),
+        pendingGauge,
+        deadGauge,
+        logger: { warn() {} },
+      }),
+    ).rejects.toThrow(/pool exploded/);
+    expect(pendingGauge.values).toEqual([]);
+    expect(deadGauge.values).toEqual([]);
+  });
+
   test("dispatches claimed rows through flushBatch", async () => {
     const { db } = makeDb([
       { id: "row-1", email_type: "password-reset", payload: { to: "a@b.co", subject: "s", html: "h" }, org_id: null, attempts: 1 },

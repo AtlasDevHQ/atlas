@@ -74,6 +74,13 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
   rows: Row[] = [];
   now = 1_000_000; // arbitrary baseline (ms)
   private nextId = 1;
+  /**
+   * Make the next N flush-terminal status writes (MARK_DONE /
+   * MARK_TRANSIENT / MARK_DEAD) throw, simulating a Postgres blip between
+   * dispatch return and status stamp. Drives the markStatusWithRetry
+   * retry-once-then-strand path.
+   */
+  failNextMarks = 0;
 
   advance(ms: number): void {
     this.now += ms;
@@ -88,6 +95,19 @@ class FakeEmailOutboxDB implements EmailOutboxDB {
     params?: unknown[],
   ): Promise<T[]> {
     const p = params ?? [];
+
+    // Inject terminal-write failures for the markStatusWithRetry path.
+    // Flush-terminal marks carry `last_error`/`processed_at` (done/dead)
+    // or `SET status = 'pending', last_error` (transient) — distinct from
+    // the recovery sweeps, which this test never triggers.
+    const isFlushTerminalMark =
+      /SET status = 'done'/i.test(sql) ||
+      /SET status = 'pending',\s*last_error/i.test(sql) ||
+      /SET status = 'dead',\s*processed_at = now\(\),\s*\n?\s*last_error = \$1/i.test(sql);
+    if (isFlushTerminalMark && this.failNextMarks > 0) {
+      this.failNextMarks--;
+      throw new Error("simulated terminal-status UPDATE failure");
+    }
 
     if (/^\s*INSERT INTO email_outbox/i.test(sql)) {
       const id = `row-${this.nextId++}`;
@@ -368,6 +388,32 @@ describe("flushBatch", () => {
       permanent: 0,
     });
     expect(db.rows[0].status).toBe("pending");
+  });
+});
+
+describe("markStatusWithRetry (terminal-status write resilience)", () => {
+  test("retries a terminal-status write once and still reaches the terminal state", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, { emailType: "password-reset", message: MSG });
+    db.failNextMarks = 1; // first MARK_DONE throws, retry succeeds
+    const result = await flushBatch(db, okDispatcher, 10);
+    expect(result.ok).toBe(1);
+    expect(db.byId("row-1")!.status).toBe("done");
+    expect(
+      loggerCalls.warn.some((c) => c.data.event === "email_outbox.status_update_retrying"),
+    ).toBe(true);
+  });
+
+  test("re-throws when the terminal-status write fails twice — row strands in_flight for recovery", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, { emailType: "password-reset", message: MSG });
+    db.failNextMarks = 2; // both attempts throw → flushBatch propagates
+    await expect(flushBatch(db, okDispatcher, 10)).rejects.toThrow(
+      /simulated terminal-status UPDATE failure/,
+    );
+    // The claim already flipped it to in_flight; the failed mark leaves it
+    // there so recoverInFlight mops it up on the next boot (no silent loss).
+    expect(db.byId("row-1")!.status).toBe("in_flight");
   });
 });
 

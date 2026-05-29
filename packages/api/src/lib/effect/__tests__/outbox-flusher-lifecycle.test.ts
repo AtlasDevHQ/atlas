@@ -314,3 +314,129 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     expect(recoveryCalls.length).toBeGreaterThan(0);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Email outbox flusher lifecycle (#2942)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The email_outbox flusher (transactional-email durability) is wired in
+// the SAME scheduler Layer as the CRM flusher but gated differently: it
+// mounts on `hasInternalDB()` ALONE — there is no SaasCrm / enterprise
+// gate, because password-reset / verification email happens in every
+// deploy mode with a DB. The CRM-side tests above were scoped to
+// `crm_outbox` so they don't observe this flusher; these tests assert the
+// email flusher's mount + recovery + tick-gate directly.
+
+describe("email outbox flusher lifecycle (#2942)", () => {
+  // email_outbox recovery sweeps (MARK_EXHAUSTED + RECOVER_STALE) — the
+  // only email statements carrying `WHERE status = 'in_flight'`.
+  const emailRecoverySweeps = () =>
+    sqlLog.filter(
+      (q) => q.sql.includes("email_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
+    );
+  // email tick observable side effects: the depth-snapshot SELECT and the
+  // CLAIM UPDATE both read `FROM email_outbox` and neither contains the
+  // `WHERE status = 'in_flight'` recovery predicate.
+  const emailTickCalls = () =>
+    sqlLog.filter(
+      (q) => /FROM email_outbox/i.test(q.sql) && !/WHERE status = 'in_flight'/i.test(q.sql),
+    );
+
+  test("runs email_outbox recovery sweeps on boot AND shutdown", async () => {
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const layer = makeSchedulerLive(config).pipe(
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+    );
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
+    await rt.dispose();
+
+    // One boot + one finalizer × two statements (dead-letter exhausted +
+    // reset stale) = 4 email_outbox in_flight sweeps.
+    expect(emailRecoverySweeps().length).toBe(4);
+  });
+
+  test("mounts INDEPENDENTLY of SaasCrm — fires even when SaasCrm.dispatcher is null", async () => {
+    // The key divergence from crm_outbox: a self-hosted / no-EE deploy has
+    // a null SaasCrm dispatcher (CRM flusher skipped) but still sends
+    // password-reset email, so the email flusher MUST mount on the DB gate
+    // alone. The dispatcher-null shape would skip the CRM flusher entirely.
+    const noopSaasCrm: Layer.Layer<SaasCrmTag> = Layer.succeed(SaasCrm, {
+      available: false,
+      upsertLead: () => Effect.void,
+      stampConversion: () => Effect.void,
+      dispatcher: null,
+    } satisfies SaasCrmShape);
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const layer = makeSchedulerLive(config).pipe(
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, noopSaasCrm)),
+    );
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
+    await rt.dispose();
+
+    // CRM sweeps must be zero (dispatcher null), email sweeps must fire.
+    const crmSweeps = sqlLog.filter(
+      (q) => q.sql.includes("crm_outbox") && /WHERE status = 'in_flight'/i.test(q.sql),
+    );
+    expect(crmSweeps.length).toBe(0);
+    expect(emailRecoverySweeps().length).toBeGreaterThan(0);
+  });
+
+  test("does NOT mount when hasInternalDB() returns false", async () => {
+    internalDbAvailable = false;
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const layer = makeSchedulerLive(config).pipe(
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+    );
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
+    await rt.dispose();
+
+    expect(emailRecoverySweeps().length).toBe(0);
+    expect(emailTickCalls().length).toBe(0);
+  });
+
+  test("forked email tick fiber actually runs (regression: forkScoped not fork)", async () => {
+    // Mirror of the CRM #2864 canary for the email fiber: prove the tick
+    // fiber survives the gen returning. Without forkScoped we'd see zero
+    // `FROM email_outbox` depth-snapshot queries.
+    process.env.ATLAS_EMAIL_OUTBOX_TICK_SECONDS = "1";
+    try {
+      const config = {} as Parameters<typeof makeSchedulerLive>[0];
+      const layer = makeSchedulerLive(config).pipe(
+        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+      );
+      const rt = ManagedRuntime.make(layer);
+      await Effect.runPromise(rt.runtimeEffect);
+      await new Promise((r) => setTimeout(r, 2_500));
+      await rt.dispose();
+      expect(emailTickCalls().length).toBeGreaterThan(0);
+    } finally {
+      delete process.env.ATLAS_EMAIL_OUTBOX_TICK_SECONDS;
+    }
+  });
+
+  test("ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED=false skips the tick but keeps recovery sweeps", async () => {
+    process.env.ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED = "false";
+    process.env.ATLAS_EMAIL_OUTBOX_TICK_SECONDS = "1";
+    try {
+      const config = {} as Parameters<typeof makeSchedulerLive>[0];
+      const layer = makeSchedulerLive(config).pipe(
+        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+      );
+      const rt = ManagedRuntime.make(layer);
+      await Effect.runPromise(rt.runtimeEffect);
+      await new Promise((r) => setTimeout(r, 2_500));
+      await rt.dispose();
+
+      // Tick gated off → no FROM email_outbox tick queries.
+      expect(emailTickCalls().length).toBe(0);
+      // Recovery sweeps run regardless of the gate → boot + shutdown = 4.
+      expect(emailRecoverySweeps().length).toBe(4);
+    } finally {
+      delete process.env.ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED;
+      delete process.env.ATLAS_EMAIL_OUTBOX_TICK_SECONDS;
+    }
+  });
+});

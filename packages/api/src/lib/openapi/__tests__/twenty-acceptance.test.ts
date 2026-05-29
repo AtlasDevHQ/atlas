@@ -15,10 +15,12 @@
  *    (representation -> tool -> slice-0 client -> wire) transmits the four
  *    Twenty traps faithfully, against an in-process mock seeded from real Twenty
  *    response shapes that HONORS the filter syntax.
- *  - Parameterized over {@link RepresentationMode} so #2931 re-runs the identical
- *    assertions in semantic-YAML mode. Path A ("operation-graph") is the only
- *    implemented mode today; the harness emits per-run metrics (representation
- *    prompt tokens + agent step count) for the bake-off.
+ *  - Parameterized over {@link RepresentationMode} ({@link MODES_UNDER_TEST}) so
+ *    every assertion runs once per mode. #2924 shipped Path A ("operation-graph")
+ *    and #2931 added Path B ("semantic-yaml"); both are implemented and both must
+ *    pass. The harness emits per-run metrics (representation prompt tokens + agent
+ *    step count) for the bake-off — see {@link emitMetricsTable} for why step
+ *    count is script-determined here, not a model-quality signal.
  *
  * OQ1 (Python-vs-tool routing): see the trace observations logged at the end of
  * the run and the note in the PR. This hermetic suite always exercises the
@@ -99,8 +101,14 @@ const SPEC = JSON.parse(
 );
 const graph = buildOperationGraph(SPEC);
 
-/** Path A is the only implemented mode; #2931 appends "semantic-yaml" here. */
-const MODES_UNDER_TEST: RepresentationMode[] = ["operation-graph"];
+/**
+ * The bake-off axis: every assertion below runs once per mode. #2924 shipped
+ * Path A ("operation-graph"); #2931 added Path B ("semantic-yaml"). Both must
+ * pass EVERY assertion — a mode that fails any one is disqualified as slice 2's
+ * default. The per-run metrics (representation tokens + agent stepCount) are
+ * emitted at teardown for the comparison report.
+ */
+const MODES_UNDER_TEST: RepresentationMode[] = ["operation-graph", "semantic-yaml"];
 
 // ── Scripted-LLM helpers (mirrors agent-integration.test.ts) ─────────────────
 let callId = 0;
@@ -180,7 +188,10 @@ async function runScenario(prompt: string, steps: Step[]) {
 // ── Mock Twenty workspace ────────────────────────────────────────────────
 let mock1: TwentyMock;
 
+let savedRepresentationEnv: string | undefined;
+
 beforeAll(async () => {
+  savedRepresentationEnv = process.env.ATLAS_OPENAPI_REPRESENTATION;
   mock1 = await startTwentyMockServer();
   process.env.ATLAS_OPENAPI_TWENTY = "true";
   process.env.ATLAS_OPENAPI_TWENTY_TOKEN = "acceptance-bearer";
@@ -192,6 +203,8 @@ afterAll(async () => {
   delete process.env.ATLAS_OPENAPI_TWENTY;
   delete process.env.ATLAS_OPENAPI_TWENTY_TOKEN;
   delete process.env.ATLAS_OPENAPI_TWENTY_BASE_URL;
+  if (savedRepresentationEnv === undefined) delete process.env.ATLAS_OPENAPI_REPRESENTATION;
+  else process.env.ATLAS_OPENAPI_REPRESENTATION = savedRepresentationEnv;
   __resetTwentyDatasourceCacheForTests();
   await mock1.close();
   emitMetricsTable();
@@ -223,6 +236,11 @@ function emitMetricsTable(): void {
     console.log(m.scenario.padEnd(34) + m.mode.padEnd(18) + String(m.restCalls).padEnd(11) + m.stepCount);
   }
   console.log(
+    "\nNOTE: stepCount is identical across modes BY CONSTRUCTION — the LLM is scripted, so both " +
+      "modes replay the same tool sequence. Only `approxTokens` varies with the representation; a " +
+      "real stepCount delta would need a live model (see docs/architecture/openapi-representation-bakeoff.md).",
+  );
+  console.log(
     "\nOQ1 trace observation: single-lookup actions resolve in 1 executeRestOperation call; " +
       "the multi-endpoint $ref chain resolves as a sequence of executeRestOperation calls in one turn. " +
       "No misrouting observed; routing stays prompt-guided (no hard-coding needed). " +
@@ -236,6 +254,10 @@ function emitMetricsTable(): void {
 // ─────────────────────────────────────────────────────────────────────────
 describe.each(MODES_UNDER_TEST)("Twenty acceptance — representation mode: %s", (mode) => {
   beforeAll(() => {
+    // Select the mode the REAL agent loop resolves (agent.ts reads it off the
+    // datasource, which reads this env). Each mode block overwrites it before
+    // its own tests run, so the two modes never bleed into each other.
+    process.env.ATLAS_OPENAPI_REPRESENTATION = mode;
     const rep = buildAgentRepresentation(graph, mode, { displayName: "Twenty" });
     representationTokens.set(mode, rep.approxTokens);
   });

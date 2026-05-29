@@ -34,7 +34,8 @@
     "dev": "bun run --hot src/api/server.ts",
     "test": "bun run scripts/test-isolated.ts",
     "test:fast": "bun test src/api && bun test src/lib",
-    "openapi:extract": "bun run scripts/extract-openapi.ts"
+    "openapi:extract": "bun run scripts/extract-openapi.ts",
+    "openapi:regen-goldens": "bun run scripts/regen-openapi-goldens.ts"
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.83",

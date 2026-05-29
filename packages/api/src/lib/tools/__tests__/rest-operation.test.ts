@@ -38,6 +38,7 @@ function datasource(): RestDatasource {
     graph,
     baseUrl: mock.restBaseUrl,
     auth: { kind: "bearer", token: "test-token" },
+    representationMode: "operation-graph",
   };
 }
 
@@ -112,7 +113,7 @@ describe("executeRestOperation tool", () => {
     });
     const result = await call(
       { operationId: "listWithHeader", header: { "X-Schema-Version": "2024-01" } },
-      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" } }),
+      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph" }),
     );
     expect(result.status).toBe("ok");
     const req = mock.matching("/rest/people").at(-1);

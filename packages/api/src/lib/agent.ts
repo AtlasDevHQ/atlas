@@ -892,9 +892,20 @@ export async function runAgent({
         tool: executeRestOperationTool,
       });
       activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
-      restRepresentation = buildAgentRepresentation(restDatasource.graph, "operation-graph", {
+      // Representation mode is the #2931 bake-off knob, resolved per datasource
+      // (env today, per-install config in slice 2). Path A vs Path B differ only
+      // in how the surface is described; both drive the same executeRestOperation.
+      const restRep = buildAgentRepresentation(restDatasource.graph, restDatasource.representationMode, {
         displayName: restDatasource.displayName,
-      }).promptContext;
+      });
+      restRepresentation = restRep.promptContext;
+      if (restRep.unresolvedResources.length > 0) {
+        log.warn(
+          { datasource: restDatasource.id, resources: restRep.unresolvedResources },
+          `REST datasource "${restDatasource.id}": ${restRep.unresolvedResources.length} resource(s) ` +
+            `resolved to no record schema — the agent sees their operations but no field surface.`,
+        );
+      }
     }
   } catch (err) {
     log.warn(

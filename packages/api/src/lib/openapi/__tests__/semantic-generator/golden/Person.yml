@@ -1,0 +1,101 @@
+name: Person
+type: rest_resource
+resource: people
+record_schema: Person
+description: REST resource backed by the "people" path group of Twenty Core REST API. Read with the GET operations below; pass parameters to executeRestOperation.
+operations:
+  - operationId: createOnePerson
+    method: POST
+    path: /people
+    kind: create
+    writes: true
+    summary: Create one person
+  - operationId: deleteOnePerson
+    method: DELETE
+    path: /people/{id}
+    kind: delete
+    writes: true
+    summary: Delete one person by id
+    parameters:
+      - name: soft_delete
+        in: query
+        required: false
+        description: When false, hard-delete the record. Always send explicitly; do not rely on the server default.
+  - operationId: findManyPeople
+    method: GET
+    path: /people
+    kind: list
+    writes: false
+    summary: List or search people. Add filter=... to search; omit for a plain list.
+    parameters:
+      - name: filter
+        in: query
+        required: false
+        description: "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine clauses with a comma (AND). Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is."
+      - name: order_by
+        in: query
+        required: false
+      - name: limit
+        in: query
+        required: false
+      - name: depth
+        in: query
+        required: false
+      - name: starting_after
+        in: query
+        required: false
+      - name: ending_before
+        in: query
+        required: false
+  - operationId: findOnePerson
+    method: GET
+    path: /people/{id}
+    kind: get
+    writes: false
+    summary: Get one person by id
+    parameters:
+      - name: depth
+        in: query
+        required: false
+  - operationId: updateOnePerson
+    method: PATCH
+    path: /people/{id}
+    kind: update
+    writes: true
+    summary: Update one person by id
+dimensions:
+  - name: id
+    type: string
+    primary_key: true
+  - name: name.firstName
+    type: string
+  - name: name.lastName
+    type: string
+  - name: emails.primaryEmail
+    type: string
+  - name: emails.additionalEmails
+    type: string[]
+  - name: atlasFirstSource
+    type: string
+    description: Atlas custom field (inline on Person).
+  - name: atlasLastSource
+    type: string
+    description: Atlas custom field (inline on Person).
+  - name: atlasStripeCustomerId
+    type: string
+    description: Atlas custom field (inline on Person).
+  - name: createdAt
+    type: timestamp
+  - name: updatedAt
+    type: timestamp
+joins:
+  - target_entity: NoteTarget
+    relationship: one_to_many
+    via: noteTargets
+query_patterns:
+  - name: list
+    description: List records via findManyPeople. Paginate with limit + starting_after (cursor); omit filter for a plain list.
+  - name: search
+    description: Search via findManyPeople by passing the filter query param (see the datasource-level filter syntax).
+  - name: get_by_id
+    description: Fetch one record by id via findOnePerson.

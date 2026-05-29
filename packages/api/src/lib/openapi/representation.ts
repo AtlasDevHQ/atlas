@@ -7,18 +7,21 @@
  * prompt-context builder reads {@link OperationGraph} rather than re-walking the
  * raw spec (`types.ts` header). Two representation strategies exist:
  *
- *  - **Path A — `"operation-graph"`** (this slice, #2924): render a trimmed
- *    slice of the operation graph directly into the prompt. No semantic-YAML
- *    layer. Implemented here.
- *  - **Path B — `"semantic-yaml"`** (#2931): generate semantic YAMLs from
- *    `components.schemas.*` and feed those instead. Declared in the
- *    {@link RepresentationMode} union so the acceptance suite can parameterize
- *    over the knob; the builder throws `not-implemented` until #2931 lands.
+ *  - **Path A — `"operation-graph"`** (#2924): render a trimmed slice of the
+ *    operation graph directly into the prompt. No semantic-YAML layer.
+ *    Implemented here.
+ *  - **Path B — `"semantic-yaml"`** (#2931): generate a semantic model from the
+ *    graph (`semantic-generator.ts`) and feed the rendered entity YAMLs as the
+ *    prompt context — the same entity-relational surface the agent already reads
+ *    for SQL datasources. Implemented here; delegates the walk to the generator.
  *
- * The acceptance suite (`__tests__/twenty-acceptance.test.ts`) is parameterized
- * over {@link RepresentationMode}; both modes produce an {@link AgentRepresentation}
- * with the same shape (`promptContext` + metrics) so #2931 can re-run identical
- * assertions and compare prompt size / agent step count head-to-head.
+ * Both paths share the datasource header ({@link renderDatasourceHeader}) — the
+ * "this is a REST API, call executeRestOperation, read-only" framing is identical;
+ * only the body (flat operation digest vs entity YAMLs) differs. The acceptance
+ * suite (`__tests__/twenty-acceptance.test.ts`) is parameterized over
+ * {@link RepresentationMode}; both modes produce an {@link AgentRepresentation}
+ * with the same shape (`promptContext` + metrics) so #2931 re-runs identical
+ * assertions and compares prompt size / agent step count head-to-head.
  *
  * Token-bounded by construction: the graph is rendered as a compact digest
  * (operation table + schema property summaries), never raw JSON — a real Twenty
@@ -31,6 +34,7 @@ import type {
   OperationGraph,
   OperationParameter,
 } from "./types";
+import { generateSemanticModel, renderModelYaml, type OpenApiSemanticModel } from "./semantic-generator";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Mode knob (the bake-off axis)
@@ -83,6 +87,13 @@ export interface AgentRepresentation {
    * an exact tokenizer would couple this to a provider.
    */
   readonly approxTokens: number;
+  /**
+   * Resources whose record schema no cascade layer could resolve (Path B only;
+   * always empty for Path A, which has no entity model). The agent-loop consumer
+   * logs this so a misconfigured or unusual spec is diagnosable instead of
+   * silently yielding field-less entities in the prompt.
+   */
+  readonly unresolvedResources: ReadonlyArray<string>;
 }
 
 export interface BuildRepresentationOptions {
@@ -107,11 +118,10 @@ export interface BuildRepresentationOptions {
 
 /**
  * Build the agent's prompt context for a REST datasource from its operation
- * graph. Pure function over the graph — no I/O, no agent logic.
- *
- * @throws {RepresentationNotImplementedError} for modes other than
- *   `"operation-graph"` (Path A). Fail loud rather than silently producing an
- *   empty representation a downstream consumer would mistake for "no surface".
+ * graph. Pure function over the graph — no I/O, no agent logic. Both bake-off
+ * modes (#2931) are implemented; the {@link RepresentationNotImplementedError}
+ * default arm is the compiler-checked guard for any FUTURE mode added to
+ * {@link REPRESENTATION_MODES} before it grows a case.
  */
 export function buildAgentRepresentation(
   graph: OperationGraph,
@@ -119,19 +129,14 @@ export function buildAgentRepresentation(
   options: BuildRepresentationOptions = {},
 ): AgentRepresentation {
   switch (mode) {
-    case "operation-graph": {
-      const promptContext = renderOperationGraph(graph, options);
-      return {
-        mode,
-        promptContext,
-        operationCount: graph.operations.size,
-        approxTokens: Math.ceil(promptContext.length / 4),
-      };
+    case "operation-graph":
+      return finalize(mode, renderOperationGraph(graph, options), graph, []);
+    case "semantic-yaml": {
+      const model = generateSemanticModel(graph);
+      return finalize(mode, renderSemanticYaml(model, graph, options), graph, model.unresolvedResources);
     }
-    case "semantic-yaml":
-      throw new RepresentationNotImplementedError(mode);
     default: {
-      // Exhaustiveness guard: when #2931 adds a mode to REPRESENTATION_MODES,
+      // Exhaustiveness guard: when a NEW mode is added to REPRESENTATION_MODES,
       // the compiler flags this site until the new mode gets a case arm.
       const _exhaustive: never = mode;
       throw new RepresentationNotImplementedError(_exhaustive);
@@ -139,17 +144,40 @@ export function buildAgentRepresentation(
   }
 }
 
+/** Wrap a rendered prompt context in the {@link AgentRepresentation} + metrics. */
+function finalize(
+  mode: RepresentationMode,
+  promptContext: string,
+  graph: OperationGraph,
+  unresolvedResources: ReadonlyArray<string>,
+): AgentRepresentation {
+  return {
+    mode,
+    promptContext,
+    operationCount: graph.operations.size,
+    approxTokens: Math.ceil(promptContext.length / 4),
+    unresolvedResources,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 //  Path A renderer — the operation graph as a compact digest
 // ─────────────────────────────────────────────────────────────────────
 
-function renderOperationGraph(
+/**
+ * The datasource framing shared by both representation modes: "this is a REST
+ * API, not SQL; call executeRestOperation; read-only this release". Keeping it
+ * in one place means the two bake-off paths differ ONLY in how they describe the
+ * surface (flat operation digest vs entity YAMLs), not in the call contract —
+ * so a token / step-count delta between them is attributable to the body, not
+ * incidental header drift.
+ */
+function renderDatasourceHeader(
   graph: OperationGraph,
   options: BuildRepresentationOptions,
-): string {
+): string[] {
   const name = options.displayName ?? graph.info.title;
   const out: string[] = [];
-
   out.push(`## REST Datasource: ${name}`);
   out.push(
     `You can read from the "${name}" REST API (OpenAPI ${graph.info.openapiVersion}). ` +
@@ -168,6 +196,47 @@ function renderOperationGraph(
         `For a single lookup, use \`executeRestOperation\` directly.`,
     );
   }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Path B renderer — the generated semantic model as entity YAMLs
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Render Path B (`semantic-yaml`): the shared datasource header, the
+ * datasource-level filter syntax (surfaced once), then the generated semantic
+ * model's entity YAMLs — the same entity-relational surface the agent reads for
+ * SQL datasources. Takes the pre-generated model (so the caller can also read its
+ * `unresolvedResources`); this function only assembles the prompt frame.
+ */
+function renderSemanticYaml(
+  model: OpenApiSemanticModel,
+  graph: OperationGraph,
+  options: BuildRepresentationOptions,
+): string {
+  const out: string[] = renderDatasourceHeader(graph, options);
+
+  out.push(
+    `\n### Entities`,
+    `This datasource is described below as semantic entities (one per REST resource), ` +
+      `the same shape as a SQL datasource: each entity lists the \`operations\` that read/write it ` +
+      `(call \`executeRestOperation\` with the \`operationId\`), its \`dimensions\` (columns, including ` +
+      `nested fields as dotted paths), \`joins\` to related entities, and \`query_patterns\`.`,
+  );
+  if (model.filterSyntax) {
+    out.push(`\n**Filter syntax** (the \`filter\` query param on list operations): ${model.filterSyntax}`);
+  }
+
+  out.push("\n```yaml", renderModelYaml(model).trimEnd(), "```");
+  return out.join("\n");
+}
+
+function renderOperationGraph(
+  graph: OperationGraph,
+  options: BuildRepresentationOptions,
+): string {
+  const out: string[] = renderDatasourceHeader(graph, options);
 
   // ── Operation table ────────────────────────────────────────────────
   out.push(`\n### Operations`);

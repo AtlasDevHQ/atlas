@@ -77,7 +77,14 @@ function makeDatasource(id: string, baseUrl: string): RestDatasource {
     servers: [],
     info: { title: id, version: "1", openapiVersion: "3.1.0" },
   };
-  return { id, displayName: id, graph, baseUrl, auth: { kind: "bearer", token: "tok" } };
+  return {
+    id,
+    displayName: id,
+    graph,
+    baseUrl,
+    auth: { kind: "bearer", token: "tok" },
+    representationMode: "operation-graph",
+  };
 }
 
 async function runPython(

@@ -19,6 +19,7 @@ const ENV_KEYS = [
   "ATLAS_OPENAPI_TWENTY",
   "ATLAS_OPENAPI_TWENTY_TOKEN",
   "ATLAS_OPENAPI_TWENTY_BASE_URL",
+  "ATLAS_OPENAPI_REPRESENTATION",
 ] as const;
 
 let server: http.Server;
@@ -140,6 +141,40 @@ describe("resolveTwentyDatasource", () => {
       res.end(JSON.stringify({ not: "an openapi document" }));
     };
     expect(await resolveTwentyDatasource()).toBeNull();
+  });
+
+  // ── Representation-mode knob (#2931 bake-off selector) ─────────────────
+  it("defaults to operation-graph (Path A) when ATLAS_OPENAPI_REPRESENTATION is unset", async () => {
+    enable();
+    delete process.env.ATLAS_OPENAPI_REPRESENTATION;
+    const ds = await resolveTwentyDatasource();
+    expect(ds!.representationMode).toBe("operation-graph");
+  });
+
+  it("selects semantic-yaml (Path B) when configured", async () => {
+    enable();
+    process.env.ATLAS_OPENAPI_REPRESENTATION = "semantic-yaml";
+    const ds = await resolveTwentyDatasource();
+    expect(ds!.representationMode).toBe("semantic-yaml");
+  });
+
+  it("falls back to the default (fail-soft) on an unknown representation value", async () => {
+    enable();
+    process.env.ATLAS_OPENAPI_REPRESENTATION = "not-a-real-mode";
+    const ds = await resolveTwentyDatasource();
+    expect(ds!.representationMode).toBe("operation-graph");
+  });
+
+  it("applies a changed representation mode without re-probing the cached spec", async () => {
+    enable();
+    process.env.ATLAS_OPENAPI_REPRESENTATION = "operation-graph";
+    const first = await resolveTwentyDatasource();
+    expect(first!.representationMode).toBe("operation-graph");
+    // Flip the knob; the graph stays cached but the mode is rebuilt per call.
+    process.env.ATLAS_OPENAPI_REPRESENTATION = "semantic-yaml";
+    const second = await resolveTwentyDatasource();
+    expect(second!.representationMode).toBe("semantic-yaml");
+    expect(specRequests).toHaveLength(1);
   });
 
   it("negative-caches a failed probe — repeated calls do NOT re-probe (#2975)", async () => {

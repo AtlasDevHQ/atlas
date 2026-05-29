@@ -1,0 +1,47 @@
+name: NoteTarget
+type: rest_resource
+resource: noteTargets
+record_schema: NoteTarget
+description: REST resource backed by the "noteTargets" path group of Twenty Core REST API. Read with the GET operations below; pass parameters to executeRestOperation.
+operations:
+  - operationId: createOneNoteTarget
+    method: POST
+    path: /noteTargets
+    kind: create
+    writes: true
+    summary: Link a note to a person (noteId + targetPersonId)
+  - operationId: findManyNoteTargets
+    method: GET
+    path: /noteTargets
+    kind: list
+    writes: false
+    summary: List note targets. Filter by person with targetPersonId[eq]:<id>.
+    parameters:
+      - name: filter
+        in: query
+        required: false
+        description: "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine clauses with a comma (AND). Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is."
+      - name: limit
+        in: query
+        required: false
+dimensions:
+  - name: id
+    type: string
+    primary_key: true
+  - name: noteId
+    type: string
+  - name: targetPersonId
+    type: string
+    description: Join column linking a note target to its Person.
+joins:
+  - target_entity: Note
+    relationship: many_to_one
+    via: note
+  - target_entity: Person
+    relationship: many_to_one
+    via: person
+query_patterns:
+  - name: list
+    description: List records via findManyNoteTargets. Paginate with limit + starting_after (cursor); omit filter for a plain list.
+  - name: search
+    description: Search via findManyNoteTargets by passing the filter query param (see the datasource-level filter syntax).

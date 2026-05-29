@@ -35,9 +35,13 @@
  */
 import { buildOperationGraph } from "./spec";
 import { OpenApiSpecError, type OperationGraph, type ResolvedAuth } from "./types";
+import { REPRESENTATION_MODES, type RepresentationMode } from "./representation";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("openapi.datasource");
+
+/** Slice-1b default representation mode when nothing is configured. */
+const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph";
 
 /**
  * A resolved REST datasource the agent can read from — the REST analogue of a
@@ -58,6 +62,36 @@ export interface RestDatasource {
   readonly baseUrl: string;
   /** Credential the slice-0 {@link executeOperation} applies. */
   readonly auth: ResolvedAuth;
+  /**
+   * Which representation strategy renders this datasource's prompt context — the
+   * bake-off knob (#2931). Slice 1b makes it selectable per datasource so both
+   * Path A ("operation-graph") and Path B ("semantic-yaml") stay live for
+   * real-workload comparison (the loser is NOT deleted). Resolved from
+   * `ATLAS_OPENAPI_REPRESENTATION` today; slice 2 (#2926) moves it to the
+   * per-install `workspace_plugins.config` row — because the agent already reads
+   * it off the resolved datasource, that swap needs no agent-loop change.
+   */
+  readonly representationMode: RepresentationMode;
+}
+
+/**
+ * Resolve the representation mode from `ATLAS_OPENAPI_REPRESENTATION`, defaulting
+ * to {@link DEFAULT_REPRESENTATION_MODE}. An unrecognized value falls back to the
+ * default with a warning rather than throwing — a misconfigured knob must never
+ * take the REST datasource offline.
+ */
+function resolveRepresentationMode(): RepresentationMode {
+  const raw = readEnv("ATLAS_OPENAPI_REPRESENTATION");
+  if (raw === undefined) return DEFAULT_REPRESENTATION_MODE;
+  if ((REPRESENTATION_MODES as readonly string[]).includes(raw)) {
+    return raw as RepresentationMode;
+  }
+  log.warn(
+    { value: raw, valid: REPRESENTATION_MODES },
+    `ATLAS_OPENAPI_REPRESENTATION="${raw}" is not a known representation mode — ` +
+      `falling back to "${DEFAULT_REPRESENTATION_MODE}".`,
+  );
+  return DEFAULT_REPRESENTATION_MODE;
 }
 
 export interface ResolveOptions {
@@ -166,6 +200,7 @@ export async function resolveTwentyDatasource(
     graph,
     baseUrl: operationsBaseUrl,
     auth: { kind: "bearer", token },
+    representationMode: resolveRepresentationMode(),
   };
 }
 

@@ -1,29 +1,31 @@
 /**
  * `executeRestOperation` — the single-operation agent tool for REST datasources
- * (PRD #2868 slice 1, #2924).
+ * (PRD #2868 slice 1 #2924; workspace-scoped + multi-datasource in slice 2 #2926).
  *
  * The convenience shortcut for trivially simple REST lookups: the agent passes
  * an `operationId` (from the representation in its system prompt) plus the
  * params, and this tool dispatches through the slice-0 {@link executeOperation}
  * client. Multi-step composition ("fetch each person's notes") is expressed as
  * a sequence of these calls across agent steps. Slice 3 (#2927) landed the
- * sandbox network boundary the in-sandbox composition path depends on (the
- * Vercel sandbox's egress is now bounded per-request to the datasource host —
- * `tools/backends/network-allowlist.ts`), but the in-sandbox `AtlasRestClient`
- * composition path itself stays deferred: it can't authenticate read-only
- * (a sandbox HTTP client lets untrusted code issue any method), so the
- * authenticated read path remains this host-side tool until read-only is
- * mediated host-side (pairs with the slice-5 write-allowlist, #2929).
+ * sandbox network boundary the in-sandbox composition path depends on; the
+ * in-sandbox `AtlasRestClient` composition path itself stays deferred (it can't
+ * authenticate read-only), so the authenticated read path remains this
+ * host-side tool until read-only is mediated host-side (pairs with slice-5).
+ *
+ * **Workspace-scoped (slice 2).** Datasources are resolved per-request from the
+ * workspace's `openapi-generic` installs (via the ambient request context's
+ * org id) — the slice-1 `ATLAS_OPENAPI_TWENTY*` env path is retired. A workspace
+ * can have several (Twenty + Stripe + …); the agent disambiguates with an
+ * optional `datasourceId` (required only when more than one is installed). The
+ * representation in the prompt labels each datasource's id.
  *
  * Read-only in this release. Only GET / HEAD operations execute; any
  * POST/PATCH/PUT/DELETE returns a `writes_disabled` status. Write support is
- * gated behind slice 5's per-endpoint `write_allowlist` + confirm-before-write
- * banner (#2929) — never enabled here.
+ * gated behind slice 5's per-endpoint `write_allowlist` (#2929).
  *
  * Structured results mirror `sendEmail`'s discriminated-union convention: every
- * branch the agent must distinguish (no datasource, unknown op, writes blocked,
- * HTTP error, transport fault) is its own `status` so the model can self-correct
- * or stop looping instead of guessing from a free-text error.
+ * branch the agent must distinguish is its own `status` so the model can
+ * self-correct or stop looping instead of guessing from a free-text error.
  */
 import { tool } from "ai";
 import { z } from "zod";
@@ -31,10 +33,8 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError, type OpenApiClientErrorReason } from "@atlas/api/lib/openapi/types";
-import {
-  resolveTwentyDatasource,
-  type RestDatasource,
-} from "@atlas/api/lib/openapi/datasource";
+import { type RestDatasource } from "@atlas/api/lib/openapi/datasource";
+import { resolveWorkspaceRestDatasources } from "@atlas/api/lib/openapi/workspace-datasource";
 import type { OperationParams } from "@atlas/api/lib/openapi/types";
 
 const log = createLogger("tools.rest-operation");
@@ -42,6 +42,7 @@ const log = createLogger("tools.rest-operation");
 export const REST_OPERATION_DESCRIPTION = `### Read a REST Datasource
 Use executeRestOperation to call a single operation on a connected REST API (described under "REST Datasource" in this prompt):
 - Pass the \`operationId\` exactly as listed, plus \`pathParams\` (for {id}-style path tokens), \`query\` (filters, limits, cursors), and \`body\` where the operation defines one
+- When more than one REST datasource is connected, pass \`datasourceId\` (shown in each datasource's header) to pick which one
 - Compose the filter \`query\` value yourself in the documented \`field[op]:value\` syntax — do NOT invent a bracketed form
 - For multi-step questions, call this tool once per step and feed each result into the next (e.g. find a person, then list their note targets, then fetch each note)
 - Read-only: only GET operations execute. Write operations are described but rejected; never claim a write happened`;
@@ -51,6 +52,7 @@ export type ExecuteRestOperationResult =
   | { status: "ok"; httpStatus: number; body: unknown }
   | { status: "http_error"; httpStatus: number; body: unknown; message: string }
   | { status: "no_datasource"; message: string }
+  | { status: "datasource_not_found"; message: string; availableDatasources: string[] }
   | { status: "unknown_operation"; message: string; availableOperations: string[] }
   | { status: "writes_disabled"; message: string; method: string }
   | { status: "client_error"; reason: OpenApiClientErrorReason; message: string };
@@ -62,6 +64,12 @@ const ExecuteRestOperationInput = z.object({
     .string()
     .min(1)
     .describe("The operationId to call, exactly as listed in the REST Datasource section."),
+  datasourceId: z
+    .string()
+    .optional()
+    .describe(
+      "Which REST datasource to call, when more than one is connected. Use the id shown in the datasource's prompt header. Optional when only one is connected.",
+    ),
   pathParams: z
     .record(z.string(), queryScalar)
     .optional()
@@ -82,27 +90,69 @@ const ExecuteRestOperationInput = z.object({
     .describe("JSON request body for write operations (rejected while read-only)."),
 });
 
-/** Test seam — production resolves the single env-configured datasource. */
+/**
+ * Test seams. `resolveDatasources` is the slice-2 multi-datasource resolver;
+ * `resolveDatasource` is the slice-1 single-datasource seam, wrapped into a
+ * one-element array for back-compat (existing tests inject it). When neither is
+ * given, datasources resolve from the ambient request context's workspace.
+ */
 export interface ExecuteRestOperationDeps {
+  readonly resolveDatasources?: () => Promise<ReadonlyArray<RestDatasource>>;
   readonly resolveDatasource?: () => Promise<RestDatasource | null>;
   /** `fetch` override threaded into the slice-0 client (tests). */
   readonly fetchImpl?: typeof globalThis.fetch;
 }
 
+/** Resolve the workspace's datasources from the ambient request context. */
+function resolveFromContext(): Promise<ReadonlyArray<RestDatasource>> {
+  const orgId = getRequestContext()?.user?.activeOrganizationId;
+  if (!orgId) return Promise.resolve([]);
+  return resolveWorkspaceRestDatasources(orgId);
+}
+
 export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = {}) {
-  const resolveDatasource = deps.resolveDatasource ?? resolveTwentyDatasource;
+  const resolveDatasources: () => Promise<ReadonlyArray<RestDatasource>> =
+    deps.resolveDatasources ??
+    (deps.resolveDatasource
+      ? async () => {
+          const single = await deps.resolveDatasource!();
+          return single ? [single] : [];
+        }
+      : resolveFromContext);
 
   return tool({
     description:
       "Call a single operation on a connected REST datasource by operationId. Read-only.",
     inputSchema: ExecuteRestOperationInput,
-    execute: async ({ operationId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
-      const datasource = await resolveDatasource();
-      if (!datasource) {
+    execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
+      const datasources = await resolveDatasources();
+      if (datasources.length === 0) {
         return {
           status: "no_datasource",
           message:
             "No REST datasource is configured for this workspace. Answer from another source or tell the user no REST datasource is connected.",
+        };
+      }
+
+      // Pick the datasource: by explicit id, or the sole one when unambiguous.
+      let datasource: RestDatasource | undefined;
+      if (datasourceId !== undefined) {
+        datasource = datasources.find((d) => d.id === datasourceId);
+        if (!datasource) {
+          return {
+            status: "datasource_not_found",
+            message: `No connected REST datasource has id "${datasourceId}". Pick one from availableDatasources.`,
+            availableDatasources: datasources.map((d) => d.id),
+          };
+        }
+      } else if (datasources.length === 1) {
+        datasource = datasources[0];
+      } else {
+        return {
+          status: "datasource_not_found",
+          message:
+            "More than one REST datasource is connected — pass datasourceId to choose which one to call.",
+          availableDatasources: datasources.map((d) => d.id),
         };
       }
 
@@ -111,7 +161,7 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         const availableOperations = [...datasource.graph.operations.keys()].toSorted();
         return {
           status: "unknown_operation",
-          message: `Unknown operationId "${operationId}". Pick one from availableOperations.`,
+          message: `Unknown operationId "${operationId}" on datasource "${datasource.id}". Pick one from availableOperations.`,
           availableOperations,
         };
       }
@@ -181,6 +231,3 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
     },
   });
 }
-
-/** Production tool instance, registered when a REST datasource is active. */
-export const executeRestOperationTool = createExecuteRestOperationTool();

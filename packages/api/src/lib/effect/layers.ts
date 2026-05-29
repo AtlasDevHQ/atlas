@@ -655,6 +655,98 @@ export const BuiltinDatasourceCatalogSeedLive: Layer.Layer<
 );
 
 // ══════════════════════════════════════════════════════════════════════
+// ██  OpenAPI Generic Datasource Catalog Seed (#2926 — v0.0.2 slice 2)
+// ══════════════════════════════════════════════════════════════════════
+
+export type OpenApiDatasourceCatalogSeedOutcome =
+  | "skipped-gate"
+  | "seeded"
+  | "error";
+
+export interface OpenApiDatasourceCatalogSeedShape {
+  /** `true` when the boot re-assert inserted the row (was missing). */
+  readonly inserted: boolean;
+  readonly outcome: OpenApiDatasourceCatalogSeedOutcome;
+  /** Scrubbed error message when `outcome === "error"`. */
+  readonly error?: string;
+}
+
+export class OpenApiDatasourceCatalogSeed extends Context.Tag(
+  "OpenApiDatasourceCatalogSeed",
+)<OpenApiDatasourceCatalogSeed, OpenApiDatasourceCatalogSeedShape>() {}
+
+/**
+ * Idempotent boot-time seed of the built-in `openapi-generic` Datasource
+ * catalog row (PRD #2868 slice 2, #2926). Code-seeded per ADR-0007, re-asserted
+ * every boot via a bare `ON CONFLICT DO NOTHING`. Parallel peer of
+ * `BuiltinDatasourceCatalogSeedLive` — the two touch disjoint slugs, and this
+ * one is kept SEPARATE so the REST datasource never enters the SQL slug
+ * allowlist / pool resolver (see `lib/openapi/catalog-seed.ts` header).
+ *
+ * Non-fatal: the boot wrapper swallows errors and logs at error so a failed
+ * seed leaves the migration-0108 row authoritative.
+ */
+export const OpenApiDatasourceCatalogSeedLive: Layer.Layer<
+  OpenApiDatasourceCatalogSeed,
+  never,
+  InternalDB | Migration
+> = Layer.effect(
+  OpenApiDatasourceCatalogSeed,
+  Effect.gen(function* () {
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "openapi-generic catalog seed skipped — upstream gate not satisfied",
+      );
+      return {
+        inserted: false,
+        outcome: "skipped-gate",
+      } satisfies OpenApiDatasourceCatalogSeedShape;
+    }
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const { runOpenApiDatasourceCatalogSeedBoot } = await import(
+          "@atlas/api/lib/openapi/catalog-seed"
+        );
+        const result = await runOpenApiDatasourceCatalogSeedBoot();
+        switch (result.kind) {
+          case "skipped":
+            return {
+              inserted: false,
+              outcome: "skipped-gate",
+            } satisfies OpenApiDatasourceCatalogSeedShape;
+          case "seeded":
+            return {
+              inserted: result.inserted,
+              outcome: "seeded",
+            } satisfies OpenApiDatasourceCatalogSeedShape;
+          case "error":
+            return {
+              inserted: false,
+              outcome: "error",
+              error: result.message,
+            } satisfies OpenApiDatasourceCatalogSeedShape;
+        }
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.error({ err }, "openapi-generic catalog seed boot wrapper threw");
+        return Effect.succeed({
+          inserted: false,
+          outcome: "error",
+          error: errorMessage(err),
+        } satisfies OpenApiDatasourceCatalogSeedShape);
+      }),
+    );
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
 // ██  Implementation-Status Override Layer (#2747 — 1.5.3 slice 9)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -2320,6 +2412,15 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
+  // OpenApiDatasourceCatalogSeedLive (#2926, slice 2) — the built-in
+  // `openapi-generic` REST datasource row, code-seeded per ADR-0007.
+  // Independent peer of the two seeds above; disjoint slug so ordering
+  // doesn't matter. Kept separate so the REST datasource never enters the
+  // SQL slug allowlist / pool resolver.
+  const openApiDatasourceCatalogSeedLayer = OpenApiDatasourceCatalogSeedLive.pipe(
+    Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
+  );
+
   // ImplementationStatusOverrideLive (#2747, slice 9) — depends on
   // BOTH seed Layers so the override is applied AFTER both finish
   // (the catalog seeder's upsert would otherwise clobber it). The
@@ -2398,6 +2499,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     backfillSaasTrialLayer,
     catalogSeedLayer,
     builtinDatasourceCatalogSeedLayer,
+    openApiDatasourceCatalogSeedLayer,
     implementationStatusOverrideLayer,
     connectionsHydrateLayer,
     semanticSyncLayer,

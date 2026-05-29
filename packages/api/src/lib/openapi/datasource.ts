@@ -1,259 +1,45 @@
 /**
- * `openapi-datasource` — slice-1 resolver for the hardcoded Twenty REST
- * datasource (PRD #2868 slice 1, #2924).
+ * `RestDatasource` — the resolved shape of a REST datasource the agent reads
+ * from: the REST analogue of a resolved SQL connection from `ConnectionRegistry`.
  *
- * END STATE (the thing this is becoming): a REST datasource is a *queryable
- * connection that lives in the workspace*, exactly like a Postgres / MySQL
- * connection. SQL connections are resolved per-workspace from
- * `workspace_plugins WHERE pillar = 'datasource'` via `ConnectionRegistry`
- * (ADR-0006 / ADR-0007); a REST datasource is the parallel adapter (PRD #2868
- * "Option B"), resolved per-workspace from the SAME table with its credentials
- * encrypted at rest. It does NOT live in env, and it is NOT an operator-global
- * thing — each workspace installs its own at `/admin/connections`.
+ * Slice 1 (#2924) resolved a single env-configured Twenty datasource here; slice
+ * 2 (#2926) retired that env path. A REST datasource is now a workspace-resident
+ * install in `workspace_plugins` (catalog `openapi-generic`, encrypted at rest),
+ * resolved per-workspace by {@link resolveWorkspaceRestDatasources}
+ * (`workspace-datasource.ts`) into this exact shape — so the agent loop + tools
+ * that consume {@link RestDatasource} needed no change when the source moved from
+ * env to DB.
  *
- * This module is the deliberately-thin, env-driven *transitional shortcut* the
- * slice-1 issue scoped ("no admin UX yet, hardcoded bearer + base URL"). It
- * wires ONE datasource — Twenty — behind the `ATLAS_OPENAPI_TWENTY` flag, probes
- * its `/rest/open-api/core` spec once, normalizes it to the slice-0
- * {@link OperationGraph}, and caches it. Slice 2 (#2926) replaces this whole
- * module with the per-workspace install registry (resolving by the request's
- * workspaceId from the DB); the {@link RestDatasource} shape it returns is what
- * the agent wiring + tool consume, and they already resolve at execute time, so
- * that swap is contained — no consumer changes.
- *
- * Credential separation: this reads `ATLAS_OPENAPI_TWENTY_TOKEN` /
- * `ATLAS_OPENAPI_TWENTY_BASE_URL`, NOT `TWENTY_API_KEY` / `TWENTY_BASE_URL`.
- * The latter belong to Atlas's own lead-capture pipeline (`ee/src/saas-crm/`,
- * see #2850) and must never be conflated with a user-facing datasource
- * credential. A distinct namespace keeps the two structurally separate.
- *
- * Fail-soft: a flag that's on but misconfigured (missing creds, unreachable
- * spec, unparseable document) logs and returns `null` rather than throwing —
- * the agent loop degrades to "no REST datasource", same as the semantic-layer
- * and learned-patterns preflight loaders. The operator sees a warning; chat
- * keeps working.
+ * This module is intentionally just the type now: the resolution logic, snapshot
+ * caching, and credential decryption live in `workspace-datasource.ts` /
+ * `probe.ts`, and the Effect-facing registry handle is `registry.ts`.
  */
-import { buildOperationGraph } from "./spec";
-import { OpenApiSpecError, type OperationGraph, type ResolvedAuth } from "./types";
-import { REPRESENTATION_MODES, type RepresentationMode } from "./representation";
-import { createLogger } from "@atlas/api/lib/logger";
-
-const log = createLogger("openapi.datasource");
-
-/** Slice-1b default representation mode when nothing is configured. */
-const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph";
+import type { OperationGraph, ResolvedAuth } from "./types";
+import type { RepresentationMode } from "./representation";
 
 /**
- * A resolved REST datasource the agent can read from — the REST analogue of a
- * resolved SQL connection from `ConnectionRegistry`: the normalized operation
- * graph, the base URL operations execute against, and the credential the
- * slice-0 client applies. Shape is stable across slices and workspace-agnostic
- * — slice 2's per-workspace install registry returns exactly this, resolved
- * from `workspace_plugins` (encrypted) by the request's workspaceId.
+ * A resolved REST datasource the agent can read from. The normalized operation
+ * graph, the base URL operations execute against, the credential the slice-0
+ * client applies, and the representation mode (#2931 bake-off knob, per-install).
+ * Workspace-agnostic: {@link resolveWorkspaceRestDatasources} stamps one of these
+ * per `workspace_plugins` install row.
  */
 export interface RestDatasource {
-  /** Stable id used in tool params + trace attributes. Slice 1: always "twenty". */
+  /** Stable id used in tool params (`datasourceId`) + trace attributes — the install_id. */
   readonly id: string;
-  /** Human-facing name for the prompt header. */
+  /** Human-facing name for the prompt header (the install's `display_name` or spec title). */
   readonly displayName: string;
-  /** The normalized operation graph (slice-0). */
+  /** The normalized operation graph (slice-0), rebuilt from the cached snapshot. */
   readonly graph: OperationGraph;
   /** Base URL operations execute against, e.g. `https://crm.example.com/rest`. */
   readonly baseUrl: string;
-  /** Credential the slice-0 {@link executeOperation} applies. */
+  /** Credential the slice-0 `executeOperation` applies (decrypted per resolve). */
   readonly auth: ResolvedAuth;
   /**
    * Which representation strategy renders this datasource's prompt context — the
-   * bake-off knob (#2931). Slice 1b makes it selectable per datasource so both
-   * Path A ("operation-graph") and Path B ("semantic-yaml") stay live for
-   * real-workload comparison (the loser is NOT deleted). Resolved from
-   * `ATLAS_OPENAPI_REPRESENTATION` today; slice 2 (#2926) moves it to the
-   * per-install `workspace_plugins.config` row — because the agent already reads
-   * it off the resolved datasource, that swap needs no agent-loop change.
+   * bake-off knob (#2931). Resolved from the per-install
+   * `workspace_plugins.config.representation_mode`; both Path A ("operation-graph",
+   * the default winner) and Path B ("semantic-yaml") stay selectable per install.
    */
   readonly representationMode: RepresentationMode;
-}
-
-/**
- * Resolve the representation mode from `ATLAS_OPENAPI_REPRESENTATION`, defaulting
- * to {@link DEFAULT_REPRESENTATION_MODE}. An unrecognized value falls back to the
- * default with a warning rather than throwing — a misconfigured knob must never
- * take the REST datasource offline.
- */
-function resolveRepresentationMode(): RepresentationMode {
-  const raw = readEnv("ATLAS_OPENAPI_REPRESENTATION");
-  if (raw === undefined) return DEFAULT_REPRESENTATION_MODE;
-  if ((REPRESENTATION_MODES as readonly string[]).includes(raw)) {
-    return raw as RepresentationMode;
-  }
-  log.warn(
-    { value: raw, valid: REPRESENTATION_MODES },
-    `ATLAS_OPENAPI_REPRESENTATION="${raw}" is not a known representation mode — ` +
-      `falling back to "${DEFAULT_REPRESENTATION_MODE}".`,
-  );
-  return DEFAULT_REPRESENTATION_MODE;
-}
-
-export interface ResolveOptions {
-  /** `fetch` override for tests. Defaults to `globalThis.fetch`. */
-  readonly fetchImpl?: typeof globalThis.fetch;
-  /** Bypass the module cache and re-probe the spec. */
-  readonly reload?: boolean;
-}
-
-// Module-level cache of the normalized GRAPH only (not the datasource), keyed by
-// base URL. The spec probe + normalize is the expensive, credential-independent
-// part; the Twenty workspace schema is operator-managed and changes rarely (same
-// caching rationale as `getPersonRestSchema`'s "cache for the process lifetime").
-// The credential is NEVER cached — `resolveTwentyDatasource` stamps the CURRENT
-// token onto a fresh `RestDatasource` on every call, so a rotated
-// `ATLAS_OPENAPI_TWENTY_TOKEN` takes effect immediately without a restart.
-//
-// This split — cache the shape, build the credential per call — is exactly the
-// principle the cross-workspace shared-spec cache (#2970) generalizes: the
-// normalized graph is shareable, the credential is not. SLICE-2 (#2926) makes
-// the credential per-workspace (DB-backed) rather than per-env; because it's
-// already rebuilt per call, that swap needs no change here. The graph key should
-// also gain spec identity (URL + version/ETag) when cross-workspace sharing lands.
-const graphCache = new Map<string, OperationGraph>();
-
-// Brief negative cache: the timestamp of the last FAILED probe per base URL. A
-// failed probe (unreachable / non-2xx / unparseable spec) never populates
-// `graphCache`, so without this every caller would re-run the 30s probe — and
-// `executePython` now resolves the datasource on every call (to bound sandbox
-// egress, #2975), so a misconfigured REST env would hang unrelated data-analysis
-// runs for 30s each. This collapses repeated failed probes to one per
-// `NEGATIVE_PROBE_TTL_MS` window. `reload` bypasses it; a later success clears
-// it (so a recovered datasource resolves on the next call after the window).
-const negativeProbeCache = new Map<string, number>();
-const NEGATIVE_PROBE_TTL_MS = 30_000;
-
-/** Reset the cache. Test-only seam — production never evicts (single long-lived spec). */
-export function __resetTwentyDatasourceCacheForTests(): void {
-  graphCache.clear();
-  negativeProbeCache.clear();
-}
-
-function readEnv(name: string): string | undefined {
-  const v = process.env[name];
-  return v !== undefined && v.trim().length > 0 ? v.trim() : undefined;
-}
-
-function stripTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
-/**
- * Resolve the Twenty REST datasource, or `null` when the flag is off or the
- * configuration is incomplete/unreachable. Probes + caches the spec on first
- * success.
- */
-export async function resolveTwentyDatasource(
-  options: ResolveOptions = {},
-): Promise<RestDatasource | null> {
-  if (readEnv("ATLAS_OPENAPI_TWENTY") !== "true") return null;
-
-  const token = readEnv("ATLAS_OPENAPI_TWENTY_TOKEN");
-  const rawBaseUrl = readEnv("ATLAS_OPENAPI_TWENTY_BASE_URL");
-  if (!token || !rawBaseUrl) {
-    log.warn(
-      { hasToken: !!token, hasBaseUrl: !!rawBaseUrl },
-      "ATLAS_OPENAPI_TWENTY=true but ATLAS_OPENAPI_TWENTY_TOKEN and/or " +
-        "ATLAS_OPENAPI_TWENTY_BASE_URL are unset — Twenty REST datasource unavailable.",
-    );
-    return null;
-  }
-
-  const base = stripTrailingSlash(rawBaseUrl);
-  const operationsBaseUrl = `${base}/rest`;
-
-  let graph = options.reload ? undefined : graphCache.get(operationsBaseUrl);
-  if (!graph) {
-    // Skip re-probing a base URL whose probe recently failed (see negative cache
-    // above) — bounds the per-call cost of a misconfigured spec. `reload` forces
-    // a fresh probe regardless.
-    if (!options.reload) {
-      const failedAt = negativeProbeCache.get(operationsBaseUrl);
-      if (failedAt !== undefined && Date.now() - failedAt < NEGATIVE_PROBE_TTL_MS) {
-        return null;
-      }
-    }
-    const probed = await probeGraph(base, token, options.fetchImpl);
-    if (!probed) {
-      negativeProbeCache.set(operationsBaseUrl, Date.now());
-      return null;
-    }
-    negativeProbeCache.delete(operationsBaseUrl);
-    graph = probed;
-    graphCache.set(operationsBaseUrl, probed);
-    log.info(
-      { operationCount: probed.operations.size, baseUrl: operationsBaseUrl },
-      "Twenty REST datasource resolved",
-    );
-  }
-
-  // Build the datasource fresh with the CURRENT token every call — the graph is
-  // cached, the credential never is (so a rotated token applies immediately).
-  return {
-    id: "twenty",
-    displayName: graph.info.title || "Twenty",
-    graph,
-    baseUrl: operationsBaseUrl,
-    auth: { kind: "bearer", token },
-    representationMode: resolveRepresentationMode(),
-  };
-}
-
-/**
- * Probe `{base}/rest/open-api/core`, normalize, and return the graph — or `null`
- * (fail-soft, logged) on an unreachable/non-2xx/unparseable spec.
- */
-async function probeGraph(
-  base: string,
-  token: string,
-  fetchOverride: typeof globalThis.fetch | undefined,
-): Promise<OperationGraph | null> {
-  const fetchImpl = fetchOverride ?? globalThis.fetch;
-  const specUrl = `${base}/rest/open-api/core`;
-
-  let doc: unknown;
-  try {
-    const response = await fetchImpl(specUrl, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) {
-      log.error(
-        { status: response.status },
-        `Twenty OpenAPI probe failed (HTTP ${response.status}) — REST datasource unavailable. ` +
-          `Check ATLAS_OPENAPI_TWENTY_BASE_URL / _TOKEN.`,
-      );
-      return null;
-    }
-    doc = await response.json();
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Twenty OpenAPI probe threw — REST datasource unavailable.",
-    );
-    return null;
-  }
-
-  try {
-    return buildOperationGraph(doc);
-  } catch (err) {
-    if (err instanceof OpenApiSpecError) {
-      log.error(
-        { reason: err.reason, location: err.location },
-        `Twenty OpenAPI spec did not parse (${err.reason}) — REST datasource unavailable.`,
-      );
-    } else {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Twenty OpenAPI spec normalization threw — REST datasource unavailable.",
-      );
-    }
-    return null;
-  }
 }

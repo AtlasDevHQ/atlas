@@ -30,8 +30,9 @@ The Twenty acceptance suite (`twenty-acceptance.test.ts`) is parameterized over
 `runAgent` loop, with the agent's tool decisions supplied by a scripted
 `MockLanguageModelV3` (the established agent-integration pattern) and an
 in-process mock Twenty workspace seeded from real response shapes. The agent
-loop selects the mode off the resolved datasource
-(`ATLAS_OPENAPI_REPRESENTATION` today; per-install config in slice 2).
+loop selects the mode off the resolved datasource — a per-install
+`representation_mode` on the `workspace_plugins` config as of slice 2 (#2926);
+the slice-1 `ATLAS_OPENAPI_REPRESENTATION` env shortcut is retired.
 
 What this measures and what it does **not**:
 
@@ -152,12 +153,12 @@ Reasoning:
 3. **The open question needs live data, and we kept the means to answer it.** A
    richer entity/join surface *may* help a real model on harder multi-hop
    questions — something the scripted harness cannot show. Path B stays a
-   one-flag switch (`ATLAS_OPENAPI_REPRESENTATION=semantic-yaml`), so slice 2 can
-   A/B it on real workloads without re-deriving anything. The generated model is
+   per-install `representation_mode` toggle, so a workspace can A/B it on real
+   workloads without re-deriving anything. The generated model is
    also the natural cache artifact (`workspace_plugins.config.openapi_snapshot`,
    OQ4) regardless of which mode renders the prompt.
 
-> **Maintainer decision (record on #2931):** _<pending — slice 2 (#2926) closeout MUST replace this line with the chosen default. Until then the code default (`DEFAULT_REPRESENTATION_MODE = "operation-graph"` in `datasource.ts`) already reflects this report's Path-A recommendation.>_
+> **Maintainer decision (#2931, recorded at slice 2 / #2926):** **Path A (`operation-graph`) is the default.** It carries the four Twenty traps faithfully at a materially lower prompt-token cost than Path B's per-entity restatement. Both modes ship and are selectable per install via the `representation_mode` toggle, so the open live-data question stays answerable. `DEFAULT_REPRESENTATION_MODE = "operation-graph"` lives in `lib/openapi/catalog.ts`.
 
 ## Reproducing
 

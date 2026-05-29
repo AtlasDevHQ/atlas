@@ -46,6 +46,8 @@ import { buildOperationGraph } from "../spec";
 import { executeOperation } from "../client";
 import { buildAgentRepresentation, type RepresentationMode } from "../representation";
 import { buildRestClientPreamble } from "../python-preamble";
+import { withRequestContext } from "@atlas/api/lib/logger";
+import type { RestDatasource } from "../datasource";
 
 // ── Env + module mocks (must precede the agent import) ───────────────────────
 process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test";
@@ -92,8 +94,19 @@ mock.module("@atlas/api/lib/cache/index", () => ({
   _resetCache: () => {},
 }));
 
+// Slice 2 (#2926): the agent + Python tool resolve REST datasources from the
+// workspace's `openapi-generic` installs — the slice-1 env path is retired.
+// Inject the install as a resolved datasource directly (the install→resolve
+// round-trip through the real handler + DB is covered by the dedicated
+// openapi-install-acceptance suite); `activeDatasources` is set per mode in the
+// describe.each block below so the agent renders the mode under test.
+let activeDatasources: RestDatasource[] = [];
+mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+  resolveWorkspaceRestDatasources: async () => activeDatasources,
+  resolveWorkspacePrimaryRestDatasource: async () => activeDatasources[0] ?? null,
+}));
+
 const { runAgent } = await import("@atlas/api/lib/agent");
-const { __resetTwentyDatasourceCacheForTests } = await import("../datasource");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 const SPEC = JSON.parse(
@@ -177,7 +190,23 @@ function findRestResults(steps: any[]): any[] {
 /** Run a scripted scenario through the full agent loop; return tool results + metrics. */
 async function runScenario(prompt: string, steps: Step[]) {
   mockModel = scriptModel(steps);
-  const result = await runAgent({ messages: userMessages(prompt) });
+  // The agent resolves REST datasources by the request's workspace (org) id —
+  // wrap the run in a request context carrying one so `resolveWorkspaceRestDatasources`
+  // (mocked above) is reached. Mirrors a real chat request's withRequestContext.
+  const result = await withRequestContext(
+    {
+      requestId: "twenty-acceptance",
+      user: {
+        id: "test-user",
+        mode: "managed",
+        role: "admin",
+        label: "test@acceptance.dev",
+        activeOrganizationId: "test-org",
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal AtlasUser for the request context
+      } as any,
+    },
+    () => runAgent({ messages: userMessages(prompt) }),
+  );
   const agentSteps = await result.steps;
   return {
     restResults: findRestResults(agentSteps),
@@ -188,24 +217,22 @@ async function runScenario(prompt: string, steps: Step[]) {
 // ── Mock Twenty workspace ────────────────────────────────────────────────
 let mock1: TwentyMock;
 
-let savedRepresentationEnv: string | undefined;
+/** The bearer + base URL the resolved Twenty datasource points at (the mock server). */
+let twentyBase: Omit<RestDatasource, "representationMode">;
 
 beforeAll(async () => {
-  savedRepresentationEnv = process.env.ATLAS_OPENAPI_REPRESENTATION;
   mock1 = await startTwentyMockServer();
-  process.env.ATLAS_OPENAPI_TWENTY = "true";
-  process.env.ATLAS_OPENAPI_TWENTY_TOKEN = "acceptance-bearer";
-  process.env.ATLAS_OPENAPI_TWENTY_BASE_URL = mock1.baseUrl;
-  __resetTwentyDatasourceCacheForTests();
+  twentyBase = {
+    id: "twenty",
+    displayName: "Twenty",
+    graph,
+    baseUrl: mock1.restBaseUrl,
+    auth: { kind: "bearer", token: "acceptance-bearer" },
+  };
 });
 
 afterAll(async () => {
-  delete process.env.ATLAS_OPENAPI_TWENTY;
-  delete process.env.ATLAS_OPENAPI_TWENTY_TOKEN;
-  delete process.env.ATLAS_OPENAPI_TWENTY_BASE_URL;
-  if (savedRepresentationEnv === undefined) delete process.env.ATLAS_OPENAPI_REPRESENTATION;
-  else process.env.ATLAS_OPENAPI_REPRESENTATION = savedRepresentationEnv;
-  __resetTwentyDatasourceCacheForTests();
+  activeDatasources = [];
   await mock1.close();
   emitMetricsTable();
 });
@@ -254,10 +281,11 @@ function emitMetricsTable(): void {
 // ─────────────────────────────────────────────────────────────────────────
 describe.each(MODES_UNDER_TEST)("Twenty acceptance — representation mode: %s", (mode) => {
   beforeAll(() => {
-    // Select the mode the REAL agent loop resolves (agent.ts reads it off the
-    // datasource, which reads this env). Each mode block overwrites it before
-    // its own tests run, so the two modes never bleed into each other.
-    process.env.ATLAS_OPENAPI_REPRESENTATION = mode;
+    // Select the mode the REAL agent loop resolves: agent.ts reads it off the
+    // resolved datasource's `representationMode`. Set the mocked workspace
+    // datasource to the mode under test so each block drives its own mode and
+    // the two never bleed into each other.
+    activeDatasources = [{ ...twentyBase, representationMode: mode }];
     const rep = buildAgentRepresentation(graph, mode, { displayName: "Twenty" });
     representationTokens.set(mode, rep.approxTokens);
   });

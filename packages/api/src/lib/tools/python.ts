@@ -14,7 +14,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { createLogger } from "@atlas/api/lib/logger";
+import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
@@ -425,15 +425,25 @@ export interface ExecutePythonDeps {
 }
 
 /**
- * Default resolver: the slice-1 env-configured Twenty datasource. Lazily
- * imported so the SQL-only Python path doesn't pull the OpenAPI layer into its
- * load graph. Slice 2 (#2926) swaps this for the per-workspace install registry
- * (resolved by the request's workspaceId); the per-tenant network allowlist
- * follows automatically, since it is computed from whatever this returns.
+ * Default resolver: the workspace's primary REST datasource (slice 2, #2926),
+ * resolved from the ambient request context's org id — retires the slice-1
+ * env-configured Twenty shortcut. Lazily imported so the SQL-only Python path
+ * doesn't pull the OpenAPI layer into its load graph. The per-tenant network
+ * allowlist follows automatically, since it is computed from whatever this
+ * returns; resolving by the request's workspace keeps tenant A's egress from
+ * ever seeing tenant B's datasource host.
+ *
+ * "Primary" = the earliest-installed datasource. A workspace with several REST
+ * datasources gets the host-side `executeRestOperation` tool for all of them;
+ * the in-sandbox Python egress is bounded to the primary for now (multi-host
+ * sandbox egress is a follow-up — the read path the slice ACs exercise is the
+ * host-side tool).
  */
 function defaultResolveRestDatasource(): Promise<RestDatasource | null> {
-  return import("@atlas/api/lib/openapi/datasource").then((m) =>
-    m.resolveTwentyDatasource(),
+  const orgId = getRequestContext()?.user?.activeOrganizationId;
+  if (!orgId) return Promise.resolve(null);
+  return import("@atlas/api/lib/openapi/workspace-datasource").then((m) =>
+    m.resolveWorkspacePrimaryRestDatasource(orgId),
   );
 }
 

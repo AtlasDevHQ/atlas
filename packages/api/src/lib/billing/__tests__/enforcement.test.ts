@@ -20,6 +20,10 @@ let mockWorkspace: Record<string, unknown> | null = null;
 let mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
 let mockWorkspaceDetailsShouldThrow = false;
 let mockUsageShouldThrow = false;
+/** Rows returned by the `internalQuery` mock (chat-integration count query). */
+let mockInternalQueryResult: unknown[] = [];
+/** When true, the `internalQuery` mock throws (count-query failure path). */
+let mockInternalQueryShouldThrow = false;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -29,7 +33,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
   getWorkspaceStatus: async () => mockWorkspace?.workspace_status ?? null,
   getInternalDB: () => ({ query: mock(() => Promise.resolve({ rows: [] })), end: mock(() => {}), on: mock(() => {}) }),
-  internalQuery: async () => [],
+  internalQuery: async () => {
+    if (mockInternalQueryShouldThrow) throw new Error("db error");
+    return mockInternalQueryResult;
+  },
   internalExecute: () => {},
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
@@ -66,7 +73,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkPlanLimits, checkResourceLimit, invalidatePlanCache, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimit, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
@@ -426,6 +433,8 @@ describe("checkResourceLimit", () => {
     mockHasInternalDB = true;
     mockWorkspaceDetailsShouldThrow = false;
     mockWorkspace = null;
+    mockInternalQueryResult = [];
+    mockInternalQueryShouldThrow = false;
     invalidatePlanCache();
   });
 
@@ -580,5 +589,172 @@ describe("checkResourceLimit", () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
     const result = await checkResourceLimit("org-1", "seats", 9);
     expect(result.allowed).toBe(true);
+  });
+
+  // ── Chat integrations (#2953) ─────────────────────────────────────
+
+  it("allows free tier unconditionally (chat_integrations)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+    const result = await checkResourceLimit("org-1", "chat_integrations", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows business tier unconditionally (chat_integrations)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "business" });
+    const result = await checkResourceLimit("org-1", "chat_integrations", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows starter tier under chat-integration limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Starter plan maxChatIntegrations = 1
+    const result = await checkResourceLimit("org-1", "chat_integrations", 0);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks starter tier at chat-integration limit (singular label)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "chat_integrations", 1),
+    );
+    expect(denied.limit).toBe(1);
+    expect(denied.errorMessage).toContain("1 chat integration");
+    expect(denied.errorMessage).toContain("Upgrade");
+  });
+
+  it("blocks starter tier over chat-integration limit (grandfathered — still cannot add)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Already over the new cap (e.g. installed before enforcement landed).
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "chat_integrations", 5),
+    );
+    expect(denied.limit).toBe(1);
+  });
+
+  it("blocks pro tier at chat-integration limit (plural label)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
+    // Pro plan maxChatIntegrations = 3
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "chat_integrations", 3),
+    );
+    expect(denied.limit).toBe(3);
+    expect(denied.errorMessage).toContain("3 chat integrations");
+  });
+
+  it("allows pro tier under chat-integration limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
+    const result = await checkResourceLimit("org-1", "chat_integrations", 2);
+    expect(result.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkChatIntegrationLimit — counts workspace_plugins(pillar='chat') (#2953)
+// ---------------------------------------------------------------------------
+
+describe("checkChatIntegrationLimit", () => {
+  const SLACK = "catalog:slack";
+
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockWorkspaceDetailsShouldThrow = false;
+    mockWorkspace = null;
+    mockInternalQueryResult = [];
+    mockInternalQueryShouldThrow = false;
+    invalidatePlanCache();
+  });
+
+  /** Shape the count-query row the way the SQL aliases it. */
+  function counts(others: number, thisCount: number): void {
+    mockInternalQueryResult = [{ others, this_count: thisCount }];
+  }
+
+  it("allows when no orgId provided", async () => {
+    const result = await checkChatIntegrationLimit(undefined, SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks (fail closed) when the count query throws", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockInternalQueryShouldThrow = true;
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(false);
+  });
+
+  it("allows free tier regardless of count", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+    counts(9, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows business tier (unlimited) for a net-new platform", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "business" });
+    counts(7, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows starter first chat install (no others, not yet installed)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    counts(0, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks starter from adding a 2nd distinct chat integration", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // One other chat platform already installed; Slack is net-new → cap=1 hit.
+    counts(1, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.limit).toBe(1);
+      expect(result.errorMessage).toContain("1 chat integration");
+    }
+  });
+
+  it("allows reconnecting an already-installed platform at the cap", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Slack itself is already installed (this_count=1) and is the only one.
+    counts(0, 1);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows reconnecting an existing platform even when grandfathered over cap", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Over the cap (others=2) but reconnecting a platform already owned.
+    counts(2, 1);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks a grandfathered over-cap workspace from adding a net-new platform", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Over the cap and Slack is net-new (this_count=0) → blocked.
+    counts(2, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(false);
+  });
+
+  it("allows pro under cap (2 others, net-new third)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
+    counts(2, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks pro at cap (3 others, net-new fourth)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
+    counts(3, 0);
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(false);
   });
 });

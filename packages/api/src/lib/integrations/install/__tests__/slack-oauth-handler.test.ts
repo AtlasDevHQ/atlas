@@ -85,6 +85,20 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+// The chat-integration cap (#2953) is exercised in
+// `billing/__tests__/enforcement.test.ts`; here we stub it to "allowed" so
+// these handler tests stay focused on the install/credential contract and
+// their `mockInternalQuery` call counts reflect only the INSERT. The single
+// "blocks when at cap" test below overrides it via `mockImplementationOnce`.
+const mockCheckChatLimit: Mock<
+  (orgId: string | undefined, catalogId: string) =>
+    Promise<{ allowed: true } | { allowed: false; errorMessage: string; limit: number }>
+> = mock(() => Promise.resolve({ allowed: true as const }));
+
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimit: mockCheckChatLimit,
+}));
+
 // ---------------------------------------------------------------------------
 // Test scaffolding — env-driven keyset (mintOAuthStateToken needs it)
 // ---------------------------------------------------------------------------
@@ -121,6 +135,8 @@ beforeEach(() => {
   mockSlackAPI.mockClear();
   mockSaveInstallation.mockClear();
   mockInternalQuery.mockClear();
+  mockCheckChatLimit.mockClear();
+  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
   // Default to the happy-path Slack response — individual tests override
   // via `mockResolvedValueOnce` / `mockImplementationOnce`.
   mockSlackAPI.mockImplementation(() =>
@@ -330,6 +346,34 @@ describe("SlackOAuthInstallHandler.handleCallback — Slack-side failure", () =>
 
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleCallback — chat-integration cap (#2953)
+// ---------------------------------------------------------------------------
+
+describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes neither store when at cap", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await expect(handler.handleCallback("auth-code", stateToken)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // The cap is enforced before either store is written.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
+    expect(mockCheckChatLimit).toHaveBeenCalledWith(WSID, "catalog:slack");
   });
 });
 

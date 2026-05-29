@@ -793,6 +793,28 @@ export class InvalidInstallIdError extends Data.TaggedError("InvalidInstallIdErr
   readonly reason: "pattern" | "reserved";
 }> {}
 
+/**
+ * A chat-platform install was refused because the workspace's plan tier has
+ * reached its chat-integration cap (Starter 1 / Pro 3 / Business unlimited
+ * — see `billing/plans.ts:maxChatIntegrations`). Thrown by the chat install
+ * handlers (`slack-oauth-handler`, `discord-static-bot-handler`) before the
+ * `workspace_plugins` INSERT, after `checkChatIntegrationLimit` counts the
+ * workspace's existing chat installs (#2953).
+ *
+ * Maps to HTTP 429 `plan_limit_exceeded` — the same wire shape the
+ * seats/connections caps surface from `admin-connections` / `invitations`
+ * — so the admin UI's upgrade affordance is uniform. Reconnecting an
+ * already-installed platform is never refused (it does not increase the
+ * distinct count), so a grandfathered over-cap workspace can still re-auth
+ * what it already has.
+ */
+export class ChatIntegrationLimitError extends Data.TaggedError("ChatIntegrationLimitError")<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** The plan tier's chat-integration cap that was hit. */
+  readonly limit: number;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -867,6 +889,7 @@ export type AtlasError =
   | CatalogNotFoundError
   | InstallNotFoundError
   | InvalidInstallIdError
+  | ChatIntegrationLimitError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -942,6 +965,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "CatalogNotFoundError",
   "InstallNotFoundError",
   "InvalidInstallIdError",
+  "ChatIntegrationLimitError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

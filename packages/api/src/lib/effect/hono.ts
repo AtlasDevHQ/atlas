@@ -86,6 +86,7 @@ type HttpErrorCode =
   | "unprocessable_entity"
   | "rate_limited"
   | "conversation_budget_exceeded"
+  | "plan_limit_exceeded"
   | "upstream_error"
   | "service_unavailable"
   | "enterprise_load_failed"
@@ -345,6 +346,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         status: 429,
         code: "conversation_budget_exceeded",
         message: error.message,
+      };
+    // #2953 — chat-integration cap reached for the workspace's plan tier.
+    // 429 + `plan_limit_exceeded` mirrors the seats/connections caps that
+    // `admin-connections` / `invitations` surface manually, so the admin
+    // UI's upgrade affordance is uniform. Body carries the cap that was hit.
+    case "ChatIntegrationLimitError":
+      return {
+        status: 429,
+        code: "plan_limit_exceeded",
+        message: error.message,
+        body: { limit: error.limit },
       };
 
     // ── 502 Bad Gateway — upstream DB error ──────────────────────

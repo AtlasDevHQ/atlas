@@ -35,10 +35,12 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  ChatIntegrationLimitError,
   DiscordApiUnavailableError,
   DiscordGuildIdInvalidError,
   DiscordReachabilityError,
 } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimit } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -221,6 +223,23 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // Throws on API errors / network failures *before* any DB write, so
     // a failed verification never leaves a half-installed row behind.
     const apiGuildName = await this.verifyReachability(routingIdentifier);
+
+    // ── 2b. Plan cap — chat-integration limit (#2953) ─────────────
+    // Block before persisting when the workspace's plan tier is at its
+    // chat-integration cap. Reconnecting Discord (already installed) is
+    // never blocked — the check excludes Discord's own row.
+    const capCheck = await checkChatIntegrationLimit(workspaceId, DISCORD_CATALOG_ID);
+    if (!capCheck.allowed) {
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Discord install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
     // Mirrors the email-form-handler and telegram-static-bot-handler

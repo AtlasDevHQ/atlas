@@ -42,6 +42,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+// The chat-integration cap (#2953) is exercised in
+// `billing/__tests__/enforcement.test.ts`; stub it to "allowed" here so
+// these handler tests stay focused on the install contract and their
+// `mockInternalQuery` call counts reflect only the UPSERT.
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimit: mock(() => Promise.resolve({ allowed: true as const })),
+}));
+
 // ---------------------------------------------------------------------------
 // Test scaffolding
 // ---------------------------------------------------------------------------

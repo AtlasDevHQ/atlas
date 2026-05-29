@@ -152,7 +152,7 @@ ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 ### How sessions work (All Deployments)
 
 1. User signs in via `POST /api/auth/sign-in/email`
-2. Better Auth creates a session and sets a `better-auth.session_token` cookie
+2. Better Auth creates a session and sets an `atlas.session_token` cookie (the name's prefix is set by `ATLAS_COOKIE_PREFIX`, default `atlas`; production over HTTPS prefixes it with `__Secure-`)
 3. Subsequent requests include the cookie automatically (browser) or send `Authorization: Bearer <session-token>` (API clients)
 4. Sessions last 7 days. On any request where the session is at least 24 hours old, the expiry is automatically renewed
 

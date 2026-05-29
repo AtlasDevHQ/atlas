@@ -265,18 +265,18 @@ describe("buildAdvancedConfig", () => {
 });
 
 describe("deriveCookieDomain", () => {
-  it("returns undefined when either env var is absent (host-only cookies / self-hosted single-origin)", () => {
+  // Second arg is the single canonical app origin (getWebOrigin() — the first
+  // CORS entry), NOT the whole allowlist, so an unrelated allowlisted origin
+  // can't veto the shared domain. The call site resolves it via getWebOrigin().
+  it("returns undefined when either input is absent (host-only cookies / self-hosted single-origin)", () => {
     expect(deriveCookieDomain(undefined, "https://app.useatlas.dev")).toBeUndefined();
     expect(deriveCookieDomain("https://api.useatlas.dev", undefined)).toBeUndefined();
     expect(deriveCookieDomain(undefined, undefined)).toBeUndefined();
   });
 
-  it("prod: api + app under useatlas.dev → useatlas.dev", () => {
+  it("prod: api + app under useatlas.dev → useatlas.dev (covers www + apex siblings)", () => {
     expect(
-      deriveCookieDomain(
-        "https://api.useatlas.dev",
-        "https://app.useatlas.dev,https://www.useatlas.dev,https://useatlas.dev",
-      ),
+      deriveCookieDomain("https://api.useatlas.dev", "https://app.useatlas.dev"),
     ).toBe("useatlas.dev");
   });
 
@@ -284,11 +284,23 @@ describe("deriveCookieDomain", () => {
     // The old `host.split('.').slice(-2)` collapsed this to `useatlas.dev`,
     // the same slot as prod. The common-suffix derivation keeps it scoped.
     expect(
-      deriveCookieDomain(
-        "https://api.staging.useatlas.dev",
-        "https://app.staging.useatlas.dev,https://www.staging.useatlas.dev",
-      ),
+      deriveCookieDomain("https://api.staging.useatlas.dev", "https://app.staging.useatlas.dev"),
     ).toBe("staging.useatlas.dev");
+  });
+
+  it("ignores the rest of the CORS allowlist — only the app origin is passed (P1)", () => {
+    // Codex P1: folding in an unrelated allowlisted origin would collapse the
+    // common suffix to nothing. The fix passes ONLY the app origin (getWebOrigin),
+    // so deriveCookieDomain literally never sees embed.partner.com and derives
+    // the correct app/API parent regardless of what else is allowlisted.
+    expect(
+      deriveCookieDomain("https://api.useatlas.dev", "https://app.useatlas.dev"),
+    ).toBe("useatlas.dev");
+    // A hypothetical "both args" different-site pair still yields undefined —
+    // proving the unrelated origin must never reach this function as arg 2.
+    expect(
+      deriveCookieDomain("https://api.useatlas.dev", "https://embed.partner.com"),
+    ).toBeUndefined();
   });
 
   it("self-hosted on a custom domain derives that domain (not hardcoded)", () => {
@@ -297,7 +309,7 @@ describe("deriveCookieDomain", () => {
     ).toBe("acme.example.com");
   });
 
-  it("returns undefined when the hosts share no 2+ label suffix (different sites — never widen)", () => {
+  it("returns undefined when the hosts share no 2+ label suffix (different sites)", () => {
     expect(
       deriveCookieDomain("https://api.useatlas.dev", "https://app.example.org"),
     ).toBeUndefined();
@@ -311,34 +323,20 @@ describe("deriveCookieDomain", () => {
     expect(deriveCookieDomain("http://127.0.0.1:3001", "http://127.0.0.1:3000")).toBeUndefined();
   });
 
-  it("skips a malformed CORS entry but still derives from the valid ones", () => {
-    expect(
-      deriveCookieDomain(
-        "https://api.staging.useatlas.dev",
-        "not-a-url, https://app.staging.useatlas.dev",
-      ),
-    ).toBe("staging.useatlas.dev");
-  });
-
-  it("derives the apex when a CORS origin IS the bare apex (real prod shape)", () => {
-    // prod ATLAS_CORS_ORIGIN includes https://useatlas.dev alongside the subdomains.
-    expect(
-      deriveCookieDomain(
-        "https://api.useatlas.dev",
-        "https://app.useatlas.dev,https://useatlas.dev",
-      ),
-    ).toBe("useatlas.dev");
-  });
-
-  it("returns undefined for IPv6 literals (host-only, via the <2-label guard)", () => {
+  it("returns undefined for IPv6 literals (host-only)", () => {
     expect(deriveCookieDomain("http://[::1]:3001", "http://[::1]:3000")).toBeUndefined();
+  });
+
+  it("returns undefined when the app origin is malformed", () => {
+    expect(deriveCookieDomain("https://api.staging.useatlas.dev", "not-a-url")).toBeUndefined();
+    expect(deriveCookieDomain("not-a-url", "https://app.staging.useatlas.dev")).toBeUndefined();
   });
 
   it("documents the public-suffix limitation: no PSL, so same-2-label-suffix hosts collapse to it", () => {
     // KNOWN LIMITATION (no public-suffix-list awareness). Two *different*
     // registrable domains under a 2-label public suffix collapse to that
     // suffix; browsers then reject `.co.uk` via the PSL so the cookie fails
-    // to set (no leak). Atlas's own hosts are always one registrable domain.
+    // to set (no leak). Atlas's API + app are always one registrable domain.
     expect(
       deriveCookieDomain("https://api.acme.co.uk", "https://app.other.co.uk"),
     ).toBe("co.uk");

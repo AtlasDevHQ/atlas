@@ -37,6 +37,7 @@ import {
   resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
   resolveCookiePrefix,
 } from "@atlas/api/lib/env-profile";
+import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
@@ -683,62 +684,58 @@ export function buildAdvancedConfig(
  * tightly as the deployment allows.
  *
  * The cookie must be valid for both the API host (`BETTER_AUTH_URL`) and the
- * frontend origin(s) (`ATLAS_CORS_ORIGIN`), so the correct domain is the
- * **longest dotted suffix common to all of them** — e.g.
+ * web app host (`webOrigin`), so the correct domain is the **longest dotted
+ * suffix common to the two** — e.g.
  *   - prod:    `api.useatlas.dev` + `app.useatlas.dev` → `useatlas.dev`
  *   - staging: `api.staging.useatlas.dev` + `app.staging.useatlas.dev`
  *              → `staging.useatlas.dev` (NOT `useatlas.dev`)
+ *
+ * `webOrigin` is the single canonical app origin (`getWebOrigin()` — the first
+ * `ATLAS_CORS_ORIGIN` entry). We deliberately do NOT fold in the rest of the
+ * CORS allowlist: an unrelated allowlisted origin (an embed/partner site on a
+ * different registrable domain) would otherwise collapse the common suffix to
+ * nothing, drop the cookie domain, and scope the session cookie to the API
+ * host only — so the app host can't see it after login and users stick at
+ * `/login`.
  *
  * The previous `host.split(".").slice(-2)` heuristic always collapsed to the
  * last two labels, so staging resolved to `useatlas.dev` — the same slot as
  * prod — which is exactly the cross-env cookie bleed this fixes.
  *
- * Returns `undefined` (host-only cookies) when either env var is absent
- * (single-origin / self-hosted), when the **auth URL** is malformed (a
- * malformed CORS entry is skipped, not fatal), when the common suffix is
- * fewer than 2 labels (different sites), or when it looks like a bare IPv4
- * (cookie domains can't be IPs).
+ * Returns `undefined` (host-only cookies) when either input is absent
+ * (single-origin / self-hosted), when a URL is malformed, when the common
+ * suffix is fewer than 2 labels (different sites), or when it looks like a
+ * bare IPv4 (cookie domains can't be IPs).
  *
  * NOTE: there is no public-suffix-list awareness. Two *different* registrable
  * domains under a 2-label public suffix (`a.co.uk` + `b.co.uk`) resolve to
  * `co.uk`; browsers reject that via the PSL so the cookie simply fails to set
- * (no leak), and Atlas's own BETTER_AUTH_URL / ATLAS_CORS_ORIGIN are always
- * the same registrable domain. Same-tenant multi-label TLDs
- * (`api.acme.co.uk` + `app.acme.co.uk` → `acme.co.uk`) work correctly.
+ * (no leak), and Atlas's API + app are always the same registrable domain.
+ * Same-tenant multi-label TLDs (`api.acme.co.uk` + `app.acme.co.uk` →
+ * `acme.co.uk`) work correctly.
  */
 export function deriveCookieDomain(
   authUrl: string | undefined,
-  corsOrigin: string | undefined,
+  webOrigin: string | undefined,
 ): string | undefined {
-  if (!authUrl || !corsOrigin) return undefined;
+  if (!authUrl || !webOrigin) return undefined;
 
-  const hosts: string[] = [];
+  let authHost: string;
+  let webHost: string;
   try {
-    hosts.push(new URL(authUrl).hostname);
+    authHost = new URL(authUrl).hostname;
+    webHost = new URL(webOrigin).hostname;
   } catch {
     return undefined;
   }
-  for (const origin of corsOrigin.split(",")) {
-    const trimmed = origin.trim();
-    if (!trimmed) continue;
-    try {
-      hosts.push(new URL(trimmed).hostname);
-    } catch {
-      // Skip a malformed CORS entry rather than abandoning the whole
-      // derivation — other entries may still yield a valid common suffix.
-    }
-  }
-  if (hosts.length < 2) return undefined;
 
-  // Longest common dotted suffix: compare label arrays from the right.
-  const reversed = hosts.map((h) => h.split(".").reverse());
+  // Longest common dotted suffix of the two hosts, compared from the right.
+  const a = authHost.split(".").reverse();
+  const b = webHost.split(".").reverse();
   const common: string[] = [];
-  for (let i = 0; ; i++) {
-    const label = reversed[0][i];
-    if (label === undefined || !reversed.every((labels) => labels[i] === label)) {
-      break;
-    }
-    common.push(label);
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len && a[i] === b[i]; i++) {
+    common.push(a[i]);
   }
   if (common.length < 2) return undefined;
   if (common.every((label) => /^\d+$/.test(label))) return undefined; // bare IPv4
@@ -2514,26 +2511,26 @@ export function getAuthInstance(): AuthInstance {
   }
 
   // Derive parent domain for cross-subdomain cookies — the longest dotted
-  // suffix common to the API host (BETTER_AUTH_URL) and the frontend origin(s)
-  // (ATLAS_CORS_ORIGIN). Only set for cross-origin deployments; without it,
+  // suffix common to the API host (BETTER_AUTH_URL) and the canonical app
+  // origin. Only for cross-origin deploys (ATLAS_CORS_ORIGIN set); without it,
   // cookies are host-scoped and won't be sent from the frontend subdomain.
-  // See `deriveCookieDomain` for why the env-specific suffix matters.
-  const cookieDomain = deriveCookieDomain(
-    process.env.BETTER_AUTH_URL,
-    process.env.ATLAS_CORS_ORIGIN,
-  );
-  // Fail loud on the silent footgun: a cross-origin deploy (CORS origin set)
-  // that yields no shared domain — usually a malformed BETTER_AUTH_URL or
-  // hosts with no common 2+ label suffix — leaves session cookies host-only,
-  // so the frontend subdomain never receives them and auth breaks with no
-  // other signal. Hostnames aren't secrets (CLAUDE.md), so log them.
-  if (process.env.BETTER_AUTH_URL && process.env.ATLAS_CORS_ORIGIN && !cookieDomain) {
+  // Use getWebOrigin() (the FIRST CORS entry — the app) rather than the whole
+  // allowlist, so an unrelated allowlisted origin can't veto the shared
+  // domain. See `deriveCookieDomain` for why the env-specific suffix matters.
+  const webOrigin = process.env.ATLAS_CORS_ORIGIN ? getWebOrigin() : null;
+  const cookieDomain = deriveCookieDomain(process.env.BETTER_AUTH_URL, webOrigin ?? undefined);
+  // Fail loud on the silent footgun: a cross-origin deploy that yields no
+  // shared domain — usually a malformed BETTER_AUTH_URL or an app origin that
+  // shares no 2+ label suffix with it — leaves session cookies host-only, so
+  // the app subdomain never receives them and auth breaks with no other
+  // signal. Hostnames aren't secrets (CLAUDE.md), so log them.
+  if (process.env.BETTER_AUTH_URL && webOrigin && !cookieDomain) {
     log.warn(
-      { authUrl: process.env.BETTER_AUTH_URL, corsOrigin: process.env.ATLAS_CORS_ORIGIN },
+      { authUrl: process.env.BETTER_AUTH_URL, webOrigin },
       "Cross-origin deploy (ATLAS_CORS_ORIGIN set) but no shared cookie domain could be "
-        + "derived — session cookies will be host-only and won't reach the frontend "
-        + "subdomain. Verify BETTER_AUTH_URL and ATLAS_CORS_ORIGIN are valid URLs sharing "
-        + "a 2+ label suffix.",
+        + "derived from the API host and the app origin — session cookies will be host-only "
+        + "and won't reach the app subdomain. Verify BETTER_AUTH_URL and the first "
+        + "ATLAS_CORS_ORIGIN entry are valid URLs sharing a 2+ label suffix.",
     );
   }
 

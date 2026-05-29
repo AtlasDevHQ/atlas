@@ -802,11 +802,13 @@ export class InvalidInstallIdError extends Data.TaggedError("InvalidInstallIdErr
  * workspace's existing chat installs (#2953).
  *
  * Maps to HTTP 429 `plan_limit_exceeded` — the same wire shape the
- * seats/connections caps surface from `admin-connections` / `invitations`
- * — so the admin UI's upgrade affordance is uniform. Reconnecting an
- * already-installed platform is never refused (it does not increase the
- * distinct count), so a grandfathered over-cap workspace can still re-auth
- * what it already has.
+ * connections cap surfaces from `admin-connections` (the seats cap is also
+ * 429 but via Better Auth's `APIError` in `lib/auth/invitations.ts`, a
+ * different envelope). Reconnecting an already-installed platform is never
+ * refused (it does not increase the distinct count), so a grandfathered
+ * over-cap workspace can still re-auth what it already has.
+ *
+ * `workspaceId` is forensic/log context only — not read by `mapTaggedError`.
  */
 export class ChatIntegrationLimitError extends Data.TaggedError("ChatIntegrationLimitError")<{
   readonly message: string;

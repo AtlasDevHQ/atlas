@@ -62,6 +62,7 @@ const {
   ConfigSchemaError,
   InstallNotFoundError,
   InvalidInstallIdError,
+  ChatIntegrationLimitError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -449,6 +450,19 @@ describe("mapTaggedError", () => {
       catalogSlug: "postgres",
       pillar: "datasource",
     });
+  });
+
+  it("maps ChatIntegrationLimitError to 429 plan_limit_exceeded with the cap in the body (#2953)", () => {
+    const result = mapTaggedError(
+      new ChatIntegrationLimitError({
+        message: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        workspaceId: "org-1",
+        limit: 1,
+      }),
+    );
+    expect(result.status).toBe(429);
+    expect(result.code).toBe("plan_limit_exceeded");
+    expect(result.body).toEqual({ limit: 1 });
   });
 });
 

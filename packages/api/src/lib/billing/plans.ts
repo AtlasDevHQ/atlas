@@ -36,10 +36,14 @@ export interface PlanLimits {
   /** Max datasource connections. -1 = unlimited. */
   maxConnections: number;
   /**
-   * Max distinct chat-platform integrations (Slack, Teams, Discord, Google
-   * Chat, Telegram, WhatsApp). -1 = unlimited. Marketed on /pricing
-   * (Starter 1 / Pro 3 / Business "All 8"); enforced at chat install time
-   * by `checkChatIntegrationLimit` (#2953).
+   * Max distinct chat-pillar integrations a workspace may install. -1 =
+   * unlimited. The cap counts `workspace_plugins WHERE pillar = 'chat'` —
+   * the six chat platforms (Slack, Teams, Discord, Google Chat, Telegram,
+   * WhatsApp). The "All 8 chat integrations" figure marketed on /pricing
+   * also counts Linear + GitHub, but those are `pillar = 'action'`, so they
+   * do NOT consume a chat-integration slot. Marketed tiers: Starter 1 /
+   * Pro 3 / Business unlimited. Enforced at chat install time by
+   * `checkChatIntegrationLimit` (#2953).
    */
   maxChatIntegrations: number;
 }

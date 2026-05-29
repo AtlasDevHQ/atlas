@@ -45,9 +45,15 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 // The chat-integration cap (#2953) is exercised in
 // `billing/__tests__/enforcement.test.ts`; stub it to "allowed" here so
 // these handler tests stay focused on the install contract and their
-// `mockInternalQuery` call counts reflect only the UPSERT.
+// `mockInternalQuery` call counts reflect only the UPSERT. The "blocks at
+// cap" test below overrides it via `mockImplementationOnce`.
+const mockCheckChatLimit: Mock<
+  (orgId: string | undefined, catalogId: string) =>
+    Promise<{ allowed: true } | { allowed: false; errorMessage: string; limit: number }>
+> = mock(() => Promise.resolve({ allowed: true as const }));
+
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
-  checkChatIntegrationLimit: mock(() => Promise.resolve({ allowed: true as const })),
+  checkChatIntegrationLimit: mockCheckChatLimit,
 }));
 
 // ---------------------------------------------------------------------------
@@ -94,6 +100,8 @@ function setFetchNetworkError(): void {
 beforeEach(() => {
   mockInternalQuery.mockClear();
   mockInternalQuery.mockImplementation(() => Promise.resolve([{ id: "install-discord-row-1" }]));
+  mockCheckChatLimit.mockClear();
+  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -234,6 +242,32 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
       /unexpected response shape/i,
     );
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat-integration cap (#2953)
+// ---------------------------------------------------------------------------
+
+describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes no install row when at cap", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
+
+    await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // Cap is checked after reachability but before the UPSERT.
+    expect(mockCheckChatLimit).toHaveBeenCalledWith(wsid, DISCORD_CATALOG_ID);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });

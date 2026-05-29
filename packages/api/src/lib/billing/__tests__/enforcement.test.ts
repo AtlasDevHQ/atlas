@@ -685,6 +685,11 @@ describe("checkChatIntegrationLimit", () => {
     mockInternalQueryShouldThrow = true;
     const result = await checkChatIntegrationLimit("org-1", SLACK);
     expect(result.allowed).toBe(false);
+    // Distinct fail-closed contract — not the normal cap message.
+    if (!result.allowed) {
+      expect(result.errorMessage).toContain("Unable to verify plan limits");
+      expect(result.limit).toBe(0);
+    }
   });
 
   it("allows free tier regardless of count", async () => {

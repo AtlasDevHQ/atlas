@@ -438,24 +438,25 @@ export async function checkResourceLimit(
   }
 
   const limits = getPlanLimits(tier);
-  const cap =
-    resource === "seats"
-      ? limits.maxSeats
-      : resource === "connections"
-        ? limits.maxConnections
-        : limits.maxChatIntegrations;
+  // Record (not a ternary chain) so a new CappedResource member is a
+  // compile error here until it's mapped to a PlanLimits field — no silent
+  // fall-through into the wrong cap/label.
+  const cap = ({
+    seats: limits.maxSeats,
+    connections: limits.maxConnections,
+    chat_integrations: limits.maxChatIntegrations,
+  } satisfies Record<CappedResource, number>)[resource];
 
   if (isUnlimited(cap)) {
     return { allowed: true };
   }
 
   if (currentCount >= cap) {
-    const resourceLabel =
-      resource === "seats"
-        ? (cap === 1 ? "seat" : "seats")
-        : resource === "connections"
-          ? (cap === 1 ? "connection" : "connections")
-          : (cap === 1 ? "chat integration" : "chat integrations");
+    const resourceLabel = ({
+      seats: cap === 1 ? "seat" : "seats",
+      connections: cap === 1 ? "connection" : "connections",
+      chat_integrations: cap === 1 ? "chat integration" : "chat integrations",
+    } satisfies Record<CappedResource, string>)[resource];
     log.warn(
       { orgId, resource, currentCount, limit: cap, tier },
       "Workspace at or over %s limit (%d/%d) — blocking resource creation",
@@ -494,14 +495,17 @@ export async function checkResourceLimit(
  *  - **The new platform is excluded from the count**, so the comparison is
  *    "do the *other* chat platforms already fill the cap?".
  *
- * NOTE (#2953, ADR-0007 migration): this counts `workspace_plugins`, which
- * today is written only by the chat install paths already pivoted to the
- * unified pipeline — Slack OAuth and Discord. Telegram / Teams / Google
- * Chat / WhatsApp still install via the legacy per-platform
- * credential-store routes in `admin-integrations.ts` and do NOT write a
- * `workspace_plugins` row, so they are not yet counted or enforced. The
- * cap becomes complete once those routes pivot to the unified install
- * record — tracked as a follow-up.
+ * NOTE (#2953, ADR-0007 migration): this counts every `workspace_plugins`
+ * row with `pillar = 'chat'`, so any platform whose install writes such a
+ * row is counted. The blocking call (this function) is wired only into the
+ * two chat handlers reached by a live install route that writes a chat row:
+ * Slack (OAuth callback) and Discord (static-bot callback). The other chat
+ * platforms — Telegram / Teams / Google Chat / WhatsApp — install today via
+ * the legacy per-platform routes in `admin-integrations.ts`, which persist
+ * only the credential store; their unified static-bot handlers DO write a
+ * `pillar='chat'` row but are not yet reached by any live route. Net effect:
+ * those four are neither counted nor capped today. The cap completes once
+ * they pivot to the unified install record — tracked in #2994.
  *
  * Fails closed (blocks) when the count query errors, consistent with
  * {@link checkResourceLimit}.

@@ -348,9 +348,11 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         message: error.message,
       };
     // #2953 — chat-integration cap reached for the workspace's plan tier.
-    // 429 + `plan_limit_exceeded` mirrors the seats/connections caps that
-    // `admin-connections` / `invitations` surface manually, so the admin
-    // UI's upgrade affordance is uniform. Body carries the cap that was hit.
+    // 429 + `plan_limit_exceeded` matches the connections cap
+    // (`admin-connections.ts` returns the same code/status manually). The
+    // seats cap is also 429 but via Better Auth's `APIError`
+    // (`lib/auth/invitations.ts`), so its envelope differs. Body carries
+    // the cap that was hit.
     case "ChatIntegrationLimitError":
       return {
         status: 429,

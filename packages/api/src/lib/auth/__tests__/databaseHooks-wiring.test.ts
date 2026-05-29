@@ -2,9 +2,9 @@
  * Wiring test for Better Auth's signup-time hooks (#2841).
  *
  * ── The risk this closes ────────────────────────────────────────────
- * Three helpers run from Better Auth plugin hooks at signup, each with
- * thorough unit coverage in isolation but — until this file — NO test
- * proving the composition actually attaches them:
+ * Five signup-time side effects run from two Better Auth plugin hooks,
+ * each with thorough unit coverage in isolation but — until this file —
+ * NO test proving the composition actually attaches them:
  *
  *   • organizationHooks.afterCreateOrganization (in `buildPlugins`)
  *       → promoteOrgOwnerToAdmin, assignSaasTrial
@@ -27,13 +27,15 @@
  * no welcome email, no SSO auto-join).
  *
  * ── Why we assert via downstream effects, not helper spies ───────────
- * The five helpers are defined *inside* `server.ts`, so the hook bodies
- * call them through lexical bindings (`await promoteOrgOwnerToAdmin(...)`)
- * rather than through the module's export object. `mock.module("../server")`
- * cannot intercept an intra-module call — and mocking the module under
- * test would defeat the point. So instead of spying the helpers, we drive
- * the *real, composed* hook and assert each helper's unique observable
- * side effect:
+ * Four of these are named helpers defined *inside* `server.ts`, called
+ * from the hook bodies through lexical bindings
+ * (`await promoteOrgOwnerToAdmin(...)`) rather than through the module's
+ * export object; the fifth (the welcome email) is an inline deferred block
+ * in the hook that dynamically imports `onUserSignup`.
+ * `mock.module("../server")` cannot intercept an intra-module call — and
+ * mocking the module under test would defeat the point. So instead of
+ * spying the helpers, we drive the *real, composed* hook and assert each
+ * one's unique observable side effect:
  *
  *   promoteOrgOwnerToAdmin → UPDATE "user" SET role = 'admin'
  *   assignSaasTrial        → UPDATE organization SET plan_tier = 'trial'
@@ -210,19 +212,23 @@ afterAll(() => {
 
 describe("organizationHooks.afterCreateOrganization wiring", () => {
   /**
-   * Reach the hook through the *composed* organization plugin instance —
-   * Better Auth 1.6.x exposes the passed options under `.options` (the
-   * same probe `server.test.ts` uses for `requireEmailVerificationOnInvitation`).
-   * Reading it here (rather than from an extracted helper) is what proves
-   * the `organizationHooks:` wiring is actually attached to the plugin.
+   * Reach the hook through the *composed* organization plugin instance.
+   * Better Auth stores the passed options on the constructed plugin under
+   * `.options` (1.6.x); older lines shipped them under `._config`. We probe
+   * both — the same defensive lookup `server.test.ts` uses for
+   * `requireEmailVerificationOnInvitation` — so a future Better Auth bump
+   * surfaces as a clear "hook not wired" failure rather than a confusing
+   * `undefined`. Reading it here (rather than from an extracted helper) is
+   * what proves the `organizationHooks:` wiring is attached to the plugin.
    */
   function getAfterCreateOrganization() {
     const plugins = buildPlugins();
     const org = plugins.find((p: { id?: string }) => p.id === "organization");
     expect(org, "organization plugin must be present in buildPlugins() output").toBeDefined();
-    const opts = (org as {
-      options?: { organizationHooks?: { afterCreateOrganization?: unknown } };
-    }).options;
+    type OrgOptions = { organizationHooks?: { afterCreateOrganization?: unknown } };
+    const opts =
+      (org as { options?: OrgOptions }).options
+      ?? (org as { _config?: OrgOptions })._config;
     const hook = opts?.organizationHooks?.afterCreateOrganization;
     expect(
       typeof hook,
@@ -239,24 +245,32 @@ describe("organizationHooks.afterCreateOrganization wiring", () => {
     const sqls = queries.map((q) => q.sql);
 
     // promoteOrgOwnerToAdmin: SELECT current role, then promote to admin.
+    // The UPDATE assertion binds to THIS hook's user id (not just "some
+    // role UPDATE fired") so a future code path emitting the same SQL shape
+    // for a different entity can't satisfy it — the canary stays specific.
     expect(
       sqls.some((s) => /SELECT\s+role\s+FROM\s+"user"/i.test(s)),
       "promoteOrgOwnerToAdmin should read the current role",
     ).toBe(true);
+    const roleUpdate = queries.find((q) => /UPDATE\s+"user"\s+SET\s+role\s*=\s*'admin'/i.test(q.sql));
     expect(
-      sqls.some((s) => /UPDATE\s+"user"\s+SET\s+role\s*=\s*'admin'/i.test(s)),
-      "promoteOrgOwnerToAdmin must be wired — expected the role-promotion UPDATE",
-    ).toBe(true);
+      roleUpdate?.params,
+      "promoteOrgOwnerToAdmin must be wired — expected the role-promotion UPDATE bound to the org owner's id",
+    ).toContain("user_org_1");
 
-    // assignSaasTrial: SELECT current tier, then flip free → trial.
+    // assignSaasTrial: SELECT current tier, then flip free → trial, bound
+    // to THIS hook's org id.
     expect(
       sqls.some((s) => /SELECT\s+plan_tier\s+FROM\s+organization/i.test(s)),
       "assignSaasTrial should read the current plan tier",
     ).toBe(true);
+    const trialUpdate = queries.find((q) =>
+      /UPDATE\s+organization\s+SET\s+plan_tier\s*=\s*'trial'/i.test(q.sql),
+    );
     expect(
-      sqls.some((s) => /UPDATE\s+organization\s+SET\s+plan_tier\s*=\s*'trial'/i.test(s)),
-      "assignSaasTrial must be wired — expected the trial-assignment UPDATE",
-    ).toBe(true);
+      trialUpdate?.params,
+      "assignSaasTrial must be wired — expected the trial-assignment UPDATE bound to the new org's id",
+    ).toContain("org_1");
   });
 });
 

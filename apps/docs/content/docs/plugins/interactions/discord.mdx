@@ -53,7 +53,7 @@ https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/discord
 Register the `/atlas` slash command using the Discord API. You can do this with a one-time script:
 
 ```bash
-curl -X POST "https://discord.com/api/v10/applications/$DISCORD_APPLICATION_ID/commands" \
+curl -X POST "https://discord.com/api/v10/applications/$DISCORD_CLIENT_ID/commands" \
   -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -83,7 +83,7 @@ Generate an invite URL with the required permissions:
 ## Configuration
 
 <Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Discord's static-bot install handler landed in 1.5.3 ([#2749](https://github.com/AtlasDevHQ/atlas/pull/2749)) — the catalog row carries `install_model: "static-bot"`, and bot credentials are read from `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, and `DISCORD_PUBLIC_KEY`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Discord's static-bot install handler landed in 1.5.3 ([#2749](https://github.com/AtlasDevHQ/atlas/pull/2749)) — the catalog row carries `install_model: "static-bot"`, and bot credentials are read from `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_PUBLIC_KEY`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ```typescript
@@ -155,7 +155,7 @@ Discord doesn't support true message streaming. The adapter uses a post-then-edi
 | Variable | Description |
 |----------|-------------|
 | `DISCORD_BOT_TOKEN` | Discord bot token |
-| `DISCORD_APPLICATION_ID` | Discord application ID |
+| `DISCORD_CLIENT_ID` | Discord application ID — labeled "Application ID" on the Developer Portal's General Information page (identical to the OAuth2 client ID). Read by the adapter as `applicationId` |
 | `DISCORD_PUBLIC_KEY` | Application public key for signature verification |
 
 ## Troubleshooting

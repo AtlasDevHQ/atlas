@@ -40,7 +40,7 @@ GitHub App auth is recommended for production. It provides fine-grained permissi
 
 1. On the app settings page, scroll to **Private keys**
 2. Click **Generate a private key** — a `.pem` file will download
-3. Store the private key securely. You'll need the contents as `GITHUB_PRIVATE_KEY`
+3. Store the private key securely. You'll need the contents as `GITHUB_APP_PRIVATE_KEY`
 
 <Callout type="warn">
 The private key grants full access to your GitHub App's permissions. Store it securely and never commit it to source control. For multi-line env vars, replace newlines with `\n` or base64-encode the key.
@@ -78,7 +78,7 @@ The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevH
 
 ### GitHub App (Recommended)
 
-The App row covers both multi-tenant (auto-detect installation from webhook payloads) and single-tenant (fixed `GITHUB_INSTALLATION_ID`) modes — set the env var to lock to one installation, or leave it unset for multi-tenant.
+The App row covers both multi-tenant (auto-detect installation from webhook payloads) and single-tenant (fixed `GITHUB_APP_INSTALLATION_ID`) modes — set the env var to lock to one installation, or leave it unset for multi-tenant.
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -101,7 +101,7 @@ export default defineConfig({
 });
 ```
 
-App ID, private key, and webhook secret come from env vars — see [Environment Variables](#environment-variables) below. Single-tenant mode is selected by also setting `GITHUB_INSTALLATION_ID` to a fixed installation; leave it unset for multi-tenant.
+App ID, slug, private key, OAuth client credentials, and webhook secret come from env vars — see [Environment Variables](#environment-variables) below. Single-tenant mode is selected by also setting `GITHUB_APP_INSTALLATION_ID` to a fixed installation; leave it unset for multi-tenant.
 
 ### Personal Access Token
 
@@ -124,13 +124,13 @@ export default defineConfig({
 });
 ```
 
-PAT + webhook secret come from env vars — see [Environment Variables](#environment-variables) below.
+The PAT itself is entered through the admin-UI install form (stored encrypted in `workspace_plugins.config`), not an env var; the webhook secret comes from `GITHUB_WEBHOOK_SECRET` — see [Environment Variables](#environment-variables) below.
 
 ### Catalog entries
 
 | Row | `slug` | `install_model` | Auth mode | Notes |
 |-----|--------|-----------------|-----------|-------|
-| GitHub App | `"github"` | `"oauth"` | App ID + private key | Recommended; covers single- and multi-tenant via env-var presence of `GITHUB_INSTALLATION_ID`. |
+| GitHub App | `"github"` | `"oauth"` | App ID + private key | Recommended; covers single- and multi-tenant via env-var presence of `GITHUB_APP_INSTALLATION_ID`. |
 | PAT | `"github-pat"` | `"static-bot"` | Fine-grained PAT | Single-account; not surfaced in the SaaS admin UI (`saas_eligible: false`). |
 
 Don't enable both rows in the same deploy — pick the auth mode that matches the workspace.
@@ -191,14 +191,24 @@ GitHub does not support rich cards or interactive buttons. The Chat SDK adapter 
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_APP_ID` | GitHub App ID (for App-based auth) |
-| `GITHUB_PRIVATE_KEY` | GitHub App private key in PEM format (for App-based auth) |
-| `GITHUB_INSTALLATION_ID` | Installation ID for single-tenant mode (optional) |
-| `GITHUB_TOKEN` | Personal Access Token (for PAT auth) |
-| `GITHUB_WEBHOOK_SECRET` | Webhook secret for HMAC-SHA256 verification |
-| `GITHUB_BOT_USERNAME` | Bot username for @-mention detection (optional, falls back to adapter default) |
+Atlas's catalog-driven install handlers (1.5.3+) gate activation on the `GITHUB_APP_*` vars below — when a `github` or `github-single-tenant` catalog row is enabled but a required var is unset, the install route returns `501` until it's configured.
+
+| Variable | Required for | Description |
+|----------|--------------|-------------|
+| `GITHUB_APP_ID` | App (both modes) | Numeric App ID from the App's General settings page. |
+| `GITHUB_APP_SLUG` | App (both modes) | App slug from `https://github.com/apps/<slug>`. Used to build the install URL. |
+| `GITHUB_APP_PRIVATE_KEY` | App (both modes) | App private key (`.pem` contents). For multi-line values, escape newlines as `\n` or base64-encode. |
+| `GITHUB_APP_CLIENT_ID` | Multi-tenant App (`github`) | App OAuth client ID — required for the install-ownership verification step. |
+| `GITHUB_APP_CLIENT_SECRET` | Multi-tenant App (`github`) | App OAuth client secret. |
+| `GITHUB_APP_INSTALLATION_ID` | Single-tenant App (`github-single-tenant`) | The operator's baked-in installation ID. Its presence selects single-tenant mode; leave unset for multi-tenant auto-detection. |
+| `GITHUB_WEBHOOK_SECRET` | All | Webhook secret for HMAC-SHA256 payload verification. Read by the underlying `@chat-adapter/github` adapter — it refuses to initialize without it (or a `webhookSecret` in config). |
+| `GITHUB_BOT_USERNAME` | Optional | Bot username for @-mention detection. Read by the adapter; defaults to `github-bot`. |
+
+PAT installs use the `github-pat` catalog row, whose token (`pat`) and optional `default_owner` are entered through the **admin-UI install form** and stored encrypted in `workspace_plugins.config` — there is no PAT env var in the catalog flow.
+
+<Callout type="info">
+The underlying `@chat-adapter/github` adapter also recognizes its own credential env vars when wired directly (outside Atlas's catalog flow): `GITHUB_TOKEN` (PAT), or `GITHUB_APP_ID` + `GITHUB_PRIVATE_KEY` (plus optional `GITHUB_INSTALLATION_ID`) for App auth. These differ from Atlas's install-handler vars above — the install handlers read `GITHUB_APP_PRIVATE_KEY` / `GITHUB_APP_INSTALLATION_ID`, whereas the adapter's own fallbacks are `GITHUB_PRIVATE_KEY` / `GITHUB_INSTALLATION_ID`.
+</Callout>
 
 ## Troubleshooting
 

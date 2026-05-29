@@ -232,3 +232,29 @@ Key differences from the explore tool's priority chain:
 Python execution has two layers of defense: an AST-based import guard (defense-in-depth, runs before execution) and the sandbox backend itself (the actual security boundary). The import guard blocks dangerous modules (`subprocess`, `os`, `socket`, etc.) and builtins (`exec`, `eval`, `open`, `__import__`, etc.). If `python3` is not available locally for AST validation, the guard is skipped -- the sandbox enforces isolation regardless.
 
 Data from a previous SQL query is injected into the sandbox as a pandas DataFrame (`df`) or raw dict (`data`). Results are returned as structured output: tables (`_atlas_table`), interactive Recharts charts (`_atlas_chart`), or PNG files (matplotlib via `chart_path()`).
+
+## REST Datasource sandbox network boundary (`executePython` + OpenAPI)
+
+When a workspace has a [REST Datasource](/docs/datasources/rest) connected, the Python sandbox's **network policy** is the layer-0 security boundary for any future in-sandbox REST work: it bounds *which hosts the sandbox can reach at all*, before any operation-level check runs. How that boundary is enforced differs by backend, and the difference is operationally important.
+
+| Backend | Deploy mode | Sandbox egress when a REST datasource is connected | What this means |
+|---------|-------------|----------------------------------------------------|-----------------|
+| **Vercel Sandbox** | SaaS (`app.useatlas.dev`) | Denied by default; narrowed **per request** to **exactly the connected datasource's host(s)** | A prompt-injected request to any other host (`attacker.example.com`, an internal metadata endpoint, …) is blocked by the sandbox itself |
+| **Sidecar** | Self-hosted (Railway, Docker) | **No policy — the sandbox network is open** | The sidecar has no per-request network policy; outbound traffic from the sandbox is **not** restricted to the datasource host |
+| **nsjail** | Self-hosted (Docker/VM) | No network at all | nsjail blocks all egress |
+
+### SaaS (Vercel Sandbox) — bounded, per-request
+
+On SaaS the per-request Firecracker microVM starts `deny-all` and is narrowed, **per request**, to the host(s) of the REST datasource resolved for that workspace (see `tools/backends/network-allowlist.ts`). Key properties:
+
+- **Computed server-side.** The allowlist is derived only from the install's base URL (`openapi_url` / `base_url_override`) inside the API boundary — never from anything the model emits. A malicious prompt cannot widen it.
+- **Per-request, not per-deploy.** The policy is scoped to the host(s) the *spawning workspace* has installed. One tenant's sandbox cannot reach another tenant's datasource host.
+- **Egress only — no credential injected.** The boundary opens egress to the host; it does **not** inject the datasource credential into the sandbox or its network path. So Python running inside the sandbox **cannot authenticate** to the upstream. The authenticated read path stays the host-side `executeRestOperation` tool, which applies the credential server-side and enforces read-only there — never running untrusted code with an authenticated connection.
+
+> **Why no in-sandbox authenticated client (yet).** A bounded, *authenticated* in-sandbox `AtlasRestClient` would let the agent loop over the upstream in code. But a network credential is injected per host and is **method-agnostic** — and untrusted agent code that can reach an HTTP client can issue any method — so an in-sandbox authenticated client cannot enforce "read-only in this release". That composition path is therefore deferred to a later slice that mediates read-only at a method-aware host-side point (pairs with the per-endpoint write allowlist). This slice ships only the network boundary.
+
+### Self-hosted (Sidecar / nsjail) — the asymmetry
+
+> **Operator warning.** On self-hosted deployments that use the **sidecar**, the sandbox network is **open** — there is no `networkPolicy` equivalent. Atlas's per-request host allowlist only applies on the Vercel Sandbox. Outbound traffic from the self-hosted Python/explore sandbox is **not** restricted to the datasource host, so a self-hosted instance has a **larger exfiltration surface than SaaS**. To approximate the SaaS boundary, restrict the sidecar container's outbound networking at the platform layer (egress firewall / network policy). The `just-bash` dev fallback inherits the host environment and is never used for `executePython` (Python requires a real sandbox backend).
+
+On every backend, the REST datasource's authenticated reads go through the host-side `executeRestOperation` tool — the credential and the read-only guard live server-side, outside any sandbox.

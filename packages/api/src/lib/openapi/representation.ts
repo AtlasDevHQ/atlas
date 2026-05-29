@@ -34,7 +34,7 @@ import type {
   OperationGraph,
   OperationParameter,
 } from "./types";
-import { generateSemanticModel, renderModelYaml } from "./semantic-generator";
+import { generateSemanticModel, renderModelYaml, type OpenApiSemanticModel } from "./semantic-generator";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Mode knob (the bake-off axis)
@@ -87,6 +87,13 @@ export interface AgentRepresentation {
    * an exact tokenizer would couple this to a provider.
    */
   readonly approxTokens: number;
+  /**
+   * Resources whose record schema no cascade layer could resolve (Path B only;
+   * always empty for Path A, which has no entity model). The agent-loop consumer
+   * logs this so a misconfigured or unusual spec is diagnosable instead of
+   * silently yielding field-less entities in the prompt.
+   */
+  readonly unresolvedResources: ReadonlyArray<string>;
 }
 
 export interface BuildRepresentationOptions {
@@ -123,9 +130,11 @@ export function buildAgentRepresentation(
 ): AgentRepresentation {
   switch (mode) {
     case "operation-graph":
-      return finalize(mode, renderOperationGraph(graph, options), graph);
-    case "semantic-yaml":
-      return finalize(mode, renderSemanticYaml(graph, options), graph);
+      return finalize(mode, renderOperationGraph(graph, options), graph, []);
+    case "semantic-yaml": {
+      const model = generateSemanticModel(graph);
+      return finalize(mode, renderSemanticYaml(model, graph, options), graph, model.unresolvedResources);
+    }
     default: {
       // Exhaustiveness guard: when a NEW mode is added to REPRESENTATION_MODES,
       // the compiler flags this site until the new mode gets a case arm.
@@ -140,12 +149,14 @@ function finalize(
   mode: RepresentationMode,
   promptContext: string,
   graph: OperationGraph,
+  unresolvedResources: ReadonlyArray<string>,
 ): AgentRepresentation {
   return {
     mode,
     promptContext,
     operationCount: graph.operations.size,
     approxTokens: Math.ceil(promptContext.length / 4),
+    unresolvedResources,
   };
 }
 
@@ -196,14 +207,14 @@ function renderDatasourceHeader(
  * Render Path B (`semantic-yaml`): the shared datasource header, the
  * datasource-level filter syntax (surfaced once), then the generated semantic
  * model's entity YAMLs — the same entity-relational surface the agent reads for
- * SQL datasources. Delegates the graph walk to `semantic-generator.ts`; this
- * function only assembles the prompt frame around the YAML.
+ * SQL datasources. Takes the pre-generated model (so the caller can also read its
+ * `unresolvedResources`); this function only assembles the prompt frame.
  */
 function renderSemanticYaml(
+  model: OpenApiSemanticModel,
   graph: OperationGraph,
   options: BuildRepresentationOptions,
 ): string {
-  const model = generateSemanticModel(graph);
   const out: string[] = renderDatasourceHeader(graph, options);
 
   out.push(

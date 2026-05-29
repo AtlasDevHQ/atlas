@@ -373,3 +373,202 @@ describe("openapi-semantic-generator — generalization (non-Twenty spec)", () =
     expect(widget.operations.find((o) => o.operationId === "getWidget")?.kind).toBe("get");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+//  4. Edge cases + robustness (#2931 review follow-ups)
+// ─────────────────────────────────────────────────────────────────────
+const EDGE_SPEC = {
+  openapi: "3.0.3",
+  info: { title: "Edge API", version: "1.0.0" },
+  components: {
+    schemas: {
+      Box: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } } },
+      Warranty: { type: "object", properties: { months: { type: "integer" } } },
+      Gadget: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          specs: {
+            type: "object",
+            properties: { dims: { type: "object", properties: { widthMm: { type: "integer" } } } },
+          },
+          warranty: { $ref: "#/components/schemas/Warranty" },
+        },
+      },
+    },
+  },
+  paths: {
+    // No matching schema at all → operations-only fallback (unresolved).
+    "/healthchecks": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } },
+    // Only resource-name singularization (layer 4) matches: boxes -> Box (no body,
+    // untyped response, opaque operationId "query" with no verb prefix).
+    "/boxes": { get: { operationId: "query", responses: { "200": { description: "ok" } } } },
+    // Body $ref resolves Gadget; warranty -> Warranty is a ref to a NON-entity.
+    "/gadgets": {
+      get: { operationId: "listGadgets", responses: { "200": { description: "ok" } } },
+      post: {
+        operationId: "createGadget",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/Gadget" } } },
+        },
+        responses: { "201": { description: "created" } },
+      },
+    },
+  },
+};
+
+describe("openapi-semantic-generator — edge cases + robustness", () => {
+  const edgeModel = generateSemanticModel(buildOperationGraph(EDGE_SPEC));
+
+  it("emits an operations-only entity (no columns/joins) when no layer resolves a schema, and flags it", () => {
+    expect(edgeModel.unresolvedResources).toContain("healthchecks");
+    const hc = entityNamed(edgeModel, "Healthcheck"); // titleCaseSingular("healthchecks")
+    expect(hc.recordSchema).toBeUndefined();
+    expect(hc.columns).toEqual([]);
+    expect(hc.joins).toEqual([]);
+    expect(hc.operations.map((o) => o.operationId)).toContain("ping");
+    // The YAML omits record_schema / dimensions / joins cleanly.
+    const rendered = renderEntityYaml(hc);
+    expect(rendered).not.toContain("record_schema");
+    expect(rendered).not.toContain("dimensions");
+    expect(rendered).not.toContain("joins");
+  });
+
+  it("resolves via layer 4 (resource-name singularization) when layers 1-3 all miss", () => {
+    // boxes: no body, untyped response, operationId "query" carries no verb —
+    // only singularize("boxes") -> "box" (case-insensitive) matches schema Box.
+    expect(entityNamed(edgeModel, "Box").recordSchema).toBe("Box");
+    expect(edgeModel.unresolvedResources).not.toContain("boxes");
+  });
+
+  it("renders a $ref to a NON-entity schema as a typed column, never a dangling join", () => {
+    const gadget = entityNamed(edgeModel, "Gadget");
+    // Warranty has no /warranties resource → not an entity → must be a column.
+    expect(gadget.columns.find((c) => c.name === "warranty")?.type).toBe("Warranty");
+    expect(gadget.joins.find((j) => j.targetEntity === "Warranty")).toBeUndefined();
+  });
+
+  it("never emits a join whose target is not a generated entity (referential integrity)", () => {
+    const names = new Set(edgeModel.entities.map((e) => e.name));
+    for (const e of edgeModel.entities) {
+      for (const j of e.joins) {
+        expect(names.has(j.targetEntity)).toBe(true);
+      }
+    }
+  });
+
+  it("flattens inline objects exactly one level (grandchildren collapse to a typed object)", () => {
+    const gadget = entityNamed(edgeModel, "Gadget");
+    const cols = gadget.columns.map((c) => c.name);
+    expect(cols).toContain("specs.dims"); // one level
+    expect(cols).not.toContain("specs.dims.widthMm"); // NOT two levels
+    expect(gadget.columns.find((c) => c.name === "specs.dims")?.type).toBe("object");
+  });
+
+  it("an empty graph yields no entities and an empty model YAML", () => {
+    const empty = generateSemanticModel(
+      buildOperationGraph({
+        openapi: "3.0.3",
+        info: { title: "Empty", version: "1.0.0" },
+        components: { schemas: {} },
+        paths: {},
+      }),
+    );
+    expect(empty.entities).toEqual([]);
+    expect(empty.unresolvedResources).toEqual([]);
+    expect(renderModelYaml(empty)).toBe("");
+  });
+
+  it("the writes flag is derived purely from HTTP method (no drift)", () => {
+    for (const e of model.entities) {
+      for (const op of e.operations) {
+        expect(op.writes).toBe(op.method !== "GET" && op.method !== "HEAD" && op.method !== "OPTIONS");
+      }
+    }
+  });
+
+  it("primaryKey is set exactly for the `id` column", () => {
+    for (const e of model.entities) {
+      for (const c of e.columns) {
+        expect(Boolean(c.primaryKey)).toBe(c.name === "id");
+      }
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  5. Multi-key envelope disambiguation (#2931 review — frequency, not key order)
+// ─────────────────────────────────────────────────────────────────────
+const MULTIKEY_SPEC = {
+  openapi: "3.0.3",
+  info: { title: "Multi-Key API", version: "1.0.0" },
+  components: {
+    schemas: {
+      Order: { type: "object", properties: { id: { type: "string" }, total: { type: "number" } } },
+      Customer: { type: "object", properties: { id: { type: "string" } } },
+    },
+  },
+  paths: {
+    "/orders": {
+      // First op's data envelope carries TWO ref-bearing keys (customer THEN
+      // orders); a naive first-key-wins unwrap would mis-pick Customer.
+      get: {
+        operationId: "queryOrders",
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        customer: { $ref: "#/components/schemas/Customer" },
+                        orders: { type: "array", items: { $ref: "#/components/schemas/Order" } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      // Second op carries only Order — tips the cross-operation vote to Order.
+      post: {
+        operationId: "queryOrders2",
+        responses: {
+          "201": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        orders: { type: "array", items: { $ref: "#/components/schemas/Order" } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+describe("openapi-semantic-generator — multi-key envelope", () => {
+  it("disambiguates a multi-key data envelope by cross-operation frequency, not JSON key order", () => {
+    const mk = generateSemanticModel(buildOperationGraph(MULTIKEY_SPEC));
+    // Order appears in both ops' envelopes, Customer in one — frequency picks Order.
+    expect(entityNamed(mk, "Order").recordSchema).toBe("Order");
+  });
+});

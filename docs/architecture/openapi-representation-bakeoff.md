@@ -145,8 +145,10 @@ Reasoning:
    token cost alone, and there it loses (+81%).
 2. **Tokens are paid every step.** The representation is fixed system-prompt
    overhead re-sent on each agent step. The leaner mode is the safer default,
-   especially as specs grow (a full Twenty `/rest/open-api/core` is ~250 KB; Path
-   B's per-entity restatement scales worse than Path A's flat digest).
+   especially as specs grow (a full Twenty `/rest/open-api/core` is ~250 KB of
+   JSON — an external, approximate figure per Twenty's published spec at time of
+   writing, not measured from the test fixture; Path B's per-entity restatement
+   scales worse than Path A's flat digest).
 3. **The open question needs live data, and we kept the means to answer it.** A
    richer entity/join surface *may* help a real model on harder multi-hop
    questions — something the scripted harness cannot show. Path B stays a
@@ -155,7 +157,7 @@ Reasoning:
    also the natural cache artifact (`workspace_plugins.config.openapi_snapshot`,
    OQ4) regardless of which mode renders the prompt.
 
-> **Maintainer decision (record on #2931):** _<pending — to be filled in by the maintainer before slice 2 consumes the default>_
+> **Maintainer decision (record on #2931):** _<pending — slice 2 (#2926) closeout MUST replace this line with the chosen default. Until then the code default (`DEFAULT_REPRESENTATION_MODE = "operation-graph"` in `datasource.ts`) already reflects this report's Path-A recommendation.>_
 
 ## Reproducing
 

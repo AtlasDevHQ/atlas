@@ -2163,7 +2163,7 @@ The transitional `datasource.ts` resolver (env-driven, single Twenty datasource 
 
 **Impact:**
 - **Path B passes every assertion in slice 1's Twenty acceptance suite** (the suite is parameterized over `RepresentationMode`; `MODES_UNDER_TEST` now carries both). Neither mode is disqualified — both drive the four traps faithfully.
-- **The bake-off picked a default from data.** Equal correctness, equal interaction shape (scripted), but Path A is ~974 prompt tokens vs Path B's ~1766 (+81%, paid every agent step). Report: `docs/architecture/openapi-representation-bakeoff.md` recommends Path A as slice 2's default, Path B kept selectable (`ATLAS_OPENAPI_REPRESENTATION`).
+- **The bake-off picked a default from data.** Equal correctness, equal interaction shape (scripted), but Path A costs roughly half the prompt tokens of Path B (~+80%, paid every agent step — see the report for the exact per-run figures, which track the fixture + renderer). Report: `docs/architecture/openapi-representation-bakeoff.md` recommends Path A as slice 2's default, Path B kept selectable (`ATLAS_OPENAPI_REPRESENTATION`).
 - **Generalization is proven, not assumed.** The same walk runs against a second hand-crafted non-Twenty spec (Widget Store, RSQL filter, `{widgetId}` not `{id}`) and produces correct `Widget`/`Category` entities — the report flags the one Twenty-shaped assumption (irregular plurals need a body or `find*Many` op).
 - **The mode is selectable per datasource**, threaded through `RestDatasource.representationMode` (env today, per-install config in slice 2) — the agent reads it off the resolved datasource, so slice 2's swap needs no agent-loop change.
 

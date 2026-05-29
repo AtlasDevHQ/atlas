@@ -143,7 +143,35 @@ export interface OpenApiSemanticModel {
    * / diagnostics; not rendered into the agent prompt.
    */
   readonly supportingSchemas: ReadonlyArray<string>;
+  /**
+   * Resources whose record schema NO cascade layer could resolve — they became
+   * operations-only entities (addressable, but with no column/join surface). An
+   * empty array is the healthy case. Surfaced (rather than logged) because the
+   * generator is pure; the prompt-building consumer logs it so a misconfigured or
+   * unusual spec is diagnosable instead of silently yielding field-less entities.
+   */
+  readonly unresolvedResources: ReadonlyArray<string>;
 }
+
+/**
+ * Compile-time guard: the model MUST stay JSON-serializable — it is persisted to
+ * `workspace_plugins.config.openapi_snapshot` and rehydrated with a plain
+ * `JSON.parse` in slice 2. This assignment stops compiling the moment a field of
+ * a non-JSON-safe type (a `Map`, `Set`, `Date`, function, …) is added, turning
+ * the "no Maps" invariant from a comment into a build error — which matters
+ * because the upstream {@link OperationGraph} is built entirely from `Map`s, so
+ * the natural extension mistake (carrying a graph sub-shape straight through) is
+ * exactly what this catches.
+ */
+type JsonSafe<T> = T extends string | number | boolean | null | undefined
+  ? T
+  : T extends ReadonlyArray<infer U>
+    ? ReadonlyArray<JsonSafe<U>>
+    : T extends ReadonlyMap<unknown, unknown> | ReadonlySet<unknown> | ((...args: never[]) => unknown)
+      ? never
+      : { [K in keyof T]: JsonSafe<T[K]> };
+const _assertModelJsonSafe = (m: OpenApiSemanticModel): JsonSafe<OpenApiSemanticModel> => m;
+void _assertModelJsonSafe;
 
 // ─────────────────────────────────────────────────────────────────────
 //  Public entry point
@@ -158,32 +186,47 @@ export function generateSemanticModel(graph: OperationGraph): OpenApiSemanticMod
   const groups = groupOperationsByResource(graph);
   const filterSyntax = findFilterSyntax(graph);
 
-  const entities: GeneratedEntity[] = [];
-  const usedSchemas = new Set<string>();
+  // Pass 1: resolve each resource's record schema first, so the COMPLETE set of
+  // entity names is known before deriving joins. A join may only target a schema
+  // that actually became an entity — otherwise it is a dangling edge to a YAML
+  // block that doesn't exist (see deriveColumnsAndJoins).
+  const resolved = [...groups].map(([resource, operations]) => ({
+    resource,
+    operations,
+    recordSchema: resolveRecordSchema(resource, operations, graph),
+  }));
+  const entitySchemaNames = new Set(resolved.map((r) => r.recordSchema).filter(isString));
 
-  for (const [resource, operations] of groups) {
-    const recordSchema = resolveRecordSchema(resource, operations, graph);
+  // Pass 2: derive columns/joins now that the entity set is known.
+  const usedSchemas = new Set<string>();
+  const entities: GeneratedEntity[] = resolved.map(({ resource, operations, recordSchema }) => {
     if (recordSchema) usedSchemas.add(recordSchema);
 
     const schema = recordSchema ? graph.schemas.get(recordSchema) : undefined;
     const { columns, joins } = schema
-      ? deriveColumnsAndJoins(schema, graph)
+      ? deriveColumnsAndJoins(schema, graph, entitySchemaNames)
       : { columns: [], joins: [] };
 
     const entityOps = operations.map(toEntityOperation);
-    entities.push({
-      name: recordSchema ?? titleCaseSingular(resource),
+    const name = recordSchema ?? titleCaseSingular(resource);
+    return {
+      name,
       resource,
       ...(recordSchema ? { recordSchema } : {}),
-      description: describeEntity(recordSchema ?? titleCaseSingular(resource), resource, graph.info.title),
+      description: describeEntity(name, resource, graph.info.title),
       operations: entityOps,
       columns,
       joins,
       queryPatterns: deriveQueryPatterns(entityOps, filterSyntax),
-    });
-  }
+    };
+  });
 
   entities.sort((a, b) => a.name.localeCompare(b.name));
+
+  const unresolvedResources = resolved
+    .filter((r) => !r.recordSchema)
+    .map((r) => r.resource)
+    .toSorted((a, b) => a.localeCompare(b));
 
   const supportingSchemas = [...graph.schemas.keys()]
     .filter((name) => !usedSchemas.has(name))
@@ -195,6 +238,7 @@ export function generateSemanticModel(graph: OperationGraph): OpenApiSemanticMod
     entities,
     ...(filterSyntax ? { filterSyntax } : {}),
     supportingSchemas,
+    unresolvedResources,
   };
 }
 
@@ -290,7 +334,7 @@ function requestBodyRefs(operations: ReadonlyArray<Operation>): string[] {
   return out;
 }
 
-/** Collect the record ref each `200/201` response unwraps to (see {@link unwrapDataEnvelope}). */
+/** Collect the record refs each `200/201` response unwraps to (see {@link unwrapDataEnvelope}). */
 function responseRecordRefs(
   operations: ReadonlyArray<Operation>,
   graph: OperationGraph,
@@ -299,8 +343,7 @@ function responseRecordRefs(
   for (const op of operations) {
     for (const status of ["200", "201"]) {
       const json = op.responses.get(status)?.content.get("application/json");
-      const ref = json ? unwrapDataEnvelope(json, graph) : undefined;
-      if (ref) out.push(ref);
+      if (json) out.push(...unwrapDataEnvelope(json, graph));
     }
   }
   return out;
@@ -308,61 +351,46 @@ function responseRecordRefs(
 
 /**
  * Unwrap a `{ data: { <resourceKey>: Record | Record[] } }` success envelope to
- * the record's schema name. This is the consistent REST list/get shape (Twenty's
- * `PersonListResponse` → `data.people[] -> Person`; `PersonResponse` →
- * `data.person -> Person`; an inline `data.noteTargets[] -> NoteTarget`). A named
- * envelope ref is resolved one hop first. Crucially it descends EXACTLY one
- * `data.<key>` level — it does NOT recurse into the record's own joins (so a
- * Person response never proposes NoteTarget as the *record*). Returns `undefined`
- * when the response isn't `data`-wrapped, so resolution falls through to the
- * operationId / name-singularization layers.
+ * the record schema name(s) it carries. This is the consistent REST list/get
+ * shape (Twenty's `PersonListResponse` → `data.people[] -> Person`;
+ * `PersonResponse` → `data.person -> Person`; an inline `data.noteTargets[] ->
+ * NoteTarget`). A named envelope ref is resolved one hop first. Crucially it
+ * descends EXACTLY one `data.<key>` level — it does NOT recurse into the record's
+ * own joins (so a Person response never proposes NoteTarget as the *record*).
+ *
+ * Returns ALL ref-bearing `data.<key>` candidates (not just the first), so a
+ * multi-key envelope is disambiguated by the caller's cross-operation frequency
+ * scoring rather than by JSON key order. Empty array when the response isn't
+ * `data`-wrapped, so resolution falls through to the operationId /
+ * name-singularization layers.
  */
-function unwrapDataEnvelope(schema: OpenApiSchema, graph: OperationGraph): string | undefined {
+function unwrapDataEnvelope(schema: OpenApiSchema, graph: OperationGraph): string[] {
   const envelope = resolveSchema(schema, graph);
   const data = envelope?.properties?.get("data");
-  if (!data) return undefined;
+  if (!data) return [];
   const dataShape = resolveSchema(data, graph);
-  if (!dataShape?.properties) return undefined;
+  if (!dataShape?.properties) return [];
+  const refs: string[] = [];
   for (const value of dataShape.properties.values()) {
     const target = refTargetOf(value);
-    if (target) return target.name;
+    if (target) refs.push(target.name);
   }
-  return undefined;
+  return refs;
 }
 
-// Verb prefixes generated REST clients put before the resource name. Ordered
-// longest-first so "findMany" matches before "find".
-const OPERATION_VERB_PREFIXES = [
-  "findMany",
-  "findOne",
-  "createMany",
-  "createOne",
-  "updateMany",
-  "updateOne",
-  "deleteMany",
-  "deleteOne",
-  "getMany",
-  "getOne",
-  "listMany",
-  "list",
-  "get",
-  "create",
-  "update",
-  "delete",
-  "find",
-] as const;
+// CRUD verb prefixes generated REST clients put before the resource name, each
+// with an optional `One`/`Many` cardinality (find / findOne / findManyPeople /
+// listWidgets). The captured remainder must start with an upper-case letter so we
+// don't strip "find" off a resource literally named "findings". The optional
+// `(?:One|Many)?` is greedy, so "findManyPeople" yields "People" (Many consumed),
+// not "ManyPeople" — replacing the old longest-first ordered prefix list.
+const OPERATION_VERBS = ["find", "get", "list", "create", "update", "delete"] as const;
+const OPERATION_VERB_RE = new RegExp(`^(?:${OPERATION_VERBS.join("|")})(?:One|Many)?([A-Z].*)$`);
 
 /** `deleteOneCompany` → `Company`; `findManyPeople` → `Person` (via singularize). */
 function schemaFromOperationId(operationId: string): string | undefined {
-  for (const prefix of OPERATION_VERB_PREFIXES) {
-    if (operationId.startsWith(prefix) && operationId.length > prefix.length) {
-      const rest = operationId.slice(prefix.length);
-      // Only treat as a verb prefix when the remainder starts upper-case (so we
-      // don't strip "find" off a resource literally named "findings").
-      if (rest[0] === rest[0]?.toUpperCase()) return singularize(rest);
-    }
-  }
-  return undefined;
+  const rest = OPERATION_VERB_RE.exec(operationId)?.[1];
+  return rest ? singularize(rest) : undefined;
 }
 
 /** Pick the candidate that appears most often AND is a real schema. */
@@ -372,15 +400,10 @@ function mostFrequentMatch(candidates: string[], schemaNames: Set<string>): stri
     const match = matchSchemaName(c, schemaNames);
     if (match) counts.set(match, (counts.get(match) ?? 0) + 1);
   }
-  let best: string | undefined;
-  let bestCount = 0;
-  for (const [name, count] of counts) {
-    if (count > bestCount) {
-      best = name;
-      bestCount = count;
-    }
-  }
-  return best;
+  // Highest count wins; the stable sort keeps the first-inserted (earliest
+  // candidate) on ties — same tie-break as a strict `>` scan.
+  const ranked = [...counts.entries()].toSorted(([, a], [, b]) => b - a);
+  return ranked[0]?.[0];
 }
 
 /** Exact, then case-insensitive match of a candidate against real schema names. */
@@ -398,16 +421,20 @@ function matchSchemaName(candidate: string, schemaNames: Set<string>): string | 
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Walk a record schema's properties into columns + joins. `$ref` properties
- * (and arrays of `$ref`) become joins (the relationships the agent traverses);
- * everything else becomes a column. Inline objects are flattened one level into
- * dotted columns so nested shapes (`emails.primaryEmail`, `bodyV2.markdown`) stay
- * visible. The record schema is resolved through one ref hop if it is itself a
- * bare `$ref` pointer.
+ * Walk a record schema's properties into columns + joins. A `$ref` (or array of
+ * `$ref`) whose target is a real entity becomes a join — a relationship the agent
+ * can traverse to another entity block. A `$ref` to a schema that is NOT an
+ * entity (a value object with no resource/operations) becomes a typed column
+ * instead: the agent can't `executeRestOperation` on a non-resource, so emitting
+ * a join to it would be a dangling edge. Everything else is a column. Inline
+ * objects are flattened one level into dotted columns so nested shapes
+ * (`emails.primaryEmail`, `bodyV2.markdown`) stay visible. The record schema is
+ * resolved through one ref hop if it is itself a bare `$ref` pointer.
  */
 function deriveColumnsAndJoins(
   schema: OpenApiSchema,
   graph: OperationGraph,
+  entitySchemaNames: ReadonlySet<string>,
 ): { columns: GeneratedColumn[]; joins: GeneratedJoin[] } {
   const resolved = resolveSchema(schema, graph);
   const columns: GeneratedColumn[] = [];
@@ -415,15 +442,21 @@ function deriveColumnsAndJoins(
   if (!resolved?.properties) return { columns, joins };
 
   for (const [propName, propSchema] of resolved.properties) {
-    // Array-of-ref or single ref → join.
     const refTarget = refTargetOf(propSchema);
-    if (refTarget) {
+    if (refTarget && entitySchemaNames.has(refTarget.name)) {
+      // Ref to a real entity → a traversable join.
       joins.push({
         via: propName,
         targetEntity: refTarget.name,
         relationship: refTarget.isArray ? "one_to_many" : "many_to_one",
         ...(refTarget.description ? { description: refTarget.description } : {}),
       });
+      continue;
+    }
+    if (refTarget) {
+      // Ref to a non-entity schema (value object) → a typed column, never a join,
+      // so the model never advertises an edge to an entity block that isn't there.
+      columns.push(leafColumn(propName, propSchema));
       continue;
     }
     appendColumns(propName, propSchema, columns);
@@ -478,9 +511,11 @@ function appendColumns(name: string, schema: OpenApiSchema, out: GeneratedColumn
       out.push({ name, type: "object", description: schema.description });
     }
     for (const [childName, childSchema] of schema.properties) {
-      // Refs nested inside an inline object stay columns-by-path is wrong — but
-      // record schemas don't nest joins under anonymous objects in practice;
-      // flatten scalar children, and represent a nested ref child as a typed leaf.
+      // Flatten one level: each child becomes a `parent.child` column. A `$ref`
+      // child of an inline object is rendered as a typed leaf (type = the ref
+      // name), NOT promoted to a join — joins are derived only from top-level
+      // properties, since record schemas don't nest entity relationships under
+      // anonymous inline objects in practice.
       out.push(leafColumn(`${name}.${childName}`, childSchema));
     }
     return;

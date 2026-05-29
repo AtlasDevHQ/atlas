@@ -38,6 +38,7 @@
 
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AdminActionType } from "@atlas/api/lib/audit/actions";
@@ -418,7 +419,13 @@ interface CycleOptions {
 export const runByotCatalogRefreshCycle = (
   opts: CycleOptions = {},
 ): Effect.Effect<ByotRefreshCycleResult> =>
-  Effect.gen(function* () {
+  // Span the whole cycle so a slow/failing upstream provider refresh shows
+  // up in the trace waterfall alongside atlas.scheduler.tick — logs + audit
+  // rows alone gave no latency attribution (#2945).
+  withEffectSpan(
+    "atlas.scheduler.byot_catalog_refresh",
+    {},
+    Effect.gen(function* () {
     if (!hasInternalDB()) {
       const result = zeroResult();
       emitCycleAudit(result);
@@ -520,7 +527,14 @@ export const runByotCatalogRefreshCycle = (
     log.info({ ...result }, "BYOT catalog refresh: cycle complete");
     emitCycleAudit(result);
     return result;
-  });
+  }),
+    (result) => ({
+      "atlas.byot.status": result.status,
+      "atlas.byot.inspected": result.inspected ?? 0,
+      "atlas.byot.refreshed": result.refreshed,
+      "atlas.byot.failed": result.failed,
+    }),
+  );
 
 function countSkip(result: ByotRefreshCycleResult, reason: ByotCatalogRefreshSkipReason): void {
   switch (reason) {

@@ -13,10 +13,18 @@ const { NodeSDK } = await import("@opentelemetry/sdk-node");
 const { OTLPTraceExporter } = await import(
   "@opentelemetry/exporter-trace-otlp-http"
 );
+const { OTLPMetricExporter } = await import(
+  "@opentelemetry/exporter-metrics-otlp-http"
+);
+const { PeriodicExportingMetricReader } = await import(
+  "@opentelemetry/sdk-metrics"
+);
 const { resourceFromAttributes } = await import("@opentelemetry/resources");
 const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } = await import(
   "@opentelemetry/semantic-conventions"
 );
+
+const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
 const resource = resourceFromAttributes({
   [ATTR_SERVICE_NAME]: "atlas-api",
@@ -24,10 +32,23 @@ const resource = resourceFromAttributes({
 });
 
 const traceExporter = new OTLPTraceExporter({
-  url: `${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,
+  url: `${endpoint}/v1/traces`,
 });
 
-const sdk = new NodeSDK({ resource, traceExporter });
+// Metric reader — without this, every meter defined in metrics.ts
+// (atlas.abuse.*, atlas.mcp.*, atlas.oauth.*, atlas.rate_limit.*,
+// atlas.crm_outbox.*) feeds a no-op meter and is silently dropped even
+// when OTEL_EXPORTER_OTLP_ENDPOINT is set. Export to the same collector
+// as traces on a 60s cadence so dashboards/alerts built on those counters
+// actually receive data.
+const metricReader = new PeriodicExportingMetricReader({
+  exporter: new OTLPMetricExporter({
+    url: `${endpoint}/v1/metrics`,
+  }),
+  exportIntervalMillis: 60_000,
+});
+
+const sdk = new NodeSDK({ resource, traceExporter, metricReader });
 sdk.start();
 
 /**

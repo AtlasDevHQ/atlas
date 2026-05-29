@@ -13,6 +13,7 @@ import { Effect } from "effect";
 import { requireEnterprise } from "../index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupConfig, purgeExpiredBackups, ensureTable } from "./engine";
+import { verifyBackup } from "./verify";
 
 const log = createLogger("ee:backups-scheduler");
 
@@ -96,7 +97,20 @@ const tick = (): Effect.Effect<void> =>
     _lastRunMinute = currentMinute;
     log.info({ schedule: config.schedule }, "Scheduled backup triggered");
 
-    yield* createBackup();
+    const backup = yield* createBackup();
+
+    // Verify every automated backup — without this the success signal is
+    // just "pg_dump exited 0 + non-empty file". The header check is cheap
+    // and catches truncated/corrupt dumps; a failed verify is logged loudly
+    // so on-call sees it rather than discovering it at restore time.
+    // (Restore-and-diff integrity remains a larger follow-up — see #2941.)
+    const verification = yield* verifyBackup(backup.id);
+    if (!verification.verified) {
+      log.error(
+        { backupId: backup.id, reason: verification.message },
+        "Scheduled backup failed verification — artifact may not be restorable",
+      );
+    }
 
     // Purge expired backups after successful backup
     yield* purgeExpiredBackups();
@@ -147,4 +161,4 @@ export function stopScheduler(): void {
 }
 
 /** @internal — for testing */
-export { cronMatchesNow as _cronMatchesNow };
+export { cronMatchesNow as _cronMatchesNow, tick as _tick };

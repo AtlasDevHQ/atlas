@@ -578,7 +578,7 @@ When an admin removes a plugin from a workspace via `DELETE /api/v1/admin/market
 | State | Action on uninstall |
 |-------|--------------------|
 | `workspace_plugins` row | **Deleted.** The installation record itself is the canonical "is this plugin installed?" signal — its absence is the uninstall. |
-| `scheduled_tasks` rows tagged with the plugin's `catalog_id` | **Deleted** in a separate statement after the install row is removed, scoped to the workspace's `org_id`. **Cleanup is best-effort, not atomic** — if the cleanup statement fails, the uninstall still succeeds (HTTP 200) and the failure is recorded as an audit event with `status: "failure"` and `metadata.cleanupFailed: true`. Orphans stay in `scheduled_tasks` until purged manually. |
+| `scheduled_tasks` rows tagged with the plugin's `catalog_id` | **Deleted** in a separate statement after the install row is removed, scoped to the workspace's `org_id`. **Cleanup is best-effort, not atomic** — if the cleanup statement fails, the uninstall still succeeds (HTTP 200) and the failure is recorded as an audit event with `status: "failure"` and `metadata.cleanupFailed: true`. Any orphans left behind are caught by the recurring orphan-reconcile signal (see [Orphan-task drift signal](#orphan-task-drift-signal)) rather than going unnoticed. |
 | `scheduled_task_runs` for the deleted tasks | **Deleted** automatically via the `task_id` foreign-key cascade. |
 | In-process hook registrations (`beforeQuery`, `afterToolCall`, `onRequest`, …) | **Not detached.** Hooks live in the process-global registry and uninstall does not invoke `teardown()` (which runs only at server shutdown). They become inert for the uninstalled workspace because hook dispatch checks `workspace_plugins` for the installation, which is now gone. No DB rows to clean. |
 
@@ -588,7 +588,7 @@ When an admin removes a plugin from a workspace via `DELETE /api/v1/admin/market
 |-------|----------|-----|
 | `plugin_<pluginId>_*` tables declared via the `schema` property | **Yes** | Reinstalling the plugin should pick up where it left off — cached digest history, sync cursors, whatever your plugin persists. Operators who need a hard reset use the workspace purge path, not uninstall. |
 | Catalog row in `plugin_catalog` | **Yes** | The catalog is platform-scoped. Uninstall is a per-workspace operation; the catalog only goes away when an admin explicitly deletes it. |
-| Webhook subscriptions you registered with external platforms (Slack, GitHub, etc.) | **Yes — unless your `teardown()` removes them** | Atlas has no visibility into your plugin's external state. If your plugin subscribes a webhook with a third party, your `teardown()` is the only place to unsubscribe it. Otherwise the external service will keep delivering events to a workspace that no longer has the plugin installed. |
+| Webhook subscriptions you registered with external platforms (Slack, GitHub, etc.) | **Yes — your plugin must revoke them** | Atlas has no visibility into your plugin's external state and cannot revoke a third-party webhook for you. **Expectation:** revoke the subscription from the route or hook that owns it as part of the uninstall flow (see below) — `teardown()` runs only at server shutdown, not on a per-workspace uninstall, so it is not a substitute. An un-revoked webhook keeps delivering events to a workspace that no longer has the plugin installed. |
 | Encrypted credentials in `workspace_plugins.config` | **No — removed with the row** | The config blob lives on the `workspace_plugins` row and is deleted with it. There is no separate credential store to clean up. |
 
 ### Tagging scheduled tasks for cleanup
@@ -604,6 +604,15 @@ INSERT INTO scheduled_tasks (
 ```
 
 Untagged tasks (`plugin_id IS NULL`) are user-created and survive uninstall — Atlas only cleans up tasks that explicitly opt in to plugin ownership.
+
+### Orphan-task drift signal
+
+Because the `scheduled_tasks` cleanup is best-effort (and the older `WorkspaceInstaller` disconnect path never cleaned tasks at all), a failed uninstall can leave a task with its `plugin_id` set but no matching `workspace_plugins` row. A recurring scheduler fiber — `orphan_task_reconcile` — closes that gap for operators:
+
+- **Always measures.** Every tick it counts orphaned plugin tasks (rows where `plugin_id IS NOT NULL` and no live `workspace_plugins` row matches on `catalog_id` + `workspace_id`). The count rides the per-tick OpenTelemetry span `atlas.scheduler.orphan_task_reconcile` as the `atlas.orphan_tasks.count` attribute, and a structured `log.warn` fires whenever the count is above zero — so orphan accumulation is visible in traces and logs without a dedicated dashboard.
+- **Optionally sweeps.** When the operator sets `ATLAS_ORPHAN_TASK_RECONCILE=true`, the same fiber deletes the confirmed orphans using the exact `(plugin_id, org_id)` predicate the uninstall path uses. It defaults off (measure-only) so a transient read blip can't trigger a destructive sweep; a NULL-`org_id` plugin task is reported but never auto-deleted.
+
+This is an operator concern, not a plugin-author one — but it's why a missed cleanup no longer silently fires forever. You still get the cleanest result by tagging tasks correctly (above) and revoking external webhooks yourself (below).
 
 ### Implementing `teardown()`
 

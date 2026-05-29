@@ -121,13 +121,19 @@ function withFiberDeathLog<A, E, R>(
 // `withFiberDeathLog` (above) only fires when a defect kills the fiber.
 // A healthy tick emits nothing, so "wedged silently" and "ran fine,
 // nothing to do" are indistinguishable in traces, and a hung-but-not-
-// crashed fiber never trips the death log. Wrap each of these 8 cleanup
+// crashed fiber never trips the death log. Wrap each of these cleanup
 // tick bodies in `withEffectSpan` so every repeat iteration emits one
 // span — a wedged fiber then shows up as an absence of spans against its
 // expected cadence.
 //
-// Scope: only these 8 cleanup fibers. The other periodic fibers forked in
-// `makeSchedulerLive` are intentionally out of scope for this pass —
+// Membership: 9 cleanup fibers. Eight were retrofitted with a span by
+// #2945 (the TTL/ratelimit/state sweeps below); the ninth,
+// `orphan_task_reconcile` (#2944), shipped with its span from day one and
+// additionally attaches the orphan count as a result attribute (the only one
+// of these nine cleanup fibers that passes `setResultAttributes` — the BYOT
+// catalog-refresh fiber and the scheduler engine use that 4th arg elsewhere).
+// The other periodic fibers forked in `makeSchedulerLive` remain out of
+// scope —
 // `sub_processor_publisher`, `settings_refresh`, `onboarding_email`, and
 // `expert_scheduler` still lack a per-tick span, while the CRM/email
 // outbox flushers already have their own heartbeat + stall-watchdog
@@ -143,7 +149,7 @@ function withFiberDeathLog<A, E, R>(
 //
 // This record is the single source of truth for the span names: each
 // wrap site below reads from it. `layers.test.ts` asserts both the exact
-// name set AND (via a structural source-scan guard) that all 8 wrap sites
+// name set AND (via a structural source-scan guard) that all 9 wrap sites
 // are present, so renaming an entry OR deleting a `withEffectSpan(...)`
 // wrap at a call site is a test failure rather than a silent regression.
 export const SCHEDULER_CLEANUP_SPAN_NAMES = {
@@ -155,6 +161,7 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   dashboard_rate_limit_cleanup: "atlas.scheduler.dashboard_rate_limit_cleanup",
   conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
   share_token_cleanup: "atlas.scheduler.share_token_cleanup",
+  orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1632,6 +1639,67 @@ export function makeSchedulerLive(
           "share_token_cleanup",
           withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.share_token_cleanup, {}, shareCleanupEffect).pipe(
             Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS))),
+          ),
+        ),
+      );
+
+      // ── Periodic fiber: orphan plugin-task reconcile (#2944) — hourly ──
+      // Counts `scheduled_tasks` whose `plugin_id` has no live
+      // `workspace_plugins` row — the residue a non-atomic plugin uninstall
+      // leaves when the post-DELETE task cleanup fails. The count rides the
+      // per-tick span as a result attribute (the only one of these cleanup
+      // fibers that attaches one), so an operator querying traces sees orphan
+      // accumulation; a `log.warn` fires on the same tick when > 0. The
+      // destructive sweep is gated behind `ATLAS_ORPHAN_TASK_RECONCILE`
+      // (default off — measure-only); the module no-ops when the internal DB
+      // is absent.
+      //
+      // Error ordering matters: `withEffectSpan` wraps the RAW tick, so a
+      // failed tick records span status ERROR + the exception (rather than a
+      // misleading status-OK span carrying a fabricated `count=0`). The
+      // loop-liveness `catchAll` is applied OUTSIDE the span — it logs the
+      // failure and lets the hourly fiber survive a DB blip without painting
+      // the failed tick green or asserting a false-healthy zero into traces.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { ORPHAN_TASK_RECONCILE_INTERVAL_MS } = require("@atlas/api/lib/scheduler/orphan-task-reconcile") as {
+        ORPHAN_TASK_RECONCILE_INTERVAL_MS: number;
+      };
+      const orphanReconcileTick = withEffectSpan(
+        SCHEDULER_CLEANUP_SPAN_NAMES.orphan_task_reconcile,
+        {},
+        Effect.tryPromise({
+          try: async () => {
+            const { runOrphanTaskReconcileTick } = await import(
+              "@atlas/api/lib/scheduler/orphan-task-reconcile"
+            );
+            return runOrphanTaskReconcileTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }),
+        (result) => ({
+          "atlas.orphan_tasks.count": result.orphanedTasks,
+          "atlas.orphan_tasks.installs": result.orphanedInstalls,
+          "atlas.orphan_tasks.reconcile_enabled": result.reconcileEnabled,
+          "atlas.orphan_tasks.deleted": result.deleted,
+        }),
+      ).pipe(
+        // Recover AFTER the span has recorded any error, so the trace shows
+        // ERROR (not OK-with-zero) while the loop stays alive.
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: errorMessage(err) },
+              "Orphan plugin-task reconcile tick failed",
+            );
+          }),
+        ),
+      );
+      // forkScoped, not fork — see SettingsLive for rationale.
+      yield* Effect.forkScoped(
+        withFiberDeathLog(
+          "orphan_task_reconcile",
+          orphanReconcileTick.pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(ORPHAN_TASK_RECONCILE_INTERVAL_MS))),
           ),
         ),
       );

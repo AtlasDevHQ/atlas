@@ -21,6 +21,7 @@ import {
   ImplementationStatusOverrideLive,
   CatalogSeed,
   BuiltinDatasourceCatalogSeed,
+  SCHEDULER_CLEANUP_SPAN_NAMES,
   type ConfigShape,
   type MigrationShape,
   type SettingsShape,
@@ -311,6 +312,50 @@ describe("makeSchedulerLive", () => {
 
     // Disposing should not throw
     await rt.dispose();
+  });
+
+  // ── Per-tick observability spans on the cleanup fibers (#2945) ──────
+  // The 8 periodic cleanup fibers are forked internally and not exposed
+  // through the `Scheduler` Tag, so the span wrapping can't be asserted by
+  // introspecting OTel. Instead the production wrap sites read their span
+  // name from `SCHEDULER_CLEANUP_SPAN_NAMES`, and these tests pin that
+  // record so dropping or renaming a span — which would re-hide a wedged
+  // fiber in traces — fails here rather than silently regressing.
+  describe("cleanup-fiber observability spans (#2945)", () => {
+    const EXPECTED_SPAN_NAMES = {
+      oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
+      rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
+      demo_rate_limit_cleanup: "atlas.scheduler.demo_rate_limit_cleanup",
+      contact_rate_limit_cleanup: "atlas.scheduler.contact_rate_limit_cleanup",
+      abuse_cleanup: "atlas.scheduler.abuse_cleanup",
+      dashboard_rate_limit_cleanup: "atlas.scheduler.dashboard_rate_limit_cleanup",
+      conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
+      share_token_cleanup: "atlas.scheduler.share_token_cleanup",
+    } as const;
+
+    test("covers exactly the 8 named cleanup fibers", () => {
+      expect(Object.keys(SCHEDULER_CLEANUP_SPAN_NAMES).toSorted()).toEqual(
+        Object.keys(EXPECTED_SPAN_NAMES).toSorted(),
+      );
+    });
+
+    test("maps each fiber to its dotted atlas.scheduler.<op> span name", () => {
+      expect(SCHEDULER_CLEANUP_SPAN_NAMES).toEqual(EXPECTED_SPAN_NAMES);
+    });
+
+    test("every span name keeps the atlas.scheduler. prefix (no bare snake_case label)", () => {
+      const entries: ReadonlyArray<[string, string]> = Object.entries(
+        SCHEDULER_CLEANUP_SPAN_NAMES,
+      );
+      for (const [fiber, span] of entries) {
+        // Convention guard from the #2945 LOW finding: the dotted prefix
+        // must survive; the op segment intentionally mirrors the fiber's
+        // `withFiberDeathLog` label (underscores within the op are fine).
+        expect(span).toBe(`atlas.scheduler.${fiber}`);
+        expect(span.startsWith("atlas.scheduler.")).toBe(true);
+        expect(span).not.toBe(fiber);
+      }
+    });
   });
 });
 

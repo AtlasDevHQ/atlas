@@ -63,6 +63,32 @@ export interface EnvProfile {
    * disables).
    */
   readonly onboardingEmailsEnabled: boolean;
+
+  /**
+   * Better Auth session-cookie name prefix (`advanced.cookiePrefix`). The
+   * session cookie is named `${cookiePrefix}.session_token`. A distinct
+   * prefix per deployment env is what isolates prod from staging: both live
+   * under the shared `.useatlas.dev` parent (staging is `*.staging.useatlas.dev`,
+   * a *subdomain* of the prod cookie domain), so prod's broadly-scoped
+   * `.useatlas.dev` cookie reaches staging hosts regardless of how staging's
+   * own cookie domain is scoped — the prefix, not the domain, is what isolates.
+   * A different name means each env's optimistic proxy gate
+   * (`packages/web/src/proxy.ts` → `getSessionCookie`) and Better Auth ignore
+   * the other env's cookie instead of being fooled by its mere presence.
+   *
+   * MUST stay in lockstep with the web proxy's `getSessionCookie` read, which
+   * CANNOT import this module (the frontend never imports `@atlas/api`). The
+   * web side reads `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX`, defaulting to `"atlas"`
+   * to match the `production` profile so unconfigured self-hosted deploys stay
+   * consistent. Whenever this value changes for a deployment, set
+   * `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` on its web service to the same string.
+   *
+   * Operator override: `ATLAS_COOKIE_PREFIX` env var (non-empty wins).
+   *
+   * NOTE: changing the prefix for an already-deployed env renames the cookie,
+   * invalidating every active session there once (users re-login).
+   */
+  readonly cookiePrefix: string;
 }
 
 const PROFILES: Record<DeployEnv, EnvProfile> = {
@@ -72,6 +98,10 @@ const PROFILES: Record<DeployEnv, EnvProfile> = {
   production: {
     requireEmailVerification: true,
     onboardingEmailsEnabled: true,
+    // `"atlas"` is also the web proxy's default (NEXT_PUBLIC_ATLAS_COOKIE_PREFIX
+    // unset → "atlas"), so self-hosted deploys — which run this profile — stay
+    // in lockstep without any extra wiring.
+    cookiePrefix: "atlas",
   },
   // Staging dogfoods signup without making the maintainer wait on
   // real verification emails (no Resend on staging anyway — DPA guard
@@ -80,12 +110,19 @@ const PROFILES: Record<DeployEnv, EnvProfile> = {
   staging: {
     requireEmailVerification: false,
     onboardingEmailsEnabled: false,
+    // Distinct from prod so prod's `.useatlas.dev` cookie (delivered to
+    // `*.staging.useatlas.dev` because staging is a subdomain of it) is ignored
+    // here. web-staging must set NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging.
+    cookiePrefix: "atlas-staging",
   },
   // Dev mirrors staging — local signup should be instant; onboarding
   // emails would spam the developer or hit a real Resend account.
   development: {
     requireEmailVerification: false,
     onboardingEmailsEnabled: false,
+    // Local dev sets NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-dev (see .env.example)
+    // so the web proxy and API agree.
+    cookiePrefix: "atlas-dev",
   },
 };
 
@@ -147,4 +184,17 @@ export function resolveOnboardingEmailsEnabled(env: NodeJS.ProcessEnv = process.
     return raw === "true";
   }
   return getEnvProfile(env).onboardingEmailsEnabled;
+}
+
+/**
+ * Resolve the Better Auth session-cookie prefix honoring the operator
+ * override: a non-empty `ATLAS_COOKIE_PREFIX` wins; otherwise the profile
+ * default applies. See {@link EnvProfile.cookiePrefix} for the prod↔staging
+ * isolation rationale and the required web-side (`NEXT_PUBLIC_ATLAS_COOKIE_PREFIX`)
+ * lockstep.
+ */
+export function resolveCookiePrefix(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.ATLAS_COOKIE_PREFIX?.trim();
+  if (raw) return raw;
+  return getEnvProfile(env).cookiePrefix;
 }

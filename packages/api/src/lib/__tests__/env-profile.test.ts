@@ -4,6 +4,7 @@ import {
   getEnvProfile,
   resolveRequireEmailVerification,
   resolveOnboardingEmailsEnabled,
+  resolveCookiePrefix,
 } from "@atlas/api/lib/env-profile";
 
 describe("resolveDeployEnv", () => {
@@ -40,22 +41,25 @@ describe("resolveDeployEnv", () => {
 });
 
 describe("getEnvProfile", () => {
-  it("production profile: verification on, onboarding emails on", () => {
+  it("production profile: verification on, onboarding emails on, cookiePrefix atlas", () => {
     const p = getEnvProfile({ ATLAS_DEPLOY_ENV: "production" });
     expect(p.requireEmailVerification).toBe(true);
     expect(p.onboardingEmailsEnabled).toBe(true);
+    expect(p.cookiePrefix).toBe("atlas");
   });
 
-  it("staging profile: verification off, onboarding off", () => {
+  it("staging profile: verification off, onboarding off, cookiePrefix atlas-staging", () => {
     const p = getEnvProfile({ ATLAS_DEPLOY_ENV: "staging" });
     expect(p.requireEmailVerification).toBe(false);
     expect(p.onboardingEmailsEnabled).toBe(false);
+    expect(p.cookiePrefix).toBe("atlas-staging");
   });
 
-  it("development profile: verification off, onboarding off", () => {
+  it("development profile: verification off, onboarding off, cookiePrefix atlas-dev", () => {
     const p = getEnvProfile({ ATLAS_DEPLOY_ENV: "development" });
     expect(p.requireEmailVerification).toBe(false);
     expect(p.onboardingEmailsEnabled).toBe(false);
+    expect(p.cookiePrefix).toBe("atlas-dev");
   });
 
   it("unset env falls through to production profile", () => {
@@ -135,5 +139,33 @@ describe("resolveOnboardingEmailsEnabled", () => {
     expect(resolveOnboardingEmailsEnabled({ ATLAS_ONBOARDING_EMAILS_ENABLED: "1" })).toBe(false);
     expect(resolveOnboardingEmailsEnabled({ ATLAS_ONBOARDING_EMAILS_ENABLED: "yes" })).toBe(false);
     expect(resolveOnboardingEmailsEnabled({ ATLAS_ONBOARDING_EMAILS_ENABLED: "" })).toBe(false);
+  });
+});
+
+describe("resolveCookiePrefix", () => {
+  it("env unset → production profile prefix 'atlas' (self-hosted default)", () => {
+    expect(resolveCookiePrefix({})).toBe("atlas");
+    expect(resolveCookiePrefix({ ATLAS_DEPLOY_ENV: "production" })).toBe("atlas");
+  });
+
+  it("staging profile → 'atlas-staging' (isolated from prod's cookie slot)", () => {
+    expect(resolveCookiePrefix({ ATLAS_DEPLOY_ENV: "staging" })).toBe("atlas-staging");
+  });
+
+  it("development profile → 'atlas-dev'", () => {
+    expect(resolveCookiePrefix({ ATLAS_DEPLOY_ENV: "development" })).toBe("atlas-dev");
+  });
+
+  it("ATLAS_COOKIE_PREFIX override wins over the profile default", () => {
+    expect(
+      resolveCookiePrefix({ ATLAS_DEPLOY_ENV: "staging", ATLAS_COOKIE_PREFIX: "custom" }),
+    ).toBe("custom");
+  });
+
+  it("blank/whitespace ATLAS_COOKIE_PREFIX falls back to the profile (no empty prefix)", () => {
+    expect(resolveCookiePrefix({ ATLAS_DEPLOY_ENV: "staging", ATLAS_COOKIE_PREFIX: "   " })).toBe(
+      "atlas-staging",
+    );
+    expect(resolveCookiePrefix({ ATLAS_COOKIE_PREFIX: "" })).toBe("atlas");
   });
 });

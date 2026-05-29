@@ -170,6 +170,7 @@ function authDeps(plugins: ReturnType<typeof buildPlugins>) {
     // driven at runtime by DATABASE_URL + the injected pool, not by this.
     database: undefined,
     cookieDomain: undefined,
+    cookiePrefix: "atlas",
     socialProviders: undefined,
     plugins,
     trustedOrigins: ["https://app.useatlas.dev"],

@@ -2,7 +2,7 @@
  * Next.js 16 proxy (replaces the middleware.ts convention from Next.js 15).
  *
  * Two responsibilities:
- * 1. Auth redirects — redirects unauthenticated users to /signup and
+ * 1. Auth redirects — redirects unauthenticated users to /login and
  *    authenticated users away from auth pages. Only active when
  *    NEXT_PUBLIC_ATLAS_AUTH_MODE is "managed" (Better Auth).
  * 2. Mode forwarding — reads the `atlas-mode` cookie and forwards it as
@@ -18,9 +18,24 @@ import type { NextRequest } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
 import { ATLAS_MODES } from "@useatlas/types/auth";
 import { PUBLIC_ROUTE_PREFIXES } from "./lib/public-routes";
+import { resolveWebCookiePrefix } from "./lib/cookie-prefix";
 
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
+
+// Session-cookie name prefix — MUST match the API's `advanced.cookiePrefix`
+// (resolved per deploy env in `@atlas/api/lib/env-profile`). The frontend
+// can't import that module, so the value is mirrored here via env. Defaults
+// to "atlas" to match the API's `production` profile, so unconfigured
+// self-hosted deploys agree without extra wiring. Atlas staging sets
+// NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging; local dev sets atlas-dev.
+// Without this, prod's `.useatlas.dev` cookie (delivered to staging because
+// staging is a subdomain) would satisfy this optimistic presence check and
+// suppress the /login redirect on a different environment.
+// `process.env.NEXT_PUBLIC_*` is read here as a direct static reference so
+// Next inlines it at build time; `resolveWebCookiePrefix` only applies the
+// default/trim (mirrors the API's resolveCookiePrefix and is unit-tested).
+const cookiePrefix = resolveWebCookiePrefix(process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX);
 
 /** Routes that only unauthenticated users should see (exact match). */
 const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];
@@ -65,7 +80,7 @@ export function proxy(request: NextRequest) {
   }
 
   try {
-    const sessionToken = getSessionCookie(request);
+    const sessionToken = getSessionCookie(request, { cookiePrefix });
 
     // Authenticated user on an auth page → redirect to home
     if (sessionToken && isAuthRoute(pathname)) {

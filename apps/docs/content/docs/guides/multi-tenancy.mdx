@@ -56,7 +56,7 @@ Use the Better Auth API to create an organization. The creating user becomes the
 # Create an organization (authenticated as a signed-in user)
 curl -X POST https://your-atlas.com/api/auth/organization/create \
   -H "Content-Type: application/json" \
-  -H "Cookie: better-auth.session_token=<session>" \
+  -H "Cookie: atlas.session_token=<session>" \
   -d '{
     "name": "Acme Corp",
     "slug": "acme-corp"
@@ -117,19 +117,19 @@ Manage org-scoped entities via the admin API. The session must have an active or
 ```bash
 # List entities for the active org (unified DB + disk view)
 curl https://your-atlas.com/api/v1/admin/semantic/entities \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 
 # Create or update an entity
 curl -X PUT https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
   -H "Content-Type: application/json" \
-  -H "Cookie: better-auth.session_token=<session>" \
+  -H "Cookie: atlas.session_token=<session>" \
   -d '{
     "yamlContent": "table: users\ndescription: Application users\ndimensions:\n  - name: id\n    sql: id\n    type: string"
   }'
 
 # Delete an entity
 curl -X DELETE https://your-atlas.com/api/v1/admin/semantic/org/entities/users \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 ```
 
 <Callout type="info" title="Unified read endpoints">
@@ -203,7 +203,7 @@ Monitor org pool health via the admin API:
 ```bash
 # Get org pool metrics
 curl https://your-atlas.com/api/v1/admin/connections \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 ```
 
 The admin console's **Connections** page shows pool stats including active/idle connections, query counts, error rates, and drain history for both base and org-scoped pools.
@@ -228,7 +228,7 @@ The admin cache flush endpoint clears all cached entries. There is no per-org fl
 ```bash
 # Flush all cached entries (admin only)
 curl -X POST https://your-atlas.com/api/v1/admin/cache/flush \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 ```
 
 Configure cache behavior in `atlas.config.ts`:
@@ -287,15 +287,15 @@ Platform admins (users with the `admin` role at the application level) can manag
 ```bash
 # List all organizations with member counts
 curl https://your-atlas.com/api/v1/admin/organizations \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 
 # Get org details with members and invitations
 curl https://your-atlas.com/api/v1/admin/organizations/org-id \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 
 # Get org stats (conversations, members, queries)
 curl https://your-atlas.com/api/v1/admin/organizations/org-id/stats \
-  -H "Cookie: better-auth.session_token=<session>"
+  -H "Cookie: atlas.session_token=<session>"
 ```
 
 ---

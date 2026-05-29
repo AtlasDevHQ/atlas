@@ -27,7 +27,10 @@ import { Effect, Duration } from "effect";
 import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
-import { defaultRegistry, type ToolRegistry } from "./tools/registry";
+import { defaultRegistry, ToolRegistry } from "./tools/registry";
+import { resolveTwentyDatasource } from "./openapi/datasource";
+import { buildAgentRepresentation } from "./openapi/representation";
+import { REST_OPERATION_DESCRIPTION, executeRestOperationTool } from "./tools/rest-operation";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
 import { connections, detectDBType, type ConnectionMetadata, type DBType } from "./db/connection";
 import { getCrossSourceJoins, type CrossSourceJoin, loadOrgWhitelist, getOrgSemanticIndex } from "./semantic";
@@ -438,8 +441,18 @@ export function buildSystemParam(
   routingContext?: ScopeRoutingContext,
   boundDashboardContext?: BoundDashboardAgentContext,
   presentationMode: "developer" | "conversational" = "developer",
+  /**
+   * #2924 — Path A REST representation. When a REST datasource resolves, the
+   * trimmed operation-graph prompt context is appended so the agent can address
+   * its operations with `executeRestOperation`. Absent for SQL-only workspaces.
+   */
+  restRepresentation?: string,
 ): string | SystemModelMessage {
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
+
+  if (restRepresentation) {
+    content += "\n\n" + restRepresentation;
+  }
 
   if (presentationMode === "conversational") {
     content += CONVERSATIONAL_PROMPT_ADDENDUM;
@@ -860,7 +873,37 @@ export async function runAgent({
 
   // Resolve async work before entering otelContext.with() (sync callback).
   const modelMessages = await convertToModelMessages(messages);
-  const rawTools = toolRegistry.getAll();
+
+  // #2924 — REST datasource (slice 1: Twenty behind ATLAS_OPENAPI_TWENTY).
+  // When a datasource resolves, merge the `executeRestOperation` tool and append
+  // the Path A operation-graph representation to the system prompt. The resolve
+  // is a no-op returning null when the flag is off, so SQL-only workspaces pay
+  // nothing and see no behavioural change. Fail-soft: a preflight error degrades
+  // to "no REST datasource" rather than breaking the chat turn.
+  let activeRegistry = toolRegistry;
+  let restRepresentation: string | undefined;
+  try {
+    const restDatasource = await resolveTwentyDatasource();
+    if (restDatasource) {
+      const restRegistry = new ToolRegistry();
+      restRegistry.register({
+        name: "executeRestOperation",
+        description: REST_OPERATION_DESCRIPTION,
+        tool: executeRestOperationTool,
+      });
+      activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
+      restRepresentation = buildAgentRepresentation(restDatasource.graph, "operation-graph", {
+        displayName: restDatasource.displayName,
+      }).promptContext;
+    }
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "REST datasource preflight failed — continuing without it",
+    );
+  }
+
+  const rawTools = activeRegistry.getAll();
   const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
 
   // #2517 — load active-group routing context so the system prompt can
@@ -883,7 +926,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, toolRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer"),
+      system: buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation),
       messages: modelMessages,
       tools,
       temperature: 0.2,

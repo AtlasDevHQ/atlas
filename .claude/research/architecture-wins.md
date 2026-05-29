@@ -2116,3 +2116,27 @@ The executing client (`executeOperation`) is a sibling transport primitive that 
 - **The milestone's shared contract is set once.** Slices 1, 1b, 2, 3, 4, 5 all consume `OperationGraph` rather than re-parsing — the deepening is "one parse boundary, every consumer reads one type."
 
 **Category:** Deep module — narrow interface (one pure normalizer + one transport primitive), broad implementation (the whole irregular surface of OpenAPI 3.x). Same shape as win #58 (connection-mode resolver) and win #69 (`WorkspaceInstallGate`): pushing the irregularity down to one module means every later consumer stops re-deriving it — and here it is set *before* the consumers exist, so they are born reading the normalized shape rather than retrofitted onto it.
+
+---
+
+## 73. The OpenAPI graph's first consumers read it, never re-walk it (slice 1, #2924)
+
+**Date:** 2026-05-29
+**Issue:** #2924 (parent PRD #2868)
+**Branch:** feat/2924-openapi-twenty-acceptance
+
+**Problem:** Slice 0 (win #72) set `OperationGraph` as the single parse boundary and predicted its consumers — "the semantic-YAML generator, the REST validator, the prompt-context builder, and the executing client all consume `OperationGraph` rather than re-parsing." Slice 1 builds the first live consumers (prompt-context builder, single-op tool, sandbox-Python client). The trap the prediction guards against is each consumer growing its own ad-hoc walk of `paths.*` / `$ref` to render *its* view — the prompt builder stringifying the raw doc, the tool re-resolving refs to find an operation, the Python generator re-deriving path templates. That reintroduces exactly the drift win #72 eliminated, one slice later.
+
+**Solution:** Every slice-1 consumer is a pure function (or thin tool) over `OperationGraph`, touching only `graph.operations` / `graph.schemas` — never a `$ref` string or a raw `paths.*` object:
+1. **`buildAgentRepresentation(graph, mode)` (`representation.ts`)** — renders the *trimmed* operation graph as the agent's prompt context (Path A). The `mode` knob (`"operation-graph"` | `"semantic-yaml"`) is the v0.0.2 bake-off axis: #2931 adds Path B reading the *same* graph, and the acceptance suite re-runs identical assertions across modes. Returns `{ promptContext, operationCount, approxTokens }` so the bake-off compares prompt size head-to-head. Renders schema properties one level deep so the four Twenty traps (filter `field[op]:value`, `targetPersonId` join, inline custom fields, `bodyV2.markdown`) are visible to the agent *structurally* — no editorializing, just the real shape.
+2. **`buildRestClientPreamble(graph, {baseUrlEnv, authEnv})` (`python-preamble.ts`)** — generates a dependency-free stdlib-`urllib` `AtlasRestClient` whose `OPERATIONS` table is baked from the graph. The Python `call(operationId, ...)` dispatcher mirrors the TS `executeOperation` semantics exactly, so the "no per-operation code" property holds in the sandbox too. Credentials injected by env-var *name*, never inlined.
+3. **`executeRestOperation` tool (`tools/rest-operation.ts`)** — the single-op shortcut. Looks the operation up in `graph.operations`, applies a read-only guard (GET/HEAD only; writes return `writes_disabled` until slice 5's allowlist), and dispatches through the slice-0 client. Discriminated-union result (`ok` / `http_error` / `writes_disabled` / `unknown_operation` / `no_datasource` / `client_error`) — same self-correction convention as `sendEmail`.
+
+The transitional `datasource.ts` resolver (env-driven, single Twenty datasource behind `ATLAS_OPENAPI_TWENTY`) is the *only* slice-1 module that does I/O — it probes `/rest/open-api/core` once, hands the result to `buildOperationGraph`, caches the graph, and returns the shape (`{ graph, baseUrl, auth }`) the three pure consumers read. Slice 2's per-workspace install registry replaces this one module without touching the consumers.
+
+**Impact:**
+- **3 pure consumers + 1 I/O resolver, 0 re-parsing.** Adding an operation to the upstream OpenAPI spec makes it appear in the prompt, the Python client, and the tool simultaneously — no code change at any consumer.
+- **The bake-off knob is structural, not bolted on.** `RepresentationMode` is a parameter of the *builder* and the *acceptance suite* (`describe.each`), so #2931's Path B is a drop-in: implement the mode, add it to `MODES_UNDER_TEST`, and the identical assertions + metrics run.
+- **The acceptance suite is the single load-bearing test.** Drives the real `runAgent` loop with a scripted LLM through the wiring against an in-process Twenty mock that *honors* the filter syntax, so the four traps are executed (a wrong filter shape fails the answer assertion), plus a real-`python3` proof that the generated client composes the Person → NoteTarget → Note `$ref` chain end-to-end.
+
+**Category:** Deepening by *consumption discipline* — the inverse of the usual "extract a module" win. Win #72 created the boundary; this win is the evidence it holds: the first three consumers are born reading `OperationGraph` and the only one that re-derives anything (I/O) is the transitional resolver slice 2 deletes. Same "set it before the consumers exist" payoff as #72, now realized.

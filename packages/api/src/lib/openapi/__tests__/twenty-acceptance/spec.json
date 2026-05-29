@@ -1,0 +1,346 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Twenty Core REST API", "version": "0.41.0" },
+  "servers": [{ "url": "https://crm.useatlas.dev/rest", "description": "workspace" }],
+  "security": [{ "bearer": [] }],
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" }
+    },
+    "parameters": {
+      "filter": {
+        "name": "filter",
+        "in": "query",
+        "required": false,
+        "description": "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine clauses with a comma (AND). Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is.",
+        "schema": { "type": "string" }
+      },
+      "orderBy": {
+        "name": "order_by",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "limit": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "format": "int32" }
+      },
+      "depth": {
+        "name": "depth",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "enum": [0, 1, 2] }
+      },
+      "startingAfter": {
+        "name": "starting_after",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "endingBefore": {
+        "name": "ending_before",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "softDelete": {
+        "name": "soft_delete",
+        "in": "query",
+        "required": false,
+        "description": "When false, hard-delete the record. Always send explicitly; do not rely on the server default.",
+        "schema": { "type": "boolean" }
+      }
+    },
+    "schemas": {
+      "Person": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": {
+            "type": "object",
+            "properties": {
+              "firstName": { "type": "string" },
+              "lastName": { "type": "string" }
+            }
+          },
+          "emails": {
+            "type": "object",
+            "properties": {
+              "primaryEmail": { "type": "string" },
+              "additionalEmails": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "atlasFirstSource": { "type": "string", "description": "Atlas custom field (inline on Person)." },
+          "atlasLastSource": { "type": "string", "description": "Atlas custom field (inline on Person)." },
+          "atlasStripeCustomerId": { "type": "string", "description": "Atlas custom field (inline on Person)." },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "noteTargets": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/NoteTarget" }
+          }
+        }
+      },
+      "NoteTarget": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "noteId": { "type": "string", "format": "uuid" },
+          "targetPersonId": { "type": "string", "format": "uuid", "description": "Join column linking a note target to its Person." },
+          "note": { "$ref": "#/components/schemas/Note" },
+          "person": { "$ref": "#/components/schemas/Person" }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "title": { "type": "string" },
+          "bodyV2": {
+            "type": "object",
+            "description": "Rich-text body. Write the markdown under bodyV2.markdown — the legacy top-level body field was removed.",
+            "properties": { "markdown": { "type": "string" } }
+          },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Company": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "name": { "type": "string" },
+          "domainName": {
+            "type": "object",
+            "properties": { "primaryLinkUrl": { "type": "string" } }
+          },
+          "employees": { "type": "integer" }
+        }
+      },
+      "PersonListResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": {
+              "people": { "type": "array", "items": { "$ref": "#/components/schemas/Person" } }
+            }
+          }
+        }
+      },
+      "PersonResponse": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "properties": { "person": { "$ref": "#/components/schemas/Person" } }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/people": {
+      "get": {
+        "operationId": "findManyPeople",
+        "summary": "List or search people. Add filter=... to search; omit for a plain list.",
+        "tags": ["People"],
+        "parameters": [
+          { "$ref": "#/components/parameters/filter" },
+          { "$ref": "#/components/parameters/orderBy" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/depth" },
+          { "$ref": "#/components/parameters/startingAfter" },
+          { "$ref": "#/components/parameters/endingBefore" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of people",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonListResponse" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOnePerson",
+        "summary": "Create one person",
+        "tags": ["People"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Person" } }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      }
+    },
+    "/people/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "get": {
+        "operationId": "findOnePerson",
+        "summary": "Get one person by id",
+        "tags": ["People"],
+        "parameters": [{ "$ref": "#/components/parameters/depth" }],
+        "responses": {
+          "200": {
+            "description": "One person",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateOnePerson",
+        "summary": "Update one person by id",
+        "tags": ["People"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Person" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/PersonResponse" } }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteOnePerson",
+        "summary": "Delete one person by id",
+        "tags": ["People"],
+        "parameters": [{ "$ref": "#/components/parameters/softDelete" }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/notes": {
+      "get": {
+        "operationId": "findManyNotes",
+        "summary": "List notes",
+        "tags": ["Notes"],
+        "parameters": [
+          { "$ref": "#/components/parameters/filter" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/startingAfter" }
+        ],
+        "responses": { "200": { "description": "A list of notes" } }
+      },
+      "post": {
+        "operationId": "createOneNote",
+        "summary": "Create one note (body goes under bodyV2.markdown)",
+        "tags": ["Notes"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Note" } }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/notes/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "get": {
+        "operationId": "findOneNote",
+        "summary": "Get one note by id",
+        "tags": ["Notes"],
+        "responses": { "200": { "description": "One note" } }
+      },
+      "delete": {
+        "operationId": "deleteOneNote",
+        "summary": "Delete one note by id",
+        "tags": ["Notes"],
+        "parameters": [{ "$ref": "#/components/parameters/softDelete" }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/noteTargets": {
+      "get": {
+        "operationId": "findManyNoteTargets",
+        "summary": "List note targets. Filter by person with targetPersonId[eq]:<id>.",
+        "tags": ["NoteTargets"],
+        "parameters": [
+          { "$ref": "#/components/parameters/filter" },
+          { "$ref": "#/components/parameters/limit" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A list of note targets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "noteTargets": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/NoteTarget" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createOneNoteTarget",
+        "summary": "Link a note to a person (noteId + targetPersonId)",
+        "tags": ["NoteTargets"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/NoteTarget" } }
+          }
+        },
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/companies": {
+      "get": {
+        "operationId": "findManyCompanies",
+        "summary": "List or search companies. Add filter=... to search.",
+        "tags": ["Companies"],
+        "parameters": [
+          { "$ref": "#/components/parameters/filter" },
+          { "$ref": "#/components/parameters/limit" },
+          { "$ref": "#/components/parameters/startingAfter" }
+        ],
+        "responses": { "200": { "description": "A list of companies" } }
+      }
+    },
+    "/companies/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "string", "format": "uuid" } }
+      ],
+      "delete": {
+        "operationId": "deleteOneCompany",
+        "summary": "Delete one company by id",
+        "tags": ["Companies"],
+        "parameters": [{ "$ref": "#/components/parameters/softDelete" }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    }
+  }
+}

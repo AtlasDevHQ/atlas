@@ -1,5 +1,5 @@
 /**
- * Shared contract for the OpenAPI Datasource primitive (v0.2.0 milestone spine).
+ * Shared contract for the OpenAPI Datasource primitive (v0.0.2 milestone spine).
  *
  * This file defines the *one normalized shape* every downstream consumer of an
  * OpenAPI 3.x document reads — the semantic-YAML generator (slice 1b), the REST

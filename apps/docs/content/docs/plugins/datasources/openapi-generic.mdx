@@ -54,12 +54,14 @@ Every operation — read or write — is authorized by `validateRestOperation`, 
 1. **Operation in graph** — an `operationId` not in the probed spec is rejected (`unknown_operation`); Atlas never dispatches a fabricated operation.
 2. **Method allowlist** — GET/HEAD always pass; any other method requires the `operationId` in `write_allowlist`, else `writes_disabled` (default-deny).
 3. **Parameter shape** — required parameters and request body must be present; parameters the spec doesn't declare are rejected (`invalid_params`).
-4. **Rate limit** — a per-`(workspace, datasource, operation)` token bucket, **60 calls/min** by default, overridable per install via `rate_limit_per_minute`. Throttles runaway agent loops on a paid upstream (`rate_limited`, with a retry hint).
-5. **Timeout** — each request is capped at `ATLAS_OPENAPI_TIMEOUT` (default **30s**). A per-install timeout above the cap is rejected.
+4. **Rate limit** — a per-`(workspace, datasource, operation)` token bucket, **60 calls/min** by default, overridable per install via the config-only `rate_limit_per_minute` key. Throttles runaway agent loops on a paid upstream (`rate_limited`, with a retry hint).
+5. **Timeout** — each request is capped at `ATLAS_OPENAPI_TIMEOUT` (default **30s**). A per-install `request_timeout_ms` (config-only) above the cap is rejected.
 
 Writes are **never written to any cache** — the write path uses the un-cached client primitive, and the paginating read cache refuses to store non-GET responses by construction.
 
 ## Configuration fields
+
+Install-form fields (Admin → Connections):
 
 | Field | Required | Notes |
 |-------|----------|-------|
@@ -70,5 +72,11 @@ Writes are **never written to any cache** — the write path uses the un-cached 
 | `auth_param_name` | — | Query param for `apikey-query`, e.g. `api_key` |
 | `base_url_override` | — | When the spec's `servers[0].url` is wrong (dev/staging) |
 | `write_allowlist` | — | JSON array of `operationId`s permitted to write. Empty = read-only (default). |
-| `rate_limit_per_minute` | — | Per-operation rate limit override (default 60) |
 | `display_name` | — | Friendly name shown in Admin → Connections |
+
+Advanced overrides (set on the install's `config` via `atlas.config.ts`, not surfaced in the install form):
+
+| Key | Notes |
+|-----|-------|
+| `rate_limit_per_minute` | Per-operation rate limit override (default 60) |
+| `request_timeout_ms` | Per-request timeout override; must be ≤ `ATLAS_OPENAPI_TIMEOUT` (the cap), else the operation is rejected |

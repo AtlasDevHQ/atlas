@@ -34,6 +34,7 @@ import {
   isValidSnapshot,
   narrowSupportedAuthKind,
   parseRateLimitPerMinute,
+  parseRequestTimeoutMs,
   parseWriteAllowlist,
   type OpenApiAuthKind,
 } from "./catalog";
@@ -176,7 +177,8 @@ function buildDatasource(
   // form's JSON string; an `atlas.config.ts` plugins entry may pass an array.
   // Both normalize to a Set; anything malformed fails closed to read-only.
   const writeAllowlist = parseWriteAllowlist(decrypted.write_allowlist, installId);
-  const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute);
+  const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute, installId);
+  const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);
 
   return {
     id: installId,
@@ -187,6 +189,7 @@ function buildDatasource(
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
     writeAllowlist,
     ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
+    ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
   };
 }
 

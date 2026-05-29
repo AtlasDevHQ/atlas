@@ -16,8 +16,9 @@
  *    for SQL datasources. Implemented here; delegates the walk to the generator.
  *
  * Both paths share the datasource header ({@link renderDatasourceHeader}) — the
- * "this is a REST API, call executeRestOperation, read-only" framing is identical;
- * only the body (flat operation digest vs entity YAMLs) differs. The acceptance
+ * "this is a REST API, call executeRestOperation, reads run / writes are opt-in +
+ * confirmed" framing is identical; only the body (flat operation digest vs entity
+ * YAMLs) differs. The acceptance
  * suite (`__tests__/twenty-acceptance.test.ts`) is parameterized over
  * {@link RepresentationMode}; both modes produce an {@link AgentRepresentation}
  * with the same shape (`promptContext` + metrics) so #2931 re-runs identical
@@ -180,7 +181,8 @@ function finalize(
 
 /**
  * The datasource framing shared by both representation modes: "this is a REST
- * API, not SQL; call executeRestOperation; read-only this release". Keeping it
+ * API, not SQL; call executeRestOperation; reads run, writes are opt-in via the
+ * allowlist and require an in-chat confirm". Keeping it
  * in one place means the two bake-off paths differ ONLY in how they describe the
  * surface (flat operation digest vs entity YAMLs), not in the call contract —
  * so a token / step-count delta between them is attributable to the body, not

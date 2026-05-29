@@ -42,9 +42,10 @@ export const OPENAPI_GENERIC_CATALOG_ID = "catalog:openapi-generic";
 export const OPENAPI_GENERIC_NAME = "OpenAPI (Generic REST)";
 
 export const OPENAPI_GENERIC_DESCRIPTION =
-  "Connect any REST API with an OpenAPI 3.x spec as a read-only datasource " +
-  "(e.g. Twenty, Stripe, an internal service). The agent discovers operations " +
-  "from the spec and queries them directly.";
+  "Connect any REST API with an OpenAPI 3.x spec as a datasource — read by " +
+  "default, with an opt-in per-endpoint write allowlist (e.g. Twenty, Stripe, " +
+  "an internal service). The agent discovers operations from the spec and " +
+  "queries them directly.";
 
 /**
  * Auth kinds the install form accepts. `oauth2` is declared (so the enum is
@@ -100,7 +101,7 @@ export const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph"
  * `secret: true` flag on `auth_value` is the single thing that drives
  * `encryptSecretFields` / `decryptSecretFields` — adding a new auth field is a
  * one-line schema change, never a hand-wired encryption call (AC3, user story
- * 19). `write_allowlist` is captured but only honored in slice 5 (#2929).
+ * 19). `write_allowlist` is honored by `validateRestOperation` (slice 5, #2929).
  *
  * `auth_kind` is a `select` so the admin UI renders a dropdown bound to
  * {@link OPENAPI_AUTH_KINDS}; the handler re-validates against
@@ -283,13 +284,45 @@ export function parseWriteAllowlist(raw: unknown, installId?: string): ReadonlyS
   return ops;
 }
 
+/** Coerce a positive-integer config override (calls/min, ms, …) or `undefined`. */
+function parsePositiveIntConfig(raw: unknown): number | undefined {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 /**
  * Resolve a per-install rate-limit override (calls/min) from config, or
  * `undefined` to use the {@link RestDatasource} default. A non-positive /
  * non-numeric value is ignored (fall back to the default) rather than throttling
- * to zero.
+ * to zero — but the dropped override is logged for parity with
+ * {@link parseWriteAllowlist}, so a fat-fingered value isn't silently swallowed.
  */
-export function parseRateLimitPerMinute(raw: unknown): number | undefined {
-  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : undefined;
+export function parseRateLimitPerMinute(raw: unknown, installId?: string): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = parsePositiveIntConfig(raw);
+  if (parsed === undefined) {
+    log.warn(
+      { installId, value: raw },
+      "OpenAPI install rate_limit_per_minute is not a positive number — using the default (60/min)",
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Resolve a per-install request-timeout override (ms) from config, or `undefined`
+ * to use the `ATLAS_OPENAPI_TIMEOUT` cap. `validateRestOperation` rejects a value
+ * above the cap (`timeout-exceeded`); a non-positive / non-numeric value is
+ * dropped (warned) and the cap applies.
+ */
+export function parseRequestTimeoutMs(raw: unknown, installId?: string): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = parsePositiveIntConfig(raw);
+  if (parsed === undefined) {
+    log.warn(
+      { installId, value: raw },
+      "OpenAPI install request_timeout_ms is not a positive number — using the ATLAS_OPENAPI_TIMEOUT cap",
+    );
+  }
+  return parsed;
 }

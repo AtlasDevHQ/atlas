@@ -123,7 +123,9 @@ const ExecuteRestOperationInput = z.object({
   body: z
     .unknown()
     .optional()
-    .describe("JSON request body for write operations (rejected while read-only)."),
+    .describe(
+      "JSON request body for an allowlisted write operation. The write is staged for the user to confirm (it does not fire immediately); a non-allowlisted write is rejected.",
+    ),
 });
 
 /**
@@ -158,7 +160,9 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
 
   return tool({
     description:
-      "Call a single operation on a connected REST datasource by operationId. Read-only.",
+      "Call a single operation on a connected REST datasource by operationId. GET operations " +
+      "execute and return data; write operations run only if allowlisted, and an allowlisted " +
+      "write is staged for the user to confirm before it fires (never claim a write happened until confirmed).",
     inputSchema: ExecuteRestOperationInput,
     execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
       const datasources = await resolveDatasources();
@@ -207,12 +211,20 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       const isWrite = peeked ? peeked.method !== "GET" && peeked.method !== "HEAD" : false;
 
       const policy: RestOperationPolicy = {
+        // The rate-limit bucket is keyed (workspace, datasource, operation). In
+        // the normal agent path an absent org short-circuits to `no_datasource`
+        // before reaching here (datasources resolve from the org); the `"default"`
+        // sentinel is only reachable via an injected resolver (tests), where the
+        // `datasourceId` dimension still uniquely scopes the bucket.
         workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
         datasourceId: datasource.id,
         writeAllowlist: datasource.writeAllowlist,
         dispatch: !isWrite,
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }
+          : {}),
+        ...(datasource.requestTimeoutMs !== undefined
+          ? { requestedTimeoutMs: datasource.requestTimeoutMs }
           : {}),
       };
 

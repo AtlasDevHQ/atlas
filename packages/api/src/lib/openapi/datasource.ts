@@ -56,4 +56,10 @@ export interface RestDatasource {
    * (60/min). Resolved from `workspace_plugins.config.rate_limit_per_minute`.
    */
   readonly rateLimitPerMinute?: number;
+  /**
+   * Per-install request-timeout override (ms). Omitted → the `ATLAS_OPENAPI_TIMEOUT`
+   * cap. `validateRestOperation` rejects a value above the cap. Resolved from
+   * `workspace_plugins.config.request_timeout_ms`.
+   */
+  readonly requestTimeoutMs?: number;
 }

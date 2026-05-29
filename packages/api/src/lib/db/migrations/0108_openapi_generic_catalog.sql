@@ -29,7 +29,7 @@ VALUES
     'catalog:openapi-generic',
     'OpenAPI (Generic REST)',
     'openapi-generic',
-    'Connect any REST API with an OpenAPI 3.x spec as a read-only datasource (e.g. Twenty, Stripe, an internal service). The agent discovers operations from the spec and queries them directly.',
+    'Connect any REST API with an OpenAPI 3.x spec as a datasource — read by default, with an opt-in per-endpoint write allowlist (e.g. Twenty, Stripe, an internal service). The agent discovers operations from the spec and queries them directly.',
     'datasource',
     'form',
     'datasource',

@@ -270,6 +270,27 @@ describe("validateRestOperation — layer 4: rate limit (per-tenant per-operatio
       expect(v.allowed).toBe(true);
     }
   });
+
+  it("staging never consumes the single token the confirm later needs (debited exactly once)", () => {
+    // The full stage→confirm seam, the invariant the `dispatch` flag protects:
+    // with a budget of ONE call, staging the write 5× must leave that token
+    // intact so the eventual confirm (dispatch:true) succeeds — then a second
+    // confirm is throttled. A regression that debited on staging would 429 the
+    // legitimate confirm; a regression that double-debited would too.
+    const t = 1_000_000;
+    const wl = new Set(["createPerson"]);
+    const stage = policy({ rateLimitPerMinute: 1, dispatch: false, now: () => t, writeAllowlist: wl });
+    for (let i = 0; i < 5; i++) {
+      expect(validateRestOperation(graph, "createPerson", { body: {} }, stage).allowed).toBe(true);
+    }
+    const confirm = policy({ rateLimitPerMinute: 1, dispatch: true, now: () => t, writeAllowlist: wl });
+    expect(validateRestOperation(graph, "createPerson", { body: {} }, confirm).allowed).toBe(true);
+    // The one token is now spent — a second confirm is throttled.
+    const second = validateRestOperation(graph, "createPerson", { body: {} }, confirm);
+    expect(second.allowed).toBe(false);
+    if (second.allowed) return;
+    expect(second.error.reason).toBe("rate-limit-exceeded");
+  });
 });
 
 describe("validateRestOperation — layer 5: timeout cap", () => {

@@ -190,6 +190,31 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
   });
 
+  it("stages an allowlisted DELETE (highest blast radius) without firing it", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["deleteOnePerson"]) });
+    const result = await call(
+      { operationId: "deleteOnePerson", pathParams: { id: "p-matt" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.method).toBe("DELETE");
+    expect(result.confirm.pathParams).toEqual({ id: "p-matt" });
+    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("needs_confirmation carries exactly the fields the chat banner + confirm endpoint read", async () => {
+    // Guards the web-local mirror (rest-operation-types.ts) against drift — if a
+    // field is added/renamed here, this assertion flags the mirror needs updating.
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson", body: { x: 1 } }, async () => ds);
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(Object.keys(result).toSorted()).toEqual(
+      ["confirm", "datasourceId", "datasourceName", "method", "operationId", "status", "summary"],
+    );
+  });
+
   it("blocks a write whose op is NOT in the allowlist even when others are", async () => {
     const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
     const result = await call(

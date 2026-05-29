@@ -193,6 +193,30 @@ describe("POST /rest-operations/confirm", () => {
     expect(second.headers.get("retry-after")).not.toBeNull();
   });
 
+  it("500s (timeout_misconfigured) when the per-install timeout exceeds the cap", async () => {
+    // request_timeout_ms above ATLAS_OPENAPI_TIMEOUT (default 30s) is rejected by
+    // validateRestOperation layer 5 — surfaced as a 500 with a requestId.
+    const app = appWith([
+      datasource({ writeAllowlist: new Set(["createOnePerson"]), requestTimeoutMs: 120_000 }),
+    ]);
+    const res = await post(app, { datasourceId: "twenty", operationId: "createOnePerson", body: {} });
+    expect(res.status).toBe(500);
+    const json = (await res.json()) as { error: string; requestId?: string };
+    expect(json.error).toBe("timeout_misconfigured");
+    // No write fired — the misconfig is caught before dispatch.
+    expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("never caches a write — a second identical confirm re-hits the upstream", async () => {
+    const app = appWith([datasource({ writeAllowlist: new Set(["createOnePerson"]) })]);
+    const body = { datasourceId: "twenty", operationId: "createOnePerson", body: { name: { firstName: "Ada" } } };
+    expect((await post(app, body)).status).toBe(200);
+    expect((await post(app, body)).status).toBe(200);
+    // Two confirms ⇒ two POSTs reached the upstream (a cache would have served the 2nd).
+    const writes = twentyMock.matching("/rest/people").filter((r) => r.method === "POST");
+    expect(writes.length).toBe(2);
+  });
+
   it("422s an invalid JSON body", async () => {
     const app = appWith([datasource()]);
     const res = await app.request("/api/v1/rest-operations/confirm", {

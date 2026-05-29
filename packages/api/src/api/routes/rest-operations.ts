@@ -150,6 +150,9 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }
           : {}),
+        ...(datasource.requestTimeoutMs !== undefined
+          ? { requestedTimeoutMs: datasource.requestTimeoutMs }
+          : {}),
       };
 
       const verdict = validateRestOperation(datasource.graph, input.operationId, params, policy);
@@ -172,7 +175,11 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
             }
             return c.json({ error: "rate_limited", message: error.message }, 429);
           case "timeout-exceeded":
-            return c.json({ error: "timeout_misconfigured", message: error.message }, 500);
+            log.warn(
+              { orgId, datasource: datasource.id, operationId: input.operationId, requestId },
+              "Confirm rejected: per-install request timeout is misconfigured (outside the cap)",
+            );
+            return c.json({ error: "timeout_misconfigured", message: error.message, requestId }, 500);
         }
       }
 

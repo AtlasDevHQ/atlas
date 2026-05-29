@@ -237,9 +237,10 @@ export function createPythonSandboxBackend(
 
       // 4. Lock network — narrow from the install-time allow-all to the
       // per-request policy (deny-all by default; the REST datasource host
-      // allowlist when composing — #2927 layer 0). Stop sandbox on failure via
-      // Effect.tapError. Logs only the non-secret policy shape (mode + host
-      // count), never the injected auth header.
+      // allowlist when a datasource is active — #2927 layer 0). Stop sandbox on
+      // failure via Effect.tapError. The policy carries no credential (egress is
+      // opened, auth is not — see network-allowlist.ts), and the log emits only
+      // the non-secret shape (mode + host count).
       yield* Effect.tryPromise({
         try: () => sandbox.updateNetworkPolicy(lockdownPolicy),
         catch: (err) => {

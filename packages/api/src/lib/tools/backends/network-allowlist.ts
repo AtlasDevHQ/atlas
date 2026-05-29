@@ -67,6 +67,8 @@ export function hostFromUrl(rawUrl: string): string | null {
   try {
     parsed = new URL(rawUrl);
   } catch {
+    // intentionally ignored: an unparseable URL contributes no host — the
+    // caller drops it (and logs), which narrows the allowlist (fail-closed).
     return null;
   }
   // Only http(s) datasources are reachable from the sandbox; anything else

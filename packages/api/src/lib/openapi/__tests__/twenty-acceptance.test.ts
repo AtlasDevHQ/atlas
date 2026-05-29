@@ -24,7 +24,7 @@
  * the run and the note in the PR. This hermetic suite always exercises the
  * `executeRestOperation` (single op) + sequential-call shape. Slice 3 (#2927)
  * landed the sandbox network boundary that the in-sandbox composition path
- * depends on (proven by `tools/backends/network-allowlist.test.ts`), but the
+ * depends on (proven by `tools/backends/__tests__/network-allowlist.test.ts`), but the
  * live in-sandbox `AtlasRestClient` composition path itself stays deferred —
  * see the python-preamble.ts header for why (read-only enforcement).
  */

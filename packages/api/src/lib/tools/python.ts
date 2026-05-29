@@ -335,10 +335,21 @@ async function getPythonBackend(
       const { computeNetworkAllowlist, networkPolicyFromAllowlist } = await import(
         "./backends/network-allowlist"
       );
-      const networkPolicy = networkPolicyFromAllowlist(
-        computeNetworkAllowlist([restDatasource.baseUrl]),
-      );
-      return createPythonSandboxBackend({ networkPolicy });
+      const allowlist = computeNetworkAllowlist([restDatasource.baseUrl]);
+      if (allowlist.length === 0) {
+        // Honor network-allowlist.ts's "caller logs the drop" contract: a
+        // configured datasource whose base URL doesn't parse to a host
+        // collapses to deny-all (fail-closed) — surface why so the operator
+        // isn't left guessing. Log the datasource id, not the URL (a base URL
+        // could carry a token in a query param).
+        log.warn(
+          { datasource: restDatasource.id },
+          "REST datasource base URL did not yield a reachable host — Python sandbox egress stays deny-all",
+        );
+      }
+      return createPythonSandboxBackend({
+        networkPolicy: networkPolicyFromAllowlist(allowlist),
+      });
     }
     return createPythonSandboxBackend();
   }

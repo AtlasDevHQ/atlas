@@ -21,9 +21,12 @@
  * so the fork stays clean.
  */
 
+import { createLogger } from "@atlas/api/lib/logger";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { CatalogId } from "@atlas/api/lib/integrations/install/types";
 import { REPRESENTATION_MODES, type RepresentationMode } from "./representation";
+
+const log = createLogger("openapi.catalog");
 
 /** Catalog slug — the dispatch key in `registerFormHandler`. */
 export const OPENAPI_GENERIC_SLUG: CatalogId = "openapi-generic";
@@ -150,7 +153,10 @@ export const OPENAPI_GENERIC_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
     key: "write_allowlist",
     type: "string",
     label: "Write allowlist (JSON)",
-    description: "JSON array of operationIds permitted to write. Honored in a later release.",
+    description:
+      "JSON array of operationIds permitted to execute non-GET (write) requests, e.g. " +
+      '["createOnePerson","createOneNote"]. Empty/omitted = read-only (default). Every ' +
+      "allowlisted write still requires an in-chat confirm-before-write step before it fires.",
   },
   {
     key: "display_name",
@@ -229,4 +235,61 @@ export function coerceRepresentationMode(raw: unknown): RepresentationMode {
     return raw as RepresentationMode;
   }
   return DEFAULT_REPRESENTATION_MODE;
+}
+
+/**
+ * Parse the `write_allowlist` config value into the set of operationIds permitted
+ * to write (slice 5, #2929). Accepts the form-stored JSON **string**
+ * (`'["createOnePerson"]'`) or an already-parsed **array** (an `atlas.config.ts`
+ * plugins entry). Anything else — a malformed JSON string, a non-array, a
+ * non-string element — resolves to the **empty set (default-deny / read-only)**,
+ * logged for the operator. A broken allowlist must never widen write access; it
+ * fails closed, the same posture as the workspace resolver's other fields.
+ */
+export function parseWriteAllowlist(raw: unknown, installId?: string): ReadonlySet<string> {
+  if (raw === undefined || raw === null || raw === "") return new Set();
+
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      log.warn(
+        { installId },
+        "OpenAPI install write_allowlist is not valid JSON — treating as read-only (default-deny)",
+      );
+      return new Set();
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    log.warn(
+      { installId },
+      "OpenAPI install write_allowlist is not a JSON array — treating as read-only (default-deny)",
+    );
+    return new Set();
+  }
+
+  const ops = new Set<string>();
+  for (const item of value) {
+    if (typeof item === "string" && item.length > 0) ops.add(item);
+  }
+  if (ops.size !== value.length) {
+    log.warn(
+      { installId },
+      "OpenAPI install write_allowlist contained non-string / empty entries — they were ignored",
+    );
+  }
+  return ops;
+}
+
+/**
+ * Resolve a per-install rate-limit override (calls/min) from config, or
+ * `undefined` to use the {@link RestDatasource} default. A non-positive /
+ * non-numeric value is ignored (fall back to the default) rather than throttling
+ * to zero.
+ */
+export function parseRateLimitPerMinute(raw: unknown): number | undefined {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }

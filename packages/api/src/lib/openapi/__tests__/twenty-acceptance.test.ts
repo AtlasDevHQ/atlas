@@ -228,6 +228,8 @@ beforeAll(async () => {
     graph,
     baseUrl: mock1.restBaseUrl,
     auth: { kind: "bearer", token: "acceptance-bearer" },
+    // The acceptance suite exercises the read surface — writes stay opted out.
+    writeAllowlist: new Set<string>(),
   };
 });
 

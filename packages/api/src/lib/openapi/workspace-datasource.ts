@@ -33,6 +33,8 @@ import {
   coerceRepresentationMode,
   isValidSnapshot,
   narrowSupportedAuthKind,
+  parseRateLimitPerMinute,
+  parseWriteAllowlist,
   type OpenApiAuthKind,
 } from "./catalog";
 import { buildResolvedAuth, snapshotToGraph } from "./probe";
@@ -170,6 +172,12 @@ function buildDatasource(
     return null;
   }
 
+  // Slice 5 (#2929): the write-side opt-in. `write_allowlist` is stored as the
+  // form's JSON string; an `atlas.config.ts` plugins entry may pass an array.
+  // Both normalize to a Set; anything malformed fails closed to read-only.
+  const writeAllowlist = parseWriteAllowlist(decrypted.write_allowlist, installId);
+  const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute);
+
   return {
     id: installId,
     displayName,
@@ -177,6 +185,8 @@ function buildDatasource(
     baseUrl: resolveBaseUrl(openapiUrl, graph, baseUrlOverride),
     auth,
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
+    writeAllowlist,
+    ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
   };
 }
 

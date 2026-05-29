@@ -8,6 +8,7 @@
     "mysql",
     "snowflake",
     "salesforce",
-    "obsidian-reader"
+    "obsidian-reader",
+    "openapi-generic"
   ]
 }

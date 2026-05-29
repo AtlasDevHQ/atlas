@@ -100,12 +100,20 @@ export interface OpenApiDatasourceMockOptions {
   readonly representationMode?: RepresentationMode;
   /** Override the spec doc the graph is built from (e.g. to load Twenty's). */
   readonly doc?: unknown;
+  /**
+   * operationIds permitted to write (slice 5, #2929). Defaults to **empty
+   * (read-only / default-deny)** — pass e.g. `["createWidget"]` to opt a write in.
+   */
+  readonly writeAllowlist?: Iterable<string>;
+  /** Per-install rate-limit override (calls/min); default 60 in the validator. */
+  readonly rateLimitPerMinute?: number;
 }
 
 /**
  * Build a {@link RestDatasource} fixture. Defaults to the {@link
- * MOCK_OPENAPI_SPEC} Widget API with bearer auth and the bake-off-default
- * `operation-graph` representation mode; override any field.
+ * MOCK_OPENAPI_SPEC} Widget API with bearer auth, the bake-off-default
+ * `operation-graph` representation mode, and an **empty write allowlist
+ * (read-only)**; override any field.
  */
 export function createOpenApiDatasourceMock(
   options: OpenApiDatasourceMockOptions = {},
@@ -118,5 +126,7 @@ export function createOpenApiDatasourceMock(
     baseUrl: options.baseUrl ?? graph.servers[0]?.url ?? "https://widgets.example.com/api",
     auth: options.auth ?? { kind: "bearer", token: "test-token" },
     representationMode: options.representationMode ?? "operation-graph",
+    writeAllowlist: new Set(options.writeAllowlist ?? []),
+    ...(options.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: options.rateLimitPerMinute } : {}),
   };
 }

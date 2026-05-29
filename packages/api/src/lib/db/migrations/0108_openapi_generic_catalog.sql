@@ -45,7 +45,7 @@ VALUES
       {"key": "auth_header_name", "type": "string", "label": "API key header name", "description": "For apikey-header auth, e.g. X-API-Key."},
       {"key": "auth_param_name", "type": "string", "label": "API key query param", "description": "For apikey-query auth, e.g. api_key."},
       {"key": "base_url_override", "type": "string", "label": "Base URL override", "description": "When the spec''s servers[0].url is wrong (dev/staging)."},
-      {"key": "write_allowlist", "type": "string", "label": "Write allowlist (JSON)", "description": "JSON array of operationIds permitted to write. Honored in a later release."},
+      {"key": "write_allowlist", "type": "string", "label": "Write allowlist (JSON)", "description": "JSON array of operationIds permitted to execute non-GET (write) requests, e.g. [\"createOnePerson\",\"createOneNote\"]. Empty/omitted = read-only (default). Every allowlisted write still requires an in-chat confirm-before-write step before it fires."},
       {"key": "display_name", "type": "string", "label": "Display name", "description": "Friendly name shown in /admin/connections."}
     ]'::jsonb,
     NOW(),

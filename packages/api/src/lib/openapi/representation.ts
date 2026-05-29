@@ -205,9 +205,12 @@ function renderDatasourceHeader(
     );
   }
   out.push(
-    `**Read-only in this release.** Only GET operations execute; write operations ` +
-      `(POST/PATCH/PUT/DELETE) are described so you can plan, but \`executeRestOperation\` ` +
-      `rejects them until the write-allowlist ships. Never claim a write succeeded.`,
+    `**Reads run; writes need opt-in + confirmation.** GET operations execute and ` +
+      `return data. Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's ` +
+      `admin has allowlisted them — a non-allowlisted write is rejected. An allowlisted ` +
+      `write does NOT run immediately: \`executeRestOperation\` returns \`needs_confirmation\`, ` +
+      `you tell the user exactly what it will do and stop, and the write fires only after ` +
+      `they confirm in the chat. Never claim a write happened until you see a confirmed result.`,
   );
   if (options.pythonCompositionEnabled) {
     out.push(

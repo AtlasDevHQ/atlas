@@ -1,6 +1,7 @@
 /**
  * `executeRestOperation` — the single-operation agent tool for REST datasources
- * (PRD #2868 slice 1 #2924; workspace-scoped + multi-datasource in slice 2 #2926).
+ * (PRD #2868 slice 1 #2924; workspace-scoped + multi-datasource in slice 2 #2926;
+ * write-side opt-in in slice 5 #2929).
  *
  * The convenience shortcut for trivially simple REST lookups: the agent passes
  * an `operationId` (from the representation in its system prompt) plus the
@@ -10,7 +11,7 @@
  * sandbox network boundary the in-sandbox composition path depends on; the
  * in-sandbox `AtlasRestClient` composition path itself stays deferred (it can't
  * authenticate read-only), so the authenticated read path remains this
- * host-side tool until read-only is mediated host-side (pairs with slice-5).
+ * host-side tool.
  *
  * **Workspace-scoped (slice 2).** Datasources are resolved per-request from the
  * workspace's `openapi-generic` installs (via the ambient request context's
@@ -19,9 +20,17 @@
  * optional `datasourceId` (required only when more than one is installed). The
  * representation in the prompt labels each datasource's id.
  *
- * Read-only in this release. Only GET / HEAD operations execute; any
- * POST/PATCH/PUT/DELETE returns a `writes_disabled` status. Write support is
- * gated behind slice 5's per-endpoint `write_allowlist` (#2929).
+ * **The safety boundary (slice 5).** Every call is authorized by
+ * {@link validateRestOperation} — the REST sibling to `validateSQL`:
+ *   - GET / HEAD execute (rate-limited, then dispatched to the upstream).
+ *   - A non-GET (write) executes ONLY if its `operationId` is in the datasource's
+ *     `write_allowlist`; otherwise → `writes_disabled` (default-deny), and the
+ *     request never fires.
+ *   - An allowlisted write is NOT dispatched here — it returns `needs_confirmation`,
+ *     and the chat surface shows a confirm-before-write banner. The write fires
+ *     only after the user confirms (via the confirm endpoint), never silently.
+ * Writes are never written to any cache (this tool calls the un-cached
+ * {@link executeOperation} primitive directly).
  *
  * Structured results mirror `sendEmail`'s discriminated-union convention: every
  * branch the agent must distinguish is its own `status` so the model can
@@ -35,17 +44,27 @@ import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError, type OpenApiClientErrorReason } from "@atlas/api/lib/openapi/types";
 import { type RestDatasource } from "@atlas/api/lib/openapi/datasource";
 import { resolveWorkspaceRestDatasources } from "@atlas/api/lib/openapi/workspace-datasource";
+import {
+  validateRestOperation,
+  type RestOperationPolicy,
+} from "@atlas/api/lib/openapi/validate-rest-operation";
+import {
+  buildRestWriteSummary,
+  type RestWriteConfirmRequest,
+} from "@atlas/api/lib/openapi/rest-write-confirm";
 import type { OperationParams } from "@atlas/api/lib/openapi/types";
 
 const log = createLogger("tools.rest-operation");
 
-export const REST_OPERATION_DESCRIPTION = `### Read a REST Datasource
+export const REST_OPERATION_DESCRIPTION = `### Read & write a REST Datasource
 Use executeRestOperation to call a single operation on a connected REST API (described under "REST Datasource" in this prompt):
 - Pass the \`operationId\` exactly as listed, plus \`pathParams\` (for {id}-style path tokens), \`query\` (filters, limits, cursors), and \`body\` where the operation defines one
 - When more than one REST datasource is connected, pass \`datasourceId\` (shown in each datasource's header) to pick which one
 - Compose the filter \`query\` value yourself in the documented \`field[op]:value\` syntax — do NOT invent a bracketed form
 - For multi-step questions, call this tool once per step and feed each result into the next (e.g. find a person, then list their note targets, then fetch each note)
-- Read-only: only GET operations execute. Write operations are described but rejected; never claim a write happened`;
+- GET operations execute and return data immediately.
+- Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's admin has allowlisted them. A non-allowlisted write returns \`writes_disabled\` — tell the user writes are off for that datasource; never claim it happened.
+- An allowlisted write does NOT run immediately: it returns \`needs_confirmation\`. Tell the user plainly what the write will do (e.g. "This will permanently delete 3 people in Twenty — confirm?") and STOP. The user confirms via the banner; do not retry, and never claim the write succeeded until you see a confirmed result.`;
 
 /** The discriminated result the agent reads. */
 export type ExecuteRestOperationResult =
@@ -55,6 +74,23 @@ export type ExecuteRestOperationResult =
   | { status: "datasource_not_found"; message: string; availableDatasources: string[] }
   | { status: "unknown_operation"; message: string; availableOperations: string[] }
   | { status: "writes_disabled"; message: string; method: string }
+  | { status: "invalid_params"; message: string; missingParams?: string[]; unexpectedParams?: string[] }
+  | { status: "rate_limited"; message: string; retryAfterMs?: number }
+  /**
+   * An allowlisted write, staged for human confirmation (slice 5). The request
+   * has NOT fired. `confirm` is the exact replay payload the confirm-before-write
+   * banner POSTs to `/api/v1/rest-operations/confirm`; `summary` is the
+   * human-facing description the banner renders.
+   */
+  | {
+      status: "needs_confirmation";
+      method: string;
+      operationId: string;
+      datasourceId: string;
+      datasourceName: string;
+      summary: string;
+      confirm: RestWriteConfirmRequest;
+    }
   | { status: "client_error"; reason: OpenApiClientErrorReason; message: string };
 
 const queryScalar = z.union([z.string(), z.number(), z.boolean()]);
@@ -156,27 +192,6 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         };
       }
 
-      const operation = datasource.graph.operations.get(operationId);
-      if (!operation) {
-        const availableOperations = [...datasource.graph.operations.keys()].toSorted();
-        return {
-          status: "unknown_operation",
-          message: `Unknown operationId "${operationId}" on datasource "${datasource.id}". Pick one from availableOperations.`,
-          availableOperations,
-        };
-      }
-
-      // Read-only guard — writes are slice 5 (#2929). Never dispatch a mutation.
-      if (operation.method !== "GET" && operation.method !== "HEAD") {
-        return {
-          status: "writes_disabled",
-          method: operation.method,
-          message:
-            `Operation "${operationId}" is a ${operation.method} (write). Write operations are not yet ` +
-            `enabled — they require a per-endpoint allowlist that ships in a later release. Do not claim it succeeded.`,
-        };
-      }
-
       const params: OperationParams = {
         ...(pathParams ? { path: pathParams } : {}),
         ...(query ? { query } : {}),
@@ -184,9 +199,88 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         ...(body !== undefined ? { body } : {}),
       };
 
+      // Peek the method so we only debit the per-operation rate quota for calls
+      // that actually hit the upstream (reads here; the confirmed write later).
+      // Staging a write for confirmation must not burn quota. An unknown op falls
+      // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
+      const peeked = datasource.graph.operations.get(operationId);
+      const isWrite = peeked ? peeked.method !== "GET" && peeked.method !== "HEAD" : false;
+
+      const policy: RestOperationPolicy = {
+        workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
+        datasourceId: datasource.id,
+        writeAllowlist: datasource.writeAllowlist,
+        dispatch: !isWrite,
+        ...(datasource.rateLimitPerMinute !== undefined
+          ? { rateLimitPerMinute: datasource.rateLimitPerMinute }
+          : {}),
+      };
+
+      const verdict = validateRestOperation(datasource.graph, operationId, params, policy);
+      if (!verdict.allowed) {
+        const { error } = verdict;
+        switch (error.reason) {
+          case "unknown-operation":
+            return {
+              status: "unknown_operation",
+              message: error.message,
+              availableOperations: [...(error.availableOperations ?? [])],
+            };
+          case "writes-disabled":
+            return {
+              status: "writes_disabled",
+              method: peeked?.method ?? "WRITE",
+              message: error.message,
+            };
+          case "invalid-params":
+            return {
+              status: "invalid_params",
+              message: error.message,
+              ...(error.missingParams ? { missingParams: [...error.missingParams] } : {}),
+              ...(error.unexpectedParams ? { unexpectedParams: [...error.unexpectedParams] } : {}),
+            };
+          case "rate-limit-exceeded":
+            return {
+              status: "rate_limited",
+              message: error.message,
+              ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+            };
+          case "timeout-exceeded":
+            // A misconfigured per-install timeout is an operator concern, not an
+            // agent one — surface it as a client_error so the model stops.
+            return { status: "client_error", reason: "timeout", message: error.message };
+        }
+      }
+
+      // Allowlisted write — stage for confirm-before-write; never dispatch here.
+      if (verdict.requiresConfirmation) {
+        const confirm: RestWriteConfirmRequest = {
+          datasourceId: datasource.id,
+          operationId,
+          ...(pathParams ? { pathParams } : {}),
+          ...(query ? { query } : {}),
+          ...(header ? { header } : {}),
+          ...(body !== undefined ? { body } : {}),
+        };
+        log.info(
+          { operationId, method: verdict.operation.method, datasource: datasource.id },
+          "executeRestOperation staged a write for confirmation",
+        );
+        return {
+          status: "needs_confirmation",
+          method: verdict.operation.method,
+          operationId,
+          datasourceId: datasource.id,
+          datasourceName: datasource.displayName,
+          summary: buildRestWriteSummary(verdict.operation, params, datasource.displayName),
+          confirm,
+        };
+      }
+
       try {
         const result = await executeOperation(datasource.graph, operationId, params, datasource.auth, {
           baseUrl: datasource.baseUrl,
+          timeoutMs: verdict.timeoutMs,
           ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         });
 

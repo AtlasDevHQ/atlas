@@ -82,6 +82,7 @@
     "platform-security",
     "prompts",
     "query",
+    "rest-datasources",
     "scheduled-tasks",
     "semantic",
     "sessions",

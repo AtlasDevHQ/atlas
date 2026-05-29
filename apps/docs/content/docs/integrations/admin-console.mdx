@@ -79,11 +79,11 @@ Clicking **Connect** runs the install flow for the card's `installModel`:
 - **Form** (Email, Webhook, Obsidian, Linear via API key) — opens a modal
   that collects the credentials inline and writes the `workspace_plugins`
   row on submit.
-- **Static-bot** (Discord) — runs the bot-add consent flow against the
-  Platform, then captures a per-Workspace routing identifier (e.g.
-  `guild_id`) against the operator-shared bot. The remaining static-bot
-  platforms (Telegram, WhatsApp, Google Chat, Teams) install from their
-  per-platform admin blocks further down the page.
+- **Static-bot** (Discord, Telegram, WhatsApp, Google Chat, Teams) —
+  installed from their per-platform admin blocks further down the page
+  rather than via the catalog card's Connect button (which is inert for
+  these). Each captures a per-Workspace routing identifier (e.g. Discord
+  `guild_id`) against the operator-shared bot.
 
 ## Disconnect
 
@@ -91,8 +91,8 @@ Clicking **Disconnect** tears the install down credential-first: the
 per-Platform credential row is deleted before the `workspace_plugins` row
 (scoped to the catalog entry and your Workspace), so credentials never
 outlive the install record. Any cached plugin instance for that pair is
-evicted, so in-flight transports stop immediately. Disconnect requires an
-MFA-enrolled admin session.
+evicted, so later tool dispatches can't reuse the stale transport.
+Disconnect requires an MFA-enrolled admin session.
 
 Disconnect removes Atlas's stored credential and install record; it does
 **not** call the Platform's token-revocation endpoint. If you also want to

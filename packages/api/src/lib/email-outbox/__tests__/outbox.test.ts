@@ -432,6 +432,30 @@ describe("flushBatch", () => {
     expect(loggerCalls.warn.some((c) => c.data.event === "email_outbox.dead_letter_expired")).toBe(true);
   });
 
+  test("a decrypt failure is RETRYABLE (stays pending), not a permanent dead-letter (codex #2972)", async () => {
+    const db = new FakeEmailOutboxDB();
+    await enqueue(db, { emailType: "password-reset", message: MSG });
+    // Simulate a row whose payload references a key version that's no
+    // longer configured (rotation drift): a versioned-prefix value that
+    // decryptSecret can't decrypt → it throws → coerceMessage returns
+    // "retryable". A fixable key-config error must NOT irreversibly
+    // dead-letter the queued auth email.
+    db.rows[0].payload = "enc:v1:aaaa:bbbb:cccc";
+    let dispatched = false;
+    const dispatcher: EmailDispatcher = async () => {
+      dispatched = true;
+      return { kind: "ok" };
+    };
+    const result = await flushBatch(db, dispatcher, 10);
+    expect(dispatched).toBe(false); // never handed to the dispatcher
+    expect(result.transient).toBe(1);
+    expect(result.permanent).toBe(0);
+    const row = db.byId("row-1")!;
+    expect(row.status).toBe("pending"); // recoverable — NOT dead
+    expect(row.attempts).toBe(1);
+    expect(loggerCalls.error.some((c) => c.data.event === "email_outbox.decrypt_failed")).toBe(true);
+  });
+
   test("delivers a not-yet-expired row normally", async () => {
     const db = new FakeEmailOutboxDB();
     await enqueue(db, {

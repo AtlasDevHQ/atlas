@@ -2283,8 +2283,10 @@ export const crmOutbox = pgTable(
 // `status` here is the OUTBOX LIFECYCLE status, NOT the content-mode status
 // (draft/published/archived). email_outbox is an operational queue, not
 // user-surfaced content, so it is intentionally OUTSIDE the content-mode
-// system (CLAUDE.md § Content Mode System carve-out). It stores no credentials
-// (the reset-link token is single-use + short-TTL), so it is NOT a member of
+// system (CLAUDE.md § Content Mode System carve-out). The payload IS a
+// bearer credential for the TTL window (a live reset link / OTP) — hence
+// encrypted at rest — but it holds no LONG-LIVED provider credential, so
+// there is nothing for F-47 rotation to re-key: it is NOT a member of
 // `INTEGRATION_TABLES`.
 // ---------------------------------------------------------------------------
 

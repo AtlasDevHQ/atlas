@@ -88,6 +88,12 @@ export interface EnqueueEmailInput {
    * the flusher dead-letters the row instead of delivering an unusable
    * link/code. Omit / null for non-expiring sends. The caller derives
    * this from the email type's TTL (reset link 1h, OTP 10m).
+   *
+   * Anchor: this is stamped at ENQUEUE time (`now() + ttlMs`), i.e. the
+   * failed-send moment — a few seconds AFTER the token was actually
+   * minted. So it slightly over-estimates true token life (safe
+   * direction: we may attempt a send whose token died seconds earlier and
+   * the auth layer rejects it; we never refuse a still-valid token).
    */
   readonly expiresAt?: Date | null;
 }
@@ -165,8 +171,11 @@ const ENQUEUE_SQL = `
  * and bumps `attempts`.
  *
  * Backoff gate: `COALESCE(retry_after, created_at + tier) <= now()`.
- * When a prior failure surfaced a delay, the absolute `retry_after`
- * wins; otherwise the tier-based delay (CLAIM_DELAY_SQL) applies.
+ * Post-#2972 `retry_after` is stamped on every transient failure, so for
+ * any row that has failed at least once the COALESCE resolves to
+ * `retry_after`. The `created_at + tier` fallback only applies to a
+ * never-failed row (retry_after NULL) — where tier(0)=0 makes it
+ * immediately due on the first claim.
  *
  * No per-email serialization / advisory locks (cf. crm_outbox) — each
  * transactional send is independent and an at-least-once duplicate is
@@ -368,32 +377,12 @@ export async function flushBatch(
   let permanent = 0;
 
   for (const raw of claimed) {
-    const message = coerceMessage(raw.payload);
-    if (message === null) {
-      // A row whose payload can't be decrypted/parsed into an
-      // EmailMessage is unrecoverable — re-sending will never succeed.
-      // Dead-letter it immediately rather than burning the retry budget.
-      // (coerceMessage already logs the specific decrypt/parse cause.)
-      await markStatusWithRetry(
-        db,
-        MARK_DEAD_SQL,
-        ["email_outbox payload could not be decrypted/parsed into an EmailMessage", raw.id],
-        raw.id,
-        "dead",
-      );
-      log.error(
-        { rowId: raw.id, event: "email_outbox.dead_letter_malformed" },
-        "Email outbox row dead-lettered — payload is not a recoverable EmailMessage",
-      );
-      permanent++;
-      continue;
-    }
-
     // Expiry gate (codex #2972): the body embeds a live reset link / OTP
     // that dies at `expires_at`. If a sustained outage outlasted the TTL,
     // delivering it would just give the user a dead link — dead-letter
-    // instead of sending. Checked AFTER decrypt so a malformed row gets
-    // the more-actionable malformed error.
+    // instead of sending. `expires_at` is a plaintext column, so this is
+    // checked BEFORE decrypt: a dead-token row is dead-lettered regardless
+    // of whether its (encrypted) body can currently be decrypted.
     const expiresAt = coerceDate(raw.expires_at);
     if (expiresAt !== null && Date.now() >= expiresAt.getTime()) {
       await markStatusWithRetry(
@@ -416,51 +405,89 @@ export async function flushBatch(
       continue;
     }
 
-    const row: ClaimedEmailRow = {
-      id: raw.id,
-      emailType: raw.email_type,
-      message,
-      orgId: raw.org_id,
-      attempts: raw.attempts,
-      expiresAt,
-    };
+    const coerced = coerceMessage(raw.payload);
 
-    let outcome: EmailDispatchOutcome;
-    try {
-      outcome = await dispatcher(row);
-    } catch (err) {
-      // Dispatcher contract violation: it should classify and return,
-      // never throw. Treat as transient so we don't dead-letter on a
-      // bug in the dispatcher's error handling.
-      log.error(
-        {
-          rowId: row.id,
-          attempts: row.attempts,
-          err: err instanceof Error ? err.message : String(err),
-          event: "email_outbox.dispatcher_threw",
-        },
-        "Dispatcher threw — classifying as transient so the row will retry",
+    // Structurally-broken payload (decrypted fine but isn't a valid
+    // EmailMessage) is unrecoverable — re-sending will never fix it.
+    // Dead-letter immediately.
+    if (coerced.kind === "malformed") {
+      await markStatusWithRetry(
+        db,
+        MARK_DEAD_SQL,
+        [`email_outbox payload is not a valid EmailMessage: ${coerced.reason}`, raw.id],
+        raw.id,
+        "dead",
       );
-      outcome = {
-        kind: "transient",
-        message: err instanceof Error ? err.message : String(err),
-      };
+      log.error(
+        { rowId: raw.id, reason: coerced.reason, event: "email_outbox.dead_letter_malformed" },
+        "Email outbox row dead-lettered — payload is not a recoverable EmailMessage",
+      );
+      permanent++;
+      continue;
     }
 
+    let outcome: EmailDispatchOutcome;
+    if (coerced.kind === "retryable") {
+      // Decrypt THREW (e.g. a key version was dropped from
+      // ATLAS_ENCRYPTION_KEYS mid-rotation — recoverable by restoring it,
+      // or genuine ciphertext corruption). Classify as transient rather
+      // than dead-lettering (codex #2972): a fixable key-config error must
+      // NOT irreversibly destroy the queued auth email. The retry budget
+      // still bounds it — if the key is never restored the row dead-letters
+      // after DEAD_AFTER_ATTEMPTS rather than spinning forever.
+      log.error(
+        { rowId: raw.id, reason: coerced.reason, event: "email_outbox.decrypt_failed" },
+        "email_outbox payload decrypt failed — RETRYABLE (restore the key version in ATLAS_ENCRYPTION_KEYS); row stays pending until the retry budget is exhausted",
+      );
+      outcome = { kind: "transient", message: coerced.reason };
+    } else {
+      const row: ClaimedEmailRow = {
+        id: raw.id,
+        emailType: raw.email_type,
+        message: coerced.message,
+        orgId: raw.org_id,
+        attempts: raw.attempts,
+        expiresAt,
+      };
+      try {
+        outcome = await dispatcher(row);
+      } catch (err) {
+        // Dispatcher contract violation: it should classify and return,
+        // never throw. Treat as transient so we don't dead-letter on a
+        // bug in the dispatcher's error handling.
+        log.error(
+          {
+            rowId: row.id,
+            attempts: row.attempts,
+            err: err instanceof Error ? err.message : String(err),
+            event: "email_outbox.dispatcher_threw",
+          },
+          "Dispatcher threw — classifying as transient so the row will retry",
+        );
+        outcome = {
+          kind: "transient",
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
+    }
+
+    // Final-status handling is keyed off `raw` (always defined) so it
+    // works for both the dispatched path and the decrypt-retryable path
+    // (which has no constructed `row`).
     if (outcome.kind === "ok") {
-      await markStatusWithRetry(db, MARK_DONE_SQL, [row.id], row.id, "done");
+      await markStatusWithRetry(db, MARK_DONE_SQL, [raw.id], raw.id, "done");
       ok++;
       continue;
     }
 
     if (outcome.kind === "permanent") {
-      await markStatusWithRetry(db, MARK_DEAD_SQL, [outcome.message, row.id], row.id, "dead");
+      await markStatusWithRetry(db, MARK_DEAD_SQL, [outcome.message, raw.id], raw.id, "dead");
       log.error(
         {
-          rowId: row.id,
-          attempts: row.attempts,
+          rowId: raw.id,
+          attempts: raw.attempts,
           err: outcome.message,
-          emailType: row.emailType,
+          emailType: raw.email_type,
           event: "email_outbox.dead_letter_permanent",
         },
         "Transactional email dead-lettered (permanent failure) — operator intervention required",
@@ -472,20 +499,20 @@ export async function flushBatch(
     // Transient. If we've already burned through the retry budget the
     // row dies here — the claim WHERE wouldn't let us pick it up again,
     // so leaving it `pending` would be a silent stuck-forever row.
-    if (row.attempts >= DEAD_AFTER_ATTEMPTS) {
+    if (raw.attempts >= DEAD_AFTER_ATTEMPTS) {
       await markStatusWithRetry(
         db,
         MARK_DEAD_SQL,
-        [`transient failure after ${DEAD_AFTER_ATTEMPTS} attempts: ${outcome.message}`, row.id],
-        row.id,
+        [`transient failure after ${DEAD_AFTER_ATTEMPTS} attempts: ${outcome.message}`, raw.id],
+        raw.id,
         "dead",
       );
       log.error(
         {
-          rowId: row.id,
-          attempts: row.attempts,
+          rowId: raw.id,
+          attempts: raw.attempts,
           err: outcome.message,
-          emailType: row.emailType,
+          emailType: raw.email_type,
           event: "email_outbox.dead_letter_exhausted",
         },
         "Transactional email dead-lettered (retry budget exhausted)",
@@ -498,17 +525,17 @@ export async function flushBatch(
     await markStatusWithRetry(
       db,
       MARK_TRANSIENT_FAIL_SQL,
-      [outcome.message, row.id, retryAfter],
-      row.id,
+      [outcome.message, raw.id, retryAfter],
+      raw.id,
       "pending",
     );
     log.warn(
       {
-        rowId: row.id,
-        attempts: row.attempts,
+        rowId: raw.id,
+        attempts: raw.attempts,
         err: outcome.message,
         retryAfterMs: outcome.retryAfterMs ?? null,
-        emailType: row.emailType,
+        emailType: raw.email_type,
         event: "email_outbox.transient_failure",
       },
       "Transactional email send failed (transient) — will retry with backoff",
@@ -520,39 +547,56 @@ export async function flushBatch(
 }
 
 /**
- * Read a claimed row's `payload` column back into an
- * `EmailOutboxMessage`: decrypt (encryptSecret round-trip; plaintext
- * passthrough when no key is configured) then JSON-parse and validate.
- * The `payload` TEXT column is always a string; a non-string indicates a
- * driver/schema regression. Returns `null` when the value isn't a usable
- * message so `flushBatch` can dead-letter it rather than crash.
+ * Result of decoding a claimed row's `payload` column:
+ *  - `ok`        — decrypted + parsed into a valid EmailMessage.
+ *  - `retryable` — decrypt THREW (a dropped/missing key version mid-
+ *                  rotation, or ciphertext corruption). The key case is
+ *                  RECOVERABLE by restoring the key, so flushBatch routes
+ *                  this through the transient path (bounded by the retry
+ *                  budget) rather than permanently dead-lettering — a
+ *                  fixable key-config error must not irreversibly destroy
+ *                  queued auth emails (codex #2972).
+ *  - `malformed` — decrypt SUCCEEDED but the plaintext isn't a valid
+ *                  EmailMessage (bad JSON / missing fields). Structurally
+ *                  broken and unrecoverable → permanent dead-letter.
  */
-function coerceMessage(payload: unknown): EmailOutboxMessage | null {
-  if (typeof payload !== "string") return null;
+type CoercedPayload =
+  | { readonly kind: "ok"; readonly message: EmailOutboxMessage }
+  | { readonly kind: "retryable"; readonly reason: string }
+  | { readonly kind: "malformed"; readonly reason: string };
+
+/**
+ * Decode a claimed row's `payload`: decrypt (encryptSecret round-trip;
+ * plaintext passthrough when no key is configured) then JSON-parse and
+ * validate. The `payload` TEXT column is always a string; a non-string
+ * indicates a driver/schema regression. See {@link CoercedPayload} for
+ * how each failure mode is classified (decrypt-throw = retryable,
+ * decrypted-but-invalid = malformed).
+ */
+function coerceMessage(payload: unknown): CoercedPayload {
+  if (typeof payload !== "string") {
+    return { kind: "malformed", reason: "payload column is not a string (schema/driver regression)" };
+  }
   let json: string;
   try {
     json = decryptSecret(payload as RawSecret);
   } catch (err) {
-    // decryptSecret throws when an enc:v<N>: row references a key version
-    // that's no longer configured (rotation drift). Unrecoverable without
-    // the key — log loudly and let flushBatch dead-letter rather than
-    // crash the tick or retry forever.
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), event: "email_outbox.decrypt_failed" },
-      "email_outbox payload decrypt failed (missing key version?) — dead-lettering row",
-    );
-    return null;
+    // Recoverable-or-corrupt: don't dead-letter here. flushBatch treats
+    // this as transient so a restored key revives delivery; the retry
+    // budget still terminates a permanently-missing key.
+    return { kind: "retryable", reason: `decrypt failed: ${err instanceof Error ? err.message : String(err)}` };
   }
   let obj: unknown;
   try {
     obj = JSON.parse(json);
   } catch {
-    // intentionally ignored: an unparseable payload is unrecoverable;
-    // returning null routes the row to flushBatch's dead-letter branch
-    // (which logs email_outbox.dead_letter_malformed at error level).
-    return null;
+    // intentionally ignored: decrypt succeeded but the plaintext isn't
+    // JSON — structurally broken, never recoverable → malformed.
+    return { kind: "malformed", reason: "decrypted payload is not valid JSON" };
   }
-  if (obj === null || typeof obj !== "object") return null;
+  if (obj === null || typeof obj !== "object") {
+    return { kind: "malformed", reason: "decrypted payload is not an object" };
+  }
   const rec = obj as Record<string, unknown>;
   if (
     typeof rec.to !== "string" ||
@@ -560,9 +604,9 @@ function coerceMessage(payload: unknown): EmailOutboxMessage | null {
     typeof rec.html !== "string" ||
     rec.to.trim().length === 0
   ) {
-    return null;
+    return { kind: "malformed", reason: "missing/invalid to/subject/html" };
   }
-  return { to: rec.to, subject: rec.subject, html: rec.html };
+  return { kind: "ok", message: { to: rec.to, subject: rec.subject, html: rec.html } };
 }
 
 /**
@@ -572,16 +616,31 @@ function coerceMessage(payload: unknown): EmailOutboxMessage | null {
  */
 function coerceDate(v: Date | string | null): Date | null {
   if (v == null) return null;
-  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (v instanceof Date) {
+    if (!Number.isNaN(v.getTime())) return v;
+  } else {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  // Non-null but unparseable: log rather than silently treating it as "no
+  // deadline" (which would let a possibly-dead token deliver). A real
+  // timestamptz column should never hit this — it'd signal a driver/schema
+  // regression — so mirror depth.ts:parseTimestamp's discipline.
+  log.warn(
+    { raw: v, event: "email_outbox.expires_at_unparseable" },
+    "email_outbox expires_at could not be parsed as a Date — treating as no deadline this tick",
+  );
+  return null;
 }
 
 /**
- * Compute the absolute `retry_after` timestamp for a transient outcome
- * with an upstream-specified delay. Returns `null` when the outcome
- * carries no delay (the SQL clears the column on every transient mark
- * so a prior Retry-After can't strand a row). Exported for tests.
+ * Compute the absolute `retry_after` candidate for a transient outcome
+ * that carried an upstream-specified delay (e.g. a 429 `Retry-After`).
+ * Returns `null` when the outcome carries no delay — in which case the
+ * SQL's `GREATEST(now() + tier, $3)` uses just the tier-based floor (it
+ * does NOT clear the column: every transient mark overwrites retry_after
+ * with a fresh now-based value, so a prior Retry-After can't strand a
+ * row). Exported for tests.
  */
 export function computeRetryAfterTimestamp(retryAfterMs: number | undefined): Date | null {
   if (retryAfterMs == null) return null;

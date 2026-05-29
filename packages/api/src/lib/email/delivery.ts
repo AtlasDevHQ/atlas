@@ -256,6 +256,18 @@ export function shouldEnqueueFailedSend(result: DeliveryResult): boolean {
 }
 
 /**
+ * Derive the outbox row's absolute `expires_at` from a per-type TTL.
+ * Returns `null` (no deadline) when `ttlMs` is absent or non-finite — a
+ * `NaN`/`Infinity` slip must NOT produce an `Invalid Date` row. Pure +
+ * exported so the date math is unit-testable in isolation (a sign flip
+ * or unit slip here would silently stamp a PAST deadline and the flusher
+ * would dead-letter the send without delivering — #2942 regression risk).
+ */
+export function computeExpiresAt(ttlMs: number | undefined): Date | null {
+  return ttlMs != null && Number.isFinite(ttlMs) ? new Date(Date.now() + ttlMs) : null;
+}
+
+/**
  * Enqueue a failed transactional send to `email_outbox` for durable
  * at-least-once retry. CONTRACT: never throws — the caller's response
  * must stay 200 to preserve signup-enumeration protection (F-09). Skips
@@ -280,10 +292,7 @@ export async function enqueueFailedTransactionalEmail(
       return;
     }
     const { enqueue } = await import("@atlas/api/lib/email-outbox");
-    const expiresAt =
-      opts.ttlMs != null && Number.isFinite(opts.ttlMs)
-        ? new Date(Date.now() + opts.ttlMs)
-        : null;
+    const expiresAt = computeExpiresAt(opts.ttlMs);
     const outboxId = await enqueue(
       { query: internalQuery },
       { emailType: opts.emailType, message, orgId: opts.orgId ?? null, expiresAt },
@@ -339,7 +348,21 @@ export async function sendTransactionalEmail(
 ): Promise<DeliveryResult> {
   const send = deps.send ?? sendEmail;
   const enqueueFailed = deps.enqueueFailed ?? enqueueFailedTransactionalEmail;
-  const result = await send(message, opts.orgId);
+  // Enforce the F-09 never-throw contract LOCALLY rather than depending on
+  // `sendEmail`'s leaf functions all catching internally (true today, but
+  // a future refactor of delivery.ts could regress it). A throw here is
+  // treated as a failed send so the caller's response still stays 200.
+  let result: DeliveryResult;
+  try {
+    result = await send(message, opts.orgId);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    log.error(
+      { to: message.to, emailType: opts.emailType, err: error },
+      "Transactional email send threw — treating as a failed send; response stays 200 (F-09)",
+    );
+    result = { success: false, provider: "log", error };
+  }
   if (shouldEnqueueFailedSend(result)) {
     try {
       await enqueueFailed(message, opts);

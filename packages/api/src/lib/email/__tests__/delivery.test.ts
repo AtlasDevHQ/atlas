@@ -29,6 +29,7 @@ const {
   sendTransactionalEmail,
   shouldEnqueueFailedSend,
   enqueueFailedTransactionalEmail,
+  computeExpiresAt,
 } = await import("../delivery");
 type DeliveryResult = import("../delivery").DeliveryResult;
 type EmailMessage = import("../delivery").EmailMessage;
@@ -273,7 +274,54 @@ describe("shouldEnqueueFailedSend", () => {
   });
 });
 
+describe("computeExpiresAt", () => {
+  it("returns null for an absent / non-finite TTL (no Invalid Date row)", () => {
+    expect(computeExpiresAt(undefined)).toBeNull();
+    expect(computeExpiresAt(Number.NaN)).toBeNull();
+    expect(computeExpiresAt(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it("stamps now + ttlMs for a finite TTL (correct sign + unit)", () => {
+    const before = Date.now();
+    const got = computeExpiresAt(600_000); // 10m
+    expect(got).toBeInstanceOf(Date);
+    // Future, not past — guards against a sign flip silently dead-lettering sends.
+    expect(got!.getTime()).toBeGreaterThanOrEqual(before + 600_000);
+    expect(got!.getTime()).toBeLessThan(before + 600_000 + 5_000);
+  });
+});
+
 describe("sendTransactionalEmail", () => {
+  it("threads emailType + ttlMs through to the enqueue path on failure", async () => {
+    const captured: Array<{ emailType: string; ttlMs?: number }> = [];
+    await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset", ttlMs: 3_600_000 },
+      {
+        send: async () => ({ success: false, provider: "resend", error: "503" }),
+        enqueueFailed: async (_m, o) => {
+          captured.push({ emailType: o.emailType, ttlMs: o.ttlMs });
+        },
+      },
+    );
+    expect(captured).toEqual([{ emailType: "password-reset", ttlMs: 3_600_000 }]);
+  });
+
+  it("treats a thrown send as a failed send and still resolves 200-safe (F-09)", async () => {
+    const result = await sendTransactionalEmail(
+      MSG,
+      { emailType: "password-reset" },
+      {
+        send: async () => {
+          throw new Error("sendEmail blew up unexpectedly");
+        },
+        enqueueFailed: async () => {},
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.provider).toBe("log");
+  });
+
   it("returns the send result and does NOT enqueue on success", async () => {
     let enqueued = 0;
     const result = await sendTransactionalEmail(

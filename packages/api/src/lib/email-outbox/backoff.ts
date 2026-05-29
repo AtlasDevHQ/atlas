@@ -41,11 +41,14 @@ const DELAYS_MS: ReadonlyArray<number> = [
 ];
 
 /**
- * Delay from `created_at` until the (attempts+1)th dispatch is allowed.
+ * Per-attempt backoff interval (ms) before the (attempts+1)th dispatch.
+ * Added to `now()` at the failure moment by `MARK_TRANSIENT_FAIL_SQL`
+ * (`retry_after = now() + tier`), and to `created_at` only for the
+ * never-failed (attempts=0) first-claim gate.
  *
  * Pure function — unit-tested in `__tests__/backoff.test.ts`. Mirrors
- * `CLAIM_DELAY_SQL` below; both are interpolated into
- * `outbox.ts:CLAIM_SQL`'s WHERE clause.
+ * `CLAIM_DELAY_SQL` below; both are interpolated into `outbox.ts`'s
+ * CLAIM and MARK_TRANSIENT statements.
  */
 export function nextDelayMs(attempts: number): number {
   if (!Number.isFinite(attempts) || attempts < 0) return 0;

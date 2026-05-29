@@ -158,6 +158,24 @@ describe("LinearApiKeyFormInstallHandler.validateConfig — happy path", () => {
     const params = mockInternalQuery.mock.calls[0][1] as unknown[];
     expect(params).toContain("catalog:linear-apikey");
   });
+
+  it("returns the persisted id on ON CONFLICT (re-install keeps the original row id)", async () => {
+    // Simulate a re-install: the candidate id we'd insert is "fresh-id"
+    // but the DB row's existing id is "preexisting-id". RETURNING id on
+    // an UPSERT returns the row's actual id, NOT the candidate — so the
+    // handler must surface "preexisting-id". Pins that installRecord.id
+    // flows from the RETURNING row decoupled from candidateId; brings
+    // this file to parity with the email/obsidian/webhook/twenty tests
+    // so a silent revert to `persistedId = candidateId` (the bug #2808
+    // removed) is caught here, not just in the empty-rowset cases below.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("RETURNING id")) return [{ id: "preexisting-id" }];
+      return [];
+    });
+    const handler = new LinearApiKeyFormInstallHandler({ idGenerator: () => "fresh-id" });
+    const result = await handler.validateConfig(WSID, validForm());
+    expect(result.installRecord.id).toBe("preexisting-id");
+  });
 });
 
 // ---------------------------------------------------------------------------

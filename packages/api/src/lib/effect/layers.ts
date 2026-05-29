@@ -35,6 +35,7 @@
 
 import { Context, Duration, Effect, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { assertSaasPlatformEmailIsResend } from "@atlas/api/lib/email/dpa-guard";
@@ -115,6 +116,46 @@ function withFiberDeathLog<A, E, R>(
     Effect.asVoid,
   );
 }
+
+// ── Per-tick observability spans for periodic cleanup fibers (#2945) ──
+// `withFiberDeathLog` (above) only fires when a defect kills the fiber.
+// A healthy tick emits nothing, so "wedged silently" and "ran fine,
+// nothing to do" are indistinguishable in traces, and a hung-but-not-
+// crashed fiber never trips the death log. Wrap each of these 8 cleanup
+// tick bodies in `withEffectSpan` so every repeat iteration emits one
+// span — a wedged fiber then shows up as an absence of spans against its
+// expected cadence.
+//
+// Scope: only these 8 cleanup fibers. The other periodic fibers forked in
+// `makeSchedulerLive` are intentionally out of scope for this pass —
+// `sub_processor_publisher`, `settings_refresh`, `onboarding_email`, and
+// `expert_scheduler` still lack a per-tick span, while the CRM/email
+// outbox flushers already have their own heartbeat + stall-watchdog
+// liveness signal. Spanning the remaining periodic fibers is tracked in
+// #2987.
+//
+// Span names follow the existing `atlas.<area>.<op>` dotted convention
+// (cf. `atlas.sql.execute`, `atlas.scheduler.task.run`, and the
+// already-landed `atlas.scheduler.byot_catalog_refresh` from #2949).
+// The snake_case op segment matches the fiber's `withFiberDeathLog`
+// label; the LOW finding in #2945 is about NOT dropping the dotted
+// `atlas.scheduler.` prefix, not about the underscores within the op.
+//
+// This record is the single source of truth for the span names: each
+// wrap site below reads from it. `layers.test.ts` asserts both the exact
+// name set AND (via a structural source-scan guard) that all 8 wrap sites
+// are present, so renaming an entry OR deleting a `withEffectSpan(...)`
+// wrap at a call site is a test failure rather than a silent regression.
+export const SCHEDULER_CLEANUP_SPAN_NAMES = {
+  oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
+  rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
+  demo_rate_limit_cleanup: "atlas.scheduler.demo_rate_limit_cleanup",
+  contact_rate_limit_cleanup: "atlas.scheduler.contact_rate_limit_cleanup",
+  abuse_cleanup: "atlas.scheduler.abuse_cleanup",
+  dashboard_rate_limit_cleanup: "atlas.scheduler.dashboard_rate_limit_cleanup",
+  conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
+  share_token_cleanup: "atlas.scheduler.share_token_cleanup",
+} as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Enterprise gate (#2563 slice 1/11 of #2017; #2564 slice 2/11)
@@ -1260,7 +1301,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "oauth_state_cleanup",
-          oauthTick.pipe(Effect.repeat(Schedule.spaced(Duration.minutes(10)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.oauth_state_cleanup, {}, oauthTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.minutes(10))),
+          ),
         ),
       );
 
@@ -1289,7 +1332,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "rate_limit_cleanup",
-          rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.rate_limit_cleanup, {}, rateLimitTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
+          ),
         ),
       );
 
@@ -1321,7 +1366,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "demo_rate_limit_cleanup",
-          demoTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.demo_rate_limit_cleanup, {}, demoTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS))),
+          ),
         ),
       );
 
@@ -1352,7 +1399,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "contact_rate_limit_cleanup",
-          contactTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.contact_rate_limit_cleanup, {}, contactTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.seconds(60))),
+          ),
         ),
       );
 
@@ -1384,7 +1433,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "abuse_cleanup",
-          abuseTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.abuse_cleanup, {}, abuseTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS))),
+          ),
         ),
       );
 
@@ -1422,7 +1473,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "dashboard_rate_limit_cleanup",
-          dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.dashboard_rate_limit_cleanup, {}, dashboardTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs))),
+          ),
         ),
       );
 
@@ -1455,7 +1508,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "conversation_rate_sweep",
-          convSweepTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.conversation_rate_sweep, {}, convSweepTick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS))),
+          ),
         ),
       );
 
@@ -1483,7 +1538,9 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "share_token_cleanup",
-          shareCleanupEffect.pipe(Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS)))),
+          withEffectSpan(SCHEDULER_CLEANUP_SPAN_NAMES.share_token_cleanup, {}, shareCleanupEffect).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS))),
+          ),
         ),
       );
 

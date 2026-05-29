@@ -852,15 +852,25 @@ export function createAuthContextTestLayer(
 // non-test consumer must branch on EE-loaded vs not — typically to
 // surface a 404 `not_available` envelope, a distinct success-shape
 // body, or to short-circuit a method that would otherwise hit the DB
-// to learn the same thing. Tags that meet that bar today:
-// ResidencyResolver, ModelRouter, SlaMetrics, BackupsManager,
-// IpAllowlistPolicy, SCIMProvenance, Domains.
+// to learn the same thing. Tags that meet that bar today (drift-check:
+// grep services.ts for the boolean-form field declaration — 10 interface
+// fields match, plus the convention sentence above): ResidencyResolver,
+// ModelRouter, MaskingPolicy, ApprovalGate, SlaMetrics, BackupsManager,
+// AuditRetention, IpAllowlistPolicy, SCIMProvenance, Domains. `SaasCrm`
+// also carries `available`, but as a discriminated-union discriminant
+// (`available: false | true`), so the boolean-form grep does not match
+// it.
 //
-// Every other Tag (MaskingPolicy, ComplianceReports, ApprovalGate,
-// AuditRetention, AuditPurgeScheduler, SSOPolicy, RolesPolicy, Branding,
-// ProactiveGate) omits the flag — its route handlers just call the methods and the
-// Noop's typed-error failure (mapped to 403 by the Hono bridge via
-// `EnterpriseError`) is the "feature unavailable" signal.
+// MaskingPolicy / ApprovalGate / AuditRetention / ResidencyResolver are
+// the four consumer-side fail-closed sites (see `enterprise-layer.ts`):
+// they branch on `available === false` to surface a 503
+// `enterprise_load_failed` when EE is enabled but failed to load.
+//
+// Every other EE Tag (ComplianceReports, AuditPurgeScheduler, SSOPolicy,
+// RolesPolicy, Branding, ProactiveGate) omits the flag — its route
+// handlers just call the methods and the Noop's typed-error failure
+// (mapped to 403 by the Hono bridge via `EnterpriseError`) is the
+// "feature unavailable" signal.
 // `DeployModeResolver` is the lone sentinel-returning Tag
 // (`"saas" | "self-hosted"` is the value, not a boolean flag).
 //

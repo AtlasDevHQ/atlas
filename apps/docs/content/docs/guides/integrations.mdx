@@ -37,7 +37,7 @@ Each catalog entry advertises one **install model** that drives how the Connect 
 |---|---|---|---|
 | `oauth` | `GET /:platform/install` → 302 to provider → `GET /:platform/callback` | Slack, Salesforce, Jira | Click **Connect**, complete the provider OAuth dance, return to `/admin/integrations` |
 | `form` | `POST /:platform/install-form` with JSON body | Email, Webhook, Obsidian | Fill in the per-platform fields the catalog declares (`configSchema`), submit |
-| `static-bot` | _placeholder_ | _(none in the install router today — Discord / Telegram / WhatsApp will move here in a future release; they currently install via the legacy BYOT path below)_ | Capture a per-Workspace routing identifier against an operator-shared bot |
+| `static-bot` | `GET /discord/install` → bot-add consent → `GET /discord/callback` (Discord); others via the legacy admin endpoints below | Discord (via the install router). Telegram, WhatsApp, Google Chat, and Teams still install via the legacy admin endpoints below. | Add the operator-shared bot to the workspace, then capture a per-Workspace routing identifier (Discord `guild_id`, Telegram `chat_id`, Teams `tenant_id`) |
 
 A request to the wrong endpoint for a catalog entry's model returns `400 wrong_install_model` — the UI picks the right surface from the catalog response, so this only fires for direct API callers.
 

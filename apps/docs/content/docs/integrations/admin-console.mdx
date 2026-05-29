@@ -71,25 +71,33 @@ what's available on higher plans without contacting sales.
 
 ## Connect flow
 
-> **Coming in 1.5.2 — slice 5 (#2654).** This slice ships the catalog
-> read-only surface so the install flow has somewhere to land.
+Clicking **Connect** runs the install flow for the card's `installModel`:
 
-When slice 5 lands, clicking **Connect** on an OAuth integration (Slack
-today; Salesforce in a later slice) opens an authorization tab against
-the Platform. After approval, Atlas writes a `workspace_plugins` row
-and the card flips to **Installed**. Form-based integrations (e.g.
-Linear via API key) open a modal that collects the credentials inline.
+- **OAuth** (Slack, Salesforce, Jira, Linear, GitHub) — opens an
+  authorization tab against the Platform. After you approve, Atlas writes
+  a `workspace_plugins` row and the card flips to **Installed**.
+- **Form** (Email, Webhook, Obsidian, Linear via API key) — opens a modal
+  that collects the credentials inline and writes the `workspace_plugins`
+  row on submit.
+- **Static-bot** (Discord) — runs the bot-add consent flow against the
+  Platform, then captures a per-Workspace routing identifier (e.g.
+  `guild_id`) against the operator-shared bot. The remaining static-bot
+  platforms (Telegram, WhatsApp, Google Chat, Teams) install from their
+  per-platform admin blocks further down the page.
 
 ## Disconnect
 
-> **Coming in 1.5.2 — slice 6 (#2656).** Today the **Disconnect**
-> button renders but is inert; use the legacy per-platform admin blocks
-> further down `/admin/integrations` to disconnect Slack / Teams /
-> Discord / etc.
+Clicking **Disconnect** tears the install down credential-first: the
+per-Platform credential row is deleted before the `workspace_plugins` row
+(scoped to the catalog entry and your Workspace), so credentials never
+outlive the install record. Any cached plugin instance for that pair is
+evicted, so in-flight transports stop immediately. Disconnect requires an
+MFA-enrolled admin session.
 
-After slice 6, **Disconnect** deletes the `workspace_plugins` row
-(scoped to the catalog entry and your Workspace), revokes the OAuth
-grant where possible, and logs an admin-action audit row.
+Disconnect removes Atlas's stored credential and install record; it does
+**not** call the Platform's token-revocation endpoint. If you also want to
+invalidate the token Atlas held, revoke the grant from the Platform's own
+app settings (e.g. Slack or Salesforce).
 
 ## Empty state
 

@@ -57,8 +57,9 @@ export default defineConfig({
       saas_eligible: true,
       min_plan: "starter",
     },
-    // 1.5.3 placeholder — visible to ops, not customer-installable until
-    // the static-bot install handler lands.
+    // Declared but held back from customers via `enabled: false` — visible
+    // to ops. Flip to `true` (with this Platform's operator env wired) to
+    // surface it; the static-bot install handler is live.
     {
       slug: "telegram",
       type: "chat",
@@ -97,8 +98,9 @@ Each entry carries:
   Examples: Email (SMTP), Webhook, Obsidian.
 - **`static-bot`** — Operator-shared bot serves every Workspace; customer
   provides only a per-Workspace routing identifier. Examples: Discord
-  `guild_id`, Telegram `chat_id`, Teams `tenant_id`. **Not installable
-  in 1.5.2** — handler ships in 1.5.3.
+  `guild_id`, Telegram `chat_id`, Teams `tenant_id`. The
+  `StaticBotInstallHandler` family is live for Discord, Telegram, WhatsApp,
+  Google Chat, and Teams.
 
 ## Boot-time seed
 
@@ -152,7 +154,7 @@ live in environment variables. The chat plugin's
 | Platform | Required env vars |
 |---|---|
 | `slack` | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_ENCRYPTION_KEY` |
-| _(other chat Platforms ship in 1.5.3)_ | — |
+| Discord, Telegram, WhatsApp, Google Chat, Teams | Each declares its own operator env vars — see the per-Platform setup in [Integrations Hub](/guides/integrations). |
 
 If a catalog entry exists with `install_model: "oauth"` and `enabled: true`
 but its env vars are missing, the AdapterRegistry logs a warn and skips

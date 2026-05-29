@@ -409,8 +409,10 @@ interface Conversation {
   id: string;
   userId: string | null;
   title: string | null;
-  surface: "web" | "api" | "mcp" | "slack";
+  surface: "web" | "api" | "mcp" | "slack" | "notebook";
   connectionId: string | null;
+  connectionGroupId: string | null;
+  routingMode?: ConversationRoutingMode | null; // "auto" | "pin" | "all"
   starred: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1050,7 +1052,7 @@ try {
 
 ## Cross-Environment Querying
 
-The 1.4.5 cross-environment scope ([multi-datasource routing guide](/deployment/multi-datasource#cross-environment-scope-routing-145)) lets a single conversation route SQL across multiple group members (`us-int` + `eu` + `apac`) and merge the results. Wire-level, every `executeSQL` tool call now carries a `envContributions: ConnectionContribution[]` array — a 1-element array for single-env executions, one entry per group member for fanouts:
+The cross-environment scope ([multi-datasource routing guide](/deployment/multi-datasource#cross-environment-scope-routing)) lets a single conversation route SQL across multiple group members (`us-int` + `eu` + `apac`) and merge the results. Wire-level, every `executeSQL` tool call now carries a `envContributions: ConnectionContribution[]` array — a 1-element array for single-env executions, one entry per group member for fanouts:
 
 ```typescript
 import type {
@@ -1076,7 +1078,7 @@ function renderResult(result: ExecuteSqlSuccessResult) {
 }
 ```
 
-`ExecuteSqlResult` is a discriminated union — `success: true` carries `columns`, `rows`, `truncated`, and `envContributions`; `success: false` carries `error` and the partial `envContributions` that did execute (so partial failures stay observable). See the [Multi-Datasource Routing guide](/deployment/multi-datasource#cross-environment-scope-routing-145) for the partial-failure rendering pattern.
+`ExecuteSqlResult` is a discriminated union — `success: true` carries `columns`, `rows`, `truncated`, and `envContributions`; `success: false` carries `error` and the partial `envContributions` that did execute (so partial failures stay observable). See the [Multi-Datasource Routing guide](/deployment/multi-datasource#cross-environment-scope-routing) for the partial-failure rendering pattern.
 
 ---
 

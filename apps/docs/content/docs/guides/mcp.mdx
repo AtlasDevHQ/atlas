@@ -21,7 +21,7 @@ Atlas's MCP tools execute with your workspace's read permissions. A connected ag
 <Tabs items={["Hosted (mcp.useatlas.dev)", "Self-hosted (stdio)"]}>
 <Tab value="Hosted (mcp.useatlas.dev)">
 
-The hosted endpoint at `mcp.useatlas.dev` is the default for Atlas SaaS users since 1.4.0. There are three onboarding paths that all end at the same place: a workspace-scoped OAuth token in your agent's MCP config and a row in **Settings → AI Agents**.
+The hosted endpoint at `mcp.useatlas.dev` is the default for Atlas SaaS users. There are three onboarding paths that all end at the same place: a workspace-scoped OAuth token in your agent's MCP config and a row in **Settings → AI Agents**.
 
 ### Path A — In-product wizard (recommended)
 
@@ -334,7 +334,7 @@ If your agent doesn't see the Atlas tools at all, **restart the client** — mos
 
 ## Client status
 
-Honest support matrix as of v1.4.1. "Tested" means the eval harness or a maintainer has run the full NovaMart loop end-to-end against this client. "Should work via DCR" means the client implements the MCP spec's authorization flow but we haven't run a full eval pass yet. "Untested" means we haven't tried it at all.
+Honest support matrix as of this writing. "Tested" means the eval harness or a maintainer has run the full NovaMart loop end-to-end against this client. "Should work via DCR" means the client implements the MCP spec's authorization flow but we haven't run a full eval pass yet. "Untested" means we haven't tried it at all.
 
 | Client | Hosted | Self-hosted (stdio) | Notes |
 |--------|--------|---------------------|-------|
@@ -801,7 +801,7 @@ Single-workspace clients continue to work unchanged after this feature shipped �
 
 ### Cross-region routing
 
-Atlas guarantees data residency from 1.0.0 onward. The MCP endpoint enforces this strictly: a request for an EU workspace that lands on the US instance returns `421 Misdirected Request`, even when the API is configured for graceful (non-strict) routing on the data path.
+Atlas guarantees data residency. The MCP endpoint enforces this strictly: a request for an EU workspace that lands on the US instance returns `421 Misdirected Request`, even when the API is configured for graceful (non-strict) routing on the data path.
 
 ```json
 {
@@ -900,7 +900,7 @@ Atlas does **not** leak the underlying revocation reason in the response body. A
 |---|---|---|
 | `active` | Enabled client with at least one outstanding non-expired access or refresh token | Status dot, no badge |
 | `reconnect_required` | Enabled client with no usable token left — the next frame will 401 with `WWW-Authenticate` | Amber badge + Reconnect CTA |
-| `revoked` | The client row is `disabled = true`. **Reserved for a future soft-revoke flow** — v1.4.1 revoke performs a hard `DELETE`, so this state is never produced by current code paths. The UI rendering exists so the contract is pinned for the next iteration. | Dimmed row, deletion is the next step |
+| `revoked` | The client row is `disabled = true`. **Reserved for a future soft-revoke flow** — today's revoke performs a hard `DELETE`, so this state is never produced by current code paths. The UI rendering exists so the contract is pinned for the next iteration. | Dimmed row, deletion is the next step |
 
 The Settings → AI Agents page renders these three states verbatim. Ops queries should pivot on `tokenState` rather than re-deriving it from `disabled` + `tokenCount`.
 
@@ -922,7 +922,7 @@ A 60/min budget admits roughly **12 `executeSQL` calls** or **60 `listEntities` 
 
 #### Live usage in Settings → AI Agents
 
-The same weighted total is surfaced per agent at **Settings → AI Agents** as a small `used/ceiling` chip on every connected client row. The chip flips to amber at 80% of the ceiling and red at 100% so users see they're approaching the limit before a 429 lands. The chip refreshes every 10 seconds while the page is foregrounded and pauses while the tab is hidden — there's no SSE / WebSocket push today (a v1.5+ concern). The same per-tool weighting drives both the chip and the limiter, so the math agrees with what the agent will see.
+The same weighted total is surfaced per agent at **Settings → AI Agents** as a small `used/ceiling` chip on every connected client row. The chip flips to amber at 80% of the ceiling and red at 100% so users see they're approaching the limit before a 429 lands. The chip refreshes every 10 seconds while the page is foregrounded and pauses while the tab is hidden — there's no SSE / WebSocket push today (a future concern). The same per-tool weighting drives both the chip and the limiter, so the math agrees with what the agent will see.
 
 #### When the bucket empties
 
@@ -966,7 +966,7 @@ curl -X PATCH \
 - **Cross-region reconciliation.** Each regional API has its own in-process buckets. A determined attacker holding tokens in `us`, `eu`, and `apac` can hit each region's quota independently, so the effective ceiling is `regions × per-client quota` rather than a single global one. Tracked as out-of-scope on [#2071](https://github.com/AtlasDevHQ/atlas/issues/2071).
 - **Multi-replica cache staleness.** Within a single region, the limiter cache is in-process. The `numReplicas: 1` pin documented above (under "Operational notes") means there's only one replica per regional service today, so an admin override invalidates the live cache immediately. If a future deployment lifts that pin (paired with the work tracked in [#2069](https://github.com/AtlasDevHQ/atlas/issues/2069)), expect a brief staleness window after a `PATCH .../rate-limit` until the other replicas's caches expire — for now the override surface and the running limiter are pinned to the same process.
 - **Override DB outage.** If the internal database is unreachable when the limiter first sees a `(workspace, client)` pair, the loader logs a warning and the bucket falls back to the workspace default until the cache is refilled. This is fail-open by design (legitimate traffic keeps flowing during a DB blip), but an admin who set a low quota for an abusive client should know the override is bypassed during such a window. Operators paged on `oauth_client_rate_limits lookup failed` log lines have the signal to act.
-- **Tiered pricing.** The override mechanism is admin-only today; no usage-based billing tier consumes it. Will fold in alongside the v1.5 billing work.
+- **Tiered pricing.** The override mechanism is admin-only today; no usage-based billing tier consumes it. Will fold in when usage-based billing ships.
 
 ### Operational notes
 
@@ -976,9 +976,9 @@ curl -X PATCH \
 - **Unauthenticated DCR** is enabled by default to support standard MCP clients. Operators with stricter threat models can opt out via `ATLAS_OAUTH_ALLOW_UNAUTH_DCR=false` — but doing so prevents Claude Desktop / ChatGPT / Cursor from onboarding without manual client provisioning.
 - **`mcp.useatlas.dev` brand hostnames are the canonical surface.** `mcp.useatlas.dev`, `mcp-eu.useatlas.dev`, and `mcp-apac.useatlas.dev` are the URLs every client config and registry entry writes against — the protected-resource metadata advertises them, the CLI installer defaults to them, and OAuth tokens minted post-cutover bind to the brand audience (`https://mcp.useatlas.dev/mcp`). The underlying regional `api.*` hostnames stay reachable and the issuer keeps accepting the regional audience for backward compatibility, but new clients should always walk forward to the brand URL.
 
-### Migrating from the v1.4.0-dev `mcp_tokens` bearer
+### Migrating from the legacy `mcp_tokens` bearer
 
-PR A of #2024 introduced a custom `mcp_tokens` table for admin-minted bearers. PR C replaced it with OAuth 2.1 access tokens before v1.4.0 shipped — there are no production tokens to migrate. Self-hosted dev DBs that ran migration `0046_mcp_tokens.sql` get the table dropped by `0047_drop_mcp_tokens.sql` automatically.
+PR A of #2024 introduced a custom `mcp_tokens` table for admin-minted bearers. PR C replaced it with OAuth 2.1 access tokens before the current MCP surface shipped — there are no production tokens to migrate. Self-hosted dev DBs that ran migration `0046_mcp_tokens.sql` get the table dropped by `0047_drop_mcp_tokens.sql` automatically.
 
 If you'd built a script against the legacy `/api/v1/admin/mcp-tokens` endpoints, replace it with:
 

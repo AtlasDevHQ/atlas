@@ -13,8 +13,8 @@ Atlas ships a single canonical demo dataset: **NovaMart**, a direct-to-consumer 
 
 NovaMart was founded during the pandemic, started with bedding, expanded to kitchen/bath/outdoor, and launched a small marketplace in 2022. The schema includes the same kinds of real-world tech-debt patterns you'd hit in a real codebase — missing FK constraints, abandoned tables, inconsistent enums, denormalized reporting tables, and schema-evolution artifacts where old and new columns coexist.
 
-<Callout type="info" title="Single canonical seed since 1.4.0">
-  Earlier releases shipped three demo seeds (`simple`, `cybersec`, `ecommerce`). 1.4.0 (#2021) collapsed the picker to a single canonical seed — the e-commerce one. Legacy `--demo simple` and `--demo cybersec` invocations now error with a migration message; `--seed` was removed entirely.
+<Callout type="info" title="Single canonical seed">
+  Earlier releases shipped three demo seeds (`simple`, `cybersec`, `ecommerce`). A later change ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)) collapsed the picker to a single canonical seed — the e-commerce one. Legacy `--demo simple` and `--demo cybersec` invocations now error with a migration message; `--seed` was removed entirely.
 </Callout>
 
 ## Loading the demo

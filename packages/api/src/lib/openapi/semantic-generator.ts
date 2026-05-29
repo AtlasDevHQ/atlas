@@ -83,6 +83,15 @@ export interface GeneratedJoin {
   readonly description?: string;
 }
 
+/** A non-path parameter the agent must know to call an operation correctly. */
+export interface GeneratedOperationParameter {
+  readonly name: string;
+  /** `query` | `header` | `cookie` — path params are implicit in `path`, omitted. */
+  readonly in: string;
+  readonly required: boolean;
+  readonly description?: string;
+}
+
 /** An operation that reads or writes this entity's resource. */
 export interface GeneratedEntityOperation {
   readonly operationId: string;
@@ -92,6 +101,13 @@ export interface GeneratedEntityOperation {
   readonly summary?: string;
   /** True for any non-GET (POST/PATCH/PUT/DELETE). The read-only gate keys on this. */
   readonly writes: boolean;
+  /**
+   * The operation's non-path parameters (query/header/cookie), so the agent sees
+   * the valid names/locations to pass through `executeRestOperation` rather than
+   * inventing or omitting them (Codex review). Path params are excluded — they are
+   * already visible in {@link path}. Empty when the operation takes none.
+   */
+  readonly parameters: ReadonlyArray<GeneratedOperationParameter>;
 }
 
 /**
@@ -197,12 +213,16 @@ export function generateSemanticModel(graph: OperationGraph): OpenApiSemanticMod
   }));
   const entitySchemaNames = new Set(resolved.map((r) => r.recordSchema).filter(isString));
 
-  // Pass 2: derive columns/joins now that the entity set is known.
+  // Pass 2: derive columns/joins now that the entity set is known. When no named
+  // schema resolved, fall back to an inline `data.<key>` response object so a
+  // resource specified only by an inline shape still gets fields (Codex review).
   const usedSchemas = new Set<string>();
   const entities: GeneratedEntity[] = resolved.map(({ resource, operations, recordSchema }) => {
     if (recordSchema) usedSchemas.add(recordSchema);
 
-    const schema = recordSchema ? graph.schemas.get(recordSchema) : undefined;
+    const schema = recordSchema
+      ? graph.schemas.get(recordSchema)
+      : inlineResponseRecordSchema(operations, graph);
     const { columns, joins } = schema
       ? deriveColumnsAndJoins(schema, graph, entitySchemaNames)
       : { columns: [], joins: [] };
@@ -223,9 +243,12 @@ export function generateSemanticModel(graph: OperationGraph): OpenApiSemanticMod
 
   entities.sort((a, b) => a.name.localeCompare(b.name));
 
-  const unresolvedResources = resolved
-    .filter((r) => !r.recordSchema)
-    .map((r) => r.resource)
+  // "Unresolved" = no named schema AND no inline fields either — a truly
+  // field-less operations-only entity. A resource that drew columns from an
+  // inline response is resolved enough to be useful, so it is NOT flagged.
+  const unresolvedResources = entities
+    .filter((e) => e.recordSchema === undefined && e.columns.length === 0)
+    .map((e) => e.resource)
     .toSorted((a, b) => a.localeCompare(b));
 
   const supportingSchemas = [...graph.schemas.keys()]
@@ -247,18 +270,17 @@ export function generateSemanticModel(graph: OperationGraph): OpenApiSemanticMod
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Group operations by their first path segment (the collection name). Both
- * `/people` and `/people/{id}` belong to resource `people`. Returns a Map sorted
- * by resource name for deterministic output. Operations whose path has no usable
- * segment are bucketed under `""` (rare; e.g. a root `/` operation) and skipped
- * if that produces a nameless group with no schema.
+ * Group operations by their collection resource. Both `/people` and
+ * `/people/{id}` belong to resource `people`. Returns a Map sorted by resource
+ * name for deterministic output. Operations whose path has no usable segment are
+ * bucketed under `""` (rare; e.g. a root `/` operation) and skipped.
  */
 function groupOperationsByResource(
   graph: OperationGraph,
 ): Map<string, Operation[]> {
   const groups = new Map<string, Operation[]>();
   for (const op of graph.operations.values()) {
-    const resource = firstPathSegment(op.path);
+    const resource = resourceForPath(op.path);
     if (!resource) continue;
     const bucket = groups.get(resource);
     if (bucket) bucket.push(op);
@@ -271,12 +293,41 @@ function groupOperationsByResource(
   return new Map([...groups.entries()].toSorted(([a], [b]) => a.localeCompare(b)));
 }
 
-/** First non-template path segment, e.g. `/people/{id}` → `people`. */
-function firstPathSegment(path: string): string {
-  for (const seg of path.split("/")) {
-    if (seg.length > 0 && !seg.startsWith("{")) return seg;
+/** Path segments OpenAPI specs use as version/base prefixes, never resources. */
+const PREFIX_SEGMENT_RE = /^(?:v\d+|api)$/i;
+
+/**
+ * The collection segment that names a resource — robust to version/base prefixes
+ * and sub-resources (Codex review), where a naive "first non-template segment"
+ * would collapse `/api/v1/people` + `/api/v1/companies` into one `api`/`v1`
+ * entity and bury Stripe-style `/v1/...` resources entirely:
+ *  - leading `api` / `vN` prefixes are skipped (`/api/v1/people` → `people`),
+ *    but never the final segment (so a real `/api` endpoint is still addressable);
+ *  - a sub-resource keeps its own identity (`/orders/{id}/items` → `items`), by
+ *    taking the LAST segment that *starts* a collection (one at the content root
+ *    or immediately after a `{template}`);
+ *  - a collection action stays with its collection (`/people/search` → `people`),
+ *    because `search` is not at a collection boundary.
+ * Returns "" for a path with no usable segment (root `/`), which the caller skips.
+ */
+function resourceForPath(path: string): string {
+  const segments = path.split("/").filter((s) => s.length > 0);
+  // Skip leading version/base prefixes, but never consume the final segment.
+  let start = 0;
+  while (start < segments.length - 1 && PREFIX_SEGMENT_RE.test(segments[start])) start++;
+
+  let result = "";
+  let atCollectionBoundary = true; // first content segment starts a collection
+  for (let i = start; i < segments.length; i++) {
+    const seg = segments[i];
+    if (seg.startsWith("{")) {
+      atCollectionBoundary = true; // the next literal segment is a sub-collection
+      continue;
+    }
+    if (atCollectionBoundary) result = seg;
+    atCollectionBoundary = false;
   }
-  return "";
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -290,9 +341,11 @@ function firstPathSegment(path: string): string {
  * `Person` lookup. Each layer proposes candidate names; the first layer whose
  * most-frequent candidate is an actual schema in the graph wins:
  *
- *  1. **Request-body `$ref`s** — a create/update body that is a bare `$ref`
- *     names the record directly (Twenty: `createOnePerson` body → `Person`).
- *     Strongest signal; handles irregular plurals (people → Person) for free.
+ *  1. **Request-body `$ref`s** — a create/update body on the resource's OWN path
+ *     that is a bare `$ref` names the record directly (Twenty: `createOnePerson`
+ *     body → `Person`). Strongest signal; handles irregular plurals (people →
+ *     Person) for free. Action sub-paths (`/people/search`) are excluded so a
+ *     request-form schema can't masquerade as the record (see {@link isRecordPath}).
  *  2. **Unwrapped responses** — a `200/201` envelope of shape `data.<key>` or
  *     `data.<key>[]` whose leaf is a `$ref` (Twenty's `PersonListResponse` →
  *     `data.people[] -> Person`, or an inline `data.noteTargets[] -> NoteTarget`).
@@ -312,7 +365,7 @@ function resolveRecordSchema(
   const schemaNames = new Set(graph.schemas.keys());
 
   const layers: Array<() => string[]> = [
-    () => requestBodyRefs(operations),
+    () => requestBodyRefs(operations, resource),
     () => responseRecordRefs(operations, graph),
     () => operations.map((op) => schemaFromOperationId(op.operationId)).filter(isString),
     () => [singularize(resource)],
@@ -325,9 +378,27 @@ function resolveRecordSchema(
   return undefined;
 }
 
-function requestBodyRefs(operations: ReadonlyArray<Operation>): string[] {
+/**
+ * Is this path the resource RECORD itself (the collection root or a single
+ * record), as opposed to a sub-action like `/people/search`? Only record paths
+ * may define the record schema from their request body (Codex review) — an action
+ * endpoint's body describes its INPUT payload (`PeopleSearchRequest`), not the
+ * returned record, so letting it win would replace the record's fields with the
+ * search-form's.
+ */
+function isRecordPath(path: string, resource: string): boolean {
+  const segments = path.split("/").filter((s) => s.length > 0);
+  const idx = segments.lastIndexOf(resource);
+  if (idx === -1) return false;
+  // Every segment after the resource must be a `{template}` (`/people/{id}`),
+  // never another literal segment (`/people/search`).
+  return segments.slice(idx + 1).every((s) => s.startsWith("{"));
+}
+
+function requestBodyRefs(operations: ReadonlyArray<Operation>, resource: string): string[] {
   const out: string[] = [];
   for (const op of operations) {
+    if (!isRecordPath(op.path, resource)) continue;
     const json = op.requestBody?.content.get("application/json");
     if (json?.ref !== undefined) out.push(json.ref);
   }
@@ -376,6 +447,41 @@ function unwrapDataEnvelope(schema: OpenApiSchema, graph: OperationGraph): strin
     if (target) refs.push(target.name);
   }
   return refs;
+}
+
+/**
+ * Fallback record shape for a resource with NO named record schema: the INLINE
+ * `data.<key>` response object (Codex review). A resource described only by an
+ * inline response — no `$ref`, no request body, and no name-matchable
+ * operationId — would otherwise be an empty operations-only entity even though
+ * its fields are fully specified. Returns the first inline object schema found
+ * under a 200/201 `data.<key>` (unwrapping a one-level array), or `undefined`
+ * when the responses carry only refs (handled by the named layers) or no object
+ * shape at all. Ref-bearing keys are skipped — those are the named-schema layers'
+ * job, so this never competes with or overrides a resolvable named record.
+ */
+function inlineResponseRecordSchema(
+  operations: ReadonlyArray<Operation>,
+  graph: OperationGraph,
+): OpenApiSchemaInline | undefined {
+  for (const op of operations) {
+    for (const status of ["200", "201"]) {
+      const json = op.responses.get(status)?.content.get("application/json");
+      const envelope = json ? resolveSchema(json, graph) : undefined;
+      const data = envelope?.properties?.get("data");
+      const dataShape = data ? resolveSchema(data, graph) : undefined;
+      if (!dataShape?.properties) continue;
+      for (const value of dataShape.properties.values()) {
+        if (value.ref !== undefined) continue; // a bare ref → the named-schema layers handle it
+        // value is now OpenApiSchemaInline; unwrap a one-level array wrapper.
+        const item = value.type === "array" ? value.items : value;
+        if (item === undefined || item.ref !== undefined) continue; // array-of-ref → named layers
+        const inline = resolveSchema(item, graph);
+        if (inline?.properties && inline.properties.size > 0) return inline;
+      }
+    }
+  }
+  return undefined;
 }
 
 // CRUD verb prefixes generated REST clients put before the resource name, each
@@ -439,9 +545,10 @@ function deriveColumnsAndJoins(
   const resolved = resolveSchema(schema, graph);
   const columns: GeneratedColumn[] = [];
   const joins: GeneratedJoin[] = [];
-  if (!resolved?.properties) return { columns, joins };
+  if (!resolved) return { columns, joins };
 
-  for (const [propName, propSchema] of resolved.properties) {
+  const properties = collectProperties(resolved, graph);
+  for (const [propName, propSchema] of properties) {
     const refTarget = refTargetOf(propSchema);
     if (refTarget && entitySchemaNames.has(refTarget.name)) {
       // Ref to a real entity → a traversable join.
@@ -476,6 +583,34 @@ function resolveSchema(
   if (schema.ref === undefined) return schema;
   const target = graph.schemas.get(schema.ref);
   return target && target.ref === undefined ? target : undefined;
+}
+
+/**
+ * Collect a record schema's properties, MERGING any `allOf`/`oneOf`/`anyOf`
+ * branches (one ref hop each) so a record modeled purely by composition — common
+ * in generated specs like Stripe (`User: allOf: [BaseUser, {...}]`) — still
+ * yields its full field surface instead of an empty entity (Codex review). Own
+ * properties take precedence and keep their order; branch properties fill in the
+ * rest (`oneOf`/`anyOf` unioned best-effort, since a composed record is described
+ * by what its variants expose). Deterministic insertion order keeps goldens stable.
+ */
+function collectProperties(
+  schema: OpenApiSchemaInline,
+  graph: OperationGraph,
+): Map<string, OpenApiSchema> {
+  const merged = new Map<string, OpenApiSchema>();
+  if (schema.properties) {
+    for (const [name, prop] of schema.properties) merged.set(name, prop);
+  }
+  const branches = [...(schema.allOf ?? []), ...(schema.oneOf ?? []), ...(schema.anyOf ?? [])];
+  for (const branch of branches) {
+    const inline = resolveSchema(branch, graph);
+    if (!inline?.properties) continue;
+    for (const [name, prop] of inline.properties) {
+      if (!merged.has(name)) merged.set(name, prop); // own props win on clash
+    }
+  }
+  return merged;
 }
 
 interface RefTarget {
@@ -566,6 +701,15 @@ function toEntityOperation(op: Operation): GeneratedEntityOperation {
     kind: classifyOperation(op),
     ...(op.summary ? { summary: op.summary } : {}),
     writes: op.method !== "GET" && op.method !== "HEAD" && op.method !== "OPTIONS",
+    // Non-path params only — path params are already visible in `path`.
+    parameters: op.parameters
+      .filter((p) => p.in !== "path")
+      .map((p) => ({
+        name: p.name,
+        in: p.in,
+        required: p.required,
+        ...(p.description ? { description: p.description } : {}),
+      })),
   };
 }
 
@@ -708,6 +852,13 @@ export function renderEntityYaml(entity: GeneratedEntity): string {
       writes: op.writes,
     };
     if (op.summary) o.summary = op.summary;
+    if (op.parameters.length > 0) {
+      o.parameters = op.parameters.map((p) => {
+        const pp: Record<string, unknown> = { name: p.name, in: p.in, required: p.required };
+        if (p.description) pp.description = p.description;
+        return pp;
+      });
+    }
     return o;
   });
 

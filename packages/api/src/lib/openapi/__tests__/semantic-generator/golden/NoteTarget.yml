@@ -16,6 +16,14 @@ operations:
     kind: list
     writes: false
     summary: List note targets. Filter by person with targetPersonId[eq]:<id>.
+    parameters:
+      - name: filter
+        in: query
+        required: false
+        description: "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine clauses with a comma (AND). Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is."
+      - name: limit
+        in: query
+        required: false
 dimensions:
   - name: id
     type: string

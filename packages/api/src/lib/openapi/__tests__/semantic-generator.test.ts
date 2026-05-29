@@ -572,3 +572,257 @@ describe("openapi-semantic-generator — multi-key envelope", () => {
     expect(entityNamed(mk, "Order").recordSchema).toBe("Order");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+//  6. Inline-response-object fallback (#2931 Codex review)
+//
+//  A resource described ONLY by an inline `data.<key>` object — no $ref, no
+//  request body, no name-matchable operationId — must still surface its fields
+//  rather than degrade to an empty operations-only entity.
+// ─────────────────────────────────────────────────────────────────────
+const INLINE_SPEC = {
+  openapi: "3.0.3",
+  info: { title: "Inline API", version: "1.0.0" },
+  components: { schemas: {} },
+  paths: {
+    "/snapshots": {
+      // Opaque operationId ("fetch"), no body, no named schema — the record
+      // shape exists ONLY as an inline object under data.snapshot.
+      get: {
+        operationId: "fetch",
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: {
+                        snapshot: {
+                          type: "object",
+                          properties: {
+                            id: { type: "string" },
+                            takenAt: { type: "string", format: "date-time" },
+                            sizeBytes: { type: "integer" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+describe("openapi-semantic-generator — inline response fallback (Codex review)", () => {
+  const m = generateSemanticModel(buildOperationGraph(INLINE_SPEC));
+
+  it("derives columns from an inline data.<key> object when no named schema resolves", () => {
+    const e = entityNamed(m, "Snapshot"); // titleCaseSingular("snapshots")
+    expect(e.recordSchema).toBeUndefined(); // no NAMED schema backs it
+    const cols = e.columns.map((c) => c.name);
+    expect(cols).toContain("id");
+    expect(cols).toContain("takenAt");
+    expect(cols).toContain("sizeBytes");
+    expect(e.columns.find((c) => c.name === "takenAt")?.type).toBe("timestamp");
+    expect(e.columns.find((c) => c.name === "id")?.primaryKey).toBe(true);
+  });
+
+  it("does NOT flag an inline-derived resource as unresolved (it has fields)", () => {
+    expect(m.unresolvedResources).not.toContain("snapshots");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  7. Codex review — grouping, action bodies, composed schemas, parameters
+// ─────────────────────────────────────────────────────────────────────
+const CODEX_SPEC = {
+  openapi: "3.0.3",
+  info: { title: "Codex Edge API", version: "1.0.0" },
+  components: {
+    schemas: {
+      BaseUser: {
+        type: "object",
+        properties: { id: { type: "string" }, createdAt: { type: "string", format: "date-time" } },
+      },
+      // Record modeled ONLY via allOf — own props + a $ref branch.
+      User: {
+        allOf: [
+          { $ref: "#/components/schemas/BaseUser" },
+          { type: "object", properties: { email: { type: "string" }, role: { type: "string" } } },
+        ],
+      },
+      Person: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
+      PeopleSearchRequest: {
+        type: "object",
+        properties: { query: { type: "string" }, limit: { type: "integer" } },
+      },
+      Item: { type: "object", properties: { id: { type: "string" }, qty: { type: "integer" } } },
+    },
+  },
+  paths: {
+    // Version prefix — must NOT collapse into a "v1"/"api" entity.
+    "/api/v1/users": {
+      get: {
+        operationId: "listUsers",
+        parameters: [
+          { name: "page", in: "query", required: false, description: "1-based page", schema: { type: "integer" } },
+          { name: "x-trace", in: "header", required: false, schema: { type: "string" } },
+        ],
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: { users: { type: "array", items: { $ref: "#/components/schemas/User" } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/v1/people": {
+      get: {
+        operationId: "listPeople2",
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: { people: { type: "array", items: { $ref: "#/components/schemas/Person" } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    // Collection ACTION — its request body must NOT define the Person record.
+    "/api/v1/people/search": {
+      post: {
+        operationId: "searchPeople2",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: { $ref: "#/components/schemas/PeopleSearchRequest" } } },
+        },
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: { people: { type: "array", items: { $ref: "#/components/schemas/Person" } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    // Sub-resource — keeps its own `items` entity, not folded into `orders`.
+    "/orders/{orderId}/items": {
+      get: {
+        operationId: "listOrderItems",
+        responses: {
+          "200": {
+            description: "ok",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    data: {
+                      type: "object",
+                      properties: { items: { type: "array", items: { $ref: "#/components/schemas/Item" } } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+describe("openapi-semantic-generator — Codex review fixes", () => {
+  const cm = generateSemanticModel(buildOperationGraph(CODEX_SPEC));
+
+  it("does NOT collapse version-prefixed paths into one api/v1 entity (Comment 2)", () => {
+    expect(cm.entities.map((e) => e.name).toSorted()).toEqual(["Item", "Person", "User"]);
+    expect(cm.entities.some((e) => e.name.toLowerCase() === "v1" || e.name.toLowerCase() === "api")).toBe(false);
+    // The resource is the collection after the prefix, not the prefix.
+    expect(entityNamed(cm, "User").resource).toBe("users");
+  });
+
+  it("keeps a sub-resource as its own entity, not folded into the parent (Comment 2)", () => {
+    expect(entityNamed(cm, "Item").resource).toBe("items");
+  });
+
+  it("does NOT let an action endpoint's request body define the record schema (Comment 3)", () => {
+    const person = entityNamed(cm, "Person");
+    // /people/search POSTs a PeopleSearchRequest body, but the record is Person.
+    expect(person.recordSchema).toBe("Person");
+    expect(person.columns.map((c) => c.name).toSorted()).toEqual(["id", "name"]);
+    // The search-form schema is supporting, never promoted to an entity.
+    expect(cm.entities.some((e) => e.name === "PeopleSearchRequest")).toBe(false);
+    expect(cm.supportingSchemas).toContain("PeopleSearchRequest");
+    // The search op is still attached to the Person entity (grouped under people).
+    expect(person.operations.map((o) => o.operationId)).toContain("searchPeople2");
+  });
+
+  it("flattens a composed (allOf) record schema into its full column set (Comment 4)", () => {
+    const user = entityNamed(cm, "User");
+    const cols = user.columns.map((c) => c.name).toSorted();
+    // id + createdAt from BaseUser, email + role from the inline allOf branch.
+    expect(cols).toEqual(["createdAt", "email", "id", "role"]);
+    expect(user.columns.find((c) => c.name === "createdAt")?.type).toBe("timestamp");
+    expect(user.columns.find((c) => c.name === "id")?.primaryKey).toBe(true);
+  });
+
+  it("preserves non-path operation parameters in the entity model + YAML (Comment 1)", () => {
+    const user = entityNamed(cm, "User");
+    const listUsers = user.operations.find((o) => o.operationId === "listUsers");
+    const paramNames = listUsers?.parameters.map((p) => p.name) ?? [];
+    expect(paramNames).toContain("page"); // query
+    expect(paramNames).toContain("x-trace"); // header
+    const page = listUsers?.parameters.find((p) => p.name === "page");
+    expect(page?.in).toBe("query");
+    expect(page?.description).toBe("1-based page");
+    // Rendered into the YAML so the agent actually sees it.
+    const yaml = renderEntityYaml(user);
+    expect(yaml).toContain("parameters:");
+    expect(yaml).toContain("name: page");
+    expect(yaml).toContain("in: query");
+  });
+});

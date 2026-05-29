@@ -16,12 +16,28 @@ operations:
     kind: delete
     writes: true
     summary: Delete one note by id
+    parameters:
+      - name: soft_delete
+        in: query
+        required: false
+        description: When false, hard-delete the record. Always send explicitly; do not rely on the server default.
   - operationId: findManyNotes
     method: GET
     path: /notes
     kind: list
     writes: false
     summary: List notes
+    parameters:
+      - name: filter
+        in: query
+        required: false
+        description: "Filter results. Syntax: field[COMPARATOR]:value, e.g. emails.primaryEmail[eq]:foo@example.com. Combine clauses with a comma (AND). Comparators: eq, neq, in, gt, gte, lt, lte, like, ilike, is."
+      - name: limit
+        in: query
+        required: false
+      - name: starting_after
+        in: query
+        required: false
   - operationId: findOneNote
     method: GET
     path: /notes/{id}

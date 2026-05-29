@@ -6,9 +6,14 @@
  * an `operationId` (from the representation in its system prompt) plus the
  * params, and this tool dispatches through the slice-0 {@link executeOperation}
  * client. Multi-step composition ("fetch each person's notes") is expressed as
- * a sequence of these calls across agent steps; the sandbox-Python composition
- * path (PRD agent-execution-shape) lands with slice 3's networkPolicy threading
- * (#2927).
+ * a sequence of these calls across agent steps. Slice 3 (#2927) landed the
+ * sandbox network boundary the in-sandbox composition path depends on (the
+ * Vercel sandbox's egress is now bounded per-request to the datasource host —
+ * `tools/backends/network-allowlist.ts`), but the in-sandbox `AtlasRestClient`
+ * composition path itself stays deferred: it can't authenticate read-only
+ * (a sandbox HTTP client lets untrusted code issue any method), so the
+ * authenticated read path remains this host-side tool until read-only is
+ * mediated host-side (pairs with the slice-5 write-allowlist, #2929).
  *
  * Read-only in this release. Only GET / HEAD operations execute; any
  * POST/PATCH/PUT/DELETE returns a `writes_disabled` status. Write support is

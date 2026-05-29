@@ -39,11 +39,30 @@ declare module "@vercel/sandbox" {
     stderr(): Promise<string>;
   }
 
-  /** Network policy update — replaces the current firewall configuration. */
+  /** A transform applied to network requests matching a domain rule. */
+  type NetworkTransformer = { headers?: Record<string, string> };
+
+  /**
+   * A rule applied to requests matching a domain. An empty rule list (`[]`)
+   * allows traffic with no transform; a non-empty list can inject headers
+   * (e.g. an `authorization` credential). Atlas's allowlist deliberately only
+   * ever emits `[]` — see `tools/backends/network-allowlist.ts`.
+   */
+  type NetworkPolicyRule = { transform?: NetworkTransformer[] };
+
+  /**
+   * Network policy update — replaces the current firewall configuration.
+   * Mirrors the installed SDK's `NetworkPolicy` shape (record values are
+   * `NetworkPolicyRule[]`, NOT `unknown`) so `satisfies NetworkPolicyUpdate`
+   * actually rejects a junk/credential-bearing per-host value at compile time.
+   */
   type NetworkPolicyUpdate =
     | "deny-all"
     | "allow-all"
-    | { allow?: string[] | Record<string, unknown>; subnets?: { allow?: string[]; deny?: string[] } };
+    | {
+        allow?: string[] | Record<string, NetworkPolicyRule[]>;
+        subnets?: { allow?: string[]; deny?: string[] };
+      };
 
   class Sandbox {
     static create(opts?: SandboxCreateOptions): Promise<Sandbox>;

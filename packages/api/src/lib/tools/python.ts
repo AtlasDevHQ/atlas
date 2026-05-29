@@ -19,6 +19,7 @@ import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { getStreamWriter } from "./python-stream";
+import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 
 const log = createLogger("python");
 
@@ -293,8 +294,19 @@ export interface PythonBackend {
  * 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if unavailable
  * 4. nsjail auto-detect (on PATH or ATLAS_NSJAIL_PATH) — graceful fallback
  * 5. No backend — error
+ *
+ * `restDatasource` (when non-null) bounds the **Vercel sandbox**'s egress to the
+ * datasource host (#2927 layer 0): the per-request network allowlist replaces
+ * the default `deny-all`. The sidecar and nsjail backends ignore it — the
+ * sidecar has no network policy (its network is open) and nsjail has no network
+ * at all. The caller only passes a non-null datasource when the Vercel backend
+ * will actually be selected. NB: this opens egress only; no credential is
+ * injected, so the authenticated read path stays the host-side
+ * `executeRestOperation` tool.
  */
-async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
+async function getPythonBackend(
+  restDatasource?: RestDatasource | null,
+): Promise<PythonBackend | { error: string }> {
   // 1. Sidecar
   if (useSidecar()) {
     const sidecarUrl = process.env.ATLAS_SANDBOX_URL!;
@@ -315,6 +327,40 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ err: detail }, "Vercel Python sandbox module not available");
       return { error: `Vercel Python sandbox unavailable: ${detail}` };
+    }
+    // Bound egress to the datasource host, computed server-side from the
+    // resolved datasource's base URL — never from the agent's `code`. Absent
+    // datasource → default options (deny-all network).
+    if (restDatasource) {
+      const { computeNetworkAllowlist, networkPolicyFromAllowlist } = await import(
+        "./backends/network-allowlist"
+      );
+      const allowlist = computeNetworkAllowlist([restDatasource.baseUrl]);
+      if (allowlist.length === 0) {
+        // Honor network-allowlist.ts's "caller logs the drop" contract: a
+        // configured datasource whose base URL doesn't parse to a host
+        // collapses to deny-all (fail-closed) — surface why so the operator
+        // isn't left guessing. Log the datasource id, not the URL (a base URL
+        // could carry a token in a query param).
+        log.warn(
+          { datasource: restDatasource.id },
+          "REST datasource base URL did not yield a reachable host — Python sandbox egress stays deny-all",
+        );
+      } else if (restDatasource.baseUrl.toLowerCase().startsWith("http://")) {
+        // Vercel's sandbox domain allowlist matches hosts by SNI (TLS), so a
+        // plain-http:// datasource host may not be reachable from the sandbox
+        // even though it is listed. The policy is still applied (the boundary is
+        // fail-closed either way — an unmatched host stays denied, not opened);
+        // we warn so an operator on a non-TLS datasource isn't left wondering why
+        // egress is blocked. Prefer https:// for REST datasources on SaaS. (#2975)
+        log.warn(
+          { datasource: restDatasource.id },
+          "REST datasource base URL is plain http:// — the Vercel sandbox domain allowlist matches HTTPS hosts (by SNI), so sandbox egress to this host may stay blocked even though it is listed; prefer https://",
+        );
+      }
+      return createPythonSandboxBackend({
+        networkPolicy: networkPolicyFromAllowlist(allowlist),
+      });
     }
     return createPythonSandboxBackend();
   }
@@ -367,8 +413,42 @@ async function getPythonBackend(): Promise<PythonBackend | { error: string }> {
 
 // --- Tool definition ---
 
-export const executePython = tool({
-  description: `Execute Python code for data analysis and visualization.
+/**
+ * Dependencies for {@link createExecutePythonTool}. `resolveRestDatasource` is
+ * a test seam (mirrors `executeRestOperation`'s `resolveDatasource`) — it lets
+ * a security test prove the sandbox egress allowlist tracks the per-request
+ * datasource, never the agent's `code`, and that tenant A's resolver cannot
+ * widen tenant B's policy.
+ */
+export interface ExecutePythonDeps {
+  readonly resolveRestDatasource?: () => Promise<RestDatasource | null>;
+}
+
+/**
+ * Default resolver: the slice-1 env-configured Twenty datasource. Lazily
+ * imported so the SQL-only Python path doesn't pull the OpenAPI layer into its
+ * load graph. Slice 2 (#2926) swaps this for the per-workspace install registry
+ * (resolved by the request's workspaceId); the per-tenant network allowlist
+ * follows automatically, since it is computed from whatever this returns.
+ */
+function defaultResolveRestDatasource(): Promise<RestDatasource | null> {
+  return import("@atlas/api/lib/openapi/datasource").then((m) =>
+    m.resolveTwentyDatasource(),
+  );
+}
+
+/**
+ * Build the `executePython` tool. Exported as a factory (matching
+ * `createExecuteRestOperationTool`) so tests can inject a per-tenant
+ * {@link ExecutePythonDeps.resolveRestDatasource}; production uses the default
+ * singleton {@link executePython}.
+ */
+export function createExecutePythonTool(deps: ExecutePythonDeps = {}) {
+  const resolveRestDatasource =
+    deps.resolveRestDatasource ?? defaultResolveRestDatasource;
+
+  return tool({
+    description: `Execute Python code for data analysis and visualization.
 
 The code runs in an isolated Python sandbox with access to common data science libraries (pandas, numpy, matplotlib, scipy, scikit-learn, statsmodels).
 
@@ -384,84 +464,107 @@ Output options:
 
 Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(), open(), compile().`,
 
-  inputSchema: z.object({
-    code: z.string().describe("Python code to execute"),
-    explanation: z.string().describe("Brief explanation of what this code does and why"),
-    data: z
-      .object({
-        columns: z.array(z.string()),
-        rows: z.array(z.array(z.unknown())),
-      })
-      .optional()
-      .describe("Optional data payload from a previous SQL query (columns + rows)"),
-  }),
+    inputSchema: z.object({
+      code: z.string().describe("Python code to execute"),
+      explanation: z.string().describe("Brief explanation of what this code does and why"),
+      data: z
+        .object({
+          columns: z.array(z.string()),
+          rows: z.array(z.array(z.unknown())),
+        })
+        .optional()
+        .describe("Optional data payload from a previous SQL query (columns + rows)"),
+    }),
 
-  execute: async ({ code, explanation, data }, options) => {
-    // 0. Resolve backend
-    const backend = await getPythonBackend();
-    if ("error" in backend) {
-      log.error(backend.error);
-      return { success: false, error: backend.error };
-    }
-
-    // 1. Validate imports (defense-in-depth — sandbox is the real boundary)
-    const validation = await validatePythonCode(code);
-    if (!validation.safe) {
-      log.warn({ reason: validation.reason }, "Python code rejected by import guard");
-      return { success: false, error: validation.reason };
-    }
-
-    // 2. Build streaming progress callback if stream writer is available
-    const writer = getStreamWriter();
-    const toolCallId = options?.toolCallId;
-    const canStream = writer && toolCallId && backend.execStream;
-
-    const onProgress = canStream
-      ? (event: PythonProgressEvent) => {
-          try {
-            // Custom data part — the AI SDK's typed data parts require compile-time
-            // registration via UIMessage generics. We bypass with a cast because Atlas
-            // uses dynamic data parts consumed via onData on the client.
-            writer.write({
-              type: "data-python-progress" as const,
-              id: toolCallId,
-              data: event,
-            } as unknown as Parameters<typeof writer.write>[0]);
-          } catch (err) {
-            log.debug(
-              { err: err instanceof Error ? err.message : String(err), toolCallId },
-              "Stream writer closed, Python progress events will not be delivered",
-            );
-          }
+    execute: async ({ code, explanation, data }, options) => {
+      // 0a. Resolve the active REST datasource (server-side) so the Vercel
+      // sandbox's egress can be bounded to its host (#2927 layer 0). Only when
+      // the Vercel backend will actually be selected — the sidecar / nsjail
+      // backends have no network policy to narrow (see getPythonBackend).
+      // Fail-soft: a resolve error leaves the sandbox at deny-all, never breaks
+      // the tool call. NB: the allowlist derives from this resolved datasource,
+      // NOT from `code` — the agent cannot widen it.
+      let restDatasource: RestDatasource | null = null;
+      if (useVercelSandbox() && !useSidecar()) {
+        try {
+          restDatasource = await resolveRestDatasource();
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "REST datasource resolve failed for Python sandbox — egress stays deny-all this turn",
+          );
         }
-      : undefined;
+      }
 
-    // 3. Execute via selected backend
-    const start = performance.now();
-    try {
-      const result = await withSpan(
-        "atlas.python.execute",
-        { "code.length": code.length, streaming: !!onProgress },
-        () =>
-          onProgress && backend.execStream
-            ? backend.execStream(code, data, onProgress)
-            : backend.exec(code, data),
-      );
-      const durationMs = Math.round(performance.now() - start);
+      // 0b. Resolve backend
+      const backend = await getPythonBackend(restDatasource);
+      if ("error" in backend) {
+        log.error(backend.error);
+        return { success: false, error: backend.error };
+      }
 
-      log.debug(
-        { durationMs, success: result.success, hasCharts: result.success && !!result.charts?.length, streaming: !!onProgress },
-        "python execution",
-      );
+      // 1. Validate imports (defense-in-depth — sandbox is the real boundary)
+      const validation = await validatePythonCode(code);
+      if (!validation.safe) {
+        log.warn({ reason: validation.reason }, "Python code rejected by import guard");
+        return { success: false, error: validation.reason };
+      }
 
-      return {
-        ...result,
-        explanation,
-      };
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error({ err: detail }, "Python execution failed");
-      return { success: false, error: detail };
-    }
-  },
-});
+      // 2. Build streaming progress callback if stream writer is available
+      const writer = getStreamWriter();
+      const toolCallId = options?.toolCallId;
+      const canStream = writer && toolCallId && backend.execStream;
+
+      const onProgress = canStream
+        ? (event: PythonProgressEvent) => {
+            try {
+              // Custom data part — the AI SDK's typed data parts require compile-time
+              // registration via UIMessage generics. We bypass with a cast because Atlas
+              // uses dynamic data parts consumed via onData on the client.
+              writer.write({
+                type: "data-python-progress" as const,
+                id: toolCallId,
+                data: event,
+              } as unknown as Parameters<typeof writer.write>[0]);
+            } catch (err) {
+              log.debug(
+                { err: err instanceof Error ? err.message : String(err), toolCallId },
+                "Stream writer closed, Python progress events will not be delivered",
+              );
+            }
+          }
+        : undefined;
+
+      // 3. Execute via selected backend
+      const start = performance.now();
+      try {
+        const result = await withSpan(
+          "atlas.python.execute",
+          { "code.length": code.length, streaming: !!onProgress },
+          () =>
+            onProgress && backend.execStream
+              ? backend.execStream(code, data, onProgress)
+              : backend.exec(code, data),
+        );
+        const durationMs = Math.round(performance.now() - start);
+
+        log.debug(
+          { durationMs, success: result.success, hasCharts: result.success && !!result.charts?.length, streaming: !!onProgress },
+          "python execution",
+        );
+
+        return {
+          ...result,
+          explanation,
+        };
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log.error({ err: detail }, "Python execution failed");
+        return { success: false, error: detail };
+      }
+    },
+  });
+}
+
+/** Production tool instance, registered into the agent toolkit. */
+export const executePython = createExecutePythonTool();

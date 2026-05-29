@@ -418,4 +418,47 @@ describe("createPythonSandboxBackend", () => {
 
     expect(result.success).toBe(true);
   });
+
+  // ── REST datasource network policy (#2927, layer 0) ───────────────────────
+  // These prove the sandbox applies the PER-REQUEST network policy passed at
+  // creation (not a fixed deny-all), scoped to exactly the request that created
+  // the backend — and that the policy carries no credential transformer.
+
+  const okMarker = (m: string) => `${m}{"success":true}\n`;
+
+  it("locks down to the provided per-request host allowlist instead of deny-all", async () => {
+    setupSandboxMock({ stdoutForMarker: okMarker });
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+    const policy = { allow: { "crm.tenant-a.example": [] } };
+    const backend = mod.createPythonSandboxBackend({ networkPolicy: policy });
+    await backend.exec("print('x')");
+
+    // Sandbox still created allow-all for pip, then narrowed to OUR policy.
+    expect((mockCreateCalls[0] as { networkPolicy: string }).networkPolicy).toBe("allow-all");
+    expect(mockUpdateNetworkPolicyCalls).toEqual([policy]);
+  });
+
+  it("SECURITY (per-request): separate backends lock down to their OWN policy — no shared state", async () => {
+    setupSandboxMock({ stdoutForMarker: okMarker });
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+
+    const a = mod.createPythonSandboxBackend({ networkPolicy: { allow: { "a.example": [] } } });
+    await a.exec("print(1)");
+    const b = mod.createPythonSandboxBackend({ networkPolicy: { allow: { "b.example": [] } } });
+    await b.exec("print(2)");
+
+    // Tenant A's spawn carries only a.example; tenant B's only b.example.
+    expect(mockUpdateNetworkPolicyCalls).toEqual([
+      { allow: { "a.example": [] } },
+      { allow: { "b.example": [] } },
+    ]);
+  });
+
+  it("defaults to deny-all when no options are given (back-compat — SQL-only workloads)", async () => {
+    setupSandboxMock({ stdoutForMarker: okMarker });
+    const backend = await freshBackend();
+    await backend.exec("print('x')");
+
+    expect(mockUpdateNetworkPolicyCalls).toEqual(["deny-all"]);
+  });
 });

@@ -64,7 +64,17 @@ function validForm(overrides: Partial<Record<string, unknown>> = {}): Record<str
 beforeEach(() => {
   setKeys("v1:test-key-for-obsidian-handler-unit-tests-must-be-long-enough");
   mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  // Echo the candidate id back on `RETURNING id` so the happy path
+  // sees the row Postgres is guaranteed to emit. The previous `[]`
+  // default leaned on the now-removed candidateId fallback (#2808);
+  // an empty rowset is exclusively the fail-loud anomaly path below.
+  mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+    if (sql.includes("RETURNING id")) {
+      const id = (params?.[0] as string | undefined) ?? "unknown";
+      return [{ id }];
+    }
+    return [];
+  });
 });
 
 afterEach(() => {
@@ -193,6 +203,33 @@ describe("ObsidianFormInstallHandler.validateConfig — persistence", () => {
     const handler = new ObsidianFormInstallHandler({ idGenerator: () => "fresh-id" });
     const result = await handler.validateConfig(WSID, validForm());
     expect(result.installRecord.id).toBe("preexisting-id");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RETURNING-id invariant — fail loud when the upsert emits no row (#2808)
+// ---------------------------------------------------------------------------
+
+describe("ObsidianFormInstallHandler.validateConfig — RETURNING invariant", () => {
+  it("throws when the upsert returns no row (driver/RLS/rewrite anomaly)", async () => {
+    // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed by
+    // Postgres to emit one row. If the mock returns [] (a structural
+    // anomaly), the handler must surface a 500 rather than silently
+    // fall back to candidateId — the fallback returned a WRONG id on
+    // the DO UPDATE path and corrupted downstream lookups.
+    mockInternalQuery.mockImplementation(async () => []);
+    const handler = new ObsidianFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+
+  it("throws when the returned id is an empty string", async () => {
+    mockInternalQuery.mockImplementation(async () => [{ id: "" }]);
+    const handler = new ObsidianFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
   });
 });
 

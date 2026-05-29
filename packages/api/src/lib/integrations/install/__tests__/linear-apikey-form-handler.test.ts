@@ -161,6 +161,33 @@ describe("LinearApiKeyFormInstallHandler.validateConfig — happy path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// RETURNING-id invariant — fail loud when the upsert emits no row (#2808)
+// ---------------------------------------------------------------------------
+
+describe("LinearApiKeyFormInstallHandler.validateConfig — RETURNING invariant", () => {
+  it("throws when the upsert returns no row (driver/RLS/rewrite anomaly)", async () => {
+    // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed by
+    // Postgres to emit one row. If the mock returns [] (a structural
+    // anomaly), the handler must surface a 500 rather than silently
+    // fall back to candidateId — the fallback returned a WRONG id on
+    // the DO UPDATE path and corrupted downstream lookups.
+    mockInternalQuery.mockImplementation(async () => []);
+    const handler = new LinearApiKeyFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+
+  it("throws when the returned id is an empty string", async () => {
+    mockInternalQuery.mockImplementation(async () => [{ id: "" }]);
+    const handler = new LinearApiKeyFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SaaS keyset gate — fail-closed on missing encryption keyset
 // ---------------------------------------------------------------------------
 

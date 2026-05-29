@@ -278,3 +278,47 @@ describe("TwentyFormInstallHandler.validateConfig — happy path", () => {
     expect(result.installRecord.id).toBe("existing-row-id");
   });
 });
+
+// ---------------------------------------------------------------------------
+// RETURNING-id invariant — fail loud when the workspace_plugins upsert
+// emits no row (#2808). The twenty_integrations credential write lands
+// first; only the catalog-binding upsert is driven into the anomaly path,
+// so an anomaly here must surface as a 500 rather than silently falling
+// back to candidateId (which returned a WRONG id on the DO UPDATE path).
+// ---------------------------------------------------------------------------
+
+describe("TwentyFormInstallHandler.validateConfig — RETURNING invariant", () => {
+  // Credential row always lands so the handler reaches the catalog
+  // upsert; the workspace_plugins branch is what we drive into the
+  // anomaly path below.
+  function twentyRow(params?: unknown[]): Record<string, unknown> {
+    return {
+      workspace_id: params?.[0],
+      base_url: params?.[1],
+      updated_at: "2026-05-26T00:00:00.000Z",
+    };
+  }
+
+  it("throws when the workspace_plugins upsert returns no row", async () => {
+    mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("INSERT INTO twenty_integrations")) return [twentyRow(params)];
+      return [];
+    });
+    const handler = new TwentyFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+
+  it("throws when the returned id is an empty string", async () => {
+    mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("INSERT INTO twenty_integrations")) return [twentyRow(params)];
+      if (sql.includes("INSERT INTO workspace_plugins")) return [{ id: "" }];
+      return [];
+    });
+    const handler = new TwentyFormInstallHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(
+      /upsert returned no id/,
+    );
+  });
+});

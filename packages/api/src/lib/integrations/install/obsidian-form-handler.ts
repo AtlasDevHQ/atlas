@@ -137,14 +137,23 @@ export class ObsidianFormInstallHandler implements FormBasedInstallHandler {
       );
       const returned = rows[0]?.id;
       if (typeof returned !== "string" || returned.length === 0) {
-        log.warn(
+        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
+        // by Postgres to emit exactly one row on both paths. Reaching
+        // here means a structural anomaly (driver rewrite, RLS hiding
+        // the result, partial-index miss). Falling back to candidateId
+        // would silently return a WRONG id on the DO UPDATE path
+        // (persisted row keeps its existing id, not the candidate),
+        // and downstream lookups would create phantom updates. Fail
+        // loud so the operator sees the invariant break with a 500.
+        log.error(
           { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — falling back to candidate",
+          "workspace_plugins upsert returned no id — Postgres invariant violation",
         );
-        persistedId = candidateId;
-      } else {
-        persistedId = returned;
+        throw new Error(
+          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
+        );
       }
+      persistedId = returned;
     } catch (err) {
       log.error(
         { workspaceId, err: err instanceof Error ? err.message : String(err) },

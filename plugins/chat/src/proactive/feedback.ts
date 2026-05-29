@@ -101,12 +101,14 @@ export function parseFeedbackSlashArgs(args: string | undefined | null): Feedbac
   const trimmed = args.trim();
   if (trimmed.length === 0) return { kind: "not-feedback" };
 
-  // The keyword must be followed by a word boundary so `feedbackhello`
-  // is not mistaken for a feedback invocation. Each pattern below has a
-  // single anchored quantifier and nothing that can fail after it, so
-  // matching is linear — no backtracking ambiguity (avoids the
-  // polynomial-ReDoS shape CodeQL flagged on the prior combined regex).
-  if (!/^feedback\b/i.test(trimmed)) return { kind: "not-feedback" };
+  // The keyword must be followed by end-of-string or one of the original
+  // separators (whitespace, `:`, `-`) — a fixed-width lookahead, so
+  // `feedbackhello` and `feedback.note` are not mistaken for invocations.
+  // This and the two strips below are each anchored with at most one
+  // trailing quantifier and nothing that can fail after it, so matching
+  // is linear — no backtracking ambiguity (avoids the polynomial-ReDoS
+  // shape CodeQL flagged on the prior combined regex).
+  if (!/^feedback(?=$|[\s:-])/i.test(trimmed)) return { kind: "not-feedback" };
 
   // Strip the keyword, then the separator: leading whitespace and an
   // optional single `:`/`-` with its trailing whitespace.

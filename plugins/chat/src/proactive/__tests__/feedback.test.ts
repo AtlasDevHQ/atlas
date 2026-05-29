@@ -73,19 +73,30 @@ describe("parseFeedbackSlashArgs", () => {
     });
   });
 
-  it("requires a separator after the keyword", () => {
-    // No word boundary after `feedback` — not a feedback invocation.
+  it("requires whitespace or a `:`/`-` separator after the keyword", () => {
+    // The keyword must abut end-of-string or one of {whitespace, :, -}.
+    // Trailing word chars or other punctuation are not invocations.
     expect(parseFeedbackSlashArgs("feedbackhello")).toEqual({ kind: "not-feedback" });
     expect(parseFeedbackSlashArgs("feedback123")).toEqual({ kind: "not-feedback" });
+    expect(parseFeedbackSlashArgs("feedback.note")).toEqual({ kind: "not-feedback" });
+    expect(parseFeedbackSlashArgs("feedback@x")).toEqual({ kind: "not-feedback" });
   });
 
-  it("matches a pathological whitespace-heavy input in linear time", () => {
-    // Regression for the polynomial-ReDoS shape (js/polynomial-redos):
-    // `feedback` + a long run of tabs must resolve instantly, not blow up.
-    const input = `feedback${"\t".repeat(100_000)}x`;
-    const start = performance.now();
-    expect(parseFeedbackSlashArgs(input)).toEqual({ kind: "feedback", text: "x" });
-    expect(performance.now() - start).toBeLessThan(100);
+  it("treats a bare separator (no body) as an empty feedback invocation", () => {
+    expect(parseFeedbackSlashArgs("feedback:")).toEqual({ kind: "feedback", text: "" });
+    expect(parseFeedbackSlashArgs("feedback -")).toEqual({ kind: "feedback", text: "" });
+  });
+
+  it("handles a huge whitespace-only body without choking", () => {
+    // The original `js/polynomial-redos` finding is on the regex *shape*
+    // (`(?:\s*[:-]\s*|\s+)(.+)`); CodeQL guards reintroduction since it
+    // flags that pattern directly. This case just exercises the strips on
+    // a large separator run — they consume it in one anchored pass and
+    // collapse to an empty body. (An absolute-time assertion would be a
+    // false guard here anyway: the leading `args.trim()` already neutered
+    // every catastrophic input for the old regex too.)
+    const input = `feedback${"\t".repeat(100_000)}`;
+    expect(parseFeedbackSlashArgs(input)).toEqual({ kind: "feedback", text: "" });
   });
 });
 

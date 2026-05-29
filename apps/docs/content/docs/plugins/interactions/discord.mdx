@@ -82,8 +82,8 @@ Generate an invite URL with the required permissions:
 
 ## Configuration
 
-<Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Discord's static-bot install handler landed in 1.5.3 ([#2749](https://github.com/AtlasDevHQ/atlas/pull/2749)) — the catalog row carries `install_model: "static-bot"`, and bot credentials are read from `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_PUBLIC_KEY`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+<Callout type="info" title="Catalog-driven activation">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. Discord's static-bot install handler landed in [#2749](https://github.com/AtlasDevHQ/atlas/pull/2749) — the catalog row carries `install_model: "static-bot"`, and bot credentials are read from `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_PUBLIC_KEY`. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ```typescript

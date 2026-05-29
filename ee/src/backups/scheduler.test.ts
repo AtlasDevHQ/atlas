@@ -9,10 +9,11 @@ mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
-// Mock engine functions
+// Mock engine functions. Schedule is "* * * * *" so the tick always
+// proceeds past the cron gate when exercised directly.
 const mockBackupResult = { id: "b1", storagePath: "/tmp/b1.sql.gz", sizeBytes: 1000, status: "completed" as const };
 const mockPurgeCount = 0;
-const mockConfig = { schedule: "0 3 * * *", retention_days: 30, storage_path: "./backups" };
+const mockConfig = { schedule: "* * * * *", retention_days: 30, storage_path: "./backups" };
 
 mock.module("./engine", () => ({
   ensureTable: () => Effect.void,
@@ -26,8 +27,13 @@ mock.module("./engine", () => ({
   _resetTableReady: () => {},
 }));
 
-// Import after mocks — we only test the exported cron helper
-const { _cronMatchesNow, stopScheduler } = await import("./scheduler");
+// Verify mock — spy so we can assert the tick verifies each backup (#2941).
+let verifyResult: { verified: boolean; message: string } = { verified: true, message: "ok" };
+const verifySpy = mock((backupId: string) => Effect.succeed({ ...verifyResult, backupId }));
+mock.module("./verify", () => ({ verifyBackup: verifySpy }));
+
+// Import after mocks — exercises the cron helper and the tick.
+const { _cronMatchesNow, _tick, stopScheduler } = await import("./scheduler");
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -86,6 +92,19 @@ describe("_cronMatchesNow (cron expression matching)", () => {
     } else {
       expect(_cronMatchesNow("1-30/2 * * * *")).toBe(false);
     }
+  });
+});
+
+describe("tick — backup verification (#2941)", () => {
+  it("verifies each backup after creating it, and a failed verify does not crash the tick", async () => {
+    // A failed verify must be handled (logged) without throwing out of the
+    // tick — otherwise one corrupt dump would kill the scheduler fiber.
+    verifyResult = { verified: false, message: "truncated dump" };
+
+    await Effect.runPromise(_tick());
+
+    // The created backup's id is passed straight to verifyBackup.
+    expect(verifySpy).toHaveBeenCalledWith("b1");
   });
 });
 

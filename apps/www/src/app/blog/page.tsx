@@ -36,7 +36,7 @@ const POSTS: Post[] = [
     slug: "announcing-atlas",
     title: "Announcing Atlas: open-source text-to-SQL with a semantic layer",
     description:
-      "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data — self-hosted or on Atlas Cloud.",
+      "Atlas is in open beta. Connect your database, auto-generate a semantic layer, and let an AI agent query your data — self-hosted or on Atlas Cloud.",
     date: "2026-03-25",
     tag: "Launch",
   },

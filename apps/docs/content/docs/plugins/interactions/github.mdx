@@ -72,8 +72,8 @@ For personal bots or testing, you can use a PAT instead of a GitHub App.
 
 ## Configuration
 
-<Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. GitHub ships **three** install rows — a multi-tenant App (`github`) and a single-tenant App (`github-single-tenant`), both OAuth-style and landed in 1.5.3 ([#2818](https://github.com/AtlasDevHQ/atlas/pull/2818)), plus the static-bot PAT row (`github-pat`) that landed alongside them ([#2807](https://github.com/AtlasDevHQ/atlas/pull/2807)). Enable exactly one row per workspace. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+<Callout type="info" title="Catalog-driven activation">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. GitHub ships **three** install rows — a multi-tenant App (`github`) and a single-tenant App (`github-single-tenant`), both OAuth-style and landed in [#2818](https://github.com/AtlasDevHQ/atlas/pull/2818), plus the static-bot PAT row (`github-pat`) that landed alongside them ([#2807](https://github.com/AtlasDevHQ/atlas/pull/2807)). Enable exactly one row per workspace. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ### GitHub App (Recommended)

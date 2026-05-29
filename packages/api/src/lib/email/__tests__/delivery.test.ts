@@ -94,6 +94,46 @@ describe("sendEmail — fallback chain", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Transient-failure retry (#2942)
+// ---------------------------------------------------------------------------
+
+describe("sendEmail — transient retry (#2942)", () => {
+  it("retries a transient 503 then succeeds", async () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      const status = calls === 1 ? 503 : 200;
+      return new Response(JSON.stringify(status === 200 ? { id: "email-2" } : "Service Unavailable"), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const result = await sendEmail({ to: "test@example.com", subject: "Test", html: "<p>Hello</p>" });
+    expect(result.success).toBe(true);
+    expect(result.provider).toBe("resend");
+    expect(calls).toBe(2); // first 503 retried, second 200 returned
+  });
+
+  it("does not retry a permanent 4xx (401)", async () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify("Unauthorized"), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const result = await sendEmail({ to: "test@example.com", subject: "Test", html: "<p>Hello</p>" });
+    expect(result.success).toBe(false);
+    expect(calls).toBe(1); // 401 is permanent — no retry
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Platform email config (getPlatformEmailConfig via sendEmail)
 // ---------------------------------------------------------------------------
 

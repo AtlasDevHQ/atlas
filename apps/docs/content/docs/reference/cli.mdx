@@ -38,7 +38,7 @@ bun run atlas -- init [options]
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
 | `--force` | Continue even if more than 20% of tables fail to profile |
-| `--demo` | Load the canonical demo dataset (NovaMart e-commerce, 13 entities, 52 tables, ~480K rows) then profile. Boolean — Atlas ships a single canonical seed since 1.4.0 (#2021) |
+| `--demo` | Load the canonical demo dataset (NovaMart e-commerce, 13 entities, 52 tables, ~480K rows) then profile. Boolean — Atlas ships a single canonical seed (#2021) |
 | `--org <orgId>` | Write to `semantic/.orgs/{orgId}/` and auto-import to DB (org-scoped mode). Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`) |
 | `--no-import` | Skip auto-import to DB in org-scoped mode (write disk only). Only meaningful with `--org` |
 
@@ -76,7 +76,7 @@ bun run atlas -- init --org org-123
 bun run atlas -- init --org org-123 --no-import
 ```
 
-`--demo` loads the canonical NovaMart e-commerce dataset (13 entities, 52 tables, ~480K rows). The previous multi-seed picker (`--demo simple` / `cybersec` / `ecommerce`) was reverted in 1.4.0 ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)); legacy invocations now error with a migration message and the `--seed` alias was removed.
+`--demo` loads the canonical NovaMart e-commerce dataset (13 entities, 52 tables, ~480K rows). The previous multi-seed picker (`--demo simple` / `cybersec` / `ecommerce`) was reverted ([#2021](https://github.com/AtlasDevHQ/atlas/issues/2021)); legacy invocations now error with a migration message and the `--seed` alias was removed.
 
 `--connection` and `--source` cannot be used together. Here's how they differ:
 
@@ -841,7 +841,7 @@ The exclusion list (`__atlas_migrations`, `region_migrations`) lives next to the
 One-shot migration backfill: enqueues every existing `demo_leads` row into `crm_outbox` so historical demo signups also dispatch to Twenty CRM. Idempotent — re-running is safe because `TwentyClient.upsertPerson` dedupes by primary email and the outbox uses a per-source idempotency key.
 
 ```bash
-bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
+bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo] [--database-url <url>]
 ```
 
 | Flag | Description |
@@ -849,6 +849,7 @@ bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source
 | `--dry-run` | Count what would be enqueued without writing to `crm_outbox`. |
 | `--batch-size <n>` | Rows per insert batch (default `500`). |
 | `--source <name>` | Source tag stamped on outbox rows (default `demo`). |
+| `--database-url <url>` | Explicit tenant-DB URL. Takes precedence over `ATLAS_TEAM_PG_URL` / `DATABASE_URL` (same resolution as `ops wipe`). |
 
 Already-run on prod against `demo_leads`; safe to re-run if a new region comes online. See the SaaS lead pipeline in [Twenty CRM integration](/integrations/twenty).
 

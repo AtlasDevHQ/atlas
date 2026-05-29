@@ -60,8 +60,8 @@ The webhook URL must be publicly accessible over HTTPS before you configure it i
 
 ## Configuration
 
-<Callout type="info" title="Catalog-driven activation (1.5.2+)">
-The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650) (1.5.2). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. WhatsApp's static-bot install handler landed in 1.5.3 ([#2753](https://github.com/AtlasDevHQ/atlas/pull/2753)) — the catalog row carries `install_model: "static-bot"`, and Cloud API credentials are read from `META_BUSINESS_*` / `WHATSAPP_*` env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
+<Callout type="info" title="Catalog-driven activation">
+The `adapters:` config field was removed in [#2650](https://github.com/AtlasDevHQ/atlas/pull/2650). Adapter activation is driven by `catalog` rows + per-Platform env vars; `chatPlugin()` itself takes no credentials. WhatsApp's static-bot install handler landed in [#2753](https://github.com/AtlasDevHQ/atlas/pull/2753) — the catalog row carries `install_model: "static-bot"`, and Cloud API credentials are read from `META_BUSINESS_*` / `WHATSAPP_*` env vars. See the [chat plugin docs](/plugins/interactions/chat#configuration) for the canonical shape.
 </Callout>
 
 ```typescript

@@ -2,9 +2,9 @@
  * LeadNormalizer — pure mapping from Atlas lead events to the Twenty
  * upsert input shape.
  *
- * Ships the `demo`, `sales-form`, and `signup` variants. `normalizeLead`'s
- * exhaustive switch surfaces a compile error the moment a new union
- * member lands.
+ * Ships the `demo`, `sales-form`, `signup`, and `conversion` variants.
+ * `normalizeLead`'s exhaustive switch surfaces a compile error the moment a
+ * new union member lands.
  *
  * Design rule: the normalizer outputs a single `eventSource` field;
  * the first-source / last-source translation happens INSIDE
@@ -12,9 +12,12 @@
  * of input → payload, with no I/O and no Twenty-record-state coupling.
  *
  * Types are defined inline here and mirrored in `packages/api/src/lib/effect/services.ts`
- * (`SaasCrmLeadInput`) — the exhaustiveness switch in `normalizeLead`
- * keeps the two in lockstep. Promote to `@useatlas/types` when a second
- * consumer outside of `ee/src/saas-crm/` appears.
+ * (`SaasCrmLeadInput`). The compile-time gate that keeps the two in lockstep
+ * is the `_leadUnionsAreMirrors` exact-equality assertion in
+ * `ee/src/saas-crm/index.ts` (the one place allowed to depend on both); the
+ * exhaustiveness switch in `normalizeLead` is the runtime backstop. Promote
+ * to `@useatlas/types` when a second consumer outside of `ee/src/saas-crm/`
+ * appears.
  */
 
 import type { UpsertPersonInput } from "./client";

@@ -18,8 +18,10 @@
  * the request (no progress — an upstream echoing its cursor can't loop forever).
  */
 import {
+  continueWith,
   dotGet,
   optionalString,
+  PAGE_DONE,
   requireString,
   withQuery,
   type PaginationConfig,
@@ -40,13 +42,13 @@ export const cursorStrategy: PaginationStrategyFactory = {
       itemsPath,
       next(response, request) {
         if (hasMorePath !== undefined && dotGet(response.body, hasMorePath) !== true) {
-          return null;
+          return PAGE_DONE;
         }
         const cursor = dotGet(response.body, cursorPath);
-        if (typeof cursor !== "string" || cursor.length === 0) return null;
+        if (typeof cursor !== "string" || cursor.length === 0) return PAGE_DONE;
         // No-progress guard: if the upstream echoes the same cursor, stop.
-        if (cursor === request.params.query?.[cursorParam]) return null;
-        return withQuery(request, { [cursorParam]: cursor });
+        if (cursor === request.params.query?.[cursorParam]) return PAGE_DONE;
+        return continueWith(withQuery(request, { [cursorParam]: cursor }));
       },
     };
   },

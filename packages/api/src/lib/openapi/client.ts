@@ -122,8 +122,10 @@ export interface PagedExecuteOptions extends ExecuteOptions {
   /** Optional hard cap on merged item count. */
   readonly maxItems?: number;
   /**
-   * Optional page cache. Its `cacheable` flag is overridden here from the
-   * operation's HTTP method, so WRITES ARE NEVER CACHED regardless of caller.
+   * Optional page cache. The method-derived read gate is dominant: a write
+   * (non-GET/HEAD) is NEVER cacheable regardless of caller, and on a read the
+   * caller may only opt OUT (pass `cacheable: false`) — it can never force a
+   * write into the cache. Any `onCacheFault` hook on the binding passes through.
    */
   readonly cache?: PageCacheBinding;
 }
@@ -132,7 +134,7 @@ export interface PagedExecuteOptions extends ExecuteOptions {
  * Execute an operation as a paginated walk: repeat the slice-0 primitive across
  * pages following `opts.pagination`, merging into one {@link MergedPages} so the
  * agent loop sees a single result. A non-paginated response (the strategy
- * returns `null` after page one) comes back as a one-page merge — safe for any
+ * decides `done` after page one) comes back as a one-page merge — safe for any
  * GET.
  *
  * @throws {OpenApiClientError} `unknown-operation` when `operationId` isn't in
@@ -175,7 +177,7 @@ export async function executeOperationPaged(
       ...(opts.maxPages !== undefined ? { maxPages: opts.maxPages } : {}),
       ...(opts.maxItems !== undefined ? { maxItems: opts.maxItems } : {}),
       ...(opts.cache !== undefined
-        ? { cache: { ...opts.cache, cacheable: opts.cache.cacheable ?? cacheable } }
+        ? { cache: { ...opts.cache, cacheable: cacheable && (opts.cache.cacheable ?? true) } }
         : {}),
     },
   );

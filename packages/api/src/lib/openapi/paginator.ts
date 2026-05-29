@@ -6,12 +6,16 @@
  * The shape: pagination is a *pluggable strategy registry*. A strategy is the
  * single decision "given the response to this page and the request that
  * produced it, what is the request for the NEXT page (or are we done)?" —
- * `next(response, request) → nextRequest | null`. The driver ({@link paginate})
+ * `next(response, request) → {@link PageDecision}`. The driver ({@link paginate})
  * runs the loop the PRD describes:
  *
  * ```
- *   while ((nextReq = strategy.next(lastResp, lastReq)) !== null) {
- *     lastResp = await execute(nextReq);   // one page per executeOperation call
+ *   let req = first;
+ *   while (req !== null) {
+ *     const resp = await execute(req);                 // one page per executeOperation call
+ *     accumulate(resp);
+ *     const decision = strategy.next(resp, req);
+ *     req = decision.kind === "continue" ? decision.request : null;  // "done"/"error" stop
  *   }
  * ```
  *
@@ -73,17 +77,51 @@ export interface PageRequest {
 }
 
 /**
+ * A strategy's decision about the next page, returned by {@link PaginationStrategy.next}.
+ * Three outcomes a bare `PageRequest | null` conflated:
+ *  - `done`     — the sequence is exhausted. A CLEAN completion; the merge is complete.
+ *  - `continue` — there is another page; fetch `request` next.
+ *  - `error`    — the response was 2xx but the next request could not be computed
+ *                 (e.g. a malformed `Link` header). The driver STOPS and marks the
+ *                 merge `truncated` with reason `"strategy-error"`, so a partial
+ *                 result is never mistaken for a clean completion.
+ */
+export type PageDecision =
+  | { readonly kind: "done" }
+  | { readonly kind: "continue"; readonly request: PageRequest }
+  | { readonly kind: "error"; readonly reason: string };
+
+/** The shared "sequence exhausted" decision (clean completion). */
+export const PAGE_DONE: PageDecision = { kind: "done" };
+
+/** Decision constructor: fetch `request` as the next page. */
+export function continueWith(request: PageRequest): PageDecision {
+  return { kind: "continue", request };
+}
+
+/**
+ * Decision constructor: a 2xx page from which the next request could not be
+ * derived. Distinct from `done` — the walk stops AND the merge is flagged
+ * truncated, so the consumer learns the data may be incomplete.
+ */
+export function pageError(reason: string): PageDecision {
+  return { kind: "error", reason };
+}
+
+/**
  * A config-bound pagination strategy. `next` is pure — given the response to
- * `request` and `request` itself, it returns the request for the next page or
- * `null` when the sequence is exhausted. `itemsPath` is the dot-path to the
- * array of records in each page body; the driver reads it to merge pages (and
- * most strategies read it to decide "a short page means the last page").
+ * `request` and `request` itself, it returns a {@link PageDecision}: the request
+ * for the next page (`continue`), a clean end (`done`), or `error` when an
+ * otherwise-2xx page yields no computable next request. `itemsPath` is the
+ * dot-path to the array of records in each page body; the driver reads it to
+ * merge pages (and most strategies read it to decide "a short page means the
+ * last page").
  */
 export interface PaginationStrategy {
   readonly name: string;
   /** Dot-path to the item array in a page body, e.g. `"data.people"` or `"items"`. */
   readonly itemsPath: string;
-  next(response: OperationResult, request: PageRequest): PageRequest | null;
+  next(response: OperationResult, request: PageRequest): PageDecision;
 }
 
 /**
@@ -500,6 +538,14 @@ export interface PageCacheBinding {
    * sets this from the operation's method so WRITES ARE NEVER CACHED.
    */
   readonly cacheable?: boolean;
+  /**
+   * Called (best-effort) when a store operation throws. The cache is performance,
+   * never correctness, so a store fault degrades to a live fetch rather than
+   * aborting the walk — this hook is how the otherwise logger-free engine lets a
+   * caller (e.g. `executeOperationPaged`) record the fault via `log.warn`. A
+   * throwing hook is itself swallowed so it can never break a walk.
+   */
+  readonly onCacheFault?: (err: Error) => void;
 }
 
 export interface PaginateOptions {
@@ -512,6 +558,14 @@ export interface PaginateOptions {
   readonly cache?: PageCacheBinding;
 }
 
+/**
+ * Why a walk stopped before the strategy reported a clean `done`. Lets a consumer
+ * tell the user *what kind* of partial result they have — "hit your 50-page cap",
+ * "upstream returned 401", and "the pagination field was malformed" are very
+ * different messages. Present iff {@link MergedPages.truncated} is `true`.
+ */
+export type TruncationReason = "max-pages" | "max-items" | "error-status" | "strategy-error";
+
 /** The single merged result the agent loop sees in place of N pages. */
 export interface MergedPages {
   /** Items concatenated across every page, in order. */
@@ -519,13 +573,22 @@ export interface MergedPages {
   /** Number of page requests served (fetched or from cache). */
   readonly pageCount: number;
   /**
-   * True when the walk stopped before exhausting the sequence — hit `maxPages` /
-   * `maxItems`, or a non-2xx page. A consumer surfacing the merged result should
-   * tell the user the data is partial when this is set.
+   * True when the walk stopped before the strategy reported a clean completion —
+   * hit `maxPages` / `maxItems`, a non-2xx page, or a strategy `error` decision.
+   * A consumer surfacing the merged result should tell the user the data is
+   * partial when this is set; {@link truncationReason} says why.
    */
   readonly truncated: boolean;
+  /** Why the walk truncated. Present iff {@link truncated} is `true`. */
+  readonly truncationReason?: TruncationReason;
   /** HTTP status of the last page fetched (the error status when truncated by one). */
   readonly lastStatus: number;
+  /**
+   * The last page's parsed `Retry-After` (ms), surfaced when truncated by an
+   * `error-status` page that carried one (typically a 429 / 503). Lets a consumer
+   * honor the upstream's backoff without re-reading the raw response.
+   */
+  readonly retryAfterMs?: number;
   /** How many pages were served from the cache (observability). */
   readonly servedFromCache: number;
 }
@@ -533,9 +596,9 @@ export interface MergedPages {
 /**
  * Walk a paginated sequence and merge it into one {@link MergedPages}. Runs the
  * PRD loop: fetch a page (cache-aware), accumulate its items, ask the strategy
- * for the next request, repeat until the strategy says "done" or a safety bound
- * trips. A single non-paginated response (strategy returns `null` immediately)
- * comes back as a one-page merge — so this is safe to use for any GET.
+ * for the next request, repeat until the strategy decides `done`/`error` or a
+ * safety bound trips. A single non-paginated response (strategy returns `done`
+ * after page one) comes back as a one-page merge — so this is safe for any GET.
  *
  * `execute` is the page fetcher (the slice-0 client, bound in
  * `executeOperationPaged`). Pure aside from `execute` + the injected cache/clock.
@@ -553,12 +616,15 @@ export async function paginate(
   let pageCount = 0;
   let servedFromCache = 0;
   let truncated = false;
+  let truncationReason: TruncationReason | undefined;
+  let retryAfterMs: number | undefined;
   let lastStatus = 0;
   let request: PageRequest | null = first;
 
   while (request !== null) {
     if (pageCount >= maxPages) {
       truncated = true;
+      truncationReason = "max-pages";
       break;
     }
 
@@ -571,28 +637,52 @@ export async function paginate(
     if (!ok) {
       // Don't follow `next` past an error — the merged result is incomplete.
       truncated = true;
+      truncationReason = "error-status";
+      retryAfterMs = result.retryAfterMs;
       break;
     }
 
     items.push(...extractItems(result.body, strategy.itemsPath));
 
-    if (maxItems !== undefined && items.length >= maxItems) {
+    // `>` not `>=`: a walk that reaches exactly `maxItems` and is then reported
+    // `done` by the strategy is COMPLETE, not truncated. Only an overflow (the
+    // strategy would have continued past the cap) marks the merge truncated.
+    if (maxItems !== undefined && items.length > maxItems) {
       truncated = true;
+      truncationReason = "max-items";
       break;
     }
 
-    request = strategy.next(result, request);
+    const decision = strategy.next(result, request);
+    if (decision.kind === "error") {
+      // 2xx page, but the strategy couldn't compute the next request (e.g. a
+      // malformed Link header). Stop loud — never mistaken for a clean `done`.
+      truncated = true;
+      truncationReason = "strategy-error";
+      break;
+    }
+    request = decision.kind === "continue" ? decision.request : null;
   }
 
   const finalItems =
     maxItems !== undefined && items.length > maxItems ? items.slice(0, maxItems) : items;
 
-  return { items: finalItems, pageCount, truncated, lastStatus, servedFromCache };
+  return {
+    items: finalItems,
+    pageCount,
+    truncated,
+    ...(truncationReason !== undefined ? { truncationReason } : {}),
+    lastStatus,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    servedFromCache,
+  };
 }
 
 /** Fetch one page, consulting the cache when bound + cacheable. Only 2xx GET-style
  * responses are stored; the `cacheable` flag (set from the op's method upstream)
- * keeps writes out of the cache. A store fault degrades to a fetch (best-effort). */
+ * keeps writes out of the cache. A store fault degrades to a fetch (best-effort)
+ * — the cache is performance, never correctness, so a throwing store reads as a
+ * miss (and a write fault is swallowed) rather than aborting the walk. */
 async function fetchPage(
   request: PageRequest,
   execute: (request: PageRequest) => Promise<OperationResult>,
@@ -607,10 +697,15 @@ async function fetchPage(
   const key = derivePageCacheKey(cache.identity, request.operationId, request.params);
   const installId = installCacheKey(cache.identity);
 
-  const [entry, watermark] = await Promise.all([
-    cache.store.get(key),
-    cache.store.getWatermark(installId),
-  ]);
+  let lookup: [CachedPage | undefined, number];
+  try {
+    lookup = await Promise.all([cache.store.get(key), cache.store.getWatermark(installId)]);
+  } catch (err) {
+    // Best-effort: a store read fault degrades to a live fetch (cache miss).
+    reportCacheFault(cache, err);
+    return { result: await execute(request), fromCache: false };
+  }
+  const [entry, watermark] = lookup;
 
   if (entry !== undefined && isPageFresh(entry, { ttlMs, watermark, now: now() })) {
     return { result: entry.result, fromCache: true };
@@ -618,7 +713,26 @@ async function fetchPage(
 
   const result = await execute(request);
   if (result.status >= 200 && result.status < 300) {
-    await cache.store.set(key, { cachedAt: now(), result });
+    try {
+      await cache.store.set(key, { cachedAt: now(), result });
+    } catch (err) {
+      // Best-effort: failing to cache must not fail the walk — we already have
+      // the page. Report and carry on.
+      reportCacheFault(cache, err);
+    }
   }
   return { result, fromCache: false };
+}
+
+/** Hand a store fault to the caller's `onCacheFault` hook, normalized to an
+ * `Error`. A throwing hook is itself swallowed — observability must never break
+ * a walk. */
+function reportCacheFault(cache: PageCacheBinding, err: unknown): void {
+  if (cache.onCacheFault === undefined) return;
+  try {
+    cache.onCacheFault(err instanceof Error ? err : new Error(String(err)));
+  } catch {
+    // intentionally ignored: a faulty fault-reporter cannot be allowed to abort
+    // pagination — the cache is performance, never correctness.
+  }
 }

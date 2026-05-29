@@ -14,10 +14,13 @@
  */
 import {
   coerceNumber,
+  continueWith,
   dotGet,
   extractItems,
   optionalNumber,
   optionalString,
+  PAGE_DONE,
+  pageError,
   requireString,
   withQuery,
   type PaginationConfig,
@@ -39,18 +42,27 @@ export const pageStrategy: PaginationStrategyFactory = {
       itemsPath,
       next(response, request) {
         const pageLength = extractItems(response.body, itemsPath).length;
-        if (pageLength === 0) return null;
+        if (pageLength === 0) return PAGE_DONE;
 
-        const currentPage = coerceNumber(request.params.query?.[pageParam]) ?? startPage;
+        const rawPage = request.params.query?.[pageParam];
+        const coercedPage = coerceNumber(rawPage);
+        if (rawPage !== undefined && coercedPage === undefined) {
+          // Page is set but unparseable — corrupt state. Stop loud rather than
+          // silently re-basing to startPage and re-fetching the early pages.
+          return pageError(
+            `page param "${pageParam}" is present but not a number: ${JSON.stringify(rawPage)}`,
+          );
+        }
+        const currentPage = coercedPage ?? startPage;
 
         if (totalPagesPath !== undefined) {
           const totalPages = coerceNumber(dotGet(response.body, totalPagesPath));
-          if (totalPages !== undefined && currentPage >= totalPages) return null;
+          if (totalPages !== undefined && currentPage >= totalPages) return PAGE_DONE;
         } else if (pageSize !== undefined && pageLength < pageSize) {
-          return null;
+          return PAGE_DONE;
         }
 
-        return withQuery(request, { [pageParam]: currentPage + 1 });
+        return continueWith(withQuery(request, { [pageParam]: currentPage + 1 }));
       },
     };
   },

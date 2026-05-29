@@ -14,9 +14,12 @@
  */
 import {
   coerceNumber,
+  continueWith,
   dotGet,
   extractItems,
   optionalString,
+  PAGE_DONE,
+  pageError,
   PaginationConfigError,
   requireNumber,
   requireString,
@@ -47,23 +50,33 @@ export const offsetStrategy: PaginationStrategyFactory = {
       itemsPath,
       next(response, request) {
         const pageLength = extractItems(response.body, itemsPath).length;
-        if (pageLength === 0) return null;
+        if (pageLength === 0) return PAGE_DONE;
 
-        const currentOffset = coerceNumber(request.params.query?.[offsetParam]) ?? 0;
-        const nextOffset = currentOffset + limit;
+        const rawOffset = request.params.query?.[offsetParam];
+        const currentOffset = coerceNumber(rawOffset);
+        if (rawOffset !== undefined && currentOffset === undefined) {
+          // Offset is set but unparseable — corrupt state. Stop loud rather than
+          // silently re-basing from 0 and re-fetching the early pages.
+          return pageError(
+            `offset param "${offsetParam}" is present but not a number: ${JSON.stringify(rawOffset)}`,
+          );
+        }
+        const nextOffset = (currentOffset ?? 0) + limit;
 
         if (totalPath !== undefined) {
           const total = coerceNumber(dotGet(response.body, totalPath));
-          if (total !== undefined && nextOffset >= total) return null;
+          if (total !== undefined && nextOffset >= total) return PAGE_DONE;
         } else if (pageLength < limit) {
           // No total to lean on: a short page is the last page.
-          return null;
+          return PAGE_DONE;
         }
 
-        return withQuery(request, {
-          [offsetParam]: nextOffset,
-          ...(limitParam !== undefined ? { [limitParam]: limit } : {}),
-        });
+        return continueWith(
+          withQuery(request, {
+            [offsetParam]: nextOffset,
+            ...(limitParam !== undefined ? { [limitParam]: limit } : {}),
+          }),
+        );
       },
     };
   },

@@ -40,6 +40,16 @@ describe("hostFromUrl", () => {
     expect(hostFromUrl("not a url")).toBeNull();
     expect(hostFromUrl("")).toBeNull();
   });
+
+  it("SECURITY: rejects `*` wildcard hosts (fail-closed — never widens to allow-all)", () => {
+    // `new URL("https://*/x").hostname` is the literal "*", which @vercel/sandbox
+    // treats as match-all (allow-all). `*.evil.com` matches every subdomain.
+    // Both parse fine, so the wildcard guard — not the URL parser — must reject
+    // them. A real datasource host never contains `*`.
+    expect(hostFromUrl("https://*/rest")).toBeNull();
+    expect(hostFromUrl("https://*.evil.com/rest")).toBeNull();
+    expect(hostFromUrl("http://crm.*.example.com/v1")).toBeNull();
+  });
 });
 
 describe("computeNetworkAllowlist", () => {
@@ -76,6 +86,18 @@ describe("computeNetworkAllowlist", () => {
     expect(allowlist).toEqual(["crm.tenant-a.example"]);
     expect(allowlist).not.toContain("attacker.example.com");
   });
+
+  it("SECURITY: a `*` wildcard base URL fails closed to an empty allowlist (→ deny-all)", () => {
+    // The whole point of the wildcard guard: even a configured datasource whose
+    // base URL is `https://*/` (or `*.evil.com`) must collapse to no host, so
+    // the caller maps it to deny-all rather than allow-all.
+    expect(computeNetworkAllowlist(["https://*/rest"])).toEqual([]);
+    expect(computeNetworkAllowlist(["https://*.evil.com/rest"])).toEqual([]);
+    // A wildcard URL alongside a real one contributes only the real host.
+    expect(
+      computeNetworkAllowlist(["https://*/rest", "https://crm.real.example/rest"]),
+    ).toEqual(["crm.real.example"]);
+  });
 });
 
 describe("networkPolicyFromAllowlist", () => {
@@ -86,8 +108,23 @@ describe("networkPolicyFromAllowlist", () => {
   it("maps hosts to the record allow form with empty rules (no credential transformer)", () => {
     // The empty rule list `[]` is what proves no transformer is attached —
     // egress is opened, auth is not.
-    expect(networkPolicyFromAllowlist(["crm.example.com"])).toEqual({
-      allow: { "crm.example.com": [] },
+    const policy = networkPolicyFromAllowlist(["crm.example.com"]);
+    expect(policy).toEqual({ allow: { "crm.example.com": [] } });
+    if (typeof policy === "string") throw new Error("expected record policy");
+    // Explicit per-host-value assertion: guards against a future regression that
+    // attaches a transformer (which the @vercel/sandbox type permits but our
+    // contract forbids). The value must stay exactly `[]`.
+    expect(policy.allow).not.toBe(undefined);
+    expect((policy.allow as Record<string, unknown>)["crm.example.com"]).toEqual([]);
+  });
+
+  it("maps a multi-host allowlist to one empty-rule entry per host", () => {
+    // Today the live caller passes a single base URL, but slice 2's per-workspace
+    // registry can resolve several — this locks the record-building loop so it
+    // emits every host (not just the first / last) each with an empty rule list.
+    const policy = networkPolicyFromAllowlist(["a.example.com", "b.example.com"]);
+    expect(policy).toEqual({
+      allow: { "a.example.com": [], "b.example.com": [] },
     });
   });
 

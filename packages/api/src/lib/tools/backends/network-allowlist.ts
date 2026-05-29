@@ -19,7 +19,9 @@
  *
  *  - **Fail-closed.** An empty allowlist maps to `"deny-all"`, never
  *    `"allow-all"`. A datasource that fails to resolve contributes no host, so
- *    the sandbox keeps zero egress.
+ *    the sandbox keeps zero egress. A `*` (wildcard / match-all) hostname is
+ *    rejected by {@link hostFromUrl}, so a base URL can never produce an
+ *    allow-all record — the "never allow-all" invariant holds by construction.
  *
  *  - **Per-request, never cached.** Nothing here is module-global or memoized:
  *    the policy is computed fresh from the caller's per-request datasource set
@@ -43,13 +45,19 @@
 
 /**
  * The `@vercel/sandbox` network-policy type, derived from the SDK's own
- * `Sandbox.updateNetworkPolicy` parameter rather than imported by name. The
+ * `Sandbox.updateNetworkPolicy` parameter rather than imported by name — the
  * exported type name has drifted across `@vercel/sandbox` versions (1.9.0
- * exports `NetworkPolicy`; other versions name the same shape differently),
- * but the method signature is stable — so deriving the type here keeps this
- * module compiling against whatever version is installed, while staying
- * exactly the shape `Sandbox.create({ networkPolicy })` / `updateNetworkPolicy`
- * accept.
+ * exports `NetworkPolicy`; other versions name the same shape differently), but
+ * the method signature is stable, so this stays correct regardless of the name.
+ *
+ * NB: under the repo's bundler module resolution this resolves through the
+ * ambient override in `packages/api/src/types/vercel-sandbox.d.ts` (which exists
+ * so core compiles when the optional package is absent), NOT the installed
+ * package's own `.d.ts`. That override is hand-kept in lockstep with the SDK and
+ * — importantly — types record values as `NetworkPolicyRule[]` (not `unknown`),
+ * so the `satisfies` below genuinely rejects a credential-bearing per-host value
+ * at compile time. The "no transformer" invariant is therefore type-enforced,
+ * not just upheld by the runtime construction in {@link networkPolicyFromAllowlist}.
  */
 type VercelSandboxInstance = InstanceType<(typeof import("@vercel/sandbox"))["Sandbox"]>;
 export type SandboxNetworkPolicy = Parameters<
@@ -61,6 +69,18 @@ export type SandboxNetworkPolicy = Parameters<
  * URL string, or `null` when it is not a parseable http(s) URL. The hostname is
  * the granularity `@vercel/sandbox` matches on (`allow: ["crm.example.com"]`),
  * so a non-standard port on the base URL does not affect the match.
+ *
+ * Fail-closed on the wildcard char: `@vercel/sandbox` treats `*` as a match-all
+ * (a record whose only key is `*` is effectively allow-all, and a `*.`-prefixed
+ * host matches every subdomain). A base URL of the form `https://` + `*` + `/`
+ * parses fine — its hostname is the literal `*` — and a `*.evil.com` host parses
+ * to that exact wildcard string. A real datasource host never contains `*`, so
+ * any `*` in the hostname is rejected (→ no host → the caller maps it to
+ * `deny-all`). This keeps the "policy can never become allow-all" invariant true
+ * by construction even when the base URL comes from a lower-trust source than
+ * today's operator env — e.g. slice 2's customer-set `base_url_override`
+ * (#2926): a tenant cannot widen their own sandbox's egress to arbitrary hosts
+ * by configuring a wildcard host.
  */
 export function hostFromUrl(rawUrl: string): string | null {
   let parsed: URL;
@@ -75,7 +95,11 @@ export function hostFromUrl(rawUrl: string): string | null {
   // (file:, data:, ftp:, …) contributes no host — fail-closed.
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   const host = parsed.hostname.toLowerCase();
-  return host.length > 0 ? host : null;
+  if (host.length === 0) return null;
+  // Reject wildcard hosts — `*` is @vercel/sandbox's match-all metacharacter, so
+  // letting it through would widen egress (potentially to allow-all). Fail-closed.
+  if (host.includes("*")) return null;
+  return host;
 }
 
 /**

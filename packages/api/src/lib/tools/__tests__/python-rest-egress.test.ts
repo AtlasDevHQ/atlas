@@ -25,6 +25,20 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
+// --- sidecar backend mock: prove the Vercel-only egress path is bypassed when
+// a sidecar is configured (it has no networkPolicy — the self-hosted asymmetry).
+let mockSidecarExecCalls = 0;
+mock.module("@atlas/api/lib/tools/python-sidecar", () => ({
+  executePythonViaSidecar: async () => {
+    mockSidecarExecCalls += 1;
+    return { success: true };
+  },
+  executePythonViaSidecarStream: async () => {
+    mockSidecarExecCalls += 1;
+    return { success: true };
+  },
+}));
+
 // --- @vercel/sandbox mock: capture the network policy the sandbox locks to ---
 let mockUpdateNetworkPolicyCalls: unknown[] = [];
 
@@ -93,6 +107,7 @@ describe("executePython REST egress (#2927, layer 0)", () => {
     delete process.env.VERCEL_PROJECT_ID;
     delete process.env.VERCEL_TOKEN;
     setupSandboxMock();
+    mockSidecarExecCalls = 0;
   });
   afterEach(() => {
     process.env = { ...originalEnv };
@@ -156,5 +171,34 @@ describe("executePython REST egress (#2927, layer 0)", () => {
     );
     expect(result.success).toBe(true);
     expect(mockUpdateNetworkPolicyCalls).toEqual(["deny-all"]);
+  });
+
+  it("SECURITY: fails closed to deny-all when the datasource base URL is a `*` wildcard host", async () => {
+    // A configured (lower-trust, slice-2) base URL of `https://*/` parses but its
+    // host is the match-all `*`. The wildcard guard collapses it to no host →
+    // deny-all, rather than handing @vercel/sandbox an allow-all policy.
+    const result = await runPython(
+      async () => makeDatasource("twenty", "https://*/rest"),
+      "result = 1",
+    );
+    expect(result.success).toBe(true);
+    expect(mockUpdateNetworkPolicyCalls).toEqual(["deny-all"]);
+  });
+
+  it("SECURITY (self-hosted asymmetry): a configured sidecar bypasses the resolver and applies NO network policy", async () => {
+    // When ATLAS_SANDBOX_URL is set, useSidecar() wins over the Vercel backend.
+    // The resolver must NOT run (the guard is `useVercelSandbox() && !useSidecar()`)
+    // and the sidecar — which has no networkPolicy equivalent — gets no narrowing.
+    process.env.ATLAS_SANDBOX_URL = "http://sandbox-sidecar:8080";
+    let resolverCalls = 0;
+    const result = await runPython(async () => {
+      resolverCalls += 1;
+      return makeDatasource("twenty", "https://crm.tenant-a.example/rest");
+    }, "result = 1");
+
+    expect(result.success).toBe(true);
+    expect(resolverCalls).toBe(0); // resolve skipped — never touched on the sidecar path
+    expect(mockSidecarExecCalls).toBe(1); // request went to the sidecar
+    expect(mockUpdateNetworkPolicyCalls).toEqual([]); // no policy applied to the sidecar
   });
 });

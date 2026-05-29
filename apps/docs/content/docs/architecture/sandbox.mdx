@@ -235,7 +235,7 @@ Data from a previous SQL query is injected into the sandbox as a pandas DataFram
 
 ## REST Datasource sandbox network boundary (`executePython` + OpenAPI)
 
-When a workspace has a [REST Datasource](/docs/datasources/rest) connected, the Python sandbox's **network policy** is the layer-0 security boundary for any future in-sandbox REST work: it bounds *which hosts the sandbox can reach at all*, before any operation-level check runs. How that boundary is enforced differs by backend, and the difference is operationally important.
+When a workspace has a REST Datasource connected, the Python sandbox's **network policy** is the layer-0 security boundary for any future in-sandbox REST work: it bounds *which hosts the sandbox can reach at all*, before any operation-level check runs. How that boundary is enforced differs by backend, and the difference is operationally important.
 
 | Backend | Deploy mode | Sandbox egress when a REST datasource is connected | What this means |
 |---------|-------------|----------------------------------------------------|-----------------|

@@ -892,7 +892,10 @@ export async function runAgent({
         tool: executeRestOperationTool,
       });
       activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
-      restRepresentation = buildAgentRepresentation(restDatasource.graph, "operation-graph", {
+      // Representation mode is the #2931 bake-off knob, resolved per datasource
+      // (env today, per-install config in slice 2). Path A vs Path B differ only
+      // in how the surface is described; both drive the same executeRestOperation.
+      restRepresentation = buildAgentRepresentation(restDatasource.graph, restDatasource.representationMode, {
         displayName: restDatasource.displayName,
       }).promptContext;
     }

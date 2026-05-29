@@ -96,8 +96,14 @@ const SPEC = JSON.parse(
 );
 const graph = buildOperationGraph(SPEC);
 
-/** Path A is the only implemented mode; #2931 appends "semantic-yaml" here. */
-const MODES_UNDER_TEST: RepresentationMode[] = ["operation-graph"];
+/**
+ * The bake-off axis: every assertion below runs once per mode. #2924 shipped
+ * Path A ("operation-graph"); #2931 added Path B ("semantic-yaml"). Both must
+ * pass EVERY assertion — a mode that fails any one is disqualified as slice 2's
+ * default. The per-run metrics (representation tokens + agent stepCount) are
+ * emitted at teardown for the comparison report.
+ */
+const MODES_UNDER_TEST: RepresentationMode[] = ["operation-graph", "semantic-yaml"];
 
 // ── Scripted-LLM helpers (mirrors agent-integration.test.ts) ─────────────────
 let callId = 0;
@@ -189,6 +195,7 @@ afterAll(async () => {
   delete process.env.ATLAS_OPENAPI_TWENTY;
   delete process.env.ATLAS_OPENAPI_TWENTY_TOKEN;
   delete process.env.ATLAS_OPENAPI_TWENTY_BASE_URL;
+  delete process.env.ATLAS_OPENAPI_REPRESENTATION;
   __resetTwentyDatasourceCacheForTests();
   await mock1.close();
   emitMetricsTable();
@@ -232,6 +239,10 @@ function emitMetricsTable(): void {
 // ─────────────────────────────────────────────────────────────────────────
 describe.each(MODES_UNDER_TEST)("Twenty acceptance — representation mode: %s", (mode) => {
   beforeAll(() => {
+    // Select the mode the REAL agent loop resolves (agent.ts reads it off the
+    // datasource, which reads this env). Each mode block overwrites it before
+    // its own tests run, so the two modes never bleed into each other.
+    process.env.ATLAS_OPENAPI_REPRESENTATION = mode;
     const rep = buildAgentRepresentation(graph, mode, { displayName: "Twenty" });
     representationTokens.set(mode, rep.approxTokens);
   });

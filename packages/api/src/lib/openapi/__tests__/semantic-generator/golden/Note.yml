@@ -1,0 +1,50 @@
+name: Note
+type: rest_resource
+resource: notes
+record_schema: Note
+description: REST resource backed by the "notes" path group of Twenty Core REST API. Read with the GET operations below; pass parameters to executeRestOperation.
+operations:
+  - operationId: createOneNote
+    method: POST
+    path: /notes
+    kind: create
+    writes: true
+    summary: Create one note (body goes under bodyV2.markdown)
+  - operationId: deleteOneNote
+    method: DELETE
+    path: /notes/{id}
+    kind: delete
+    writes: true
+    summary: Delete one note by id
+  - operationId: findManyNotes
+    method: GET
+    path: /notes
+    kind: list
+    writes: false
+    summary: List notes
+  - operationId: findOneNote
+    method: GET
+    path: /notes/{id}
+    kind: get
+    writes: false
+    summary: Get one note by id
+dimensions:
+  - name: id
+    type: string
+    primary_key: true
+  - name: title
+    type: string
+  - name: bodyV2
+    type: object
+    description: Rich-text body. Write the markdown under bodyV2.markdown — the legacy top-level body field was removed.
+  - name: bodyV2.markdown
+    type: string
+  - name: createdAt
+    type: timestamp
+query_patterns:
+  - name: list
+    description: List records via findManyNotes. Paginate with limit + starting_after (cursor); omit filter for a plain list.
+  - name: search
+    description: Search via findManyNotes by passing the filter query param (see the datasource-level filter syntax).
+  - name: get_by_id
+    description: Fetch one record by id via findOneNote.

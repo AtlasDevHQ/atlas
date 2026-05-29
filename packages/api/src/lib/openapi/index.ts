@@ -61,3 +61,22 @@ export type {
   ServerInfo,
   SpecInfo,
 } from "./types";
+
+// Slice-1b (#2931) — the semantic-model generator (Path B of the representation
+// bake-off). `representation.ts` consumes it directly for `semantic-yaml` mode;
+// these re-exports let slice 2 reach the model + YAML serializations for the
+// per-tenant `workspace_plugins.config.openapi_snapshot` cache.
+export {
+  generateSemanticModel,
+  renderEntityYaml,
+  renderModelYaml,
+} from "./semantic-generator";
+export type {
+  GeneratedColumn,
+  GeneratedEntity,
+  GeneratedEntityOperation,
+  GeneratedJoin,
+  GeneratedQueryPattern,
+  OpenApiSemanticModel,
+  OperationKind,
+} from "./semantic-generator";

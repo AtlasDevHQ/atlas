@@ -1,0 +1,33 @@
+name: Company
+type: rest_resource
+resource: companies
+record_schema: Company
+description: REST resource backed by the "companies" path group of Twenty Core REST API. Read with the GET operations below; pass parameters to executeRestOperation.
+operations:
+  - operationId: deleteOneCompany
+    method: DELETE
+    path: /companies/{id}
+    kind: delete
+    writes: true
+    summary: Delete one company by id
+  - operationId: findManyCompanies
+    method: GET
+    path: /companies
+    kind: list
+    writes: false
+    summary: List or search companies. Add filter=... to search.
+dimensions:
+  - name: id
+    type: string
+    primary_key: true
+  - name: name
+    type: string
+  - name: domainName.primaryLinkUrl
+    type: string
+  - name: employees
+    type: number
+query_patterns:
+  - name: list
+    description: List records via findManyCompanies. Paginate with limit + starting_after (cursor); omit filter for a plain list.
+  - name: search
+    description: Search via findManyCompanies by passing the filter query param (see the datasource-level filter syntax).

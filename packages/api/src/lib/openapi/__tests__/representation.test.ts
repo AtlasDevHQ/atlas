@@ -5,7 +5,6 @@ import * as path from "path";
 import { buildOperationGraph } from "../spec";
 import {
   buildAgentRepresentation,
-  RepresentationNotImplementedError,
   REPRESENTATION_MODES,
 } from "../representation";
 
@@ -155,10 +154,64 @@ describe("buildAgentRepresentation — mode knob (bake-off parameterization)", (
     expect(REPRESENTATION_MODES).toContain("semantic-yaml");
   });
 
-  it("fails loud on the not-yet-implemented semantic-yaml mode (Path B / #2931)", () => {
-    expect(() => buildAgentRepresentation(graph, "semantic-yaml")).toThrow(
-      RepresentationNotImplementedError,
-    );
+  it("both modes produce a representation with the same metric shape", () => {
+    const a = buildAgentRepresentation(graph, "operation-graph", { displayName: "Twenty" });
+    const b = buildAgentRepresentation(graph, "semantic-yaml", { displayName: "Twenty" });
+    for (const rep of [a, b]) {
+      expect(rep.operationCount).toBe(graph.operations.size);
+      expect(rep.approxTokens).toBe(Math.ceil(rep.promptContext.length / 4));
+      expect(rep.approxTokens).toBeGreaterThan(0);
+    }
+    expect(a.mode).toBe("operation-graph");
+    expect(b.mode).toBe("semantic-yaml");
+  });
+});
+
+describe("buildAgentRepresentation — Path B (semantic-yaml)", () => {
+  const rep = buildAgentRepresentation(graph, "semantic-yaml", { displayName: "Twenty" });
+
+  it("shares the datasource header with Path A (same call contract framing)", () => {
+    expect(rep.promptContext).toContain("## REST Datasource: Twenty");
+    expect(rep.promptContext).toContain("executeRestOperation");
+    expect(rep.promptContext).toContain("NOT a SQL database");
+    expect(rep.promptContext.toLowerCase()).toContain("read-only");
+  });
+
+  it("renders entities as semantic YAML, addressable by operationId", () => {
+    expect(rep.promptContext).toContain("### Entities");
+    expect(rep.promptContext).toContain("type: rest_resource");
+    // Every twenty-mcp-backing operation is reachable from the YAML operations blocks.
+    for (const opId of [
+      "findManyPeople",
+      "findOnePerson",
+      "createOnePerson",
+      "findManyCompanies",
+      "findManyNotes",
+      "findManyNoteTargets",
+    ]) {
+      expect(rep.promptContext, `Path B should mention ${opId}`).toContain(opId);
+    }
+  });
+
+  it("carries the four Twenty traps through the YAML surface", () => {
+    // TRAP 1 — filter syntax, surfaced once at the datasource level.
+    expect(rep.promptContext).toContain("field[COMPARATOR]:value");
+    // TRAP 2 — targetPersonId join column, no invented personId.
+    expect(rep.promptContext).toContain("targetPersonId");
+    // TRAP 3 — inline custom fields, no customFields wrapper.
+    expect(rep.promptContext).toContain("atlasFirstSource");
+    expect(rep.promptContext).not.toContain("customFields");
+    // TRAP 4 — bodyV2.markdown.
+    expect(rep.promptContext).toContain("bodyV2.markdown");
+  });
+
+  it("does NOT advertise the Python composition path by default", () => {
+    expect(rep.promptContext).not.toContain("executePython");
+    const withPython = buildAgentRepresentation(graph, "semantic-yaml", {
+      displayName: "Twenty",
+      pythonCompositionEnabled: true,
+    });
+    expect(withPython.promptContext).toContain("executePython");
   });
 });
 

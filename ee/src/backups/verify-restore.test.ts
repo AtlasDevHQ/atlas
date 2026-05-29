@@ -1,24 +1,28 @@
 /**
  * Restore-into-scratch-DB verification tests (#2941).
  *
- * Two layers of coverage:
+ * Coverage:
  *
- *  1. **Real-PG regression** (opt-in — skips unless a scratch Postgres URL is
- *     available). This is the test the fuller fix exists for: a dump with a
- *     valid pg_dump header but a TRUNCATED tail PASSED the old header-only
- *     check. Under restore-into-scratch-DB verification it must now FAIL.
- *     The matching valid dump must PASS with a non-zero table count.
- *
- *     Mirrors the skip pattern in `migrate-pg.test.ts` — set either
- *     `ATLAS_BACKUP_VERIFY_SCRATCH_URL` or `TEST_DATABASE_URL` (the latter is
- *     used both as the source DB to dump AND, with a dedicated scratch DB
- *     created per-run, as the restore target). Requires `pg_dump` + `psql` on
- *     PATH. ⚠️ The scratch DB's public schema is WIPED — never point at prod.
- *
- *  2. **Fail-loud** (always runs, mocked): when the scratch URL IS configured
+ *  1. **Fail-loud** (always runs, mocked): when the scratch URL IS configured
  *     but the restore subprocess can't run (psql missing / connection refused),
  *     verification returns verified:false at the full-restore level — it must
  *     NOT fall through to verified:true.
+ *
+ *  2. **Same-target guard** (always runs, pure unit): `scratchTargetsSameAsPrimary`
+ *     refuses to wipe a scratch DB that resolves to the same {host, port, db} as
+ *     DATABASE_URL.
+ *
+ *  3. **Real-PG smoke** (opt-in — skips unless a dedicated scratch Postgres is
+ *     available). The headline AC of #2941: a dump with a valid pg_dump header
+ *     but a TRUNCATED tail PASSED the old header-only check; under
+ *     restore-into-scratch-DB verification it must now FAIL. Also covers the
+ *     valid dump (verified:true, non-zero BASE TABLE count, row stamped) and a
+ *     header-valid-but-empty dump (zero base tables → verified:false).
+ *
+ *     Set `ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST` (preferred — CI sets this on a
+ *     DEDICATED `atlas_backup_scratch` DB) or `TEST_DATABASE_URL`. Requires
+ *     `pg_dump` + `psql` on PATH. ⚠️ The scratch DB's public schema is WIPED on
+ *     every run — never point at prod.
  *
  * Uses real fs/zlib/child_process (unlike verify.test.ts, which mocks them) so
  * the psql-pipe path is genuinely exercised. Only the DB / enterprise / logger
@@ -65,7 +69,7 @@ mock.module("./engine", () => ({
   _resetTableReady: () => {},
 }));
 
-const { verifyBackup } = await import("./verify");
+const { verifyBackup, scratchTargetsSameAsPrimary } = await import("./verify");
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect as Effect.Effect<A, never>);
 
@@ -113,6 +117,77 @@ describe("verifyBackup full-restore — fail loud when restore can't run (#2941)
   });
 });
 
+// ── Guard: scratch DB must not equal DATABASE_URL (item 2) ───────────
+
+describe("scratchTargetsSameAsPrimary — destructive-wipe guard (#2941)", () => {
+  it("flags an exact-match URL", () => {
+    const url = "postgresql://atlas:atlas@db.example.com:5432/atlas";
+    expect(scratchTargetsSameAsPrimary(url, url)).toBe(true);
+  });
+
+  it("flags a match even when only credentials differ", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://scratch_user:pw1@db.example.com:5432/atlas",
+        "postgresql://prod_user:pw2@db.example.com:5432/atlas",
+      ),
+    ).toBe(true);
+  });
+
+  it("flags a match when ports are implicit vs explicit 5432", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://u:p@db.example.com/atlas",
+        "postgresql://u:p@db.example.com:5432/atlas",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores query params (sslmode) when comparing", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://u:p@db.example.com:5432/atlas?sslmode=require",
+        "postgresql://u:p@db.example.com:5432/atlas",
+      ),
+    ).toBe(true);
+  });
+
+  it("does NOT flag a different database name on the same host", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://u:p@db.example.com:5432/atlas_backup_scratch",
+        "postgresql://u:p@db.example.com:5432/atlas",
+      ),
+    ).toBe(false);
+  });
+
+  it("does NOT flag a different host", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://u:p@scratch.example.com:5432/atlas",
+        "postgresql://u:p@db.example.com:5432/atlas",
+      ),
+    ).toBe(false);
+  });
+
+  it("does NOT flag a different port", () => {
+    expect(
+      scratchTargetsSameAsPrimary(
+        "postgresql://u:p@db.example.com:5433/atlas",
+        "postgresql://u:p@db.example.com:5432/atlas",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when DATABASE_URL is unset", () => {
+    expect(scratchTargetsSameAsPrimary("postgresql://u:p@db:5432/atlas", undefined)).toBe(false);
+  });
+
+  it("returns false for an unparseable URL (defers to the connection attempt)", () => {
+    expect(scratchTargetsSameAsPrimary("not-a-url", "postgresql://u:p@db:5432/atlas")).toBe(false);
+  });
+});
+
 // ── (1) Real-PG regression — opt-in, skips when no scratch DB available ──
 
 const SCRATCH_URL = process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL_TEST ?? process.env.TEST_DATABASE_URL;
@@ -140,20 +215,39 @@ describeIfPg("verifyBackup full-restore — real Postgres smoke (#2941)", () => 
     "",
   ].join("\n");
 
+  // A header-valid dump that only runs SET statements — restores cleanly but
+  // produces ZERO base tables (item 8).
+  const EMPTY_DUMP = [
+    "--",
+    "-- PostgreSQL database dump",
+    "--",
+    "SET statement_timeout = 0;",
+    "SET client_encoding = 'UTF8';",
+    "--",
+    "-- PostgreSQL database dump complete",
+    "--",
+    "",
+  ].join("\n");
+
   let tmp: string;
 
   beforeEach(() => {
     ee.reset();
     tmp = mkdtempSync(join(tmpdir(), "atlas-verify-pg-"));
-    // SCRATCH_URL is guaranteed defined inside describeIfPg.
+    // SCRATCH_URL is guaranteed defined inside describeIfPg. It must point at a
+    // DEDICATED scratch DB (its public schema is wiped). The dumps here are
+    // crafted strings, not pg_dumps of a source DB, so DATABASE_URL is
+    // irrelevant — clear it so the same-target safety guard can't trip on a
+    // dev's local env that happens to point DATABASE_URL at the scratch DB.
     process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL = SCRATCH_URL as string;
+    delete process.env.DATABASE_URL;
   });
 
   afterAll(() => {
     delete process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL;
   });
 
-  it("verifies a valid dump as restorable with a non-zero table count", async () => {
+  it("verifies a valid dump as restorable with a non-zero base-table count + stamps the row", async () => {
     const dumpPath = join(tmp, "valid.sql.gz");
     writeFileSync(dumpPath, gzipSync(Buffer.from(VALID_DUMP)));
     mockBackup = baseBackup(dumpPath);
@@ -164,8 +258,14 @@ describeIfPg("verifyBackup full-restore — real Postgres smoke (#2941)", () => 
 
     expect(result.level).toBe("full-restore");
     expect(result.verified).toBe(true);
-    // The message reports the restored table count.
-    expect(result.message).toMatch(/restored \d+ table/);
+    // The message reports the restored base-table count (structural smoke).
+    expect(result.message).toMatch(/\d+ base table/);
+
+    // The backup row is STAMPED verified + full-restore (item 9).
+    const update = ee.capturedQueries.find((q) => q.sql.includes("UPDATE backups"));
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("status = 'verified'");
+    expect(update!.sql).toContain("verify_level = 'full-restore'");
   });
 
   it("REGRESSION: a valid-header-but-truncated dump now FAILS (header-only would have passed)", async () => {
@@ -186,5 +286,19 @@ describeIfPg("verifyBackup full-restore — real Postgres smoke (#2941)", () => 
 
     expect(result.level).toBe("full-restore");
     expect(result.verified).toBe(false);
+  });
+
+  it("fails a header-valid dump that restores to ZERO base tables (item 8)", async () => {
+    const dumpPath = join(tmp, "empty.sql.gz");
+    writeFileSync(dumpPath, gzipSync(Buffer.from(EMPTY_DUMP)));
+    mockBackup = baseBackup(dumpPath);
+    ee.queueMockRows([]); // status -> failed UPDATE
+
+    const result = await run(verifyBackup("b1"));
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.level).toBe("full-restore");
+    expect(result.verified).toBe(false);
+    expect(result.message).toContain("zero base tables");
   });
 });

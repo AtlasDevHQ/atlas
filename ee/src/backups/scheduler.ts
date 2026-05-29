@@ -100,10 +100,12 @@ const tick = (): Effect.Effect<void> =>
     const backup = yield* createBackup();
 
     // Verify every automated backup — without this the success signal is
-    // just "pg_dump exited 0 + non-empty file". The header check is cheap
-    // and catches truncated/corrupt dumps; a failed verify is logged loudly
-    // so on-call sees it rather than discovering it at restore time.
-    // (Restore-and-diff integrity remains a larger follow-up — see #2941.)
+    // just "pg_dump exited 0 + non-empty file". A failed verify is logged
+    // loudly so on-call sees it rather than discovering it at restore time.
+    // Verification depth is governed by ATLAS_BACKUP_VERIFY_SCRATCH_URL (#2941):
+    // when set, verifyBackup restores the dump into a disposable scratch DB and
+    // counts base tables ("restorable"); when unset, it degrades to a pg_dump
+    // header check ("has a valid header") and logs a warning.
     const verification = yield* verifyBackup(backup.id);
     if (!verification.verified) {
       log.error(

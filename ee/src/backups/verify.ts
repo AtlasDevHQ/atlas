@@ -6,11 +6,14 @@
  *  - **full-restore** (preferred): when `ATLAS_BACKUP_VERIFY_SCRATCH_URL` points
  *    at a disposable scratch Postgres, the dump is decompressed and piped into
  *    `psql --single-transaction --set ON_ERROR_STOP=on` against that scratch DB,
- *    then a `count(*)` over `information_schema.tables` proves the restore
- *    produced real objects. "Verified" then means "restorable", not merely "has
- *    a valid header". A dump that is a valid pg_dump header but truncated /
- *    corrupt-tailed makes psql exit non-zero (or yields zero tables) under
+ *    then a `count(*)` over base tables in `information_schema.tables` proves the
+ *    restore produced real tables. "Verified" then means "restorable", not merely
+ *    "has a valid header". A dump that is a valid pg_dump header but truncated /
+ *    corrupt-tailed makes psql exit non-zero (or yields zero base tables) under
  *    ON_ERROR_STOP=on, so verification FAILS — which header-only checking missed.
+ *    NOTE: this is a *structural* smoke (base tables exist after restore), not a
+ *    row-level completeness proof — a dump truncated on a clean statement
+ *    boundary after some tables already restored can still pass. See #2941.
  *
  *  - **header-only** (degraded fallback): when no scratch URL is configured we
  *    gunzip the first 4096 bytes and check for the pg_dump header string. This
@@ -18,9 +21,12 @@
  *    We log a loud warning explaining WHY we degraded (never silently skip).
  *
  * ⚠️  The scratch URL MUST point at a genuinely disposable database. Full-restore
- *    verification WIPES the scratch DB's `public` schema (`DROP SCHEMA public
- *    CASCADE; CREATE SCHEMA public;`) before each restore so a plain-format
- *    pg_dump restores without object conflicts. Never point it at a real DB.
+ *    verification WIPES the scratch DB's `public` schema (`DROP SCHEMA IF EXISTS
+ *    public CASCADE; CREATE SCHEMA public;`) before each restore so a plain-format
+ *    pg_dump restores without object conflicts. Never point it at a real DB. As a
+ *    safety net we refuse to run (verified:false, NO wipe) if the scratch URL
+ *    resolves to the same {host, port, database} as DATABASE_URL — so a copy-paste
+ *    env mistake can't turn nightly verification into a nightly prod wipe.
  *
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  * Enterprise-gated via requireEnterpriseEffect("backups").
@@ -76,6 +82,12 @@ export const verifyBackup = (
 
     const scratchUrl = process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL;
 
+    // A verify that can't actually verify is a failure, not a pass — when a
+    // scratch URL IS configured but the restore path blew up (psql missing,
+    // connection refused, …) we report the strongest level so callers don't
+    // mistake this for a degraded header check.
+    const level: VerifyLevel = scratchUrl ? "full-restore" : "header-only";
+
     // Inner effect uses tryPromise so errors land in the typed channel
     const verifyWork = scratchUrl
       ? verifyByRestore(backupId, backup.storage_path, scratchUrl)
@@ -84,16 +96,25 @@ export const verifyBackup = (
     return yield* verifyWork.pipe(
       Effect.catchAll((err) =>
         Effect.sync(() => {
-          const errorMessage = err instanceof Error ? err.message : String(err);
+          // Full error (which may include psql stderr with scratch host/port/db)
+          // stays server-side only.
           log.error(
-            { err: err instanceof Error ? err : new Error(String(err)), backupId },
+            { err: err instanceof Error ? err : new Error(String(err)), backupId, level },
             "Backup verification failed",
           );
 
-          // Best-effort status update — fire-and-forget with error handling
+          // Generic, actionable message — never leak connection details or raw
+          // psql/pg_dump stderr onto the wire or into the persisted column
+          // (CLAUDE.md: no secrets / stack traces in responses).
+          const safeMessage =
+            level === "full-restore"
+              ? "Verification failed — could not restore the backup into the scratch DB. See server logs."
+              : "Verification failed — could not read or decompress the backup file. See server logs.";
+
+          // Best-effort status update — fire-and-forget with error handling.
           void internalQuery(
-            `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
-            [`Verification failed: ${errorMessage.slice(0, 1000)}`, backupId],
+            `UPDATE backups SET status = 'failed', verify_level = $1, error_message = $2 WHERE id = $3`,
+            [level, safeMessage, backupId],
           ).catch((updateErr) => {
             log.warn(
               { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
@@ -101,12 +122,7 @@ export const verifyBackup = (
             );
           });
 
-          // A verify that can't actually verify is a failure, not a pass —
-          // when a scratch URL IS configured but the restore path blew up
-          // (psql missing, connection refused, …) we report the strongest
-          // level so callers don't mistake this for a degraded header check.
-          const level: VerifyLevel = scratchUrl ? "full-restore" : "header-only";
-          return { verified: false, message: `Verification failed: ${errorMessage}`, level };
+          return { verified: false, message: safeMessage, level };
         }),
       ),
     );
@@ -117,12 +133,18 @@ export const verifyBackup = (
 // ---------------------------------------------------------------------------
 
 /**
- * Restore the dump into the scratch DB and assert it produced objects.
+ * Restore the dump into the scratch DB and assert it produced base tables.
  *
  * Resets the scratch DB's public schema, pipes the decompressed dump into
- * `psql --single-transaction --set ON_ERROR_STOP=on`, then counts tables in
+ * `psql --single-transaction --set ON_ERROR_STOP=on`, then counts BASE TABLES in
  * `information_schema`. A truncated dump exits non-zero under ON_ERROR_STOP or
- * yields zero tables → verification fails.
+ * yields zero base tables → verification fails.
+ *
+ * This is a *structural* smoke (base tables exist after restore), not a
+ * row-level completeness proof. A dump truncated on a clean statement boundary
+ * after some tables already restored can still pass — recording the source DB's
+ * expected base-table count at backup time and asserting `restored >= expected`
+ * is a tracked follow-up to #2941.
  */
 const verifyByRestore = (
   backupId: string,
@@ -130,6 +152,28 @@ const verifyByRestore = (
   scratchUrl: string,
 ): Effect.Effect<{ verified: boolean; message: string; level: VerifyLevel }, Error> =>
   Effect.gen(function* () {
+    // Safety net: refuse to wipe the scratch DB if it resolves to the same
+    // target as DATABASE_URL — a single env copy-paste error would otherwise
+    // turn nightly verification into a nightly prod wipe (and then "pass").
+    if (scratchTargetsSameAsPrimary(scratchUrl, process.env.DATABASE_URL)) {
+      const message =
+        "Refusing to verify: ATLAS_BACKUP_VERIFY_SCRATCH_URL resolves to the same database as DATABASE_URL. " +
+        "Point it at a DISPOSABLE scratch Postgres — verification WIPES the scratch DB's public schema.";
+      log.error({ backupId }, message);
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE backups SET status = 'failed', verify_level = 'full-restore', error_message = $1 WHERE id = $2`,
+            [
+              "Verification skipped — scratch DB equals DATABASE_URL (would wipe the primary DB). See server logs.",
+              backupId,
+            ],
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      return { verified: false, message, level: "full-restore" as const };
+    }
+
     const conn = parsePsqlConn(scratchUrl);
 
     log.info({ backupId }, "Verifying backup via restore-into-scratch-DB smoke");
@@ -140,21 +184,21 @@ const verifyByRestore = (
     // Step 2: restore the dump into the scratch DB.
     yield* restoreDumpIntoScratch(conn, storagePath);
 
-    // Step 3: prove the restore produced real objects.
+    // Step 3: prove the restore produced real base tables.
     const tableCount = yield* countScratchTables(conn);
 
     if (tableCount <= 0) {
       yield* Effect.tryPromise({
         try: () =>
           internalQuery(
-            `UPDATE backups SET status = 'failed', verify_level = 'full-restore', error_message = 'Verification failed: restore smoke produced zero tables' WHERE id = $1`,
+            `UPDATE backups SET status = 'failed', verify_level = 'full-restore', error_message = 'Verification failed: restore smoke produced zero base tables' WHERE id = $1`,
             [backupId],
           ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
       return {
         verified: false,
-        message: "Restore smoke produced zero tables in public schema — backup is empty or unrestorable",
+        message: "Restore smoke produced zero base tables in public schema — backup is empty or unrestorable",
         level: "full-restore" as const,
       };
     }
@@ -171,7 +215,7 @@ const verifyByRestore = (
     log.info({ backupId, tableCount, level: "full-restore" }, "Backup verified via restore-into-scratch-DB smoke");
     return {
       verified: true,
-      message: `Backup verified via restore-into-scratch-DB smoke — restored ${tableCount} table(s)`,
+      message: `Backup verified — structural smoke: ${tableCount} base table(s) restored into the scratch DB (not a row-level completeness proof)`,
       level: "full-restore" as const,
     };
   });
@@ -188,6 +232,43 @@ function parsePsqlConn(url: string): PsqlConn {
   const dbName = parsed.pathname.replace(/^\//, "");
   if (dbName) args.push("-d", dbName);
   return { args, password: parsed.password ? decodeURIComponent(parsed.password) : "" };
+}
+
+/**
+ * True when `scratchUrl` resolves to the same Postgres target as `primaryUrl`
+ * (DATABASE_URL): same hostname, port, and database name. Credentials and query
+ * params (sslmode etc.) are intentionally ignored so a creds-only difference
+ * doesn't defeat the guard. Exported for unit testing.
+ *
+ * Conservative: if `primaryUrl` is unset or either URL fails to parse, returns
+ * false (we don't block verification on a parse failure — the worst case is the
+ * existing destructive behaviour, which the operator already opted into by
+ * setting a scratch URL). The host/port/db match is the load-bearing check.
+ */
+export function scratchTargetsSameAsPrimary(
+  scratchUrl: string,
+  primaryUrl: string | undefined,
+): boolean {
+  if (!primaryUrl) return false;
+  let scratch: URL;
+  let primary: URL;
+  try {
+    scratch = new URL(scratchUrl);
+    primary = new URL(primaryUrl);
+  } catch {
+    // intentionally ignored: an unparseable URL can't be proven equal; the
+    // downstream psql call will surface a connection error instead.
+    return false;
+  }
+  const norm = (u: URL) => ({
+    host: u.hostname.toLowerCase(),
+    // Default Postgres port is 5432 when the URL omits it.
+    port: u.port || "5432",
+    db: u.pathname.replace(/^\//, ""),
+  });
+  const a = norm(scratch);
+  const b = norm(primary);
+  return a.host === b.host && a.port === b.port && a.db === b.db;
 }
 
 /** Run a single SQL command against the scratch DB via `psql -c`. */
@@ -217,7 +298,10 @@ const runPsqlCommand = (conn: PsqlConn, sql: string): Effect.Effect<void, Error>
     });
 
     if (exitCode !== 0) {
-      return yield* Effect.fail(new Error(`psql command failed (exit ${exitCode}): ${stderr.slice(0, 500)}`));
+      // Raw stderr (scratch host/port/db) stays in the server log; the thrown
+      // message is generic so the outer catch can't leak it onto the wire.
+      log.error({ exitCode, stderr: stderr.slice(0, 1000) }, "psql scratch-reset command failed");
+      return yield* Effect.fail(new Error(`Scratch DB reset failed (psql exit ${exitCode})`));
     }
   });
 
@@ -259,13 +343,19 @@ const restoreDumpIntoScratch = (conn: PsqlConn, storagePath: string): Effect.Eff
     });
 
     if (exitCode !== 0) {
-      return yield* Effect.fail(
-        new Error(`Restore smoke failed — psql exited ${exitCode}: ${stderr.slice(0, 500)}`),
-      );
+      // Raw stderr stays server-side; the outer catch surfaces a generic message.
+      log.error({ exitCode, stderr: stderr.slice(0, 1000) }, "psql restore smoke failed");
+      return yield* Effect.fail(new Error(`Restore smoke failed (psql exit ${exitCode})`));
     }
   });
 
-/** Count tables in the scratch DB's public schema after a restore. */
+/**
+ * Count BASE TABLES in the scratch DB's public schema after a restore.
+ *
+ * Filtering on `table_type = 'BASE TABLE'` excludes views — a dump whose
+ * CREATE TABLEs were truncated but that still created a view would otherwise
+ * pass a bare `count(*)`.
+ */
 const countScratchTables = (conn: PsqlConn): Effect.Effect<number, Error> =>
   Effect.gen(function* () {
     const psql = spawn(
@@ -276,7 +366,7 @@ const countScratchTables = (conn: PsqlConn): Effect.Effect<number, Error> =>
         "ON_ERROR_STOP=on",
         "-tA",
         "-c",
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'",
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
       ],
       {
         env: { ...process.env, PGPASSWORD: conn.password },
@@ -303,12 +393,14 @@ const countScratchTables = (conn: PsqlConn): Effect.Effect<number, Error> =>
     });
 
     if (exitCode !== 0) {
-      return yield* Effect.fail(new Error(`Table count failed (exit ${exitCode}): ${stderr.slice(0, 500)}`));
+      log.error({ exitCode, stderr: stderr.slice(0, 1000) }, "psql base-table count failed");
+      return yield* Effect.fail(new Error(`Base table count failed (psql exit ${exitCode})`));
     }
 
     const count = parseInt(stdout.trim(), 10);
     if (Number.isNaN(count)) {
-      return yield* Effect.fail(new Error(`Could not parse table count from psql output: "${stdout.trim()}"`));
+      log.error({ stdout: stdout.slice(0, 200) }, "Could not parse base table count from psql output");
+      return yield* Effect.fail(new Error("Could not parse base table count from psql output"));
     }
     return count;
   });

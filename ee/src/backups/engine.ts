@@ -51,9 +51,12 @@ export const ensureTable = (): Effect.Effect<void, EnterpriseError | Error> =>
     );
     // verify_level records which depth of verification last ran for a backup —
     // 'full-restore' (restored into a scratch DB and counted) vs 'header-only'
-    // (degraded fallback). This table is created ad-hoc here (not via the
-    // schema.ts / migrations drift system), so the column is added with an
-    // idempotent ALTER for deployments whose `backups` table predates #2941.
+    // (degraded fallback). The `backups` table IS mirrored in
+    // `packages/api/src/lib/db/schema.ts` (and migrations/0000_baseline.sql), so
+    // this column MUST also be mirrored there (`verifyLevel: text("verify_level")`)
+    // — otherwise the next `drizzle-kit generate` emits a DROP COLUMN and wipes
+    // it on deploy (#2941). This idempotent ALTER adds the column at runtime for
+    // existing deployments whose `backups` table predates #2941.
     yield* Effect.promise(() =>
       internalQuery(
         `ALTER TABLE backups ADD COLUMN IF NOT EXISTS verify_level TEXT`,

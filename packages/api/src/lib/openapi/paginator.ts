@@ -256,11 +256,15 @@ export function coerceNumber(value: unknown): number | undefined {
 /**
  * Clone a {@link PageRequest} with the given query values merged in (overriding
  * existing keys). Path / header / body buckets pass through unchanged.
- * `undefined` patch values are kept as-is so the slice-0 client drops them.
+ * `undefined` patch values are kept as-is so the slice-0 client drops them. Array
+ * values are preserved (the client explodes them into repeated query keys) so a
+ * strategy can carry repeated filters across pages.
  */
 export function withQuery(
   request: PageRequest,
-  patch: Readonly<Record<string, string | number | boolean | undefined>>,
+  patch: Readonly<
+    Record<string, string | number | boolean | ReadonlyArray<string | number | boolean> | undefined>
+  >,
 ): PageRequest {
   return {
     operationId: request.operationId,

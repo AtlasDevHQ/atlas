@@ -239,6 +239,15 @@ const NEXT_CASES: NextCase[] = [
     expected: continueWith({ operationId: "list", params: { query: { ids: "1,2,3", page: "2" } } }),
   },
   {
+    title: "link-header: collects repeated query params into an array",
+    config: { strategy: "link-header", itemsPath: "items" },
+    request: { operationId: "list", params: {} },
+    response: ok({ items: [{ id: 1 }] }, {
+      link: '<https://api.example.com/things?labels=bug&labels=help&page=2>; rel="next"',
+    }),
+    expected: continueWith({ operationId: "list", params: { query: { labels: ["bug", "help"], page: "2" } } }),
+  },
+  {
     title: "link-header: a literal rel= inside another param value doesn't false-match",
     config: { strategy: "link-header", itemsPath: "items" },
     request: { operationId: "list", params: {} },

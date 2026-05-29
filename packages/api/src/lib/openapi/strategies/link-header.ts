@@ -89,8 +89,13 @@ function linkParamsDeclareRel(params: string, rel: string): boolean {
   return false;
 }
 
-/** Parse a (possibly relative) URL's query string into a scalar query patch. */
-function extractQueryParams(url: string): Record<string, string> | null {
+/**
+ * Parse a (possibly relative) URL's query string into a query patch. A key that
+ * repeats in the next-page URL (e.g. `?labels=bug&labels=help&page=2`) is
+ * collected into an array so the filter survives to the next page — the client
+ * explodes arrays back into repeated keys. A single-valued key stays a string.
+ */
+function extractQueryParams(url: string): Record<string, string | string[]> | null {
   let parsed: URL;
   try {
     parsed = new URL(url, "http://link-header.invalid");
@@ -100,9 +105,10 @@ function extractQueryParams(url: string): Record<string, string> | null {
     // merge is flagged truncated (we won't fabricate a URL).
     return null;
   }
-  const patch: Record<string, string> = {};
-  parsed.searchParams.forEach((v, k) => {
-    patch[k] = v;
-  });
+  const patch: Record<string, string | string[]> = {};
+  for (const key of new Set(parsed.searchParams.keys())) {
+    const all = parsed.searchParams.getAll(key);
+    patch[key] = all.length > 1 ? all : all[0];
+  }
   return patch;
 }

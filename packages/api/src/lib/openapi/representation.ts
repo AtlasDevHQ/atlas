@@ -117,12 +117,13 @@ export interface BuildRepresentationOptions {
    */
   readonly datasourceId?: string;
   /**
-   * Whether the sandbox-Python composition path is live. Atlas ships read-only
-   * single-operation execution via `executeRestOperation`; the Python path
-   * (multi-call composition over the upstream) needs the sandbox to authenticate
-   * read-only host-side, which isn't wired yet — so no caller sets this today
-   * (it defaults false and the prompt does NOT advertise `executePython`). Kept
-   * as the seam for when in-sandbox composition lands (pairs with slice 5).
+   * Whether the sandbox-Python composition path is live. Atlas ships
+   * single-operation execution via `executeRestOperation` — reads run directly,
+   * and (since slice 5, #2929) allowlisted writes run after an in-chat confirm.
+   * The Python path (multi-call composition over the upstream) needs the sandbox
+   * to authenticate host-side, which isn't wired yet — so no caller sets this
+   * today (it defaults false and the prompt does NOT advertise `executePython`).
+   * Kept as the seam for when in-sandbox composition lands.
    */
   readonly pythonCompositionEnabled?: boolean;
 }

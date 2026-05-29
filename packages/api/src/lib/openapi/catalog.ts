@@ -82,15 +82,22 @@ export const OPENAPI_SUPPORTED_AUTH_KINDS: ReadonlyArray<OpenApiAuthKind> = [
 export type SupportedAuthKind = Exclude<OpenApiAuthKind, "oauth2">;
 
 /**
- * Narrow a raw {@link OpenApiAuthKind} to the executable subset, or `null` for a
- * declared-but-deferred kind (`oauth2`, slice 6 #2930). The install form rejects
- * oauth2 at submit; the rediscover/resolve read paths (which read the kind back
- * from the DB, where a drifted row could carry oauth2) skip or 400 on `null`
- * rather than relying on a thrown-and-caught error. Keep in lockstep with
- * {@link OPENAPI_SUPPORTED_AUTH_KINDS} if more kinds defer.
+ * Narrow a raw auth-kind **string** (read back from a `workspace_plugins.config`
+ * JSONB row, where the value is untyped at the trust boundary) to the executable
+ * subset, or `null` when it isn't one. Returns `null` for BOTH the
+ * declared-but-deferred `oauth2` (slice 6 #2930) AND any unrecognized/garbage
+ * value a drifted or hand-edited row might carry — it validates **positive
+ * membership** against {@link OPENAPI_SUPPORTED_AUTH_KINDS} rather than merely
+ * excluding `oauth2`, so the caller's explicit `null` skip is what guards
+ * `buildResolvedAuth` (no reliance on a thrown-and-caught "unsupported kind").
+ * The install form rejects oauth2 at submit; the rediscover/resolve read paths
+ * skip on `null`. Keep in lockstep with {@link OPENAPI_SUPPORTED_AUTH_KINDS} if
+ * more kinds defer.
  */
-export function narrowSupportedAuthKind(kind: OpenApiAuthKind): SupportedAuthKind | null {
-  return kind === "oauth2" ? null : kind;
+export function narrowSupportedAuthKind(kind: string): SupportedAuthKind | null {
+  return (OPENAPI_SUPPORTED_AUTH_KINDS as ReadonlyArray<string>).includes(kind)
+    ? (kind as SupportedAuthKind)
+    : null;
 }
 
 /** Default representation mode — the #2931 bake-off winner (Path A). */
@@ -213,7 +220,12 @@ export function isValidSnapshot(value: unknown): value is OpenApiSnapshot {
     typeof s.version === "string" &&
     typeof s.openapiVersion === "string" &&
     typeof s.operationCount === "number" &&
-    s.doc !== undefined
+    // The raw OpenAPI document is always a JSON object — reject a primitive,
+    // `null`, or an array so `snapshotToGraph` never tries to rebuild from a
+    // value that isn't a spec document.
+    typeof s.doc === "object" &&
+    s.doc !== null &&
+    !Array.isArray(s.doc)
   );
 }
 

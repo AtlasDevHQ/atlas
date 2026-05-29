@@ -36,7 +36,17 @@ type CardState =
   | { phase: "submitting" }
   | { phase: "executed"; response: RestWriteConfirmResponse }
   | { phase: "cancelled" }
-  | { phase: "error"; message: string };
+  /**
+   * `retrySafe` gates the re-arming "Try again" button. It is `true` ONLY when
+   * the write provably did NOT fire (a 4xx — the server rejected before
+   * dispatching the upstream call), so re-confirming can't double-write. For any
+   * ambiguous outcome — a 5xx, a network fault after the request left, or a 2xx
+   * whose body couldn't be read — the write MAY have completed, so we surface
+   * "check before retrying" copy and withhold the button. This is the whole
+   * point of the confirm-before-write flow: never make a non-idempotent
+   * DELETE/POST trivially re-fireable when the first attempt's outcome is unknown.
+   */
+  | { phase: "error"; message: string; retrySafe: boolean };
 
 /** The compact line shown for any non-confirmation REST result (reads, errors). */
 function RestResultLine({ result }: { result: unknown }) {
@@ -50,6 +60,7 @@ function RestResultLine({ result }: { result: unknown }) {
     status === "invalid_params" ||
     status === "unknown_operation" ||
     status === "no_datasource" ||
+    status === "datasource_unavailable" ||
     status === "datasource_not_found";
   const tone = isError
     ? "border-red-300 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400"
@@ -113,7 +124,17 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
         } catch {
           message = `${message}: ${text}`;
         }
-        setCardState({ phase: "error", message });
+        // The confirm endpoint rejects 4xx BEFORE it dispatches the upstream
+        // write (no_workspace 400, writes_disabled 403, not_found 404,
+        // invalid_params/validation 422, rate_limited 429) — so the write
+        // provably never fired and re-confirming is safe. A 5xx is raised at or
+        // after dispatch (an upstream client fault, or an unexpected failure
+        // mid-call), so the write may already have landed.
+        const retrySafe = res.status < 500;
+        if (!retrySafe) {
+          message = `${message} — the write may have completed. Check ${confirmResult.datasourceName} before retrying.`;
+        }
+        setCardState({ phase: "error", message, retrySafe });
         return;
       }
 
@@ -121,18 +142,32 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
       try {
         data = (await res.json()) as RestWriteConfirmResponse;
       } catch {
-        setCardState({ phase: "error", message: "The write ran, but the response could not be read. Refresh to check." });
+        // A 2xx means the server completed the dispatch — only the response body
+        // was unreadable. The write DID run; do not offer a re-arming retry.
+        setCardState({
+          phase: "error",
+          retrySafe: false,
+          message: `The write completed, but its response could not be read. Check ${confirmResult.datasourceName} to confirm — do not re-run it.`,
+        });
         return;
       }
       setCardState({ phase: "executed", response: data });
     } catch (err) {
-      const message =
+      // fetch() rejected. A TypeError is a transport-level fault that can occur
+      // AFTER the request reached the server and the write dispatched (e.g. the
+      // connection dropped before the response arrived) — so the outcome is
+      // genuinely ambiguous and re-confirming could double-write.
+      const detail =
         err instanceof TypeError
-          ? "Network error — could not reach the server."
+          ? "could not reach the server"
           : err instanceof Error
             ? err.message
             : String(err);
-      setCardState({ phase: "error", message });
+      setCardState({
+        phase: "error",
+        retrySafe: false,
+        message: `Network error — ${detail}. The write may have completed; check ${confirmResult.datasourceName} before retrying.`,
+      });
     }
   }
 
@@ -218,12 +253,17 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
       {cardState.phase === "error" && (
         <div className="border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
           <p className="text-xs text-red-600 dark:text-red-400">{cardState.message}</p>
-          <button
-            onClick={() => setCardState({ phase: "idle" })}
-            className="mt-2 rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-          >
-            Try again
-          </button>
+          {/* Only re-arm Confirm when the write provably didn't fire (4xx). For an
+              ambiguous outcome we deliberately offer no retry — the user verifies
+              the datasource rather than risking a duplicate non-idempotent write. */}
+          {cardState.retrySafe && (
+            <button
+              onClick={() => setCardState({ phase: "idle" })}
+              className="mt-2 rounded border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:border-zinc-600 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
     </div>

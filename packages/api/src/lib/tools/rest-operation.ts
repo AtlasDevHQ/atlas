@@ -43,9 +43,10 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError, type OpenApiClientErrorReason } from "@atlas/api/lib/openapi/types";
 import { type RestDatasource } from "@atlas/api/lib/openapi/datasource";
-import { resolveWorkspaceRestDatasources } from "@atlas/api/lib/openapi/workspace-datasource";
+import { resolveWorkspaceRestDatasourcesOrThrow } from "@atlas/api/lib/openapi/workspace-datasource";
 import {
   validateRestOperation,
+  isWriteMethod,
   type RestOperationPolicy,
 } from "@atlas/api/lib/openapi/validate-rest-operation";
 import {
@@ -66,11 +67,27 @@ Use executeRestOperation to call a single operation on a connected REST API (des
 - Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's admin has allowlisted them. A non-allowlisted write returns \`writes_disabled\` — tell the user writes are off for that datasource; never claim it happened.
 - An allowlisted write does NOT run immediately: it returns \`needs_confirmation\`. Tell the user plainly what the write will do (e.g. "This will permanently delete 3 people in Twenty — confirm?") and STOP. The user confirms via the banner; do not retry, and never claim the write succeeded until you see a confirmed result.`;
 
+/**
+ * The tool's `client_error` reason: the slice-0 client's transport/parse reasons,
+ * plus a `unexpected` catch-all for a non-{@link OpenApiClientError} fault (a code
+ * bug, OOM, etc.). Keeping `unexpected` distinct from `network` stops the agent
+ * reading a deterministic internal failure as a transient transport blip worth
+ * retrying.
+ */
+export type RestToolClientErrorReason = OpenApiClientErrorReason | "unexpected";
+
 /** The discriminated result the agent reads. */
 export type ExecuteRestOperationResult =
   | { status: "ok"; httpStatus: number; body: unknown }
   | { status: "http_error"; httpStatus: number; body: unknown; message: string }
   | { status: "no_datasource"; message: string }
+  /**
+   * The workspace's REST datasource registry couldn't be loaded (a transient
+   * failure reaching the config store) — distinct from `no_datasource` (the
+   * workspace genuinely has none). The agent must NOT tell the user no datasource
+   * is connected; it's temporarily unavailable. See #2929 review.
+   */
+  | { status: "datasource_unavailable"; message: string }
   | { status: "datasource_not_found"; message: string; availableDatasources: string[] }
   | { status: "unknown_operation"; message: string; availableOperations: string[] }
   | { status: "writes_disabled"; message: string; method: string }
@@ -91,7 +108,7 @@ export type ExecuteRestOperationResult =
       summary: string;
       confirm: RestWriteConfirmRequest;
     }
-  | { status: "client_error"; reason: OpenApiClientErrorReason; message: string };
+  | { status: "client_error"; reason: RestToolClientErrorReason; message: string };
 
 const queryScalar = z.union([z.string(), z.number(), z.boolean()]);
 
@@ -141,11 +158,15 @@ export interface ExecuteRestOperationDeps {
   readonly fetchImpl?: typeof globalThis.fetch;
 }
 
-/** Resolve the workspace's datasources from the ambient request context. */
+/**
+ * Resolve the workspace's datasources from the ambient request context. Uses the
+ * strict resolver so a registry load failure (DB outage) propagates and surfaces
+ * as `datasource_unavailable` — distinct from an empty workspace (#2929 review).
+ */
 function resolveFromContext(): Promise<ReadonlyArray<RestDatasource>> {
   const orgId = getRequestContext()?.user?.activeOrganizationId;
   if (!orgId) return Promise.resolve([]);
-  return resolveWorkspaceRestDatasources(orgId);
+  return resolveWorkspaceRestDatasourcesOrThrow(orgId);
 }
 
 export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = {}) {
@@ -165,7 +186,27 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       "write is staged for the user to confirm before it fires (never claim a write happened until confirmed).",
     inputSchema: ExecuteRestOperationInput,
     execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
-      const datasources = await resolveDatasources();
+      let datasources: ReadonlyArray<RestDatasource>;
+      try {
+        datasources = await resolveDatasources();
+      } catch (err) {
+        // The registry load failed (DB outage) — surface it as temporarily
+        // unavailable, NOT as "no datasource connected". A false "none is
+        // connected" claim would hide the outage from the user.
+        const requestId = getRequestContext()?.requestId;
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(
+          { requestId, err: message },
+          "executeRestOperation could not load the workspace's REST datasources",
+        );
+        return {
+          status: "datasource_unavailable",
+          message:
+            "Couldn't load this workspace's REST datasources right now — a temporary error reaching Atlas's " +
+            "configuration store. This does NOT mean none is connected: tell the user the REST datasource is " +
+            "temporarily unavailable and to retry shortly; do not claim it isn't configured.",
+        };
+      }
       if (datasources.length === 0) {
         return {
           status: "no_datasource",
@@ -208,7 +249,7 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       // Staging a write for confirmation must not burn quota. An unknown op falls
       // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
       const peeked = datasource.graph.operations.get(operationId);
-      const isWrite = peeked ? peeked.method !== "GET" && peeked.method !== "HEAD" : false;
+      const isWrite = peeked ? isWriteMethod(peeked.method) : false;
 
       const policy: RestOperationPolicy = {
         // The rate-limit bucket is keyed (workspace, datasource, operation). In
@@ -284,7 +325,7 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           operationId,
           datasourceId: datasource.id,
           datasourceName: datasource.displayName,
-          summary: buildRestWriteSummary(verdict.operation, params, datasource.displayName),
+          summary: buildRestWriteSummary(verdict.operation, datasource.displayName),
           confirm,
         };
       }
@@ -328,10 +369,13 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           { operationId, requestId, err: message, datasource: datasource.id },
           "executeRestOperation unexpected failure",
         );
+        // Not an OpenApiClientError — a code bug / OOM / etc. Classify it as
+        // `unexpected`, never `network`: a deterministic internal failure must
+        // not read to the agent as a transient transport fault worth retrying.
         return {
           status: "client_error",
-          reason: "network",
-          message: `Failed to execute "${operationId}": ${message}`,
+          reason: "unexpected",
+          message: `Unexpected internal error executing "${operationId}": ${message}`,
         };
       }
     },

@@ -25,7 +25,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError } from "@atlas/api/lib/openapi/types";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
-import { resolveWorkspaceRestDatasources } from "@atlas/api/lib/openapi/workspace-datasource";
+import { resolveWorkspaceRestDatasourcesOrThrow } from "@atlas/api/lib/openapi/workspace-datasource";
 import {
   validateRestOperation,
   type RestOperationPolicy,
@@ -99,7 +99,9 @@ const confirmRoute = createRoute({
  * `mock.module()`-ing the DB. `index.ts` registers the no-arg default.
  */
 export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
-  const resolveDatasources = deps.resolveDatasources ?? resolveWorkspaceRestDatasources;
+  // Strict resolver: a registry load failure propagates so we return a correlated
+  // 500 instead of a misleading 404 "datasource_not_found" (#2929 review).
+  const resolveDatasources = deps.resolveDatasources ?? resolveWorkspaceRestDatasourcesOrThrow;
 
   const route = new OpenAPIHono<AuthEnv>();
   route.use(standardAuth);
@@ -132,7 +134,27 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
 
       const input = c.req.valid("json");
 
-      const datasources = await resolveDatasources(orgId);
+      let datasources: ReadonlyArray<RestDatasource>;
+      try {
+        datasources = await resolveDatasources(orgId);
+      } catch (err) {
+        // The registry load failed (DB outage). Return a correlated 500 rather
+        // than letting the throw escape to the global handler (which would mint a
+        // fresh, log-unrelated requestId) or masquerade as a 404 not-found.
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(
+          { orgId, operationId: input.operationId, err: message, requestId },
+          "Confirm could not load the workspace's REST datasources",
+        );
+        return c.json(
+          {
+            error: "datasource_unavailable",
+            message: "Couldn't load this workspace's REST datasources right now. Retry shortly.",
+            requestId,
+          },
+          500,
+        );
+      }
       const datasource = datasources.find((d) => d.id === input.datasourceId);
       if (!datasource) {
         return c.json(

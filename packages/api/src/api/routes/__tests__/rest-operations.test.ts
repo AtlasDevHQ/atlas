@@ -111,9 +111,12 @@ function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
 
 /** Mount the route with an injected resolver returning `datasources` for ws-1. */
 function appWith(datasources: RestDatasource[]) {
-  const route = createRestOperationsRoute({
-    resolveDatasources: async (workspaceId: string) => (workspaceId === "ws-1" ? datasources : []),
-  });
+  return appWithResolver(async (workspaceId: string) => (workspaceId === "ws-1" ? datasources : []));
+}
+
+/** Mount the route with an arbitrary resolver (e.g. one that throws). */
+function appWithResolver(resolveDatasources: (workspaceId: string) => Promise<RestDatasource[]>) {
+  const route = createRestOperationsRoute({ resolveDatasources });
   const app = new Hono();
   app.route("/api/v1/rest-operations", route);
   return app;
@@ -158,6 +161,19 @@ describe("POST /rest-operations/confirm", () => {
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("writes_disabled");
     expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("500s (datasource_unavailable) when the registry load fails — not a misleading 404", async () => {
+    // A DB outage resolving the workspace's installs must surface as a correlated
+    // 500, not a 404 "datasource_not_found" (which would imply the id is wrong).
+    const app = appWithResolver(async () => {
+      throw new Error("pg down");
+    });
+    const res = await post(app, { datasourceId: "twenty", operationId: "createOnePerson", body: {} });
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe("datasource_unavailable");
+    // Nothing reached the upstream — the failure is before dispatch.
+    expect(twentyMock.requests.length).toBe(0);
   });
 
   it("404s an unknown datasource", async () => {

@@ -45,16 +45,14 @@ export function confirmRequestToParams(req: RestWriteConfirmRequest): OperationP
 
 /**
  * A concise, factual one-line description of a staged write for the banner
- * header, e.g. `deleteOnePerson — DELETE /people/{id} on Twenty`. The agent
- * supplies the richer natural-language framing ("permanently delete 3 people")
- * in its turn; this stays operation-accurate so the banner can't misstate the
- * verb or target.
+ * header, e.g. `Delete a person — DELETE /people/{id} on Twenty` — the label is
+ * the operation's spec `summary` when present, falling back to its
+ * `operationId`. The agent supplies the richer natural-language framing
+ * ("permanently delete 3 people") in its turn; this derives purely from the
+ * resolved {@link Operation} (it takes no agent-supplied params) so the banner
+ * can't misstate the verb or target even if the agent's prose is wrong.
  */
-export function buildRestWriteSummary(
-  operation: Operation,
-  _params: OperationParams,
-  datasourceName: string,
-): string {
+export function buildRestWriteSummary(operation: Operation, datasourceName: string): string {
   const label = operation.summary?.trim() || operation.operationId;
   return `${label} — ${operation.method} ${operation.path} on ${datasourceName}`;
 }

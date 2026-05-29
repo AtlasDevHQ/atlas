@@ -158,6 +158,15 @@ describe("executeRestOperation tool", () => {
     expect(result.status).toBe("no_datasource");
   });
 
+  it("returns datasource_unavailable (NOT no_datasource) when the registry load fails", async () => {
+    // A DB outage loading the install registry must not be reported to the agent
+    // as "no datasource connected" — that false claim would hide the outage.
+    const result = await call({ operationId: "findManyPeople" }, async () => {
+      throw new Error("pg down");
+    });
+    expect(result.status).toBe("datasource_unavailable");
+  });
+
   it("surfaces an upstream 404 as http_error (not a throw)", async () => {
     const result = await call({ operationId: "findOnePerson", pathParams: { id: "does-not-exist" } });
     expect(result.status).toBe("http_error");

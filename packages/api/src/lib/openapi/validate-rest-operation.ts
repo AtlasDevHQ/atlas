@@ -281,8 +281,13 @@ function validateParamShape(
 //  Public entry point
 // ─────────────────────────────────────────────────────────────────────
 
-/** A GET/HEAD reads; anything else mutates and is gated by the write allowlist. */
-function isWriteMethod(method: string): boolean {
+/**
+ * A GET/HEAD reads; anything else mutates and is gated by the write allowlist.
+ * Exported so the `executeRestOperation` tool peeks an operation's write-ness
+ * with the same predicate the validator authorizes against (no re-deriving the
+ * `!== "GET" && !== "HEAD"` check inline, where it could drift).
+ */
+export function isWriteMethod(method: string): boolean {
   return method !== "GET" && method !== "HEAD";
 }
 

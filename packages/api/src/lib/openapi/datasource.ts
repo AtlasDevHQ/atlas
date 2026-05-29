@@ -83,9 +83,21 @@ export interface ResolveOptions {
 // also gain spec identity (URL + version/ETag) when cross-workspace sharing lands.
 const graphCache = new Map<string, OperationGraph>();
 
+// Brief negative cache: the timestamp of the last FAILED probe per base URL. A
+// failed probe (unreachable / non-2xx / unparseable spec) never populates
+// `graphCache`, so without this every caller would re-run the 30s probe — and
+// `executePython` now resolves the datasource on every call (to bound sandbox
+// egress, #2975), so a misconfigured REST env would hang unrelated data-analysis
+// runs for 30s each. This collapses repeated failed probes to one per
+// `NEGATIVE_PROBE_TTL_MS` window. `reload` bypasses it; a later success clears
+// it (so a recovered datasource resolves on the next call after the window).
+const negativeProbeCache = new Map<string, number>();
+const NEGATIVE_PROBE_TTL_MS = 30_000;
+
 /** Reset the cache. Test-only seam — production never evicts (single long-lived spec). */
 export function __resetTwentyDatasourceCacheForTests(): void {
   graphCache.clear();
+  negativeProbeCache.clear();
 }
 
 function readEnv(name: string): string | undefined {
@@ -123,8 +135,21 @@ export async function resolveTwentyDatasource(
 
   let graph = options.reload ? undefined : graphCache.get(operationsBaseUrl);
   if (!graph) {
+    // Skip re-probing a base URL whose probe recently failed (see negative cache
+    // above) — bounds the per-call cost of a misconfigured spec. `reload` forces
+    // a fresh probe regardless.
+    if (!options.reload) {
+      const failedAt = negativeProbeCache.get(operationsBaseUrl);
+      if (failedAt !== undefined && Date.now() - failedAt < NEGATIVE_PROBE_TTL_MS) {
+        return null;
+      }
+    }
     const probed = await probeGraph(base, token, options.fetchImpl);
-    if (!probed) return null;
+    if (!probed) {
+      negativeProbeCache.set(operationsBaseUrl, Date.now());
+      return null;
+    }
+    negativeProbeCache.delete(operationsBaseUrl);
     graph = probed;
     graphCache.set(operationsBaseUrl, probed);
     log.info(

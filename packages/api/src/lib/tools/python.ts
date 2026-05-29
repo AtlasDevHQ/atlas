@@ -346,6 +346,17 @@ async function getPythonBackend(
           { datasource: restDatasource.id },
           "REST datasource base URL did not yield a reachable host — Python sandbox egress stays deny-all",
         );
+      } else if (restDatasource.baseUrl.toLowerCase().startsWith("http://")) {
+        // Vercel's sandbox domain allowlist matches hosts by SNI (TLS), so a
+        // plain-http:// datasource host may not be reachable from the sandbox
+        // even though it is listed. The policy is still applied (the boundary is
+        // fail-closed either way — an unmatched host stays denied, not opened);
+        // we warn so an operator on a non-TLS datasource isn't left wondering why
+        // egress is blocked. Prefer https:// for REST datasources on SaaS. (#2975)
+        log.warn(
+          { datasource: restDatasource.id },
+          "REST datasource base URL is plain http:// — the Vercel sandbox domain allowlist matches HTTPS hosts (by SNI), so sandbox egress to this host may stay blocked even though it is listed; prefer https://",
+        );
       }
       return createPythonSandboxBackend({
         networkPolicy: networkPolicyFromAllowlist(allowlist),

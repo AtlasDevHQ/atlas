@@ -185,6 +185,19 @@ describe("executePython REST egress (#2927, layer 0)", () => {
     expect(mockUpdateNetworkPolicyCalls).toEqual(["deny-all"]);
   });
 
+  it("still narrows to the host for an http:// datasource (warn-not-drop — boundary stays fail-closed)", async () => {
+    // Vercel's allowlist matches by SNI so http:// egress may not work, but we
+    // apply the policy anyway (the host is still listed, never opened wider) and
+    // only warn — dropping would risk breaking a host if the SNI caveat is
+    // version-dependent. The policy must still be the host record, not deny-all.
+    const result = await runPython(
+      async () => makeDatasource("twenty", "http://crm.internal/rest"),
+      "result = 1",
+    );
+    expect(result.success).toBe(true);
+    expect(mockUpdateNetworkPolicyCalls).toEqual([{ allow: { "crm.internal": [] } }]);
+  });
+
   it("SECURITY (self-hosted asymmetry): a configured sidecar bypasses the resolver and applies NO network policy", async () => {
     // When ATLAS_SANDBOX_URL is set, useSidecar() wins over the Vercel backend.
     // The resolver must NOT run (the guard is `useVercelSandbox() && !useSidecar()`)

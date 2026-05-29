@@ -9,6 +9,7 @@
     "./lib/audit/*": "./src/lib/audit/*.ts",
     "./lib/content-mode": "./src/lib/content-mode/index.ts",
     "./lib/lead-outbox": "./src/lib/lead-outbox/index.ts",
+    "./lib/email-outbox": "./src/lib/email-outbox/index.ts",
     "./lib/env-routing": "./src/lib/env-routing/index.ts",
     "./lib/env-routing/*": "./src/lib/env-routing/*.ts",
     "./lib/multi-env-merger": "./src/lib/multi-env-merger/index.ts",

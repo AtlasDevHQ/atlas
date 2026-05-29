@@ -65,8 +65,25 @@ import {
   type RecoveryResult as OutboxRecoveryResult,
 } from "@atlas/api/lib/lead-outbox";
 import {
+  recoverInFlight as recoverEmailOutboxInFlight,
+  runEmailOutboxTick,
+  makeEmailDispatcher,
+  getTickIntervalMs as getEmailOutboxTickIntervalMs,
+  getWarnThreshold as getEmailOutboxWarnThreshold,
+  isFlusherEnabled as isEmailOutboxFlusherEnabled,
+  OutboxWarnRateLimiter as EmailOutboxWarnRateLimiter,
+  FLUSH_BATCH_LIMIT as EMAIL_OUTBOX_FLUSH_BATCH_LIMIT,
+  STARTUP_RECOVERY_STALE_MS as EMAIL_OUTBOX_STARTUP_STALE_MS,
+  SHUTDOWN_RECOVERY_STALE_MS as EMAIL_OUTBOX_SHUTDOWN_STALE_MS,
+  type EmailOutboxDB,
+  type RecoveryResult as EmailOutboxRecoveryResult,
+} from "@atlas/api/lib/email-outbox";
+import { sendEmail } from "@atlas/api/lib/email/delivery";
+import {
   crmOutboxPendingCount,
   crmOutboxDeadCount,
+  emailOutboxPendingCount,
+  emailOutboxDeadCount,
 } from "@atlas/api/lib/metrics";
 
 const log = createLogger("effect:layers");
@@ -1813,6 +1830,233 @@ export function makeSchedulerLive(
             hasInternalDB: hasInternalDB(),
           },
           "CRM outbox flusher not started — no dispatcher (self-hosted / no EE / no internal DB)",
+        );
+      }
+
+      // ── Periodic fiber: transactional-email outbox flusher (#2942) ──
+      // Durable at-least-once delivery for password-reset / verification
+      // emails so a SUSTAINED provider outage no longer drops a send.
+      // `sendTransactionalEmail` enqueues a pending row when the
+      // in-process retry path is exhausted; this flusher claims, re-sends
+      // via the RAW `sendEmail` (no re-enqueue loop), and stamps terminal
+      // status. Unlike the CRM flusher this is NOT enterprise-gated — the
+      // dispatcher is core `sendEmail`, and transactional auth email
+      // happens in every deploy mode that has an internal DB. Gate is
+      // therefore `hasInternalDB()` only.
+      if (hasInternalDB()) {
+        const emailOutboxDb: EmailOutboxDB = { query: internalQuery };
+        const emailDispatcher = makeEmailDispatcher(sendEmail);
+
+        // Startup recovery: reset stale `in_flight` carcasses from a
+        // crash mid-send, dead-letter rows past the retry budget. Runs
+        // BEFORE the tick starts.
+        yield* Effect.tryPromise({
+          try: (): Promise<EmailOutboxRecoveryResult> =>
+            recoverEmailOutboxInFlight(emailOutboxDb, EMAIL_OUTBOX_STARTUP_STALE_MS),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.tap((result: EmailOutboxRecoveryResult) =>
+            Effect.sync(() => {
+              if (result.reset > 0 || result.deadLettered > 0) {
+                log.warn(
+                  {
+                    reset: result.reset,
+                    deadLettered: result.deadLettered,
+                    staleAgeMs: EMAIL_OUTBOX_STARTUP_STALE_MS,
+                    event: "email_outbox.startup_recovery",
+                  },
+                  `Recovered email_outbox carcasses at boot — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
+                );
+              }
+            }),
+          ),
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.error(
+                { err: errorMessage(err), event: "email_outbox.startup_recovery_failed" },
+                "Email outbox startup recovery failed — stranded in_flight rows will block until next restart",
+              );
+            }),
+          ),
+        );
+
+        // Shutdown-recovery finalizer — registered BEFORE the forks below
+        // so LIFO finalizer order interrupts the tick + watchdog fibers
+        // (awaiting their cleanup) before this sweep runs, avoiding a race
+        // with an in-flight tick. Same ordering rationale as the CRM block.
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            yield* Effect.tryPromise({
+              try: (): Promise<EmailOutboxRecoveryResult> =>
+                recoverEmailOutboxInFlight(emailOutboxDb, EMAIL_OUTBOX_SHUTDOWN_STALE_MS),
+              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+            }).pipe(
+              Effect.tap((result: EmailOutboxRecoveryResult) =>
+                Effect.sync(() => {
+                  log.info(
+                    {
+                      reset: result.reset,
+                      deadLettered: result.deadLettered,
+                      staleAgeMs: EMAIL_OUTBOX_SHUTDOWN_STALE_MS,
+                      event: "email_outbox.shutdown_recovery",
+                    },
+                    `Email outbox shutdown sweep — ${result.reset} reset to pending, ${result.deadLettered} dead-lettered`,
+                  );
+                }),
+              ),
+              Effect.catchAll((err) =>
+                Effect.sync(() => {
+                  log.warn(
+                    { err: errorMessage(err), event: "email_outbox.shutdown_recovery_failed" },
+                    "Email outbox shutdown recovery sweep failed — next boot will mop up",
+                  );
+                }),
+              ),
+            );
+          }),
+        );
+
+        // Region/opt-out gate. Recovery sweeps above + the shutdown
+        // finalizer stay wired regardless so a flip-back-on inherits clean
+        // state. Nested-if (not early-return) so we don't skip the main
+        // scheduler finalizer below.
+        const emailFlusherEnabled = isEmailOutboxFlusherEnabled();
+        if (!emailFlusherEnabled) {
+          log.info(
+            { event: "email_outbox.flusher_disabled_by_env" },
+            "Email outbox flusher disabled by ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED=false — recovery sweeps still run on boot/shutdown",
+          );
+        }
+
+        if (emailFlusherEnabled) {
+          const emailTickIntervalMs = getEmailOutboxTickIntervalMs();
+          const emailWarnLimiter = new EmailOutboxWarnRateLimiter(getEmailOutboxWarnThreshold());
+          let emailTickCount = 0;
+          let emailLastTickAt = Date.now();
+          const EMAIL_HEARTBEAT_EVERY_N_TICKS = Math.max(
+            1,
+            Math.round(60_000 / Math.max(1, emailTickIntervalMs)),
+          );
+          const EMAIL_STALL_THRESHOLD_MS = Math.max(15_000, emailTickIntervalMs * 2);
+
+          const emailTick = Effect.sync(() => {
+            // Liveness stamped at tick START so a legitimately long tick
+            // (sequential re-sends with per-row network calls) doesn't
+            // trip the watchdog.
+            emailLastTickAt = Date.now();
+          }).pipe(
+            Effect.flatMap(() =>
+              Effect.tryPromise({
+                try: () =>
+                  runEmailOutboxTick({
+                    db: emailOutboxDb,
+                    dispatcher: emailDispatcher,
+                    batchLimit: EMAIL_OUTBOX_FLUSH_BATCH_LIMIT,
+                    limiter: emailWarnLimiter,
+                    pendingGauge: emailOutboxPendingCount,
+                    deadGauge: emailOutboxDeadCount,
+                    logger: log,
+                  }),
+                catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+              }),
+            ),
+            Effect.tap(({ flush: result, snapshot }) =>
+              Effect.sync(() => {
+                emailTickCount += 1;
+                if (result.claimed > 0) {
+                  log.info(
+                    {
+                      tickCount: emailTickCount,
+                      claimed: result.claimed,
+                      ok: result.ok,
+                      transient: result.transient,
+                      permanent: result.permanent,
+                      event: "email_outbox.tick_complete",
+                    },
+                    `Email outbox tick: ${result.claimed} claimed (ok=${result.ok}, transient=${result.transient}, dead=${result.permanent})`,
+                  );
+                  return;
+                }
+                if (emailTickCount % EMAIL_HEARTBEAT_EVERY_N_TICKS === 0) {
+                  log.info(
+                    {
+                      tickCount: emailTickCount,
+                      pending: snapshot.pending,
+                      dead: snapshot.dead,
+                      event: "email_outbox.heartbeat",
+                    },
+                    `Email outbox heartbeat tick=${emailTickCount} (queue idle: pending=${snapshot.pending}, dead=${snapshot.dead})`,
+                  );
+                }
+              }),
+            ),
+            Effect.catchAll((err) =>
+              Effect.sync(() => {
+                emailTickCount += 1;
+                log.warn(
+                  {
+                    tickCount: emailTickCount,
+                    err: errorMessage(err),
+                    event: "email_outbox.tick_failed",
+                  },
+                  "Email outbox flush tick failed — will retry on next interval",
+                );
+              }),
+            ),
+          );
+          // forkScoped, not fork — see SettingsLive. Recovery finalizer is
+          // registered ABOVE this fork so LIFO interrupts this fiber before
+          // the sweep runs.
+          yield* Effect.forkScoped(
+            withFiberDeathLog(
+              "email_outbox_flusher",
+              emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(emailTickIntervalMs)))),
+            ),
+          );
+
+          // Stall watchdog — surfaces a silently-dead fiber as an error
+          // log without auto-restarting (operator redeploys). Polls at
+          // tick cadence to bound detection lag.
+          let emailLastStallLogAt = 0;
+          const emailWatchdog = Effect.sync(() => {
+            const sinceMs = Date.now() - emailLastTickAt;
+            if (sinceMs < EMAIL_STALL_THRESHOLD_MS) return;
+            const now = Date.now();
+            if (now - emailLastStallLogAt < 60_000) return;
+            emailLastStallLogAt = now;
+            log.error(
+              {
+                tickCount: emailTickCount,
+                sinceLastTickMs: sinceMs,
+                thresholdMs: EMAIL_STALL_THRESHOLD_MS,
+                event: "email_outbox.tick_stall",
+              },
+              `Email outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(EMAIL_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart.`,
+            );
+          });
+          // forkScoped, not fork — see SettingsLive for rationale.
+          yield* Effect.forkScoped(
+            withFiberDeathLog(
+              "email_outbox_watchdog",
+              emailWatchdog.pipe(
+                Effect.repeat(Schedule.spaced(Duration.millis(emailTickIntervalMs))),
+              ),
+            ),
+          );
+          log.info(
+            {
+              intervalMs: emailTickIntervalMs,
+              batchLimit: EMAIL_OUTBOX_FLUSH_BATCH_LIMIT,
+              heartbeatEveryNTicks: EMAIL_HEARTBEAT_EVERY_N_TICKS,
+              stallThresholdMs: EMAIL_STALL_THRESHOLD_MS,
+            },
+            "Email outbox flusher started — heartbeat=email_outbox.heartbeat (every ~60s when idle); stall watchdog=email_outbox.tick_stall",
+          );
+        } // close `if (emailFlusherEnabled)`
+      } else {
+        log.debug(
+          { hasInternalDB: hasInternalDB() },
+          "Email outbox flusher not started — no internal DB",
         );
       }
 

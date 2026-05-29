@@ -348,6 +348,10 @@ describe("deriveCookieDomain", () => {
 });
 
 describe("_sendVerificationOTP", () => {
+  // Captures the `opts` the durable wrapper receives so we can assert the
+  // per-type TTL the caller passes (#2942). Reset per test.
+  const capturedOpts: Array<{ emailType: string; orgId?: string; ttlMs?: number }> = [];
+
   // Full delivery-module mock so partial-mock SyntaxErrors in unrelated
   // test files don't surface; plus the fire-and-forget contract
   // assertions so a thrown rejection from the OTP send can never
@@ -359,14 +363,27 @@ describe("_sendVerificationOTP", () => {
       error?: string;
     }>,
   ): void => {
+    capturedOpts.length = 0;
     mock.module("@atlas/api/lib/email/delivery", () => ({
       sendEmail,
+      // _sendVerificationOTP now sends via the durable wrapper (#2942).
+      // Delegate to the captured `sendEmail` so the message-capture and
+      // fire-and-forget assertions below are unchanged; capture `opts` so
+      // the TTL wiring is asserted. The wrapper's outbox-enqueue side
+      // effect itself is exercised in delivery.test.ts.
+      sendTransactionalEmail: async (
+        msg: { to: string; subject: string; html: string },
+        opts: { emailType: string; orgId?: string; ttlMs?: number },
+      ) => {
+        capturedOpts.push(opts);
+        return sendEmail(msg);
+      },
       sendEmailWithTransport: async () => ({ success: true, provider: "resend" as const }),
       getEmailTransport: async () => null,
     }));
   };
 
-  it("renders the OTP into the email body", async () => {
+  it("renders the OTP into the email body and passes the 10-minute TTL", async () => {
     const calls: Array<{ to: string; subject: string; html: string }> = [];
     installDeliveryMock(async (msg) => {
       calls.push(msg);
@@ -378,6 +395,10 @@ describe("_sendVerificationOTP", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].to).toBe("otp@example.com");
     expect(calls[0].subject.toLowerCase()).toContain("verification");
+    // The outbox TTL must match the "expires in 10 minutes" body copy so a
+    // post-outage re-send never delivers a dead code (#2942).
+    expect(capturedOpts[0]?.emailType).toBe("verification-otp");
+    expect(capturedOpts[0]?.ttlMs).toBe(10 * 60_000);
     // Surface the literal OTP — `<a href>` parsing is intentionally
     // absent here since OTP emails should NEVER carry a clickable
     // verification link (that's the magic-link path we're moving away

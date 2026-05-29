@@ -352,6 +352,7 @@ describe("migrateAuthTables", () => {
             { name: "0104_crm_outbox_email_key.sql" },
             { name: "0105_drop_legacy_invitations.sql" },
             { name: "0106_crm_outbox_workspace_id.sql" },
+            { name: "0107_email_outbox.sql" },
           ],
         };
       }

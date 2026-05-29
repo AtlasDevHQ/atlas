@@ -18,6 +18,7 @@ import type { NextRequest } from "next/server";
 import { getSessionCookie } from "better-auth/cookies";
 import { ATLAS_MODES } from "@useatlas/types/auth";
 import { PUBLIC_ROUTE_PREFIXES } from "./lib/public-routes";
+import { resolveWebCookiePrefix } from "./lib/cookie-prefix";
 
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 const VALID_MODES = new Set<string>(ATLAS_MODES);
@@ -31,7 +32,10 @@ const VALID_MODES = new Set<string>(ATLAS_MODES);
 // Without this, prod's `.useatlas.dev` cookie (delivered to staging because
 // staging is a subdomain) would satisfy this optimistic presence check and
 // suppress the /login redirect on a different environment.
-const cookiePrefix = process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX || "atlas";
+// `process.env.NEXT_PUBLIC_*` is read here as a direct static reference so
+// Next inlines it at build time; `resolveWebCookiePrefix` only applies the
+// default/trim (mirrors the API's resolveCookiePrefix and is unit-tested).
+const cookiePrefix = resolveWebCookiePrefix(process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX);
 
 /** Routes that only unauthenticated users should see (exact match). */
 const authRoutes = ["/signup", "/login", "/forgot-password", "/reset-password"];

@@ -10,12 +10,18 @@
  *  - `openapi-client` (`client.ts`): `executeOperation(graph, id, params, auth)`
  *    — executes a single operation over HTTP. Transport primitive only.
  *
+ *  - `openapi-paginator` (`paginator.ts` + `strategies/`): a pluggable strategy
+ *    registry + driver so a multi-page response is followed transparently and
+ *    the agent loop sees ONE merged result. `executeOperationPaged` (in
+ *    `client.ts`) composes the primitive over it (slice 4, #2928).
+ *
  * Deferred to later slices (clean extension points left in place): semantic-YAML
- * generation (1b), pagination (4), `validateRestOperation` (5), networkPolicy
- * threading (3), catalog/install surface (2).
+ * generation (1b), `validateRestOperation` (5), networkPolicy threading (3),
+ * catalog/install surface (2).
  */
 export { buildOperationGraph } from "./spec";
-export { executeOperation, parseRetryAfterMs } from "./client";
+export { executeOperation, executeOperationPaged, parseRetryAfterMs } from "./client";
+export type { PagedExecuteOptions } from "./client";
 
 // Slice-1 consumers (#2924) — the prompt-context representation (Path A) and the
 // sandbox-Python client preamble. Pure functions over the slice-0 graph; the
@@ -61,3 +67,43 @@ export type {
   ServerInfo,
   SpecInfo,
 } from "./types";
+
+// ── openapi-paginator (slice 4, #2928) ───────────────────────────────────────
+// The registry + driver + page cache, and the default registry assembled from
+// the four built-in strategy files. Pagination types live in `paginator.ts`
+// (NOT `types.ts`) so this barrel + the slice-1b parse contract stay decoupled.
+export {
+  paginate,
+  PaginatorRegistry,
+  PaginationConfigError,
+  InMemoryPageCacheStore,
+  invalidateInstallCache,
+  derivePageCacheKey,
+  installCacheKey,
+  isPageFresh,
+  detectPaginationConfig,
+  extractItems,
+  dotGet,
+  withQuery,
+  PAGE_DONE,
+  continueWith,
+  pageError,
+  PAGINATION_EXTENSION_KEY,
+  DEFAULT_PAGE_CACHE_TTL_MS,
+  DEFAULT_MAX_PAGES,
+} from "./paginator";
+export type {
+  PageRequest,
+  PageDecision,
+  PaginationStrategy,
+  PaginationStrategyFactory,
+  PaginationConfig,
+  PaginateOptions,
+  MergedPages,
+  TruncationReason,
+  CachedPage,
+  PageCacheStore,
+  PageCacheBinding,
+  PageCacheIdentity,
+} from "./paginator";
+export { defaultPaginatorRegistry, BUILT_IN_STRATEGIES } from "./strategies";

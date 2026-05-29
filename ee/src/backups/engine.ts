@@ -44,8 +44,19 @@ export const ensureTable = (): Effect.Effect<void, EnterpriseError | Error> =>
            status                TEXT NOT NULL DEFAULT 'in_progress',
            storage_path          TEXT NOT NULL,
            retention_expires_at  TIMESTAMPTZ NOT NULL,
-           error_message         TEXT
+           error_message         TEXT,
+           verify_level          TEXT
          )`,
+      ),
+    );
+    // verify_level records which depth of verification last ran for a backup —
+    // 'full-restore' (restored into a scratch DB and counted) vs 'header-only'
+    // (degraded fallback). This table is created ad-hoc here (not via the
+    // schema.ts / migrations drift system), so the column is added with an
+    // idempotent ALTER for deployments whose `backups` table predates #2941.
+    yield* Effect.promise(() =>
+      internalQuery(
+        `ALTER TABLE backups ADD COLUMN IF NOT EXISTS verify_level TEXT`,
       ),
     );
     yield* Effect.promise(() =>
@@ -292,6 +303,8 @@ export type BackupRow = {
   storage_path: string;
   retention_expires_at: string;
   error_message: string | null;
+  /** Depth of the last verification — 'full-restore' | 'header-only' | null (never verified). */
+  verify_level: string | null;
 };
 
 type BackupRowQuery = {
@@ -302,6 +315,7 @@ type BackupRowQuery = {
   storage_path: string;
   retention_expires_at: string;
   error_message: string | null;
+  verify_level: string | null;
 };
 
 export const listBackups = (limit = 50): Effect.Effect<BackupRow[], EnterpriseError | Error> =>
@@ -309,7 +323,7 @@ export const listBackups = (limit = 50): Effect.Effect<BackupRow[], EnterpriseEr
     yield* ensureTable();
     const rows = yield* Effect.promise(() =>
       internalQuery<BackupRowQuery>(
-        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message
+        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level
          FROM backups
          ORDER BY created_at DESC
          LIMIT $1`,
@@ -324,7 +338,7 @@ export const getBackupById = (id: string): Effect.Effect<BackupRow | null, Enter
     yield* ensureTable();
     const rows = yield* Effect.promise(() =>
       internalQuery<BackupRowQuery>(
-        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message
+        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level
          FROM backups WHERE id = $1`,
         [id],
       ),

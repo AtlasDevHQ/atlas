@@ -97,16 +97,18 @@ describe("ensureTable", () => {
   });
 
   it("creates tables and seeds config on first call", async () => {
-    // Queue empty results for all CREATE TABLE/INDEX/INSERT queries
-    ee.queueMockRows([], [], [], []);
+    // Queue empty results for all CREATE TABLE/ALTER/INDEX/INSERT queries
+    ee.queueMockRows([], [], [], [], []);
     await run(ensureTable());
-    // Should have run: CREATE TABLE backups, CREATE INDEX, CREATE TABLE backup_config, INSERT seed = 4 queries
-    expect(ee.capturedQueries.length).toBe(4);
+    // Should have run: CREATE TABLE backups, ALTER TABLE add verify_level,
+    // CREATE INDEX, CREATE TABLE backup_config, INSERT seed = 5 queries.
+    expect(ee.capturedQueries.length).toBe(5);
     expect(ee.capturedQueries[0].sql).toContain("CREATE TABLE IF NOT EXISTS backups");
+    expect(ee.capturedQueries[1].sql).toContain("ADD COLUMN IF NOT EXISTS verify_level");
   });
 
   it("skips creation on second call (idempotent)", async () => {
-    ee.queueMockRows([], [], [], []);
+    ee.queueMockRows([], [], [], [], []);
     await run(ensureTable());
     const firstCount = ee.capturedQueries.length;
     await run(ensureTable());
@@ -128,7 +130,7 @@ describe("getBackupConfig", () => {
 
   it("returns config row from DB", async () => {
     // ensureTable (4) + config SELECT (1)
-    ee.queueMockRows([], [], [], [], [defaultConfigRow]);
+    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
     const config = await run(getBackupConfig());
     expect(config.schedule).toBe("0 3 * * *");
     expect(config.retention_days).toBe(30);
@@ -152,7 +154,7 @@ describe("updateBackupConfig", () => {
 
   it("upserts partial config", async () => {
     // ensureTable (4) + config SELECT (1) + UPSERT (1)
-    ee.queueMockRows([], [], [], [], [defaultConfigRow], []);
+    ee.queueMockRows([], [], [], [], [], [defaultConfigRow], []);
     await run(updateBackupConfig({ schedule: "0 1 * * *" }));
     // The last query should be the upsert (not the seed from ensureTable)
     const upsertQuery = ee.capturedQueries[ee.capturedQueries.length - 1];
@@ -171,7 +173,7 @@ describe("listBackups", () => {
   it("returns backup rows", async () => {
     const row = { id: "b1", created_at: "2026-01-01", size_bytes: "1000", status: "completed", storage_path: "/tmp/b1.sql.gz", retention_expires_at: "2026-02-01", error_message: null };
     // ensureTable (4) + SELECT (1)
-    ee.queueMockRows([], [], [], [], [row]);
+    ee.queueMockRows([], [], [], [], [], [row]);
     const backups = await run(listBackups());
     expect(backups).toHaveLength(1);
     expect(backups[0].id).toBe("b1");
@@ -193,7 +195,7 @@ describe("getBackupById", () => {
   it("returns backup when found", async () => {
     const row = { id: "b1", created_at: "2026-01-01", size_bytes: "1000", status: "completed", storage_path: "/tmp/b1.sql.gz", retention_expires_at: "2026-02-01", error_message: null };
     // ensureTable (4) + SELECT (1)
-    ee.queueMockRows([], [], [], [], [row]);
+    ee.queueMockRows([], [], [], [], [], [row]);
     const backup = await run(getBackupById("b1"));
     expect(backup).not.toBeNull();
     expect(backup!.id).toBe("b1");
@@ -218,7 +220,7 @@ describe("purgeExpiredBackups", () => {
       { id: "b2", storage_path: "/tmp/b2.sql.gz" },
     ];
     // ensureTable (4) + SELECT expired (1) + DELETE b1 (1) + DELETE b2 (1)
-    ee.queueMockRows([], [], [], [], expired, [], []);
+    ee.queueMockRows([], [], [], [], [], expired, [], []);
     mockUnlink = mock(() => Promise.resolve(undefined));
 
     const count = await run(purgeExpiredBackups());
@@ -228,7 +230,7 @@ describe("purgeExpiredBackups", () => {
   it("handles ENOENT — file already gone, still deletes DB record", async () => {
     const expired = [{ id: "b1", storage_path: "/tmp/gone.sql.gz" }];
     // ensureTable (4) + SELECT expired (1) + DELETE (1)
-    ee.queueMockRows([], [], [], [], expired, []);
+    ee.queueMockRows([], [], [], [], [], expired, []);
     mockUnlink = mock(() => {
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
@@ -242,7 +244,7 @@ describe("purgeExpiredBackups", () => {
   it("skips DB deletion when file delete fails with non-ENOENT", async () => {
     const expired = [{ id: "b1", storage_path: "/tmp/locked.sql.gz" }];
     // ensureTable (4) + SELECT expired (1) — no DELETE (file unlink fails)
-    ee.queueMockRows([], [], [], [], expired);
+    ee.queueMockRows([], [], [], [], [], expired);
     mockUnlink = mock(() => {
       const err = new Error("EACCES") as NodeJS.ErrnoException;
       err.code = "EACCES";
@@ -269,7 +271,7 @@ describe("listStorageFiles", () => {
 
   it("returns only .sql.gz files", async () => {
         // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [defaultConfigRow]);
+    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => Promise.resolve(["a.sql.gz", "b.sql.gz", "notes.txt"]));
 
     const files = await run(listStorageFiles());
@@ -278,7 +280,7 @@ describe("listStorageFiles", () => {
 
   it("returns empty array when directory does not exist (ENOENT)", async () => {
         // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [defaultConfigRow]);
+    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => {
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
@@ -291,7 +293,7 @@ describe("listStorageFiles", () => {
 
   it("propagates non-ENOENT errors", async () => {
         // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [defaultConfigRow]);
+    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => {
       const err = new Error("EACCES") as NodeJS.ErrnoException;
       err.code = "EACCES";

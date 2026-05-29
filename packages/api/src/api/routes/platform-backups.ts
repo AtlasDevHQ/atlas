@@ -23,6 +23,7 @@ import {
   BackupsManager,
 } from "@atlas/api/lib/effect/services";
 import { BackupEntrySchema, BackupConfigSchema } from "@useatlas/schemas";
+import type { BackupEntry } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -89,12 +90,21 @@ const verifyBackupRoute = createRoute({
   method: "post",
   path: "/{id}/verify",
   tags: ["Platform Admin — Backups"],
-  summary: "Verify backup integrity",
-  description: "SaaS only. Decompress and validate the pg_dump header of a backup file.",
+  summary: "Verify backup restorability",
+  description:
+    "SaaS only. When ATLAS_BACKUP_VERIFY_SCRATCH_URL is configured, restores the dump into a disposable scratch DB and counts tables (full-restore). Otherwise degrades to a pg_dump header check (header-only).",
   responses: {
     200: {
       description: "Verification result",
-      content: { "application/json": { schema: z.object({ verified: z.boolean(), message: z.string() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            verified: z.boolean(),
+            message: z.string(),
+            level: z.enum(["full-restore", "header-only"]),
+          }),
+        },
+      },
     },
     400: { description: "Backup not in verifiable state", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -205,7 +215,14 @@ function toBackupEntry(row: {
   storage_path: string;
   retention_expires_at: string;
   error_message: string | null;
-}) {
+  verify_level?: string | null;
+}): BackupEntry {
+  // Narrow the free-text DB column to the wire enum; an unrecognized value
+  // (only possible via direct DB tamper) degrades to null rather than leaking.
+  const verifyLevel: BackupEntry["verifyLevel"] =
+    row.verify_level === "full-restore" || row.verify_level === "header-only"
+      ? row.verify_level
+      : null;
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -214,6 +231,7 @@ function toBackupEntry(row: {
     storagePath: row.storage_path,
     retentionExpiresAt: row.retention_expires_at,
     errorMessage: row.error_message,
+    verifyLevel,
   };
 }
 
@@ -276,6 +294,7 @@ platformBackups.openapi(createBackupRoute, async (c) => {
       storagePath: result.storagePath,
       retentionExpiresAt: new Date().toISOString(),
       errorMessage: null,
+      verifyLevel: null,
     };
     return c.json({ message: "Backup created successfully.", backup }, 200);
   }), { label: "create backup" });

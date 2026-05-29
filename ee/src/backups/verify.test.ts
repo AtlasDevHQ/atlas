@@ -101,15 +101,18 @@ const validBackup = {
 
 // ── Tests ──────────────────────────────────────────────────────────
 
-describe("verifyBackup", () => {
+describe("verifyBackup (header-only fallback — no scratch URL)", () => {
   beforeEach(() => {
     ee.reset();
     mockGetBackupById = null;
     mockReadStreamChunks = [Buffer.from("-- PostgreSQL database dump\n-- Dumped from")];
     mockReadStreamError = null;
+    // These tests cover the degraded path — ensure no scratch URL is set so
+    // we exercise the header-only branch deterministically.
+    delete process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL;
   });
 
-  it("verifies a valid backup with pg_dump header", async () => {
+  it("verifies a valid backup with pg_dump header (header-only level)", async () => {
     mockGetBackupById = () => validBackup;
     // UPDATE to 'verified'
     ee.queueMockRows([]);
@@ -117,6 +120,9 @@ describe("verifyBackup", () => {
     const result = await run(verifyBackup("b1"));
     expect(result.verified).toBe(true);
     expect(result.message).toContain("verified");
+    expect(result.level).toBe("header-only");
+    // The degraded path is honest about NOT proving restorability.
+    expect(result.message).toContain("NOT proven restorable");
   });
 
   it("returns false for invalid header", async () => {
@@ -128,6 +134,7 @@ describe("verifyBackup", () => {
     const result = await run(verifyBackup("b1"));
     expect(result.verified).toBe(false);
     expect(result.message).toContain("pg_dump header not found");
+    expect(result.level).toBe("header-only");
   });
 
   it("fails when backup not found", async () => {

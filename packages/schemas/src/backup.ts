@@ -39,6 +39,7 @@ export const BackupEntrySchema = z.object({
   storagePath: z.string(),
   retentionExpiresAt: z.string(),
   errorMessage: z.string().nullable(),
+  verifyLevel: z.enum(["full-restore", "header-only"]).nullable(),
 }) satisfies z.ZodType<BackupEntry>;
 
 export const BackupConfigSchema = z.object({

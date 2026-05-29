@@ -28,6 +28,12 @@ export interface BackupEntry {
   retentionExpiresAt: string;
   /** Error message if status is "failed". */
   errorMessage: string | null;
+  /**
+   * Depth of the last verification, or null if never verified:
+   *  - "full-restore" — restored into a disposable scratch DB and counted tables (proven restorable).
+   *  - "header-only" — degraded fallback (valid pg_dump header only; NOT proven restorable).
+   */
+  verifyLevel: "full-restore" | "header-only" | null;
 }
 
 // ---------------------------------------------------------------------------

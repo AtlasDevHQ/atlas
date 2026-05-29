@@ -66,12 +66,12 @@ Each provider requires its own API key:
 
 | Provider | Default Model |
 |----------|--------------|
-| `anthropic` | `claude-opus-4-6` |
+| `anthropic` | `claude-opus-4-7` |
 | `openai` | `gpt-4o` |
-| `bedrock` | `anthropic.claude-opus-4-6-v1:0` |
+| `bedrock` | `anthropic.claude-opus-4-7` |
 | `ollama` | `llama3.1` |
 | `openai-compatible` | None — `ATLAS_MODEL` required |
-| `gateway` | `anthropic/claude-opus-4.6` |
+| `gateway` | `anthropic/claude-opus-4.7` |
 
 <Tabs items={["Anthropic", "OpenAI", "AWS Bedrock", "Ollama (local)", "OpenAI-compatible (vLLM, TGI)"]}>
 <Tab value="Anthropic">
@@ -247,7 +247,7 @@ ATLAS_API_KEY_ROLE=member
 | `BETTER_AUTH_TRUSTED_ORIGINS` | — | Comma-separated CSRF-allowed origins |
 | `ATLAS_ADMIN_EMAIL` | — | User matching this email gets `admin` role on signup. If unset, first signup gets admin only when `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN=true` |
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | `false` | Opt-in fallback: when `ATLAS_ADMIN_EMAIL` is unset and no admin user exists, the first signup is promoted to `platform_admin`. Accepts `true`/`1`/`yes`/`on` (case-insensitive). **Do not enable in production** — any unauthenticated visitor could race the operator and claim admin with a single signup |
-| `ATLAS_REQUIRE_EMAIL_VERIFICATION` | `true` | Require email verification on signup. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
+| `ATLAS_REQUIRE_EMAIL_VERIFICATION` | profile default — `true` in `production`, `false` in `staging`/`development` | Require email verification on signup. When unset, the default comes from the [`ATLAS_DEPLOY_ENV`](#runtime) profile; setting it explicitly overrides the profile. Setting `false` re-enables Better Auth's `USER_ALREADY_EXISTS` signup error (an email-enumeration oracle) and is only acceptable for self-hosted single-tenant deployments without an email provider |
 | `ATLAS_MFA_ISSUER` | `Atlas` | Issuer label shown in TOTP authenticator apps (Google Authenticator, 1Password, etc.) when users enroll an MFA device |
 | `ATLAS_RPID` | `app.useatlas.dev` | WebAuthn relying-party ID used during passkey enrollment and assertion. Set explicitly to the production hostname when self-hosting under a custom domain — mismatched RP IDs reject every authenticator response |
 | `ATLAS_RPNAME` | `Atlas` | Human-readable relying-party name shown to users in passkey enrollment prompts |
@@ -389,6 +389,7 @@ Idle and absolute timeouts can also be configured via [`atlas.config.ts`](/refer
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_ORG_ID` | — | Organization ID for org-scoped semantic layer selection. CLI-only — when set, the CLI reads/writes to `semantic/.orgs/{orgId}/` instead of `semantic/`. Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`). Can also be passed via `--org` flag. The API server derives the org from the authenticated session, not this variable |
+| `ATLAS_INVITATION_LIMIT_PER_ORG` | `100` | Maximum pending invitations per organization. Issuing more returns the `invitation_limit` error until existing invitations are accepted or cancelled. Non-positive/invalid values fall back to the default. Source: `packages/api/src/api/routes/platform-invitations.ts` |
 
 ---
 
@@ -406,7 +407,7 @@ Actor binding for the [MCP server](/guides/mcp). The transport runs in one of tw
 | `ATLAS_MCP_RATE_LIMIT_MAX_KEYS` | (oauth-client clamp default) | Maximum cardinality of distinct rate-limit keys retained per workspace before LRU eviction. Bounds memory usage on workspaces with many short-lived OAuth clients. Clamped to a minimum at startup |
 | `ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS` | `1800000` (30m) | Idle timeout for hosted-MCP sessions. The sweep evicts sessions whose `lastSeenAt` is older than this. Floored at `60000` (1m) — values below the floor log a warning and fall back to the default. Test-only overrides set this below the floor in-process. Source: `packages/mcp/src/hosted.ts` |
 | `ATLAS_CANONICAL_QUESTIONS_PATH` | (bundled `eval/canonical-questions/questions.yml`) | Override path to the bundled NovaMart canonical-questions YAML used by the hosted MCP prompt server. Set when the `eval/` directory has been relocated; an empty string throws at startup (very likely a template error). Source: `packages/mcp/src/prompts/canonical.ts` |
-| `ATLAS_DEFAULT_WORKSPACE` | — | Framework-boundary workspace selector bridged into hosted MCP via the `X-Atlas-Default-Workspace` header. Honored only by `multi`-scope clients when the operator's MCP wrapper sets the header from this env var; no MCP client framework auto-bridges it as of 1.5.3 (see `packages/mcp/src/hosted.ts` for the header contract). Source: `packages/mcp/src/hosted.ts` |
+| `ATLAS_DEFAULT_WORKSPACE` | — | Framework-boundary workspace selector bridged into hosted MCP via the `X-Atlas-Default-Workspace` header. Honored only by `multi`-scope clients when the operator's MCP wrapper sets the header from this env var; no MCP client framework auto-bridges it as of May 2026 (see `packages/mcp/src/hosted.ts` for the header contract). Source: `packages/mcp/src/hosted.ts` |
 
 ---
 
@@ -529,7 +530,7 @@ VERCEL_TOKEN=your-vercel-access-token
 | `VERCEL_PROJECT_PRODUCTION_URL` | (set by Vercel) | Vercel-platform-set production hostname. Used by managed auth (`auth/server.ts`) when deriving the trusted origins list on Vercel deployments — Atlas prepends `https://` to it. Sibling of the documented `VERCEL` runtime marker; cannot be set manually |
 | `NEXT_PUBLIC_ATLAS_API_URL` | — | Next.js frontend: cross-origin API URL. When unset, same-origin via Next.js rewrites |
 | `NEXT_PUBLIC_ATLAS_AUTH_MODE` | — | Enables proxy-level route protection in the Next.js frontend. When set to `managed`, unauthenticated users are redirected to `/signup`. Other auth modes skip proxy enforcement |
-| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for same-origin mode (only used when `NEXT_PUBLIC_ATLAS_API_URL` is unset) |
+| `ATLAS_API_URL` | `http://localhost:3001` | Rewrite target for Next.js same-origin mode (used only when `NEXT_PUBLIC_ATLAS_API_URL` is unset). Also read by the `atlas` CLI as the API endpoint for `query`, `import`, `export`, and `init` against a remote instance; the CLI defaults to `http://localhost:3001` when unset |
 
 ```bash
 # Production: cross-origin setup
@@ -646,7 +647,7 @@ See [Python Tool](/guides/python) for the full guide.
 | `POSTMARK_SERVER_TOKEN` | — | Postmark server token. Used when `ATLAS_EMAIL_PROVIDER=postmark` |
 | `ATLAS_EMAIL_FROM` | `Atlas <noreply@ship.useatlas.dev>` | From address for scheduled task and onboarding emails |
 | `ATLAS_SMTP_URL` | — | Webhook URL for email delivery (POST JSON with `from`, `to`, `subject`, `html`). Alternative to Resend |
-| `ATLAS_ONBOARDING_EMAILS_ENABLED` | `false` | Enable automated onboarding drip campaign for new signups. Requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
+| `ATLAS_ONBOARDING_EMAILS_ENABLED` | profile default — `true` in `production`, `false` in `staging`/`development` | Enable the automated onboarding drip campaign for new signups. When unset, the default comes from the [`ATLAS_DEPLOY_ENV`](#runtime) profile; set this explicitly to override. Also requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
 | `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS` | `2592000000` (30d) | TTL for signed unsubscribe links. Accepts `60000` (60s) to `31536000000` (1y); invalid values fall back to the default |
 
 ---
@@ -776,6 +777,10 @@ Operator-only. These env vars wire Atlas-the-company's own lead pipeline (`ee/sr
 | `TWENTY_BASE_URL` | `https://crm.useatlas.dev` | Override the default Twenty host. Only the SaaS operator pipeline reads this — plugin installs use admin-UI or `atlas.config.ts` |
 | `TURNSTILE_SECRET_KEY` | — | Cloudflare Turnstile secret for siteverify on `/api/v1/contact`. When unset, `verifyTurnstile()` fails closed (no submissions accepted) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | — | Cloudflare Turnstile public site key. Read by the `<TalkToSalesForm>` component in `apps/www`. When unset, the form renders a "bot protection not configured" notice |
+| `ATLAS_CONTACT_RATE_LIMIT_RPM` | `5` | Per-IP requests-per-minute cap on the `POST /api/v1/contact` talk-to-sales route. `0` disables rate limiting. Invalid values fall back to the default |
+| `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED` | `true` | Whether this API pod runs the `crm_outbox` flusher tick. Set `false` on non-primary regions (EU/APAC) that defer dispatch to the US-primary flusher; boot/shutdown recovery sweeps still run |
+| `ATLAS_CRM_OUTBOX_TICK_SECONDS` | `5` | Seconds between `crm_outbox` flush ticks. Clamped to `[1, 3600]`; non-numeric/≤0 values fall back to the default |
+| `ATLAS_CRM_OUTBOX_WARN_THRESHOLD` | `100` | Outbox depth above which a warning is emitted to metrics. Clamped to `[1, 1000000]`; invalid values fall back to the default |
 
 ---
 
@@ -831,7 +836,7 @@ SaaS only. Required for custom domain support via Railway.
 | `ATLAS_DEMO_ENABLED` | `false` | Enable demo mode at `/demo`. Allows unauthenticated users to try Atlas against the sample database with an email gate |
 | `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Max requests per minute per demo user |
 | `ATLAS_DEMO_MAX_STEPS` | `10` | Max agent steps per demo request (lower than authenticated default of 25) |
-| `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set at signup via onboarding; drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
+| `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set this explicitly to pre-configure the demo dataset industry on a single-tenant deploy; in the hosted product it is captured during onboarding. Drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
 
 Requires `BETTER_AUTH_SECRET` for demo token signing.
 
@@ -853,6 +858,7 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Vercel) set this automatically |
+| `ATLAS_DEPLOY_ENV` | `production` | Deployment-shape discriminator for the env-profile module (`packages/api/src/lib/env-profile.ts`). One of `production`, `staging`, `development`. Unset or unrecognized → `production`. Selects a typed table of non-secret runtime defaults so a deploy shape can be switched with one var instead of many. Currently drives the defaults for `ATLAS_REQUIRE_EMAIL_VERIFICATION` and `ATLAS_ONBOARDING_EMAILS_ENABLED` (both `true` under `production`, `false` under `staging`/`development`) — each individual env var still overrides the profile default when set explicitly |
 | `ATLAS_MIGRATION_RETRIES` | `5` | Number of retry attempts for internal database migrations at startup. Retries use exponential backoff. Set `0` to disable retries (useful in tests) |
 
 ---
@@ -862,8 +868,8 @@ Destructive operator-CLI subcommands gated by explicit env confirmation. None of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_SETTINGS_REFRESH_INTERVAL` | `30000` | Hot-reload interval for settings in milliseconds (default: 30s). Controls how often the API re-reads workspace-level settings from the database. Set to `0` to disable periodic refresh |
-| `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts (1.4.6). When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the pre-1.4.6 direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
-| `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the 1.4.6 `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor-146) |
+| `ATLAS_DASHBOARD_DRAFTS_ENABLED` | `true` | Per-user dashboard drafts. When enabled, admin mutations to a bound dashboard write to the caller's draft and the **Publish** flow promotes them via an atomic three-way merge against the persisted baseline. Set to the literal string `false` to fall back to the direct-write model — draft fetch returns `503` and the chat-bound editor degrades to a read-only viewer. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
+| `ATLAS_INTERNAL_SCREENSHOT_COOKIE` | — | Service cookie value used by the `screenshotDashboard` vision tool (#2367). The headless Chromium worker calls back into `/admin/dashboards/:id/screenshot` and must authenticate as the requesting user; without this cookie the screenshot request is rejected and the agent falls back to its last-good description. Set this on **both** the API and web services when running behind a reverse proxy. See [Dashboards → Chat as editor](/guides/dashboards#chat-as-editor) |
 | `ATLAS_WEB_BASE_URL` | `http://localhost:3000` | Base URL of the Next.js web app used by `screenshotDashboard` to construct the screenshot target URL (`${ATLAS_WEB_BASE_URL}/dashboards/:id`). Set to the production web origin when self-hosting (e.g. `https://atlas.acme.com`) so the headless Chromium worker hits the right host |
 
 ---

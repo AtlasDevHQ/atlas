@@ -1,6 +1,6 @@
 ---
 title: Migrating to 0.1
-description: Drop the legacy `connectionId` field — the 1.4.4 multi-environment slice (#2336) replaces it with `connectionGroupId` on every wire shape it touched.
+description: Drop the legacy `connectionId` field — the multi-environment slice (#2336) replaces it with `connectionGroupId` on every wire shape it touched.
 ---
 
 `@useatlas/types@0.1.0` is the first major bump on the `0.x` line. It
@@ -11,8 +11,9 @@ the major in a coordinated second wave.
 
 ## Why this exists
 
-Atlas 1.4.4 made every piece of content (semantic entities, PII rules,
-dashboards, scheduled tasks, approvals) scope to a **connection group**
+The multi-environment semantic layer release (#2336) made every piece of
+content (semantic entities, PII rules, dashboards, scheduled tasks,
+approvals) scope to a **connection group**
 instead of a single connection. The migration shipped additively:
 existing rows kept `connection_id`, new rows started populating
 `connection_group_id`, and every response shape exposed both. That

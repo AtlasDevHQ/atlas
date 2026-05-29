@@ -1074,6 +1074,7 @@ export default defineConfig({
 | `deployMode` | `"auto" \| "saas" \| "self-hosted"` | `"auto"` | Deployment mode. `saas` enables hosted product features (enterprise-gated). `auto` detects from environment |
 | `residency` | `object` | — | Data residency region routing (enterprise-gated) |
 | `catalog` | `CatalogEntry[]` | — | Plugin Catalog declaration — installable chat Platforms and integration plugins. Idempotently seeded into `plugin_catalog` at boot. See [ADR-0002](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0002-catalog-seeded-from-config-at-boot.md) |
+| `overrideImplementationStatus` | `Record<string, "available" \| "coming_soon">` | — | Per-deploy override for a catalog row's `implementation_status`, keyed by catalog slug. Self-host operators use it to promote a `coming_soon` entry to `available` once they've shipped their own handler, without forking the catalog definition |
 
 ---
 

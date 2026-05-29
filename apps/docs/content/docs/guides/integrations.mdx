@@ -31,7 +31,7 @@ A **Delivery Channels** card at the bottom summarizes all available notification
 
 ## Install models
 
-Each catalog entry advertises one **install model** that drives how the Connect button behaves. The 1.5.2 install router (`/api/v1/integrations/:platform/{install,callback,install-form}`) dispatches by `plugin_catalog.install_model`:
+Each catalog entry advertises one **install model** that drives how the Connect button behaves. The unified install router (`/api/v1/integrations/:platform/{install,callback,install-form}`) dispatches by `plugin_catalog.install_model`:
 
 | Install model | Endpoint pair | Catalog entries today | What customer admins do |
 |---|---|---|---|
@@ -45,7 +45,7 @@ A request to the wrong endpoint for a catalog entry's model returns `400 wrong_i
 
 ## Operator vs customer admin
 
-1.5.2 split the install responsibilities between two roles. This separation is what makes the SaaS deploy at `app.useatlas.dev` self-serve without per-tenant operator work.
+The unified install pipeline splits the install responsibilities between two roles. This separation is what makes the SaaS deploy at `app.useatlas.dev` self-serve without per-tenant operator work.
 
 **Operator (you, once per Platform — at deploy time)**
 
@@ -431,9 +431,9 @@ The integration is read-only — the agent can search the vault but never writes
 
 ## API Endpoints
 
-The 1.5.2 install surface lives under `/api/v1/integrations/*` and is what the `/admin/integrations` card UI calls. All endpoints require an authenticated workspace admin (per [ADR-0004](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0004-platform-oauth-is-not-better-auth.md) — this is _Platform_ OAuth, separate from User OAuth via Better Auth) **except** `GET /:platform/callback`, which is the OAuth provider redirect and is authenticated by the signed state token bound at install time.
+The unified install surface lives under `/api/v1/integrations/*` and is what the `/admin/integrations` card UI calls. All endpoints require an authenticated workspace admin (per [ADR-0004](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0004-platform-oauth-is-not-better-auth.md) — this is _Platform_ OAuth, separate from User OAuth via Better Auth) **except** `GET /:platform/callback`, which is the OAuth provider redirect and is authenticated by the signed state token bound at install time.
 
-### Install + manage (canonical, 1.5.2)
+### Install + manage (canonical)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -443,7 +443,7 @@ The 1.5.2 install surface lives under `/api/v1/integrations/*` and is what the `
 | `POST` | `/api/v1/integrations/:platform/install-form` | Submit form-based install (no OAuth) — JSON body shaped to the catalog entry's `configSchema`. Validates server-side; returns `400 invalid_form_data` with `fieldErrors` for per-field detail. Used by Email, Webhook, Obsidian. |
 | `DELETE` | `/api/v1/integrations/:platform` | Disconnect — tears down both stores in the ADR-0003 order (credential row FIRST, install record SECOND). For Slack the credential row lives in `chat_cache`; for Salesforce / Jira it lives in `integration_credentials`. Succeeds even when ops has kill-switched the catalog entry via `enabled=false` so credentials aren't stranded. **MFA required** for any managed-auth admin session (both SaaS and self-hosted with managed auth — `shouldRequireMfaForAuthResult` does not branch on deploy mode). **Coverage today:** Slack, Salesforce, Jira. Form-based platforms (Email, Webhook, Obsidian) return `501 disconnect_unavailable` from this route — disconnect them via the platform-specific legacy paths listed below until the form-handler teardown lands. |
 
-### Status + legacy admin (BYOT, pre-1.5.2)
+### Status + legacy admin (BYOT)
 
 The admin `status` endpoint is still consumed by the integrations page header for the aggregated counts. The BYOT POST endpoints predate the install router and remain available whenever the operator hasn't (or won't) configure Platform OAuth — `Connect` falls through to the platform-specific BYOT form when OAuth isn't wired (`canByot = !canConnect && hasInternalDB` in `packages/web/src/app/admin/integrations/page.tsx`). SaaS deploys always have an internal DB, so a BYOT card surfaces in SaaS too when its Platform OAuth is unconfigured — keep this in mind during OAuth misconfiguration triage.
 
@@ -460,7 +460,7 @@ The admin `status` endpoint is still consumed by the integrations page header fo
 | `POST` | `/api/v1/admin/integrations/whatsapp` | Connect WhatsApp (validates Cloud API credentials). |
 | `POST` | `/api/v1/admin/integrations/email` | Connect email provider (SMTP, SendGrid, Postmark, SES). |
 | `POST` | `/api/v1/admin/integrations/email/test` | Send test email using saved config. |
-| `DELETE` | `/api/v1/admin/integrations/slack` | Legacy Slack disconnect — pre-1.5.2 path. Prefer `DELETE /api/v1/integrations/slack` (above) for new clients. |
+| `DELETE` | `/api/v1/admin/integrations/slack` | Legacy Slack disconnect. Prefer `DELETE /api/v1/integrations/slack` (above) for new clients. |
 | `DELETE` | `/api/v1/admin/integrations/teams` | Legacy Teams disconnect. |
 | `DELETE` | `/api/v1/admin/integrations/discord` | Legacy Discord disconnect. |
 | `DELETE` | `/api/v1/admin/integrations/telegram` | Legacy Telegram disconnect. |
@@ -474,7 +474,7 @@ The legacy admin router exposes explicit per-platform DELETE routes (no wildcard
 
 ---
 
-## Jira (Lazy OAuth — 1.5.2 / #2659)
+## Jira (Lazy OAuth — #2659)
 
 Jira is the second **lazy OAuth integration**, riding the shared infrastructure Salesforce established in #2658 — credentials in `integration_credentials`, per-Workspace plugin instances built on demand by `LazyPluginLoader`, dual-store teardown via the same disconnect path.
 
@@ -519,7 +519,7 @@ Jira access tokens are short-lived. On HTTP 401 during a query, Atlas runs `gran
 
 ---
 
-## Salesforce (Lazy OAuth — 1.5.2 / #2658)
+## Salesforce (Lazy OAuth — #2658)
 
 Salesforce is the first **lazy OAuth integration** — credentials live in the dedicated `integration_credentials` table (per [ADR-0005](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0005-integration-credentials-table.md)) and the per-Workspace plugin instance is built on demand by `LazyPluginLoader` on the first agent tool call.
 

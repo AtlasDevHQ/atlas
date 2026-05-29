@@ -44,12 +44,12 @@ Lists all registered datasource connections with their database type, descriptio
 Connection URLs are encrypted at rest when `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY` is set.
 </Callout>
 
-### Group by Type / Environment toggle (1.4.4)
+### Group by Type / Environment toggle
 
 The connections list ships with a **Group by [Type | Environment]** toggle at the top of the table:
 
 - **By Type** (default) — connections cluster under their database type (`postgresql`, `mysql`, `clickhouse`, `snowflake`, …). Useful when you're auditing what kinds of stores Atlas is reading from
-- **By Environment** — connections cluster under their **connection group** (`prod`, `staging`, `eu-only`, …). This is the new view 1.4.4 introduced and is the right default for multi-environment workspaces — it makes "which replicas does `prod` actually have?" answerable at a glance
+- **By Environment** — connections cluster under their **connection group** (`prod`, `staging`, `eu-only`, …). This is the right default for multi-environment workspaces — it makes "which replicas does `prod` actually have?" answerable at a glance
 
 Single-connection deploys see the same content under either view; the toggle is a no-op until you create a second group member. See [Multi-environment semantic layer](/semantic-layer/multi-env) for the underlying connection-group model.
 
@@ -126,9 +126,9 @@ Browse entities by clicking them in the sidebar. The catalog shows `use_for` tag
 
 In **SaaS mode**, admins can create, edit, and delete entities directly from the UI with schema-aware autocomplete and full version history. See [Semantic Editor](/guides/semantic-editor) for the full guide.
 
-### Drift drawer (1.4.4)
+### Drift drawer
 
-Drift between the live database schema and the semantic layer is surfaced inline on `/admin/semantic`. As of 1.4.4, the legacy `/admin/schema-diff` page is retired — drift now lives next to the entities it describes, so you no longer have to context-switch between two routes to reconcile schema changes.
+Drift between the live database schema and the semantic layer is surfaced inline on `/admin/semantic`. The legacy `/admin/schema-diff` page is retired — drift now lives next to the entities it describes, so you no longer have to context-switch between two routes to reconcile schema changes.
 
 **File tree badges.** Entities whose live schema has drifted from their YAML get a badge in the file tree:
 
@@ -153,7 +153,7 @@ Clicking a per-row reconcile button writes the change directly to the entity YAM
 **API.** The drift-detection API (`GET /api/v1/admin/semantic/diff?connection=<id>`) returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object. The `connection` query param is optional — omitted it uses the workspace's default connection. See [Schema Evolution](/deployment/schema-evolution) for the underlying drift contract.
 
 <Callout type="info">
-**If you're looking for `/admin/schema-diff`** — the page was retired in 1.4.4. Drift is now inline on `/admin/semantic` per the walkthrough above. There was no public `/api/v1/admin/schema-diff` REST endpoint; the new inline drift drawer uses `/api/v1/admin/semantic/diff` (documented above).
+**If you're looking for `/admin/schema-diff`** — that page is retired. Drift is now inline on `/admin/semantic` per the walkthrough above. There was no public `/api/v1/admin/schema-diff` REST endpoint; the new inline drift drawer uses `/api/v1/admin/semantic/diff` (documented above).
 </Callout>
 
 See [Semantic Layer](/getting-started/semantic-layer) for the YAML format reference.

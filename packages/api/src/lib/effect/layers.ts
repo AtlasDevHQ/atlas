@@ -121,9 +121,18 @@ function withFiberDeathLog<A, E, R>(
 // `withFiberDeathLog` (above) only fires when a defect kills the fiber.
 // A healthy tick emits nothing, so "wedged silently" and "ran fine,
 // nothing to do" are indistinguishable in traces, and a hung-but-not-
-// crashed fiber never trips the death log. Wrap each tick body in
-// `withEffectSpan` so every repeat iteration emits one span — a wedged
-// fiber then shows up as an absence of spans against its expected cadence.
+// crashed fiber never trips the death log. Wrap each of these 8 cleanup
+// tick bodies in `withEffectSpan` so every repeat iteration emits one
+// span — a wedged fiber then shows up as an absence of spans against its
+// expected cadence.
+//
+// Scope: only these 8 cleanup fibers. The other periodic fibers forked in
+// `makeSchedulerLive` are intentionally out of scope for this pass —
+// `sub_processor_publisher`, `settings_refresh`, `onboarding_email`, and
+// `expert_scheduler` still lack a per-tick span, while the CRM/email
+// outbox flushers already have their own heartbeat + stall-watchdog
+// liveness signal. Spanning the remaining periodic fibers is tracked in
+// #2987.
 //
 // Span names follow the existing `atlas.<area>.<op>` dotted convention
 // (cf. `atlas.sql.execute`, `atlas.scheduler.task.run`, and the
@@ -133,9 +142,10 @@ function withFiberDeathLog<A, E, R>(
 // `atlas.scheduler.` prefix, not about the underscores within the op.
 //
 // This record is the single source of truth for the span names: each
-// wrap site below reads from it, and `layers.test.ts` asserts the exact
-// set, so dropping or renaming a span is a test failure rather than a
-// silent regression.
+// wrap site below reads from it. `layers.test.ts` asserts both the exact
+// name set AND (via a structural source-scan guard) that all 8 wrap sites
+// are present, so renaming an entry OR deleting a `withEffectSpan(...)`
+// wrap at a call site is a test failure rather than a silent regression.
 export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
   rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",

@@ -30,9 +30,21 @@ import {
   ResidencyError,
   type ResidencyErrorCode,
 } from "@atlas/api/lib/residency/errors";
-import type { RegionStatus, WorkspaceRegion } from "@useatlas/types";
+import type { DeployRegion, RegionStatus, WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
+
+/**
+ * The pre-prod soak deploy region (#2897 / #2908). Staging is a 4th
+ * `DeployRegion` keyed `"staging"` (under `*.staging.useatlas.dev`) but is
+ * deliberately *excluded* from the residency router: a workspace keyed here
+ * resolves to a `null` region route and falls through to the local DB
+ * connection rather than any residency-mapped pool — see
+ * `resolveRegionDatabaseUrl`. `satisfies DeployRegion` anchors the literal to
+ * the union so dropping `"staging"` from `@useatlas/types` fails compilation
+ * here rather than silently re-enabling routing.
+ */
+const STAGING_REGION = "staging" satisfies DeployRegion;
 
 // ── Typed errors ────────────────────────────────────────────────────
 
@@ -205,6 +217,18 @@ export const resolveRegionDatabaseUrl = (
 
     const region = yield* Effect.promise(() => getWorkspaceRegion(workspaceId));
     if (!region) return null;
+
+    // Staging arm (#2908): the staging deploy region is never a residency
+    // target. Return null *before* the regionConfig lookup so a staging-keyed
+    // workspace falls through to the local DB connection — without tripping
+    // the "region no longer configured / contract may be violated" error path
+    // below. Short-circuiting here also wins over any accidental `staging`
+    // entry in residency.regions, so staging can never claim to be a
+    // residency-mapped region. us|eu|apac are untouched.
+    if (region === STAGING_REGION) {
+      log.debug({ workspaceId, region }, "Workspace keyed to staging region — excluded from residency routing, falling through to local DB");
+      return null;
+    }
 
     const regionConfig = config.residency.regions[region];
     if (!regionConfig) {

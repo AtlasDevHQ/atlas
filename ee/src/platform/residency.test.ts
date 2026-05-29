@@ -25,11 +25,24 @@ const ee = createEEMock({
       return { assigned: true };
     },
   },
+  // Capture `log.error` calls so the staging-arm tests can assert the
+  // "region no longer configured / contract may be violated" path does NOT
+  // fire — distinguishing the intentional staging short-circuit from the
+  // misconfiguration path (which also returns null, but loudly).
+  logger: {
+    createLogger: () => ({
+      info: () => {},
+      warn: () => {},
+      error: (...args: unknown[]) => { loggerErrors.push(args); },
+      debug: () => {},
+    }),
+  },
 });
 
 // Extra state for the custom overrides above
 const mockRows: Record<string, unknown>[][] = [];
 let queryCallCount = 0;
+const loggerErrors: unknown[][] = [];
 
 mock.module("../index", () => ee.enterpriseMock);
 const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
@@ -80,6 +93,7 @@ function resetMocks() {
   ee.reset();
   mockRows.length = 0;
   queryCallCount = 0;
+  loggerErrors.length = 0;
   mockConfig = {
     residency: {
       regions: {
@@ -202,6 +216,42 @@ describe("residency", () => {
       mockRows.push([{ region: null }]);
       const result = await run(resolveRegionDatabaseUrl("org-1"));
       expect(result).toBeNull();
+    });
+
+    // ── Staging arm (#2908) ───────────────────────────────────────────
+    // Staging is a DeployRegion but never a residency target — a
+    // staging-keyed workspace falls through to the local DB connection.
+
+    it("returns null for a staging-keyed workspace without logging a contract violation", async () => {
+      // "staging" is absent from the configured residency.regions (us-east /
+      // eu-west). The staging arm must short-circuit to null BEFORE the
+      // regionConfig lookup — i.e. without tripping the loud "region no
+      // longer configured / contract may be violated" error log that the
+      // misconfiguration path would emit. The log assertion is what pins the
+      // new arm: both paths return null, only the staging arm stays quiet.
+      mockRows.push([{ region: "staging" }]);
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
+      expect(result).toBeNull();
+      expect(loggerErrors).toHaveLength(0);
+    });
+
+    it("excludes staging even when it is present in residency config (never a residency target)", async () => {
+      // Defensive: even if an operator accidentally adds a `staging` entry to
+      // the regions map, the staging arm wins and routing stays null. Without
+      // it, this would resolve a non-null staging datasource.
+      mockConfig = {
+        residency: {
+          regions: {
+            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
+            staging: { label: "Staging", databaseUrl: "postgresql://staging/atlas", datasourceUrl: "postgresql://staging/data" },
+          },
+          defaultRegion: "us-east",
+        },
+      };
+      mockRows.push([{ region: "staging" }]);
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
+      expect(result).toBeNull();
+      expect(loggerErrors).toHaveLength(0);
     });
   });
 

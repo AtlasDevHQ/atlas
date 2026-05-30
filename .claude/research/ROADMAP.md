@@ -31,13 +31,15 @@ Extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) bec
 - [x] **Slice 5 — write-side opt-in** ([#2929](https://github.com/AtlasDevHQ/atlas/issues/2929)) — `validateRestOperation` safety stack + `write_allowlist` + confirm-before-write banner. Shipped in [#2993](https://github.com/AtlasDevHQ/atlas/pull/2993).
 - [ ] **Slice 6 — expansion targets** ([#2930](https://github.com/AtlasDevHQ/atlas/issues/2930), HITL) — stripe-data + 2 REST candidates thin-wrapping the primitive.
 
-Spec-lifecycle follow-ups (net-new v0.0.2 scope, milestone-tracked): customer-configurable refresh interval + Refresh now ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977)) shipped [#3002](https://github.com/AtlasDevHQ/atlas/pull/3002); still open — scheduler-driven re-discovery ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)), structured drift diff ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) + breaking-change signal ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)), and a shared cross-workspace spec/graph cache ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)).
+Slice 6 ([#2930](https://github.com/AtlasDevHQ/atlas/issues/2930)) is the remaining gate — once it lands, v0.0.2 maps 1:1 to PRD #2868 and the tag cuts. The net-new spec-lifecycle subsystem (refresh interval, auto re-discovery, drift diff, breaking-change signal, shared cache) was split into [`v0.0.3 — Spec Lifecycle`](https://github.com/AtlasDevHQ/atlas/milestone/58) per [#3013](https://github.com/AtlasDevHQ/atlas/issues/3013) to keep this milestone inside its PRD contract.
 
 ---
 
 ## Planned tags
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
+
+- **`v0.0.3` — Spec Lifecycle** ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58)) — successor to v0.0.2, split out per [#3013](https://github.com/AtlasDevHQ/atlas/issues/3013). Keeps an OpenAPI datasource's view current after install: refresh interval ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977), shipped [#3002](https://github.com/AtlasDevHQ/atlas/pull/3002)), scheduler-driven auto re-discovery ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)), structured drift diff ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) + breaking-change signal ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)), shared cross-workspace spec/graph cache ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)).
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (slices 1–4, 6, 7, 9 + Railway dual-trigger [#2921](https://github.com/AtlasDevHQ/atlas/issues/2921) landed). May land before or after `v0.0.2` depending on adoption signal.
 

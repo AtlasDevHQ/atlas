@@ -33,7 +33,9 @@ import {
   coerceRepresentationMode,
   isValidSnapshot,
   narrowSupportedAuthKind,
-  type OpenApiAuthKind,
+  parseRateLimitPerMinute,
+  parseRequestTimeoutMs,
+  parseWriteAllowlist,
 } from "./catalog";
 import { buildResolvedAuth, snapshotToGraph } from "./probe";
 import type { OperationGraph, ResolvedAuth } from "./types";
@@ -137,14 +139,16 @@ function buildDatasource(
   }
 
   const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
-  const rawAuthKind = (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind;
-  // A drifted row could carry the deferred `oauth2` kind — skip it explicitly
-  // (slice 6 #2930) rather than relying on buildResolvedAuth to throw.
+  const rawAuthKind = typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none";
+  // Validate the kind read back from JSONB against the executable set: a drifted
+  // or hand-edited row could carry the deferred `oauth2` (slice 6 #2930) OR an
+  // outright unrecognized value — both narrow to `null` here and skip, rather
+  // than passing a garbage string through to a buildResolvedAuth throw.
   const authKind = narrowSupportedAuthKind(rawAuthKind);
   if (!authKind) {
     log.warn(
       { installId, authKind: rawAuthKind },
-      "OpenAPI install uses a deferred auth kind (oauth2) — skipping until slice 6",
+      "OpenAPI install uses an unsupported or deferred auth kind — skipping (oauth2 lands in slice 6)",
     );
     return null;
   }
@@ -170,6 +174,13 @@ function buildDatasource(
     return null;
   }
 
+  // Slice 5 (#2929): the write-side opt-in. `write_allowlist` is stored as the
+  // form's JSON string; an `atlas.config.ts` plugins entry may pass an array.
+  // Both normalize to a Set; anything malformed fails closed to read-only.
+  const writeAllowlist = parseWriteAllowlist(decrypted.write_allowlist, installId);
+  const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute, installId);
+  const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);
+
   return {
     id: installId,
     displayName,
@@ -177,31 +188,23 @@ function buildDatasource(
     baseUrl: resolveBaseUrl(openapiUrl, graph, baseUrlOverride),
     auth,
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
+    writeAllowlist,
+    ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
+    ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
   };
 }
 
 /**
- * Resolve every installed REST datasource for a workspace. Returns `[]` when
- * the workspace has none. Per-install failures are skipped (logged), never
- * thrown.
+ * Decrypt + build the resolvable subset of already-loaded install rows.
+ * Per-install failures (decrypt / snapshot / deferred-auth) are skipped and
+ * logged — one broken install must never sink the workspace's others. Pure
+ * (modulo logging); the query that loads `rows` is the caller's concern, so the
+ * strict / soft variants below differ only in how a *query* failure is handled.
  */
-export async function resolveWorkspaceRestDatasources(
+function buildDatasourcesFromRows(
   workspaceId: string,
-  deps: ResolveWorkspaceDeps = {},
-): Promise<ReadonlyArray<RestDatasource>> {
-  const query = deps.query ?? defaultQuery;
-
-  let rows: ReadonlyArray<OpenApiInstallRow>;
-  try {
-    rows = await query(workspaceId);
-  } catch (err) {
-    log.warn(
-      { workspaceId, err: err instanceof Error ? err.message : String(err) },
-      "Failed to load OpenAPI datasource installs — continuing with none",
-    );
-    return [];
-  }
-
+  rows: ReadonlyArray<OpenApiInstallRow>,
+): RestDatasource[] {
   const out: RestDatasource[] = [];
   for (const row of rows) {
     let decrypted: Record<string, unknown>;
@@ -218,6 +221,53 @@ export async function resolveWorkspaceRestDatasources(
     if (ds) out.push(ds);
   }
   return out;
+}
+
+/**
+ * Strict resolver: a whole-query failure (the install registry itself is
+ * unreachable — e.g. an internal-DB outage) **propagates**, so a user-facing
+ * caller can distinguish "couldn't load the registry" from "this workspace has
+ * none" instead of conflating the two into a false "no REST datasource is
+ * connected" (#2929 review). Per-install failures still skip-and-continue.
+ *
+ * Use this at the sites that make a user-facing claim about datasource presence
+ * — the `executeRestOperation` tool and the confirm endpoint. The prompt-build /
+ * Effect-registry / python-egress paths want the never-rejects
+ * {@link resolveWorkspaceRestDatasources}, which degrades to `[]` on failure.
+ */
+export async function resolveWorkspaceRestDatasourcesOrThrow(
+  workspaceId: string,
+  deps: ResolveWorkspaceDeps = {},
+): Promise<ReadonlyArray<RestDatasource>> {
+  const query = deps.query ?? defaultQuery;
+  // A query failure propagates here, on purpose — the caller turns it into a
+  // distinct "temporarily unavailable" signal rather than an empty result.
+  const rows = await query(workspaceId);
+  return buildDatasourcesFromRows(workspaceId, rows);
+}
+
+/**
+ * Resolve every installed REST datasource for a workspace. Returns `[]` when the
+ * workspace has none AND — fail-soft — when the load itself fails (logged). This
+ * never-rejects contract is depended on by the prompt-build path (`agent.ts`,
+ * which must not fail a chat turn over a datasource blip), the Effect registry
+ * (`registry.ts`, which wraps this in `Effect.promise`), and the python egress
+ * thunk. A caller that must tell a load failure apart from an empty workspace
+ * uses {@link resolveWorkspaceRestDatasourcesOrThrow} instead.
+ */
+export async function resolveWorkspaceRestDatasources(
+  workspaceId: string,
+  deps: ResolveWorkspaceDeps = {},
+): Promise<ReadonlyArray<RestDatasource>> {
+  try {
+    return await resolveWorkspaceRestDatasourcesOrThrow(workspaceId, deps);
+  } catch (err) {
+    log.warn(
+      { workspaceId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to load OpenAPI datasource installs — continuing with none",
+    );
+    return [];
+  }
 }
 
 /**

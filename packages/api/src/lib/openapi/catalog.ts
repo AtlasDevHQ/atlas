@@ -21,9 +21,12 @@
  * so the fork stays clean.
  */
 
+import { createLogger } from "@atlas/api/lib/logger";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { CatalogId } from "@atlas/api/lib/integrations/install/types";
 import { REPRESENTATION_MODES, type RepresentationMode } from "./representation";
+
+const log = createLogger("openapi.catalog");
 
 /** Catalog slug — the dispatch key in `registerFormHandler`. */
 export const OPENAPI_GENERIC_SLUG: CatalogId = "openapi-generic";
@@ -39,9 +42,10 @@ export const OPENAPI_GENERIC_CATALOG_ID = "catalog:openapi-generic";
 export const OPENAPI_GENERIC_NAME = "OpenAPI (Generic REST)";
 
 export const OPENAPI_GENERIC_DESCRIPTION =
-  "Connect any REST API with an OpenAPI 3.x spec as a read-only datasource " +
-  "(e.g. Twenty, Stripe, an internal service). The agent discovers operations " +
-  "from the spec and queries them directly.";
+  "Connect any REST API with an OpenAPI 3.x spec as a datasource — read by " +
+  "default, with an opt-in per-endpoint write allowlist (e.g. Twenty, Stripe, " +
+  "an internal service). The agent discovers operations from the spec and " +
+  "queries them directly.";
 
 /**
  * Auth kinds the install form accepts. `oauth2` is declared (so the enum is
@@ -78,15 +82,22 @@ export const OPENAPI_SUPPORTED_AUTH_KINDS: ReadonlyArray<OpenApiAuthKind> = [
 export type SupportedAuthKind = Exclude<OpenApiAuthKind, "oauth2">;
 
 /**
- * Narrow a raw {@link OpenApiAuthKind} to the executable subset, or `null` for a
- * declared-but-deferred kind (`oauth2`, slice 6 #2930). The install form rejects
- * oauth2 at submit; the rediscover/resolve read paths (which read the kind back
- * from the DB, where a drifted row could carry oauth2) skip or 400 on `null`
- * rather than relying on a thrown-and-caught error. Keep in lockstep with
- * {@link OPENAPI_SUPPORTED_AUTH_KINDS} if more kinds defer.
+ * Narrow a raw auth-kind **string** (read back from a `workspace_plugins.config`
+ * JSONB row, where the value is untyped at the trust boundary) to the executable
+ * subset, or `null` when it isn't one. Returns `null` for BOTH the
+ * declared-but-deferred `oauth2` (slice 6 #2930) AND any unrecognized/garbage
+ * value a drifted or hand-edited row might carry — it validates **positive
+ * membership** against {@link OPENAPI_SUPPORTED_AUTH_KINDS} rather than merely
+ * excluding `oauth2`, so the caller's explicit `null` skip is what guards
+ * `buildResolvedAuth` (no reliance on a thrown-and-caught "unsupported kind").
+ * The install form rejects oauth2 at submit; the rediscover/resolve read paths
+ * skip on `null`. Keep in lockstep with {@link OPENAPI_SUPPORTED_AUTH_KINDS} if
+ * more kinds defer.
  */
-export function narrowSupportedAuthKind(kind: OpenApiAuthKind): SupportedAuthKind | null {
-  return kind === "oauth2" ? null : kind;
+export function narrowSupportedAuthKind(kind: string): SupportedAuthKind | null {
+  return (OPENAPI_SUPPORTED_AUTH_KINDS as ReadonlyArray<string>).includes(kind)
+    ? (kind as SupportedAuthKind)
+    : null;
 }
 
 /** Default representation mode — the #2931 bake-off winner (Path A). */
@@ -97,7 +108,7 @@ export const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph"
  * `secret: true` flag on `auth_value` is the single thing that drives
  * `encryptSecretFields` / `decryptSecretFields` — adding a new auth field is a
  * one-line schema change, never a hand-wired encryption call (AC3, user story
- * 19). `write_allowlist` is captured but only honored in slice 5 (#2929).
+ * 19). `write_allowlist` is honored by `validateRestOperation` (slice 5, #2929).
  *
  * `auth_kind` is a `select` so the admin UI renders a dropdown bound to
  * {@link OPENAPI_AUTH_KINDS}; the handler re-validates against
@@ -150,7 +161,10 @@ export const OPENAPI_GENERIC_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
     key: "write_allowlist",
     type: "string",
     label: "Write allowlist (JSON)",
-    description: "JSON array of operationIds permitted to write. Honored in a later release.",
+    description:
+      "JSON array of operationIds permitted to execute non-GET (write) requests, e.g. " +
+      '["createOnePerson","createOneNote"]. Empty/omitted = read-only (default). Every ' +
+      "allowlisted write still requires an in-chat confirm-before-write step before it fires.",
   },
   {
     key: "display_name",
@@ -206,7 +220,12 @@ export function isValidSnapshot(value: unknown): value is OpenApiSnapshot {
     typeof s.version === "string" &&
     typeof s.openapiVersion === "string" &&
     typeof s.operationCount === "number" &&
-    s.doc !== undefined
+    // The raw OpenAPI document is always a JSON object — reject a primitive,
+    // `null`, or an array so `snapshotToGraph` never tries to rebuild from a
+    // value that isn't a spec document.
+    typeof s.doc === "object" &&
+    s.doc !== null &&
+    !Array.isArray(s.doc)
   );
 }
 
@@ -229,4 +248,93 @@ export function coerceRepresentationMode(raw: unknown): RepresentationMode {
     return raw as RepresentationMode;
   }
   return DEFAULT_REPRESENTATION_MODE;
+}
+
+/**
+ * Parse the `write_allowlist` config value into the set of operationIds permitted
+ * to write (slice 5, #2929). Accepts the form-stored JSON **string**
+ * (`'["createOnePerson"]'`) or an already-parsed **array** (an `atlas.config.ts`
+ * plugins entry). Anything else — a malformed JSON string, a non-array, a
+ * non-string element — resolves to the **empty set (default-deny / read-only)**,
+ * logged for the operator. A broken allowlist must never widen write access; it
+ * fails closed, the same posture as the workspace resolver's other fields.
+ */
+export function parseWriteAllowlist(raw: unknown, installId?: string): ReadonlySet<string> {
+  if (raw === undefined || raw === null || raw === "") return new Set();
+
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      log.warn(
+        { installId },
+        "OpenAPI install write_allowlist is not valid JSON — treating as read-only (default-deny)",
+      );
+      return new Set();
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    log.warn(
+      { installId },
+      "OpenAPI install write_allowlist is not a JSON array — treating as read-only (default-deny)",
+    );
+    return new Set();
+  }
+
+  const ops = new Set<string>();
+  for (const item of value) {
+    if (typeof item === "string" && item.length > 0) ops.add(item);
+  }
+  if (ops.size !== value.length) {
+    log.warn(
+      { installId },
+      "OpenAPI install write_allowlist contained non-string / empty entries — they were ignored",
+    );
+  }
+  return ops;
+}
+
+/** Coerce a positive-integer config override (calls/min, ms, …) or `undefined`. */
+function parsePositiveIntConfig(raw: unknown): number | undefined {
+  const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Resolve a per-install rate-limit override (calls/min) from config, or
+ * `undefined` to use the {@link RestDatasource} default. A non-positive /
+ * non-numeric value is ignored (fall back to the default) rather than throttling
+ * to zero — but the dropped override is logged for parity with
+ * {@link parseWriteAllowlist}, so a fat-fingered value isn't silently swallowed.
+ */
+export function parseRateLimitPerMinute(raw: unknown, installId?: string): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = parsePositiveIntConfig(raw);
+  if (parsed === undefined) {
+    log.warn(
+      { installId, value: raw },
+      "OpenAPI install rate_limit_per_minute is not a positive number — using the default (60/min)",
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Resolve a per-install request-timeout override (ms) from config, or `undefined`
+ * to use the `ATLAS_OPENAPI_TIMEOUT` cap. `validateRestOperation` rejects a value
+ * above the cap (`timeout-exceeded`); a non-positive / non-numeric value is
+ * dropped (warned) and the cap applies.
+ */
+export function parseRequestTimeoutMs(raw: unknown, installId?: string): number | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = parsePositiveIntConfig(raw);
+  if (parsed === undefined) {
+    log.warn(
+      { installId, value: raw },
+      "OpenAPI install request_timeout_ms is not a positive number — using the ATLAS_OPENAPI_TIMEOUT cap",
+    );
+  }
+  return parsed;
 }

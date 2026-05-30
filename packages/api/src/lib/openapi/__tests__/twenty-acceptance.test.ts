@@ -102,7 +102,10 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 // describe.each block below so the agent renders the mode under test.
 let activeDatasources: RestDatasource[] = [];
 mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+  // Mock ALL exports — the tool + confirm route now import the strict
+  // `…OrThrow` sibling (#2929 review); omitting it trips "export not found".
   resolveWorkspaceRestDatasources: async () => activeDatasources,
+  resolveWorkspaceRestDatasourcesOrThrow: async () => activeDatasources,
   resolveWorkspacePrimaryRestDatasource: async () => activeDatasources[0] ?? null,
 }));
 
@@ -228,6 +231,8 @@ beforeAll(async () => {
     graph,
     baseUrl: mock1.restBaseUrl,
     auth: { kind: "bearer", token: "acceptance-bearer" },
+    // The acceptance suite exercises the read surface — writes stay opted out.
+    writeAllowlist: new Set<string>(),
   };
 });
 

@@ -16,8 +16,9 @@
  *    for SQL datasources. Implemented here; delegates the walk to the generator.
  *
  * Both paths share the datasource header ({@link renderDatasourceHeader}) — the
- * "this is a REST API, call executeRestOperation, read-only" framing is identical;
- * only the body (flat operation digest vs entity YAMLs) differs. The acceptance
+ * "this is a REST API, call executeRestOperation, reads run / writes are opt-in +
+ * confirmed" framing is identical; only the body (flat operation digest vs entity
+ * YAMLs) differs. The acceptance
  * suite (`__tests__/twenty-acceptance.test.ts`) is parameterized over
  * {@link RepresentationMode}; both modes produce an {@link AgentRepresentation}
  * with the same shape (`promptContext` + metrics) so #2931 re-runs identical
@@ -116,12 +117,13 @@ export interface BuildRepresentationOptions {
    */
   readonly datasourceId?: string;
   /**
-   * Whether the sandbox-Python composition path is live. Atlas ships read-only
-   * single-operation execution via `executeRestOperation`; the Python path
-   * (multi-call composition over the upstream) needs the sandbox to authenticate
-   * read-only host-side, which isn't wired yet — so no caller sets this today
-   * (it defaults false and the prompt does NOT advertise `executePython`). Kept
-   * as the seam for when in-sandbox composition lands (pairs with slice 5).
+   * Whether the sandbox-Python composition path is live. Atlas ships
+   * single-operation execution via `executeRestOperation` — reads run directly,
+   * and (since slice 5, #2929) allowlisted writes run after an in-chat confirm.
+   * The Python path (multi-call composition over the upstream) needs the sandbox
+   * to authenticate host-side, which isn't wired yet — so no caller sets this
+   * today (it defaults false and the prompt does NOT advertise `executePython`).
+   * Kept as the seam for when in-sandbox composition lands.
    */
   readonly pythonCompositionEnabled?: boolean;
 }
@@ -180,7 +182,8 @@ function finalize(
 
 /**
  * The datasource framing shared by both representation modes: "this is a REST
- * API, not SQL; call executeRestOperation; read-only this release". Keeping it
+ * API, not SQL; call executeRestOperation; reads run, writes are opt-in via the
+ * allowlist and require an in-chat confirm". Keeping it
  * in one place means the two bake-off paths differ ONLY in how they describe the
  * surface (flat operation digest vs entity YAMLs), not in the call contract —
  * so a token / step-count delta between them is attributable to the body, not
@@ -205,9 +208,12 @@ function renderDatasourceHeader(
     );
   }
   out.push(
-    `**Read-only in this release.** Only GET operations execute; write operations ` +
-      `(POST/PATCH/PUT/DELETE) are described so you can plan, but \`executeRestOperation\` ` +
-      `rejects them until the write-allowlist ships. Never claim a write succeeded.`,
+    `**Reads run; writes need opt-in + confirmation.** GET operations execute and ` +
+      `return data. Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's ` +
+      `admin has allowlisted them — a non-allowlisted write is rejected. An allowlisted ` +
+      `write does NOT run immediately: \`executeRestOperation\` returns \`needs_confirmation\`, ` +
+      `you tell the user exactly what it will do and stop, and the write fires only after ` +
+      `they confirm in the chat. Never claim a write happened until you see a confirmed result.`,
   );
   if (options.pythonCompositionEnabled) {
     out.push(

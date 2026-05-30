@@ -54,8 +54,12 @@ describe("buildAgentRepresentation — Path A (operation-graph)", () => {
     expect(rep.promptContext).toContain("NOT a SQL database");
   });
 
-  it("marks the surface read-only until the write-allowlist ships (slice 5 boundary)", () => {
-    expect(rep.promptContext.toLowerCase()).toContain("read-only");
+  it("teaches the write-allowlist + confirm-before-write contract (slice 5)", () => {
+    const lower = rep.promptContext.toLowerCase();
+    // Writes are opt-in (allowlisted) and require confirmation — no longer "read-only".
+    expect(lower).toContain("confirm");
+    expect(lower).toContain("allowlist");
+    expect(rep.promptContext).toContain("needs_confirmation");
   });
 
   it("does NOT advertise the Python composition path by default (gated to slice 3 networkPolicy)", () => {
@@ -200,7 +204,8 @@ describe("buildAgentRepresentation — Path B (semantic-yaml)", () => {
     expect(rep.promptContext).toContain("## REST Datasource: Twenty");
     expect(rep.promptContext).toContain("executeRestOperation");
     expect(rep.promptContext).toContain("NOT a SQL database");
-    expect(rep.promptContext.toLowerCase()).toContain("read-only");
+    // Same write-allowlist + confirm-before-write framing as Path A (slice 5).
+    expect(rep.promptContext.toLowerCase()).toContain("confirm");
   });
 
   it("renders entities as semantic YAML, addressable by operationId", () => {

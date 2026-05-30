@@ -84,6 +84,7 @@ function makeDatasource(id: string, baseUrl: string): RestDatasource {
     baseUrl,
     auth: { kind: "bearer", token: "tok" },
     representationMode: "operation-graph",
+    writeAllowlist: new Set<string>(),
   };
 }
 

@@ -10,6 +10,7 @@ import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
 import { CreateDashboardCard } from "./create-dashboard-card";
 import { StageChangeCard } from "./stage-change-card";
+import { RestWriteConfirmCard } from "./rest-write-confirm-card";
 import type { PreviousExecution } from "../notebook/types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
@@ -60,6 +61,10 @@ export const ToolPart = memo(function ToolPart({
     case "removeCard":
     case "updateCardSql":
       return <StageChangeCard part={part} />;
+    // #2929 — REST writes stage a `needs_confirmation` result; the card renders
+    // the confirm-before-write banner (and a compact line for read results).
+    case "executeRestOperation":
+      return <RestWriteConfirmCard part={part} />;
     default: {
       const result = getToolResult(part);
       if (isActionToolResult(result)) {

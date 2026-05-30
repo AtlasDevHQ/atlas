@@ -8,6 +8,7 @@ import {
   createExecuteRestOperationTool,
   type ExecuteRestOperationResult,
 } from "../rest-operation";
+import { _resetRestRateLimits } from "@atlas/api/lib/openapi/validate-rest-operation";
 import {
   startTwentyMockServer,
   type TwentyMock,
@@ -30,9 +31,14 @@ beforeAll(async () => {
 afterAll(async () => {
   await mock.close();
 });
-beforeEach(() => mock.reset());
+beforeEach(() => {
+  mock.reset();
+  // The tool now runs validateRestOperation (which debits a per-operation rate
+  // bucket) on every read — reset it so a generous default never bleeds across tests.
+  _resetRestRateLimits();
+});
 
-function datasource(): RestDatasource {
+function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
   return {
     id: "twenty",
     displayName: "Twenty",
@@ -40,6 +46,8 @@ function datasource(): RestDatasource {
     baseUrl: mock.restBaseUrl,
     auth: { kind: "bearer", token: "test-token" },
     representationMode: "operation-graph",
+    writeAllowlist: new Set<string>(),
+    ...overrides,
   };
 }
 
@@ -114,7 +122,7 @@ describe("executeRestOperation tool", () => {
     });
     const result = await call(
       { operationId: "listWithHeader", header: { "X-Schema-Version": "2024-01" } },
-      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph" }),
+      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph", writeAllowlist: new Set<string>() }),
     );
     expect(result.status).toBe("ok");
     const req = mock.matching("/rest/people").at(-1);
@@ -128,7 +136,8 @@ describe("executeRestOperation tool", () => {
     expect(req?.method).toBe("GET");
   });
 
-  it("blocks write operations (read-only until slice 5)", async () => {
+  it("blocks NON-allowlisted writes (writes_disabled, default-deny)", async () => {
+    // The default datasource has an empty write allowlist → every write is denied.
     for (const op of ["createOnePerson", "updateOnePerson", "deleteOnePerson", "createOneNote"]) {
       const result = await call({ operationId: op, pathParams: { id: "p-matt" }, body: { x: 1 } });
       expect(result.status, `${op} should be blocked`).toBe("writes_disabled");
@@ -149,11 +158,99 @@ describe("executeRestOperation tool", () => {
     expect(result.status).toBe("no_datasource");
   });
 
+  it("returns datasource_unavailable (NOT no_datasource) when the registry load fails", async () => {
+    // A DB outage loading the install registry must not be reported to the agent
+    // as "no datasource connected" — that false claim would hide the outage.
+    const result = await call({ operationId: "findManyPeople" }, async () => {
+      throw new Error("pg down");
+    });
+    expect(result.status).toBe("datasource_unavailable");
+  });
+
   it("surfaces an upstream 404 as http_error (not a throw)", async () => {
     const result = await call({ operationId: "findOnePerson", pathParams: { id: "does-not-exist" } });
     expect(result.status).toBe("http_error");
     if (result.status !== "http_error") return;
     expect(result.httpStatus).toBe(404);
+  });
+});
+
+// ── Write-side opt-in (slice 5, #2929) ───────────────────────────────────────
+// The agent stages writes; it never dispatches them. An allowlisted write comes
+// back as `needs_confirmation` (the confirm-before-write banner fires it later);
+// a non-allowlisted write is `writes_disabled`. The upstream sees no mutation.
+describe("executeRestOperation — write-side opt-in", () => {
+  it("stages an ALLOWLISTED write as needs_confirmation, never dispatching it", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      async () => ds,
+    );
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.method).toBe("POST");
+    expect(result.operationId).toBe("createOnePerson");
+    expect(result.datasourceId).toBe("twenty");
+    // The replay payload round-trips the agent's inputs for the confirm endpoint.
+    expect(result.confirm.operationId).toBe("createOnePerson");
+    expect(result.confirm.datasourceId).toBe("twenty");
+    expect(result.confirm.body).toEqual({ name: { firstName: "Ada" } });
+    // Critically: NO write reached the upstream — confirmation is still pending.
+    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("stages an allowlisted DELETE (highest blast radius) without firing it", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["deleteOnePerson"]) });
+    const result = await call(
+      { operationId: "deleteOnePerson", pathParams: { id: "p-matt" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.method).toBe("DELETE");
+    expect(result.confirm.pathParams).toEqual({ id: "p-matt" });
+    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("needs_confirmation carries exactly the fields the chat banner + confirm endpoint read", async () => {
+    // Guards the web-local mirror (rest-operation-types.ts) against drift — if a
+    // field is added/renamed here, this assertion flags the mirror needs updating.
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson", body: { x: 1 } }, async () => ds);
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(Object.keys(result).toSorted()).toEqual(
+      ["confirm", "datasourceId", "datasourceName", "method", "operationId", "status", "summary"],
+    );
+  });
+
+  it("blocks a write whose op is NOT in the allowlist even when others are", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call(
+      { operationId: "deleteOnePerson", pathParams: { id: "p-matt" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("writes_disabled");
+    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("rejects an allowlisted write missing its required body (invalid_params)", async () => {
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const result = await call({ operationId: "createOnePerson" }, async () => ds);
+    expect(result.status).toBe("invalid_params");
+    if (result.status !== "invalid_params") return;
+    expect(result.missingParams).toContain("body");
+    expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("rate-limits reads per operation (rate_limited) once the bucket is empty", async () => {
+    const ds = datasource({ rateLimitPerMinute: 1 });
+    const first = await call({ operationId: "findManyPeople" }, async () => ds);
+    expect(first.status).toBe("ok");
+    const second = await call({ operationId: "findManyPeople" }, async () => ds);
+    expect(second.status).toBe("rate_limited");
+    if (second.status !== "rate_limited") return;
+    expect(second.retryAfterMs).toBeGreaterThan(0);
   });
 });
 

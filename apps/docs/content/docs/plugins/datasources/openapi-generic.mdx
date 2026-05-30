@@ -1,0 +1,82 @@
+---
+title: OpenAPI (Generic REST)
+description: Connect any REST API with an OpenAPI 3.x spec as a datasource — read by default, with an explicit per-endpoint write allowlist and confirm-before-write.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The built-in **OpenAPI (Generic REST)** datasource (`openapi-generic`) lets you point Atlas at any REST API that publishes an OpenAPI 3.x spec — Twenty, Stripe, an internal microservice — and have the agent discover its operations and query them directly. No per-API client to hand-code: paste the spec URL and a credential, and the agent reads the operation surface from the spec.
+
+It installs from **Admin → Connections** like any other datasource (the catalog row is code-seeded into every Atlas deployment). Credentials are encrypted at rest in `workspace_plugins.config`.
+
+<Callout type="info">
+A workspace can install several OpenAPI datasources side by side (one for Twenty, one for Stripe, …). Each is its own install with its own credential, write allowlist, and rate limit.
+</Callout>
+
+## Reading
+
+GET (and HEAD) operations execute immediately. The agent calls `executeRestOperation` with an `operationId` from the spec plus its parameters, and gets the response back as data. Multi-step questions ("show me Matt's notes") run as a sequence of operations across agent steps.
+
+## Writing — opt-in, then confirm
+
+**Writes are off by default.** A non-GET operation (POST / PATCH / PUT / DELETE) only runs if its `operationId` is in that install's **write allowlist** — and even then, never silently.
+
+### 1. Allowlist the operations you want to permit
+
+The `write_allowlist` config field is a JSON array of `operationId`s permitted to execute a write:
+
+```json
+["createOnePerson", "createOneNote"]
+```
+
+Anything not listed is denied. An empty or omitted allowlist means the datasource stays read-only. A malformed value fails **closed** (read-only) — a typo never opens up writes.
+
+### 2. The agent stages the write; the user confirms it
+
+When the agent decides to call an allowlisted write, `executeRestOperation` does **not** dispatch it. It returns a `needs_confirmation` result, and the chat surface renders a **confirm-before-write banner** describing exactly what will happen:
+
+> **POST** — createOnePerson — POST /people on Twenty
+>
+> This will write to **Twenty**. It has not run yet — confirm to proceed, or cancel to leave it un-run.
+>
+> `[ Confirm write ]` `[ Cancel ]`
+
+The write fires only when the user clicks **Confirm write** — the request is POSTed to `/api/v1/rest-operations/confirm`, which re-validates the operation against the allowlist server-side before executing. The agent cannot self-confirm, and a non-allowlisted operation is refused at the confirm endpoint too (defense in depth). **Cancel** leaves the write un-run.
+
+<Callout type="warn">
+Prompting a write that is **not** allowlisted (e.g. "delete every Person") returns `writes_disabled` — the request never fires, and the agent is told not to claim it happened. Add the operation to `write_allowlist` to enable it.
+</Callout>
+
+## The safety stack (`validateRestOperation`)
+
+Every operation — read or write — is authorized by `validateRestOperation`, the REST sibling to Atlas's SQL validator. Five layers, in order:
+
+1. **Operation in graph** — an `operationId` not in the probed spec is rejected (`unknown_operation`); Atlas never dispatches a fabricated operation.
+2. **Method allowlist** — GET/HEAD always pass; any other method requires the `operationId` in `write_allowlist`, else `writes_disabled` (default-deny).
+3. **Parameter shape** — required parameters and request body must be present; parameters the spec doesn't declare are rejected (`invalid_params`).
+4. **Rate limit** — a per-`(workspace, datasource, operation)` token bucket, **60 calls/min** by default, overridable per install via the config-only `rate_limit_per_minute` key. Throttles runaway agent loops on a paid upstream (`rate_limited`, with a retry hint).
+5. **Timeout** — each request is capped at `ATLAS_OPENAPI_TIMEOUT` (default **30s**). A per-install `request_timeout_ms` (config-only) above the cap is rejected.
+
+Writes are **never written to any cache** — the write path uses the un-cached client primitive, and the paginating read cache refuses to store non-GET responses by construction.
+
+## Configuration fields
+
+Install-form fields (Admin → Connections):
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `openapi_url` | yes | URL of the OpenAPI 3.x document, e.g. `https://crm.example.com/rest/open-api/core` |
+| `auth_kind` | yes | `none` / `bearer` / `basic` / `apikey-header` / `apikey-query` (oauth2 is coming soon) |
+| `auth_value` | — | Bearer token, API key, or `username:password`. Encrypted at rest. |
+| `auth_header_name` | — | Header name for `apikey-header`, e.g. `X-API-Key` |
+| `auth_param_name` | — | Query param for `apikey-query`, e.g. `api_key` |
+| `base_url_override` | — | When the spec's `servers[0].url` is wrong (dev/staging) |
+| `write_allowlist` | — | JSON array of `operationId`s permitted to write. Empty = read-only (default). |
+| `display_name` | — | Friendly name shown in Admin → Connections |
+
+Advanced overrides (set on the install's `config` via `atlas.config.ts`, not surfaced in the install form):
+
+| Key | Notes |
+|-----|-------|
+| `rate_limit_per_minute` | Per-operation rate limit override (default 60) |
+| `request_timeout_ms` | Per-request timeout override; must be ≤ `ATLAS_OPENAPI_TIMEOUT` (the cap), else the operation is rejected |

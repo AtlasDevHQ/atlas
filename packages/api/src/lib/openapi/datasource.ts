@@ -42,4 +42,24 @@ export interface RestDatasource {
    * the default winner) and Path B ("semantic-yaml") stay selectable per install.
    */
   readonly representationMode: RepresentationMode;
+  /**
+   * The `operationId`s permitted to execute a non-GET (write) method — slice 5's
+   * write-side opt-in (#2929). Resolved from the per-install
+   * `workspace_plugins.config.write_allowlist`. **Empty = read-only** (the
+   * default, default-deny). `validateRestOperation` is the boundary that honors
+   * it; a staged write still requires a confirm-before-write step before it fires.
+   */
+  readonly writeAllowlist: ReadonlySet<string>;
+  /**
+   * Per-install rate-limit override (calls/min) for the per-operation token
+   * bucket. Omitted → {@link import("./validate-rest-operation").DEFAULT_RATE_LIMIT_PER_MINUTE}
+   * (60/min). Resolved from `workspace_plugins.config.rate_limit_per_minute`.
+   */
+  readonly rateLimitPerMinute?: number;
+  /**
+   * Per-install request-timeout override (ms). Omitted → the `ATLAS_OPENAPI_TIMEOUT`
+   * cap. `validateRestOperation` rejects a value above the cap. Resolved from
+   * `workspace_plugins.config.request_timeout_ms`.
+   */
+  readonly requestTimeoutMs?: number;
 }

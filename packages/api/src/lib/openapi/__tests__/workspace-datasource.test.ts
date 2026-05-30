@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   resolveWorkspaceRestDatasources,
+  resolveWorkspaceRestDatasourcesOrThrow,
   resolveWorkspacePrimaryRestDatasource,
   type OpenApiInstallRow,
 } from "../workspace-datasource";
@@ -180,6 +181,61 @@ describe("resolveWorkspaceRestDatasources", () => {
       query: queryReturning([{ install_id: "ds-1", config: config({ display_name: undefined }) }]),
     });
     expect(result[0].displayName).toBe("Mock Widget API");
+  });
+
+  it("carries a valid write_allowlist (JSON string) through to the datasource", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-1", config: config({ write_allowlist: '["createOneWidget","deleteOneWidget"]' }) },
+      ]),
+    });
+    expect([...result[0].writeAllowlist].toSorted()).toEqual(["createOneWidget", "deleteOneWidget"]);
+  });
+
+  it("fails a malformed write_allowlist CLOSED (read-only, size 0) without sinking the install", async () => {
+    // The exact regression guard #2929 asked for: a hostile/garbage allowlist
+    // string must resolve to NO write access, not silently enable writes.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-1", config: config({ write_allowlist: "not json{" }) },
+      ]),
+    });
+    expect(result).toHaveLength(1); // the datasource still resolves (reads work)…
+    expect(result[0].writeAllowlist.size).toBe(0); // …but with zero writes enabled
+  });
+
+  it("skips an install with an unrecognized auth_kind (drifted row), not the whole set", async () => {
+    // narrowSupportedAuthKind validates positive membership, so a garbage kind
+    // skips here rather than reaching a buildResolvedAuth throw.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "garbage", config: config({ auth_kind: "totally-bogus", openapi_snapshot: snapshot("2026-05-29T11:00:00.000Z") }) },
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-29T12:00:00.000Z") }) },
+      ]),
+    });
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
+  });
+});
+
+describe("resolveWorkspaceRestDatasourcesOrThrow (strict)", () => {
+  it("PROPAGATES a query failure so the caller can tell an outage from an empty workspace", async () => {
+    await expect(
+      resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+        query: async () => {
+          throw new Error("pg down");
+        },
+      }),
+    ).rejects.toThrow("pg down");
+  });
+
+  it("still skips a single broken install (does not throw on a per-install failure)", async () => {
+    const result = await resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+      query: queryReturning([
+        { install_id: "broken", config: config({ openapi_snapshot: undefined }) },
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-29T13:00:00.000Z") }) },
+      ]),
+    });
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
   });
 });
 

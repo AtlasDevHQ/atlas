@@ -247,6 +247,19 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // Stable id per row — derived once so retries land on the same
     // unique-index hit. ON CONFLICT updates `config`/`enabled` rather
     // than swapping the id, so cross-store joins stay stable.
+    //
+    // Schema notes (mirrors `discord-static-bot-handler.ts`):
+    //   - `pillar` + `install_id` became NOT NULL in migration 0092
+    //     (#2739) and the auto-fill trigger was dropped in 0096 (#2744),
+    //     so every writer must name both columns explicitly — and the
+    //     chat-integration cap (#2953) counts `pillar = 'chat'` rows, so
+    //     omitting `pillar` would make Slack installs invisible to it.
+    //   - Chat-pillar installs are singletons per (workspace, catalog),
+    //     enforced by the `workspace_plugins_singleton` partial unique
+    //     index (`WHERE pillar IN ('chat','action')`). We target it via
+    //     the inference clause so re-install lands on the existing row.
+    //   - One install per (workspace, catalog) for chat, so `install_id`
+    //     mirrors `id`.
     const installId = crypto.randomUUID();
     const installConfig = {
       team_id: teamId,
@@ -257,9 +270,9 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     };
     try {
       await internalQuery(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
            SET config = EXCLUDED.config,
                enabled = true`,
         [installId, workspaceId, SLACK_CATALOG_ID, JSON.stringify(installConfig)],

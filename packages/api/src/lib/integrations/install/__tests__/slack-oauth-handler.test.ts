@@ -99,8 +99,18 @@ const mockCheckChatLimit: Mock<
     >
 > = mock(() => Promise.resolve({ allowed: true as const }));
 
+// Mock every named export — a partial `mock.module()` causes a `SyntaxError`
+// in other files importing the missing exports (per CLAUDE.md "Mock all
+// exports"). Only `checkChatIntegrationLimit` is exercised here; the rest are
+// inert no-ops.
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
   checkChatIntegrationLimit: mockCheckChatLimit,
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
 }));
 
 // ---------------------------------------------------------------------------

@@ -516,12 +516,24 @@ export async function checkResourceLimit(
  *    "do the *other* chat platforms already fill the cap?".
  *
  * The cap counts every `workspace_plugins` row with `pillar = 'chat'`, so it
- * only constrains platforms whose install actually writes such a row. Which
- * platforms that is today (and the per-platform routing state) is tracked in
- * #2994; the Slack handler's missing-`pillar` INSERT is tracked in #2995.
+ * only constrains platforms whose install actually writes such a row. Today
+ * that is Slack (OAuth) and Discord — both write `pillar = 'chat'` rows. The
+ * legacy credential-store-only chat routes (Telegram / Teams / gchat /
+ * WhatsApp) don't yet write a `workspace_plugins` row, so they are neither
+ * counted nor capped until they pivot to the unified install record (#2994).
  *
  * Fails closed when the count can't be determined (query error or no row),
  * surfacing `reason: "check_failed"` — consistent with {@link checkResourceLimit}.
+ *
+ * KNOWN LIMITATION (TOCTOU): this is a read-only precheck; the caller does the
+ * `workspace_plugins` INSERT separately, so two *distinct* net-new platforms
+ * installed concurrently (e.g. Slack + Discord finishing OAuth in the same
+ * window while the workspace is one under its cap) can both pass and both
+ * write, landing one over the cap. The same-platform case can't breach it —
+ * the `workspace_plugins_singleton` partial unique index collapses a duplicate
+ * install into an UPSERT (a reconnect, always allowed). Closing the
+ * cross-platform window needs a per-workspace advisory lock / transaction
+ * around count+INSERT; tracked in #3001 (deferred — narrow window, heavy lift).
  */
 export async function checkChatIntegrationLimit(
   orgId: string | undefined,

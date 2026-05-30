@@ -59,6 +59,26 @@ Every operation — read or write — is authorized by `validateRestOperation`, 
 
 Writes are **never written to any cache** — the write path uses the un-cached client primitive, and the paginating read cache refuses to store non-GET responses by construction.
 
+## Keeping the spec current
+
+Atlas caches the probed spec per install. When the upstream API ships new operations or changes a shape, the cache needs to be re-discovered so the agent's view stays accurate. Two ways to refresh it:
+
+- **Refresh now** — the **Rediscover schema** button on the datasource card (Admin → Connections) re-probes the spec endpoint immediately and replaces the cached snapshot. Use this right after the upstream API changes.
+- **Auto-refresh interval** — the **Auto-refresh** control sets how often Atlas re-discovers the spec on its own:
+
+| Value | Meaning |
+|-------|---------|
+| `off` (default) | Never auto-refresh — re-discover manually with **Rediscover schema**. |
+| `daily` | Re-discover every 24 hours. |
+| `weekly` | Re-discover every 7 days. |
+| `<N>h` | A custom interval of `N` hours, clamped to **1h … 720h** (30 days). Set via `atlas.config.ts`. |
+
+The interval is stored per install (it's not a secret, so it's a plain `workspace_plugins.config` field). An out-of-range custom value is **clamped** into the bounds; an unparseable value is **rejected** with a message — it never silently falls back to `off`.
+
+<Callout type="info">
+This release ships the setting, the manual **Refresh now**, and validation. The background fiber that walks due installs and auto-re-discovers on the interval lands in a follow-up — until then `off` and the manual button are the active paths, and any configured interval is honored once that scheduler ships.
+</Callout>
+
 ## Configuration fields
 
 Install-form fields (Admin → Connections):
@@ -80,3 +100,4 @@ Advanced overrides (set on the install's `config` via `atlas.config.ts`, not sur
 |-----|-------|
 | `rate_limit_per_minute` | Per-operation rate limit override (default 60) |
 | `request_timeout_ms` | Per-request timeout override; must be ≤ `ATLAS_OPENAPI_TIMEOUT` (the cap), else the operation is rejected |
+| `spec_refresh_interval` | How often to auto-re-discover the spec: `off` (default) / `daily` / `weekly` / `<N>h` (1h–720h, clamped). Also settable from the **Auto-refresh** control on the datasource card. |

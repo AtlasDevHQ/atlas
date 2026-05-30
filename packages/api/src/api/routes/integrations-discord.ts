@@ -46,6 +46,7 @@ import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
 import {
+  ChatIntegrationLimitError,
   DiscordApiUnavailableError,
   DiscordGuildIdInvalidError,
   DiscordReachabilityError,
@@ -188,7 +189,8 @@ const callbackRoute = createRoute({
       description:
         "Install complete — redirected to /admin/integrations. " +
         "Success: `?installed=discord`. User cancel: `?error=discord&reason=authorization_denied`. " +
-        "JSON callers receive structured 4xx responses instead.",
+        "Chat-integration cap reached (browser caller): `?error=discord&reason=plan_limit_reached`. " +
+        "JSON callers receive structured 4xx/5xx responses instead.",
     },
     400: {
       description: "Invalid state, user cancel, or missing guild_id",
@@ -198,12 +200,25 @@ const callbackRoute = createRoute({
       description: "Discord catalog row missing",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    // #2953 — workspace at its plan's chat-integration cap (JSON callers;
+    // browsers get a 302 with `reason=plan_limit_reached`). `plan_limit_exceeded`
+    // body carries the `limit` that was hit.
+    429: {
+      description: "Chat-integration cap reached for the workspace's plan tier: `plan_limit_exceeded` (JSON-Accept caller)",
+      content: { "application/json": { schema: ErrorSchema.extend({ limit: z.number() }) } },
+    },
     501: {
       description: "Discord install handler not registered",
       content: { "application/json": { schema: ErrorSchema } },
     },
     502: {
       description: "Discord API unreachable while verifying the guild",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    // #2953 — the chat-integration count couldn't be determined (transient DB
+    // fault), so the cap check failed closed: `billing_check_failed` "try again".
+    503: {
+      description: "Billing/plan-limit check unavailable: `billing_check_failed` (JSON-Accept caller)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -663,6 +678,23 @@ discordIntegrations.openapi(callbackRoute, async (c) =>
         return c.json(
           { error: "upstream_error", message: err.message, requestId },
           502,
+        );
+      }
+      // Workspace at its plan's chat-integration cap. Browser callers get
+      // the friendly upgrade redirect; JSON callers fall through to the 429
+      // `plan_limit_exceeded` mapping in runHandler. (A `BillingCheckFailedError`
+      // is intentionally left to the 503 JSON mapper — transient "try again".)
+      if (err instanceof ChatIntegrationLimitError) {
+        log.info(
+          { workspaceId, limit: err.limit },
+          "Discord install blocked — workspace at chat-integration cap",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildAdminIntegrationsUrl("error", { reason: "plan_limit_reached" }));
+        }
+        return c.json(
+          { error: "plan_limit_exceeded", message: err.message, requestId, limit: err.limit },
+          429,
         );
       }
       throw err;

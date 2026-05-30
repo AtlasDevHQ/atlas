@@ -793,6 +793,55 @@ export class InvalidInstallIdError extends Data.TaggedError("InvalidInstallIdErr
   readonly reason: "pattern" | "reserved";
 }> {}
 
+/**
+ * A chat-platform install was refused because the workspace's plan tier has
+ * reached its chat-integration cap (per-tier numbers live in
+ * `billing/plans.ts:maxChatIntegrations`). Thrown by the chat install
+ * handlers (`slack-oauth-handler`, `discord-static-bot-handler`) before the
+ * `workspace_plugins` INSERT, after `checkChatIntegrationLimit` counts the
+ * workspace's existing chat installs (#2953).
+ *
+ * Maps to HTTP 429 `plan_limit_exceeded` — the same status and wire code
+ * the connections cap surfaces from `admin-connections`, plus a `limit`
+ * field in the body (the connections cap omits it). The seats cap is also
+ * 429 but via Better Auth's `APIError` in `lib/auth/invitations.ts`, a
+ * different envelope. Reconnecting an already-installed platform is never
+ * refused (it does not increase the distinct count), so a grandfathered
+ * over-cap workspace can still re-auth what it already has.
+ *
+ * Distinct from {@link BillingCheckFailedError}: this means the cap was
+ * genuinely hit (429 "upgrade"); that means we couldn't read the count and
+ * failed closed (503 "try again").
+ *
+ * `workspaceId` is forensic/log context only — not read by `mapTaggedError`.
+ */
+export class ChatIntegrationLimitError extends Data.TaggedError("ChatIntegrationLimitError")<{
+  readonly message: string;
+  readonly workspaceId: string;
+  /** The plan tier's chat-integration cap that was hit. */
+  readonly limit: number;
+}> {}
+
+/**
+ * A chat-platform install was blocked because Atlas could NOT determine the
+ * workspace's current chat-integration count (internal-DB error, or the
+ * count query returned no row). The check fails closed — the install is
+ * refused — but this is a transient infrastructure fault, not a plan-cap
+ * hit, so it must NOT tell the user to "upgrade your plan".
+ *
+ * Maps to HTTP 503 `billing_check_failed` — mirroring the same-named arm of
+ * {@link import("@atlas/api/lib/billing/enforcement").PlanCheckResult} that
+ * the chat/query routes already surface for token-budget checks. The
+ * actionable message is "try again". Counterpart to
+ * {@link ChatIntegrationLimitError} (the genuine-cap-hit 429).
+ *
+ * `workspaceId` is forensic/log context only — not read by `mapTaggedError`.
+ */
+export class BillingCheckFailedError extends Data.TaggedError("BillingCheckFailedError")<{
+  readonly message: string;
+  readonly workspaceId: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -867,6 +916,8 @@ export type AtlasError =
   | CatalogNotFoundError
   | InstallNotFoundError
   | InvalidInstallIdError
+  | ChatIntegrationLimitError
+  | BillingCheckFailedError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -942,6 +993,8 @@ export const ATLAS_ERROR_TAG_LIST = [
   "CatalogNotFoundError",
   "InstallNotFoundError",
   "InvalidInstallIdError",
+  "ChatIntegrationLimitError",
+  "BillingCheckFailedError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

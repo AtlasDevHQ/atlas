@@ -139,6 +139,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
+  // Pulled into the graph via `billing/enforcement` (the chat install
+  // handlers' #2953 cap check). Never invoked on the disconnect path, but
+  // the named export must exist so the partial mock doesn't SyntaxError.
+  getWorkspaceDetails: mock(() => Promise.resolve(null)),
   internalExecute: mock(() => Promise.resolve()),
   makeInternalDBShimLayer: () => makeMockInternalDBShimLayer(mockInternalQuery, { available: true }),
   makeInternalDBLive: () => Layer.succeedContext(Context.empty()),

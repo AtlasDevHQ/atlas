@@ -35,6 +35,17 @@ export interface PlanLimits {
   maxSeats: number;
   /** Max datasource connections. -1 = unlimited. */
   maxConnections: number;
+  /**
+   * Max distinct chat-pillar integrations a workspace may install. -1 =
+   * unlimited. The cap counts `workspace_plugins WHERE pillar = 'chat'` —
+   * the six chat platforms (Slack, Teams, Discord, Google Chat, Telegram,
+   * WhatsApp). The "All 8 chat integrations" figure marketed on /pricing
+   * also counts Linear + GitHub, but those are `pillar = 'action'`, so they
+   * do NOT consume a chat-integration slot. Marketed tiers: Starter 1 /
+   * Pro 3 / Business unlimited. Enforced at chat install time by
+   * `checkChatIntegrationLimit` (#2953).
+   */
+  maxChatIntegrations: number;
 }
 
 export interface PlanDefinition {
@@ -78,6 +89,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       tokenBudgetPerSeat: UNLIMITED,
       maxSeats: UNLIMITED,
       maxConnections: UNLIMITED,
+      maxChatIntegrations: UNLIMITED,
     },
     features: { ...NO_FEATURES },
   },
@@ -96,6 +108,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       tokenBudgetPerSeat: 2_000_000,
       maxSeats: 10,
       maxConnections: 1,
+      maxChatIntegrations: 1,
     },
     features: { ...NO_FEATURES },
   },
@@ -109,6 +122,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       tokenBudgetPerSeat: 2_000_000,
       maxSeats: 10,
       maxConnections: 1,
+      maxChatIntegrations: 1,
     },
     features: { ...NO_FEATURES },
   },
@@ -122,6 +136,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       tokenBudgetPerSeat: 5_000_000,
       maxSeats: 25,
       maxConnections: 3,
+      maxChatIntegrations: 3,
     },
     features: {
       customDomain: true,
@@ -140,6 +155,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       tokenBudgetPerSeat: 15_000_000,
       maxSeats: UNLIMITED,
       maxConnections: UNLIMITED,
+      maxChatIntegrations: UNLIMITED,
     },
     features: {
       customDomain: true,
@@ -205,6 +221,7 @@ export function getStripePlans(): Array<{
         tokenBudgetPerSeat: PLANS.starter.limits.tokenBudgetPerSeat,
         seats: PLANS.starter.limits.maxSeats,
         connections: PLANS.starter.limits.maxConnections,
+        chatIntegrations: PLANS.starter.limits.maxChatIntegrations,
       },
       freeTrial: { days: TRIAL_DAYS },
     });
@@ -220,6 +237,7 @@ export function getStripePlans(): Array<{
         tokenBudgetPerSeat: PLANS.pro.limits.tokenBudgetPerSeat,
         seats: PLANS.pro.limits.maxSeats,
         connections: PLANS.pro.limits.maxConnections,
+        chatIntegrations: PLANS.pro.limits.maxChatIntegrations,
       },
       freeTrial: { days: TRIAL_DAYS },
     });
@@ -235,6 +253,7 @@ export function getStripePlans(): Array<{
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,
         seats: UNLIMITED,
         connections: UNLIMITED,
+        chatIntegrations: UNLIMITED,
       },
       freeTrial: { days: TRIAL_DAYS },
     });

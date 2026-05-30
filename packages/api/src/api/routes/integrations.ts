@@ -43,7 +43,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler, runEffect } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
-import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import {
   WorkspaceInstaller,
   WorkspaceInstallerLive,
@@ -304,7 +304,8 @@ const callbackRoute = createRoute({
       description:
         "Install complete or failed in a recoverable way — redirected to /admin/integrations. " +
         "Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. " +
-        "Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead.",
+        "Hard failure (browser caller): `?error=<platform>&reason=<code>` (chat-integration cap reached → " +
+        "`reason=plan_limit_reached`). JSON callers receive 400/429/502/503 instead.",
     },
     400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
     403: {
@@ -320,8 +321,21 @@ const callbackRoute = createRoute({
       },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
+    // #2953 — workspace at its plan's chat-integration cap (JSON callers;
+    // browsers get a 302 to the admin UI with `reason=plan_limit_reached`).
+    // `plan_limit_exceeded` body carries the `limit` that was hit.
+    429: {
+      description: "Chat-integration cap reached for the workspace's plan tier: `plan_limit_exceeded` (JSON-Accept caller)",
+      content: { "application/json": { schema: ErrorSchema.extend({ limit: z.number() }) } },
+    },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
     502: { description: "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
+    // #2953 — the chat-integration count couldn't be determined (transient DB
+    // fault), so the cap check failed closed: `billing_check_failed` "try again".
+    503: {
+      description: "Billing/plan-limit check unavailable: `billing_check_failed` (JSON-Accept caller)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
   },
 });
 
@@ -1090,6 +1104,21 @@ integrations.openapi(callbackRoute, async (c) =>
         );
         if (prefersHtml(c.req.raw)) {
           return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "upstream_error" }));
+        }
+      }
+      // Workspace at its plan's chat-integration cap. Browser callers get
+      // the friendly upgrade redirect (mirrors the min_plan deny path
+      // above); JSON callers fall through to the 429 `plan_limit_exceeded`
+      // mapping in runHandler. (A `BillingCheckFailedError` — count couldn't
+      // be read — is intentionally left to the 503 JSON mapper: it's a
+      // transient "try again", not an upgrade prompt.)
+      if (err instanceof ChatIntegrationLimitError) {
+        log.info(
+          { platform, workspaceId: err.workspaceId, limit: err.limit },
+          "Install callback blocked — workspace at chat-integration cap",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "plan_limit_reached" }));
         }
       }
       throw err;

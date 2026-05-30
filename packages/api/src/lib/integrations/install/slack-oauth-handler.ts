@@ -40,7 +40,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { slackAPI } from "@atlas/api/lib/slack/api";
 import { saveInstallation } from "@atlas/api/lib/slack/store";
-import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimit } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -211,10 +212,54 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       });
     }
 
-    // ── 3. Install record — workspace_plugins INSERT (first store) ──
+    // ── 3. Plan cap — chat-integration limit (#2953) ──────────────
+    // Block before writing either store when the workspace's plan tier
+    // is at its chat-integration cap. Reconnecting Slack (already
+    // installed) is never blocked — the check excludes Slack's own row.
+    const capCheck = await checkChatIntegrationLimit(workspaceId, SLACK_CATALOG_ID);
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // We couldn't read the workspace's chat-integration count, so the
+        // cap check failed closed. Surface this as a transient 503 "try
+        // again" — NOT a 429 "upgrade your plan", which would be wrong and
+        // non-actionable when the block is an internal-DB blip.
+        log.error(
+          { workspaceId },
+          "Slack install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Slack install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
+    // ── 4. Install record — workspace_plugins INSERT (first store) ──
     // Stable id per row — derived once so retries land on the same
     // unique-index hit. ON CONFLICT updates `config`/`enabled` rather
     // than swapping the id, so cross-store joins stay stable.
+    //
+    // Schema notes (mirrors `discord-static-bot-handler.ts`):
+    //   - `pillar` + `install_id` became NOT NULL in migration 0092
+    //     (#2739) and the auto-fill trigger was dropped in 0096 (#2744),
+    //     so every writer must name both columns explicitly — and the
+    //     chat-integration cap (#2953) counts `pillar = 'chat'` rows, so
+    //     omitting `pillar` would make Slack installs invisible to it.
+    //   - Chat-pillar installs are singletons per (workspace, catalog),
+    //     enforced by the `workspace_plugins_singleton` partial unique
+    //     index (`WHERE pillar IN ('chat','action')`). We target it via
+    //     the inference clause so re-install lands on the existing row.
+    //   - One install per (workspace, catalog) for chat, so `install_id`
+    //     mirrors `id`.
     const installId = crypto.randomUUID();
     const installConfig = {
       team_id: teamId,
@@ -225,9 +270,9 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     };
     try {
       await internalQuery(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
            SET config = EXCLUDED.config,
                enabled = true`,
         [installId, workspaceId, SLACK_CATALOG_ID, JSON.stringify(installConfig)],
@@ -249,7 +294,7 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       catalogId: SLACK_SLUG,
     };
 
-    // ── 4. Credential — chat_cache:slack:installation:<teamId> ──
+    // ── 5. Credential — chat_cache:slack:installation:<teamId> ──
     // ADR-0003 atomicity: a failure here leaves the install row in
     // place. The admin sees "Reconnect needed" in /admin/integrations
     // and can retry — re-running this method will UPSERT the install

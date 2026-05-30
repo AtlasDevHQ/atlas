@@ -85,6 +85,34 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+// The chat-integration cap (#2953) is exercised in
+// `billing/__tests__/enforcement.test.ts`; here we stub it to "allowed" so
+// these handler tests stay focused on the install/credential contract and
+// their `mockInternalQuery` call counts reflect only the INSERT. The single
+// "blocks when at cap" test below overrides it via `mockImplementationOnce`.
+const mockCheckChatLimit: Mock<
+  (orgId: string | undefined, catalogId: string) =>
+    Promise<
+      | { allowed: true }
+      | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+      | { allowed: false; reason: "check_failed"; errorMessage: string }
+    >
+> = mock(() => Promise.resolve({ allowed: true as const }));
+
+// Mock every named export — a partial `mock.module()` causes a `SyntaxError`
+// in other files importing the missing exports (per CLAUDE.md "Mock all
+// exports"). Only `checkChatIntegrationLimit` is exercised here; the rest are
+// inert no-ops.
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimit: mockCheckChatLimit,
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+}));
+
 // ---------------------------------------------------------------------------
 // Test scaffolding — env-driven keyset (mintOAuthStateToken needs it)
 // ---------------------------------------------------------------------------
@@ -121,6 +149,8 @@ beforeEach(() => {
   mockSlackAPI.mockClear();
   mockSaveInstallation.mockClear();
   mockInternalQuery.mockClear();
+  mockCheckChatLimit.mockClear();
+  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
   // Default to the happy-path Slack response — individual tests override
   // via `mockResolvedValueOnce` / `mockImplementationOnce`.
   mockSlackAPI.mockImplementation(() =>
@@ -328,6 +358,57 @@ describe("SlackOAuthInstallHandler.handleCallback — Slack-side failure", () =>
       platform: "slack",
     });
 
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleCallback — chat-integration cap (#2953)
+// ---------------------------------------------------------------------------
+
+describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes neither store when at cap", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "cap_reached" as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await expect(handler.handleCallback("auth-code", stateToken)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // The cap is enforced before either store is written.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
+    expect(mockCheckChatLimit).toHaveBeenCalledWith(WSID, "catalog:slack");
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    // A DB blip means we can't read the count → fail closed, but as a
+    // transient 503 "try again", not a 429 "upgrade your plan".
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await expect(handler.handleCallback("auth-code", stateToken)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+
+    // Still fail closed — neither store is written.
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });

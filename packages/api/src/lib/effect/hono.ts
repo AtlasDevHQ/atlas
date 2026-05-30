@@ -86,6 +86,8 @@ type HttpErrorCode =
   | "unprocessable_entity"
   | "rate_limited"
   | "conversation_budget_exceeded"
+  | "plan_limit_exceeded"
+  | "billing_check_failed"
   | "upstream_error"
   | "service_unavailable"
   | "enterprise_load_failed"
@@ -344,6 +346,30 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
       return {
         status: 429,
         code: "conversation_budget_exceeded",
+        message: error.message,
+      };
+    // #2953 — chat-integration cap reached for the workspace's plan tier.
+    // 429 + `plan_limit_exceeded` matches the connections cap
+    // (`admin-connections.ts` returns the same code/status manually). The
+    // seats cap is also 429 but via Better Auth's `APIError`
+    // (`lib/auth/invitations.ts`), so its envelope differs. Body carries
+    // the cap that was hit.
+    case "ChatIntegrationLimitError":
+      return {
+        status: 429,
+        code: "plan_limit_exceeded",
+        message: error.message,
+        body: { limit: error.limit },
+      };
+    // #2953 — the chat-integration count could not be determined (DB error
+    // / missing row), so the cap check failed closed. This is a transient
+    // infra fault, NOT a plan-cap hit: 503 + `billing_check_failed` (same
+    // code the token-budget check surfaces) so the user sees "try again",
+    // not a misleading "upgrade your plan".
+    case "BillingCheckFailedError":
+      return {
+        status: 503,
+        code: "billing_check_failed",
         message: error.message,
       };
 

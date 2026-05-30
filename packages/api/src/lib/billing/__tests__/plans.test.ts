@@ -30,12 +30,14 @@ describe("billing/plans", () => {
       expect(isUnlimited(limits.tokenBudgetPerSeat)).toBe(true);
       expect(isUnlimited(limits.maxSeats)).toBe(true);
       expect(isUnlimited(limits.maxConnections)).toBe(true);
+      expect(isUnlimited(limits.maxChatIntegrations)).toBe(true);
     });
 
     it("business tier has unlimited seats and connections", () => {
       const limits = getPlanLimits("business");
       expect(isUnlimited(limits.maxSeats)).toBe(true);
       expect(isUnlimited(limits.maxConnections)).toBe(true);
+      expect(isUnlimited(limits.maxChatIntegrations)).toBe(true);
       expect(isUnlimited(limits.tokenBudgetPerSeat)).toBe(false);
       expect(limits.tokenBudgetPerSeat).toBe(15_000_000);
     });
@@ -46,6 +48,7 @@ describe("billing/plans", () => {
       expect(trial.tokenBudgetPerSeat).toBe(starter.tokenBudgetPerSeat);
       expect(trial.maxSeats).toBe(starter.maxSeats);
       expect(trial.maxConnections).toBe(starter.maxConnections);
+      expect(trial.maxChatIntegrations).toBe(starter.maxChatIntegrations);
     });
 
     it("starter tier has finite limits", () => {
@@ -54,6 +57,7 @@ describe("billing/plans", () => {
       expect(limits.tokenBudgetPerSeat).toBe(2_000_000);
       expect(limits.maxSeats).toBe(10);
       expect(limits.maxConnections).toBe(1);
+      expect(limits.maxChatIntegrations).toBe(1);
     });
 
     it("pro tier has expected limits", () => {
@@ -61,6 +65,7 @@ describe("billing/plans", () => {
       expect(limits.tokenBudgetPerSeat).toBe(5_000_000);
       expect(limits.maxSeats).toBe(25);
       expect(limits.maxConnections).toBe(3);
+      expect(limits.maxChatIntegrations).toBe(3);
     });
 
     it("trial definition includes trialDays", () => {

@@ -2084,13 +2084,13 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
       const currentCount = memberRows[0]?.count ?? 0;
       const limitCheck = await checkResourceLimit(orgId, "seats", currentCount);
       if (!limitCheck.allowed) {
-        // checkResourceLimit fails closed on infra errors (returns
-        // allowed: false, limit: 0). Detect this sentinel and fail open —
-        // blocking SSO login is worse than transient over-provisioning.
-        if (limitCheck.limit === 0) {
+        // checkResourceLimit fails closed on infra errors with
+        // `reason: "check_failed"`. Detect that and fail open — blocking
+        // SSO login is worse than transient over-provisioning.
+        if (limitCheck.reason === "check_failed") {
           log.warn(
             { userId: user.id, orgId },
-            "SSO auto-provisioning: billing check returned limit=0 (infra error?) — allowing provisioning",
+            "SSO auto-provisioning: billing check failed (infra error?) — allowing provisioning",
           );
         } else {
           log.warn(

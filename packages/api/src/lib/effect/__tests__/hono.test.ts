@@ -62,6 +62,8 @@ const {
   ConfigSchemaError,
   InstallNotFoundError,
   InvalidInstallIdError,
+  ChatIntegrationLimitError,
+  BillingCheckFailedError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -449,6 +451,32 @@ describe("mapTaggedError", () => {
       catalogSlug: "postgres",
       pillar: "datasource",
     });
+  });
+
+  it("maps ChatIntegrationLimitError to 429 plan_limit_exceeded with the cap in the body (#2953)", () => {
+    const result = mapTaggedError(
+      new ChatIntegrationLimitError({
+        message: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        workspaceId: "org-1",
+        limit: 1,
+      }),
+    );
+    expect(result.status).toBe(429);
+    expect(result.code).toBe("plan_limit_exceeded");
+    expect(result.body).toEqual({ limit: 1 });
+  });
+
+  it("maps BillingCheckFailedError to 503 billing_check_failed (not a 429 upgrade) (#2953)", () => {
+    const result = mapTaggedError(
+      new BillingCheckFailedError({
+        message: "Unable to verify plan limits. Please try again.",
+        workspaceId: "org-1",
+      }),
+    );
+    expect(result.status).toBe(503);
+    expect(result.code).toBe("billing_check_failed");
+    // No `limit` in the body — there's no meaningful cap to report.
+    expect(result.body).toBeUndefined();
   });
 });
 

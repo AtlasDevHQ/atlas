@@ -376,20 +376,46 @@ function isTrialExpired(workspace: WorkspaceRow): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Resource limit enforcement (seats, connections)
+// Resource limit enforcement (seats, connections, chat integrations)
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of a resource-limit check.
+ *
+ * The two `allowed: false` arms are deliberately distinct so callers can
+ * map them to different HTTP statuses — mirroring the `plan_limit_exceeded`
+ * (429) vs `billing_check_failed` (503) split in {@link checkPlanLimits}:
+ *
+ *  - `cap_reached` — the workspace is genuinely at/over its plan cap. The
+ *    actionable response is "upgrade your plan" (429). Carries `limit`, the
+ *    cap that was hit.
+ *  - `check_failed` — we could NOT determine the count (DB error, missing
+ *    row). Fail-closed: the request is blocked, but the actionable response
+ *    is "try again" (503), NOT "upgrade your plan". Carries no `limit` —
+ *    there is no meaningful cap to report.
+ */
 export type ResourceLimitResult =
   | { allowed: true }
-  | { allowed: false; errorMessage: string; limit: number };
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+
+/** Plan-capped resources. Each maps to a `PlanLimits` field. */
+export type CappedResource = "seats" | "connections" | "chat_integrations";
 
 /**
- * Check whether adding one more resource (seat or connection) would
- * exceed the plan's limit for the given workspace.
+ * Check whether adding one more resource (seat, connection, or chat
+ * integration) would exceed the plan's limit for the given workspace.
  *
- * Returns `{ allowed: true }` when the resource can be created, or
- * `{ allowed: false, errorMessage, limit }` when the plan cap has been
- * reached.
+ * `currentCount` is the count of that resource the workspace already has;
+ * the check blocks when `currentCount >= cap`. Because the block fires
+ * only on *new* resource creation, a workspace that is already over a
+ * newly-introduced cap keeps what it has (grandfathered) and is simply
+ * unable to add more.
+ *
+ * Returns `{ allowed: true }` when the resource can be created,
+ * `{ allowed: false, reason: "cap_reached", ... }` when the plan cap has
+ * been reached, or `{ allowed: false, reason: "check_failed", ... }` when
+ * the workspace lookup failed and we fail closed (see {@link ResourceLimitResult}).
  *
  * Enforcement is skipped (always allowed) when:
  * - No internal DB is configured (self-hosted without managed auth)
@@ -398,7 +424,7 @@ export type ResourceLimitResult =
  */
 export async function checkResourceLimit(
   orgId: string | undefined,
-  resource: "seats" | "connections",
+  resource: CappedResource,
   currentCount: number,
 ): Promise<ResourceLimitResult> {
   if (!orgId || !hasInternalDB()) {
@@ -413,8 +439,10 @@ export async function checkResourceLimit(
       { err: err instanceof Error ? err.message : String(err), orgId, resource },
       "Failed to fetch workspace for resource limit check — blocking as precaution",
     );
-    // Fail closed: consistent with checkPlanLimits behavior per CLAUDE.md
-    return { allowed: false, errorMessage: "Unable to verify plan limits. Please try again.", limit: 0 };
+    // Fail closed: consistent with checkPlanLimits behavior per CLAUDE.md.
+    // `check_failed` (not `cap_reached`) so the caller surfaces a 503
+    // "try again", not a misleading 429 "upgrade your plan".
+    return { allowed: false, reason: "check_failed", errorMessage: "Unable to verify plan limits. Please try again." };
   }
 
   if (!workspace) {
@@ -429,16 +457,25 @@ export async function checkResourceLimit(
   }
 
   const limits = getPlanLimits(tier);
-  const cap = resource === "seats" ? limits.maxSeats : limits.maxConnections;
+  // Record (not a ternary chain) so a new CappedResource member is a
+  // compile error here until it's mapped to a PlanLimits field — no silent
+  // fall-through into the wrong cap/label.
+  const cap = ({
+    seats: limits.maxSeats,
+    connections: limits.maxConnections,
+    chat_integrations: limits.maxChatIntegrations,
+  } satisfies Record<CappedResource, number>)[resource];
 
   if (isUnlimited(cap)) {
     return { allowed: true };
   }
 
   if (currentCount >= cap) {
-    const resourceLabel = resource === "seats"
-      ? (cap === 1 ? "seat" : "seats")
-      : (cap === 1 ? "connection" : "connections");
+    const resourceLabel = ({
+      seats: cap === 1 ? "seat" : "seats",
+      connections: cap === 1 ? "connection" : "connections",
+      chat_integrations: cap === 1 ? "chat integration" : "chat integrations",
+    } satisfies Record<CappedResource, string>)[resource];
     log.warn(
       { orgId, resource, currentCount, limit: cap, tier },
       "Workspace at or over %s limit (%d/%d) — blocking resource creation",
@@ -448,11 +485,104 @@ export async function checkResourceLimit(
     );
     return {
       allowed: false,
+      reason: "cap_reached",
       errorMessage: `Your ${tier} plan allows up to ${cap} ${resourceLabel}. Upgrade to add more.`,
       limit: cap,
     };
   }
 
   return { allowed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Chat integration cap (#2953)
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether the workspace may install one more chat-platform
+ * integration without exceeding its plan's `maxChatIntegrations` cap (the
+ * marketed per-tier numbers live next to the values in `billing/plans.ts`).
+ *
+ * Counts the workspace's existing chat-pillar installs in
+ * `workspace_plugins` (the same store the connections cap counts) and
+ * delegates the cap comparison to {@link checkResourceLimit}.
+ *
+ * `catalogId` is the catalog row id of the platform being installed (e.g.
+ * `"catalog:slack"`). It matters for two reasons:
+ *  - **Reconnect is never blocked.** Re-authing a platform the workspace
+ *    already has does not increase the distinct count, so a workspace that
+ *    is already over a (grandfathered) cap can still re-auth what it owns.
+ *  - **The new platform is excluded from the count**, so the comparison is
+ *    "do the *other* chat platforms already fill the cap?".
+ *
+ * The cap counts every `workspace_plugins` row with `pillar = 'chat'`, so it
+ * only constrains platforms whose install actually writes such a row. Today
+ * that is Slack (OAuth) and Discord — both write `pillar = 'chat'` rows. The
+ * legacy credential-store-only chat routes (Telegram / Teams / gchat /
+ * WhatsApp) don't yet write a `workspace_plugins` row, so they are neither
+ * counted nor capped until they pivot to the unified install record (#2994).
+ *
+ * Fails closed when the count can't be determined (query error or no row),
+ * surfacing `reason: "check_failed"` — consistent with {@link checkResourceLimit}.
+ *
+ * KNOWN LIMITATION (TOCTOU): this is a read-only precheck; the caller does the
+ * `workspace_plugins` INSERT separately, so two *distinct* net-new platforms
+ * installed concurrently (e.g. Slack + Discord finishing OAuth in the same
+ * window while the workspace is one under its cap) can both pass and both
+ * write, landing one over the cap. The same-platform case can't breach it —
+ * the `workspace_plugins_singleton` partial unique index collapses a duplicate
+ * install into an UPSERT (a reconnect, always allowed). Closing the
+ * cross-platform window needs a per-workspace advisory lock / transaction
+ * around count+INSERT; tracked in #3001 (deferred — narrow window, heavy lift).
+ */
+export async function checkChatIntegrationLimit(
+  orgId: string | undefined,
+  catalogId: string,
+): Promise<ResourceLimitResult> {
+  if (!orgId || !hasInternalDB()) {
+    return { allowed: true };
+  }
+
+  let counts: { others: number; this_count: number } | undefined;
+  try {
+    const rows = await internalQuery<{ others: number; this_count: number }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE catalog_id <> $2)::int AS others,
+         COUNT(*) FILTER (WHERE catalog_id = $2)::int  AS this_count
+       FROM workspace_plugins
+       WHERE workspace_id = $1
+         AND pillar = 'chat'
+         AND status <> 'archived'`,
+      [orgId, catalogId],
+    );
+    counts = rows[0];
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
+      "Failed to count chat integrations for limit check — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: "Unable to verify plan limits. Please try again." };
+  }
+
+  // The aggregate SQL above always returns exactly one row, so a missing
+  // row means the driver/query contract was violated. Fail closed rather
+  // than coerce the absent count to 0 — `?? 0` would silently breach the
+  // cap (treat "unknown" as "no other integrations → allow").
+  if (!counts) {
+    log.error(
+      { orgId, catalogId },
+      "Chat-integration count query returned no row — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: "Unable to verify plan limits. Please try again." };
+  }
+
+  // Reconnecting an already-installed platform never increases the distinct
+  // count — always allow so a grandfathered over-cap workspace can re-auth
+  // what it already has.
+  if (counts.this_count > 0) {
+    return { allowed: true };
+  }
+
+  return checkResourceLimit(orgId, "chat_integrations", counts.others);
 }
 

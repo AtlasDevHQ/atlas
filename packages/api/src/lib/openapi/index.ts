@@ -126,3 +126,21 @@ export type {
   PageCacheIdentity,
 } from "./paginator";
 export { defaultPaginatorRegistry, BUILT_IN_STRATEGIES } from "./strategies";
+
+// ── Data candidates + vendor quirks (slice 6a, #3028) ────────────────────────
+// Thin pre-wired vendor `*-data` datasource wrappers (Stripe; Notion/GitHub
+// next) over the generic primitive, plus the declarative vendor-quirk descriptor
+// the client applies through its header/query seams. The pattern 6b/6c extend.
+export {
+  DATA_CANDIDATES,
+  DATA_CANDIDATE_CATALOG_IDS,
+  DATA_CANDIDATE_CONFIG_SCHEMA,
+  STRIPE_DATA_CANDIDATE,
+  findDataCandidateByCatalogId,
+  findDataCandidateBySlug,
+} from "./data-candidates";
+export type { DataCandidate } from "./data-candidates";
+export { applyQuirkHeaders, applyQuirkQueryShaping } from "./vendor-quirk";
+export type { VendorQuirk, QueryParamShapeRule } from "./vendor-quirk";
+export { seedDataCandidateCatalog } from "./data-candidate-seed";
+export type { DataCandidateCatalogSeedResult } from "./data-candidate-seed";

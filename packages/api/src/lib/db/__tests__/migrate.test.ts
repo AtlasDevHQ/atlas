@@ -126,7 +126,7 @@ describe("runMigrations", () => {
     //   #2849 (workspace_id on crm_outbox) = 107. Plus
     //   0107 (email_outbox durable queue for transactional email, #2942) = 108.
     //   Plus 0108 (openapi-generic catalog row, #2926) = 109.
-    expect(count).toBe(109);
+    expect(count).toBe(110);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -264,6 +264,7 @@ describe("runMigrations", () => {
         "0106_crm_outbox_workspace_id.sql",
         "0107_email_outbox.sql",
         "0108_openapi_generic_catalog.sql",
+        "0109_data_candidate_catalog.sql",
       ],
     });
 

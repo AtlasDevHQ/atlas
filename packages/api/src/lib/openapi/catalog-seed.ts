@@ -30,6 +30,7 @@ import {
   OPENAPI_GENERIC_DESCRIPTION,
   OPENAPI_GENERIC_CONFIG_SCHEMA,
 } from "./catalog";
+import { seedDataCandidateCatalog } from "./data-candidate-seed";
 
 const log = createLogger("openapi.catalog-seed");
 
@@ -89,6 +90,12 @@ export type OpenApiDatasourceCatalogSeedBootResult =
  * Boot-pass wrapper. Log-and-continue posture (mirrors
  * `runBuiltinDatasourceCatalogSeedBoot`): a seed failure leaves the
  * migration-inserted row authoritative rather than crashing the API.
+ *
+ * Slice 6a (#3028): this also seeds the vendor `*-data` candidate rows
+ * (`data-candidate-seed.ts`) in the same boot pass / DB session, so no extra
+ * boot DAG node is needed. The returned `inserted` flag still reflects the
+ * generic row; candidate inserts are logged by their own seed. A candidate seed
+ * failure propagates into this wrapper's catch (same non-fatal posture).
  */
 export async function runOpenApiDatasourceCatalogSeedBoot(): Promise<OpenApiDatasourceCatalogSeedBootResult> {
   const { hasInternalDB, getInternalDB } = await import("@atlas/api/lib/db/internal");
@@ -108,12 +115,15 @@ export async function runOpenApiDatasourceCatalogSeedBoot(): Promise<OpenApiData
 
   try {
     const result = await seedOpenApiDatasourceCatalog(db);
+    // Slice 6a (#3028): seed the vendor *-data candidate rows (Stripe today;
+    // Notion/GitHub next) in the same pass. Same idempotent ON CONFLICT posture.
+    await seedDataCandidateCatalog(db);
     return { kind: "seeded", inserted: result.inserted };
   } catch (err) {
     const normalized = err instanceof Error ? err : new Error(String(err));
     log.error(
       { err: normalized },
-      "openapi-generic catalog seed failed — migration-inserted row remains authoritative",
+      "openapi-generic / data-candidate catalog seed failed — migration-inserted rows remain authoritative",
     );
     return { kind: "error", message: normalized.message };
   }

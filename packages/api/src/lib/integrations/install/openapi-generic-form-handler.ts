@@ -43,6 +43,7 @@ import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { isPlaintextCredentialRisk } from "@atlas/api/lib/db/secret-encryption";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { assertBaseUrlAllowed, EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
+import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   OPENAPI_GENERIC_SLUG,
@@ -52,6 +53,7 @@ import {
   OPENAPI_SUPPORTED_AUTH_KINDS,
   DEFAULT_REPRESENTATION_MODE,
   narrowSupportedAuthKind,
+  type SupportedAuthKind,
 } from "@atlas/api/lib/openapi/catalog";
 import {
   buildResolvedAuth,
@@ -212,69 +214,10 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
     }
     const data = parsed.data;
 
-    // ── 2. SaaS keyset gate ─────────────────────────────────────────
-    if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
-      log.error(
-        { workspaceId },
-        "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext auth_value)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
-          "Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
-
-    // ── 2a. Self-hosted plaintext-credential warning (non-fatal) ────
-    // The SaaS gate above hard-fails. A self-hosted prod-like deploy with a
-    // credential and no keyset is *allowed* — the keyless dev passthrough in
-    // `encryptSecret` is intentional repo-wide parity — but it must not be
-    // silent. Mirror the boot-time P0 alarm via the shared predicate so the
-    // operator gets the same signal at the credential boundary rather than
-    // only on a later read of plaintext-at-rest. (In SaaS + no keyset we
-    // already threw above, so this only fires for self-hosted NODE_ENV=production.)
-    if (data.auth_value && isPlaintextCredentialRisk()) {
-      log.warn(
-        { workspaceId },
-        "Persisting an OpenAPI datasource credential with no encryption keyset configured in a " +
-          "prod-like environment — auth_value will be stored in plaintext. Set ATLAS_ENCRYPTION_KEYS " +
-          "(or ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) to encrypt integration credentials at rest.",
-      );
-    }
-
-    // ── 2b. SSRF guard for base_url_override ────────────────────────
-    // The override becomes the operations base URL the agent later sends requests
-    // to, host-side, via `executeRestOperation`. It's admin-supplied, so block
-    // private/internal targets via the shared chokepoint (the spec URL itself is
-    // guarded inside `probeSpec`). The guard is ON in every deploy mode;
-    // self-hosted operators opt OUT via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS (#3006).
-    if (data.base_url_override) {
-      try {
-        assertBaseUrlAllowed(data.base_url_override);
-      } catch (err) {
-        if (err instanceof EgressBlockedError) {
-          throw FormInstallValidationError.fromZodFlatten({
-            fieldErrors: {
-              base_url_override: [
-                "Base URL must use HTTPS and resolve to a public host — private or internal " +
-                  "addresses are blocked. Set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow " +
-                  "internal targets (self-hosted only).",
-              ],
-            },
-            formErrors: [],
-          });
-        }
-        throw err;
-      }
-    }
-
-    // ── 3. Probe the spec (slice-0) → snapshot ──────────────────────
-    // The credential is needed because some specs (Twenty) require auth to read
-    // `/open-api/core`. A probe failure is a user-fixable input error → 400 on
-    // the offending field, not a 500.
-    //
-    // `data.auth_kind` is guaranteed non-oauth2 here (the schema's superRefine
-    // fails the parse for oauth2 above); narrow to SupportedAuthKind so
-    // buildResolvedAuth is called total. The `null` arm is unreachable.
+    // ── 2. Narrow the form's auth kind to the executable subset ─────
+    // oauth2 is rejected by the schema's superRefine above; the `null` arm is
+    // unreachable but kept total so `persistOpenApiDatasourceInstall` receives a
+    // {@link SupportedAuthKind}, never a raw form string.
     const supportedKind = narrowSupportedAuthKind(data.auth_kind);
     if (!supportedKind) {
       throw FormInstallValidationError.fromZodFlatten({
@@ -284,111 +227,241 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
         formErrors: [],
       });
     }
-    const auth = buildResolvedAuth(
-      supportedKind,
-      data.auth_value,
-      data.auth_header_name,
-      data.auth_param_name,
+
+    // ── 3. Shared probe → encrypt → insert core ─────────────────────
+    // Everything past form parsing (keyset gate, plaintext warning, SSRF guard,
+    // probe→snapshot, schema-driven encryption, multi-instance INSERT) is the
+    // SAME for every OpenAPI datasource install — the generic row here AND the
+    // built-in data candidates (slice 6a, #3028) — so it lives in one shared
+    // function. A candidate handler is then a thin wrapper that pre-fills
+    // openapi_url + auth_kind and calls the same core (no forked install path).
+    return persistOpenApiDatasourceInstall({
+      workspaceId,
+      catalogId: OPENAPI_GENERIC_CATALOG_ID,
+      catalogSlug: OPENAPI_GENERIC_SLUG,
+      configSchema: OPENAPI_GENERIC_CONFIG_SCHEMA,
+      openapiUrl: data.openapi_url,
+      authKind: supportedKind,
+      ...(data.auth_value ? { authValue: data.auth_value } : {}),
+      ...(data.auth_header_name ? { authHeaderName: data.auth_header_name } : {}),
+      ...(data.auth_param_name ? { authParamName: data.auth_param_name } : {}),
+      ...(data.base_url_override ? { baseUrlOverride: data.base_url_override } : {}),
+      ...(data.write_allowlist ? { writeAllowlist: data.write_allowlist } : {}),
+      ...(data.display_name ? { displayName: data.display_name } : {}),
+      newId: this.newId,
+      now: this.now,
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+    });
+  }
+}
+
+/**
+ * Params for {@link persistOpenApiDatasourceInstall} — the resolved (post-form)
+ * inputs every OpenAPI datasource install shares. `authKind` is the already-
+ * narrowed {@link SupportedAuthKind} (oauth2 unrepresentable). `catalogId` is the
+ * `catalog:*` FK written to the row; `catalogSlug` is the bare slug returned on
+ * the {@link InstallRecord}. `configSchema`'s `secret: true` flags drive
+ * encryption — never named here.
+ */
+export interface PersistOpenApiDatasourceInstallParams {
+  readonly workspaceId: WorkspaceId;
+  readonly catalogId: string;
+  readonly catalogSlug: string;
+  readonly configSchema: ReadonlyArray<ConfigSchemaField>;
+  readonly openapiUrl: string;
+  readonly authKind: SupportedAuthKind;
+  readonly authValue?: string;
+  readonly authHeaderName?: string;
+  readonly authParamName?: string;
+  readonly baseUrlOverride?: string;
+  readonly writeAllowlist?: string;
+  readonly displayName?: string;
+  readonly newId: () => string;
+  readonly now: () => string;
+  readonly fetchImpl?: typeof globalThis.fetch;
+}
+
+/**
+ * The shared OpenAPI datasource install core: keyset gate → plaintext warning →
+ * SSRF guard → probe→snapshot → schema-driven encryption → multi-instance
+ * INSERT. Extracted from {@link OpenApiGenericFormInstallHandler.validateConfig}
+ * (slice 6a, #3028) so the generic handler AND every built-in data-candidate
+ * handler share ONE install path — the candidate is a thin wrapper that pre-fills
+ * `openapiUrl` + `authKind` and calls this, never a fork.
+ *
+ * A probe failure surfaces as a field-level {@link FormInstallValidationError} on
+ * `openapi_url`; the SaaS keyset gate hard-fails; a self-hosted prod deploy with
+ * no keyset warns (non-fatal). Inserts a fresh `install_id` every call
+ * (multi-instance) under `status='draft'`.
+ */
+export async function persistOpenApiDatasourceInstall(
+  params: PersistOpenApiDatasourceInstallParams,
+): Promise<{ readonly installRecord: InstallRecord; readonly credentialWritten: boolean }> {
+  const {
+    workspaceId,
+    catalogId,
+    catalogSlug,
+    configSchema,
+    openapiUrl,
+    authKind,
+    authValue,
+    authHeaderName,
+    authParamName,
+    baseUrlOverride,
+    writeAllowlist,
+    displayName,
+    newId,
+    now,
+    fetchImpl,
+  } = params;
+
+  // ── SaaS keyset gate ──────────────────────────────────────────────
+  if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
+    log.error(
+      { workspaceId, catalogSlug },
+      "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext auth_value)",
     );
-    const probeOpts: ProbeOptions = this.fetchImpl ? { fetchImpl: this.fetchImpl } : {};
-    let snapshot;
+    throw new Error(
+      "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
+        "Set ATLAS_ENCRYPTION_KEYS and retry.",
+    );
+  }
+
+  // ── Self-hosted plaintext-credential warning (non-fatal) ──────────
+  // The SaaS gate above hard-fails. A self-hosted prod-like deploy with a
+  // credential and no keyset is *allowed* (keyless dev passthrough is intentional
+  // repo-wide parity) but must not be silent — mirror the boot-time P0 alarm.
+  if (authValue && isPlaintextCredentialRisk()) {
+    log.warn(
+      { workspaceId, catalogSlug },
+      "Persisting an OpenAPI datasource credential with no encryption keyset configured in a " +
+        "prod-like environment — auth_value will be stored in plaintext. Set ATLAS_ENCRYPTION_KEYS " +
+        "(or ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) to encrypt integration credentials at rest.",
+    );
+  }
+
+  // ── SSRF guard for base_url_override ──────────────────────────────
+  // The override becomes the operations base URL the agent later sends requests
+  // to, host-side, via `executeRestOperation`. Block private/internal targets via
+  // the shared chokepoint (the spec URL itself is guarded inside `probeSpec`).
+  // Self-hosted operators opt OUT via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS (#3006).
+  if (baseUrlOverride) {
     try {
-      const { doc, graph } = await probeSpec(data.openapi_url, auth, probeOpts);
-      snapshot = buildSnapshot(doc, graph, this.now());
+      assertBaseUrlAllowed(baseUrlOverride);
     } catch (err) {
-      if (err instanceof OpenApiProbeError) {
-        log.warn(
-          { workspaceId, reason: err.reason },
-          "OpenAPI install probe failed — surfacing as field validation error",
-        );
-        // Point the modal at openapi_url for every probe failure class
-        // (unreachable / http_error / unparseable / no_operations) — the spec
-        // URL is the field the admin can act on; the message carries the detail.
+      if (err instanceof EgressBlockedError) {
         throw FormInstallValidationError.fromZodFlatten({
-          fieldErrors: { openapi_url: [err.message] },
+          fieldErrors: {
+            base_url_override: [
+              "Base URL must use HTTPS and resolve to a public host — private or internal " +
+                "addresses are blocked. Set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow " +
+                "internal targets (self-hosted only).",
+            ],
+          },
           formErrors: [],
         });
       }
-      log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "OpenAPI install probe threw unexpectedly",
-      );
       throw err;
     }
-
-    // ── 4. Assemble config + encrypt secret fields ──────────────────
-    // The catalog `config_schema`'s `secret: true` flag drives encryption — we
-    // never name `auth_value` explicitly here. Operational metadata
-    // (representation_mode, openapi_snapshot) is non-secret and passes through.
-    const rawConfig: Record<string, unknown> = {
-      openapi_url: data.openapi_url,
-      auth_kind: data.auth_kind,
-      ...(data.auth_value ? { auth_value: data.auth_value } : {}),
-      ...(data.auth_header_name ? { auth_header_name: data.auth_header_name } : {}),
-      ...(data.auth_param_name ? { auth_param_name: data.auth_param_name } : {}),
-      ...(data.base_url_override ? { base_url_override: data.base_url_override } : {}),
-      ...(data.write_allowlist ? { write_allowlist: data.write_allowlist } : {}),
-      display_name: data.display_name || snapshot.title,
-      representation_mode: DEFAULT_REPRESENTATION_MODE,
-      openapi_snapshot: snapshot,
-    };
-    const schema = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
-    const encryptedConfig = encryptSecretFields(rawConfig, schema);
-
-    // ── 5. Insert a fresh multi-instance datasource row ─────────────
-    // Same UUID for `id` and `install_id` (mirrors the Twenty handler). Fresh
-    // every submit — multi-instance, so no `(workspace_id, catalog_id)`
-    // conflict. The `(workspace_id, catalog_id, install_id)` DO UPDATE is
-    // belt-and-suspenders idempotency on the UUID (which never collides).
-    // `status='draft'` matches the SQL-connection convention (#2177): the
-    // pending-changes pill surfaces it and the admin publishes atomically.
-    const installId = this.newId();
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status, installed_at, updated_at)
-         VALUES ($1, $2, $3, $1, 'datasource', $4::jsonb, true, 'draft', NOW(), NOW())
-         ON CONFLICT (workspace_id, catalog_id, install_id) DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true,
-               updated_at = NOW()
-         RETURNING id`,
-        [installId, workspaceId, OPENAPI_GENERIC_CATALOG_ID, JSON.stringify(encryptedConfig)],
-      );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        log.error(
-          { workspaceId, installId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        { workspaceId, installId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist OpenAPI datasource install record — aborting install",
-      );
-      throw err;
-    }
-
-    log.info(
-      {
-        workspaceId,
-        installId: persistedId,
-        operationCount: snapshot.operationCount,
-        specHost: safeHost(data.openapi_url),
-      },
-      "OpenAPI generic datasource install completed",
-    );
-    return {
-      installRecord: { id: persistedId, workspaceId, catalogId: OPENAPI_GENERIC_SLUG },
-      credentialWritten: data.auth_kind !== "none",
-    };
   }
+
+  // ── Probe the spec (slice-0) → snapshot ───────────────────────────
+  // The credential is needed because some specs require auth to read. A probe
+  // failure is a user-fixable input error → 400 on `openapi_url`, not a 500.
+  const auth = buildResolvedAuth(authKind, authValue, authHeaderName, authParamName);
+  const probeOpts: ProbeOptions = fetchImpl ? { fetchImpl } : {};
+  let snapshot;
+  try {
+    const { doc, graph } = await probeSpec(openapiUrl, auth, probeOpts);
+    snapshot = buildSnapshot(doc, graph, now());
+  } catch (err) {
+    if (err instanceof OpenApiProbeError) {
+      log.warn(
+        { workspaceId, catalogSlug, reason: err.reason },
+        "OpenAPI install probe failed — surfacing as field validation error",
+      );
+      throw FormInstallValidationError.fromZodFlatten({
+        fieldErrors: { openapi_url: [err.message] },
+        formErrors: [],
+      });
+    }
+    log.error(
+      { workspaceId, catalogSlug, err: err instanceof Error ? err.message : String(err) },
+      "OpenAPI install probe threw unexpectedly",
+    );
+    throw err;
+  }
+
+  // ── Assemble config + encrypt secret fields ───────────────────────
+  // The `config_schema`'s `secret: true` flag drives encryption — never naming
+  // `auth_value` here. Operational metadata is non-secret and passes through.
+  const rawConfig: Record<string, unknown> = {
+    openapi_url: openapiUrl,
+    auth_kind: authKind,
+    ...(authValue ? { auth_value: authValue } : {}),
+    ...(authHeaderName ? { auth_header_name: authHeaderName } : {}),
+    ...(authParamName ? { auth_param_name: authParamName } : {}),
+    ...(baseUrlOverride ? { base_url_override: baseUrlOverride } : {}),
+    ...(writeAllowlist ? { write_allowlist: writeAllowlist } : {}),
+    display_name: displayName || snapshot.title,
+    representation_mode: DEFAULT_REPRESENTATION_MODE,
+    openapi_snapshot: snapshot,
+  };
+  const schema = parseConfigSchema(configSchema);
+  const encryptedConfig = encryptSecretFields(rawConfig, schema);
+
+  // ── Insert a fresh multi-instance datasource row ──────────────────
+  // Same UUID for `id` and `install_id`. Fresh every submit (multi-instance);
+  // the `(workspace_id, catalog_id, install_id)` DO UPDATE is belt-and-suspenders
+  // idempotency on the never-colliding UUID. `status='draft'` (the #2177
+  // convention) surfaces the pending-changes pill for atomic publish.
+  const installId = newId();
+  let persistedId: string;
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `INSERT INTO workspace_plugins
+         (id, workspace_id, catalog_id, install_id, pillar, config, enabled, status, installed_at, updated_at)
+       VALUES ($1, $2, $3, $1, 'datasource', $4::jsonb, true, 'draft', NOW(), NOW())
+       ON CONFLICT (workspace_id, catalog_id, install_id) DO UPDATE
+         SET config = EXCLUDED.config,
+             enabled = true,
+             updated_at = NOW()
+       RETURNING id`,
+      [installId, workspaceId, catalogId, JSON.stringify(encryptedConfig)],
+    );
+    const returned = rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      log.error(
+        { workspaceId, catalogSlug, installId },
+        "workspace_plugins upsert returned no id — Postgres invariant violation",
+      );
+      throw new Error(
+        "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
+      );
+    }
+    persistedId = returned;
+  } catch (err) {
+    log.error(
+      { workspaceId, catalogSlug, installId, err: err instanceof Error ? err.message : String(err) },
+      "Failed to persist OpenAPI datasource install record — aborting install",
+    );
+    throw err;
+  }
+
+  log.info(
+    {
+      workspaceId,
+      catalogSlug,
+      installId: persistedId,
+      operationCount: snapshot.operationCount,
+      specHost: safeHost(openapiUrl),
+    },
+    "OpenAPI datasource install completed",
+  );
+  return {
+    installRecord: { id: persistedId, workspaceId, catalogId: catalogSlug },
+    credentialWritten: authKind !== "none",
+  };
 }
 
 /** Best-effort host extraction for log breadcrumbs — never throws, never leaks the path. */

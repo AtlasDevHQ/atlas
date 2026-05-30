@@ -18,6 +18,7 @@
  */
 import type { OperationGraph, ResolvedAuth } from "./types";
 import type { RepresentationMode } from "./representation";
+import type { VendorQuirk } from "./vendor-quirk";
 
 /**
  * A resolved REST datasource the agent can read from. The normalized operation
@@ -75,4 +76,14 @@ export interface RestDatasource {
    * `workspace_plugins.config.request_timeout_ms`.
    */
   readonly requestTimeoutMs?: number;
+  /**
+   * The vendor's declarative quirk (slice 6a, #3028) — required static headers /
+   * query param-shaping the client applies on every request. Present only for a
+   * built-in data-candidate install (e.g. `stripe-data` → `expand[]` shaping);
+   * `undefined` for a plain `openapi-generic` install. CODE-resident: the resolver
+   * looks it up from the `DATA_CANDIDATES` registry by the install's catalog id —
+   * it is never stored in (or read from) the encrypted config. The agent tool
+   * threads it into `executeOperation` via {@link import("./types").ExecuteOptions.quirk}.
+   */
+  readonly quirk?: VendorQuirk;
 }

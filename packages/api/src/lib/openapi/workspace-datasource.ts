@@ -37,6 +37,11 @@ import {
   parseSideEffectingOperations,
   parseWriteAllowlist,
 } from "./catalog";
+import {
+  DATA_CANDIDATE_CATALOG_IDS,
+  DATA_CANDIDATE_CONFIG_SCHEMA,
+  findDataCandidateByCatalogId,
+} from "./data-candidates";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
 import { resolveAuthFromDecryptedConfig, snapshotToGraph } from "./probe";
 import type { OperationGraph } from "./types";
@@ -47,9 +52,16 @@ const log = createLogger("openapi.workspace-datasource");
  * A `workspace_plugins` row this resolver reads. `config` is the raw (encrypted)
  * JSONB. A `type` (not `interface`) so it satisfies `internalQuery`'s
  * `Record<string, unknown>` row constraint via TS's implicit index signature.
+ *
+ * `catalog_id` distinguishes a plain `openapi-generic` install from a built-in
+ * data-candidate install (e.g. `catalog:stripe-data`, slice 6a #3028) so the
+ * resolver can attach the candidate's code-resident quirk + decrypt with the
+ * matching config schema. Optional for back-compat: a row that omits it is
+ * treated as the generic datasource (no quirk).
  */
 export type OpenApiInstallRow = {
   readonly install_id: string;
+  readonly catalog_id?: string;
   readonly config: Record<string, unknown> | null;
 };
 
@@ -93,20 +105,24 @@ export async function defaultQuery(
   workspaceId: string,
   exec?: OpenApiInstallQueryExecutor,
 ): Promise<ReadonlyArray<OpenApiInstallRow>> {
-  const sql = `SELECT install_id, config
+  // Match the generic datasource AND every built-in data candidate (slice 6a,
+  // #3028) — `catalog_id = ANY($2)` over one array keeps the scope a single
+  // bind. The per-conjunct tenant guard is otherwise unchanged.
+  const sql = `SELECT install_id, catalog_id, config
        FROM workspace_plugins
       WHERE workspace_id = $1
-        AND catalog_id = $2
+        AND catalog_id = ANY($2)
         AND pillar = 'datasource'
         AND status != 'archived'
       ORDER BY installed_at ASC`;
-  const params = [workspaceId, OPENAPI_GENERIC_CATALOG_ID];
+  const params = [workspaceId, [OPENAPI_GENERIC_CATALOG_ID, ...DATA_CANDIDATE_CATALOG_IDS]];
   if (exec) return exec(sql, params);
   const { internalQuery } = await import("@atlas/api/lib/db/internal");
   return internalQuery<OpenApiInstallRow>(sql, params);
 }
 
-const SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
+const GENERIC_SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
+const CANDIDATE_SECRET_SCHEMA = parseConfigSchema(DATA_CANDIDATE_CONFIG_SCHEMA);
 
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
@@ -147,6 +163,7 @@ function resolveBaseUrl(
 function buildDatasource(
   workspaceId: string,
   installId: string,
+  catalogId: string | undefined,
   decrypted: Record<string, unknown>,
 ): RestDatasource | null {
   // Validate the snapshot read back from JSONB, rather than an unchecked cast: a
@@ -228,6 +245,13 @@ function buildDatasource(
     throw err;
   }
 
+  // Slice 6a (#3028): a built-in data-candidate install carries its declarative
+  // quirk in the code-resident registry (keyed by catalog id), never in config —
+  // attach it so the agent tool can thread it into the client. A plain
+  // openapi-generic install (or an unknown catalog id) has none.
+  const candidate =
+    catalogId !== undefined ? findDataCandidateByCatalogId(catalogId) : undefined;
+
   return {
     id: installId,
     displayName,
@@ -239,6 +263,7 @@ function buildDatasource(
     sideEffectingOperations,
     ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
     ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
+    ...(candidate?.quirk !== undefined ? { quirk: candidate.quirk } : {}),
   };
 }
 
@@ -255,9 +280,17 @@ function buildDatasourcesFromRows(
 ): RestDatasource[] {
   const out: RestDatasource[] = [];
   for (const row of rows) {
+    // Pick the decryption schema by catalog: a data candidate's config (slice 6a)
+    // carries fewer fields than the generic one, but both mark `auth_value` as the
+    // sole secret — so decryption is identical in practice; selecting the matching
+    // schema keeps the seam correct if a future candidate adds its own secret field.
+    const secretSchema =
+      row.catalog_id !== undefined && findDataCandidateByCatalogId(row.catalog_id) !== undefined
+        ? CANDIDATE_SECRET_SCHEMA
+        : GENERIC_SECRET_SCHEMA;
     let decrypted: Record<string, unknown>;
     try {
-      decrypted = decryptSecretFields(row.config ?? {}, SECRET_SCHEMA);
+      decrypted = decryptSecretFields(row.config ?? {}, secretSchema);
     } catch (err) {
       log.warn(
         { workspaceId, installId: row.install_id, err: err instanceof Error ? err.message : String(err) },
@@ -265,7 +298,7 @@ function buildDatasourcesFromRows(
       );
       continue;
     }
-    const ds = buildDatasource(workspaceId, row.install_id, decrypted);
+    const ds = buildDatasource(workspaceId, row.install_id, row.catalog_id, decrypted);
     if (ds) out.push(ds);
   }
   return out;

@@ -20,6 +20,7 @@
  * into it — per PRD #2868 "Option B: parallel adapter, not subordinate".
  */
 import { Data } from "effect";
+import type { VendorQuirk } from "./vendor-quirk";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Primitive enums
@@ -305,6 +306,14 @@ export interface ExecuteOptions {
   readonly timeoutMs?: number;
   /** `fetch` implementation override, for integration tests. */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /**
+   * A vendor's declarative deviations from plain REST (slice 6a, #3028): required
+   * static headers + query param-shaping the client applies to THIS request
+   * through its header / query seams. Data, not a code branch — a data candidate
+   * (`data-candidates.ts`) supplies its {@link VendorQuirk} here via the resolved
+   * {@link import("./datasource").RestDatasource}. Omit for a perfectly-generic API.
+   */
+  readonly quirk?: VendorQuirk;
 }
 
 /**

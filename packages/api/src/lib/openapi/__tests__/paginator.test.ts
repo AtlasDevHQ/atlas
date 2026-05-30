@@ -138,6 +138,66 @@ const NEXT_CASES: NextCase[] = [
     expected: PAGE_DONE,
   },
 
+  // ── cursor: last-item-id dialect (Stripe, #3028) ──────────────────────
+  {
+    title: "cursor(last-item): next cursor is the last item's id while has_more",
+    config: {
+      strategy: "cursor",
+      itemsPath: "data",
+      cursorParam: "starting_after",
+      cursorFromLastItem: true,
+      cursorItemField: "id",
+      hasMorePath: "has_more",
+    },
+    request: { operationId: "GetCustomers", params: { query: { limit: 2 } } },
+    response: ok({ object: "list", data: [{ id: "cus_1" }, { id: "cus_2" }], has_more: true }),
+    expected: continueWith({
+      operationId: "GetCustomers",
+      params: { query: { limit: 2, starting_after: "cus_2" } },
+    }),
+  },
+  {
+    title: "cursor(last-item): stops when has_more is false",
+    config: {
+      strategy: "cursor",
+      itemsPath: "data",
+      cursorParam: "starting_after",
+      cursorFromLastItem: true,
+      cursorItemField: "id",
+      hasMorePath: "has_more",
+    },
+    request: { operationId: "GetCustomers", params: { query: { starting_after: "cus_2" } } },
+    response: ok({ object: "list", data: [{ id: "cus_3" }], has_more: false }),
+    expected: PAGE_DONE,
+  },
+  {
+    title: "cursor(last-item): stops on an empty page even if has_more is true",
+    config: {
+      strategy: "cursor",
+      itemsPath: "data",
+      cursorParam: "starting_after",
+      cursorFromLastItem: true,
+      cursorItemField: "id",
+      hasMorePath: "has_more",
+    },
+    request: { operationId: "GetCustomers", params: {} },
+    response: ok({ object: "list", data: [], has_more: true }),
+    expected: PAGE_DONE,
+  },
+  {
+    title: "cursor(last-item): stops when the last item lacks the cursor field",
+    config: {
+      strategy: "cursor",
+      itemsPath: "data",
+      cursorParam: "starting_after",
+      cursorFromLastItem: true,
+      cursorItemField: "id",
+    },
+    request: { operationId: "GetCustomers", params: {} },
+    response: ok({ object: "list", data: [{ notId: "x" }] }),
+    expected: PAGE_DONE,
+  },
+
   // ── offset ──────────────────────────────────────────────────────────
   {
     title: "offset: advances offset by limit on a full page",

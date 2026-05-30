@@ -14,13 +14,18 @@ import * as path from "path";
 import { buildOperationGraph } from "../spec";
 import { executeOperation, executeOperationPaged } from "../client";
 import { defaultPaginatorRegistry } from "../strategies";
-import { STRIPE_DATA_CANDIDATE } from "../data-candidates";
+import { STRIPE_DATA_CANDIDATE, NOTION_DATA_CANDIDATE } from "../data-candidates";
 import type { OperationGraph } from "../types";
 
 const STRIPE_SPEC = JSON.parse(
   fs.readFileSync(path.join(import.meta.dir, "fixtures", "stripe.excerpt.json"), "utf8"),
 );
 const stripeGraph: OperationGraph = buildOperationGraph(STRIPE_SPEC);
+
+const NOTION_SPEC = JSON.parse(
+  fs.readFileSync(path.join(import.meta.dir, "fixtures", "notion.excerpt.json"), "utf8"),
+);
+const notionGraph: OperationGraph = buildOperationGraph(NOTION_SPEC);
 
 /** Capture every request URL + headers a stubbed fetch sees. */
 function capturingFetch(body: unknown) {
@@ -178,6 +183,134 @@ describe("executeOperationPaged — Stripe cursor walk (headline AC)", () => {
     for (const h of seenHeaders) {
       expect(h["stripe-version"]).toBe("2024-06-20");
       expect(h["authorization"]).toBe("Bearer sk_test_x");
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  Notion — the required-static-header proof (slice 6b headline AC, #3029)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("executeOperation — Notion required Notion-Version header (slice 6b, #3029)", () => {
+  it("injects Notion-Version from the quirk on a GET, alongside (never clobbering) bearer auth", async () => {
+    const { fetchImpl, calls } = capturingFetch({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+    await executeOperation(
+      notionGraph,
+      "get-users",
+      { query: { page_size: 2 } },
+      { kind: "bearer", token: "secret_ntn_x" },
+      { baseUrl: "https://api.notion.com", fetchImpl, quirk: NOTION_DATA_CANDIDATE.quirk },
+    );
+    expect(calls[0].headers["notion-version"]).toBe("2025-09-03");
+    expect(calls[0].headers["authorization"]).toBe("Bearer secret_ntn_x");
+  });
+
+  it("injects Notion-Version on a POST too — it's data, not a GET-only code path", async () => {
+    const { fetchImpl, calls } = capturingFetch({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+    // post-search is the operation behind "list pages in my workspace".
+    await executeOperation(
+      notionGraph,
+      "post-search",
+      { body: { query: "roadmap" } },
+      { kind: "bearer", token: "secret_ntn_x" },
+      { baseUrl: "https://api.notion.com", fetchImpl, quirk: NOTION_DATA_CANDIDATE.quirk },
+    );
+    expect(calls[0].headers["notion-version"]).toBe("2025-09-03");
+    expect(calls[0].headers["authorization"]).toBe("Bearer secret_ntn_x");
+  });
+
+  it("is ABSENT without the quirk — proving the header is supplied by the quirk, not the graph", async () => {
+    const { fetchImpl, calls } = capturingFetch({
+      object: "list",
+      results: [],
+      next_cursor: null,
+      has_more: false,
+    });
+    await executeOperation(
+      notionGraph,
+      "get-users",
+      { query: { page_size: 2 } },
+      { kind: "bearer", token: "t" },
+      { baseUrl: "https://api.notion.com", fetchImpl },
+    );
+    // The spec declares Notion-Version as an OPTIONAL header param with a default,
+    // but the generic client never auto-sends a param default — so without the
+    // candidate's quirk the header would be missing. That gap is exactly what the
+    // declarative requiredHeaders descriptor closes.
+    expect(calls[0].headers["notion-version"]).toBeUndefined();
+  });
+});
+
+describe("executeOperationPaged — Notion cursor walk carries Notion-Version on every page", () => {
+  it("merges body-cursor pages (next_cursor → start_cursor) with the header on each request", async () => {
+    // The candidate's default pagination resolves over the SAME generic registry —
+    // a Notion-specific paginator would throw here.
+    const strategy = defaultPaginatorRegistry.resolve(NOTION_DATA_CANDIDATE.pagination!);
+
+    const PAGES = 3;
+    const PAGE_SIZE = 2;
+    const seen: { url: string; headers: Record<string, string> }[] = [];
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      const href = typeof input === "string" ? input : input.toString();
+      const headers: Record<string, string> = {};
+      const h = init?.headers as Record<string, string> | undefined;
+      if (h) for (const [k, v] of Object.entries(h)) headers[k.toLowerCase()] = String(v);
+      seen.push({ url: href, headers });
+
+      const after = new URL(href).searchParams.get("start_cursor");
+      // page index derives from the cursor (cursor-<n>) or 0 on the first page.
+      const pageIndex = after === null ? 0 : Number(after.replace("cursor-", ""));
+      const results = Array.from({ length: PAGE_SIZE }, (_, i) => ({
+        object: "user",
+        id: `u-${pageIndex}-${i}`,
+      }));
+      const has_more = pageIndex < PAGES - 1;
+      const next_cursor = has_more ? `cursor-${pageIndex + 1}` : null;
+      return new Response(JSON.stringify({ object: "list", results, next_cursor, has_more }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const merged = await executeOperationPaged(
+      notionGraph,
+      "get-users",
+      { query: { page_size: PAGE_SIZE } },
+      { kind: "bearer", token: "secret_ntn_x" },
+      {
+        baseUrl: "https://api.notion.com",
+        fetchImpl,
+        pagination: strategy,
+        quirk: NOTION_DATA_CANDIDATE.quirk,
+        maxPages: 10,
+      },
+    );
+
+    expect(merged.items).toHaveLength(PAGES * PAGE_SIZE);
+    expect(merged.pageCount).toBe(PAGES);
+    expect(merged.truncated).toBe(false);
+    expect(seen).toHaveLength(PAGES);
+
+    // First page has no cursor; later pages carry start_cursor = previous next_cursor.
+    expect(seen[0].url).not.toContain("start_cursor");
+    expect(seen[1].url).toContain("start_cursor=cursor-1");
+    expect(seen[2].url).toContain("start_cursor=cursor-2");
+
+    // The headline AC: the required header rides EVERY page of the walk, not just
+    // the first, alongside the bearer credential.
+    for (const { headers } of seen) {
+      expect(headers["notion-version"]).toBe("2025-09-03");
+      expect(headers["authorization"]).toBe("Bearer secret_ntn_x");
     }
   });
 });

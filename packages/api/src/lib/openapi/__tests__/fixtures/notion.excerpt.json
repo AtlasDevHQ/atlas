@@ -1,0 +1,108 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Notion API",
+    "version": "2.0.0",
+    "description": "Faithful excerpt of Notion's published OpenAPI spec (makenotion/notion-mcp-server, the 2025-09-03 Data Source Edition) for v0.0.2 slice 6b (#3029). Trimmed to two operations that exercise the data-candidate axes: get-users (cursor-in-query list — the body-cursor pagination dialect) and post-search (POST — proves the required Notion-Version header is injected regardless of method). The `Notion-Version` header is modeled exactly as the real spec models it: an OPTIONAL header parameter with a default. Nothing in OpenAPI can express 'send this on every request', which is the whole reason it lives in the candidate's declarative quirk (requiredHeaders) rather than the graph."
+  },
+  "servers": [{ "url": "https://api.notion.com" }],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": { "type": "http", "scheme": "bearer" },
+      "basicAuth": { "type": "http", "scheme": "basic" }
+    },
+    "parameters": {
+      "notionVersion": {
+        "name": "Notion-Version",
+        "in": "header",
+        "required": false,
+        "schema": { "type": "string", "default": "2025-09-03" },
+        "description": "The Notion API version"
+      }
+    },
+    "schemas": {
+      "PaginatedList": {
+        "type": "object",
+        "description": "Notion's standard cursor-paginated list envelope.",
+        "properties": {
+          "object": { "type": "string", "enum": ["list"] },
+          "results": { "type": "array", "items": { "type": "object" } },
+          "next_cursor": { "type": "string", "nullable": true },
+          "has_more": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/v1/users": {
+      "get": {
+        "operationId": "get-users",
+        "summary": "List all users",
+        "parameters": [
+          {
+            "name": "start_cursor",
+            "in": "query",
+            "required": false,
+            "description": "If supplied, return a page of results starting after the cursor. If omitted, return the first page.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "The number of items to return. Maximum: 100.",
+            "schema": { "type": "integer", "default": 100 }
+          },
+          { "$ref": "#/components/parameters/notionVersion" }
+        ],
+        "responses": {
+          "200": {
+            "description": "A cursor-paginated list of users.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaginatedList" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "operationId": "post-search",
+        "summary": "Search by title",
+        "description": "Search all parent or child pages and databases shared with the integration — the operation behind 'list pages in my workspace'. Cursor lives in the request body, so its deep pagination is a slice-2 per-operation override; the candidate's default pagination targets the GET list surface.",
+        "parameters": [{ "$ref": "#/components/parameters/notionVersion" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Text compared against page and database titles."
+                  },
+                  "start_cursor": { "type": "string" },
+                  "page_size": { "type": "integer", "default": 100 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A cursor-paginated list of pages and databases.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PaginatedList" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

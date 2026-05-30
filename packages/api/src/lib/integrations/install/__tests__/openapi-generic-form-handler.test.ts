@@ -271,3 +271,33 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });
+
+// ── base_url_override SSRF guard (#3006) ──────────────────────────────────────
+
+describe("OpenApiGenericFormInstallHandler — base_url_override SSRF guard", () => {
+  it("rejects an internal base_url_override by default — in non-SaaS mode (guard is ON everywhere now)", async () => {
+    // setKeys() (beforeEach) already deletes ATLAS_DEPLOY_MODE → self-hosted. The
+    // pre-#3006 guard only fired on SaaS; it now fires in every mode unless opted out.
+    const handler = newHandler();
+    let caught: unknown;
+    try {
+      await handler.validateConfig(WSID, validForm({ base_url_override: "https://10.0.0.5/v1" }));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    expect((caught as InstanceType<typeof FormInstallValidationError>).fieldErrors.base_url_override).toBeDefined();
+    expect(mockInternalQuery).not.toHaveBeenCalled(); // install aborted before the insert
+  });
+
+  it("accepts an internal base_url_override when the operator opts out (ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true)", async () => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    const handler = newHandler();
+    const { installRecord } = await handler.validateConfig(
+      WSID,
+      validForm({ base_url_override: "https://10.0.0.5/v1" }),
+    );
+    expect(installRecord.id).toBe("install-1");
+    expect(mockInternalQuery).toHaveBeenCalled(); // install proceeded to the insert
+  });
+});

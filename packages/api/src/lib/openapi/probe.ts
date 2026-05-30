@@ -181,8 +181,9 @@ export async function probeSpec(
 ): Promise<{ readonly doc: unknown; readonly graph: OperationGraph }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
-  // SSRF guard (SaaS only): the spec URL is admin-supplied and fetched here,
-  // host-side — block private/internal targets before the fetch.
+  // SSRF guard (all deploy modes; opt out via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS):
+  // the spec URL is admin-supplied and fetched here, host-side — block
+  // private/internal targets before the fetch. #3006.
   assertSpecUrlAllowed(openapiUrl);
 
   // apiKey-query placement: the spec endpoint may itself need the key in the

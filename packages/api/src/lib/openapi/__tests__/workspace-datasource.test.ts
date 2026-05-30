@@ -253,3 +253,56 @@ describe("resolveWorkspacePrimaryRestDatasource", () => {
     expect(primary?.id).toBe("first");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────
+//  Resolve-time SSRF guard (#3006)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("resolveWorkspaceRestDatasources — SSRF guard at resolve time", () => {
+  // A snapshot whose spec declares an INTERNAL servers[0].url — the public-spec,
+  // internal-server attack. `resolveBaseUrl` would derive a host-side base URL
+  // pointed at cloud metadata; the resolver must skip the datasource (fail-soft).
+  const internalSpec = { ...MOCK_OPENAPI_SPEC, servers: [{ url: "https://169.254.169.254" }] };
+  const internalGraph = buildOperationGraph(internalSpec);
+  function internalSnapshot(probedAt = "2026-05-29T00:00:00.000Z"): OpenApiSnapshot {
+    return buildSnapshot(internalSpec, internalGraph, probedAt);
+  }
+
+  const ORIGINAL_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+  afterEach(() => {
+    if (ORIGINAL_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_FLAG;
+  });
+
+  it("skips a datasource whose spec-derived servers[0].url is internal — but keeps its public siblings (fail-soft isolation)", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "internal", config: config({ openapi_snapshot: internalSnapshot() }) },
+        { install_id: "public", config: config() }, // public servers[0].url
+      ]),
+    });
+    expect(result.map((d) => d.id)).toEqual(["public"]); // internal dropped, public survives
+  });
+
+  it("skips a datasource whose base_url_override is internal", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-1", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+      ]),
+    });
+    expect(result).toHaveLength(0);
+  });
+
+  it("resolves an internal datasource when the operator opts out (ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true)", async () => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "internal", config: config({ openapi_snapshot: internalSnapshot() }) },
+      ]),
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].baseUrl).toBe("https://169.254.169.254");
+  });
+});

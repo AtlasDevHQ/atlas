@@ -133,7 +133,7 @@ export async function guardedFetch(
         `Upstream redirected to a malformed Location (${err instanceof Error ? err.message : String(err)}).`,
       );
     }
-    log.debug({ from: safeUrlForLog(currentUrl), to: safeUrlForLog(nextUrl), hop }, "guardedFetch following redirect");
+    log.debug({ from: hostForLog(currentUrl), to: hostForLog(nextUrl), hop }, "guardedFetch following redirect");
     currentUrl = nextUrl;
   }
 
@@ -143,8 +143,13 @@ export async function guardedFetch(
   );
 }
 
-/** Host-only breadcrumb for logs — never the path/query (which may carry an apiKey-query secret). */
-function safeUrlForLog(url: string): string {
+/**
+ * Host-only breadcrumb for logs — never the path/query (which may carry an
+ * apiKey-query secret). Exported so every guard consumer logs blocked targets
+ * the same way (host only), keeping the "logs never carry a credential"
+ * invariant owned by the module that makes the SSRF decision.
+ */
+export function hostForLog(url: string): string {
   try {
     return new URL(url).host;
   } catch {

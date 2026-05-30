@@ -37,7 +37,7 @@ import {
   parseRequestTimeoutMs,
   parseWriteAllowlist,
 } from "./catalog";
-import { assertBaseUrlAllowed, EgressBlockedError } from "./egress-guard";
+import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
 import { buildResolvedAuth, snapshotToGraph } from "./probe";
 import type { OperationGraph, ResolvedAuth } from "./types";
 
@@ -89,16 +89,6 @@ const SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
 
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
-/** Host-only breadcrumb for the skip log — never the path/query (apiKey-query secrets). */
-function safeHostForLog(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    // intentionally ignored: log breadcrumb only.
-    return "<unparseable>";
-  }
 }
 
 /**
@@ -205,7 +195,7 @@ function buildDatasource(
   } catch (err) {
     if (err instanceof EgressBlockedError) {
       log.warn(
-        { installId, host: safeHostForLog(baseUrl) },
+        { installId, host: hostForLog(baseUrl) },
         "OpenAPI install resolves to a blocked (private/internal) base URL — skipping " +
           "(set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow internal targets, self-hosted only)",
       );

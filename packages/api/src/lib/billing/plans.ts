@@ -42,8 +42,8 @@ export interface PlanLimits {
    * WhatsApp). The "All 8 chat integrations" figure marketed on /pricing
    * also counts Linear + GitHub, but those are `pillar = 'action'`, so they
    * do NOT consume a chat-integration slot. Marketed tiers: Starter 1 /
-   * Pro 3 / Business unlimited. Enforced at chat install time by
-   * `checkChatIntegrationLimit` (#2953).
+   * Pro 3 / Business unlimited. Enforced atomically at chat install time by
+   * `checkChatIntegrationLimitAndInstall` (#2953, #3001).
    */
   maxChatIntegrations: number;
 }

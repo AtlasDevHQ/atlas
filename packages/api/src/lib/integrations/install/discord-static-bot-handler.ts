@@ -33,7 +33,6 @@
 
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   BillingCheckFailedError,
   ChatIntegrationLimitError,
@@ -41,7 +40,7 @@ import {
   DiscordGuildIdInvalidError,
   DiscordReachabilityError,
 } from "@atlas/api/lib/effect/errors";
-import { checkChatIntegrationLimit } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -225,11 +224,62 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // a failed verification never leaves a half-installed row behind.
     const apiGuildName = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Plan cap — chat-integration limit (#2953) ─────────────
-    // Block before persisting when the workspace's plan tier is at its
-    // chat-integration cap. Reconnecting Discord (already installed) is
-    // never blocked — the check excludes Discord's own row.
-    const capCheck = await checkChatIntegrationLimit(workspaceId, DISCORD_CATALOG_ID);
+    // ── 2b. Plan cap + install row — atomic (#2953, #3001) ─────────
+    // Enforce the chat-integration cap and persist the workspace_plugins row
+    // in ONE transaction guarded by a per-workspace advisory lock, so two
+    // *distinct* net-new platforms installing concurrently can't both slip
+    // past the cap. Reconnecting Discord (already installed) is never blocked
+    // — the gate excludes Discord's own row from the count, and the UPSERT
+    // collapses the duplicate.
+    //
+    // UPSERT keyed on (workspace, catalog): candidate id on INSERT, RETURNING
+    // id so a CONFLICT lands on the existing row's id (idempotent re-install).
+    //
+    // Schema notes:
+    //   - `pillar` + `install_id` became NOT NULL in migration 0092 (#2739)
+    //     and the auto-fill trigger was dropped in 0096 (#2744). Every writer
+    //     must name both columns explicitly.
+    //   - Chat-pillar installs are singletons per (workspace, catalog),
+    //     enforced by the `workspace_plugins_singleton` partial unique index
+    //     (`WHERE pillar IN ('chat','action')` from migration 0092). We target
+    //     it via the inference clause so re-install lands on the existing row.
+    //   - For chat-pillar there's only one install per (workspace, catalog),
+    //     so `install_id` mirrors `id` — WorkspaceInstaller's datasource path
+    //     uses a caller-supplied installId; static-bot chat installs don't
+    //     have that surface, so we reuse the row id.
+    const candidateId = this.newId();
+    const configPayload: DiscordInstallConfig = {
+      guild_id: routingIdentifier,
+      ...extractGuildName(extras, apiGuildName, workspaceId),
+    };
+
+    let capCheck;
+    try {
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
+        workspaceId,
+        DISCORD_CATALOG_ID,
+        {
+          sql: `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
+         DO UPDATE
+           SET config = EXCLUDED.config,
+               enabled = true
+         RETURNING id`,
+          params: [candidateId, workspaceId, DISCORD_CATALOG_ID, JSON.stringify(configPayload)],
+        },
+      );
+    } catch (err) {
+      log.error(
+        {
+          workspaceId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        },
+        "Failed to persist Discord install record — aborting install",
+      );
+      throw err;
+    }
     if (!capCheck.allowed) {
       if (capCheck.reason === "check_failed") {
         // Count couldn't be determined — fail closed, but as a transient
@@ -254,66 +304,18 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
       });
     }
 
-    // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
-    // Mirrors the email-form-handler and telegram-static-bot-handler
-    // pattern: candidate id on INSERT, RETURNING id so a CONFLICT lands
-    // on the existing row's id (idempotent re-install).
-    const candidateId = this.newId();
-    const configPayload: DiscordInstallConfig = {
-      guild_id: routingIdentifier,
-      ...extractGuildName(extras, apiGuildName, workspaceId),
-    };
-
-    let persistedId: string;
-    try {
-      // Schema notes:
-      //   - `pillar` + `install_id` became NOT NULL in migration 0092
-      //     (#2739) and the auto-fill trigger was dropped in 0096
-      //     (#2744). Every writer must name both columns explicitly.
-      //   - Chat-pillar installs are singletons per (workspace, catalog),
-      //     enforced by the `workspace_plugins_singleton` partial unique
-      //     index (`WHERE pillar IN ('chat','action')` from migration
-      //     0092). We target it via the inference clause
-      //     `ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat','action')`
-      //     so re-install lands on the existing row (idempotent UPSERT).
-      //   - For chat-pillar there's only one install per (workspace,
-      //     catalog), so `install_id` mirrors `id` — Workspaceinstaller's
-      //     datasource path uses a caller-supplied installId; static-bot
-      //     chat installs don't have that surface, so we reuse the row id.
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-        [candidateId, workspaceId, DISCORD_CATALOG_ID, JSON.stringify(configPayload)],
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
+      // the row on both insert and update. Empty here means a driver /
+      // wrapper regression — fail loudly rather than ship a stale id back (on
+      // re-install the DB row has the existing id; falling back to the fresh
+      // candidateId would strand subsequent lookups).
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for Discord install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
       );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
-        // returns the row on both insert and update. Empty here means a
-        // driver / wrapper regression — fail loudly rather than ship a
-        // stale id back (on re-install the DB row has the existing id;
-        // falling back to the fresh candidateId would strand subsequent
-        // lookups).
-        throw new Error(
-          `workspace_plugins UPSERT returned no id for Discord install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        {
-          workspaceId,
-          err: err instanceof Error ? err : new Error(String(err)),
-        },
-        "Failed to persist Discord install record — aborting install",
-      );
-      throw err;
     }
+    const persistedId: string = returned;
 
     log.info(
       {

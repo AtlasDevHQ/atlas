@@ -56,17 +56,46 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => QueryResult> 
   },
 );
 
+// A fake transaction client for the atomic chat-install gate
+// (`checkChatIntegrationLimitAndInstall`, #3001). The gate runs the cap
+// re-count + workspace_plugins UPSERT inside a transaction on a client from
+// `getInternalDB().connect()`, so the route test must supply a connectable
+// pool. Transaction-control statements (BEGIN/COMMIT/ROLLBACK + the advisory
+// lock) are no-ops; the COUNT and INSERT delegate to the same
+// `mockInternalQuery` each test already scripts, wrapped as `{ rows }`.
+const fakeTxnClient = {
+  query: async (sql: string, params?: unknown[]): Promise<{ rows: DbRow[] }> => {
+    if (
+      sql === "BEGIN" ||
+      sql === "COMMIT" ||
+      sql === "ROLLBACK" ||
+      sql.includes("pg_advisory_xact_lock")
+    ) {
+      return { rows: [] };
+    }
+    return { rows: await mockInternalQuery(sql, params) };
+  },
+  release: () => {},
+};
+
 // Partial mock — spread the real module's exports so admin auth,
 // migration helpers, encryption helpers, and the dozens of other
 // consumers in the import graph stay intact. Override `internalQuery`
-// (the read path this route uses) and `hasInternalDB` (the
+// (the read path this route uses), `hasInternalDB` (the
 // `requireOrgContext()` middleware on `integrationsCatalog` short-
-// circuits to 404 when DB is unconfigured — true in tests by default).
+// circuits to 404 when DB is unconfigured — true in tests by default),
+// and `getInternalDB` (the atomic install gate's transaction pool).
 const realInternal = await import("@atlas/api/lib/db/internal");
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...realInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
+  getInternalDB: mock(() => ({
+    query: async (sql: string, params?: unknown[]) => ({ rows: await mockInternalQuery(sql, params) }),
+    connect: () => Promise.resolve(fakeTxnClient),
+    end: () => Promise.resolve(),
+    on: () => {},
+  })),
 }));
 
 // Auth — mutable for per-test admin/non-admin/unauthenticated scenarios.

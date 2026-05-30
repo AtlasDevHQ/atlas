@@ -9,13 +9,14 @@
  * (workspace_plugins INSERT succeeds, chat_cache write throws) →
  * `credentialResult.written: false` while keeping the install record.
  *
- * `mock.module()` is used to stub the three module dependencies the
- * handler reaches into: `lib/slack/api` (`slackAPI` — the
- * `oauth.v2.access` exchange), `lib/slack/store` (`saveInstallation` —
- * the per-tenant `chat_cache:slack:installation:<teamId>` write), and
- * `lib/db/internal` (`internalQuery` — the `workspace_plugins` INSERT).
- * Each mock exports every named export it shadows so other tests in
- * the suite don't see a partial module.
+ * `mock.module()` is used to stub the module dependencies the handler
+ * reaches into: `lib/slack/api` (`slackAPI` — the `oauth.v2.access`
+ * exchange), `lib/slack/store` (`saveInstallation` — the per-tenant
+ * `chat_cache:slack:installation:<teamId>` write), and
+ * `lib/billing/enforcement` (`checkChatIntegrationLimitAndInstall` — the
+ * atomic cap-gate that owns the `workspace_plugins` INSERT post-#3001).
+ * Each mock exports every named export it shadows so other tests in the
+ * suite don't see a partial module.
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -75,36 +76,38 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   } as const,
 }));
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([]),
-);
-
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
+  internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
-// The chat-integration cap (#2953) is exercised in
-// `billing/__tests__/enforcement.test.ts`; here we stub it to "allowed" so
-// these handler tests stay focused on the install/credential contract and
-// their `mockInternalQuery` call counts reflect only the INSERT. The single
-// "blocks when at cap" test below overrides it via `mockImplementationOnce`.
-const mockCheckChatLimit: Mock<
-  (orgId: string | undefined, catalogId: string) =>
-    Promise<
-      | { allowed: true }
-      | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
-      | { allowed: false; reason: "check_failed"; errorMessage: string }
-    >
-> = mock(() => Promise.resolve({ allowed: true as const }));
+// The chat-integration cap + the `workspace_plugins` INSERT now run atomically
+// through `checkChatIntegrationLimitAndInstall` (#3001) — the gate owns the
+// write. We stub it to "allowed" so these handler tests stay focused on the
+// OAuth/credential contract and assert the INSERT shape via the gate's `insert`
+// arg; the cap-enforcement decision + transaction sequencing live in
+// `billing/__tests__/enforcement.test.ts`. The `at cap` / `check failed` tests
+// below override it via `mockImplementationOnce`.
+type GateResult =
+  | { allowed: true; rows: Array<Record<string, unknown>> }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimitAndInstall: Mock<
+  (
+    orgId: string | undefined,
+    catalogId: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => Promise<GateResult>
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [] }));
 
-// Mock every named export — a partial `mock.module()` causes a `SyntaxError`
+// Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
-// exports"). Only `checkChatIntegrationLimit` is exercised here; the rest are
-// inert no-ops.
+// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here; the
+// rest are inert no-ops.
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
-  checkChatIntegrationLimit: mockCheckChatLimit,
+  checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
   checkPlanLimits: () => Promise.resolve({ allowed: true }),
   getCachedWorkspace: () => Promise.resolve(null),
@@ -148,9 +151,10 @@ beforeEach(() => {
   setKeys("v1:test-key-one");
   mockSlackAPI.mockClear();
   mockSaveInstallation.mockClear();
-  mockInternalQuery.mockClear();
-  mockCheckChatLimit.mockClear();
-  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
+  mockCheckChatLimitAndInstall.mockClear();
+  mockCheckChatLimitAndInstall.mockImplementation(() =>
+    Promise.resolve({ allowed: true as const, rows: [] }),
+  );
   // Default to the happy-path Slack response — individual tests override
   // via `mockResolvedValueOnce` / `mockImplementationOnce`.
   mockSlackAPI.mockImplementation(() =>
@@ -233,14 +237,17 @@ describe("SlackOAuthInstallHandler.handleCallback — happy path", () => {
       redirect_uri: SLACK_CONFIG.redirectUri,
     });
 
-    // workspace_plugins INSERT — happens BEFORE the chat_cache write per ADR-0003.
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
-    expect(sql).toContain("INSERT INTO workspace_plugins");
+    // workspace_plugins INSERT — now run atomically by the cap gate, BEFORE
+    // the chat_cache write per ADR-0003. Assert the gate was called once with
+    // the workspace id + catalog id and an INSERT carrying the right params.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog, gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(WSID);
+    expect(gateCatalog).toBe("catalog:slack");
+    expect(gateInsert.sql).toContain("INSERT INTO workspace_plugins");
     // The params include the workspaceId + catalog_id `catalog:slack`
     // (which matches the seed id pattern from catalog-seeder.ts).
-    expect(params).toBeDefined();
-    const paramsList = params as unknown[];
+    const paramsList = gateInsert.params as unknown[];
     expect(paramsList).toContain(WSID);
     expect(paramsList).toContain("catalog:slack");
 
@@ -260,8 +267,8 @@ describe("SlackOAuthInstallHandler.handleCallback — happy path", () => {
 
     await handler.handleCallback("auth-code-abc", stateToken);
 
-    const [_sql, params] = mockInternalQuery.mock.calls[0];
-    const paramsList = params as unknown[];
+    const [, , gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    const paramsList = gateInsert.params as unknown[];
     // Find the JSONB config string — the only param that's a JSON object.
     const configJson = paramsList.find((p) =>
       typeof p === "string" && p.startsWith("{") && p.includes("team_id"),
@@ -293,7 +300,7 @@ describe("SlackOAuthInstallHandler.handleCallback — state rejection", () => {
 
     expect(result).toBeNull();
     expect(mockSlackAPI).not.toHaveBeenCalled();
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 
@@ -310,7 +317,7 @@ describe("SlackOAuthInstallHandler.handleCallback — state rejection", () => {
 
     expect(result).toBeNull();
     expect(mockSlackAPI).not.toHaveBeenCalled();
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 
@@ -342,7 +349,7 @@ describe("SlackOAuthInstallHandler.handleCallback — Slack-side failure", () =>
       upstreamError: "invalid_code",
     });
 
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 
@@ -358,7 +365,7 @@ describe("SlackOAuthInstallHandler.handleCallback — Slack-side failure", () =>
       platform: "slack",
     });
 
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 });
@@ -368,8 +375,10 @@ describe("SlackOAuthInstallHandler.handleCallback — Slack-side failure", () =>
 // ---------------------------------------------------------------------------
 
 describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () => {
-  it("throws ChatIntegrationLimitError and writes neither store when at cap", async () => {
-    mockCheckChatLimit.mockImplementationOnce(() =>
+  it("throws ChatIntegrationLimitError and writes no credential when at cap", async () => {
+    // The gate rolls back the workspace_plugins INSERT internally on a cap
+    // denial, so it returns `cap_reached` with no rows written.
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
         reason: "cap_reached" as const,
@@ -385,16 +394,19 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
       limit: 1,
     });
 
-    // The cap is enforced before either store is written.
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    // The gate enforced the cap (and rolled back its INSERT); the credential
+    // store is never reached.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(WSID);
+    expect(gateCatalog).toBe("catalog:slack");
     expect(mockSaveInstallation).not.toHaveBeenCalled();
-    expect(mockCheckChatLimit).toHaveBeenCalledWith(WSID, "catalog:slack");
   });
 
   it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
     // A DB blip means we can't read the count → fail closed, but as a
     // transient 503 "try again", not a 429 "upgrade your plan".
-    mockCheckChatLimit.mockImplementationOnce(() =>
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
         reason: "check_failed" as const,
@@ -408,8 +420,7 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
       _tag: "BillingCheckFailedError",
     });
 
-    // Still fail closed — neither store is written.
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    // Still fail closed — the credential store is never reached.
     expect(mockSaveInstallation).not.toHaveBeenCalled();
   });
 });
@@ -436,8 +447,9 @@ describe("SlackOAuthInstallHandler.handleCallback — partial failure", () => {
     expect(result!.credentialResult.reason).toBeTypeOf("string");
     expect(result!.credentialResult.reason).toContain("Reconnect");
 
-    // workspace_plugins INSERT happened.
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    // The cap gate ran the workspace_plugins INSERT (and committed it);
+    // only the subsequent credential write failed.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
     expect(mockSaveInstallation).toHaveBeenCalledTimes(1);
   });
 });

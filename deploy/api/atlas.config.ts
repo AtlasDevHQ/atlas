@@ -955,7 +955,7 @@ export default defineConfig({
       "staging": {
         label: "Staging",
         databaseUrl: process.env.DATABASE_URL!,
-        apiUrl: "https://staging.api.useatlas.dev",
+        apiUrl: "https://api.staging.useatlas.dev",
       },
     },
   },

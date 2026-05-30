@@ -67,7 +67,7 @@ RUN cd packages/react && bun run build
 # ARG-with-default lets Railway pass a per-service override via build args
 # (Railway maps service env vars to `--build-arg` automatically) without
 # forking the Dockerfile for each environment. Prod keeps the default;
-# staging overrides via `NEXT_PUBLIC_ATLAS_API_URL=https://staging.api.useatlas.dev`
+# staging overrides via `NEXT_PUBLIC_ATLAS_API_URL=https://api.staging.useatlas.dev`
 # on the web-staging service. Without ARG, the ENV literal would always win
 # and bake the prod URL into staging's bundle.
 ARG NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev

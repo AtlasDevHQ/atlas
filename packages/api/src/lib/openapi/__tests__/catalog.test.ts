@@ -12,6 +12,7 @@
 import { describe, it, expect } from "bun:test";
 import {
   parseWriteAllowlist,
+  parseSideEffectingOperations,
   narrowSupportedAuthKind,
   coerceRepresentationMode,
   isValidSnapshot,
@@ -61,6 +62,55 @@ describe("parseWriteAllowlist — fail-closed write gate", () => {
   it("drops non-string / empty-string elements, keeping only valid op ids", () => {
     const set = parseWriteAllowlist(["createOnePerson", "", 7, null, "createOneNote"] as unknown);
     expect([...set].toSorted()).toEqual(["createOneNote", "createOnePerson"]);
+  });
+});
+
+describe("parseSideEffectingOperations — #3008 escape-hatch parse", () => {
+  // Mirrors the parseWriteAllowlist suite: this is the canonical fail-closed
+  // normalization that feeds the write allowlist + confirm gate for a config-
+  // flagged side-effecting GET. A regression that made it lenient (e.g. treating a
+  // bare string as a one-op list) would mis-stage operations and leave every
+  // Set-constructing test still green — so these assertions are load-bearing.
+  it("parses a form-stored JSON string array into a Set", () => {
+    const set = parseSideEffectingOperations('["cancelJob","resetPassword"]');
+    expect(set.has("cancelJob")).toBe(true);
+    expect(set.has("resetPassword")).toBe(true);
+    expect(set.size).toBe(2);
+  });
+
+  it("accepts an already-parsed array (the atlas.config.ts plugins path)", () => {
+    const set = parseSideEffectingOperations(["cancelJob"]);
+    expect(set.has("cancelJob")).toBe(true);
+    expect(set.size).toBe(1);
+  });
+
+  it("treats absent / empty config as no overrides (empty set, method-only classification)", () => {
+    expect(parseSideEffectingOperations(undefined).size).toBe(0);
+    expect(parseSideEffectingOperations(null).size).toBe(0);
+    expect(parseSideEffectingOperations("").size).toBe(0);
+  });
+
+  it("degrades to empty on malformed JSON — never a permissive / fabricated list", () => {
+    expect(parseSideEffectingOperations("not json{").size).toBe(0);
+    expect(parseSideEffectingOperations("[unterminated").size).toBe(0);
+  });
+
+  it("degrades to empty when the JSON is not an array (object / number / bool)", () => {
+    expect(parseSideEffectingOperations('{"cancelJob":true}').size).toBe(0);
+    expect(parseSideEffectingOperations("42").size).toBe(0);
+    expect(parseSideEffectingOperations("true").size).toBe(0);
+  });
+
+  it("does NOT treat a bare string as a single-op list", () => {
+    // A raw bare string isn't valid JSON → empty set.
+    expect(parseSideEffectingOperations("cancelJob").size).toBe(0);
+    // A JSON string-literal parses to a string (not an array) → still empty set.
+    expect(parseSideEffectingOperations('"cancelJob"').size).toBe(0);
+  });
+
+  it("drops non-string / empty-string elements, keeping only valid op ids", () => {
+    const set = parseSideEffectingOperations(["cancelJob", "", 7, null, "resetPassword"] as unknown);
+    expect([...set].toSorted()).toEqual(["cancelJob", "resetPassword"]);
   });
 });
 

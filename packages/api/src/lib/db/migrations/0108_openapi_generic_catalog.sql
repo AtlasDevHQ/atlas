@@ -46,6 +46,7 @@ VALUES
       {"key": "auth_param_name", "type": "string", "label": "API key query param", "description": "For apikey-query auth, e.g. api_key."},
       {"key": "base_url_override", "type": "string", "label": "Base URL override", "description": "When the spec''s servers[0].url is wrong (dev/staging)."},
       {"key": "write_allowlist", "type": "string", "label": "Write allowlist (JSON)", "description": "JSON array of operationIds permitted to execute non-GET (write) requests, e.g. [\"createOnePerson\",\"createOneNote\"]. Empty/omitted = read-only (default). Every allowlisted write still requires an in-chat confirm-before-write step before it fires."},
+      {"key": "side_effecting_operations", "type": "string", "label": "Side-effecting GET operations (JSON)", "description": "JSON array of operationIds whose GET/HEAD method MUTATES state (e.g. [\"cancelJob\"] for GET /jobs/{id}/cancel). Listing one forces it through the write allowlist + confirm flow, exactly like a POST. SECURITY: read vs write is classified by HTTP method by DEFAULT — when a GET on this API changes data (common for legacy / RPC-style services), you MUST list it here (or set x-atlas-side-effecting: true on the operation in the spec), or the agent will run it as an unconfirmed read."},
       {"key": "display_name", "type": "string", "label": "Display name", "description": "Friendly name shown in /admin/connections."}
     ]'::jsonb,
     NOW(),

@@ -6,8 +6,9 @@
  * adapter, not subordinate").
  *
  * This is a SECURITY boundary. Treat it like `validateSQL`:
- *   - default-deny on writes (a non-GET only executes if its `operationId` is in
- *     the install's `write_allowlist`),
+ *   - default-deny on writes (a non-GET — or a GET/HEAD flagged side-effecting,
+ *     #3008 — only executes if its `operationId` is in the install's
+ *     `write_allowlist`),
  *   - fail loud on an operation that isn't in the probed graph (never dispatch a
  *     fabricated operation),
  *   - never a silent fallback — every rejection is an explicit
@@ -18,8 +19,12 @@
  * the sandbox boundary, before any of this runs):
  *
  *   1. **Operation in graph.** Unknown `operationId` → `unknown-operation`.
- *   2. **Method allowlist.** GET/HEAD always pass; any other method requires
+ *   2. **Write allowlist.** A read (GET/HEAD) passes; a write requires
  *      `policy.writeAllowlist.has(operationId)` → `writes-disabled` otherwise.
+ *      "Write" is NOT method-only (#3008): a GET/HEAD flagged side-effecting —
+ *      via the `x-atlas-side-effecting: true` spec extension or the install's
+ *      `side_effecting_operations` list — is gated here too. See
+ *      {@link isSideEffectingOperation}.
  *   3. **Parameter shape.** Required params + required body present; no params
  *      that the spec doesn't declare → `invalid-params`.
  *   4. **Rate limit.** A per-`(workspace, datasource, operation)` token bucket
@@ -38,8 +43,9 @@
  * quota throttles real upstream dispatches, not pre-flight rejections.
  *
  * On success the verdict carries the resolved {@link Operation}, whether the
- * caller must obtain human confirmation before dispatching (every non-GET/HEAD),
- * and the effective `timeoutMs` to pass to the client.
+ * caller must obtain human confirmation before dispatching (every effective
+ * write — see {@link isSideEffectingOperation}), and the effective `timeoutMs`
+ * to pass to the client.
  */
 import { Data } from "effect";
 
@@ -97,6 +103,14 @@ export interface RestOperationPolicy {
   readonly datasourceId: string;
   /** The `operationId`s permitted to execute a non-GET method. Empty = read-only. */
   readonly writeAllowlist: ReadonlySet<string>;
+  /**
+   * `operationId`s the install config marks side-effecting (the
+   * `side_effecting_operations` list). A GET/HEAD in this set — like one whose
+   * spec carries `x-atlas-side-effecting: true` — is forced through the write
+   * allowlist + confirm path even though its method reads. Omit → no
+   * config-level overrides. See #3008 and {@link isSideEffectingOperation}.
+   */
+  readonly sideEffectingOperations?: ReadonlySet<string>;
   /** Per-install rate-limit override (calls/min). Default {@link DEFAULT_RATE_LIMIT_PER_MINUTE}. */
   readonly rateLimitPerMinute?: number;
   /**
@@ -122,8 +136,9 @@ export type RestOperationVerdict =
       readonly allowed: true;
       readonly operation: Operation;
       /**
-       * `true` for every non-GET/HEAD method — the caller MUST obtain human
-       * confirmation (the confirm-before-write banner) before dispatching.
+       * `true` for every effective write — a non-GET/HEAD method, OR a GET/HEAD
+       * escalated by an #3008 side-effecting override. The caller MUST obtain
+       * human confirmation (the confirm-before-write banner) before dispatching.
        */
       readonly requiresConfirmation: boolean;
       /** The effective per-request timeout the client should use. */
@@ -298,6 +313,30 @@ export function isWriteMethod(method: string): boolean {
 }
 
 /**
+ * Whether an operation must be authorized as a WRITE — gated by the write
+ * allowlist and staged for human confirmation. Combines the three #3008 signals:
+ *   1. its HTTP method mutates ({@link isWriteMethod} — the default), OR
+ *   2. its spec carried `x-atlas-side-effecting: true` ({@link Operation.sideEffecting}), OR
+ *   3. the install config lists its `operationId` in `side_effecting_operations`.
+ *
+ * GET=read is only a DEFAULT here, never ground truth: a mutating RPC-over-GET
+ * (`GET /jobs/{id}/cancel`, `GET /admin/resetPassword`) — common in the
+ * legacy/internal services this milestone targets — is escalated by (2) or (3).
+ * The combination is monotonic: an override can only ADD safety (escalate a read
+ * to a write), never strip it (a POST stays a write whatever the flags say).
+ */
+export function isSideEffectingOperation(
+  operation: Operation,
+  sideEffectingOperations?: ReadonlySet<string>,
+): boolean {
+  return (
+    isWriteMethod(operation.method) ||
+    operation.sideEffecting === true ||
+    (sideEffectingOperations?.has(operation.operationId) ?? false)
+  );
+}
+
+/**
  * Authorize a single REST operation against the install policy. See the module
  * doc for the layer ordering and security contract. Pure except for the layer-4
  * token bucket (the only stateful layer, and only when `dispatch !== false`).
@@ -324,17 +363,24 @@ export function validateRestOperation(
     };
   }
 
-  const isWrite = isWriteMethod(operation.method);
+  // Not method-only (#3008): a GET/HEAD flagged side-effecting (spec extension or
+  // install config) is authorized as a write too — allowlist + confirm.
+  const isWrite = isSideEffectingOperation(operation, policy.sideEffectingOperations);
 
-  // ── Layer 2 — method allowlist (default-deny writes) ─────────────────────
+  // ── Layer 2 — write allowlist (default-deny writes) ──────────────────────
   if (isWrite && !policy.writeAllowlist.has(operationId)) {
+    // A GET/HEAD reaches here only via a side-effecting override; name that,
+    // rather than the misleading "is a GET (write)".
+    const why = isWriteMethod(operation.method)
+      ? `is a ${operation.method} (write)`
+      : `is a ${operation.method} flagged as side-effecting`;
     return {
       allowed: false,
       error: new RestValidationError({
         reason: "writes-disabled",
         operationId,
         message:
-          `Operation "${operationId}" is a ${operation.method} (write). Writes are disabled for this ` +
+          `Operation "${operationId}" ${why}. Writes are disabled for this ` +
           `datasource — add "${operationId}" to its write allowlist to enable it. Do not claim it succeeded.`,
       }),
     };

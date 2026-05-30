@@ -168,6 +168,11 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         workspaceId: orgId,
         datasourceId: datasource.id,
         writeAllowlist: datasource.writeAllowlist,
+        // #3008: a config-flagged side-effecting GET must be re-gated by the
+        // allowlist on the confirm replay too (the spec-extension path is already
+        // covered, since `operation.sideEffecting` is read from the graph). Without
+        // this, a direct confirm POST for such a GET would bypass the allowlist.
+        sideEffectingOperations: datasource.sideEffectingOperations,
         dispatch: true, // this IS the upstream call — debit the quota
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

@@ -35,6 +35,7 @@ import {
   narrowSupportedAuthKind,
   parseRateLimitPerMinute,
   parseRequestTimeoutMs,
+  parseSideEffectingOperations,
   parseWriteAllowlist,
 } from "./catalog";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
@@ -179,6 +180,12 @@ function buildDatasource(
   // form's JSON string; an `atlas.config.ts` plugins entry may pass an array.
   // Both normalize to a Set; anything malformed fails closed to read-only.
   const writeAllowlist = parseWriteAllowlist(decrypted.write_allowlist, installId);
+  // #3008: operationIds the operator marks side-effecting (a mutating RPC-over-GET) —
+  // forced through the write allowlist + confirm path even though their method reads.
+  // A malformed list degrades to empty (classification stays method-only) — note
+  // this is NOT the "fails closed to read-only" posture above: an empty side-effecting
+  // list LEAVES an intended-to-gate GET running unconfirmed. See parseSideEffectingOperations.
+  const sideEffectingOperations = parseSideEffectingOperations(decrypted.side_effecting_operations, installId);
   const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute, installId);
   const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);
 
@@ -212,6 +219,7 @@ function buildDatasource(
     auth,
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
     writeAllowlist,
+    sideEffectingOperations,
     ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
     ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
   };

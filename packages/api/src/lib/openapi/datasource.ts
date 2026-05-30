@@ -51,6 +51,17 @@ export interface RestDatasource {
    */
   readonly writeAllowlist: ReadonlySet<string>;
   /**
+   * `operationId`s the operator marked side-effecting in install config — forced
+   * through the write allowlist + confirm path even though their HTTP method
+   * reads (a mutating RPC-over-GET). The `x-atlas-side-effecting: true` spec
+   * extension does the same per-op. **Empty = no config-level overrides**
+   * (classification is method-only). Resolved from
+   * `workspace_plugins.config.side_effecting_operations`. Required (always a Set,
+   * possibly empty) so it mirrors {@link writeAllowlist} and callers never branch
+   * on `undefined`. See #3008.
+   */
+  readonly sideEffectingOperations: ReadonlySet<string>;
+  /**
    * Per-install rate-limit override (calls/min) for the per-operation token
    * bucket. Omitted → {@link import("./validate-rest-operation").DEFAULT_RATE_LIMIT_PER_MINUTE}
    * (60/min). Resolved from `workspace_plugins.config.rate_limit_per_minute`.

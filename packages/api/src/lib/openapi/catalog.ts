@@ -108,7 +108,8 @@ export const DEFAULT_REPRESENTATION_MODE: RepresentationMode = "operation-graph"
  * `secret: true` flag on `auth_value` is the single thing that drives
  * `encryptSecretFields` / `decryptSecretFields` — adding a new auth field is a
  * one-line schema change, never a hand-wired encryption call (AC3, user story
- * 19). `write_allowlist` is honored by `validateRestOperation` (slice 5, #2929).
+ * 19). `write_allowlist` (and `side_effecting_operations`, #3008) are honored by
+ * `validateRestOperation` (slice 5, #2929).
  *
  * `auth_kind` is a `select` so the admin UI renders a dropdown bound to
  * {@link OPENAPI_AUTH_KINDS}; the handler re-validates against
@@ -165,6 +166,18 @@ export const OPENAPI_GENERIC_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
       "JSON array of operationIds permitted to execute non-GET (write) requests, e.g. " +
       '["createOnePerson","createOneNote"]. Empty/omitted = read-only (default). Every ' +
       "allowlisted write still requires an in-chat confirm-before-write step before it fires.",
+  },
+  {
+    key: "side_effecting_operations",
+    type: "string",
+    label: "Side-effecting GET operations (JSON)",
+    description:
+      "JSON array of operationIds whose GET/HEAD method MUTATES state (e.g. " +
+      '["cancelJob"] for GET /jobs/{id}/cancel). Listing one forces it through the write ' +
+      "allowlist + confirm flow, exactly like a POST. SECURITY: read vs write is classified by " +
+      "HTTP method by DEFAULT — when a GET on this API changes data (common for legacy / RPC-style " +
+      "services), you MUST list it here (or set x-atlas-side-effecting: true on the operation in " +
+      "the spec), or the agent will run it as an unconfirmed read.",
   },
   {
     key: "display_name",
@@ -291,6 +304,64 @@ export function parseWriteAllowlist(raw: unknown, installId?: string): ReadonlyS
     log.warn(
       { installId },
       "OpenAPI install write_allowlist contained non-string / empty entries — they were ignored",
+    );
+  }
+  return ops;
+}
+
+/**
+ * Parse the `side_effecting_operations` config value (#3008): operationIds whose
+ * read-method (GET/HEAD) MUTATES state and must therefore be forced through the
+ * write allowlist + confirm path (the per-spec `x-atlas-side-effecting: true`
+ * extension does the same per-operation). Accepts the form-stored JSON **string**
+ * (`'["cancelJob"]'`) or an already-parsed **array** (an `atlas.config.ts` plugins
+ * entry); anything malformed resolves to the **empty set** — classification stays
+ * method-only — logged for the operator.
+ *
+ * NOTE: degrading-to-empty here is NOT "fail-closed" in the {@link
+ * parseWriteAllowlist} sense, and the security semantics are inverted. An empty
+ * *allowlist* means default-deny writes (safe); an empty *side-effecting list*
+ * means a GET the operator INTENDED to gate is left classified as a plain read
+ * and runs unconfirmed (the less-safe outcome for that operation). We degrade to
+ * empty + warn rather than throw because the config is a free-text JSON blob — we
+ * can't infer which ops a malformed list meant, and a hard throw would take the
+ * whole datasource offline for one fat-fingered entry. The operator must fix the
+ * config; the warn log surfaces it. (Contrast the spec extension, a single named
+ * scalar the parser CAN pinpoint and so rejects loudly — see {@link
+ * import("./spec").buildOperationGraph}.)
+ */
+export function parseSideEffectingOperations(raw: unknown, installId?: string): ReadonlySet<string> {
+  if (raw === undefined || raw === null || raw === "") return new Set();
+
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      log.warn(
+        { installId },
+        "OpenAPI install side_effecting_operations is not valid JSON — ignoring (classification stays method-only)",
+      );
+      return new Set();
+    }
+  }
+
+  if (!Array.isArray(value)) {
+    log.warn(
+      { installId },
+      "OpenAPI install side_effecting_operations is not a JSON array — ignoring (classification stays method-only)",
+    );
+    return new Set();
+  }
+
+  const ops = new Set<string>();
+  for (const item of value) {
+    if (typeof item === "string" && item.length > 0) ops.add(item);
+  }
+  if (ops.size !== value.length) {
+    log.warn(
+      { installId },
+      "OpenAPI install side_effecting_operations contained non-string / empty entries — they were ignored",
     );
   }
   return ops;

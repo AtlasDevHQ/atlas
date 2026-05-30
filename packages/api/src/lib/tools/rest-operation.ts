@@ -46,7 +46,7 @@ import { type RestDatasource } from "@atlas/api/lib/openapi/datasource";
 import { resolveWorkspaceRestDatasourcesOrThrow } from "@atlas/api/lib/openapi/workspace-datasource";
 import {
   validateRestOperation,
-  isWriteMethod,
+  isSideEffectingOperation,
   type RestOperationPolicy,
 } from "@atlas/api/lib/openapi/validate-rest-operation";
 import {
@@ -63,7 +63,7 @@ Use executeRestOperation to call a single operation on a connected REST API (des
 - When more than one REST datasource is connected, pass \`datasourceId\` (shown in each datasource's header) to pick which one
 - Compose the filter \`query\` value yourself in the documented \`field[op]:value\` syntax — do NOT invent a bracketed form
 - For multi-step questions, call this tool once per step and feed each result into the next (e.g. find a person, then list their note targets, then fetch each note)
-- GET operations execute and return data immediately.
+- GET operations execute and return data immediately — UNLESS that GET is flagged side-effecting (by the datasource's spec or its admin config). Some legacy/internal APIs mutate via GET (e.g. \`GET /jobs/{id}/cancel\`); a flagged GET is treated exactly like a write — it needs allowlisting and is staged for confirmation, never run silently.
 - Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's admin has allowlisted them. A non-allowlisted write returns \`writes_disabled\` — tell the user writes are off for that datasource; never claim it happened.
 - An allowlisted write does NOT run immediately: it returns \`needs_confirmation\`. Tell the user plainly what the write will do (e.g. "This will permanently delete 3 people in Twenty — confirm?") and STOP. The user confirms via the banner; do not retry, and never claim the write succeeded until you see a confirmed result.`;
 
@@ -182,8 +182,11 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
   return tool({
     description:
       "Call a single operation on a connected REST datasource by operationId. GET operations " +
-      "execute and return data; write operations run only if allowlisted, and an allowlisted " +
-      "write is staged for the user to confirm before it fires (never claim a write happened until confirmed).",
+      "execute and return data immediately, UNLESS a GET is flagged side-effecting — by the " +
+      "datasource's spec or its admin config (some legacy APIs mutate via GET). Those, like write " +
+      "operations (POST/PATCH/PUT/DELETE), run only if allowlisted, and an allowlisted write / " +
+      "side-effecting GET is staged for the user to confirm before it fires (never claim a write " +
+      "happened until confirmed).",
     inputSchema: ExecuteRestOperationInput,
     execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
       let datasources: ReadonlyArray<RestDatasource>;
@@ -249,7 +252,11 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       // Staging a write for confirmation must not burn quota. An unknown op falls
       // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
       const peeked = datasource.graph.operations.get(operationId);
-      const isWrite = peeked ? isWriteMethod(peeked.method) : false;
+      // Side-effecting (#3008) GET/HEADs count as writes here too, so they are
+      // staged for confirmation (dispatch:false) rather than run immediately.
+      const isWrite = peeked
+        ? isSideEffectingOperation(peeked, datasource.sideEffectingOperations)
+        : false;
 
       const policy: RestOperationPolicy = {
         // The rate-limit bucket is keyed (workspace, datasource, operation). In
@@ -260,6 +267,7 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
         datasourceId: datasource.id,
         writeAllowlist: datasource.writeAllowlist,
+        sideEffectingOperations: datasource.sideEffectingOperations,
         dispatch: !isWrite,
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

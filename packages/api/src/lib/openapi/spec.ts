@@ -15,7 +15,9 @@
  *    because every walker reads only a known set of keys; the one place an
  *    `x-*` *sibling entry* legally appears (the `paths` object) is explicitly
  *    skipped. Real specs (Stripe, Twenty) are full of extensions — rejecting
- *    them would make "normalize Stripe's spec" impossible.
+ *    them would make "normalize Stripe's spec" impossible. The ONE extension this
+ *    builder reads is `x-atlas-side-effecting` on an operation (#3008), surfaced
+ *    as {@link Operation.sideEffecting}; all other `x-*` keys are still ignored.
  *  - Circular `$ref`s through named components (Twenty's Person ↔ NoteTarget).
  *    These are REQUIRED to resolve (acceptance criterion). We resolve a named
  *    `$ref` to a pointer node (`{ ref: "Name" }`) rather than inlining, so the
@@ -525,6 +527,30 @@ class GraphBuilder {
         if (summary !== undefined) operation.summary = summary;
         const description = asString(opRaw.description);
         if (description !== undefined) operation.description = description;
+        // #3008: the `x-atlas-side-effecting: true` vendor extension escalates a
+        // read-method operation (a mutating RPC-over-GET) to the write path. Only
+        // an explicit `true` sets it — an explicit `false` (or a missing value)
+        // leaves classification to the method, and the flag can never DOWNGRADE a
+        // write method to a read. A present-but-non-boolean value (e.g. the string
+        // "true" from a YAML/templating round-trip) is REJECTED, not silently
+        // dropped: this is a security-load-bearing signal, so we fail loud here —
+        // matching every other malformed scalar in this parser — rather than let a
+        // mistyped flag leave a side-effecting GET classified as an unconfirmed
+        // read (the write-safety false negative this feature exists to prevent).
+        if ("x-atlas-side-effecting" in opRaw) {
+          const sideEffecting = asBoolean(opRaw["x-atlas-side-effecting"]);
+          if (sideEffecting === undefined) {
+            throw new OpenApiSpecError({
+              reason: "invalid-structure",
+              location: `${opLocation}.x-atlas-side-effecting`,
+              message:
+                `x-atlas-side-effecting at ${opLocation} must be a boolean, got ` +
+                `${describe(opRaw["x-atlas-side-effecting"])}. A mistyped value (e.g. the ` +
+                `string "true") would silently leave a side-effecting GET ungated.`,
+            });
+          }
+          if (sideEffecting) operation.sideEffecting = true;
+        }
         const requestBody = this.buildRequestBody(opRaw.requestBody, `${opLocation}.requestBody`);
         if (requestBody !== undefined) operation.requestBody = requestBody;
 

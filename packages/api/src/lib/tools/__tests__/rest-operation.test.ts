@@ -191,6 +191,57 @@ describe("executeRestOperation tool", () => {
   });
 });
 
+// ── Single-page truncation (#3011 GAP 1) ─────────────────────────────────────
+// The live tool calls the un-paginated `executeOperation` primitive directly
+// (see rest-operation.ts). The paginating composer `executeOperationPaged`
+// (lib/openapi/client.ts) is DORMANT — no production caller passes a cache, and
+// wiring it + a real cross-pod page store is #2970's job, not this tool's. So a
+// large `findMany` silently returns ONLY page 1 even when the upstream
+// advertises more pages. This pins that as a KNOWN, asserted property rather
+// than a latent surprise — the day #2970 wires pagination here, this test flips
+// (and a real-store cross-pod tenant-isolation test joins it; see the note in
+// openapi/__tests__/paginator.test.ts).
+describe("executeRestOperation — single-page truncation (executeOperationPaged dormant, #2970)", () => {
+  it("returns ONLY page 1 of a multi-page upstream and does not follow the next-page cursor", async () => {
+    let fetchCount = 0;
+    const fetchImpl = (async () => {
+      fetchCount += 1;
+      return new Response(
+        JSON.stringify({
+          data: { people: [{ id: "p-1" }, { id: "p-2" }] },
+          // The upstream advertises a next page — a paginating client WOULD walk it.
+          pageInfo: { hasNextPage: true, endCursor: "CURSOR_TO_PAGE_2" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    const t = createExecuteRestOperationTool({
+      resolveDatasource: async () => datasource(),
+      fetchImpl,
+    });
+    const result = (await t.execute!(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+      { operationId: "findManyPeople" } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+      { toolCallId: "t1", messages: [] } as any,
+    )) as ExecuteRestOperationResult;
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    // Exactly one upstream request — the live tool does NOT paginate.
+    expect(fetchCount).toBe(1);
+    const body = result.body as {
+      data: { people: unknown[] };
+      pageInfo: { hasNextPage: boolean };
+    };
+    // Only page 1's rows come back, even though the upstream signals more exist.
+    expect(body.data.people).toHaveLength(2);
+    // The truncation is observable: hasNextPage is true yet no further fetch fired.
+    expect(body.pageInfo.hasNextPage).toBe(true);
+  });
+});
+
 // ── Write-side opt-in (slice 5, #2929) ───────────────────────────────────────
 // The agent stages writes; it never dispatches them. An allowlisted write comes
 // back as `needs_confirmation` (the confirm-before-write banner fires it later);

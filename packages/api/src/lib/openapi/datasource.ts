@@ -12,7 +12,9 @@
  *
  * This module is intentionally just the type now: the resolution logic, snapshot
  * caching, and credential decryption live in `workspace-datasource.ts` /
- * `probe.ts`, and the Effect-facing registry handle is `registry.ts`.
+ * `probe.ts`. Consumers call the plain async resolver
+ * {@link resolveWorkspaceRestDatasources} directly (agent loop, tools, routes) —
+ * there is no Effect `Context.Tag` wrapper (the unused one was removed in #3009).
  */
 import type { OperationGraph, ResolvedAuth } from "./types";
 import type { RepresentationMode } from "./representation";

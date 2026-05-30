@@ -138,6 +138,10 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
     OpenApiProbeError,
     assertSpecUrlAllowed: () => {},
     buildResolvedAuth: () => ({ kind: "none" }),
+    // The shared decrypt→auth glue the rediscover route now calls. The fixture's
+    // auth_kind is "none", so the success arm (ok: true) is the relevant one;
+    // the 400 (ok: false) branch is exercised by the workspace-resolver tests.
+    resolveAuthFromDecryptedConfig: () => ({ ok: true, auth: { kind: "none" }, authKind: "none" }),
     probeSpec: async () => {
       if (probeShouldFail) throw new OpenApiProbeError("unreachable", "probe boom");
       return { doc: { openapi: "3.1.0" }, graph: emptyGraph };
@@ -151,6 +155,7 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
       doc,
     }),
     snapshotToGraph: () => emptyGraph,
+    invalidateInstallGraphCache: () => {},
     summarizeOperations: () => [],
     __resetSnapshotGraphCacheForTests: () => {},
   };

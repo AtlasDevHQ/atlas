@@ -3,11 +3,12 @@
  * analogue for OpenAPI datasources (PRD #2868 slice 2, AC6 / #2926). Builds a
  * {@link RestDatasource} from a small self-contained OpenAPI 3.1 doc (no file
  * I/O, no DB) so tests across the agent loop, the `executeRestOperation` tool,
- * and the registry get a real normalized {@link OperationGraph} without
- * hand-rolling fixtures or reaching for `mock.module()`.
+ * and the workspace resolver get a real normalized {@link OperationGraph}
+ * without hand-rolling fixtures or reaching for `mock.module()`.
  *
- * Pair with `createOpenApiDatasourceTestLayer()` (registry.ts) when an
- * Effect consumer needs the datasource injected via `Layer.provide`.
+ * Feed the returned datasource to a resolver fixture (the injected `deps.query`
+ * seam on `resolveWorkspaceRestDatasources`) when a consumer needs it resolved
+ * from a fake `workspace_plugins` row instead of a live DB.
  *
  * Importable as `@atlas/api/testing/openapi-datasource` (the `testing` alias →
  * `src/__mocks__`), mirroring `@atlas/api/testing/connection`.

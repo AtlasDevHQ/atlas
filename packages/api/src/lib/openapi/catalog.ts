@@ -367,6 +367,25 @@ export function parseSideEffectingOperations(raw: unknown, installId?: string): 
   return ops;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  Per-install numeric overrides — rate limit + request timeout
+//
+//  FORWARD SEAM (#3009): the two parsers below READ `rate_limit_per_minute` /
+//  `request_timeout_ms` off the decrypted install config, surface them on
+//  {@link import("./datasource").RestDatasource}, and `validateRestOperation`
+//  already enforces them (per-op token bucket + the timeout cap). But Atlas
+//  ships NO write surface for them today: they're absent from
+//  {@link OPENAPI_GENERIC_CONFIG_SCHEMA}, the install form
+//  (`openapi-generic-form-handler.ts`), the admin PATCH route, and migration
+//  0108 — so in practice both resolve to `undefined` (the defaults apply) and the
+//  validator's cap branches are exercised only by tests / a hand-written config
+//  row. The read side is kept wired (mirrors how `representation.ts` keeps
+//  `pythonCompositionEnabled` as a dormant seam): lighting it up is a purely
+//  additive change — add the two keys to the schema + a form field + a PATCH
+//  branch — with no parser/validator rework. Until then this is intentional dead
+//  config, not an oversight.
+// ─────────────────────────────────────────────────────────────────────
+
 /** Coerce a positive-integer config override (calls/min, ms, …) or `undefined`. */
 function parsePositiveIntConfig(raw: unknown): number | undefined {
   const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseInt(raw, 10) : NaN;

@@ -7,9 +7,10 @@
  *   - The SQL seed's `BUILTIN_DATASOURCE_CATALOG_SLUGS` allowlist drives the
  *     boot loader + registry bridge (slug → `db_type` → `ConnectionRegistry`
  *     pool). `openapi-generic` has no SQL pool — it resolves through the
- *     parallel `OpenApiDatasourceRegistry` (PRD §"Option B"). Adding it to that
- *     allowlist would force `catalogSlugToDbType` to invent a fake db_type and
- *     pull the boot loader into a code path that doesn't apply.
+ *     parallel REST resolver `resolveWorkspaceRestDatasources`
+ *     (`workspace-datasource.ts`, PRD §"Option B"). Adding it to that allowlist
+ *     would force `catalogSlugToDbType` to invent a fake db_type and pull the
+ *     boot loader into a code path that doesn't apply.
  *   - Keeping it out means the SQL boot loader's `pc.slug = ANY(...)` filter
  *     skips `openapi-generic` installs for free — the fork stays clean.
  *

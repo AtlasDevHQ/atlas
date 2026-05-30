@@ -105,15 +105,16 @@ After a burst of PR merges the repo accumulates local branches whose remote has 
    git fetch --prune origin
    ```
 
-2. **List candidates** — anything tagged `[gone]` in `git branch -vv`:
+2. **List candidates** — branches whose upstream is gone, shown by `git branch -vv` as `[origin/<branch>: gone]`:
    ```bash
-   git branch -vv | grep '\[gone\]'
+   git branch -vv | grep ': gone\]'
    ```
+   Note the pattern is `': gone\]'`, not `'\[gone\]'` — git formats the marker as `[origin/<branch>: gone]`, so a literal `[gone]` never matches.
    If nothing matches, skip to Step 3. If the current branch is in the list, first `git checkout main` — you can't delete the branch you're on.
 
 3. **Remove orphan worktrees, then delete branches.** This loop handles both plain branches and ones pinned by worktrees (including locked worktrees whose owning agent PID is dead). The force-unlock is only safe when the PID is not alive — check before using `-f -f`:
    ```bash
-   git branch -v | grep '\[gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
+   git branch -vv | grep ': gone\]' | sed 's/^[+* ]//' | awk '{print $1}' | while read branch; do
      echo "Processing: $branch"
      worktree=$(git worktree list | grep "\[$branch\]" | awk '{print $1}')
      if [ -n "$worktree" ] && [ "$worktree" != "$(git rev-parse --show-toplevel)" ]; then

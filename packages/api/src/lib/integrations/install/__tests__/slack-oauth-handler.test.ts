@@ -441,7 +441,10 @@ describe("SlackOAuthInstallHandler.handleCallback — install record id (#3005)"
     // #3005: on reconnect the UPSERT lands on the existing row, which keeps
     // its ORIGINAL id (ON CONFLICT DO UPDATE never touches `id`). The handler
     // must hand back the persisted id (gate `rows[0].id`), not the freshly
-    // minted `crypto.randomUUID()` it passes IN as the candidate.
+    // minted `crypto.randomUUID()` it passes IN as the candidate. With the gate
+    // mocked, this pins the HANDLER contract (reads `rows[0].id`, not the
+    // candidate); the end-to-end two-call reconnect semantics against a real
+    // `ON CONFLICT DO UPDATE` row live in `billing/__tests__/chat-cap-pg.test.ts`.
     const persistedId = "wp-existing-reconnect-id";
     mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
       Promise.resolve({ allowed: true as const, rows: [{ id: persistedId }] }),

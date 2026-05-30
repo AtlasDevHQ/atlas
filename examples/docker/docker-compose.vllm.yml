@@ -23,7 +23,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ../../packages/cli/data/init-demo-db.sql:/docker-entrypoint-initdb.d/00-init.sql
-      - ../../packages/cli/data/demo.sql:/data/demo.sql:ro
+      - ../../packages/cli/data/ecommerce.sql:/data/ecommerce.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U atlas"]
       interval: 5s

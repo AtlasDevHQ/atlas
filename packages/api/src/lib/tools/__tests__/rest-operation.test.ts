@@ -233,12 +233,16 @@ describe("executeRestOperation — single-page truncation (executeOperationPaged
     expect(fetchCount).toBe(1);
     const body = result.body as {
       data: { people: unknown[] };
-      pageInfo: { hasNextPage: boolean };
+      pageInfo: { hasNextPage: boolean; endCursor: string };
     };
     // Only page 1's rows come back, even though the upstream signals more exist.
     expect(body.data.people).toHaveLength(2);
     // The truncation is observable: hasNextPage is true yet no further fetch fired.
     expect(body.pageInfo.hasNextPage).toBe(true);
+    // The next-page cursor is surfaced verbatim but NOT followed — the contract
+    // the day #2970 wires pagination flips: a paginating client would consume
+    // this cursor for the second fetch.
+    expect(body.pageInfo.endCursor).toBe("CURSOR_TO_PAGE_2");
   });
 });
 

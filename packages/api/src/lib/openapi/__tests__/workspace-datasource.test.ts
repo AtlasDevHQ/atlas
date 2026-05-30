@@ -284,6 +284,14 @@ describe("defaultQuery — tenant-scope clause", () => {
     expect(flat).toContain("catalog_id = $2");
     expect(flat).toContain("pillar = 'datasource'");
     expect(flat).toContain("status != 'archived'");
+    // Assert the conjuncts as ONE contiguous AND-joined WHERE clause, not just
+    // four independent substrings: the per-conjunct checks above pass even if a
+    // regression swapped an `AND` for an `OR` (or moved a conjunct out of the
+    // WHERE) — both of which are tenant-isolation holes. Pinning the full clause
+    // catches the connective + membership, not only the presence, of each guard.
+    expect(flat).toContain(
+      "WHERE workspace_id = $1 AND catalog_id = $2 AND pillar = 'datasource' AND status != 'archived'",
+    );
 
     // Param ORDER is load-bearing: $1 is the caller's workspace (never client
     // input), $2 is the built-in openapi-generic catalog id. Flipping these

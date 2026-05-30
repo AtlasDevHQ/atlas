@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as http from "http";
 import { type AddressInfo } from "net";
@@ -23,7 +23,15 @@ let baseUrl: string;
 let captured: CapturedRequest | null = null;
 let graph: OperationGraph;
 
+// These are integration tests against a real loopback (127.0.0.1) server — which
+// the #3006 SSRF guard blocks by default. A local test server is exactly the
+// "internal service" case the operator opt-out exists for, so enable it for the
+// whole file and restore it after. The execute-time *rejection* tests below
+// toggle it back off per-test to exercise the guard.
+const ORIGINAL_EGRESS_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+
 beforeAll(async () => {
+  process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
   graph = buildOperationGraph(
     JSON.parse(fs.readFileSync(path.join(FIXTURES, "client-spec.json"), "utf8")),
   );
@@ -48,6 +56,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+  else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
   await new Promise<void>((resolve, reject) =>
     server.close((err) => (err ? reject(err) : resolve())),
   );
@@ -378,5 +388,91 @@ describe("parseRetryAfterMs", () => {
     expect(parseRetryAfterMs("")).toBeUndefined();
     expect(parseRetryAfterMs("   ")).toBeUndefined();
     expect(parseRetryAfterMs("not-a-date")).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  SSRF egress guard at execution time (#3006)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("executeOperation — SSRF egress guard (#3006)", () => {
+  // Run with the guard ON (the file-wide opt-out is restored after each test).
+  beforeEach(() => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+  });
+  afterEach(() => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true"; // back to the file-wide setting
+  });
+
+  /** A minimal one-GET graph whose `servers[0].url` is whatever the caller wants. */
+  function graphWithServer(serverUrl: string): OperationGraph {
+    return buildOperationGraph({
+      openapi: "3.1.0",
+      info: { title: "Internal", version: "1.0.0" },
+      servers: [{ url: serverUrl }],
+      paths: {
+        "/ping": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } },
+      },
+    });
+  }
+
+  it("rejects a spec whose servers[0].url is internal — at execute time, before any request", async () => {
+    const internalGraph = graphWithServer("https://169.254.169.254");
+    let fired = false;
+    const fetchImpl = (async () => {
+      fired = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    // No baseUrl override → the client falls back to the spec-derived servers[0].url.
+    const err = await executeOperation(internalGraph, "ping", {}, { kind: "none" }, { fetchImpl }).catch((e) => e);
+    expect(err).toBeInstanceOf(OpenApiClientError);
+    expect((err as OpenApiClientError).reason).toBe("blocked-egress");
+    expect(fired).toBe(false); // rejected before the request left the box
+  });
+
+  it("rejects an internal baseUrl override too", async () => {
+    const publicGraph = graphWithServer("https://public.example.com");
+    const err = await executeOperation(
+      publicGraph,
+      "ping",
+      {},
+      { kind: "none" },
+      { baseUrl: "https://[::ffff:169.254.169.254]" },
+    ).catch((e) => e);
+    expect(err).toBeInstanceOf(OpenApiClientError);
+    expect((err as OpenApiClientError).reason).toBe("blocked-egress");
+  });
+
+  it("rejects a public→internal redirect at execute time (TOCTOU)", async () => {
+    const publicGraph = graphWithServer("https://public.example.com");
+    let hops = 0;
+    const fetchImpl = (async (url: string) => {
+      hops++;
+      if (url.startsWith("https://public.example.com")) {
+        return new Response(null, { status: 302, headers: { location: "https://10.0.0.5/internal" } });
+      }
+      return new Response("should-not-reach", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const err = await executeOperation(publicGraph, "ping", {}, { kind: "none" }, { fetchImpl }).catch((e) => e);
+    expect(err).toBeInstanceOf(OpenApiClientError);
+    expect((err as OpenApiClientError).reason).toBe("blocked-egress");
+    expect(hops).toBe(1); // the internal hop never fired
+  });
+
+  it("still executes against a public host with the guard ON", async () => {
+    const publicGraph = graphWithServer("https://public.example.com");
+    let seenUrl = "";
+    const fetchImpl = (async (url: string) => {
+      seenUrl = url;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const result = await executeOperation(publicGraph, "ping", {}, { kind: "none" }, { fetchImpl });
+    expect(result.status).toBe(200);
+    expect(seenUrl).toBe("https://public.example.com/ping");
   });
 });

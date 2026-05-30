@@ -37,6 +37,7 @@ import {
   parseRequestTimeoutMs,
   parseWriteAllowlist,
 } from "./catalog";
+import { assertBaseUrlAllowed, EgressBlockedError } from "./egress-guard";
 import { buildResolvedAuth, snapshotToGraph } from "./probe";
 import type { OperationGraph, ResolvedAuth } from "./types";
 
@@ -88,6 +89,16 @@ const SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
 
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+/** Host-only breadcrumb for the skip log — never the path/query (apiKey-query secrets). */
+function safeHostForLog(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    // intentionally ignored: log breadcrumb only.
+    return "<unparseable>";
+  }
 }
 
 /**
@@ -181,11 +192,33 @@ function buildDatasource(
   const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute, installId);
   const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);
 
+  // Resolve-side SSRF chokepoint (#3006): the operations base URL the agent
+  // POSTs to — an admin override OR the spec-derived `servers[0].url` — must
+  // pass the same guard install/rediscover apply. A public spec that declared an
+  // internal `servers[0].url` would otherwise produce a credentialed host-side
+  // request to internal infra. Fail-soft (skip + log), matching this resolver's
+  // posture: one misconfigured datasource must not sink the workspace's others.
+  // `guardedFetch` in the client is the hard execution-time backstop.
+  const baseUrl = resolveBaseUrl(openapiUrl, graph, baseUrlOverride);
+  try {
+    assertBaseUrlAllowed(baseUrl);
+  } catch (err) {
+    if (err instanceof EgressBlockedError) {
+      log.warn(
+        { installId, host: safeHostForLog(baseUrl) },
+        "OpenAPI install resolves to a blocked (private/internal) base URL — skipping " +
+          "(set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow internal targets, self-hosted only)",
+      );
+      return null;
+    }
+    throw err;
+  }
+
   return {
     id: installId,
     displayName,
     graph,
-    baseUrl: resolveBaseUrl(openapiUrl, graph, baseUrlOverride),
+    baseUrl,
     auth,
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
     writeAllowlist,

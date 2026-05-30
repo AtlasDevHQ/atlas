@@ -84,10 +84,18 @@ const graph = buildOperationGraph(SPEC);
 
 let twentyMock: TwentyMock;
 
+// The mock REST server binds to 127.0.0.1 (loopback), which the #3006 SSRF guard
+// blocks by default. A local test server is the "internal service" case the
+// operator opt-out exists for — enable it for this file and restore it after.
+const ORIGINAL_EGRESS_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+
 beforeAll(async () => {
+  process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
   twentyMock = await startTwentyMockServer();
 });
 afterAll(async () => {
+  if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+  else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
   await twentyMock.close();
 });
 beforeEach(() => {

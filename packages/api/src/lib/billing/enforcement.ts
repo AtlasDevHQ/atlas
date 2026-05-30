@@ -545,11 +545,11 @@ export const CHAT_INTEGRATION_COUNT_SQL = `SELECT
 
 /**
  * The `workspace_plugins` INSERT the gate runs inside its transaction. Raw
- * SQL + params (rather than a structured descriptor) because the two callers
- * own subtly different UPSERT shapes (Slack has no `RETURNING`; Discord
- * `RETURNING id`); the gate stays agnostic and just executes it under the
- * lock. Callers are trusted in-process code — this is internal-DB write SQL,
- * not user analytics SQL.
+ * SQL + params (rather than a structured descriptor) because each caller owns
+ * its own UPSERT shape; the gate stays agnostic and just executes it under the
+ * lock. Both current callers (Slack and Discord) append `RETURNING id` so the
+ * handler can read back the persisted row id (#3005). Callers are trusted
+ * in-process code — this is internal-DB write SQL, not user analytics SQL.
  */
 export interface WorkspacePluginInsert {
   readonly sql: string;
@@ -560,12 +560,12 @@ export interface WorkspacePluginInsert {
  * Outcome of {@link checkChatIntegrationLimitAndInstall}. Mirrors the
  * {@link ResourceLimitResult} arms (so callers map `cap_reached` → 429 and
  * `check_failed` → 503 exactly as elsewhere), but the success arm carries the
- * INSERT's `RETURNING` rows — the Discord handler needs the upserted row id.
+ * INSERT's `RETURNING` rows — the Slack and Discord handlers read the upserted
+ * row id from them (#3005).
  *
  * `rows` is the INSERT's `RETURNING` output and **may be empty even on
- * success** when the SQL has no `RETURNING` clause (Slack's UPSERT). A caller
- * that reads a column must guard for absence (see the Discord handler's
- * `rows[0]?.id` check).
+ * success** when the SQL omits a `RETURNING` clause. A caller that reads a
+ * column must guard for absence (see the handlers' `rows[0]?.id` check).
  */
 export type ChatIntegrationInstallResult<T extends Record<string, unknown> = Record<string, unknown>> =
   | { allowed: true; readonly rows: readonly T[] }

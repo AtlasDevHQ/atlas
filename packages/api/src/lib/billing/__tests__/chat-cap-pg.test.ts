@@ -410,4 +410,44 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
     },
     PG_TEST_TIMEOUT_MS,
   );
+
+  it(
+    "two concurrent SAME-platform installs at cap — both succeed, collapse to one row",
+    async () => {
+      const ws = `ws-same-${Date.now()}`;
+      await seedOrg(ws, "starter"); // cap = 1, zero installed
+
+      // The docstring claims the same-platform case was always safe — the
+      // singleton partial unique index collapses the duplicate into an UPSERT.
+      // Prove it under real contention: two concurrent Slack installs serialize
+      // on the advisory lock; the first lands net-new (allowed), the second
+      // recounts this_count=1 → reconnect → skips the cap → UPSERTs the same
+      // (workspace, catalog) row. Both allowed, exactly one row.
+      const [a, b] = await Promise.all([
+        checkChatIntegrationLimitAndInstall<{ id: string }>(
+          ws,
+          "catalog:slack",
+          slackInsert(`${ws}-slack-a`, ws),
+        ),
+        checkChatIntegrationLimitAndInstall<{ id: string }>(
+          ws,
+          "catalog:slack",
+          slackInsert(`${ws}-slack-b`, ws),
+        ),
+      ]);
+
+      expect(a.allowed).toBe(true);
+      expect(b.allowed).toBe(true);
+
+      // Exactly one Slack row — the second install collapsed onto the first via
+      // ON CONFLICT, never breaching the cap.
+      const { rows } = await pool.query<{ catalog_id: string }>(
+        `SELECT catalog_id FROM workspace_plugins WHERE workspace_id = $1 AND pillar = 'chat'`,
+        [ws],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.catalog_id).toBe("catalog:slack");
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
 });

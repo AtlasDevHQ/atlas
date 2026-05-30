@@ -27,6 +27,7 @@ import {
   getInternalDB,
   getWorkspaceDetails,
   internalQuery,
+  type InternalPoolClient,
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
@@ -504,11 +505,15 @@ const CHAT_CAP_CHECK_FAILED_MSG = "Unable to verify plan limits. Please try agai
 
 /**
  * Numeric namespace for the per-workspace install advisory lock — the
- * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Keeps
- * this lock's keyspace disjoint from the other advisory-lock users in the
- * codebase (`lead-outbox` uses `2870`, migrations use the single-arg
- * `hashtext('atlas_migrations')` form), so a hash collision can't cross
- * features. Value is this issue's number.
+ * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
+ *
+ * Postgres keeps the single-arg `pg_advisory_lock(bigint)` and two-arg
+ * `(int4, int4)` lock spaces fully disjoint, so this lock can never collide
+ * with any single-arg user regardless of value (migrations
+ * `hashtext('atlas_migrations')`, `rotate-encryption-key` `0x1f47`,
+ * `backfill-plugin-config` `0x1f42`). The only peer in the two-arg space is
+ * `lead-outbox` (`2870`), and `3001 ≠ 2870` keeps them disjoint there too.
+ * Value is this issue's number.
  */
 const CHAT_INSTALL_LOCK_NAMESPACE = 3001;
 
@@ -521,12 +526,14 @@ const CHAT_INSTALL_LOCK_NAMESPACE = 3001;
  * or a dropped `status <> 'archived'` would otherwise pass every mock-based
  * test. `$1` = workspace id, `$2` = catalog id of the platform being installed.
  *
- * The cap counts every `workspace_plugins` row with `pillar = 'chat'`, so it
- * only constrains platforms whose install writes such a row. Today that is
- * Slack (OAuth) and Discord — both write `pillar = 'chat'`. The legacy
- * credential-store-only chat routes (Telegram / Teams / gchat / WhatsApp)
- * don't yet write a `workspace_plugins` row, so they are neither counted nor
- * capped until they pivot to the unified install record (#2994).
+ * The cap counts every `workspace_plugins` row with `pillar = 'chat'`. Six
+ * chat handlers write such a row today (Slack, Discord, Telegram, Teams,
+ * gchat, WhatsApp), so all six consume a slot in this count. Only Slack and
+ * Discord run their INSERT through the atomic gate
+ * ({@link checkChatIntegrationLimitAndInstall}); the other four still persist
+ * via a direct `internalQuery` UPSERT, so they are *counted* but their own
+ * install isn't *serialized* against a concurrent net-new install — they move
+ * onto the gate when they adopt the unified install path (#2994).
  */
 export const CHAT_INTEGRATION_COUNT_SQL = `SELECT
    COUNT(*) FILTER (WHERE catalog_id <> $2)::int AS others,
@@ -537,13 +544,31 @@ export const CHAT_INTEGRATION_COUNT_SQL = `SELECT
    AND status <> 'archived'`;
 
 /**
+ * The `workspace_plugins` INSERT the gate runs inside its transaction. Raw
+ * SQL + params (rather than a structured descriptor) because the two callers
+ * own subtly different UPSERT shapes (Slack has no `RETURNING`; Discord
+ * `RETURNING id`); the gate stays agnostic and just executes it under the
+ * lock. Callers are trusted in-process code — this is internal-DB write SQL,
+ * not user analytics SQL.
+ */
+export interface WorkspacePluginInsert {
+  readonly sql: string;
+  readonly params: readonly unknown[];
+}
+
+/**
  * Outcome of {@link checkChatIntegrationLimitAndInstall}. Mirrors the
  * {@link ResourceLimitResult} arms (so callers map `cap_reached` → 429 and
  * `check_failed` → 503 exactly as elsewhere), but the success arm carries the
  * INSERT's `RETURNING` rows — the Discord handler needs the upserted row id.
+ *
+ * `rows` is the INSERT's `RETURNING` output and **may be empty even on
+ * success** when the SQL has no `RETURNING` clause (Slack's UPSERT). A caller
+ * that reads a column must guard for absence (see the Discord handler's
+ * `rows[0]?.id` check).
  */
-export type ChatIntegrationInstallResult<T extends Record<string, unknown>> =
-  | { allowed: true; rows: T[] }
+export type ChatIntegrationInstallResult<T extends Record<string, unknown> = Record<string, unknown>> =
+  | { allowed: true; readonly rows: readonly T[] }
   | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
   | { allowed: false; reason: "check_failed"; errorMessage: string };
 
@@ -564,7 +589,10 @@ export type ChatIntegrationInstallResult<T extends Record<string, unknown>> =
  *      warms the workspace cache so the in-transaction cap check reads from
  *      cache instead of acquiring a *second* pooled connection while we hold
  *      this transaction's client — and lets us fail closed before taking the
- *      lock if the workspace lookup errors.
+ *      lock if the workspace lookup errors. A workspace with no `organization`
+ *      row (pre-migration / Better-Auth-only) has no plan and therefore no
+ *      cap, so it short-circuits to a direct INSERT with no lock — the one
+ *      deliberate fail-open, distinct from the DB-error case which fails closed.
  *   2. `pg_advisory_xact_lock(namespace, hashtext(workspaceId))` — a
  *      transaction-scoped advisory lock keyed on the workspace, released
  *      automatically on COMMIT/ROLLBACK. Concurrent installs for the *same*
@@ -591,10 +619,12 @@ export type ChatIntegrationInstallResult<T extends Record<string, unknown>> =
  * @param insert - The `workspace_plugins` INSERT to run inside the gate. Its
  *   `RETURNING` rows (if any) come back on the success arm.
  */
-export async function checkChatIntegrationLimitAndInstall<T extends Record<string, unknown>>(
+export async function checkChatIntegrationLimitAndInstall<
+  T extends Record<string, unknown> = Record<string, unknown>,
+>(
   orgId: string | undefined,
   catalogId: string,
-  insert: { readonly sql: string; readonly params: readonly unknown[] },
+  insert: WorkspacePluginInsert,
 ): Promise<ChatIntegrationInstallResult<T>> {
   // No enforcement context — no cap to apply, nothing to serialize, so run the
   // INSERT directly. (workspace_plugins lives in the internal DB, so when
@@ -609,8 +639,9 @@ export async function checkChatIntegrationLimitAndInstall<T extends Record<strin
   // so the in-transaction cap check below doesn't acquire a second pooled
   // connection while holding this transaction's client. Fail closed if the
   // lookup errors — before taking the lock.
+  let workspace: WorkspaceRow | null;
   try {
-    await getCachedWorkspace(orgId);
+    workspace = await getCachedWorkspace(orgId);
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
@@ -619,7 +650,28 @@ export async function checkChatIntegrationLimitAndInstall<T extends Record<strin
     return { allowed: false, reason: "check_failed", errorMessage: CHAT_CAP_CHECK_FAILED_MSG };
   }
 
-  const client = await getInternalDB().connect();
+  // No `organization` row → no plan tier → no cap to enforce (pre-migration /
+  // Better-Auth-only workspace). This is the ONLY deliberate fail-open in this
+  // gate — a workspace lookup *error* fails closed above, a genuine *absence*
+  // allows. Run the INSERT directly with no lock; there's nothing to serialize.
+  if (!workspace) {
+    const rows = await internalQuery<T>(insert.sql, insert.params as unknown[]);
+    return { allowed: true, rows };
+  }
+
+  let client: InternalPoolClient;
+  try {
+    client = await getInternalDB().connect();
+  } catch (err) {
+    // Pool exhausted / DB down at acquire time — a transient infra fault, not a
+    // plan breach. Fail closed as check_failed (→ 503 "try again") rather than
+    // letting a raw pool error degrade into an unlabeled 500.
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
+      "Failed to acquire internal DB client for chat-integration install gate — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: CHAT_CAP_CHECK_FAILED_MSG };
+  }
   // Destroy the client on a failed ROLLBACK so a dirty socket doesn't poison
   // the next borrower (matches cascadeWorkspaceDelete / hardDeleteWorkspace).
   let rollbackErr: Error | null = null;
@@ -686,8 +738,15 @@ export async function checkChatIntegrationLimitAndInstall<T extends Record<strin
     await client.query("COMMIT");
     return { allowed: true, rows: result.rows as T[] };
   } catch (err) {
-    // Write-path failure (lock / INSERT / COMMIT) — roll back and re-throw so
-    // the caller surfaces a 5xx, as the pre-#3001 standalone INSERT did.
+    // Write-path failure (lock / INSERT / COMMIT) — log with gate context, roll
+    // back, and re-throw so the caller surfaces a 5xx, as the pre-#3001
+    // standalone INSERT did. Logging the originating error here means a
+    // subsequent "ROLLBACK failed" warning isn't the only breadcrumb when COMMIT
+    // was the real cause.
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
+      "Chat-integration install gate write-path failed — rolling back",
+    );
     await rollback();
     throw err;
   } finally {

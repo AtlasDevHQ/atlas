@@ -821,6 +821,20 @@ describe("checkChatIntegrationLimitAndInstall", () => {
     expect(mockConnectCount).toBe(0);
   });
 
+  it("runs the INSERT directly (no lock) when the workspace has no organization row", async () => {
+    // orgId present + internal DB present, but no `organization` row → no plan,
+    // no cap. The ONLY deliberate fail-open: allow with a direct INSERT and
+    // never open a transaction. (A workspace lookup *error* fails closed — see
+    // the next section; a genuine *absence* allows.)
+    mockWorkspace = null;
+    mockInternalQueryResult = [{ id: "no-org-row" }];
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
+    expect(result.allowed).toBe(true);
+    if (result.allowed) expect(result.rows).toEqual([{ id: "no-org-row" }]);
+    // No transaction opened — the fail-open path skips the lock entirely.
+    expect(mockConnectCount).toBe(0);
+  });
+
   // ── Fail-closed before/under the lock ─────────────────────────────
 
   it("fails closed (check_failed) before opening a transaction when the workspace lookup throws", async () => {

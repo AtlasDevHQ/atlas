@@ -291,7 +291,7 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       catalogId: SLACK_SLUG,
     };
 
-    // ── 5. Credential — chat_cache:slack:installation:<teamId> ──
+    // ── 4. Credential — chat_cache:slack:installation:<teamId> ──
     // ADR-0003 atomicity: a failure here leaves the install row in
     // place. The admin sees "Reconnect needed" in /admin/integrations
     // and can retry — re-running this method will UPSERT the install

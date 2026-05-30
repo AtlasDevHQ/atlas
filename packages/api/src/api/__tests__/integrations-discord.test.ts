@@ -61,8 +61,12 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => QueryResult> 
 // re-count + workspace_plugins UPSERT inside a transaction on a client from
 // `getInternalDB().connect()`, so the route test must supply a connectable
 // pool. Transaction-control statements (BEGIN/COMMIT/ROLLBACK + the advisory
-// lock) are no-ops; the COUNT and INSERT delegate to the same
-// `mockInternalQuery` each test already scripts, wrapped as `{ rows }`.
+// lock) are **no-ops here** — this test only proves the route → handler → gate
+// → SQL-dispatch wiring, NOT lock behaviour. Genuine advisory-lock contention
+// (two concurrent net-new installs racing the cap) is covered against real
+// Postgres in `billing/__tests__/chat-cap-pg.test.ts`. The COUNT and INSERT
+// delegate to the same `mockInternalQuery` each test already scripts, wrapped
+// as `{ rows }`.
 const fakeTxnClient = {
   query: async (sql: string, params?: unknown[]): Promise<{ rows: DbRow[] }> => {
     if (

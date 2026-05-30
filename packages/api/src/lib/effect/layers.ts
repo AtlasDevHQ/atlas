@@ -38,6 +38,13 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { InternalDB, makeInternalDBLive, hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
+import {
+  StagingSeed,
+  StagingSeedError,
+  ensureStagingSeed,
+  type StagingSeedResult,
+} from "@atlas/api/lib/staging/seed";
 import { assertSaasPlatformEmailIsResend } from "@atlas/api/lib/email/dpa-guard";
 import {
   EnterpriseGuardLive,
@@ -1036,6 +1043,61 @@ export const ConnectionsHydrateLive: Layer.Layer<
   never,
   InternalDB | Migration
 > = makeConnectionsHydrateLive();
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Staging Seed Layer (#2914 — staging slice 7)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Boot wiring for {@link ensureStagingSeed}. Runs after migrations + the
+ * catalog seeders, before the HTTP server binds (`server.ts` awaits
+ * `runtime.runtimeEffect` before `Bun.serve`).
+ *
+ * Unlike the non-fatal seeders above, a genuine seed failure is NOT
+ * swallowed: the `StagingSeedError` propagates so `buildAppLayer`'s DAG
+ * fails and `server.ts` exits non-zero. A misconfigured staging boot is
+ * loud (#2914 acceptance: "Boot failure surfaces ... not swallowed").
+ *
+ * Dependencies:
+ *   - `InternalDB` / `Migration` — the readiness gate (mirrors the other
+ *     boot layers; a not-ready DB yields `skipped-gate` rather than a crash).
+ *   - `BuiltinDatasourceCatalogSeed` — an ordering barrier so the
+ *     `demo-postgres` catalog row exists before the staging org installs it.
+ *     Effect memoizes the same-Tag layer, so this does not re-run the seed.
+ *
+ * The region gate is the FIRST statement: on `us`/`eu`/`apac` (or region
+ * unset) this returns immediately, touching no DB and emitting no log line
+ * (#2914 acceptance: "seed code does not execute").
+ */
+export const StagingSeedLive: Layer.Layer<
+  StagingSeed,
+  StagingSeedError,
+  InternalDB | Migration | BuiltinDatasourceCatalogSeed
+> = Layer.effect(
+  StagingSeed,
+  Effect.gen(function* () {
+    // Region gate first — non-staging boots are provably inert.
+    if (getApiRegion() !== "staging") {
+      return { outcome: "skipped-region" } satisfies StagingSeedResult;
+    }
+
+    const db = yield* InternalDB;
+    const migration = yield* Migration;
+    // Ordering barrier — see the dependency note above.
+    yield* BuiltinDatasourceCatalogSeed;
+
+    if (!db.available || !migration.migrated) {
+      log.info(
+        { available: db.available, migrated: migration.migrated },
+        "Staging seed skipped — upstream gate (InternalDB or Migration) not satisfied",
+      );
+      return { outcome: "skipped-gate" } satisfies StagingSeedResult;
+    }
+
+    // Let StagingSeedError propagate — boot fails loudly, never silently.
+    return yield* ensureStagingSeed();
+  }),
+);
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Semantic Sync Layer
@@ -2444,6 +2506,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   | BuiltinDatasourceCatalogSeed
   | ImplementationStatusOverride
   | ConnectionsHydrate
+  | StagingSeed
   | SemanticSync
   | Settings
   | Scheduler
@@ -2509,6 +2572,16 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     Layer.provide(Layer.merge(internalDBLayer, migrationLayer)),
   );
 
+  // StagingSeedLive (#2914) — depends on Migration (so 0093's demo-postgres
+  // catalog row exists) + the builtin datasource seeder (ordering barrier so
+  // the row is re-asserted before the staging org installs it). Region-gated
+  // to `staging`, so prod / self-hosted boots run it as an immediate no-op.
+  const stagingSeedLayer = StagingSeedLive.pipe(
+    Layer.provide(
+      Layer.mergeAll(internalDBLayer, migrationLayer, builtinDatasourceCatalogSeedLayer),
+    ),
+  );
+
   // Independent layers (no Effect-level deps)
   const semanticSyncLayer = SemanticSyncLive;
   const settingsLayer = SettingsLive;
@@ -2570,6 +2643,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     openApiDatasourceCatalogSeedLayer,
     implementationStatusOverrideLayer,
     connectionsHydrateLayer,
+    stagingSeedLayer,
     semanticSyncLayer,
     settingsLayer,
     schedulerLayer,

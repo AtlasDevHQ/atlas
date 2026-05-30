@@ -19,10 +19,11 @@
  *     Telegram's `display_name` — admin-facing label only, dropped
  *     silently when malformed.
  *
- * `mock.module()` stubs the two module dependencies the handler reaches
- * into: `lib/db/internal` (`internalQuery`) and the global `fetch` used
- * for the Discord API call. Each mock exports every named export it
- * shadows (CLAUDE.md "mock all exports" rule).
+ * `mock.module()` stubs the module dependencies the handler reaches into:
+ * `lib/billing/enforcement` (`checkChatIntegrationLimitAndInstall` — the
+ * atomic cap-gate that owns the `workspace_plugins` UPSERT post-#3001) and
+ * the global `fetch` used for the Discord API call. Each mock exports every
+ * named export it shadows (CLAUDE.md "mock all exports" rule).
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -32,36 +33,39 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([{ id: "install-discord-row-1" }]),
-);
-
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
+  internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
-// The chat-integration cap (#2953) is exercised in
-// `billing/__tests__/enforcement.test.ts`; stub it to "allowed" here so
-// these handler tests stay focused on the install contract and their
-// `mockInternalQuery` call counts reflect only the UPSERT. The "blocks at
-// cap" test below overrides it via `mockImplementationOnce`.
-const mockCheckChatLimit: Mock<
-  (orgId: string | undefined, catalogId: string) =>
-    Promise<
-      | { allowed: true }
-      | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
-      | { allowed: false; reason: "check_failed"; errorMessage: string }
-    >
-> = mock(() => Promise.resolve({ allowed: true as const }));
+// The chat-integration cap + the workspace_plugins UPSERT now run atomically
+// through `checkChatIntegrationLimitAndInstall` (#3001) — the gate owns the
+// write and returns the RETURNING rows. We stub it to "allowed" with a
+// scripted row id so these handler tests stay focused on the install contract
+// (guild_id validation, reachability, config payload) and assert the UPSERT
+// shape via the gate's `insert` arg. The cap-enforcement decision + transaction
+// sequencing live in `billing/__tests__/enforcement.test.ts`. The cap /
+// fail-closed / RETURNING-empty / DB-error tests override it per case.
+type GateResult =
+  | { allowed: true; rows: Array<Record<string, unknown>> }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimitAndInstall: Mock<
+  (
+    orgId: string | undefined,
+    catalogId: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => Promise<GateResult>
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: "install-discord-row-1" }] }));
 
-// Mock every named export — a partial `mock.module()` causes a `SyntaxError`
+// Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
-// exports"). Only `checkChatIntegrationLimit` is exercised here; the rest are
-// inert no-ops.
+// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here; the
+// rest are inert no-ops.
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
-  checkChatIntegrationLimit: mockCheckChatLimit,
+  checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
   checkPlanLimits: () => Promise.resolve({ allowed: true }),
   getCachedWorkspace: () => Promise.resolve(null),
@@ -112,10 +116,10 @@ function setFetchNetworkError(): void {
 }
 
 beforeEach(() => {
-  mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([{ id: "install-discord-row-1" }]));
-  mockCheckChatLimit.mockClear();
-  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
+  mockCheckChatLimitAndInstall.mockClear();
+  mockCheckChatLimitAndInstall.mockImplementation(() =>
+    Promise.resolve({ allowed: true as const, rows: [{ id: "install-discord-row-1" }] }),
+  );
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -170,7 +174,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — guild_id validation"
   it("rejects empty guild_id", async () => {
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await expect(handler.confirmInstall(wsid, "")).rejects.toThrow(/guild_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("rejects guild_id with non-numeric characters (e.g. invite codes or @handles)", async () => {
@@ -180,13 +184,13 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — guild_id validation"
     // are common admin mistakes; reject before the API call.
     await expect(handler.confirmInstall(wsid, "@my-server")).rejects.toThrow(/guild_id/);
     await expect(handler.confirmInstall(wsid, "discord.gg/abc")).rejects.toThrow(/guild_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("rejects guild_id that's too short to be a snowflake (Discord ids are 17–20 digits)", async () => {
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await expect(handler.confirmInstall(wsid, "12345")).rejects.toThrow(/guild_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("accepts a well-formed 18-digit Discord snowflake", async () => {
@@ -218,7 +222,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "999999999999999999")).rejects.toThrow(
       /Unknown Guild/i,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws with a clear error when the bot is not in the guild (403)", async () => {
@@ -227,14 +231,14 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
       /missing access/i,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws when the Discord API call fails at the network layer (no install row)", async () => {
     setFetchNetworkError();
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(/discord/i);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("treats Discord's generic 'code: 0' error as a real failure (HTTP status is the discriminator)", async () => {
@@ -247,7 +251,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
       /Generic error from upstream/i,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws unavailable when the API returns 2xx without a guild id (contract violation)", async () => {
@@ -256,7 +260,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(
       /unexpected response shape/i,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 });
 
@@ -266,7 +270,9 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — reachability verific
 
 describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap", () => {
   it("throws ChatIntegrationLimitError and writes no install row when at cap", async () => {
-    mockCheckChatLimit.mockImplementationOnce(() =>
+    // The gate rolls back its UPSERT internally on a cap denial and returns
+    // `cap_reached` — the row is never committed.
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
         reason: "cap_reached" as const,
@@ -281,13 +287,17 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap
       limit: 1,
     });
 
-    // Cap is checked after reachability but before the UPSERT.
-    expect(mockCheckChatLimit).toHaveBeenCalledWith(wsid, DISCORD_CATALOG_ID);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    // The gate enforced the cap (after reachability), keyed on the workspace +
+    // Discord catalog id, with the UPSERT it would have committed.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog, gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(wsid);
+    expect(gateCatalog).toBe(DISCORD_CATALOG_ID);
+    expect(gateInsert.sql).toMatch(/INSERT INTO workspace_plugins/);
   });
 
   it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
-    mockCheckChatLimit.mockImplementationOnce(() =>
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
       Promise.resolve({
         allowed: false as const,
         reason: "check_failed" as const,
@@ -300,8 +310,8 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap
       _tag: "BillingCheckFailedError",
     });
 
-    // Still fail closed — no install row written.
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    // Still fail closed — the gate returned check_failed without committing.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -310,15 +320,21 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — chat-integration cap
 // ---------------------------------------------------------------------------
 
 describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => {
+  /** Pull the gate's `insert` arg from the most recent call. */
+  function lastGateInsert(): { sql: string; params: readonly unknown[] } {
+    const calls = mockCheckChatLimitAndInstall.mock.calls;
+    return calls[calls.length - 1][2];
+  }
+
   it("UPSERTs workspace_plugins with the catalog id + guild_id config payload", async () => {
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await handler.confirmInstall(wsid, "123456789012345678", undefined, {
       guild_name: "Acme Engineering",
     });
 
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
-    const sqlText = String(sql);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const insert = lastGateInsert();
+    const sqlText = insert.sql;
     expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
     // Required NOT NULL columns post-0092 / 0096 (codex P0 regression
     // catcher) — the INSERT must name pillar + install_id explicitly,
@@ -329,8 +345,10 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
     expect(sqlText).toMatch(/pillar/);
     expect(sqlText).toMatch(/'chat'/);
     expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
+    // The gate runs the UPSERT under the lock, so RETURNING id must be present.
+    expect(sqlText).toMatch(/RETURNING id/);
 
-    const paramsArr = params as unknown[];
+    const paramsArr = insert.params as unknown[];
     expect(paramsArr).toContain(wsid);
     expect(paramsArr).toContain(DISCORD_CATALOG_ID);
     const configJson = paramsArr.find(
@@ -349,8 +367,7 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
     setFetchOk({ id: "123456789012345678" });
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await handler.confirmInstall(wsid, "123456789012345678");
-    const [, params] = mockInternalQuery.mock.calls[0];
-    const configJson = (params as unknown[]).find(
+    const configJson = (lastGateInsert().params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("guild_id"),
     );
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
@@ -362,17 +379,16 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
     setFetchOk({ id: "123456789012345678", name: "From API" });
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await handler.confirmInstall(wsid, "123456789012345678");
-    const [, params] = mockInternalQuery.mock.calls[0];
-    const configJson = (params as unknown[]).find(
+    const configJson = (lastGateInsert().params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("guild_id"),
     );
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
     expect(parsed.guild_name).toBe("From API");
   });
 
-  it("returns the persisted install id from RETURNING (re-install idempotency)", async () => {
-    mockInternalQuery.mockImplementation(() =>
-      Promise.resolve([{ id: "existing-install-row" }]),
+  it("returns the persisted install id from the gate's RETURNING rows (re-install idempotency)", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
     );
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     const result = await handler.confirmInstall(wsid, "123456789012345678");
@@ -381,8 +397,10 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
     expect(result.installRecord.catalogId).toBe(DISCORD_SLUG);
   });
 
-  it("throws when RETURNING comes back empty — never ships a candidate id that doesn't match the persisted row", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  it("throws when the gate's RETURNING rows are empty — never ships a candidate id that doesn't match the persisted row", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [] }),
+    );
     const handler = new DiscordStaticBotInstallHandler({
       botToken: "tkn",
       clientId: "111",
@@ -394,7 +412,8 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — persistence", () => 
   });
 
   it("surfaces DB failure rather than half-installing — no return after a throw", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB down")));
+    // The gate throws on a genuine write-path failure (after rolling back).
+    mockCheckChatLimitAndInstall.mockImplementation(() => Promise.reject(new Error("DB down")));
     const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
     await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(/DB down/);
   });

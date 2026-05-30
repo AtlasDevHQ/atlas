@@ -797,9 +797,11 @@ export class InvalidInstallIdError extends Data.TaggedError("InvalidInstallIdErr
  * A chat-platform install was refused because the workspace's plan tier has
  * reached its chat-integration cap (per-tier numbers live in
  * `billing/plans.ts:maxChatIntegrations`). Thrown by the chat install
- * handlers (`slack-oauth-handler`, `discord-static-bot-handler`) before the
- * `workspace_plugins` INSERT, after `checkChatIntegrationLimit` counts the
- * workspace's existing chat installs (#2953).
+ * handlers (`slack-oauth-handler`, `discord-static-bot-handler`) when
+ * `checkChatIntegrationLimitAndInstall` finds the cap reached — it counts the
+ * workspace's existing chat installs and runs the `workspace_plugins` INSERT
+ * atomically under a per-workspace advisory lock, rolling back when the cap is
+ * hit (#2953, #3001).
  *
  * Maps to HTTP 429 `plan_limit_exceeded` — the same status and wire code
  * the connections cap surfaces from `admin-connections`, plus a `limit`

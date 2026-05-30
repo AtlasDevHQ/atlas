@@ -24,6 +24,15 @@ let mockUsageShouldThrow = false;
 let mockInternalQueryResult: unknown[] = [];
 /** When true, the `internalQuery` mock throws (count-query failure path). */
 let mockInternalQueryShouldThrow = false;
+/**
+ * Fake transaction client `getInternalDB().connect()` hands back for the
+ * atomic install-gate tests (`checkChatIntegrationLimitAndInstall`). Set per
+ * test via {@link makeFakeTxnClient}; `null` means no test configured one (the
+ * gate's no-orgId / no-DB short-circuits never call `connect`).
+ */
+let mockTxnClient: ReturnType<typeof makeFakeTxnClient> | null = null;
+/** Count of `getInternalDB().connect()` calls — asserts no transaction opened. */
+let mockConnectCount = 0;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -32,7 +41,18 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     return orgId ? mockWorkspace : null;
   },
   getWorkspaceStatus: async () => mockWorkspace?.workspace_status ?? null,
-  getInternalDB: () => ({ query: mock(() => Promise.resolve({ rows: [] })), end: mock(() => {}), on: mock(() => {}) }),
+  getInternalDB: () => ({
+    query: mock(() => Promise.resolve({ rows: [] })),
+    connect: () => {
+      mockConnectCount++;
+      if (!mockTxnClient) {
+        throw new Error("test did not configure a fake txn client (mockTxnClient)");
+      }
+      return Promise.resolve(mockTxnClient.client);
+    },
+    end: mock(() => {}),
+    on: mock(() => {}),
+  }),
   internalQuery: async () => {
     if (mockInternalQueryShouldThrow) throw new Error("db error");
     return mockInternalQueryResult;
@@ -73,7 +93,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkChatIntegrationLimit, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimitAndInstall, CHAT_INTEGRATION_COUNT_SQL, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type ChatIntegrationInstallResult, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
@@ -94,6 +114,82 @@ function expectLimitExceeded(result: PlanCheckResult): Extract<PlanCheckResult, 
 function expectAllowed(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: true }> {
   expect(result.allowed).toBe(true);
   return result as Extract<PlanCheckResult, { allowed: true }>;
+}
+
+// ---------------------------------------------------------------------------
+// Fake transaction client for the atomic install-gate tests
+// (`checkChatIntegrationLimitAndInstall`). Records every `query` call so a
+// test can assert the BEGIN → advisory-lock → COUNT → INSERT → COMMIT
+// sequence (or ROLLBACK on a denial), and exposes the `release` error so the
+// poisoned-socket destroy path can be checked.
+// ---------------------------------------------------------------------------
+
+interface FakeTxnClientOpts {
+  /** Rows returned for the chat-integration COUNT(*) FILTER query. */
+  readonly countRows?: Array<Record<string, unknown>>;
+  /** When true, the COUNT query throws. */
+  readonly countThrows?: boolean;
+  /** Rows returned for the workspace_plugins INSERT (RETURNING). */
+  readonly insertRows?: Array<Record<string, unknown>>;
+  /** When true, the INSERT throws (write-path failure → gate re-throws). */
+  readonly insertThrows?: boolean;
+  /** When true, ROLLBACK throws (poisoned socket → client destroyed on release). */
+  readonly rollbackThrows?: boolean;
+}
+
+function makeFakeTxnClient(opts: FakeTxnClientOpts = {}) {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  const state: { releaseErr: Error | undefined; released: boolean } = {
+    releaseErr: undefined,
+    released: false,
+  };
+  const client = {
+    query: (sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }> => {
+      calls.push({ sql, params });
+      if (sql === "ROLLBACK") {
+        if (opts.rollbackThrows) return Promise.reject(new Error("rollback failed"));
+        return Promise.resolve({ rows: [] });
+      }
+      if (sql === "BEGIN" || sql === "COMMIT") return Promise.resolve({ rows: [] });
+      if (sql.includes("pg_advisory_xact_lock")) return Promise.resolve({ rows: [] });
+      if (sql.includes("COUNT(*) FILTER")) {
+        if (opts.countThrows) return Promise.reject(new Error("count failed"));
+        return Promise.resolve({ rows: opts.countRows ?? [] });
+      }
+      if (sql.includes("INSERT INTO workspace_plugins")) {
+        if (opts.insertThrows) return Promise.reject(new Error("insert failed"));
+        return Promise.resolve({ rows: opts.insertRows ?? [] });
+      }
+      return Promise.resolve({ rows: [] });
+    },
+    release: (err?: Error): void => {
+      state.released = true;
+      state.releaseErr = err;
+    },
+  };
+  /** SQL of every recorded call, in order — for sequence assertions. */
+  const sqls = (): string[] => calls.map((c) => c.sql);
+  /** True if any recorded call's SQL contains `needle`. */
+  const ran = (needle: string): boolean => calls.some((c) => c.sql.includes(needle));
+  return { client, calls, sqls, ran, state };
+}
+
+/** Narrow a chat-install gate cap_reached denial for `.limit` access. */
+function expectInstallCapReached<T extends Record<string, unknown>>(
+  result: ChatIntegrationInstallResult<T>,
+): Extract<ChatIntegrationInstallResult<T>, { reason: "cap_reached" }> {
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toBe("cap_reached");
+  return result as Extract<ChatIntegrationInstallResult<T>, { reason: "cap_reached" }>;
+}
+
+/** Narrow a chat-install gate check_failed (fail-closed) denial. */
+function expectInstallCheckFailed<T extends Record<string, unknown>>(
+  result: ChatIntegrationInstallResult<T>,
+): Extract<ChatIntegrationInstallResult<T>, { reason: "check_failed" }> {
+  expect(result.allowed).toBe(false);
+  if (!result.allowed) expect(result.reason).toBe("check_failed");
+  return result as Extract<ChatIntegrationInstallResult<T>, { reason: "check_failed" }>;
 }
 
 /** Create a standard workspace fixture (defaults to starter tier). */
@@ -662,11 +758,25 @@ describe("checkResourceLimit", () => {
 });
 
 // ---------------------------------------------------------------------------
-// checkChatIntegrationLimit — counts workspace_plugins(pillar='chat') (#2953)
+// checkChatIntegrationLimitAndInstall — atomic cap + INSERT gate (#2953, #3001)
+//
+// Exercises the in-transaction decision logic against a fake client that
+// records the BEGIN → advisory-lock → COUNT → (INSERT/COMMIT | ROLLBACK)
+// sequence. The COUNT and INSERT rows are scripted per test; the real-Postgres
+// aggregate + the concurrency race are covered by chat-cap-pg.test.ts (#2999).
 // ---------------------------------------------------------------------------
 
-describe("checkChatIntegrationLimit", () => {
+describe("checkChatIntegrationLimitAndInstall", () => {
   const SLACK = "catalog:slack";
+  /** A representative workspace_plugins UPSERT — the fake client matches on substring. */
+  const INSERT = {
+    sql: `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+      VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
+      ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
+        SET config = EXCLUDED.config, enabled = true
+      RETURNING id`,
+    params: ["install-1", "org-1", SLACK, "{}"],
+  };
 
   beforeEach(() => {
     mockHasInternalDB = true;
@@ -674,108 +784,235 @@ describe("checkChatIntegrationLimit", () => {
     mockWorkspace = null;
     mockInternalQueryResult = [];
     mockInternalQueryShouldThrow = false;
+    mockTxnClient = null;
+    mockConnectCount = 0;
     invalidatePlanCache();
   });
 
-  /** Shape the count-query row the way the SQL aliases it. */
-  function counts(others: number, thisCount: number): void {
-    mockInternalQueryResult = [{ others, this_count: thisCount }];
+  /** Configure the fake txn client with scripted COUNT + INSERT rows. */
+  function setTxn(
+    others: number,
+    thisCount: number,
+    opts: { insertRows?: Array<Record<string, unknown>>; rollbackThrows?: boolean } = {},
+  ): ReturnType<typeof makeFakeTxnClient> {
+    mockTxnClient = makeFakeTxnClient({
+      countRows: [{ others, this_count: thisCount }],
+      insertRows: opts.insertRows ?? [{ id: "persisted-1" }],
+      rollbackThrows: opts.rollbackThrows,
+    });
+    return mockTxnClient;
   }
 
-  it("allows when no orgId provided", async () => {
-    const result = await checkChatIntegrationLimit(undefined, SLACK);
+  // ── No-enforcement short-circuit (no lock / transaction) ──────────
+
+  it("runs the INSERT directly (no transaction) when no orgId", async () => {
+    mockInternalQueryResult = [{ id: "direct-1" }];
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>(undefined, SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    if (result.allowed) expect(result.rows).toEqual([{ id: "direct-1" }]);
+    expect(mockConnectCount).toBe(0);
   });
 
-  it("allows when no internal DB", async () => {
+  it("runs the INSERT directly (no transaction) when no internal DB", async () => {
     mockHasInternalDB = false;
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    mockInternalQueryResult = [{ id: "direct-2" }];
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    expect(mockConnectCount).toBe(0);
   });
 
-  it("blocks (fail closed, check_failed) when the count query throws", async () => {
+  it("runs the INSERT directly (no lock) when the workspace has no organization row", async () => {
+    // orgId present + internal DB present, but no `organization` row → no plan,
+    // no cap. The ONLY deliberate fail-open: allow with a direct INSERT and
+    // never open a transaction. (A workspace lookup *error* fails closed — see
+    // the next section; a genuine *absence* allows.)
+    mockWorkspace = null;
+    mockInternalQueryResult = [{ id: "no-org-row" }];
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
+    expect(result.allowed).toBe(true);
+    if (result.allowed) expect(result.rows).toEqual([{ id: "no-org-row" }]);
+    // No transaction opened — the fail-open path skips the lock entirely.
+    expect(mockConnectCount).toBe(0);
+  });
+
+  // ── Fail-closed before/under the lock ─────────────────────────────
+
+  it("fails closed (check_failed) before opening a transaction when the workspace lookup throws", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
-    mockInternalQueryShouldThrow = true;
-    // Distinct fail-closed contract — check_failed (→ 503 "try again"), not
-    // cap_reached (→ 429 "upgrade"). No `limit` field.
-    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    mockWorkspaceDetailsShouldThrow = true;
+    const denied = expectInstallCheckFailed(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
     expect(denied.errorMessage).toContain("Unable to verify plan limits");
+    // Failed closed before taking the lock — no transaction opened.
+    expect(mockConnectCount).toBe(0);
   });
 
-  it("blocks (fail closed, check_failed) when the count query returns no row", async () => {
+  it("fails closed (check_failed) and rolls back when the count query throws under the lock", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
-    // The aggregate SQL always returns one row; an empty result means a
-    // driver/query contract violation. Must NOT coerce to 0 (fail open).
-    mockInternalQueryResult = [];
-    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    mockTxnClient = makeFakeTxnClient({ countThrows: true });
+    const denied = expectInstallCheckFailed(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
     expect(denied.errorMessage).toContain("Unable to verify plan limits");
+    expect(mockTxnClient.ran("ROLLBACK")).toBe(true);
+    expect(mockTxnClient.ran("INSERT INTO workspace_plugins")).toBe(false);
+    expect(mockTxnClient.ran("COMMIT")).toBe(false);
   });
 
-  it("allows free tier regardless of count", async () => {
+  it("fails closed (check_failed) when the count returns no row (no coerce-to-0)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockTxnClient = makeFakeTxnClient({ countRows: [] });
+    expectInstallCheckFailed(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
+    expect(mockTxnClient.ran("ROLLBACK")).toBe(true);
+    expect(mockTxnClient.ran("INSERT INTO workspace_plugins")).toBe(false);
+  });
+
+  // ── Allowed paths — INSERT + COMMIT ───────────────────────────────
+
+  it("allows free tier net-new and commits the INSERT", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "free" });
-    counts(9, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    const txn = setTxn(9, 0, { insertRows: [{ id: "free-row" }] });
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    if (result.allowed) expect(result.rows).toEqual([{ id: "free-row" }]);
+    expect(txn.ran("INSERT INTO workspace_plugins")).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
+    expect(txn.ran("ROLLBACK")).toBe(false);
+    expect(txn.state.released).toBe(true);
   });
 
-  it("allows business tier (unlimited) for a net-new platform", async () => {
+  it("allows business (unlimited) net-new and commits", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "business" });
-    counts(7, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    const txn = setTxn(7, 0);
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
   });
 
-  it("allows starter first chat install (no others, not yet installed)", async () => {
+  it("allows starter first install (no others) and commits", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
-    counts(0, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    const txn = setTxn(0, 0);
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    expect(txn.ran("INSERT INTO workspace_plugins")).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
   });
 
-  it("blocks starter from adding a 2nd distinct chat integration", async () => {
-    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
-    // One other chat platform already installed; Slack is net-new → cap=1 hit.
-    counts(1, 0);
-    const denied = expectResourceDenied(await checkChatIntegrationLimit("org-1", SLACK));
-    expect(denied.limit).toBe(1);
-    expect(denied.errorMessage).toContain("1 chat integration");
+  it("allows pro under cap (2 others, net-new third) and commits", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
+    const txn = setTxn(2, 0);
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
+    expect(result.allowed).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
   });
 
-  it("allows reconnecting an already-installed platform at the cap", async () => {
+  // ── Reconnect is never blocked (skips the cap comparison) ──────────
+
+  it("allows reconnect at cap and commits (skips the cap comparison)", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
     // Slack itself is already installed (this_count=1) and is the only one.
-    counts(0, 1);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    const txn = setTxn(0, 1);
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    expect(txn.ran("INSERT INTO workspace_plugins")).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
   });
 
-  it("allows reconnecting an existing platform even when grandfathered over cap", async () => {
+  it("allows reconnect even when grandfathered over cap", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
     // Over the cap (others=2) but reconnecting a platform already owned.
-    counts(2, 1);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    const txn = setTxn(2, 1);
+    const result = await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
     expect(result.allowed).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(true);
   });
 
-  it("blocks a grandfathered over-cap workspace from adding a net-new platform", async () => {
+  // ── Cap reached — ROLLBACK, no INSERT ─────────────────────────────
+
+  it("blocks starter net-new at cap, rolls back, and never INSERTs", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "starter" });
-    // Over the cap and Slack is net-new (this_count=0) → blocked.
-    counts(2, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
-    expect(result.allowed).toBe(false);
+    const txn = setTxn(1, 0); // one other chat platform → cap=1 hit
+    const denied = expectInstallCapReached(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
+    expect(denied.limit).toBe(1);
+    expect(denied.errorMessage).toContain("1 chat integration");
+    expect(txn.ran("ROLLBACK")).toBe(true);
+    expect(txn.ran("INSERT INTO workspace_plugins")).toBe(false);
+    expect(txn.ran("COMMIT")).toBe(false);
   });
 
-  it("allows pro under cap (2 others, net-new third)", async () => {
-    mockWorkspace = makeWorkspace({ plan_tier: "pro" });
-    counts(2, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
-    expect(result.allowed).toBe(true);
+  it("blocks a grandfathered over-cap net-new and rolls back", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    const txn = setTxn(2, 0);
+    expectInstallCapReached(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
+    expect(txn.ran("ROLLBACK")).toBe(true);
+    expect(txn.ran("INSERT INTO workspace_plugins")).toBe(false);
   });
 
-  it("blocks pro at cap (3 others, net-new fourth)", async () => {
+  it("blocks pro at cap (3 others) and rolls back", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "pro" });
-    counts(3, 0);
-    const result = await checkChatIntegrationLimit("org-1", SLACK);
-    expect(result.allowed).toBe(false);
+    const txn = setTxn(3, 0);
+    const denied = expectInstallCapReached(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
+    expect(denied.limit).toBe(3);
+    expect(txn.ran("ROLLBACK")).toBe(true);
+  });
+
+  // ── Sequencing + write-path failures ──────────────────────────────
+
+  it("acquires the per-workspace advisory lock before counting, and runs the exact aggregate SQL", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    const txn = setTxn(0, 0);
+    await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT);
+
+    const sqls = txn.sqls();
+    const beginAt = sqls.findIndex((s) => s === "BEGIN");
+    const lockAt = sqls.findIndex((s) => s.includes("pg_advisory_xact_lock"));
+    const countAt = sqls.findIndex((s) => s.includes("COUNT(*) FILTER"));
+    const insertAt = sqls.findIndex((s) => s.includes("INSERT INTO workspace_plugins"));
+    const commitAt = sqls.findIndex((s) => s === "COMMIT");
+    // BEGIN → lock → count → insert → commit, strictly ordered.
+    expect(beginAt).toBe(0);
+    expect(lockAt).toBeGreaterThan(beginAt);
+    expect(countAt).toBeGreaterThan(lockAt);
+    expect(insertAt).toBeGreaterThan(countAt);
+    expect(commitAt).toBeGreaterThan(insertAt);
+
+    // The recount under the lock uses the exact exported aggregate (the same
+    // SQL the real-PG #2999 test pins), parameterized on (workspace, catalog).
+    const countCall = txn.calls.find((c) => c.sql.includes("COUNT(*) FILTER"));
+    expect(countCall?.sql).toBe(CHAT_INTEGRATION_COUNT_SQL);
+    expect(countCall?.params).toEqual(["org-1", SLACK]);
+  });
+
+  it("re-throws a write-path failure (INSERT error) and rolls back", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    const txn = makeFakeTxnClient({ countRows: [{ others: 0, this_count: 0 }], insertThrows: true });
+    mockTxnClient = txn;
+    await expect(
+      checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    ).rejects.toThrow("insert failed");
+    expect(txn.ran("ROLLBACK")).toBe(true);
+    expect(txn.ran("COMMIT")).toBe(false);
+  });
+
+  it("destroys the client on a failed ROLLBACK (poisoned socket) while still returning the denial", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Cap reached → ROLLBACK path; the ROLLBACK itself fails.
+    const txn = setTxn(1, 0, { rollbackThrows: true });
+    const denied = expectInstallCapReached(
+      await checkChatIntegrationLimitAndInstall<{ id: string }>("org-1", SLACK, INSERT),
+    );
+    expect(denied.limit).toBe(1);
+    // release() called with the rollback error so the pool destroys the client.
+    expect(txn.state.released).toBe(true);
+    expect(txn.state.releaseErr).toBeInstanceOf(Error);
   });
 });

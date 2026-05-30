@@ -40,6 +40,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { isPlaintextCredentialRisk } from "@atlas/api/lib/db/secret-encryption";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { assertBaseUrlAllowed, EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
 import type { WorkspaceId } from "@useatlas/types";
@@ -91,6 +92,8 @@ const OptionalUrlSchema = z
       const u = new URL(raw);
       return u.protocol === "https:" || u.protocol === "http:";
     } catch {
+      // intentionally ignored: URL constructor throw is the negative
+      // validation signal — the user sees the .refine message.
       return false;
     }
   }, "base_url_override must be a well-formed http(s) URL")
@@ -218,6 +221,23 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
       throw new Error(
         "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
           "Set ATLAS_ENCRYPTION_KEYS and retry.",
+      );
+    }
+
+    // ── 2a. Self-hosted plaintext-credential warning (non-fatal) ────
+    // The SaaS gate above hard-fails. A self-hosted prod-like deploy with a
+    // credential and no keyset is *allowed* — the keyless dev passthrough in
+    // `encryptSecret` is intentional repo-wide parity — but it must not be
+    // silent. Mirror the boot-time P0 alarm via the shared predicate so the
+    // operator gets the same signal at the credential boundary rather than
+    // only on a later read of plaintext-at-rest. (In SaaS + no keyset we
+    // already threw above, so this only fires for self-hosted NODE_ENV=production.)
+    if (data.auth_value && isPlaintextCredentialRisk()) {
+      log.warn(
+        { workspaceId },
+        "Persisting an OpenAPI datasource credential with no encryption keyset configured in a " +
+          "prod-like environment — auth_value will be stored in plaintext. Set ATLAS_ENCRYPTION_KEYS " +
+          "(or ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) to encrypt integration credentials at rest.",
       );
     }
 

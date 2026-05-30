@@ -102,6 +102,25 @@ export function hasVersionedPrefix(stored: string): boolean {
   return PREFIXED_RE.test(stored);
 }
 
+/**
+ * True when the runtime is "prod-like" (`NODE_ENV=production` or
+ * `ATLAS_DEPLOY_MODE=saas`) yet no encryption keyset is configured — the
+ * exact condition under which {@link encryptSecret}'s dev passthrough would
+ * silently persist a credential in plaintext.
+ *
+ * Single source of truth for the boot-time P0 alarm below and for any
+ * credential-write boundary that wants to re-warn at the point of persist
+ * (e.g. the OpenAPI generic datasource install handler). Reuse this rather
+ * than re-deriving the `NODE_ENV` / `ATLAS_DEPLOY_MODE` check so every site
+ * stays in lockstep. Evaluated live (keyset lookup is cached internally), so
+ * a test that mutates the env and resets the keyset cache sees the new value.
+ */
+export function isPlaintextCredentialRisk(): boolean {
+  const isProdLike =
+    process.env.NODE_ENV === "production" || process.env.ATLAS_DEPLOY_MODE === "saas";
+  return isProdLike && !getEncryptionKeyset();
+}
+
 // Boot-time alarm: in production without a key configured, every new
 // credential gets stored plaintext via the passthrough in `encryptSecret`.
 // The audit-level fallback is intentional (dev + self-hosted without a
@@ -109,9 +128,7 @@ export function hasVersionedPrefix(stored: string): boolean {
 // one and the silent pass-through would otherwise only surface on a
 // read of pre-encrypted data — too late. Fire once at module load.
 (() => {
-  const isProdLike =
-    process.env.NODE_ENV === "production" || process.env.ATLAS_DEPLOY_MODE === "saas";
-  if (isProdLike && !getEncryptionKeyset()) {
+  if (isPlaintextCredentialRisk()) {
     log.error(
       "No encryption key configured (ATLAS_ENCRYPTION_KEYS / ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) — " +
       "integration credentials will be written plaintext. This is a P0 in SaaS mode.",

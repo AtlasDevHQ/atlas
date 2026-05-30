@@ -29,6 +29,35 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
 
+// Capture the handler's structured logger so we can assert the non-fatal
+// plaintext-credential warning fires (#3012 AC1). Mock EVERY value export of
+// the logger module — a partial mock.module() trips "Export not found" on a
+// transitive import (CLAUDE.md). Types are erased and need no mock.
+const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogger = {
+  warn: mockLogWarn,
+  info: mockLogInfo,
+  debug: () => {},
+  error: () => {},
+  trace: () => {},
+  fatal: () => {},
+  silent: () => {},
+  child: () => mockLogger,
+};
+mock.module("@atlas/api/lib/logger", () => ({
+  createLogger: () => mockLogger,
+  getLogger: () => mockLogger,
+  withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  setLogLevel: () => true,
+  scrubErrSerializer: (v: unknown) => v,
+  scrubLogFormatter: (obj: Record<string, unknown>) => obj,
+  hashShareToken: (token: string) => token.slice(0, 16),
+  redactPaths: [] as string[],
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"] as const,
+}));
+
 const WSID = "ws-openapi-1" as WorkspaceId;
 
 type HandlerCtor = typeof import("../openapi-generic-form-handler").OpenApiGenericFormInstallHandler;
@@ -87,6 +116,8 @@ function validForm(overrides: Record<string, unknown> = {}): Record<string, unkn
 
 beforeEach(() => {
   setKeys();
+  mockLogWarn.mockClear();
+  mockLogInfo.mockClear();
   mockInternalQuery.mockClear();
   mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
     if (sql.includes("RETURNING id")) {
@@ -269,6 +300,49 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     const handler = newHandler();
     await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(/Encryption keyset unavailable/);
     expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ── Plaintext-credential warning (#3012) ─────────────────────────────────────
+
+describe("OpenApiGenericFormInstallHandler — plaintext-credential warning", () => {
+  it("warns (non-fatal) when persisting a credential in a prod-like env with no keyset", async () => {
+    // Self-hosted prod-like (NODE_ENV=production, NOT saas) with no keyset: the
+    // SaaS hard-fail gate doesn't apply, so the install proceeds — but the
+    // operator must be warned that auth_value lands in plaintext at rest.
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    process.env.NODE_ENV = "production";
+    _resetEncryptionKeyCache();
+
+    const handler = newHandler();
+    const result = await handler.validateConfig(WSID, validForm());
+
+    // Non-fatal: the row is still written (dev passthrough is intentional parity).
+    expect(result.installRecord.id).toBe("install-1");
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+
+    // ...but the credential-boundary warning fired, mirroring the boot-time alarm.
+    const warned = mockLogWarn.mock.calls.some(
+      (c) => typeof c[1] === "string" && (c[1] as string).includes("stored in plaintext"),
+    );
+    expect(warned).toBe(true);
+  });
+
+  it("does not warn when an encryption keyset is configured", async () => {
+    // setKeys() (beforeEach) already set ATLAS_ENCRYPTION_KEYS; prod-like but safe.
+    process.env.NODE_ENV = "production";
+    _resetEncryptionKeyCache();
+
+    const handler = newHandler();
+    await handler.validateConfig(WSID, validForm());
+
+    const warnedPlaintext = mockLogWarn.mock.calls.some(
+      (c) => typeof c[1] === "string" && (c[1] as string).includes("stored in plaintext"),
+    );
+    expect(warnedPlaintext).toBe(false);
   });
 });
 

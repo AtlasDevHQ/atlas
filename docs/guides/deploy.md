@@ -59,7 +59,7 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
 
 ```bash
 # Option A: Canonical demo dataset (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows)
-psql "$ATLAS_DATASOURCE_URL" < data/demo.sql
+psql "$ATLAS_DATASOURCE_URL" < data/ecommerce.sql
 
 # Option B: Your own data
 ATLAS_DATASOURCE_URL="$ATLAS_DATASOURCE_URL" bun run atlas -- init
@@ -233,7 +233,7 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@your-analytics-host:5432/mydb
 
 ```bash
 # Option A: Canonical demo dataset (NovaMart e-commerce — 13 entities, 52 tables, ~480K rows)
-psql "$ATLAS_DATASOURCE_URL" < data/demo.sql
+psql "$ATLAS_DATASOURCE_URL" < data/ecommerce.sql
 
 # Option B: Your own data (skip seeding, just generate semantic layer)
 ATLAS_DATASOURCE_URL="$ATLAS_DATASOURCE_URL" bun run atlas -- init

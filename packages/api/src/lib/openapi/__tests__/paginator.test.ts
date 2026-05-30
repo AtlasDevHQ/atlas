@@ -532,6 +532,19 @@ function countingExecute() {
 
 const FIRST: PageRequest = { operationId: "findManyThings", params: { query: {} } };
 
+// NOTE (#3011 / #2970): the per-page cache exercised below — including its
+// per-(workspace, install) `identity` keying and the cross-install isolation
+// asserted in "the cache_invalidated_at watermark flushes the install's cache
+// (Rediscover schema)" — currently covers a NOT-YET-REACHABLE path. No production caller passes a
+// `cache` binding: `executeOperationPaged` is dormant and the live tool
+// (lib/tools/rest-operation.ts) calls the un-paginated `executeOperation`
+// primitive directly (see the single-page-truncation test in
+// tools/__tests__/rest-operation.test.ts). These tests pin the cache's
+// tenant-scoping contract ahead of that wiring. When #2970 wires
+// `executeOperationPaged` + a real (Postgres) page store into the live tool,
+// add a real-store CROSS-POD tenant-isolation test alongside this block
+// (mirroring the scoped graph-cache test in probe.test.ts) — the in-memory
+// store here cannot catch a key collision across pods sharing one L2 store.
 describe("paginator — page cache (per-page, TTL, watermark)", () => {
   it("caches each page so a second walk does zero fetches within TTL", async () => {
     const store = new InMemoryPageCacheStore();

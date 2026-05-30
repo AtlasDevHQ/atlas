@@ -1330,6 +1330,46 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   // `status` column) is covered structurally by the `0096: cutover`
   // describe + the full migration replay at `beforeAll`.
 
+  // ─────────────────────────────────────────────────────────────────────
+  // 0108 — openapi-generic Datasource catalog seed (#2926 / #3011 GAP 3)
+  //
+  // The end-to-end run above only asserts count>0; an `INSERT ... ON CONFLICT
+  // DO NOTHING` that silently no-ops (a constraint collision on a future
+  // schema drift) would still "pass" with this catalog row ABSENT. The NOVEL
+  // coverage here is the `toHaveLength(1)` row-presence check after the full
+  // migration replay — that the INSERT actually landed. The column pins below
+  // (type/pillar/install_model + the `secret:true` field) overlap with
+  // catalog-seed.test.ts's static `migration 0108 ↔ code alignment` assertions;
+  // they ride along as cheap insurance against a partial-landing drift. Pinned
+  // because the install pipeline reads them: type + pillar route the row through
+  // the OpenApiDatasourceRegistry (no SQL pool), install_model drives the admin
+  // form, and `secret:true` is what encryptSecretFields encrypts at rest (a
+  // dropped flag plaintexts the token).
+  // ─────────────────────────────────────────────────────────────────────
+  it("0108: seeds the openapi-generic datasource catalog row with the credential field marked secret (#3011)", async () => {
+    const { rows } = await pool.query<{
+      type: string;
+      pillar: string;
+      install_model: string;
+      config_schema: Array<{ key: string; secret?: boolean }>;
+    }>(
+      `SELECT type, pillar, install_model, config_schema
+         FROM plugin_catalog
+        WHERE id = 'catalog:openapi-generic'`,
+    );
+    // The INSERT actually landed a row — not a silent ON CONFLICT no-op.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.type).toBe("datasource");
+    expect(rows[0]?.pillar).toBe("datasource");
+    expect(rows[0]?.install_model).toBe("form");
+
+    // Exactly the credential field carries secret:true, so encryptSecretFields
+    // encrypts `auth_value` in workspace_plugins.config at install time.
+    const secretKeys = (rows[0]?.config_schema ?? [])
+      .filter((f) => f.secret === true)
+      .map((f) => f.key);
+    expect(secretKeys).toEqual(["auth_value"]);
+  }, PG_TEST_TIMEOUT_MS);
 
   // ─────────────────────────────────────────────────────────────────────
   // 0096: connections / connection_groups cutover (#2744, 1.5.3 slice 6)

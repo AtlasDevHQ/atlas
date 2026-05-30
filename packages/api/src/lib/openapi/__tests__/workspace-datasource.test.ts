@@ -11,12 +11,13 @@ import {
   resolveWorkspaceRestDatasources,
   resolveWorkspaceRestDatasourcesOrThrow,
   resolveWorkspacePrimaryRestDatasource,
+  defaultQuery,
   type OpenApiInstallRow,
 } from "../workspace-datasource";
 import { buildOperationGraph } from "../spec";
 import { buildSnapshot, __resetSnapshotGraphCacheForTests } from "../probe";
 import { MOCK_OPENAPI_SPEC } from "@atlas/api/testing/openapi-datasource";
-import type { OpenApiSnapshot } from "../catalog";
+import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "../catalog";
 
 const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
 
@@ -251,6 +252,51 @@ describe("resolveWorkspacePrimaryRestDatasource", () => {
       ]),
     });
     expect(primary?.id).toBe("first");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  defaultQuery tenant-scope clause (#3011 GAP 2)
+//
+//  Every test above injects `deps.query`, so the production `defaultQuery`
+//  SQL — the only place the per-tenant scope is enforced — is NEVER exercised.
+//  A regression that weakened any conjunct (dropping `pillar`, `status`, or
+//  the `workspace_id`/`catalog_id` bind) is a cross-tenant datasource /
+//  credential leak that would pass the whole suite unnoticed. Drive the real
+//  SQL through the `exec` seam and pin both the scope clause and the param
+//  order — the prod path (no `exec`) still runs `internalQuery` unchanged.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("defaultQuery — tenant-scope clause", () => {
+  it("scopes the SELECT to the caller's workspace + openapi-generic catalog, non-archived datasources (#3011)", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    await defaultQuery("org-CALLER", async (sql, params) => {
+      capturedSql = sql;
+      capturedParams = params;
+      return [];
+    });
+
+    const flat = capturedSql.replace(/\s+/g, " ").trim();
+    expect(flat).toContain("FROM workspace_plugins");
+    // Each conjunct is load-bearing — dropping any one is a tenant-isolation hole.
+    expect(flat).toContain("workspace_id = $1");
+    expect(flat).toContain("catalog_id = $2");
+    expect(flat).toContain("pillar = 'datasource'");
+    expect(flat).toContain("status != 'archived'");
+    // Assert the conjuncts as ONE contiguous AND-joined WHERE clause, not just
+    // four independent substrings: the per-conjunct checks above pass even if a
+    // regression swapped an `AND` for an `OR` (or moved a conjunct out of the
+    // WHERE) — both of which are tenant-isolation holes. Pinning the full clause
+    // catches the connective + membership, not only the presence, of each guard.
+    expect(flat).toContain(
+      "WHERE workspace_id = $1 AND catalog_id = $2 AND pillar = 'datasource' AND status != 'archived'",
+    );
+
+    // Param ORDER is load-bearing: $1 is the caller's workspace (never client
+    // input), $2 is the built-in openapi-generic catalog id. Flipping these
+    // would scope the query to the wrong dimension.
+    expect(capturedParams).toEqual(["org-CALLER", OPENAPI_GENERIC_CATALOG_ID]);
   });
 });
 

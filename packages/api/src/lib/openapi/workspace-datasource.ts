@@ -67,22 +67,43 @@ export interface ResolveWorkspaceDeps {
 }
 
 /**
+ * Executor seam for {@link defaultQuery}. Production omits it (the lazily-imported
+ * `internalQuery` runs against the real pool); tests pass one to assert the SQL +
+ * param binding without a DB — the existing `deps.query` seam injects at the
+ * resolver level and so never exercises this function's own scope clause.
+ */
+export type OpenApiInstallQueryExecutor = (
+  sql: string,
+  params: unknown[],
+) => Promise<ReadonlyArray<OpenApiInstallRow>>;
+
+/**
  * Default query: the workspace's non-archived `openapi-generic` installs.
  * Lazily imports `internalQuery` so the resolver's static graph stays free of
  * the DB module (admin-route tests partial-mock it heavily).
+ *
+ * The `WHERE` clause is the load-bearing tenant-scope guard: every conjunct
+ * (`workspace_id = $1`, `catalog_id = $2`, `pillar = 'datasource'`,
+ * `status != 'archived'`) must hold, or the resolver leaks another tenant's
+ * datasources / credentials. Every other test injects `deps.query` and so
+ * bypasses this SQL — the `exec` seam lets a unit test drive it directly and
+ * fail loudly if the scope or param order regresses (#3011).
  */
-async function defaultQuery(workspaceId: string): Promise<ReadonlyArray<OpenApiInstallRow>> {
-  const { internalQuery } = await import("@atlas/api/lib/db/internal");
-  return internalQuery<OpenApiInstallRow>(
-    `SELECT install_id, config
+export async function defaultQuery(
+  workspaceId: string,
+  exec?: OpenApiInstallQueryExecutor,
+): Promise<ReadonlyArray<OpenApiInstallRow>> {
+  const sql = `SELECT install_id, config
        FROM workspace_plugins
       WHERE workspace_id = $1
         AND catalog_id = $2
         AND pillar = 'datasource'
         AND status != 'archived'
-      ORDER BY installed_at ASC`,
-    [workspaceId, OPENAPI_GENERIC_CATALOG_ID],
-  );
+      ORDER BY installed_at ASC`;
+  const params = [workspaceId, OPENAPI_GENERIC_CATALOG_ID];
+  if (exec) return exec(sql, params);
+  const { internalQuery } = await import("@atlas/api/lib/db/internal");
+  return internalQuery<OpenApiInstallRow>(sql, params);
 }
 
 const SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);

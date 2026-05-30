@@ -40,7 +40,12 @@ function stagedDeletePart() {
       datasourceId: "twenty",
       datasourceName: "Twenty",
       summary: "Delete a person — DELETE /people/{id} on Twenty",
-      confirm: { datasourceId: "twenty", operationId: "deleteOnePerson", pathParams: { id: "p-1" } },
+      confirm: {
+        datasourceId: "twenty",
+        operationId: "deleteOnePerson",
+        pathParams: { id: "p-1" },
+        token: "signed-confirm-token", // #3007: opaque single-use token the banner forwards verbatim
+      },
     },
   };
 }

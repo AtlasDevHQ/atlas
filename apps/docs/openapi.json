@@ -9346,11 +9346,16 @@
                       ]
                     }
                   },
-                  "body": {}
+                  "body": {},
+                  "token": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 },
                 "required": [
                   "datasourceId",
-                  "operationId"
+                  "operationId",
+                  "token"
                 ]
               }
             }
@@ -9388,7 +9393,7 @@
             }
           },
           "400": {
-            "description": "Invalid request / no active workspace",
+            "description": "Invalid request / no active workspace / missing-invalid-expired-replayed confirm token / not a write",
             "content": {
               "application/json": {
                 "schema": {

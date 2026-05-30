@@ -9,6 +9,7 @@ import {
   type ExecuteRestOperationResult,
 } from "../rest-operation";
 import { _resetRestRateLimits } from "@atlas/api/lib/openapi/validate-rest-operation";
+import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 import {
   startTwentyMockServer,
   type TwentyMock,
@@ -29,14 +30,20 @@ let mock: TwentyMock;
 // blocks by default. A local test server is the "internal service" case the
 // operator opt-out exists for — enable it for this file and restore it after.
 const ORIGINAL_EGRESS_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+// Staging an allowlisted write now mints a signed single-use confirm token (#3007),
+// which needs a signing key resolvable from the encryption keyset. Restore after.
+const ORIGINAL_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
 
 beforeAll(async () => {
   process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+  process.env.BETTER_AUTH_SECRET = "test-confirm-token-signing-secret-not-a-real-key";
   mock = await startTwentyMockServer();
 });
 afterAll(async () => {
   if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
   else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
+  if (ORIGINAL_AUTH_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
+  else process.env.BETTER_AUTH_SECRET = ORIGINAL_AUTH_SECRET;
   await mock.close();
 });
 beforeEach(() => {
@@ -231,6 +238,42 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(Object.keys(result).toSorted()).toEqual(
       ["confirm", "datasourceId", "datasourceName", "method", "operationId", "status", "summary"],
     );
+    // #3007: the staged write carries a single-use confirm token the banner forwards.
+    expect(typeof result.confirm.token).toBe("string");
+    expect(result.confirm.token.length).toBeGreaterThan(0);
+  });
+
+  it("REFUSES to stage a write when no confirm-token signing key is configured (client_error, no dispatch)", async () => {
+    // Fail-loud (#3007): without a signing key the confirm gate can't be enforced,
+    // so the tool must NOT stage an unverifiable confirm — it returns client_error
+    // and tells the agent not to claim the write ran.
+    const ds = datasource({ writeAllowlist: new Set(["createOnePerson"]) });
+    const saved = {
+      keys: process.env.ATLAS_ENCRYPTION_KEYS,
+      key: process.env.ATLAS_ENCRYPTION_KEY,
+      auth: process.env.BETTER_AUTH_SECRET,
+    };
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.BETTER_AUTH_SECRET;
+    _resetEncryptionKeyCache();
+    try {
+      const result = await call(
+        { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+        async () => ds,
+      );
+      expect(result.status).toBe("client_error");
+      // Never staged as needs_confirmation, and nothing dispatched upstream.
+      expect(mock.requests.some((r) => r.method !== "GET")).toBe(false);
+    } finally {
+      if (saved.keys === undefined) delete process.env.ATLAS_ENCRYPTION_KEYS;
+      else process.env.ATLAS_ENCRYPTION_KEYS = saved.keys;
+      if (saved.key === undefined) delete process.env.ATLAS_ENCRYPTION_KEY;
+      else process.env.ATLAS_ENCRYPTION_KEY = saved.key;
+      if (saved.auth === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = saved.auth;
+      _resetEncryptionKeyCache();
+    }
   });
 
   it("blocks a write whose op is NOT in the allowlist even when others are", async () => {

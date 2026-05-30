@@ -19,6 +19,13 @@ export interface RestWriteConfirmRequest {
   query?: Record<string, string | number | boolean | Array<string | number | boolean>>;
   header?: Record<string, string | number | boolean>;
   body?: unknown;
+  /**
+   * Server-signed, single-use confirm token (#3007). Opaque to the banner — it
+   * POSTs the whole `confirm` payload (including this token) verbatim; the confirm
+   * endpoint verifies it matches the staged write, then burns it so a replay is
+   * rejected. Always present on a `needs_confirmation` result from the API.
+   */
+  token: string;
 }
 
 /** The `needs_confirmation` arm — an allowlisted write staged for human confirmation. */

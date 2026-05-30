@@ -51,6 +51,7 @@ import {
 } from "@atlas/api/lib/openapi/validate-rest-operation";
 import {
   buildRestWriteSummary,
+  mintRestConfirmToken,
   type RestWriteConfirmRequest,
 } from "@atlas/api/lib/openapi/rest-write-confirm";
 import type { OperationParams } from "@atlas/api/lib/openapi/types";
@@ -310,11 +311,48 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
             // A misconfigured per-install timeout is an operator concern, not an
             // agent one — surface it as a client_error so the model stops.
             return { status: "client_error", reason: "timeout", message: error.message };
+          default: {
+            // Fail closed: a future RestValidationReason that isn't handled must NOT
+            // fall through to dispatch — surface it as a client_error so the agent stops.
+            const _exhaustive: never = error.reason;
+            return {
+              status: "client_error",
+              reason: "unexpected",
+              message: `Operation "${operationId}" was rejected by an unhandled validation rule (${String(_exhaustive)}).`,
+            };
+          }
         }
       }
 
       // Allowlisted write — stage for confirm-before-write; never dispatch here.
       if (verdict.requiresConfirmation) {
+        // #3007: mint the single-use confirm token binding this exact staged write.
+        // If no signing key is configured the gate can't be enforced, so we refuse
+        // to stage rather than offer an unverifiable confirm (the oauth-state-token
+        // fail-loud stance) — surfaced as a client_error so the agent stops cleanly.
+        let token: string;
+        try {
+          token = mintRestConfirmToken({
+            workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
+            datasourceId: datasource.id,
+            operationId,
+            params,
+          });
+        } catch (err) {
+          const requestId = getRequestContext()?.requestId;
+          const message = err instanceof Error ? err.message : String(err);
+          log.error(
+            { operationId, datasource: datasource.id, requestId, err: message },
+            "executeRestOperation could not mint a confirm token",
+          );
+          return {
+            status: "client_error",
+            reason: "unexpected",
+            message:
+              "Could not stage this write for confirmation — the server is missing a signing key for confirm tokens. " +
+              "Tell the user the write can't be confirmed right now; do not claim it ran.",
+          };
+        }
         const confirm: RestWriteConfirmRequest = {
           datasourceId: datasource.id,
           operationId,
@@ -322,6 +360,7 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
           ...(query ? { query } : {}),
           ...(header ? { header } : {}),
           ...(body !== undefined ? { body } : {}),
+          token,
         };
         log.info(
           { operationId, method: verdict.operation.method, datasource: datasource.id },

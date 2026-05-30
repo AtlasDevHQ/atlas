@@ -18,6 +18,7 @@ import { buildOperationGraph } from "../spec";
 import { buildSnapshot, __resetSnapshotGraphCacheForTests } from "../probe";
 import { MOCK_OPENAPI_SPEC } from "@atlas/api/testing/openapi-datasource";
 import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "../catalog";
+import { DATA_CANDIDATE_CATALOG_IDS } from "../data-candidates";
 
 const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
 
@@ -240,6 +241,38 @@ describe("resolveWorkspaceRestDatasourcesOrThrow (strict)", () => {
   });
 });
 
+describe("resolveWorkspaceRestDatasources — data-candidate quirk attachment (slice 6a, #3028)", () => {
+  it("attaches the candidate's declarative quirk for a candidate-catalog install", async () => {
+    // A stripe-data install row carries the candidate catalog id; the resolver
+    // looks the candidate up in the code-resident registry and attaches its quirk
+    // — the quirk is never stored in (or read from) the encrypted config.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "inst-stripe", catalog_id: "catalog:stripe-data", config: config() },
+      ]),
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].quirk?.queryParamShaping).toEqual([{ param: "expand", bracketArray: true }]);
+  });
+
+  it("leaves quirk undefined for a plain openapi-generic install", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "inst-generic", catalog_id: OPENAPI_GENERIC_CATALOG_ID, config: config() },
+      ]),
+    });
+    expect(result[0].quirk).toBeUndefined();
+  });
+
+  it("treats a row with no catalog_id as the generic datasource (no quirk)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([{ install_id: "inst-legacy", config: config() }]),
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].quirk).toBeUndefined();
+  });
+});
+
 describe("resolveWorkspacePrimaryRestDatasource", () => {
   it("returns the first install, or null when none", async () => {
     expect(
@@ -268,7 +301,7 @@ describe("resolveWorkspacePrimaryRestDatasource", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("defaultQuery — tenant-scope clause", () => {
-  it("scopes the SELECT to the caller's workspace + openapi-generic catalog, non-archived datasources (#3011)", async () => {
+  it("scopes the SELECT to the caller's workspace + generic & data-candidate catalogs, non-archived datasources (#3011 / #3028)", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
     await defaultQuery("org-CALLER", async (sql, params) => {
@@ -281,7 +314,7 @@ describe("defaultQuery — tenant-scope clause", () => {
     expect(flat).toContain("FROM workspace_plugins");
     // Each conjunct is load-bearing — dropping any one is a tenant-isolation hole.
     expect(flat).toContain("workspace_id = $1");
-    expect(flat).toContain("catalog_id = $2");
+    expect(flat).toContain("catalog_id = ANY($2)");
     expect(flat).toContain("pillar = 'datasource'");
     expect(flat).toContain("status != 'archived'");
     // Assert the conjuncts as ONE contiguous AND-joined WHERE clause, not just
@@ -290,13 +323,17 @@ describe("defaultQuery — tenant-scope clause", () => {
     // WHERE) — both of which are tenant-isolation holes. Pinning the full clause
     // catches the connective + membership, not only the presence, of each guard.
     expect(flat).toContain(
-      "WHERE workspace_id = $1 AND catalog_id = $2 AND pillar = 'datasource' AND status != 'archived'",
+      "WHERE workspace_id = $1 AND catalog_id = ANY($2) AND pillar = 'datasource' AND status != 'archived'",
     );
 
     // Param ORDER is load-bearing: $1 is the caller's workspace (never client
-    // input), $2 is the built-in openapi-generic catalog id. Flipping these
-    // would scope the query to the wrong dimension.
-    expect(capturedParams).toEqual(["org-CALLER", OPENAPI_GENERIC_CATALOG_ID]);
+    // input), $2 is the array of built-in catalog ids — the generic datasource
+    // plus every data candidate (slice 6a, #3028). Flipping these would scope the
+    // query to the wrong dimension; dropping a candidate id would hide its installs.
+    expect(capturedParams).toEqual([
+      "org-CALLER",
+      [OPENAPI_GENERIC_CATALOG_ID, ...DATA_CANDIDATE_CATALOG_IDS],
+    ]);
   });
 });
 

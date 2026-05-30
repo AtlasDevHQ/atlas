@@ -43,6 +43,12 @@ import {
   type OperationResult,
   type ResolvedAuth,
 } from "./types";
+import {
+  applyQuirkHeaders,
+  applyQuirkQueryShaping,
+  type QueryValue,
+  type VendorQuirk,
+} from "./vendor-quirk";
 
 // ─────────────────────────────────────────────────────────────────────
 //  Public entry point
@@ -88,8 +94,8 @@ export async function executeOperation(
     });
   }
 
-  const url = buildUrl(baseUrl, operation, params, graph, resolvedAuth);
-  const headers = buildHeaders(operation, params, graph, resolvedAuth);
+  const url = buildUrl(baseUrl, operation, params, graph, resolvedAuth, opts.quirk);
+  const headers = buildHeaders(operation, params, graph, resolvedAuth, opts.quirk);
   const { body, hasBody } = buildBody(operation, params, headers);
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -195,6 +201,10 @@ export async function executeOperationPaged(
     ...(opts.baseUrl !== undefined ? { baseUrl: opts.baseUrl } : {}),
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.fetchImpl !== undefined ? { fetchImpl: opts.fetchImpl } : {}),
+    // Thread the vendor quirk into every page request (slice 6a, #3028) so a
+    // paginated walk shapes expand[] / sends required headers on each page, not
+    // just the first — the cursor param the strategy adds is left unshaped.
+    ...(opts.quirk !== undefined ? { quirk: opts.quirk } : {}),
   };
 
   return paginate(
@@ -222,12 +232,17 @@ function buildUrl(
   params: OperationParams,
   graph: OperationGraph,
   resolvedAuth: ResolvedAuth,
+  quirk: VendorQuirk | undefined,
 ): URL {
   const resolvedPath = substitutePathParams(operation, params.path);
   const url = new URL(joinUrl(baseUrl, resolvedPath));
 
-  if (params.query) {
-    for (const [key, value] of Object.entries(params.query)) {
+  // Apply the vendor's query param-shaping (slice 6a, #3028) BEFORE encoding, so
+  // a matched param (Stripe `expand` → `expand[]`) is emitted under its reshaped
+  // key. Pure: a NEW record (or the input unchanged when there's no quirk).
+  const query = applyQuirkQueryShaping(params.query, quirk);
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
       appendQueryValue(url.searchParams, key, value);
     }
   }
@@ -263,11 +278,7 @@ function joinUrl(baseUrl: string, pathSegment: string): string {
 }
 
 /** Append a query value; arrays explode (repeat the key); `undefined` is dropped. */
-function appendQueryValue(
-  search: URLSearchParams,
-  key: string,
-  value: string | number | boolean | ReadonlyArray<string | number | boolean> | undefined,
-): void {
+function appendQueryValue(search: URLSearchParams, key: string, value: QueryValue): void {
   if (value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) search.append(key, String(item));
@@ -285,6 +296,7 @@ function buildHeaders(
   params: OperationParams,
   graph: OperationGraph,
   resolvedAuth: ResolvedAuth,
+  quirk: VendorQuirk | undefined,
 ): Record<string, string> {
   const headers: Record<string, string> = {
     accept: "application/json",
@@ -299,6 +311,11 @@ function buildHeaders(
     }
   }
 
+  // The vendor's required static headers (slice 6a, #3028) apply as
+  // NON-clobbering defaults — set before auth so an explicit `in: header` param
+  // above wins, and so a quirk header can't shadow the Authorization header auth
+  // applies next (a quirk that names "Authorization" is ignored by the guard).
+  applyQuirkHeaders(headers, quirk);
   applyHeaderAuth(headers, operation, graph, resolvedAuth);
   return headers;
 }

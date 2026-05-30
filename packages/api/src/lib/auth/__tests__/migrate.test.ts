@@ -354,6 +354,7 @@ describe("migrateAuthTables", () => {
             { name: "0106_crm_outbox_workspace_id.sql" },
             { name: "0107_email_outbox.sql" },
             { name: "0108_openapi_generic_catalog.sql" },
+            { name: "0109_data_candidate_catalog.sql" },
           ],
         };
       }

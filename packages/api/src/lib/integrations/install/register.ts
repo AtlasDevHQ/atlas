@@ -27,6 +27,8 @@ import { EmailFormInstallHandler } from "./email-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
+import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
+import { DATA_CANDIDATES } from "@atlas/api/lib/openapi/data-candidates";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
 import { TwentyFormInstallHandler, TWENTY_SLUG } from "./twenty-form-handler";
 import {
@@ -154,6 +156,18 @@ export function registerBuiltinInstallHandlers(): void {
   // `ATLAS_OPENAPI_TWENTY*` env shortcut.
   registerFormHandler(OPENAPI_GENERIC_SLUG, new OpenApiGenericFormInstallHandler());
   log.info("Registered OpenApiGenericFormInstallHandler");
+  // Built-in vendor *-data candidates (#3028). Each is a thin pre-wired wrapper
+  // over the generic OpenAPI primitive — same form-handler shape, no env gate
+  // (the admin supplies the credential at install). One handler per candidate,
+  // registered under its slug (e.g. "stripe-data"). Adding a candidate is a
+  // one-line registry entry (data-candidates.ts), not a new handler class.
+  for (const candidate of DATA_CANDIDATES) {
+    registerFormHandler(candidate.slug, new DataCandidateFormInstallHandler(candidate));
+  }
+  log.info(
+    { candidates: DATA_CANDIDATES.map((c) => c.slug) },
+    "Registered DataCandidateFormInstallHandler(s)",
+  );
   registerFormHandler("webhook", new WebhookFormInstallHandler());
   log.info("Registered WebhookFormInstallHandler");
   // Twenty CRM form-install. Per-workspace credentials land in the

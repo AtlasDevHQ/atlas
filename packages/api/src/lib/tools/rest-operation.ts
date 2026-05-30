@@ -381,6 +381,10 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         const result = await executeOperation(datasource.graph, operationId, params, datasource.auth, {
           baseUrl: datasource.baseUrl,
           timeoutMs: verdict.timeoutMs,
+          // Slice 6a (#3028): a built-in data-candidate datasource (e.g. Stripe)
+          // carries a declarative quirk — required headers / query param-shaping
+          // (expand[]). The client applies it through its header/query seams.
+          ...(datasource.quirk ? { quirk: datasource.quirk } : {}),
           ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         });
 

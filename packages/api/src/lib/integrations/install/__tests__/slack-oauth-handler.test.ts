@@ -93,13 +93,17 @@ type GateResult =
   | { allowed: true; rows: Array<Record<string, unknown>> }
   | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
   | { allowed: false; reason: "check_failed"; errorMessage: string };
+// The persisted `workspace_plugins` id the gate's `RETURNING id` would surface
+// on the happy path. The handler now reads `installRecord.id` from this (#3005)
+// — the default arm must carry a row so the non-empty guard doesn't trip.
+const DEFAULT_PERSISTED_ID = "wp-default-install-id";
 const mockCheckChatLimitAndInstall: Mock<
   (
     orgId: string | undefined,
     catalogId: string,
     insert: { sql: string; params: readonly unknown[] },
   ) => Promise<GateResult>
-> = mock(() => Promise.resolve({ allowed: true as const, rows: [] }));
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: DEFAULT_PERSISTED_ID }] }));
 
 // Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
@@ -153,7 +157,7 @@ beforeEach(() => {
   mockSaveInstallation.mockClear();
   mockCheckChatLimitAndInstall.mockClear();
   mockCheckChatLimitAndInstall.mockImplementation(() =>
-    Promise.resolve({ allowed: true as const, rows: [] }),
+    Promise.resolve({ allowed: true as const, rows: [{ id: DEFAULT_PERSISTED_ID }] }),
   );
   // Default to the happy-path Slack response — individual tests override
   // via `mockResolvedValueOnce` / `mockImplementationOnce`.
@@ -225,6 +229,9 @@ describe("SlackOAuthInstallHandler.handleCallback — happy path", () => {
     expect(result!.credentialResult).toEqual({ written: true });
     expect(result!.installRecord.workspaceId).toBe(WSID);
     expect(result!.installRecord.catalogId).toBe("slack");
+    // The install record id is the persisted row id from the gate's RETURNING,
+    // not the candidate UUID the handler minted (#3005).
+    expect(result!.installRecord.id).toBe(DEFAULT_PERSISTED_ID);
 
     // oauth.v2.access called with the configured client id/secret + code.
     expect(mockSlackAPI).toHaveBeenCalledTimes(1);
@@ -428,6 +435,50 @@ describe("SlackOAuthInstallHandler.handleCallback — chat-integration cap", () 
 // ---------------------------------------------------------------------------
 // handleCallback — partial failure (ADR-0003 Reconnect path)
 // ---------------------------------------------------------------------------
+
+describe("SlackOAuthInstallHandler.handleCallback — install record id (#3005)", () => {
+  it("returns the persisted workspace_plugins id from the gate's RETURNING row, not a fresh UUID", async () => {
+    // #3005: on reconnect the UPSERT lands on the existing row, which keeps
+    // its ORIGINAL id (ON CONFLICT DO UPDATE never touches `id`). The handler
+    // must hand back the persisted id (gate `rows[0].id`), not the freshly
+    // minted `crypto.randomUUID()` it passes IN as the candidate. With the gate
+    // mocked, this pins the HANDLER contract (reads `rows[0].id`, not the
+    // candidate); the end-to-end two-call reconnect semantics against a real
+    // `ON CONFLICT DO UPDATE` row live in `billing/__tests__/chat-cap-pg.test.ts`.
+    const persistedId = "wp-existing-reconnect-id";
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: persistedId }] }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    const result = await handler.handleCallback("auth-code", stateToken);
+
+    expect(result).not.toBeNull();
+    expect(result!.installRecord.id).toBe(persistedId);
+    // The candidate id the handler generated is the INSERT's `$1` param — it
+    // must NOT be the value returned when the row already existed.
+    const [, , gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    const candidateId = (gateInsert.params as unknown[])[0];
+    expect(candidateId).not.toBe(persistedId);
+  });
+
+  it("throws when the gate returns no id (RETURNING empty — driver regression), and writes no credential", async () => {
+    // Postgres ≥9.5 guarantees INSERT … ON CONFLICT … RETURNING populates on
+    // both insert and update. An empty row signals a driver/wrapper regression
+    // — fail loud rather than ship a stale candidate id back. Mirrors the
+    // Discord handler's non-empty guard.
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({ allowed: true as const, rows: [] }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "slack");
+
+    await expect(handler.handleCallback("auth-code", stateToken)).rejects.toThrow();
+    // The credential store is never reached when the install row id is missing.
+    expect(mockSaveInstallation).not.toHaveBeenCalled();
+  });
+});
 
 describe("SlackOAuthInstallHandler.handleCallback — partial failure", () => {
   it("returns credentialResult.written=false when workspace_plugins write succeeds but chat_cache write throws", async () => {

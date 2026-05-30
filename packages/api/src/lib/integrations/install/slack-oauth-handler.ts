@@ -231,6 +231,11 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     //     the inference clause so re-install lands on the existing row.
     //   - One install per (workspace, catalog) for chat, so `install_id`
     //     mirrors `id`.
+    //   - `RETURNING id` so we hand back the PERSISTED row id, not this
+    //     candidate (#3005): on reconnect the UPSERT lands on the existing
+    //     row, which keeps its original id (ON CONFLICT DO UPDATE never
+    //     touches `id`), so the freshly-minted candidate would not match the
+    //     DB row. The gate surfaces the INSERT's RETURNING rows on success.
     const installId = crypto.randomUUID();
     const installConfig = {
       team_id: teamId,
@@ -241,12 +246,13 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     };
     let capCheck;
     try {
-      capCheck = await checkChatIntegrationLimitAndInstall(workspaceId, SLACK_CATALOG_ID, {
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(workspaceId, SLACK_CATALOG_ID, {
         sql: `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
            SET config = EXCLUDED.config,
-               enabled = true`,
+               enabled = true
+         RETURNING id`,
         params: [installId, workspaceId, SLACK_CATALOG_ID, JSON.stringify(installConfig)],
       });
     } catch (err) {
@@ -285,8 +291,26 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
       });
     }
 
+    // Read the id back from the UPSERT's RETURNING row rather than reusing the
+    // candidate `installId` (#3005). On reconnect the row already exists and
+    // keeps its ORIGINAL id, so the candidate would be wrong. Mirrors the
+    // non-empty guard in `discord-static-bot-handler.ts`.
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns the
+      // row on both insert and update. Empty here means a driver / wrapper
+      // regression — fail loudly rather than hand back a stale candidate id
+      // (on re-install the DB row has the existing id; falling back to the
+      // fresh candidate would strand subsequent lookups and the credential
+      // write below).
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for Slack install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
+      );
+    }
+    const persistedId: string = returned;
+
     const installRecord: InstallRecord = {
-      id: installId,
+      id: persistedId,
       workspaceId,
       catalogId: SLACK_SLUG,
     };

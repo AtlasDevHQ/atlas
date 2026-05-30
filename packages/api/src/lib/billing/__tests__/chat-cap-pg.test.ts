@@ -167,13 +167,14 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
   const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
   const ORIGINAL_FETCH = globalThis.fetch;
 
-  /** Slack-handler-shaped UPSERT (mirrors slack-oauth-handler.ts). */
+  /** Slack-handler-shaped UPSERT with RETURNING id (mirrors slack-oauth-handler.ts, #3005). */
   function slackInsert(installId: string, ws: string) {
     return {
       sql: `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action') DO UPDATE
-           SET config = EXCLUDED.config, enabled = true`,
+           SET config = EXCLUDED.config, enabled = true
+         RETURNING id`,
       params: [installId, ws, "catalog:slack", JSON.stringify({ team_id: "T1" })],
     };
   }
@@ -251,6 +252,107 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
       `INSERT INTO organization (id, name, slug, plan_tier) VALUES ($1, $1, $1, $2)`,
       [id, planTier],
     );
+  }
+
+  /**
+   * Drive the REAL `SlackOAuthInstallHandler.handleCallback` end-to-end against
+   * Postgres for a first-install + reconnect, asserting `installRecord.id`
+   * matches the persisted row id both times and the row stays idempotent
+   * (#3005). On reconnect the `ON CONFLICT DO UPDATE` never touches `id`, so the
+   * row keeps its ORIGINAL id — the handler must return that, not the fresh
+   * `crypto.randomUUID()` candidate it mints each call.
+   *
+   * Shared by the fail-open (no org → gate's `internalQuery` INSERT) and the
+   * transactional (org seeded → gate's `client.query` INSERT) cases so the
+   * `RETURNING id` round-trip the fix depends on is covered through BOTH gate
+   * sources. Each caller passes a distinct `teamId` because `afterEach` clears
+   * `workspace_plugins`/`organization` but not `chat_cache`, and
+   * `saveInstallation`'s hijack guard rejects a team already bound to another
+   * workspace. Saves/restores the keyset + slack-encryption env (the file's
+   * hermetic-env discipline).
+   */
+  async function assertSlackReconnectReturnsPersistedId(ws: string, teamId: string): Promise<void> {
+    const { SlackOAuthInstallHandler } = await import(
+      "../../integrations/install/slack-oauth-handler"
+    );
+    const { mintOAuthStateToken } = await import(
+      "../../integrations/install/oauth-state-token"
+    );
+    const { _resetEncryptionKeyCache } = await import("../../db/encryption-keys");
+    const { resetSlackEncryptionKeyCache } = await import(
+      "../../slack/installation-encryption"
+    );
+
+    // The state-token mint/verify needs a keyset; the chat_cache write needs
+    // SLACK_ENCRYPTION_KEY *unset* (plaintext path). Save/restore both.
+    const prior = {
+      keys: process.env.ATLAS_ENCRYPTION_KEYS,
+      key: process.env.ATLAS_ENCRYPTION_KEY,
+      authSecret: process.env.BETTER_AUTH_SECRET,
+      slackKey: process.env.SLACK_ENCRYPTION_KEY,
+    };
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:slack-reconnect-test-key";
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.SLACK_ENCRYPTION_KEY;
+    _resetEncryptionKeyCache();
+    resetSlackEncryptionKeyCache();
+
+    // The handler's only outbound fetch is the Slack oauth.v2.access exchange.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          team: { id: teamId, name: "Reconnect Co" },
+          access_token: "xoxb-token",
+          bot_user_id: "U-BOT",
+          scope: "commands,chat:write,app_mentions:read",
+          app_id: "A1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+
+    try {
+      const handler = new SlackOAuthInstallHandler({
+        clientId: "cid",
+        clientSecret: "csecret",
+        redirectUri: "https://atlas.example/cb",
+      });
+
+      // First install commits a row.
+      const first = await handler.handleCallback("code-1", mintOAuthStateToken(ws, "slack"));
+      expect(first).not.toBeNull();
+      expect(first!.credentialResult.written).toBe(true);
+
+      const afterFirst = await pool.query<{ id: string }>(
+        `SELECT id FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = 'catalog:slack'`,
+        [ws],
+      );
+      expect(afterFirst.rows).toHaveLength(1);
+      const persistedId = afterFirst.rows[0]!.id;
+      expect(first!.installRecord.id).toBe(persistedId);
+
+      // Reconnect (same workspace + team) UPSERTs the same row → same id.
+      const second = await handler.handleCallback("code-2", mintOAuthStateToken(ws, "slack"));
+      expect(second).not.toBeNull();
+      expect(second!.installRecord.id).toBe(persistedId);
+
+      const afterSecond = await pool.query<{ id: string }>(
+        `SELECT id FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = 'catalog:slack'`,
+        [ws],
+      );
+      // Idempotent — still exactly one row, same id.
+      expect(afterSecond.rows).toHaveLength(1);
+      expect(afterSecond.rows[0]?.id).toBe(persistedId);
+    } finally {
+      if (prior.keys === undefined) delete process.env.ATLAS_ENCRYPTION_KEYS;
+      else process.env.ATLAS_ENCRYPTION_KEYS = prior.keys;
+      if (prior.key !== undefined) process.env.ATLAS_ENCRYPTION_KEY = prior.key;
+      if (prior.authSecret !== undefined) process.env.BETTER_AUTH_SECRET = prior.authSecret;
+      if (prior.slackKey !== undefined) process.env.SLACK_ENCRYPTION_KEY = prior.slackKey;
+      _resetEncryptionKeyCache();
+      resetSlackEncryptionKeyCache();
+    }
   }
 
   it(
@@ -334,6 +436,36 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
       // Idempotent — still exactly one row, same id.
       expect(afterSecond.rows).toHaveLength(1);
       expect(afterSecond.rows[0]?.id).toBe(persistedId);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "Slack handler hands back the persisted id across first-install + reconnect — fail-open path, no org (#3005)",
+    async () => {
+      // No `organization` row → the gate fail-opens to a direct `internalQuery`
+      // INSERT (enforcement.ts), isolating the id round-trip from cap
+      // enforcement. Covers the `internalQuery` RETURNING source.
+      await assertSlackReconnectReturnsPersistedId(
+        `ws-slack-reconnect-noorg-${Date.now()}`,
+        "T-RECONNECT-NOORG",
+      );
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "Slack handler hands back the persisted id across first-install + reconnect — transactional path, org seeded (#3005)",
+    async () => {
+      // A provisioned workspace (organization row present) routes the INSERT
+      // through the gate's transactional `client.query` path under the advisory
+      // lock — the path a real customer hits, and a DIFFERENT RETURNING source
+      // than the fail-open case above. starter cap = 1: the first install
+      // (this_count = 0) fits, and reconnect (this_count = 1) skips the cap
+      // comparison, so BOTH calls run the transactional RETURNING INSERT.
+      const ws = `ws-slack-reconnect-org-${Date.now()}`;
+      await seedOrg(ws, "starter");
+      await assertSlackReconnectReturnsPersistedId(ws, "T-RECONNECT-ORG");
     },
     PG_TEST_TIMEOUT_MS,
   );

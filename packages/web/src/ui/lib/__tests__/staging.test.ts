@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
 import { isStagingRegion } from "@/ui/lib/staging";
-import type { DeployRegion } from "@/ui/lib/types";
 
 describe("isStagingRegion", () => {
   it("is true only for the staging region", () => {
@@ -9,8 +8,7 @@ describe("isStagingRegion", () => {
   });
 
   it("is false for every production region", () => {
-    const prodRegions: DeployRegion[] = ["us", "eu", "apac"];
-    for (const region of prodRegions) {
+    for (const region of ["us", "eu", "apac"]) {
       expect(isStagingRegion(region)).toBe(false);
     }
   });
@@ -21,8 +19,9 @@ describe("isStagingRegion", () => {
   });
 
   it("never mistakes an unrecognized region for staging", () => {
-    // Defensive: a region the client's union doesn't know about must never
-    // be treated as staging.
-    expect(isStagingRegion("production" as DeployRegion)).toBe(false);
+    // The wire field is a raw string, so any value outside the known regions
+    // must fail closed.
+    expect(isStagingRegion("production")).toBe(false);
+    expect(isStagingRegion("")).toBe(false);
   });
 });

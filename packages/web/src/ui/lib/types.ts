@@ -100,7 +100,6 @@ export type {
   UserActivityReport,
 } from "@useatlas/types";
 export type {
-  DeployRegion,
   DeployMode,
   DeployModeSetting,
   PlatformWorkspace,

@@ -130,7 +130,7 @@ register → initialize(ctx) → healthCheck() → ... → teardown()
    - `ctx.tools` — Tool registry for adding agent tools.
    - `ctx.logger` — Pino-compatible child logger scoped to the plugin.
    - `ctx.config` — Resolved Atlas configuration.
-3. **Health check** — Periodic probe. Return `{ healthy: false, message }` to signal degradation. Never throw. Results surface in the `plugins` component of `GET /api/v1/health` — a failing probe shifts the top-level status to `degraded` (HTTP 200, never 503).
+3. **Health check** — Periodic probe. Return `{ healthy: false, message }` to signal degradation. Never throw. Results surface in the `plugins` component of `GET /api/health` — a failing probe shifts the top-level status to `degraded` (HTTP 200, never 503).
 4. **Teardown** — Graceful shutdown in reverse registration order (LIFO). Use `teardown()` to release state Atlas can't see — external webhook subscriptions, third-party connections, drained queues. **Note:** `teardown()` runs on server shutdown, *not* on a per-workspace uninstall (uninstall is a DB-row removal, not a process event).
 
 > **v1.1 note:** `AtlasPluginContext` will gain `executeQuery`, `conversations`, and `actions` fields for full host-level decoupling. Currently, interaction plugins that need these inject them via config callbacks.

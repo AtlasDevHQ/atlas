@@ -31,6 +31,12 @@
  *      `ATLAS_OPENAPI_TIMEOUT` (default 30s). A per-install requested timeout
  *      outside `(0, cap]` → `timeout-exceeded`.
  *
+ * The numbering is the PRD's conceptual stack, but the rate-limit *debit*
+ * (layer 4 — the only stateful side-effect) is performed **last**, after the
+ * timeout check passes. A request rejected by any earlier validation (including
+ * a misconfigured per-install timeout) must never drain the token bucket — the
+ * quota throttles real upstream dispatches, not pre-flight rejections.
+ *
  * On success the verdict carries the resolved {@link Operation}, whether the
  * caller must obtain human confirmation before dispatching (every non-GET/HEAD),
  * and the effective `timeoutMs` to pass to the client.
@@ -352,7 +358,31 @@ export function validateRestOperation(
     };
   }
 
-  // ── Layer 4 — rate limit (only when this precedes a real upstream call) ──
+  // ── Layer 5 — timeout cap (validated BEFORE the rate-limit debit) ────────
+  // Side-effect-free, so it runs ahead of layer 4: a misconfigured per-install
+  // timeout must reject without burning a token (the request never dispatches).
+  const cap = getOpenApiTimeoutCap();
+  let timeoutMs = cap;
+  if (policy.requestedTimeoutMs !== undefined) {
+    const requested = policy.requestedTimeoutMs;
+    if (!Number.isFinite(requested) || requested <= 0 || requested > cap) {
+      return {
+        allowed: false,
+        error: new RestValidationError({
+          reason: "timeout-exceeded",
+          operationId,
+          message:
+            `Requested timeout ${requested}ms for "${operationId}" is outside the allowed range ` +
+            `(0, ${cap}ms]. Lower the per-install timeout or raise ATLAS_OPENAPI_TIMEOUT.`,
+        }),
+      };
+    }
+    timeoutMs = requested;
+  }
+
+  // ── Layer 4 — rate limit (debited LAST, only when this precedes a real ───
+  // upstream call). Performed after every other validation so a request
+  // rejected by layers 1–3 or 5 never drains the token bucket.
   if (policy.dispatch !== false) {
     const now = (policy.now ?? Date.now)();
     const verdict = tryConsumeToken(
@@ -374,26 +404,6 @@ export function validateRestOperation(
         }),
       };
     }
-  }
-
-  // ── Layer 5 — timeout cap ────────────────────────────────────────────────
-  const cap = getOpenApiTimeoutCap();
-  let timeoutMs = cap;
-  if (policy.requestedTimeoutMs !== undefined) {
-    const requested = policy.requestedTimeoutMs;
-    if (!Number.isFinite(requested) || requested <= 0 || requested > cap) {
-      return {
-        allowed: false,
-        error: new RestValidationError({
-          reason: "timeout-exceeded",
-          operationId,
-          message:
-            `Requested timeout ${requested}ms for "${operationId}" is outside the allowed range ` +
-            `(0, ${cap}ms]. Lower the per-install timeout or raise ATLAS_OPENAPI_TIMEOUT.`,
-        }),
-      };
-    }
-    timeoutMs = requested;
   }
 
   return { allowed: true, operation, requiresConfirmation: isWrite, timeoutMs };

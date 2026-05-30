@@ -366,4 +366,29 @@ describe("validateRestOperation — layer ordering", () => {
     process.env.ATLAS_OPENAPI_TIMEOUT = "-5";
     expect(getOpenApiTimeoutCap()).toBe(30_000);
   });
+
+  it("a timeout rejection does NOT debit the rate-limit token (debit runs after the timeout check)", () => {
+    // Budget of ONE call, fixed clock so the bucket can't refill mid-test. A
+    // request rejected for a misconfigured timeout must not burn that token —
+    // otherwise a single bad per-install config would lock the operation out.
+    const t = 1_000_000;
+    process.env.ATLAS_OPENAPI_TIMEOUT = "30000";
+
+    const overCap = policy({ rateLimitPerMinute: 1, dispatch: true, now: () => t, requestedTimeoutMs: 120_000 });
+    const rejected = validateRestOperation(graph, "listPeople", { query: { limit: 1 } }, overCap);
+    expect(rejected.allowed).toBe(false);
+    if (rejected.allowed) return;
+    expect(rejected.error.reason).toBe("timeout-exceeded");
+
+    // The single token survived the rejection: a well-configured dispatch on the
+    // SAME (workspace, datasource, operation) bucket still succeeds...
+    const ok = policy({ rateLimitPerMinute: 1, dispatch: true, now: () => t });
+    expect(validateRestOperation(graph, "listPeople", { query: { limit: 1 } }, ok).allowed).toBe(true);
+
+    // ...and only now — after a real dispatch — is the bucket empty.
+    const throttled = validateRestOperation(graph, "listPeople", { query: { limit: 1 } }, ok);
+    expect(throttled.allowed).toBe(false);
+    if (throttled.allowed) return;
+    expect(throttled.error.reason).toBe("rate-limit-exceeded");
+  });
 });

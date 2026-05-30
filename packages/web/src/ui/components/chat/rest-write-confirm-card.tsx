@@ -26,7 +26,10 @@ import { LoadingCard } from "./loading-card";
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
-  } catch {
+  } catch (err) {
+    console.debug("RestWriteConfirmCard: failed to stringify response body", {
+      reason: err instanceof Error ? err.message : String(err),
+    });
     return "[Unable to display]";
   }
 }
@@ -121,7 +124,11 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
         try {
           const parsed = JSON.parse(text) as { message?: string };
           if (typeof parsed.message === "string") message = parsed.message;
-        } catch {
+        } catch (err) {
+          // Non-JSON error body — fall back to surfacing the raw text.
+          console.debug("RestWriteConfirmCard: error response body was not JSON", {
+            reason: err instanceof Error ? err.message : String(err),
+          });
           message = `${message}: ${text}`;
         }
         // The confirm endpoint rejects 4xx BEFORE it dispatches the upstream
@@ -141,9 +148,12 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
       let data: RestWriteConfirmResponse;
       try {
         data = (await res.json()) as RestWriteConfirmResponse;
-      } catch {
+      } catch (err) {
         // A 2xx means the server completed the dispatch — only the response body
         // was unreadable. The write DID run; do not offer a re-arming retry.
+        console.debug("RestWriteConfirmCard: could not parse 2xx confirm response body", {
+          reason: err instanceof Error ? err.message : String(err),
+        });
         setCardState({
           phase: "error",
           retrySafe: false,
@@ -157,6 +167,9 @@ export function RestWriteConfirmCard({ part }: { part: unknown }) {
       // AFTER the request reached the server and the write dispatched (e.g. the
       // connection dropped before the response arrived) — so the outcome is
       // genuinely ambiguous and re-confirming could double-write.
+      console.warn("RestWriteConfirmCard: confirm request failed before a response was read", {
+        reason: err instanceof Error ? err.message : String(err),
+      });
       const detail =
         err instanceof TypeError
           ? "could not reach the server"

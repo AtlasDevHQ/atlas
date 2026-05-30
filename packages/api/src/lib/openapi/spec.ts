@@ -15,7 +15,9 @@
  *    because every walker reads only a known set of keys; the one place an
  *    `x-*` *sibling entry* legally appears (the `paths` object) is explicitly
  *    skipped. Real specs (Stripe, Twenty) are full of extensions — rejecting
- *    them would make "normalize Stripe's spec" impossible.
+ *    them would make "normalize Stripe's spec" impossible. The ONE extension this
+ *    builder reads is `x-atlas-side-effecting` on an operation (#3008), surfaced
+ *    as {@link Operation.sideEffecting}; all other `x-*` keys are still ignored.
  *  - Circular `$ref`s through named components (Twenty's Person ↔ NoteTarget).
  *    These are REQUIRED to resolve (acceptance criterion). We resolve a named
  *    `$ref` to a pointer node (`{ ref: "Name" }`) rather than inlining, so the
@@ -525,6 +527,13 @@ class GraphBuilder {
         if (summary !== undefined) operation.summary = summary;
         const description = asString(opRaw.description);
         if (description !== undefined) operation.description = description;
+        // #3008: the `x-atlas-side-effecting: true` vendor extension escalates a
+        // read-method operation (a mutating RPC-over-GET) to the write path. Only
+        // an explicit `true` sets it — a missing/false value leaves classification
+        // to the method, and the flag can never DOWNGRADE a write method to a read.
+        if (asBoolean(opRaw["x-atlas-side-effecting"]) === true) {
+          operation.sideEffecting = true;
+        }
         const requestBody = this.buildRequestBody(opRaw.requestBody, `${opLocation}.requestBody`);
         if (requestBody !== undefined) operation.requestBody = requestBody;
 

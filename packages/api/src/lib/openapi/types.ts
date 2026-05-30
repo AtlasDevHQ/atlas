@@ -189,6 +189,16 @@ export interface OperationResponse {
 export interface Operation {
   readonly operationId: string;
   readonly method: HttpMethod;
+  /**
+   * Operator-asserted override (#3008): `true` when the operation's spec carried
+   * the `x-atlas-side-effecting: true` vendor extension. Such an operation MUTATES
+   * state even if its {@link method} is a GET/HEAD (a mutating RPC-over-GET, e.g.
+   * `GET /jobs/{id}/cancel`), so the validator forces it through the write
+   * allowlist + confirm path. Absent → classify by method (the GET=read default).
+   * De-escalation is impossible by design: a write method stays a write whatever
+   * this flag says — see {@link import("./validate-rest-operation").isSideEffectingOperation}.
+   */
+  readonly sideEffecting?: boolean;
   /** The templated path, e.g. "/people/{id}". */
   readonly path: string;
   readonly summary?: string;

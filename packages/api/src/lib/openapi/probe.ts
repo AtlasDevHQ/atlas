@@ -155,7 +155,7 @@ export function buildResolvedAuth(
  * instead of relying on a thrown-and-caught "unsupported kind".
  */
 export type DecryptedAuthResult =
-  | { readonly ok: true; readonly auth: ResolvedAuth; readonly authKind: SupportedAuthKind }
+  | { readonly ok: true; readonly auth: ResolvedAuth }
   | { readonly ok: false; readonly rawAuthKind: string };
 
 /**
@@ -184,11 +184,7 @@ export function resolveAuthFromDecryptedConfig(
     typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined;
   const authParamName =
     typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined;
-  return {
-    ok: true,
-    auth: buildResolvedAuth(authKind, authValue, authHeaderName, authParamName),
-    authKind,
-  };
+  return { ok: true, auth: buildResolvedAuth(authKind, authValue, authHeaderName, authParamName) };
 }
 
 /**
@@ -359,8 +355,11 @@ export function summarizeOperations(
  * a future non-UUID path (an `atlas.config.ts` plugins entry, the CLI seeder
  * extended to REST, slice 6) could collide two workspaces' ids and serve one
  * workspace's operation surface to another. The cached value is shape-only (no
- * credential), so this is defense-in-depth — but it matches the page-L2 cache's
- * `${workspaceId}::${pluginInstallId}` keying so the two stay in lockstep.
+ * credential), so this is defense-in-depth — but it shares the page-L2 cache's
+ * workspace-prefixed scoping discipline ({@link installCacheKey} prefixes
+ * `${workspaceId}::…`) so neither cache can drift into a cross-tenant assumption.
+ * (The literal separators differ — single `:` here, `::` there — because the two
+ * are independent in-process namespaces; only the workspace-scoping is shared.)
  *
  * Keying on `probedAt` means a "Rediscover schema" re-probe (which bumps
  * `probedAt`) lands under a fresh key; the now-orphaned prior key is dropped by

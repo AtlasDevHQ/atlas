@@ -315,7 +315,6 @@ describe("resolveAuthFromDecryptedConfig", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.authKind).toBe("apikey-header");
       expect(result.auth).toEqual({
         kind: "apiKey",
         value: "k123",
@@ -326,7 +325,7 @@ describe("resolveAuthFromDecryptedConfig", () => {
 
   it("defaults a missing auth_kind to none (ok: true)", () => {
     const result = resolveAuthFromDecryptedConfig({});
-    expect(result).toEqual({ ok: true, auth: { kind: "none" }, authKind: "none" });
+    expect(result).toEqual({ ok: true, auth: { kind: "none" } });
   });
 
   it("returns ok: false for the deferred oauth2 kind, carrying the raw value", () => {

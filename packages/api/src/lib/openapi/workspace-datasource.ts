@@ -277,10 +277,9 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
  * Resolve every installed REST datasource for a workspace. Returns `[]` when the
  * workspace has none AND — fail-soft — when the load itself fails (logged). This
  * never-rejects contract is depended on by the prompt-build path (`agent.ts`,
- * which must not fail a chat turn over a datasource blip), the Effect registry
- * (`registry.ts`, which wraps this in `Effect.promise`), and the python egress
- * thunk. A caller that must tell a load failure apart from an empty workspace
- * uses {@link resolveWorkspaceRestDatasourcesOrThrow} instead.
+ * which must not fail a chat turn over a datasource blip) and the python egress
+ * thunk (`tools/python.ts`). A caller that must tell a load failure apart from an
+ * empty workspace uses {@link resolveWorkspaceRestDatasourcesOrThrow} instead.
  */
 export async function resolveWorkspaceRestDatasources(
   workspaceId: string,

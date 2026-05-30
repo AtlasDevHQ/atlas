@@ -115,6 +115,14 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
   decryptSecretFields: (config: Record<string, unknown>) => ({ ...config }),
 }));
 
+/**
+ * Spy on the graph-cache eviction so the rediscover/DELETE wiring (#3009) is
+ * asserted at the ROUTE level — the unit tests in `probe.test.ts` prove the
+ * eviction LOGIC, but only this catches a regression that drops the call, swaps
+ * its args, or hoists it above the 404 guard.
+ */
+const invalidateGraphCacheSpy = mock((_workspaceId: string, _installId: string) => {});
+
 // Controllable probe stub — success returns a tiny graph; failure throws the
 // (locally-defined) OpenApiProbeError the route does `instanceof` against.
 mock.module("@atlas/api/lib/openapi/probe", () => {
@@ -141,7 +149,7 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
     // The shared decrypt→auth glue the rediscover route now calls. The fixture's
     // auth_kind is "none", so the success arm (ok: true) is the relevant one;
     // the 400 (ok: false) branch is exercised by the workspace-resolver tests.
-    resolveAuthFromDecryptedConfig: () => ({ ok: true, auth: { kind: "none" }, authKind: "none" }),
+    resolveAuthFromDecryptedConfig: () => ({ ok: true, auth: { kind: "none" } }),
     probeSpec: async () => {
       if (probeShouldFail) throw new OpenApiProbeError("unreachable", "probe boom");
       return { doc: { openapi: "3.1.0" }, graph: emptyGraph };
@@ -155,7 +163,7 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
       doc,
     }),
     snapshotToGraph: () => emptyGraph,
-    invalidateInstallGraphCache: () => {},
+    invalidateInstallGraphCache: invalidateGraphCacheSpy,
     summarizeOperations: () => [],
     __resetSnapshotGraphCacheForTests: () => {},
   };
@@ -183,6 +191,7 @@ beforeEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
   mockInternalQuery.mockClear();
+  invalidateGraphCacheSpy.mockClear();
 });
 afterEach(() => {
   CURRENT_ORG = FIXTURE.owner;
@@ -288,6 +297,40 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
       ([sql]) => (sql as string).includes("UPDATE") && (sql as string).includes("openapi_snapshot"),
     );
     expect(update).toBeDefined();
+  });
+});
+
+// ── Graph-cache eviction wiring (#3009) ──────────────────────────────────────
+
+describe("admin-openapi-datasources — graph-cache eviction wiring", () => {
+  it("rediscover evicts the install's cached graph after a successful re-probe", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    // Scoped to (workspaceId, installId) — the exact #3009 wiring, args in order.
+    expect(invalidateGraphCacheSpy).toHaveBeenCalledTimes(1);
+    expect(invalidateGraphCacheSpy).toHaveBeenLastCalledWith(FIXTURE.owner, "ds-1");
+  });
+
+  it("DELETE evicts the uninstalled datasource's cached graph", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", { method: "DELETE" });
+    expect(res.status).toBe(200);
+    expect(invalidateGraphCacheSpy).toHaveBeenCalledTimes(1);
+    expect(invalidateGraphCacheSpy).toHaveBeenLastCalledWith(FIXTURE.owner, "ds-1");
+  });
+
+  it("does NOT evict on a failed rediscover (eviction only after a successful re-probe)", async () => {
+    probeShouldFail = true;
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(400);
+    expect(invalidateGraphCacheSpy).not.toHaveBeenCalled();
+  });
+
+  it("does NOT evict when the install is not owned by the caller (404 — no cross-tenant flush)", async () => {
+    CURRENT_ORG = "org-attacker";
+    const del = await adminOpenApiDatasources.request("/ds-1", { method: "DELETE" });
+    const rediscover = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect([del.status, rediscover.status]).toEqual([404, 404]);
+    expect(invalidateGraphCacheSpy).not.toHaveBeenCalled();
   });
 });
 

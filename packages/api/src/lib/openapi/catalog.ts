@@ -196,11 +196,12 @@ export const OPENAPI_GENERIC_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
  * lightweight fields are denormalized for the detail page so it can list the
  * operation surface without rebuilding the graph on every read.
  *
- * `probedAt` is an ISO-8601 string — it doubles as the in-process graph-cache
- * key so a "Rediscover schema" re-probe invalidates the cached graph.
+ * `probedAt` is an ISO-8601 string — it's the trailing component of the
+ * in-process graph-cache key (`${workspaceId}:${installId}:${probedAt}`) so a
+ * "Rediscover schema" re-probe (which bumps it) lands under a fresh key.
  */
 export interface OpenApiSnapshot {
-  /** ISO-8601 timestamp of the probe. Also the in-process graph cache key. */
+  /** ISO-8601 timestamp of the probe. Trailing component of the graph-cache key. */
   readonly probedAt: string;
   /** Spec `info.title`, for the card/header. */
   readonly title: string;

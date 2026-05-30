@@ -31,7 +31,7 @@ Extend Atlas's datasource model beyond SQL so REST services (Twenty, Stripe) bec
 - [x] **Slice 5 — write-side opt-in** ([#2929](https://github.com/AtlasDevHQ/atlas/issues/2929)) — `validateRestOperation` safety stack + `write_allowlist` + confirm-before-write banner. Shipped in [#2993](https://github.com/AtlasDevHQ/atlas/pull/2993).
 - [ ] **Slice 6 — expansion targets** ([#2930](https://github.com/AtlasDevHQ/atlas/issues/2930), HITL) — stripe-data + 2 REST candidates thin-wrapping the primitive.
 
-Spec-lifecycle follow-ups (net-new v0.0.2 scope, milestone-tracked): scheduler-driven re-discovery ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)), customer-configurable refresh interval ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977)), structured drift diff ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) + breaking-change signal ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)), and a shared cross-workspace spec/graph cache ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)).
+Spec-lifecycle follow-ups (net-new v0.0.2 scope, milestone-tracked): customer-configurable refresh interval + Refresh now ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977)) shipped [#3002](https://github.com/AtlasDevHQ/atlas/pull/3002); still open — scheduler-driven re-discovery ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)), structured drift diff ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) + breaking-change signal ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)), and a shared cross-workspace spec/graph cache ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)).
 
 ---
 

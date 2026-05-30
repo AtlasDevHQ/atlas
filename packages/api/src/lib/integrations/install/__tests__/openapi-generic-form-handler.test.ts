@@ -271,3 +271,40 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });
+
+// ── base_url_override SSRF guard (#3006) ──────────────────────────────────────
+
+describe("OpenApiGenericFormInstallHandler — base_url_override SSRF guard", () => {
+  it("rejects an internal base_url_override by default — in non-SaaS mode (guard is ON everywhere now)", async () => {
+    // setKeys() (beforeEach) already deletes ATLAS_DEPLOY_MODE → self-hosted. The
+    // pre-#3006 guard only fired on SaaS; it now fires in every mode unless opted out.
+    const handler = newHandler();
+    const result = handler.validateConfig(WSID, validForm({ base_url_override: "https://10.0.0.5/v1" }));
+    await expect(result).rejects.toBeInstanceOf(FormInstallValidationError);
+    await expect(result).rejects.toHaveProperty("fieldErrors.base_url_override");
+    expect(mockInternalQuery).not.toHaveBeenCalled(); // install aborted before the insert
+  });
+
+  it("accepts an internal base_url_override when the operator opts out (ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true)", async () => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    const handler = newHandler();
+    const { installRecord } = await handler.validateConfig(
+      WSID,
+      validForm({ base_url_override: "https://10.0.0.5/v1" }),
+    );
+    expect(installRecord.id).toBe("install-1");
+    expect(mockInternalQuery).toHaveBeenCalled(); // install proceeded to the insert
+  });
+
+  it("rejects a PUBLIC but non-HTTPS base_url_override (cleartext-credential downgrade)", async () => {
+    // zod's OptionalUrlSchema allows http(s); the egress guard is the only thing
+    // that rejects a plaintext-scheme public host — a credential-downgrade risk
+    // (the agent would later send a credentialed request in the clear).
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const handler = newHandler();
+    const result = handler.validateConfig(WSID, validForm({ base_url_override: "http://public.example.com/v1" }));
+    await expect(result).rejects.toBeInstanceOf(FormInstallValidationError);
+    await expect(result).rejects.toHaveProperty("fieldErrors.base_url_override");
+    expect(mockInternalQuery).not.toHaveBeenCalled(); // aborted before the insert
+  });
+});

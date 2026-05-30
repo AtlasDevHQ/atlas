@@ -41,7 +41,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
-import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { assertBaseUrlAllowed, EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   OPENAPI_GENERIC_SLUG,
@@ -221,25 +221,30 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
       );
     }
 
-    // ── 2b. SaaS SSRF guard for base_url_override ───────────────────
-    // The override becomes the operations base URL the agent later POSTs to,
-    // host-side, via `executeRestOperation`. It's admin-supplied, so on
-    // multi-tenant SaaS block private/internal targets (the spec URL itself is
-    // guarded inside `probeSpec`). Self-hosted may point at internal services.
-    if (
-      process.env.ATLAS_DEPLOY_MODE === "saas" &&
-      data.base_url_override &&
-      !isSafeExternalUrl(data.base_url_override)
-    ) {
-      throw FormInstallValidationError.fromZodFlatten({
-        fieldErrors: {
-          base_url_override: [
-            "Base URL must use HTTPS and resolve to a public host — private or " +
-              "internal addresses are blocked in hosted mode.",
-          ],
-        },
-        formErrors: [],
-      });
+    // ── 2b. SSRF guard for base_url_override ────────────────────────
+    // The override becomes the operations base URL the agent later sends requests
+    // to, host-side, via `executeRestOperation`. It's admin-supplied, so block
+    // private/internal targets via the shared chokepoint (the spec URL itself is
+    // guarded inside `probeSpec`). The guard is ON in every deploy mode;
+    // self-hosted operators opt OUT via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS (#3006).
+    if (data.base_url_override) {
+      try {
+        assertBaseUrlAllowed(data.base_url_override);
+      } catch (err) {
+        if (err instanceof EgressBlockedError) {
+          throw FormInstallValidationError.fromZodFlatten({
+            fieldErrors: {
+              base_url_override: [
+                "Base URL must use HTTPS and resolve to a public host — private or internal " +
+                  "addresses are blocked. Set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow " +
+                  "internal targets (self-hosted only).",
+              ],
+            },
+            formErrors: [],
+          });
+        }
+        throw err;
+      }
     }
 
     // ── 3. Probe the spec (slice-0) → snapshot ──────────────────────

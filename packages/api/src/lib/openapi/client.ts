@@ -26,6 +26,7 @@
  * deferred to slice 6 — pass `{ kind: "bearer", token }` once a token is
  * obtained out of band.
  */
+import { EgressBlockedError, guardedFetch } from "./egress-guard";
 import {
   paginate,
   type MergedPages,
@@ -51,9 +52,10 @@ import {
  * Execute one operation from the graph against its target.
  *
  * @throws {OpenApiClientError} for client-side faults (unknown operation,
- *   missing base URL, missing path param, missing auth placement) and transport
- *   faults (timeout, network). A non-2xx HTTP response is NOT an error — it is
- *   returned as the result.
+ *   missing base URL, missing path param, missing auth placement, `blocked-egress`
+ *   — the resolved base URL or a redirect hop resolves to a private/internal
+ *   address, SSRF guard) and transport faults (timeout, network). A non-2xx HTTP
+ *   response is NOT an error — it is returned as the result.
  */
 export async function executeOperation(
   graph: OperationGraph,
@@ -95,13 +97,30 @@ export async function executeOperation(
 
   let response: Response;
   try {
-    response = await fetchImpl(url.toString(), {
-      method: operation.method,
-      headers,
-      ...(hasBody ? { body } : {}),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    // The resolved base URL (an admin override OR the spec-derived
+    // `servers[0].url`) and every redirect hop are re-validated against the SSRF
+    // guard immediately before the request leaves the box — a public spec that
+    // declares an internal `servers[0].url`, or a public host that 302-redirects
+    // to one, is rejected here, at execution time (#3006).
+    response = await guardedFetch(
+      url.toString(),
+      {
+        method: operation.method,
+        headers,
+        ...(hasBody ? { body } : {}),
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+      { fetchImpl },
+    );
   } catch (err) {
+    if (err instanceof EgressBlockedError) {
+      throw new OpenApiClientError({
+        reason: "blocked-egress",
+        operationId,
+        status: 0,
+        message: err.message,
+      });
+    }
     throw classifyTransportError(err, operationId, timeoutMs);
   }
 

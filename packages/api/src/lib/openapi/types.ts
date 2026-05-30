@@ -355,6 +355,7 @@ export type OpenApiClientErrorReason =
   | "missing-base-url"
   | "missing-path-param"
   | "missing-auth-placement"
+  | "blocked-egress" // target (or a redirect hop) resolves to a private/internal address — SSRF guard, #3006
   | "timeout"
   | "network"
   | "unparseable-response";

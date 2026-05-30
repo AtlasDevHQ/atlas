@@ -18,7 +18,7 @@
  * the route layer maps them to actionable 4xx/5xx envelopes instead of a 500.
  */
 
-import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { assertBaseUrlAllowed, guardedFetch, EgressBlockedError } from "./egress-guard";
 import { buildOperationGraph } from "./spec";
 import {
   OpenApiSpecError,
@@ -67,28 +67,31 @@ export class OpenApiProbeError extends Error {
 }
 
 /**
- * SaaS SSRF guard for the host-side spec fetch. The spec URL is admin-supplied
- * and fetched by the API server itself at install + rediscover, so on
- * multi-tenant SaaS it must point at a public HTTPS host — otherwise a workspace
- * admin could aim it at cloud-metadata (`169.254.169.254`) or internal services
- * (classic SSRF). Self-hosted operators legitimately connect internal OpenAPI
- * services, so the guard is SaaS-only — mirrors the `ATLAS_DEPLOY_MODE === "saas"`
- * credential gates in the install handlers. Throws {@link OpenApiProbeError}
- * `unreachable` so callers surface the same actionable 400 they already map
- * probe failures to.
+ * SSRF guard for the host-side spec fetch. The spec URL is admin-supplied and
+ * fetched by the API server itself at install + rediscover, so it must point at
+ * a public HTTPS host — otherwise a workspace admin could aim it at
+ * cloud-metadata (`169.254.169.254`) or internal services (classic SSRF). The
+ * guard is ON in every deploy mode; self-hosted operators who legitimately
+ * connect internal OpenAPI services opt OUT explicitly via
+ * `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true` (#3006 — no implicit non-SaaS skip).
  *
- * Hostname-based (reuses {@link isSafeExternalUrl}): it does not resolve DNS, so
- * a public name that resolves to a private IP is out of scope — the same bar the
- * shared guard sets for the codebase's other store-then-fetch URL surfaces.
+ * Delegates to the shared {@link assertBaseUrlAllowed} chokepoint and rethrows
+ * its {@link EgressBlockedError} as {@link OpenApiProbeError} `unreachable`, so
+ * callers surface the same actionable 400 they already map probe failures to.
+ *
+ * IP/CIDR-based (via `assertBaseUrlAllowed` → `isSafeExternalUrl`): it does not
+ * resolve DNS, so a public name that resolves to a private IP is out of scope at
+ * this layer — that redirect/rebind case is caught at fetch time by
+ * {@link guardedFetch}.
  */
 export function assertSpecUrlAllowed(specUrl: string): void {
-  if (process.env.ATLAS_DEPLOY_MODE !== "saas") return;
-  if (!isSafeExternalUrl(specUrl)) {
-    throw new OpenApiProbeError(
-      "unreachable",
-      "The spec URL must use HTTPS and resolve to a public host — private or internal " +
-        "addresses are blocked in hosted mode.",
-    );
+  try {
+    assertBaseUrlAllowed(specUrl);
+  } catch (err) {
+    if (err instanceof EgressBlockedError) {
+      throw new OpenApiProbeError("unreachable", err.message);
+    }
+    throw err;
   }
 }
 
@@ -179,8 +182,9 @@ export async function probeSpec(
 ): Promise<{ readonly doc: unknown; readonly graph: OperationGraph }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
 
-  // SSRF guard (SaaS only): the spec URL is admin-supplied and fetched here,
-  // host-side — block private/internal targets before the fetch.
+  // SSRF guard (all deploy modes; opt out via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS):
+  // the spec URL is admin-supplied and fetched here, host-side — block
+  // private/internal targets before the fetch. #3006.
   assertSpecUrlAllowed(openapiUrl);
 
   // apiKey-query placement: the spec endpoint may itself need the key in the
@@ -200,11 +204,18 @@ export async function probeSpec(
 
   let doc: unknown;
   try {
-    const response = await fetchImpl(url, {
-      method: "GET",
-      headers: { Accept: "application/json", ...authHeadersForProbe(auth) },
-      signal: AbortSignal.timeout(probeTimeoutMs()),
-    });
+    // `guardedFetch` re-validates the URL immediately before the request leaves
+    // the box and re-checks every redirect `Location` host — closing the TOCTOU
+    // gap where a guarded public spec URL 302-redirects to an internal target.
+    const response = await guardedFetch(
+      url,
+      {
+        method: "GET",
+        headers: { Accept: "application/json", ...authHeadersForProbe(auth) },
+        signal: AbortSignal.timeout(probeTimeoutMs()),
+      },
+      { fetchImpl },
+    );
     if (!response.ok) {
       throw new OpenApiProbeError(
         "http_error",
@@ -216,6 +227,10 @@ export async function probeSpec(
     doc = await response.json();
   } catch (err) {
     if (err instanceof OpenApiProbeError) throw err;
+    if (err instanceof EgressBlockedError) {
+      // A redirect to a blocked host (the up-front guard passed; the hop didn't).
+      throw new OpenApiProbeError("unreachable", err.message);
+    }
     throw new OpenApiProbeError(
       "unreachable",
       `Could not fetch the OpenAPI spec: ${err instanceof Error ? err.message : String(err)}`,

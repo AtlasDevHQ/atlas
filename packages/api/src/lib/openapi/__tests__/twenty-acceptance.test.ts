@@ -223,7 +223,13 @@ let mock1: TwentyMock;
 /** The bearer + base URL the resolved Twenty datasource points at (the mock server). */
 let twentyBase: Omit<RestDatasource, "representationMode">;
 
+// The mock REST server binds to 127.0.0.1 (loopback), which the #3006 SSRF guard
+// blocks by default. A local test server is the "internal service" case the
+// operator opt-out exists for — enable it for this file and restore it after.
+const ORIGINAL_EGRESS_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+
 beforeAll(async () => {
+  process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
   mock1 = await startTwentyMockServer();
   twentyBase = {
     id: "twenty",
@@ -237,6 +243,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+  else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
   activeDatasources = [];
   await mock1.close();
   emitMetricsTable();

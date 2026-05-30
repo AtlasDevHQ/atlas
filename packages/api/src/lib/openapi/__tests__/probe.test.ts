@@ -123,40 +123,45 @@ describe("probeSpec", () => {
   });
 });
 
-describe("assertSpecUrlAllowed (SaaS SSRF guard)", () => {
-  const ORIGINAL = process.env.ATLAS_DEPLOY_MODE;
+describe("assertSpecUrlAllowed (SSRF guard, #3006)", () => {
+  const ORIGINAL = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.ATLAS_DEPLOY_MODE;
-    else process.env.ATLAS_DEPLOY_MODE = ORIGINAL;
+    if (ORIGINAL === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL;
   });
 
-  it("is a no-op off SaaS (self-hosted may connect internal hosts)", () => {
-    delete process.env.ATLAS_DEPLOY_MODE;
-    expect(() => assertSpecUrlAllowed("http://localhost:9000/openapi.json")).not.toThrow();
-    expect(() => assertSpecUrlAllowed("http://10.0.0.5/openapi.json")).not.toThrow();
-  });
-
-  it("rejects private/internal spec URLs in SaaS mode (metadata, localhost, RFC1918)", () => {
-    process.env.ATLAS_DEPLOY_MODE = "saas";
+  it("rejects private/internal spec URLs by default in EVERY deploy mode (no implicit non-SaaS skip)", () => {
+    // The pre-#3006 guard was a no-op off SaaS, leaving self-hosted unprotected.
+    // It is now ON everywhere unless the operator opts out explicitly.
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    delete process.env.ATLAS_DEPLOY_MODE; // even with no deploy mode set, the guard fires
     for (const url of [
       "http://169.254.169.254/latest/meta-data/", // cloud metadata
       "https://localhost/openapi.json",
       "https://127.0.0.1/openapi.json",
       "https://10.0.0.5/openapi.json",
       "https://192.168.1.10/openapi.json",
+      "https://[::ffff:169.254.169.254]/openapi.json", // IPv4-mapped metadata
+      "https://metadata.google.internal/v1/", // GCP metadata hostname
       "http://crm.example.com/openapi.json", // non-HTTPS
     ]) {
       expect(() => assertSpecUrlAllowed(url), url).toThrow(OpenApiProbeError);
     }
   });
 
-  it("allows a public HTTPS spec URL in SaaS mode", () => {
-    process.env.ATLAS_DEPLOY_MODE = "saas";
+  it("allows a public HTTPS spec URL", () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
     expect(() => assertSpecUrlAllowed("https://crm.example.com/rest/open-api/core")).not.toThrow();
   });
 
-  it("probeSpec fires the guard before the host-side fetch (SaaS)", async () => {
-    process.env.ATLAS_DEPLOY_MODE = "saas";
+  it("opts the guard out when ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true (self-hosted internal services)", () => {
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    expect(() => assertSpecUrlAllowed("http://localhost:9000/openapi.json")).not.toThrow();
+    expect(() => assertSpecUrlAllowed("http://10.0.0.5/openapi.json")).not.toThrow();
+  });
+
+  it("probeSpec fires the guard before the host-side fetch", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
     let fetched = false;
     const fetchImpl = (async () => {
       fetched = true;
@@ -166,6 +171,23 @@ describe("assertSpecUrlAllowed (SaaS SSRF guard)", () => {
     expect(err).toBeInstanceOf(OpenApiProbeError);
     expect((err as OpenApiProbeError).reason).toBe("unreachable");
     expect(fetched).toBe(false); // guard rejected before any request left the box
+  });
+
+  it("probeSpec rejects a public→internal redirect (TOCTOU)", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let hops = 0;
+    const fetchImpl = (async (url: string) => {
+      hops++;
+      // The up-front guard passes (public host); the upstream then 302s to metadata.
+      if (new URL(url).hostname === "public.example.com") {
+        return new Response(null, { status: 302, headers: { location: "https://169.254.169.254/" } });
+      }
+      return new Response(JSON.stringify(MOCK_OPENAPI_SPEC), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const err = await probeSpec("https://public.example.com/o.json", { kind: "none" }, { fetchImpl }).catch((e) => e);
+    expect(err).toBeInstanceOf(OpenApiProbeError);
+    expect((err as OpenApiProbeError).reason).toBe("unreachable");
+    expect(hops).toBe(1); // followed nothing past the blocked redirect
   });
 });
 

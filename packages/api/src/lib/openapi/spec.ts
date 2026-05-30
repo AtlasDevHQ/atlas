@@ -529,10 +529,27 @@ class GraphBuilder {
         if (description !== undefined) operation.description = description;
         // #3008: the `x-atlas-side-effecting: true` vendor extension escalates a
         // read-method operation (a mutating RPC-over-GET) to the write path. Only
-        // an explicit `true` sets it — a missing/false value leaves classification
-        // to the method, and the flag can never DOWNGRADE a write method to a read.
-        if (asBoolean(opRaw["x-atlas-side-effecting"]) === true) {
-          operation.sideEffecting = true;
+        // an explicit `true` sets it — an explicit `false` (or a missing value)
+        // leaves classification to the method, and the flag can never DOWNGRADE a
+        // write method to a read. A present-but-non-boolean value (e.g. the string
+        // "true" from a YAML/templating round-trip) is REJECTED, not silently
+        // dropped: this is a security-load-bearing signal, so we fail loud here —
+        // matching every other malformed scalar in this parser — rather than let a
+        // mistyped flag leave a side-effecting GET classified as an unconfirmed
+        // read (the write-safety false negative this feature exists to prevent).
+        if ("x-atlas-side-effecting" in opRaw) {
+          const sideEffecting = asBoolean(opRaw["x-atlas-side-effecting"]);
+          if (sideEffecting === undefined) {
+            throw new OpenApiSpecError({
+              reason: "invalid-structure",
+              location: `${opLocation}.x-atlas-side-effecting`,
+              message:
+                `x-atlas-side-effecting at ${opLocation} must be a boolean, got ` +
+                `${describe(opRaw["x-atlas-side-effecting"])}. A mistyped value (e.g. the ` +
+                `string "true") would silently leave a side-effecting GET ungated.`,
+            });
+          }
+          if (sideEffecting) operation.sideEffecting = true;
         }
         const requestBody = this.buildRequestBody(opRaw.requestBody, `${opLocation}.requestBody`);
         if (requestBody !== undefined) operation.requestBody = requestBody;

@@ -55,4 +55,37 @@ describe("buildOperationGraph — x-atlas-side-effecting (#3008)", () => {
     const graph = buildOperationGraph(doc());
     expect(graph.operations.get("getJob")?.sideEffecting).toBeUndefined();
   });
+
+  // #3008 fail-closed: a present-but-non-boolean value is a security-load-bearing
+  // misconfiguration (e.g. the string "true" from a YAML/templating round-trip),
+  // NOT silently dropped. Dropping it would leave a side-effecting GET classified
+  // as an unconfirmed read — the exact false negative this feature prevents.
+  function docWithSideEffecting(value: unknown) {
+    return {
+      openapi: "3.1.0",
+      info: { title: "Jobs", version: "1.0.0" },
+      paths: {
+        "/jobs/{id}/cancel": {
+          get: {
+            operationId: "cancelJob",
+            "x-atlas-side-effecting": value,
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    };
+  }
+
+  it("throws on a non-boolean x-atlas-side-effecting (string) — fail-closed, not silently dropped", () => {
+    expect(() => buildOperationGraph(docWithSideEffecting("true"))).toThrow(/must be a boolean/);
+  });
+
+  it("throws on a non-boolean x-atlas-side-effecting (number)", () => {
+    expect(() => buildOperationGraph(docWithSideEffecting(1))).toThrow(/must be a boolean/);
+  });
+
+  it("throws on a non-boolean x-atlas-side-effecting (object)", () => {
+    expect(() => buildOperationGraph(docWithSideEffecting({}))).toThrow(/x-atlas-side-effecting/);
+  });
 });

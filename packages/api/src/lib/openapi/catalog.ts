@@ -316,9 +316,19 @@ export function parseWriteAllowlist(raw: unknown, installId?: string): ReadonlyS
  * extension does the same per-operation). Accepts the form-stored JSON **string**
  * (`'["cancelJob"]'`) or an already-parsed **array** (an `atlas.config.ts` plugins
  * entry); anything malformed resolves to the **empty set** — classification stays
- * method-only — logged for the operator. Same fail-closed normalization as
- * {@link parseWriteAllowlist}: a broken list can only ever ADD safety, never strip
- * it, so degrading to "none" is the safe default.
+ * method-only — logged for the operator.
+ *
+ * NOTE: degrading-to-empty here is NOT "fail-closed" in the {@link
+ * parseWriteAllowlist} sense, and the security semantics are inverted. An empty
+ * *allowlist* means default-deny writes (safe); an empty *side-effecting list*
+ * means a GET the operator INTENDED to gate is left classified as a plain read
+ * and runs unconfirmed (the less-safe outcome for that operation). We degrade to
+ * empty + warn rather than throw because the config is a free-text JSON blob — we
+ * can't infer which ops a malformed list meant, and a hard throw would take the
+ * whole datasource offline for one fat-fingered entry. The operator must fix the
+ * config; the warn log surfaces it. (Contrast the spec extension, a single named
+ * scalar the parser CAN pinpoint and so rejects loudly — see {@link
+ * import("./spec").buildOperationGraph}.)
  */
 export function parseSideEffectingOperations(raw: unknown, installId?: string): ReadonlySet<string> {
   if (raw === undefined || raw === null || raw === "") return new Set();

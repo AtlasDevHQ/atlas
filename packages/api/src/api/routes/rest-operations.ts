@@ -172,9 +172,7 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         // allowlist on the confirm replay too (the spec-extension path is already
         // covered, since `operation.sideEffecting` is read from the graph). Without
         // this, a direct confirm POST for such a GET would bypass the allowlist.
-        ...(datasource.sideEffectingOperations !== undefined
-          ? { sideEffectingOperations: datasource.sideEffectingOperations }
-          : {}),
+        sideEffectingOperations: datasource.sideEffectingOperations,
         dispatch: true, // this IS the upstream call — debit the quota
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

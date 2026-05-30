@@ -181,6 +181,9 @@ function buildDatasource(
   const writeAllowlist = parseWriteAllowlist(decrypted.write_allowlist, installId);
   // #3008: operationIds the operator marks side-effecting (a mutating RPC-over-GET) —
   // forced through the write allowlist + confirm path even though their method reads.
+  // A malformed list degrades to empty (classification stays method-only) — note
+  // this is NOT the "fails closed to read-only" posture above: an empty side-effecting
+  // list LEAVES an intended-to-gate GET running unconfirmed. See parseSideEffectingOperations.
   const sideEffectingOperations = parseSideEffectingOperations(decrypted.side_effecting_operations, installId);
   const rateLimitPerMinute = parseRateLimitPerMinute(decrypted.rate_limit_per_minute, installId);
   const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);

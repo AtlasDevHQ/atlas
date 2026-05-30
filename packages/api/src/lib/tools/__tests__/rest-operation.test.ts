@@ -47,6 +47,7 @@ function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
     auth: { kind: "bearer", token: "test-token" },
     representationMode: "operation-graph",
     writeAllowlist: new Set<string>(),
+    sideEffectingOperations: new Set<string>(),
     ...overrides,
   };
 }
@@ -122,7 +123,7 @@ describe("executeRestOperation tool", () => {
     });
     const result = await call(
       { operationId: "listWithHeader", header: { "X-Schema-Version": "2024-01" } },
-      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph", writeAllowlist: new Set<string>() }),
+      async () => ({ id: "twenty", displayName: "Twenty", graph: headerGraph, baseUrl: mock.restBaseUrl, auth: { kind: "bearer", token: "test-token" }, representationMode: "operation-graph", writeAllowlist: new Set<string>(), sideEffectingOperations: new Set<string>() }),
     );
     expect(result.status).toBe("ok");
     const req = mock.matching("/rest/people").at(-1);
@@ -251,6 +252,32 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(second.status).toBe("rate_limited");
     if (second.status !== "rate_limited") return;
     expect(second.retryAfterMs).toBeGreaterThan(0);
+  });
+
+  it("stages a config-flagged side-effecting GET as needs_confirmation, never dispatching it (#3008)", async () => {
+    // A GET the install marks side-effecting is treated exactly like a write: it
+    // stages with dispatch:false, so it never hits the upstream and never burns the
+    // per-operation quota at stage time (the same GET runs as a plain read sans flag).
+    const ds = datasource({
+      writeAllowlist: new Set(["findManyPeople"]),
+      sideEffectingOperations: new Set(["findManyPeople"]),
+    });
+    const result = await call({ operationId: "findManyPeople" }, async () => ds);
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.method).toBe("GET");
+    expect(result.operationId).toBe("findManyPeople");
+    // dispatch:false — the flagged GET did NOT reach the upstream (quota untouched).
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("blocks a config-flagged side-effecting GET that is NOT allowlisted (writes_disabled, #3008)", async () => {
+    const ds = datasource({ sideEffectingOperations: new Set(["findManyPeople"]) });
+    const result = await call({ operationId: "findManyPeople" }, async () => ds);
+    expect(result.status).toBe("writes_disabled");
+    if (result.status !== "writes_disabled") return;
+    expect(result.method).toBe("GET");
+    expect(mock.requests).toHaveLength(0);
   });
 });
 

@@ -6,8 +6,9 @@
  * adapter, not subordinate").
  *
  * This is a SECURITY boundary. Treat it like `validateSQL`:
- *   - default-deny on writes (a non-GET only executes if its `operationId` is in
- *     the install's `write_allowlist`),
+ *   - default-deny on writes (a non-GET — or a GET/HEAD flagged side-effecting,
+ *     #3008 — only executes if its `operationId` is in the install's
+ *     `write_allowlist`),
  *   - fail loud on an operation that isn't in the probed graph (never dispatch a
  *     fabricated operation),
  *   - never a silent fallback — every rejection is an explicit

@@ -105,6 +105,11 @@ export interface OpenApiDatasourceMockOptions {
    * (read-only / default-deny)** — pass e.g. `["createWidget"]` to opt a write in.
    */
   readonly writeAllowlist?: Iterable<string>;
+  /**
+   * operationIds whose GET/HEAD mutates state (#3008) — forced through the write
+   * allowlist + confirm path. Defaults to **empty** (classification is method-only).
+   */
+  readonly sideEffectingOperations?: Iterable<string>;
   /** Per-install rate-limit override (calls/min); default 60 in the validator. */
   readonly rateLimitPerMinute?: number;
 }
@@ -127,6 +132,7 @@ export function createOpenApiDatasourceMock(
     auth: options.auth ?? { kind: "bearer", token: "test-token" },
     representationMode: options.representationMode ?? "operation-graph",
     writeAllowlist: new Set(options.writeAllowlist ?? []),
+    sideEffectingOperations: new Set(options.sideEffectingOperations ?? []),
     ...(options.rateLimitPerMinute !== undefined ? { rateLimitPerMinute: options.rateLimitPerMinute } : {}),
   };
 }

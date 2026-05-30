@@ -17,6 +17,10 @@ A workspace can install several OpenAPI datasources side by side (one for Twenty
 
 GET (and HEAD) operations execute immediately. The agent calls `executeRestOperation` with an `operationId` from the spec plus its parameters, and gets the response back as data. Multi-step questions ("show me Matt's notes") run as a sequence of operations across agent steps.
 
+<Callout type="warn">
+Read vs write is classified by HTTP **method** by default — but only as a default, not ground truth. Some legacy / RPC-style APIs **mutate state through a GET** (e.g. `GET /jobs/{id}/cancel`, `GET /admin/resetPassword`). If yours does, you **must** mark those operations side-effecting so Atlas gates them like writes — see [Side-effecting GETs](#side-effecting-gets) below. An unmarked mutating GET runs as an unconfirmed read.
+</Callout>
+
 ## Writing — opt-in, then confirm
 
 **Writes are off by default.** A non-GET operation (POST / PATCH / PUT / DELETE) only runs if its `operationId` is in that install's **write allowlist** — and even then, never silently.
@@ -47,12 +51,42 @@ The write fires only when the user clicks **Confirm write** — the request is P
 Prompting a write that is **not** allowlisted (e.g. "delete every Person") returns `writes_disabled` — the request never fires, and the agent is told not to claim it happened. Add the operation to `write_allowlist` to enable it.
 </Callout>
 
+## Side-effecting GETs
+
+Atlas classifies read vs write by HTTP method **as a default, not ground truth**. A GET or HEAD that actually mutates state (a "mutating RPC-over-GET", common in legacy / internal services) can be flagged side-effecting, and is then forced through the **same write allowlist + confirm path** as a POST — it must be allowlisted, and it stages for confirmation rather than running silently.
+
+There are two ways to flag one, and they combine (either is enough). The classification is **monotonic**: a flag can only ever *escalate* a read to a write, never downgrade a write method to a read.
+
+**1. In the spec — `x-atlas-side-effecting: true`.** If you control the OpenAPI document, mark the operation directly:
+
+```yaml
+paths:
+  /jobs/{id}/cancel:
+    get:
+      operationId: cancelJob
+      x-atlas-side-effecting: true   # this GET mutates — gate it like a write
+```
+
+Only an explicit boolean `true` escalates; `false` (or absent) leaves classification to the method. A present-but-non-boolean value (e.g. the string `"true"`) is **rejected at probe time** — a mistyped flag fails the install loudly rather than silently leaving the GET ungated.
+
+**2. In the install config — `side_effecting_operations`.** When you don't own the spec, list the offending `operationId`s as a JSON array on the install:
+
+```json
+["cancelJob", "resetPassword"]
+```
+
+A malformed value degrades to "none" (classification stays method-only) and is logged. Note this is **not** fail-closed the way `write_allowlist` is: an empty or broken side-effecting list leaves a mutating GET running unconfirmed, so fix a logged parse warning promptly.
+
+<Callout type="warn">
+This is an **operator-validated security boundary**. Atlas cannot know which of an API's GETs mutate state — you must. If a GET on your API changes data and you don't flag it (either way above), the agent will run it as an unconfirmed read.
+</Callout>
+
 ## The safety stack (`validateRestOperation`)
 
 Every operation — read or write — is authorized by `validateRestOperation`, the REST sibling to Atlas's SQL validator. Five layers, in order:
 
 1. **Operation in graph** — an `operationId` not in the probed spec is rejected (`unknown_operation`); Atlas never dispatches a fabricated operation.
-2. **Method allowlist** — GET/HEAD always pass; any other method requires the `operationId` in `write_allowlist`, else `writes_disabled` (default-deny).
+2. **Write allowlist** — GET/HEAD pass **unless flagged side-effecting** (see above); any other method, or a side-effecting GET/HEAD, requires the `operationId` in `write_allowlist`, else `writes_disabled` (default-deny).
 3. **Parameter shape** — required parameters and request body must be present; parameters the spec doesn't declare are rejected (`invalid_params`).
 4. **Rate limit** — a per-`(workspace, datasource, operation)` token bucket, **60 calls/min** by default, overridable per install via the config-only `rate_limit_per_minute` key. Throttles runaway agent loops on a paid upstream (`rate_limited`, with a retry hint).
 5. **Timeout** — each request is capped at `ATLAS_OPENAPI_TIMEOUT` (default **30s**). A per-install `request_timeout_ms` (config-only) above the cap is rejected.
@@ -92,6 +126,7 @@ Install-form fields (Admin → Connections):
 | `auth_param_name` | — | Query param for `apikey-query`, e.g. `api_key` |
 | `base_url_override` | — | When the spec's `servers[0].url` is wrong (dev/staging) |
 | `write_allowlist` | — | JSON array of `operationId`s permitted to write. Empty = read-only (default). |
+| `side_effecting_operations` | — | JSON array of `operationId`s whose GET/HEAD **mutates** state — forced through the write allowlist + confirm path. Empty = method-only classification (default). See [Side-effecting GETs](#side-effecting-gets). |
 | `display_name` | — | Friendly name shown in Admin → Connections |
 
 Advanced overrides (set on the install's `config` via `atlas.config.ts`, not surfaced in the install form):

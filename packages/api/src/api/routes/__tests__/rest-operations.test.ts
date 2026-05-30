@@ -105,6 +105,7 @@ function datasource(overrides: Partial<RestDatasource> = {}): RestDatasource {
     auth: { kind: "bearer", token: "confirm-token" },
     representationMode: "operation-graph",
     writeAllowlist: new Set<string>(),
+    sideEffectingOperations: new Set<string>(),
     ...overrides,
   };
 }
@@ -161,6 +162,36 @@ describe("POST /rest-operations/confirm", () => {
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("writes_disabled");
     expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
+  });
+
+  it("re-gates a CONFIG-flagged side-effecting GET on the confirm replay (the bypass this closes, #3008)", async () => {
+    // A direct confirm POST for a GET the install config marks side-effecting must
+    // still hit the write allowlist. The config flag does NOT live on the graph
+    // (unlike the x-atlas-side-effecting spec extension), so the route has to thread
+    // `sideEffectingOperations` onto the policy itself. Drop that wiring and this GET
+    // slips through as an unconfirmed read — this test is the regression guard.
+    const app = appWith([datasource({ sideEffectingOperations: new Set(["findManyPeople"]) })]);
+    const res = await post(app, { datasourceId: "twenty", operationId: "findManyPeople" });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("writes_disabled");
+    // Rejected before dispatch — nothing reached the upstream.
+    expect(twentyMock.requests.length).toBe(0);
+  });
+
+  it("dispatches an ALLOWLISTED config-flagged side-effecting GET on confirm (#3008)", async () => {
+    // The re-gate must not over-block: once the side-effecting GET is allowlisted,
+    // a confirm replay dispatches it upstream like any other confirmed write.
+    const app = appWith([
+      datasource({
+        writeAllowlist: new Set(["findManyPeople"]),
+        sideEffectingOperations: new Set(["findManyPeople"]),
+      }),
+    ]);
+    const res = await post(app, { datasourceId: "twenty", operationId: "findManyPeople" });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { status: string }).status).toBe("executed");
+    // The GET really reached the upstream (the re-gate allowed it through).
+    expect(twentyMock.matching("/rest/people").at(-1)?.method).toBe("GET");
   });
 
   it("500s (datasource_unavailable) when the registry load fails — not a misleading 404", async () => {

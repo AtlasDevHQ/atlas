@@ -329,17 +329,16 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
     // Narrow + build the credential via the glue shared with the workspace
     // resolver. A drifted row could carry the deferred oauth2 kind (or garbage) —
     // `ok: false` becomes an actionable 400 rather than letting buildResolvedAuth's
-    // exhaustiveness guard 500.
+    // exhaustiveness guard 500. Tailor the remediation: a deferred oauth2 row is
+    // "coming later"; any other unsupported/drifted kind needs the operator to fix
+    // the config, so don't tell them it's oauth2 when it isn't.
     const authResult = resolveAuthFromDecryptedConfig(decrypted);
     if (!authResult.ok) {
-      return c.json(
-        {
-          error: "bad_request",
-          message: "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable.",
-          requestId,
-        },
-        400,
-      );
+      const message =
+        authResult.rawAuthKind === "oauth2"
+          ? "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable."
+          : `This datasource has an unsupported auth kind ("${authResult.rawAuthKind}") — fix its config before rediscovering.`;
+      return c.json({ error: "bad_request", message, requestId }, 400);
     }
     const auth = authResult.auth;
 

@@ -25,6 +25,8 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 let CURRENT_ORG = "org-owner";
 /** Flip the mocked probe to fail (rediscover error-mapping test). */
 let probeShouldFail = false;
+/** Force resolveAuthFromDecryptedConfig to its ok:false arm (rediscover 400 tests). */
+let authResultOverride: { ok: false; rawAuthKind: string } | null = null;
 
 const CATALOG_ID = "catalog:openapi-generic";
 
@@ -149,7 +151,7 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
     // The shared decrypt→auth glue the rediscover route now calls. The fixture's
     // auth_kind is "none", so the success arm (ok: true) is the relevant one;
     // the 400 (ok: false) branch is exercised by the workspace-resolver tests.
-    resolveAuthFromDecryptedConfig: () => ({ ok: true, auth: { kind: "none" } }),
+    resolveAuthFromDecryptedConfig: () => authResultOverride ?? { ok: true, auth: { kind: "none" } },
     probeSpec: async () => {
       if (probeShouldFail) throw new OpenApiProbeError("unreachable", "probe boom");
       return { doc: { openapi: "3.1.0" }, graph: emptyGraph };
@@ -196,6 +198,7 @@ beforeEach(() => {
 afterEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
+  authResultOverride = null;
 });
 
 // ── Workspace scoping (tenant isolation) ─────────────────────────────────────
@@ -297,6 +300,27 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
       ([sql]) => (sql as string).includes("UPDATE") && (sql as string).includes("openapi_snapshot"),
     );
     expect(update).toBeDefined();
+  });
+
+  it("maps a deferred oauth2 row to a 400 with the oauth2-specific message (no UPDATE)", async () => {
+    authResultOverride = { ok: false, rawAuthKind: "oauth2" };
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toContain("oauth2");
+    // Failed auth resolution short-circuits before the snapshot UPDATE + eviction.
+    expect(mockInternalQuery.mock.calls.find(([sql]) => (sql as string).includes("UPDATE"))).toBeUndefined();
+    expect(invalidateGraphCacheSpy).not.toHaveBeenCalled();
+  });
+
+  it("maps a drifted (non-oauth2) auth kind to a 400 with a generic fix-config message", async () => {
+    authResultOverride = { ok: false, rawAuthKind: "weird-kind" };
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain("weird-kind"); // names the offending value
+    expect(body.message).not.toContain("oauth2"); // NOT the oauth2 remediation
   });
 });
 

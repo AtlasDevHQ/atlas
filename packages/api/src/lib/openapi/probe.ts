@@ -172,11 +172,20 @@ export type DecryptedAuthResult =
  * `ok: false` carries the raw kind string so the caller can log/surface it
  * (the value is untyped at the trust boundary — it could be the deferred
  * `oauth2` (slice 6 #2930) OR a drifted/hand-edited garbage value).
+ *
+ * An ABSENT `auth_kind` is a legitimate no-auth datasource (a public API) and
+ * resolves `ok: true` with `{ kind: "none" }`. But a PRESENT-but-non-string
+ * value is a drifted/corrupt row — surfaced as `ok: false` (stringified) rather
+ * than silently downgraded to no-auth, which would hide a misconfigured
+ * credential behind unauthenticated requests (CLAUDE.md: prefer errors over
+ * silent fallbacks).
  */
 export function resolveAuthFromDecryptedConfig(
   decrypted: Record<string, unknown>,
 ): DecryptedAuthResult {
-  const rawAuthKind = typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none";
+  const rawAuthKind = decrypted.auth_kind;
+  if (rawAuthKind === undefined) return { ok: true, auth: { kind: "none" } };
+  if (typeof rawAuthKind !== "string") return { ok: false, rawAuthKind: String(rawAuthKind) };
   const authKind = narrowSupportedAuthKind(rawAuthKind);
   if (!authKind) return { ok: false, rawAuthKind };
   const authValue = typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined;

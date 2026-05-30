@@ -323,9 +323,16 @@ describe("resolveAuthFromDecryptedConfig", () => {
     }
   });
 
-  it("defaults a missing auth_kind to none (ok: true)", () => {
+  it("defaults an ABSENT auth_kind to none (ok: true — a legitimate no-auth datasource)", () => {
     const result = resolveAuthFromDecryptedConfig({});
     expect(result).toEqual({ ok: true, auth: { kind: "none" } });
+  });
+
+  it("returns ok: false for a PRESENT-but-non-string auth_kind (drifted row, not a silent no-auth)", () => {
+    // The key distinction from the absent case above: a present-but-corrupt value
+    // must surface, not silently downgrade to no-auth (CLAUDE.md: prefer errors).
+    expect(resolveAuthFromDecryptedConfig({ auth_kind: 123 })).toEqual({ ok: false, rawAuthKind: "123" });
+    expect(resolveAuthFromDecryptedConfig({ auth_kind: null })).toEqual({ ok: false, rawAuthKind: "null" });
   });
 
   it("returns ok: false for the deferred oauth2 kind, carrying the raw value", () => {

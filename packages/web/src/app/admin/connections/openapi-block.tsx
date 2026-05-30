@@ -99,6 +99,7 @@ const DatasourceSummarySchema = z.object({
   openapiUrl: z.string().nullable(),
   baseUrlOverride: z.string().nullable(),
   representationMode: z.string(),
+  specRefreshInterval: z.string(),
   status: z.string(),
   snapshot: SnapshotSchema,
 });
@@ -118,6 +119,26 @@ const DetailSchema = DatasourceSummarySchema.extend({
 });
 
 const AUTH_KINDS = ["none", "bearer", "basic", "apikey-header", "apikey-query"] as const;
+
+/**
+ * Auto-refresh presets the Select exposes (#2977). The agent's view of a spec
+ * stays current without a manual click; `off` (default) never auto-refreshes.
+ * The values mirror the API's `spec_refresh_interval` enum — a custom `"<N>h"`
+ * interval set via `atlas.config.ts` is still rendered (see {@link formatRefreshLabel}).
+ */
+const REFRESH_INTERVAL_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+] as const;
+
+/** Human label for a stored interval value — a preset name, or "Every Nh" for a custom interval. */
+function formatRefreshLabel(value: string): string {
+  const preset = REFRESH_INTERVAL_OPTIONS.find((o) => o.value === value);
+  if (preset) return preset.label;
+  const custom = /^(\d+(?:\.\d+)?)h$/.exec(value);
+  return custom ? `Every ${custom[1]}h` : value;
+}
 
 interface OpenApiProviderBlockProps {
   readonly demoReadOnly: boolean;
@@ -233,6 +254,11 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
     method: "PATCH",
     invalidates: onChange,
   });
+  const setRefresh = useAdminMutation<{ updated: boolean; specRefreshInterval: string }>({
+    path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}`,
+    method: "PATCH",
+    invalidates: onChange,
+  });
   const remove = useAdminMutation<{ deleted: boolean }>({
     path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}`,
     method: "DELETE",
@@ -265,6 +291,19 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
       toast.success(`Representation set to ${representationMode}`);
     } else {
       toast.error(friendlyErrorOrNull(result.error) ?? "Couldn't change representation mode");
+    }
+  }
+
+  async function handleSetRefresh(specRefreshInterval: string) {
+    const result = await setRefresh.mutate({ body: { specRefreshInterval } });
+    if (result.ok) {
+      toast.success(
+        specRefreshInterval === "off"
+          ? "Auto-refresh disabled"
+          : `Auto-refresh set to ${formatRefreshLabel(specRefreshInterval).toLowerCase()}`,
+      );
+    } else {
+      toast.error(friendlyErrorOrNull(result.error) ?? "Couldn't change the refresh interval");
     }
   }
 
@@ -343,6 +382,38 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
                 />
                 <span className="text-xs text-muted-foreground">semantic-yaml</span>
               </span>
+            }
+          />
+          <DetailRow
+            label="Auto-refresh"
+            value={
+              <Select
+                value={ds.specRefreshInterval}
+                disabled={setMode.saving || setRefresh.saving}
+                onValueChange={handleSetRefresh}
+              >
+                <SelectTrigger
+                  className="h-7 w-36 text-xs"
+                  aria-label="Spec auto-refresh interval"
+                  data-testid="openapi-refresh-interval"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {REFRESH_INTERVAL_OPTIONS.map((o) => (
+                    <SelectItem key={o.value} value={o.value}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                  {/* A custom "<N>h" interval (set via atlas.config.ts) isn't a preset —
+                      surface it so the Select shows the live value rather than blanking. */}
+                  {REFRESH_INTERVAL_OPTIONS.every((o) => o.value !== ds.specRefreshInterval) ? (
+                    <SelectItem value={ds.specRefreshInterval}>
+                      {formatRefreshLabel(ds.specRefreshInterval)}
+                    </SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
             }
           />
         </DetailList>

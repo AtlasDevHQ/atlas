@@ -43,6 +43,10 @@ import {
   OpenApiProbeError,
 } from "@atlas/api/lib/openapi/probe";
 import { REPRESENTATION_MODES } from "@atlas/api/lib/openapi/representation";
+import {
+  coerceSpecRefreshInterval,
+  normalizeSpecRefreshInterval,
+} from "@atlas/api/lib/openapi/spec-refresh";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -77,6 +81,9 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
     openapiUrl: typeof c.openapi_url === "string" ? c.openapi_url : null,
     baseUrlOverride: typeof c.base_url_override === "string" ? c.base_url_override : null,
     representationMode: coerceRepresentationMode(c.representation_mode),
+    // Per-install spec-refresh interval (#2977). Fail-soft display coercion so a
+    // drifted / absent value renders as the `off` default rather than undefined.
+    specRefreshInterval: coerceSpecRefreshInterval(c.spec_refresh_interval),
     status,
     snapshot: snapshot
       ? {
@@ -145,13 +152,35 @@ const patchRoute = createRoute({
   method: "patch",
   path: "/{installId}",
   tags: ["Admin — OpenAPI Datasources"],
-  summary: "Update the representation-mode toggle",
+  summary: "Update non-secret install config (representation mode, spec refresh interval)",
   request: {
     params: z.object({ installId: z.string().min(1).openapi({ param: { name: "installId", in: "path" } }) }),
     body: {
       content: {
         "application/json": {
-          schema: z.object({ representationMode: z.enum(REPRESENTATION_MODES) }),
+          // Both fields optional — a partial PATCH updates only what's provided.
+          // `specRefreshInterval` is a free string validated + clamped in the
+          // handler (off / daily / weekly / "<N>h"); the richer parse gives an
+          // actionable 400 a bare enum couldn't (#2977).
+          schema: z
+            .object({
+              representationMode: z.enum(REPRESENTATION_MODES).optional(),
+              specRefreshInterval: z
+                .string()
+                .min(1)
+                .optional()
+                .openapi({
+                  description:
+                    "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), " +
+                    "'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). " +
+                    "Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
+                  example: "daily",
+                }),
+            })
+            .refine(
+              (b) => b.representationMode !== undefined || b.specRefreshInterval !== undefined,
+              { message: "Provide representationMode and/or specRefreshInterval." },
+            ),
         },
       },
     },
@@ -358,19 +387,44 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
   runHandler(c, "update openapi datasource", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const { installId } = c.req.valid("param");
-    const { representationMode } = c.req.valid("json");
+    const { representationMode, specRefreshInterval } = c.req.valid("json");
     const row = await loadInstall(orgId, installId);
     if (!row) {
       return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
     }
 
-    // JSONB merge of the single toggle — the encrypted auth_value is untouched.
+    // Collect the non-secret config fields this PATCH touches: the JSONB column
+    // (snake_case) it writes, and the camelCase wire shape echoed in the response
+    // + audit metadata. Each column key is from a fixed allow-set (never user
+    // input) so interpolating it into the SQL is safe; the value is always bound.
+    const updates: Record<string, string> = {};
+    const changed: Record<string, string> = {};
+    if (representationMode !== undefined) {
+      updates.representation_mode = representationMode;
+      changed.representationMode = representationMode;
+    }
+    if (specRefreshInterval !== undefined) {
+      // Validate + clamp here so an invalid interval is an actionable 400, never a
+      // silent fallback to off (#2977 / CLAUDE.md error-handling). An out-of-range
+      // but positive value is clamped (e.g. "9000h" → the 30-day ceiling).
+      const normalized = normalizeSpecRefreshInterval(specRefreshInterval);
+      if (!normalized.ok) {
+        return c.json({ error: "bad_request", message: normalized.message, requestId }, 400);
+      }
+      updates.spec_refresh_interval = normalized.value;
+      changed.specRefreshInterval = normalized.value;
+    }
+
+    // JSONB merge of only the provided fields — the encrypted auth_value is
+    // untouched. Representation-only PATCH keeps the exact single-key SQL shape.
+    const keys = Object.keys(updates);
+    const pairs = keys.map((key, i) => `'${key}', $${i + 4}::text`).join(", ");
     await internalQuery(
       `UPDATE workspace_plugins
-          SET config = config || jsonb_build_object('representation_mode', $4::text),
+          SET config = config || jsonb_build_object(${pairs}),
               updated_at = NOW()
         WHERE workspace_id = $1 AND install_id = $2 AND catalog_id = $3 AND pillar = 'datasource'`,
-      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, representationMode],
+      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, ...keys.map((k) => updates[k])],
     );
 
     logAdminAction({
@@ -379,10 +433,10 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
       targetId: installId,
       scope: "workspace",
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { installId, representationMode, kind: "openapi-representation-toggle" },
+      metadata: { installId, ...changed, kind: "openapi-config-update" },
     });
 
-    return c.json({ updated: true, representationMode }, 200);
+    return c.json({ updated: true, ...changed }, 200);
   }),
 );
 

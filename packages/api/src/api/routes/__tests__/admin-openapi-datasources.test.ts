@@ -273,4 +273,105 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("probe_failed");
   });
+
+  it("Refresh now (rediscover) re-probes the upstream spec on success", async () => {
+    // The snapshot UPDATE only fires after probeSpec resolves, so its presence is
+    // proof the manual "Refresh now" triggered a live re-probe (AC: re-probe).
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    const update = mockInternalQuery.mock.calls.find(
+      ([sql]) => (sql as string).includes("UPDATE") && (sql as string).includes("openapi_snapshot"),
+    );
+    expect(update).toBeDefined();
+  });
+});
+
+// ── Per-install spec-refresh interval (#2977) ────────────────────────────────
+
+/** The merge UPDATE the PATCH handler issues, if any. */
+function findConfigUpdate() {
+  return mockInternalQuery.mock.calls.find(([sql]) => (sql as string).includes("UPDATE"));
+}
+
+describe("admin-openapi-datasources — spec_refresh_interval set / clear / clamp", () => {
+  it("GET detail surfaces specRefreshInterval (default off when the row has no key)", async () => {
+    const body = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      specRefreshInterval: string;
+    };
+    // The fixture config carries no spec_refresh_interval → coerced to the default.
+    expect(body.specRefreshInterval).toBe("off");
+  });
+
+  it("PATCH sets a named preset, writing only spec_refresh_interval (never auth_value)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specRefreshInterval: "daily" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { specRefreshInterval: string }).toMatchObject({
+      specRefreshInterval: "daily",
+    });
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("jsonb_build_object('spec_refresh_interval'");
+    expect(update?.[0]).not.toContain("auth_value");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "daily"]);
+  });
+
+  it("PATCH clears the interval by setting it back to off", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specRefreshInterval: "off" }),
+    });
+    expect(res.status).toBe(200);
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "off"]);
+  });
+
+  it("PATCH clamps an out-of-range custom interval to the ceiling (not a rejection)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specRefreshInterval: "9000h" }),
+    });
+    expect(res.status).toBe(200);
+    // 30-day ceiling = 720h.
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "720h"]);
+  });
+
+  it("PATCH rejects an unparseable interval with an actionable 400 — no silent fallback, no UPDATE", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specRefreshInterval: "soon" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toContain("daily"); // names the valid options
+    // The bad value never reached the database.
+    expect(findConfigUpdate()).toBeUndefined();
+  });
+
+  it("PATCH can update representation mode and refresh interval together", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ representationMode: "semantic-yaml", specRefreshInterval: "weekly" }),
+    });
+    expect(res.status).toBe(200);
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("representation_mode");
+    expect(update?.[0]).toContain("spec_refresh_interval");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "semantic-yaml", "weekly"]);
+  });
+
+  it("PATCH with an empty body is a 400 (at least one field required)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
 });

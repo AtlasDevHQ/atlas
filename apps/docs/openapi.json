@@ -52043,7 +52043,7 @@
         "tags": [
           "Admin — OpenAPI Datasources"
         ],
-        "summary": "Update the representation-mode toggle",
+        "summary": "Update non-secret install config (representation mode, spec refresh interval)",
         "parameters": [
           {
             "schema": {
@@ -52067,11 +52067,14 @@
                       "operation-graph",
                       "semantic-yaml"
                     ]
+                  },
+                  "specRefreshInterval": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), 'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
+                    "example": "daily"
                   }
-                },
-                "required": [
-                  "representationMode"
-                ]
+                }
               }
             }
           }

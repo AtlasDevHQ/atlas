@@ -52043,7 +52043,7 @@
         "tags": [
           "Admin — OpenAPI Datasources"
         ],
-        "summary": "Update the representation-mode toggle",
+        "summary": "Update non-secret install config (representation mode, spec refresh interval)",
         "parameters": [
           {
             "schema": {
@@ -52067,11 +52067,12 @@
                       "operation-graph",
                       "semantic-yaml"
                     ]
+                  },
+                  "specRefreshInterval": {
+                    "type": "string",
+                    "minLength": 1
                   }
-                },
-                "required": [
-                  "representationMode"
-                ]
+                }
               }
             }
           }

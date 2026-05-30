@@ -4,6 +4,7 @@ import { buildThemeInitScript } from "@/ui/hooks/theme-init-script";
 import { AuthGuard } from "@/ui/components/auth-guard";
 import { QueryProvider } from "@/ui/components/query-provider";
 import { ModeBanner } from "@/ui/components/mode-banner";
+import { StagingBanner } from "@/ui/components/staging-banner";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
@@ -24,6 +25,7 @@ export default function RootLayout({
       </head>
       <body className="flex h-dvh flex-col bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-background focus:text-foreground">Skip to content</a>
+        <StagingBanner />
         <QueryProvider>
           <NuqsAdapter>
             <AuthGuard>

@@ -85,6 +85,44 @@ describe("rest confirm token — mint/verify", () => {
     expect(v.ok).toBe(true);
   });
 
+  it("canonical hash is order-independent across ALL param buckets (path/query/header/body)", () => {
+    // A real banner re-serializing the whole RestWriteConfirmRequest can reorder
+    // keys in any bucket; canonicalize must make all of them equal, else a legit
+    // confirm false-rejects.
+    const token = mintRestConfirmToken(
+      binding({
+        params: {
+          path: { id: "p-1", org: "o-1" },
+          query: { filter: "x", limit: 10 },
+          header: { "X-A": "1", "X-B": "2" },
+          body: { a: 1, b: 2 },
+        },
+      }),
+    );
+    const v = verifyRestConfirmToken(
+      token,
+      binding({
+        params: {
+          body: { b: 2, a: 1 },
+          header: { "X-B": "2", "X-A": "1" },
+          query: { limit: 10, filter: "x" },
+          path: { org: "o-1", id: "p-1" },
+        },
+      }),
+    );
+    expect(v.ok).toBe(true);
+  });
+
+  it("query ARRAY values are order-significant (reordering them changes the binding)", () => {
+    const token = mintRestConfirmToken(binding({ params: { query: { ids: ["a", "b", "c"] } } }));
+    expect(verifyRestConfirmToken(token, binding({ params: { query: { ids: ["a", "b", "c"] } } })).ok).toBe(true);
+    // Arrays preserve order — a reordered array is a different request.
+    expect(verifyRestConfirmToken(token, binding({ params: { query: { ids: ["c", "b", "a"] } } }))).toEqual({
+      ok: false,
+      reason: "binding-mismatch",
+    });
+  });
+
   it("rejects a token whose params were tampered after minting (binding-mismatch)", () => {
     const token = mintRestConfirmToken(binding({ params: { body: { amount: 10 } } }));
     const v = verifyRestConfirmToken(token, binding({ params: { body: { amount: 1_000_000 } } }));
@@ -104,7 +142,12 @@ describe("rest confirm token — mint/verify", () => {
   it("rejects a token with a tampered signature (bad-signature)", () => {
     const token = mintRestConfirmToken(binding());
     const segs = token.split(".");
-    segs[2] = segs[2].slice(0, -1) + (segs[2].endsWith("A") ? "B" : "A");
+    // Tamper at the BYTE level — flipping the last base64url char can be a no-op
+    // (the final char of a 32-byte sig carries unused low bits), which would let a
+    // forged token verify; XORing a decoded byte is guaranteed to differ.
+    const sig = Buffer.from(segs[2], "base64url");
+    sig[0] ^= 0xff;
+    segs[2] = sig.toString("base64url");
     expect(verifyRestConfirmToken(segs.join("."), binding())).toEqual({ ok: false, reason: "bad-signature" });
   });
 
@@ -167,5 +210,25 @@ describe("rest confirm token — no signing key (fail loud)", () => {
 
   it("verify rejects with no-key (never validates without a key)", () => {
     expect(verifyRestConfirmToken("a.b.c", binding())).toEqual({ ok: false, reason: "no-key" });
+  });
+});
+
+describe("rest confirm token — key rotation (unknown kid)", () => {
+  beforeAll(() => {
+    clearKeyEnv();
+    process.env.ATLAS_ENCRYPTION_KEYS = "v2:rotation-key-two,v1:rotation-key-one";
+    _resetEncryptionKeyCache();
+  });
+  afterAll(() => restoreKeyEnv());
+
+  it("rejects a token signed by a key that's since been rotated out (bad-signature)", () => {
+    // Minted under the active key (v2)…
+    const token = mintRestConfirmToken(binding());
+    expect(verifyRestConfirmToken(token, binding()).ok).toBe(true);
+    // …operator rotates v2 out (only v1 remains). The token's kid=2 is now unknown,
+    // so verify can't reconstruct the signing key — rejected, never silently re-keyed.
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:rotation-key-one";
+    _resetEncryptionKeyCache();
+    expect(verifyRestConfirmToken(token, binding())).toEqual({ ok: false, reason: "bad-signature" });
   });
 });

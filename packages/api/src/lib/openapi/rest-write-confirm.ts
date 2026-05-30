@@ -24,8 +24,9 @@
  *
  *   - {@link mintRestConfirmToken} (staging) signs a token binding
  *     `(workspaceId, datasourceId, operationId, canonical-params, nonce, exp)`
- *     with the resolved encryption keyset (the same HMAC-over-`BETTER_AUTH_SECRET`
- *     -derived keyset `oauth-state-token.ts` uses — no new signing secret).
+ *     with the resolved encryption keyset (`ATLAS_ENCRYPTION_KEYS` →
+ *     `ATLAS_ENCRYPTION_KEY` → `BETTER_AUTH_SECRET`) — the same keyset
+ *     `oauth-state-token.ts` signs with, so no new signing secret is introduced.
  *   - {@link verifyRestConfirmToken} (confirm) re-derives that binding from the
  *     re-resolved request and rejects a missing / tampered / expired token, or
  *     one minted for a different workspace / datasource / operation / params.
@@ -299,9 +300,11 @@ export function verifyRestConfirmToken(
 
 /**
  * Burned-nonce store: `nonce → exp (unix seconds)`. Only holds nonces that were
- * actually consumed, so its size tracks confirms-in-the-last-TTL-window (human-
- * gated, tiny). An entry is evicted once past its token's `exp` — after which the
- * expiry check in {@link verifyRestConfirmToken} rejects the token anyway.
+ * actually consumed (human-gated confirms — tiny). Eviction is lazy / on-write:
+ * each {@link burnRestConfirmNonce} call first drops entries past their token's
+ * `exp`, so if confirm traffic stops, already-expired entries linger until the
+ * next burn — harmless, since the expiry check in {@link verifyRestConfirmToken}
+ * rejects an expired token regardless of whether its nonce is still in the store.
  *
  * In-process, like the rate-limit token bucket in `validate-rest-operation.ts`:
  * the single-use guarantee is exact WITHIN a process (the check-and-set is

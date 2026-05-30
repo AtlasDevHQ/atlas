@@ -186,6 +186,29 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         params,
       });
       if (!verification.ok) {
+        // `no-key` is a server/operator misconfiguration (no signing key configured),
+        // not an attacker-probeable token failure — surface it as a correlated 500,
+        // not the neutral client 400. (Near-unreachable in practice: mint fails loud
+        // on no-key, so a confirmable write can't have been staged without a key —
+        // reachable only if the key is removed/rotated-to-empty between stage+confirm.)
+        if (verification.reason === "no-key") {
+          log.error(
+            { orgId, datasource: datasource.id, operationId: input.operationId, requestId },
+            "Confirm rejected: no signing key configured for confirm tokens (server misconfiguration)",
+          );
+          return c.json(
+            {
+              error: "confirm_token_unverifiable",
+              message:
+                "The server can't verify write confirmations right now — its confirm-token signing key isn't configured. This is a server configuration issue, not a problem with your request.",
+              requestId,
+            },
+            500,
+          );
+        }
+        // Every attacker-probeable reason (missing / malformed / bad-signature /
+        // binding-mismatch / expired) maps to ONE neutral 400 — the specific reason
+        // is logged server-side but never returned, so it can't be probed.
         log.warn(
           { orgId, datasource: datasource.id, operationId: input.operationId, reason: verification.reason, requestId },
           "Confirm rejected: invalid confirm token",
@@ -243,6 +266,19 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
               "Confirm rejected: per-install request timeout is misconfigured (outside the cap)",
             );
             return c.json({ error: "timeout_misconfigured", message: error.message, requestId }, 500);
+          default: {
+            // Fail closed: a future RestValidationReason that isn't handled here must
+            // NOT fall through toward dispatch on this security boundary.
+            const _exhaustive: never = error.reason;
+            log.error(
+              { orgId, datasource: datasource.id, operationId: input.operationId, requestId, reason: String(_exhaustive) },
+              "Confirm rejected: unhandled validation reason (fail-closed)",
+            );
+            return c.json(
+              { error: "internal_error", message: "The write was rejected by an unhandled validation rule.", requestId },
+              500,
+            );
+          }
         }
       }
 

@@ -311,6 +311,16 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
             // A misconfigured per-install timeout is an operator concern, not an
             // agent one — surface it as a client_error so the model stops.
             return { status: "client_error", reason: "timeout", message: error.message };
+          default: {
+            // Fail closed: a future RestValidationReason that isn't handled must NOT
+            // fall through to dispatch — surface it as a client_error so the agent stops.
+            const _exhaustive: never = error.reason;
+            return {
+              status: "client_error",
+              reason: "unexpected",
+              message: `Operation "${operationId}" was rejected by an unhandled validation rule (${String(_exhaustive)}).`,
+            };
+          }
         }
       }
 

@@ -31,6 +31,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import type { RestWriteConfirmRequest } from "@atlas/api/lib/openapi/rest-write-confirm";
+import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 
 // --- Mocks (mirrors validate-sql.test.ts) ---
 
@@ -402,10 +403,13 @@ describe("POST /rest-operations/confirm — single-use token gate (#3007)", () =
         body: {},
       } as RestWriteConfirmRequest),
     });
-    // Flip the last char of the signature segment.
+    // Tamper at the BYTE level so the decoded signature is guaranteed to differ.
+    // (Flipping the last base64url char can be a no-op: the final char of a 32-byte
+    // sig carries unused low bits, so e.g. "A"↔"B" can decode to the SAME bytes.)
     const segs = good.split(".");
-    const last = segs[2];
-    segs[2] = last.slice(0, -1) + (last.endsWith("A") ? "B" : "A");
+    const sig = Buffer.from(segs[2], "base64url");
+    sig[0] ^= 0xff;
+    segs[2] = sig.toString("base64url");
     const res = await post(app, {
       datasourceId: "twenty",
       operationId: "createOnePerson",
@@ -467,6 +471,57 @@ describe("POST /rest-operations/confirm — single-use token gate (#3007)", () =
     expect(((await res.json()) as { error: string }).error).toBe("not_a_write");
     // Nothing dispatched — the read was refused before any upstream call.
     expect(twentyMock.requests.length).toBe(0);
+  });
+
+  it("is single-use under CONCURRENCY — two simultaneous replays yield one 200 + one 400, one write", async () => {
+    // The burn is a synchronous check-and-set with no `await` between verify and
+    // burn, so concurrent replays of the same token can't both reach the upstream.
+    const app = appWith([datasource({ writeAllowlist: new Set(["createOnePerson"]) })]);
+    const body = confirmBody({
+      datasourceId: "twenty",
+      operationId: "createOnePerson",
+      body: { name: { firstName: "Ada" } },
+    });
+    const [a, b] = await Promise.all([post(app, body), post(app, body)]);
+    expect([a.status, b.status].toSorted()).toEqual([200, 400]);
+    // Exactly one write reached the upstream.
+    const writes = twentyMock.matching("/rest/people").filter((r) => r.method === "POST");
+    expect(writes.length).toBe(1);
+  });
+
+  it("500s (confirm_token_unverifiable) when the server has no signing key — misconfig, not a client 400", async () => {
+    // A missing/rotated-to-empty signing key at confirm time is a SERVER fault — it
+    // surfaces as a correlated 500, never as the neutral "your confirmation is invalid"
+    // 400 (and still fail-closed: no write fires).
+    const app = appWith([datasource({ writeAllowlist: new Set(["createOnePerson"]) })]);
+    const saved = {
+      keys: process.env.ATLAS_ENCRYPTION_KEYS,
+      key: process.env.ATLAS_ENCRYPTION_KEY,
+      auth: process.env.BETTER_AUTH_SECRET,
+    };
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.BETTER_AUTH_SECRET;
+    _resetEncryptionKeyCache();
+    try {
+      const res = await post(app, {
+        datasourceId: "twenty",
+        operationId: "createOnePerson",
+        body: {},
+        token: "any.nonempty.token",
+      });
+      expect(res.status).toBe(500);
+      expect(((await res.json()) as { error: string }).error).toBe("confirm_token_unverifiable");
+      expect(twentyMock.requests.some((r) => r.method !== "GET")).toBe(false);
+    } finally {
+      if (saved.keys === undefined) delete process.env.ATLAS_ENCRYPTION_KEYS;
+      else process.env.ATLAS_ENCRYPTION_KEYS = saved.keys;
+      if (saved.key === undefined) delete process.env.ATLAS_ENCRYPTION_KEY;
+      else process.env.ATLAS_ENCRYPTION_KEY = saved.key;
+      if (saved.auth === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = saved.auth;
+      _resetEncryptionKeyCache();
+    }
   });
 
   it("REJECTS a token minted for a DIFFERENT workspace (binding mismatch, 400)", async () => {

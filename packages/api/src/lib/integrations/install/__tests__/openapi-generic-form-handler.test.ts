@@ -344,6 +344,26 @@ describe("OpenApiGenericFormInstallHandler — plaintext-credential warning", ()
     );
     expect(warnedPlaintext).toBe(false);
   });
+
+  it("does not warn for a credential-less install (auth_kind 'none'), even prod-like with no keyset", async () => {
+    // The guard is `data.auth_value && isPlaintextCredentialRisk()` — no credential
+    // means nothing lands in plaintext, so the warning must stay silent.
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    delete process.env.ATLAS_ENCRYPTION_KEY;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.ATLAS_DEPLOY_MODE;
+    process.env.NODE_ENV = "production";
+    _resetEncryptionKeyCache();
+
+    const handler = newHandler();
+    const result = await handler.validateConfig(WSID, validForm({ auth_kind: "none", auth_value: undefined }));
+
+    expect(result.credentialWritten).toBe(false);
+    const warnedPlaintext = mockLogWarn.mock.calls.some(
+      (c) => typeof c[1] === "string" && (c[1] as string).includes("stored in plaintext"),
+    );
+    expect(warnedPlaintext).toBe(false);
+  });
 });
 
 // ── base_url_override SSRF guard (#3006) ──────────────────────────────────────

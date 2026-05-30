@@ -72607,7 +72607,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Install complete — redirected to /admin/integrations. Success: `?installed=discord`. User cancel: `?error=discord&reason=authorization_denied`. JSON callers receive structured 4xx responses instead."
+            "description": "Install complete — redirected to /admin/integrations. Success: `?installed=discord`. User cancel: `?error=discord&reason=authorization_denied`. Chat-integration cap reached (browser caller): `?error=discord&reason=plan_limit_reached`. JSON callers receive structured 4xx/5xx responses instead."
           },
           "400": {
             "description": "Invalid state, user cancel, or missing guild_id",
@@ -72659,6 +72659,35 @@
               }
             }
           },
+          "429": {
+            "description": "Chat-integration cap reached for the workspace's plan tier: `plan_limit_exceeded` (JSON-Accept caller)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "limit"
+                  ]
+                }
+              }
+            }
+          },
           "501": {
             "description": "Discord install handler not registered",
             "content": {
@@ -72686,6 +72715,31 @@
           },
           "502": {
             "description": "Discord API unreachable while verifying the guild",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable: `billing_check_failed` (JSON-Accept caller)",
             "content": {
               "application/json": {
                 "schema": {
@@ -73182,7 +73236,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Install complete or failed in a recoverable way — redirected to /admin/integrations. Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. Hard failure (browser caller): `?error=<platform>&reason=<code>`. JSON callers receive 400/502 instead."
+            "description": "Install complete or failed in a recoverable way — redirected to /admin/integrations. Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. Hard failure (browser caller): `?error=<platform>&reason=<code>` (chat-integration cap reached → `reason=plan_limit_reached`). JSON callers receive 400/429/502/503 instead."
           },
           "400": {
             "description": "Invalid or expired state, or unknown platform (JSON-Accept caller)",
@@ -73293,6 +73347,35 @@
               }
             }
           },
+          "429": {
+            "description": "Chat-integration cap reached for the workspace's plan tier: `plan_limit_exceeded` (JSON-Accept caller)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "limit": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "limit"
+                  ]
+                }
+              }
+            }
+          },
           "501": {
             "description": "OAuth handler not registered",
             "content": {
@@ -73320,6 +73403,31 @@
           },
           "502": {
             "description": "Upstream Platform rejected the OAuth exchange (JSON-Accept caller)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable: `billing_check_failed` (JSON-Accept caller)",
             "content": {
               "application/json": {
                 "schema": {

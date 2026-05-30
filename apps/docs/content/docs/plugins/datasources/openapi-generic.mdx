@@ -47,6 +47,8 @@ When the agent decides to call an allowlisted write, `executeRestOperation` does
 
 The write fires only when the user clicks **Confirm write** — the request is POSTed to `/api/v1/rest-operations/confirm`, which re-validates the operation against the allowlist server-side before executing. The agent cannot self-confirm, and a non-allowlisted operation is refused at the confirm endpoint too (defense in depth). **Cancel** leaves the write un-run.
 
+The staged write carries a short-lived, server-signed, **single-use** confirm token binding it to that exact `(workspace, datasource, operation, parameters)`. The confirm endpoint verifies the token and **burns it** — so the human-in-the-loop step is enforced server-side, not just in the UI: a replayed, tampered, expired, or foreign-workspace confirm is rejected, and the same approval can never fire a second write. If a confirmation expires before the user acts, ask the agent to retry so it re-stages a fresh one. The token lifetime defaults to 10 minutes (`ATLAS_OPENAPI_CONFIRM_TTL_SECONDS`).
+
 <Callout type="warn">
 Prompting a write that is **not** allowlisted (e.g. "delete every Person") returns `writes_disabled` — the request never fires, and the agent is told not to claim it happened. Add the operation to `write_allowlist` to enable it.
 </Callout>

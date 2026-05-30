@@ -30,7 +30,11 @@ import {
   validateRestOperation,
   type RestOperationPolicy,
 } from "@atlas/api/lib/openapi/validate-rest-operation";
-import { confirmRequestToParams } from "@atlas/api/lib/openapi/rest-write-confirm";
+import {
+  confirmRequestToParams,
+  verifyRestConfirmToken,
+  burnRestConfirmNonce,
+} from "@atlas/api/lib/openapi/rest-write-confirm";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -45,6 +49,9 @@ const ConfirmRequestSchema = z.object({
   query: z.record(z.string(), z.union([queryScalar, z.array(queryScalar)])).optional(),
   header: z.record(z.string(), queryScalar).optional(),
   body: z.unknown().optional(),
+  // #3007: the single-use confirm token minted at staging. Required — a confirm
+  // POST without it is a malformed request (rejected by the validation hook).
+  token: z.string().min(1, "confirm token is required"),
 });
 
 const ConfirmResponseSchema = z.object({
@@ -82,7 +89,7 @@ const confirmRoute = createRoute({
       description: "Write executed (or upstream returned a non-2xx, surfaced as http_error)",
       content: { "application/json": { schema: ConfirmResponseSchema } },
     },
-    400: { description: "Invalid request / no active workspace", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid request / no active workspace / missing-invalid-expired-replayed confirm token / not a write", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden — writes disabled for this operation", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Datasource or operation not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -164,6 +171,35 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
       }
 
       const params = confirmRequestToParams(input);
+
+      // #3007: the single-use confirm gate. The staged write carries a server-
+      // signed token binding (workspace, datasource, operation, canonical params,
+      // nonce, exp). Verify it matches THIS re-resolved request before anything
+      // else — a missing, forged, expired, or workspace-/op-/param-mismatched
+      // token never reaches the upstream. The replay (nonce burn) check runs just
+      // before dispatch. The specific failure reason is logged but never returned:
+      // a uniform 400 keeps an attacker from probing which check tripped.
+      const verification = verifyRestConfirmToken(input.token, {
+        workspaceId: orgId,
+        datasourceId: input.datasourceId,
+        operationId: input.operationId,
+        params,
+      });
+      if (!verification.ok) {
+        log.warn(
+          { orgId, datasource: datasource.id, operationId: input.operationId, reason: verification.reason, requestId },
+          "Confirm rejected: invalid confirm token",
+        );
+        return c.json(
+          {
+            error: "confirm_token_invalid",
+            message:
+              "This write confirmation is missing, invalid, expired, or already used. Ask Atlas to retry the write so it can be re-staged.",
+          },
+          400,
+        );
+      }
+
       const policy: RestOperationPolicy = {
         workspaceId: orgId,
         datasourceId: datasource.id,
@@ -208,6 +244,42 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
             );
             return c.json({ error: "timeout_misconfigured", message: error.message, requestId }, 500);
         }
+      }
+
+      // #3007: keep /confirm write-only. A valid token can be minted for any
+      // binding (the mint is binding-agnostic), so even a well-signed token for a
+      // plain read is refused here — the confirm gate exists to fire writes the
+      // human approved, not to be a general dispatch endpoint.
+      if (!verdict.requiresConfirmation) {
+        log.warn(
+          { orgId, datasource: datasource.id, operationId: input.operationId, requestId },
+          "Confirm rejected: operation is a read (confirm endpoint is write-only)",
+        );
+        return c.json(
+          {
+            error: "not_a_write",
+            message: `Operation "${input.operationId}" is a read — the confirm endpoint only executes writes.`,
+          },
+          400,
+        );
+      }
+
+      // #3007: burn the nonce — single-use. Synchronous, with no `await` between
+      // verifyRestConfirmToken above and here, so two concurrent replays of the
+      // same token can't both reach the upstream (the first burns it; the second
+      // sees it burned and is rejected as a replay).
+      if (!burnRestConfirmNonce(verification.nonce, verification.expSeconds)) {
+        log.warn(
+          { orgId, datasource: datasource.id, operationId: input.operationId, requestId },
+          "Confirm rejected: confirm token already used (replay)",
+        );
+        return c.json(
+          {
+            error: "confirm_token_invalid",
+            message: "This write confirmation was already used. Ask Atlas to retry the write so it can be re-staged.",
+          },
+          400,
+        );
       }
 
       // Execute the confirmed write via the un-cached primitive (writes are

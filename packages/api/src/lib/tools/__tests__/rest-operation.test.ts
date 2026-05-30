@@ -29,14 +29,20 @@ let mock: TwentyMock;
 // blocks by default. A local test server is the "internal service" case the
 // operator opt-out exists for — enable it for this file and restore it after.
 const ORIGINAL_EGRESS_FLAG = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+// Staging an allowlisted write now mints a signed single-use confirm token (#3007),
+// which needs a signing key resolvable from the encryption keyset. Restore after.
+const ORIGINAL_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
 
 beforeAll(async () => {
   process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+  process.env.BETTER_AUTH_SECRET = "test-confirm-token-signing-secret-not-a-real-key";
   mock = await startTwentyMockServer();
 });
 afterAll(async () => {
   if (ORIGINAL_EGRESS_FLAG === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
   else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = ORIGINAL_EGRESS_FLAG;
+  if (ORIGINAL_AUTH_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
+  else process.env.BETTER_AUTH_SECRET = ORIGINAL_AUTH_SECRET;
   await mock.close();
 });
 beforeEach(() => {
@@ -231,6 +237,9 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(Object.keys(result).toSorted()).toEqual(
       ["confirm", "datasourceId", "datasourceName", "method", "operationId", "status", "summary"],
     );
+    // #3007: the staged write carries a single-use confirm token the banner forwards.
+    expect(typeof result.confirm.token).toBe("string");
+    expect(result.confirm.token.length).toBeGreaterThan(0);
   });
 
   it("blocks a write whose op is NOT in the allowlist even when others are", async () => {

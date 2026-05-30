@@ -90,14 +90,17 @@ export type OpenApiInstallQueryExecutor = (
 ) => Promise<ReadonlyArray<OpenApiInstallRow>>;
 
 /**
- * Default query: the workspace's non-archived `openapi-generic` installs.
+ * Default query: the workspace's non-archived REST datasource installs — the
+ * built-in `openapi-generic` row AND every data candidate (slice 6a, #3028),
+ * matched via `catalog_id = ANY($2)` over one code-resident array of catalog ids.
  * Lazily imports `internalQuery` so the resolver's static graph stays free of
  * the DB module (admin-route tests partial-mock it heavily).
  *
  * The `WHERE` clause is the load-bearing tenant-scope guard: every conjunct
- * (`workspace_id = $1`, `catalog_id = $2`, `pillar = 'datasource'`,
+ * (`workspace_id = $1`, `catalog_id = ANY($2)`, `pillar = 'datasource'`,
  * `status != 'archived'`) must hold, or the resolver leaks another tenant's
- * datasources / credentials. Every other test injects `deps.query` and so
+ * datasources / credentials. The `$2` array holds only built-in catalog
+ * constants (never client input). Every other test injects `deps.query` and so
  * bypasses this SQL — the `exec` seam lets a unit test drive it directly and
  * fail loudly if the scope or param order regresses (#3011).
  */

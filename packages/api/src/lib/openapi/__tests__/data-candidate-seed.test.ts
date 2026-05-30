@@ -78,4 +78,15 @@ describe("migration 0109 ↔ code alignment", () => {
     expect(sql).toContain("'stripe-data'");
     expect(sql).toContain("ON CONFLICT DO NOTHING");
   });
+
+  it("the migration's name + description match the STRIPE_DATA_CANDIDATE registry literal", () => {
+    // On a fresh DB the migration row is authoritative (it runs before the boot
+    // seed's `ON CONFLICT DO NOTHING`), so its name/description must not drift from
+    // the registry — else the catalog card copy differs by deploy age. SQL doubles
+    // a literal `'`, so escape before substring-matching.
+    const sql = migrationSql();
+    const esc = (s: string) => s.replace(/'/g, "''");
+    expect(sql).toContain(`'${esc(STRIPE_DATA_CANDIDATE.name)}'`);
+    expect(sql).toContain(esc(STRIPE_DATA_CANDIDATE.description));
+  });
 });

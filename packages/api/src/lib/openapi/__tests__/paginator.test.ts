@@ -197,6 +197,23 @@ const NEXT_CASES: NextCase[] = [
     response: ok({ object: "list", data: [{ notId: "x" }] }),
     expected: PAGE_DONE,
   },
+  {
+    title: "cursor(last-item): coerces a numeric last-item id to a string cursor",
+    config: {
+      strategy: "cursor",
+      itemsPath: "data",
+      cursorParam: "starting_after",
+      cursorFromLastItem: true,
+      cursorItemField: "id",
+      hasMorePath: "has_more",
+    },
+    request: { operationId: "GetCustomers", params: { query: { limit: 2 } } },
+    response: ok({ object: "list", data: [{ id: 41 }, { id: 42 }], has_more: true }),
+    expected: continueWith({
+      operationId: "GetCustomers",
+      params: { query: { limit: 2, starting_after: "42" } },
+    }),
+  },
 
   // ── offset ──────────────────────────────────────────────────────────
   {

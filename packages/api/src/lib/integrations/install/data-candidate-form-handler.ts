@@ -59,9 +59,11 @@ export const DataCandidateFormDataSchema = z
   .object({
     auth_value: z
       .string()
+      // Trim BEFORE min/max so a whitespace-only paste (e.g. "   ") is rejected by
+      // .min(1) rather than passing the length check and trimming to "" downstream.
+      .trim()
       .min(1, "auth_value is required")
-      .max(AUTH_VALUE_MAX, `auth_value must be ${AUTH_VALUE_MAX} characters or fewer`)
-      .transform((raw) => raw.trim()),
+      .max(AUTH_VALUE_MAX, `auth_value must be ${AUTH_VALUE_MAX} characters or fewer`),
     base_url_override: OptionalUrlSchema,
     display_name: z.string().trim().max(256).optional(),
   })

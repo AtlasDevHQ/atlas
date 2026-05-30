@@ -21,6 +21,8 @@
  *  - `cursorItemField`    (opt) — with `cursorFromLastItem`, the dot-path to the
  *                                 cursor field ON the last item, e.g. `"id"`.
  *                                 Omit to use the last item itself as the cursor.
+ *                                 A numeric id is coerced to its string form; any
+ *                                 other non-string value ends the walk fail-soft.
  *  - `hasMorePath`        (opt) — dot-path to a boolean "more pages" flag, e.g.
  *                                 `"pageInfo.hasNextPage"` / `"has_more"`. When set,
  *                                 the walk stops unless it is exactly `true`.
@@ -70,7 +72,17 @@ export const cursorStrategy: PaginationStrategyFactory = {
           const items = extractItems(response.body, itemsPath);
           if (items.length === 0) return PAGE_DONE;
           const lastItem = items[items.length - 1];
-          cursor = cursorItemField !== undefined ? dotGet(lastItem, cursorItemField) : lastItem;
+          const rawCursor =
+            cursorItemField !== undefined ? dotGet(lastItem, cursorItemField) : lastItem;
+          // The last-item cursor is commonly a numeric id (Stripe uses string ids
+          // like `cus_…`, but other vendors of this dialect number them). Coerce a
+          // finite number to its string form so the walk continues; anything else
+          // (object, null, NaN) falls through to the typeof guard below and ends
+          // the walk fail-soft rather than fetching a garbage cursor.
+          cursor =
+            typeof rawCursor === "number" && Number.isFinite(rawCursor)
+              ? String(rawCursor)
+              : rawCursor;
         } else {
           // `cursorPath` is non-undefined here: the non-last-item branch took the
           // `requireString` path above (fail-loud at create time otherwise).

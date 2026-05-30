@@ -21,6 +21,10 @@ describe("DataCandidateFormDataSchema", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it("rejects a whitespace-only auth_value (trim runs before min(1))", () => {
+    expect(DataCandidateFormDataSchema.safeParse({ auth_value: "   " }).success).toBe(false);
+  });
+
   it("rejects a locked field (openapi_url / auth_kind) via the strict schema", () => {
     expect(
       DataCandidateFormDataSchema.safeParse({ auth_value: "x", openapi_url: "https://evil/spec" })

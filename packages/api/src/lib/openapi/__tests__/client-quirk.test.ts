@@ -136,4 +136,48 @@ describe("executeOperationPaged — Stripe cursor walk (headline AC)", () => {
     // expand[] shaping applied on every page, including paginated follow-ups.
     for (const c of calls) expect(c).toContain("expand%5B%5D=data.subscriptions");
   });
+
+  it("sends the quirk's required headers on every page of a cursor walk", async () => {
+    const strategy = defaultPaginatorRegistry.resolve(STRIPE_DATA_CANDIDATE.pagination!);
+
+    const PAGES = 3;
+    const seenHeaders: Record<string, string>[] = [];
+    const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+      const href = typeof input === "string" ? input : input.toString();
+      const headers: Record<string, string> = {};
+      const h = init?.headers as Record<string, string> | undefined;
+      if (h) for (const [k, v] of Object.entries(h)) headers[k.toLowerCase()] = String(v);
+      seenHeaders.push(headers);
+      const after = new URL(href).searchParams.get("starting_after");
+      const pageIndex = after === null ? 0 : Number(after.split("-")[1]) + 1;
+      const data = [{ id: `cus-${pageIndex}-0` }];
+      return new Response(
+        JSON.stringify({ object: "list", data, has_more: pageIndex < PAGES - 1 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+
+    await executeOperationPaged(
+      stripeGraph,
+      "GetCustomers",
+      { query: { limit: 1 } },
+      { kind: "bearer", token: "sk_test_x" },
+      {
+        baseUrl: "https://api.stripe.com",
+        fetchImpl,
+        pagination: strategy,
+        // A required-header quirk (the Notion #3029 shape) threaded through the walk.
+        quirk: { requiredHeaders: { "Stripe-Version": "2024-06-20" } },
+        maxPages: 10,
+      },
+    );
+
+    expect(seenHeaders).toHaveLength(PAGES);
+    // The required header is present on the first AND every paginated follow-up,
+    // alongside the bearer credential.
+    for (const h of seenHeaders) {
+      expect(h["stripe-version"]).toBe("2024-06-20");
+      expect(h["authorization"]).toBe("Bearer sk_test_x");
+    }
+  });
 });

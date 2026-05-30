@@ -46,6 +46,7 @@ import {
 import {
   applyQuirkHeaders,
   applyQuirkQueryShaping,
+  type QueryValue,
   type VendorQuirk,
 } from "./vendor-quirk";
 
@@ -277,11 +278,7 @@ function joinUrl(baseUrl: string, pathSegment: string): string {
 }
 
 /** Append a query value; arrays explode (repeat the key); `undefined` is dropped. */
-function appendQueryValue(
-  search: URLSearchParams,
-  key: string,
-  value: string | number | boolean | ReadonlyArray<string | number | boolean> | undefined,
-): void {
+function appendQueryValue(search: URLSearchParams, key: string, value: QueryValue): void {
   if (value === undefined) return;
   if (Array.isArray(value)) {
     for (const item of value) search.append(key, String(item));

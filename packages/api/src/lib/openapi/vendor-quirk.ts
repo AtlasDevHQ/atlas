@@ -29,7 +29,7 @@
  */
 
 /** A query value as the client models it — scalar, exploding array, or dropped. */
-type QueryValue =
+export type QueryValue =
   | string
   | number
   | boolean

@@ -79,9 +79,10 @@ export class OpenApiProbeError extends Error {
  * its {@link EgressBlockedError} as {@link OpenApiProbeError} `unreachable`, so
  * callers surface the same actionable 400 they already map probe failures to.
  *
- * IP/CIDR-based (via `isSafeExternalUrl`): it does not resolve DNS, so a public
- * name that resolves to a private IP is out of scope at this layer — that
- * redirect/rebind case is caught at fetch time by {@link guardedFetch}.
+ * IP/CIDR-based (via `assertBaseUrlAllowed` → `isSafeExternalUrl`): it does not
+ * resolve DNS, so a public name that resolves to a private IP is out of scope at
+ * this layer — that redirect/rebind case is caught at fetch time by
+ * {@link guardedFetch}.
  */
 export function assertSpecUrlAllowed(specUrl: string): void {
   try {

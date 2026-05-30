@@ -52,9 +52,10 @@ import {
  * Execute one operation from the graph against its target.
  *
  * @throws {OpenApiClientError} for client-side faults (unknown operation,
- *   missing base URL, missing path param, missing auth placement) and transport
- *   faults (timeout, network). A non-2xx HTTP response is NOT an error — it is
- *   returned as the result.
+ *   missing base URL, missing path param, missing auth placement, `blocked-egress`
+ *   — the resolved base URL or a redirect hop resolves to a private/internal
+ *   address, SSRF guard) and transport faults (timeout, network). A non-2xx HTTP
+ *   response is NOT an error — it is returned as the result.
  */
 export async function executeOperation(
   graph: OperationGraph,

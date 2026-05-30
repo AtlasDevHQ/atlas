@@ -179,7 +179,7 @@ describe("assertSpecUrlAllowed (SSRF guard, #3006)", () => {
     const fetchImpl = (async (url: string) => {
       hops++;
       // The up-front guard passes (public host); the upstream then 302s to metadata.
-      if (url.startsWith("https://public.example.com")) {
+      if (new URL(url).hostname === "public.example.com") {
         return new Response(null, { status: 302, headers: { location: "https://169.254.169.254/" } });
       }
       return new Response(JSON.stringify(MOCK_OPENAPI_SPEC), { status: 200 });

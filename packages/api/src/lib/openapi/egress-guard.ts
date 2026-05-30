@@ -36,22 +36,28 @@ const log = createLogger("openapi.egress-guard");
 export const MAX_REDIRECTS = 5;
 
 /**
- * A host-side fetch target was blocked by the SSRF guard. `url` is the offending
- * URL (or redirect target) — safe to log, never contains a credential (auth is
- * carried in headers, not the URL, except apiKey-query, which is on the request
- * the caller built, not this string).
+ * A host-side fetch target was blocked by the SSRF guard. The offending URL is
+ * **redacted to its host** (`hostname[:port]`) before it touches the message or
+ * the public {@link EgressBlockedError.host} field, because the URL the client
+ * builds carries the credential for apiKey-query auth (`?api_key=…`) in its query
+ * string — and this error's `message` is propagated to the agent (the
+ * `blocked-egress` tool result) and to logs. Redacting at construction keeps the
+ * "no secrets in responses / logs" invariant (CLAUDE.md) structural: it is
+ * impossible to build an `EgressBlockedError` that leaks a path/query secret.
  */
 export class EgressBlockedError extends Error {
-  readonly url: string;
+  /** Host of the blocked target (`hostname[:port]`), already redacted — never the path/query. */
+  readonly host: string;
   constructor(url: string, detail?: string) {
+    const host = hostForLog(url);
     super(
-      `Refusing to fetch "${url}": it resolves to a private, loopback, link-local, or internal ` +
+      `Refusing to fetch host "${host}": it resolves to a private, loopback, link-local, or internal ` +
         `address (or is not HTTPS). Point the datasource at a public HTTPS host, or set ` +
         `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow internal targets (self-hosted only).` +
         (detail ? ` ${detail}` : ""),
     );
     this.name = "EgressBlockedError";
-    this.url = url;
+    this.host = host;
   }
 }
 
@@ -91,17 +97,90 @@ function isRedirectStatus(status: number): boolean {
 }
 
 /**
+ * Request headers forwarded across an origin boundary on a redirect. Everything
+ * NOT in this set — `Authorization`, `Cookie`, `Proxy-Authorization`, and any
+ * apiKey-header (whatever its configured name) — is dropped on a cross-origin
+ * hop so the workspace credential never reaches a host other than the original
+ * target. (We strip by allow-list rather than deny-list precisely because the
+ * apiKey header name is operator-configurable and unknown to this layer.)
+ */
+const SAFE_CROSS_ORIGIN_HEADERS: ReadonlySet<string> = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "content-type",
+  "user-agent",
+]);
+
+/** Origin of `url`, or `""` when unparseable (treated as "not the original origin" — fail-closed). */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    // intentionally ignored: an unparseable URL has no comparable origin.
+    return "";
+  }
+}
+
+/**
+ * Build the `RequestInit` for the next redirect hop, applying the two transforms
+ * `fetch`'s own redirect following would do but that `redirect: "manual"` turns
+ * off:
+ *
+ *  - **Credential scoping.** The credential headers are forwarded ONLY when the
+ *    next hop is the original target origin (`toOriginalOrigin`); any other
+ *    origin gets the {@link SAFE_CROSS_ORIGIN_HEADERS} subset, so a public→public
+ *    redirect can't harvest the workspace's `Authorization` / apiKey header.
+ *  - **Method/body downgrade (RFC 9110 §15.4).** 303 → GET; a 301/302 on a POST
+ *    → GET (universal user-agent behavior); 307/308 preserve. Downgrades are
+ *    cumulative (read from `prevInit`); a body is dropped when the method becomes
+ *    GET/HEAD. Headers are sourced from `originalInit` so the credential is
+ *    re-attached if the chain redirects back to the original origin.
+ */
+function nextHopInit(
+  prevInit: RequestInit,
+  originalInit: RequestInit,
+  status: number,
+  toOriginalOrigin: boolean,
+): RequestInit {
+  let method = (prevInit.method ?? "GET").toUpperCase();
+  let body = prevInit.body;
+  if (status === 303 || ((status === 301 || status === 302) && method === "POST")) {
+    method = "GET";
+    body = undefined;
+  }
+  if (method === "GET" || method === "HEAD") body = undefined;
+
+  const source = new Headers(originalInit.headers);
+  const headers = new Headers();
+  source.forEach((value, key) => {
+    if (toOriginalOrigin || SAFE_CROSS_ORIGIN_HEADERS.has(key.toLowerCase())) {
+      headers.set(key, value);
+    }
+  });
+  if (body === undefined) {
+    headers.delete("content-type");
+    headers.delete("content-length");
+  }
+
+  return { ...originalInit, method, headers, body, redirect: "manual" };
+}
+
+/**
  * Fetch `url` with the SSRF guard enforced at every hop. Validates the initial
  * URL, issues the request with `redirect: "manual"`, and on a 3xx re-validates
  * the resolved `Location` host against {@link assertBaseUrlAllowed} *before*
  * following — so a public→internal redirect (the classic SSRF TOCTOU) is
  * rejected even though the up-front check passed. Caps depth at `maxRedirects`.
  *
- * The same `init` (method, headers, body, signal) is replayed on each hop: the
- * security goal is host re-validation, not byte-perfect HTTP redirect method
- * semantics. The caller's `AbortSignal` (typically `AbortSignal.timeout`) bounds
- * the whole chain. Throws {@link EgressBlockedError} when any hop is blocked;
- * transport errors propagate from the underlying `fetch`.
+ * Each redirect hop's `RequestInit` is rebuilt by {@link nextHopInit}: the
+ * workspace credential is forwarded only to the original target origin (a
+ * cross-origin redirect drops it — `redirect: "manual"` disables the native
+ * cross-origin `Authorization` stripping `fetch` would otherwise do), and the
+ * method/body follow the RFC 9110 §15.4 redirect rules. The caller's
+ * `AbortSignal` (typically `AbortSignal.timeout`) bounds the whole chain. Throws
+ * {@link EgressBlockedError} when any hop is blocked or the `Location` is
+ * malformed; transport errors propagate from the underlying `fetch`.
  */
 export async function guardedFetch(
   url: string,
@@ -110,14 +189,16 @@ export async function guardedFetch(
 ): Promise<Response> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const maxRedirects = options.maxRedirects ?? MAX_REDIRECTS;
+  const originalOrigin = originOf(url);
 
   let currentUrl = url;
+  let currentInit: RequestInit = { ...init, redirect: "manual" };
   for (let hop = 0; hop <= maxRedirects; hop++) {
     // Re-validate immediately before every request leaves the box — this is the
     // "final host" check the up-front guard cannot make for redirect targets.
     assertBaseUrlAllowed(currentUrl);
 
-    const response = await fetchImpl(currentUrl, { ...init, redirect: "manual" });
+    const response = await fetchImpl(currentUrl, currentInit);
     if (!isRedirectStatus(response.status)) return response;
 
     const location = response.headers.get("location");
@@ -133,7 +214,13 @@ export async function guardedFetch(
         `Upstream redirected to a malformed Location (${err instanceof Error ? err.message : String(err)}).`,
       );
     }
-    log.debug({ from: hostForLog(currentUrl), to: hostForLog(nextUrl), hop }, "guardedFetch following redirect");
+
+    const toOriginalOrigin = originalOrigin !== "" && originOf(nextUrl) === originalOrigin;
+    currentInit = nextHopInit(currentInit, init, response.status, toOriginalOrigin);
+    log.debug(
+      { from: hostForLog(currentUrl), to: hostForLog(nextUrl), hop, crossOrigin: !toOriginalOrigin },
+      "guardedFetch following redirect",
+    );
     currentUrl = nextUrl;
   }
 

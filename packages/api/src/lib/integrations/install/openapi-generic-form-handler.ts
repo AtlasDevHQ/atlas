@@ -222,8 +222,8 @@ export class OpenApiGenericFormInstallHandler implements FormBasedInstallHandler
     }
 
     // ── 2b. SSRF guard for base_url_override ────────────────────────
-    // The override becomes the operations base URL the agent later POSTs to,
-    // host-side, via `executeRestOperation`. It's admin-supplied, so block
+    // The override becomes the operations base URL the agent later sends requests
+    // to, host-side, via `executeRestOperation`. It's admin-supplied, so block
     // private/internal targets via the shared chokepoint (the spec URL itself is
     // guarded inside `probeSpec`). The guard is ON in every deploy mode;
     // self-hosted operators opt OUT via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS (#3006).

@@ -449,7 +449,7 @@ describe("executeOperation — SSRF egress guard (#3006)", () => {
     let hops = 0;
     const fetchImpl = (async (url: string) => {
       hops++;
-      if (url.startsWith("https://public.example.com")) {
+      if (new URL(url).hostname === "public.example.com") {
         return new Response(null, { status: 302, headers: { location: "https://10.0.0.5/internal" } });
       }
       return new Response("should-not-reach", { status: 200 });

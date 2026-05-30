@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import {
   assertBaseUrlAllowed,
   guardedFetch,
+  hostForLog,
   isInternalEgressAllowed,
   EgressBlockedError,
   MAX_REDIRECTS,
@@ -82,7 +83,7 @@ describe("guardedFetch", () => {
     const hosts: string[] = [];
     const fetchImpl = (async (url: string) => {
       hosts.push(new URL(url).host);
-      if (url.startsWith("https://a.example.com")) {
+      if (new URL(url).hostname === "a.example.com") {
         return new Response(null, { status: 302, headers: { location: "https://b.example.com/final" } });
       }
       return new Response("done", { status: 200 });
@@ -97,7 +98,7 @@ describe("guardedFetch", () => {
     let hops = 0;
     const fetchImpl = (async (url: string) => {
       hops++;
-      if (url.startsWith("https://public.example.com")) {
+      if (new URL(url).hostname === "public.example.com") {
         return new Response(null, { status: 302, headers: { location: "https://169.254.169.254/latest/" } });
       }
       return new Response("should-not-reach", { status: 200 });
@@ -143,5 +144,87 @@ describe("guardedFetch", () => {
       new Response(null, { status: 304 })) as unknown as typeof globalThis.fetch;
     const res = await guardedFetch("https://public.example.com/x", {}, { fetchImpl });
     expect(res.status).toBe(304);
+  });
+
+  it("throws EgressBlockedError when the redirect Location is malformed (fail closed)", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const fetchImpl = (async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "ht!tp://::::" }, // unparseable even against the base
+      })) as unknown as typeof globalThis.fetch;
+    await expect(guardedFetch("https://public.example.com/x", {}, { fetchImpl })).rejects.toBeInstanceOf(
+      EgressBlockedError,
+    );
+  });
+
+  it("strips the credential headers on a cross-origin redirect (public→public), keeps them same-origin", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const authByHost: Record<string, string | null> = {};
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      const host = new URL(url).hostname;
+      authByHost[host] = new Headers(init?.headers).get("authorization");
+      if (host === "a.example.com") {
+        // first an in-origin hop, then bounce to a different public origin
+        return new URL(url).pathname === "/start"
+          ? new Response(null, { status: 302, headers: { location: "https://a.example.com/next" } })
+          : new Response(null, { status: 302, headers: { location: "https://b.example.com/final" } });
+      }
+      return new Response("done", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const res = await guardedFetch(
+      "https://a.example.com/start",
+      { headers: { Authorization: "Bearer SECRET", accept: "application/json" } },
+      { fetchImpl },
+    );
+    expect(res.status).toBe(200);
+    // Same-origin hops keep the credential; the cross-origin hop to b.example.com must not see it.
+    expect(authByHost["a.example.com"]).toBe("Bearer SECRET");
+    expect(authByHost["b.example.com"]).toBeNull();
+  });
+
+  it("downgrades a 303 to GET and drops the body on the next hop", async () => {
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    let secondHopMethod = "";
+    let secondHopHadBody = false;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname === "/post") {
+        return new Response(null, { status: 303, headers: { location: "https://api.example.com/result" } });
+      }
+      secondHopMethod = (init?.method ?? "GET").toUpperCase();
+      secondHopHadBody = init?.body != null;
+      return new Response("ok", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const res = await guardedFetch(
+      "https://api.example.com/post",
+      { method: "POST", body: JSON.stringify({ a: 1 }), headers: { "content-type": "application/json" } },
+      { fetchImpl },
+    );
+    expect(res.status).toBe(200);
+    expect(secondHopMethod).toBe("GET"); // 303 always becomes GET
+    expect(secondHopHadBody).toBe(false); // and drops the body
+  });
+});
+
+describe("hostForLog", () => {
+  it("returns host only — never the path or query (which can carry an apiKey-query secret)", () => {
+    expect(hostForLog("https://10.0.0.5/v1/things?api_key=SECRET")).toBe("10.0.0.5");
+    expect(hostForLog("https://api.example.com:8443/x?token=abc")).toBe("api.example.com:8443");
+  });
+
+  it("returns <unparseable> for a malformed URL (never the raw string)", () => {
+    expect(hostForLog("ht!tp://::::")).toBe("<unparseable>");
+  });
+});
+
+describe("EgressBlockedError redaction", () => {
+  it("does not leak an apiKey-query secret into the message or the host field", () => {
+    const err = new EgressBlockedError("https://169.254.169.254/latest?api_key=SUPER_SECRET");
+    expect(err.host).toBe("169.254.169.254");
+    expect(err.message).not.toContain("SUPER_SECRET");
+    expect(err.message).not.toContain("api_key");
+    expect(err.message).toContain("169.254.169.254");
   });
 });

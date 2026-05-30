@@ -183,7 +183,7 @@ function buildDatasource(
   const requestTimeoutMs = parseRequestTimeoutMs(decrypted.request_timeout_ms, installId);
 
   // Resolve-side SSRF chokepoint (#3006): the operations base URL the agent
-  // POSTs to — an admin override OR the spec-derived `servers[0].url` — must
+  // sends requests to — an admin override OR the spec-derived `servers[0].url` — must
   // pass the same guard install/rediscover apply. A public spec that declared an
   // internal `servers[0].url` would otherwise produce a credentialed host-side
   // request to internal infra. Fail-soft (skip + log), matching this resolver's

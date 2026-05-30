@@ -61,6 +61,42 @@ function isBlockedHostname(host: string): boolean {
   );
 }
 
+/** Expand an IPv6 literal to its eight 16-bit groups, or `null` if malformed. */
+function expandIPv6Groups(ipv6: string): number[] | null {
+  const halves = ipv6.split("::");
+  if (halves.length > 2) return null;
+  const parse = (s: string): number[] =>
+    s.length === 0 ? [] : s.split(":").map((g) => Number.parseInt(g, 16));
+  const head = parse(halves[0] ?? "");
+  const tail = halves.length === 2 ? parse(halves[1] ?? "") : [];
+  const groups =
+    halves.length === 1 ? head : [...head, ...new Array(8 - head.length - tail.length).fill(0), ...tail];
+  if (groups.length !== 8 || groups.some((g) => !Number.isInteger(g) || g < 0 || g > 0xffff)) return null;
+  return groups;
+}
+
+/**
+ * Extract the IPv4 address embedded in the low 32 bits of an IPv4-compatible
+ * (`::a.b.c.d`, deprecated RFC 4291) or NAT64 (`64:ff9b::a.b.c.d`, RFC 6052)
+ * IPv6 literal, or `null`. The WHATWG parser canonicalizes both to compressed
+ * hex (`::a9fe:a9fe`), so we expand the groups rather than scan for a dotted
+ * quad. `net.BlockList` only canonicalizes the IPv4-*mapped* form (`::ffff:/96`)
+ * against the IPv4 subnets — so that prefix is intentionally NOT handled here
+ * (the BlockList already catches it); these two wrappers slip past it. Re-testing
+ * the embedded IPv4 against the IPv4 ranges is defense-in-depth so an internal
+ * IPv4 can't be smuggled through an IPv6 wrapper. Loopback/unspecified
+ * (`::`, `::1`) are left to the IPv6 ranges (returned as `null`).
+ */
+function extractEmbeddedIPv4(ipv6: string): string | null {
+  const g = expandIPv6Groups(ipv6);
+  if (!g) return null;
+  const highZero = g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
+  const isCompatible = highZero && !(g[6] === 0 && g[7] <= 1); // exclude :: and ::1
+  const isNat64 = g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0;
+  if (!isCompatible && !isNat64) return null;
+  return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+}
+
 /**
  * Validates that a user-supplied URL is safe for server-side requests.
  * Blocks non-HTTPS schemes, internal hostnames, and any address in a
@@ -88,7 +124,9 @@ export function isSafeExternalUrl(url: string): boolean {
   }
   if (parsed.protocol !== "https:") return false;
 
-  const host = parsed.hostname.toLowerCase();
+  // Normalize FQDN trailing dots ("metadata.google.internal." resolves to the
+  // same name) so the hostname denylist can't be bypassed with a trailing dot.
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, "");
   if (host.length === 0) return false;
   if (isBlockedHostname(host)) return false;
 
@@ -96,9 +134,16 @@ export function isSafeExternalUrl(url: string): boolean {
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 
   if (net.isIPv4(bare)) return !PRIVATE_BLOCKLIST.check(bare, "ipv4");
-  // `check(_, "ipv6")` covers pure IPv6 ranges AND IPv4-mapped addresses, which
-  // BlockList canonicalizes back to IPv4 and tests against the IPv4 subnets.
-  if (net.isIPv6(bare)) return !PRIVATE_BLOCKLIST.check(bare, "ipv6");
+  if (net.isIPv6(bare)) {
+    // `check(_, "ipv6")` covers pure IPv6 ranges AND IPv4-mapped addresses, which
+    // BlockList canonicalizes back to IPv4 and tests against the IPv4 subnets.
+    if (PRIVATE_BLOCKLIST.check(bare, "ipv6")) return false;
+    // Re-test any IPv4 embedded in an IPv4-compatible / NAT64 wrapper against the
+    // IPv4 ranges — BlockList does not canonicalize those (see extractEmbeddedIPv4).
+    const embedded = extractEmbeddedIPv4(bare);
+    if (embedded && PRIVATE_BLOCKLIST.check(embedded, "ipv4")) return false;
+    return true;
+  }
 
   // Not an IP literal — a DNS name we deliberately do not resolve.
   return true;

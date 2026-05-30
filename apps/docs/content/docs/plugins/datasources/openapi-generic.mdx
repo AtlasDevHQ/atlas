@@ -126,7 +126,7 @@ Install-form fields (Admin → Connections):
 | `auth_value` | — | Bearer token, API key, or `username:password`. Encrypted at rest. |
 | `auth_header_name` | — | Header name for `apikey-header`, e.g. `X-API-Key` |
 | `auth_param_name` | — | Query param for `apikey-query`, e.g. `api_key` |
-| `base_url_override` | — | When the spec's `servers[0].url` is wrong (dev/staging) |
+| `base_url_override` | — | When the spec's `servers[0].url` is wrong (dev/staging). **Security:** the configured `auth_value` is sent to whatever host this resolves to — only point `base_url_override` at a host the same credential is valid for, or you risk leaking the credential to an unintended host. |
 | `write_allowlist` | — | JSON array of `operationId`s permitted to write. Empty = read-only (default). |
 | `side_effecting_operations` | — | JSON array of `operationId`s whose GET/HEAD **mutates** state — forced through the write allowlist + confirm path. Empty = method-only classification (default). See [Side-effecting GETs](#side-effecting-gets). |
 | `display_name` | — | Friendly name shown in Admin → Connections |

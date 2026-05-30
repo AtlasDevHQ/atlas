@@ -145,6 +145,16 @@ export interface PagedExecuteOptions extends ExecuteOptions {
    * (non-GET/HEAD) is NEVER cacheable regardless of caller, and on a read the
    * caller may only opt OUT (pass `cacheable: false`) — it can never force a
    * write into the cache. Any `onCacheFault` hook on the binding passes through.
+   *
+   * MULTI-TENANT WIRING CONTRACT (#3010 / #2970): this cache is keyed by
+   * {@link PageCacheBinding.identity} (`{ workspaceId, pluginInstallId }`). When
+   * the L2 store is finally wired (no production caller passes `cache` today —
+   * `executeOperationPaged` is dormant), `identity.workspaceId` MUST be populated
+   * from the request-context org id (the authenticated tenant), NEVER from
+   * client/tool input — a caller-supplied workspaceId is a cross-tenant cache-
+   * poisoning vector (read another tenant's cached pages, or flush theirs). Add a
+   * cross-tenant regression test alongside that wiring (mirrors the scoped
+   * graph-cache test in `probe.test.ts`).
    */
   readonly cache?: PageCacheBinding;
 }

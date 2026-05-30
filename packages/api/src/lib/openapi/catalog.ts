@@ -196,11 +196,12 @@ export const OPENAPI_GENERIC_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
  * lightweight fields are denormalized for the detail page so it can list the
  * operation surface without rebuilding the graph on every read.
  *
- * `probedAt` is an ISO-8601 string — it doubles as the in-process graph-cache
- * key so a "Rediscover schema" re-probe invalidates the cached graph.
+ * `probedAt` is an ISO-8601 string — it's the trailing component of the
+ * in-process graph-cache key (`${workspaceId}:${installId}:${probedAt}`) so a
+ * "Rediscover schema" re-probe (which bumps it) lands under a fresh key.
  */
 export interface OpenApiSnapshot {
-  /** ISO-8601 timestamp of the probe. Also the in-process graph cache key. */
+  /** ISO-8601 timestamp of the probe. Trailing component of the graph-cache key. */
   readonly probedAt: string;
   /** Spec `info.title`, for the card/header. */
   readonly title: string;
@@ -366,6 +367,25 @@ export function parseSideEffectingOperations(raw: unknown, installId?: string): 
   }
   return ops;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+//  Per-install numeric overrides — rate limit + request timeout
+//
+//  FORWARD SEAM (#3009): the two parsers below READ `rate_limit_per_minute` /
+//  `request_timeout_ms` off the decrypted install config, surface them on
+//  {@link import("./datasource").RestDatasource}, and `validateRestOperation`
+//  already enforces them (per-op token bucket + the timeout cap). But Atlas
+//  ships NO write surface for them today: they're absent from
+//  {@link OPENAPI_GENERIC_CONFIG_SCHEMA}, the install form
+//  (`openapi-generic-form-handler.ts`), the admin PATCH route, and migration
+//  0108 — so in practice both resolve to `undefined` (the defaults apply) and the
+//  validator's cap branches are exercised only by tests / a hand-written config
+//  row. The read side is kept wired (mirrors how `representation.ts` keeps
+//  `pythonCompositionEnabled` as a dormant seam): lighting it up is a purely
+//  additive change — add the two keys to the schema + a form field + a PATCH
+//  branch — with no parser/validator rework. Until then this is intentional dead
+//  config, not an oversight.
+// ─────────────────────────────────────────────────────────────────────
 
 /** Coerce a positive-integer config override (calls/min, ms, …) or `undefined`. */
 function parsePositiveIntConfig(raw: unknown): number | undefined {

@@ -32,15 +32,14 @@ import {
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
   isValidSnapshot,
-  narrowSupportedAuthKind,
   parseRateLimitPerMinute,
   parseRequestTimeoutMs,
   parseSideEffectingOperations,
   parseWriteAllowlist,
 } from "./catalog";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
-import { buildResolvedAuth, snapshotToGraph } from "./probe";
-import type { OperationGraph, ResolvedAuth } from "./types";
+import { resolveAuthFromDecryptedConfig, snapshotToGraph } from "./probe";
+import type { OperationGraph } from "./types";
 
 const log = createLogger("openapi.workspace-datasource");
 
@@ -125,6 +124,7 @@ function resolveBaseUrl(
 
 /** Build a single {@link RestDatasource} from a decrypted install row, or `null` to skip. */
 function buildDatasource(
+  workspaceId: string,
   installId: string,
   decrypted: Record<string, unknown>,
 ): RestDatasource | null {
@@ -141,22 +141,20 @@ function buildDatasource(
   }
 
   const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
-  const rawAuthKind = typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none";
-  // Validate the kind read back from JSONB against the executable set: a drifted
-  // or hand-edited row could carry the deferred `oauth2` (slice 6 #2930) OR an
-  // outright unrecognized value — both narrow to `null` here and skip, rather
-  // than passing a garbage string through to a buildResolvedAuth throw.
-  const authKind = narrowSupportedAuthKind(rawAuthKind);
-  if (!authKind) {
+  // Narrow + build the credential from the decrypted JSONB via the glue shared
+  // with the rediscover route. A drifted / hand-edited row could carry the
+  // deferred `oauth2` (slice 6 #2930) OR an outright unrecognized value — both
+  // resolve to `ok: false` and skip here, rather than passing a garbage string
+  // through to a buildResolvedAuth throw.
+  const authResult = resolveAuthFromDecryptedConfig(decrypted);
+  if (!authResult.ok) {
     log.warn(
-      { installId, authKind: rawAuthKind },
+      { installId, authKind: authResult.rawAuthKind },
       "OpenAPI install uses an unsupported or deferred auth kind — skipping (oauth2 lands in slice 6)",
     );
     return null;
   }
-  const authValue = typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined;
-  const authHeaderName = typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined;
-  const authParamName = typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined;
+  const auth = authResult.auth;
   const baseUrlOverride = typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
   const displayName =
     typeof decrypted.display_name === "string" && decrypted.display_name.length > 0
@@ -164,10 +162,8 @@ function buildDatasource(
       : snapshot.title;
 
   let graph: OperationGraph;
-  let auth: ResolvedAuth;
   try {
-    graph = snapshotToGraph(installId, snapshot);
-    auth = buildResolvedAuth(authKind, authValue, authHeaderName, authParamName);
+    graph = snapshotToGraph(workspaceId, installId, snapshot);
   } catch (err) {
     log.warn(
       { installId, err: err instanceof Error ? err.message : String(err) },
@@ -248,7 +244,7 @@ function buildDatasourcesFromRows(
       );
       continue;
     }
-    const ds = buildDatasource(row.install_id, decrypted);
+    const ds = buildDatasource(workspaceId, row.install_id, decrypted);
     if (ds) out.push(ds);
   }
   return out;
@@ -281,10 +277,9 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
  * Resolve every installed REST datasource for a workspace. Returns `[]` when the
  * workspace has none AND — fail-soft — when the load itself fails (logged). This
  * never-rejects contract is depended on by the prompt-build path (`agent.ts`,
- * which must not fail a chat turn over a datasource blip), the Effect registry
- * (`registry.ts`, which wraps this in `Effect.promise`), and the python egress
- * thunk. A caller that must tell a load failure apart from an empty workspace
- * uses {@link resolveWorkspaceRestDatasourcesOrThrow} instead.
+ * which must not fail a chat turn over a datasource blip) and the python egress
+ * thunk (`tools/python.ts`). A caller that must tell a load failure apart from an
+ * empty workspace uses {@link resolveWorkspaceRestDatasourcesOrThrow} instead.
  */
 export async function resolveWorkspaceRestDatasources(
   workspaceId: string,

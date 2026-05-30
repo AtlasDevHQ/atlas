@@ -30,15 +30,15 @@ import {
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
   isValidSnapshot,
-  narrowSupportedAuthKind,
   type OpenApiSnapshot,
   type OpenApiAuthKind,
 } from "@atlas/api/lib/openapi/catalog";
 import {
-  buildResolvedAuth,
+  resolveAuthFromDecryptedConfig,
   probeSpec,
   buildSnapshot,
   snapshotToGraph,
+  invalidateInstallGraphCache,
   summarizeOperations,
   OpenApiProbeError,
 } from "@atlas/api/lib/openapi/probe";
@@ -272,7 +272,7 @@ adminOpenApiDatasources.openapi(detailRoute, async (c) =>
     let snapshotError = false;
     if (snapshot) {
       try {
-        operations = summarizeOperations(snapshotToGraph(installId, snapshot)).map((o) => ({
+        operations = summarizeOperations(snapshotToGraph(orgId, installId, snapshot)).map((o) => ({
           operationId: o.operationId,
           method: o.method,
           path: o.path,
@@ -326,26 +326,21 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
     if (!openapiUrl) {
       return c.json({ error: "bad_request", message: "Datasource has no spec URL to rediscover.", requestId }, 400);
     }
-    // A drifted row could carry the deferred oauth2 kind — surface an actionable
-    // 400 rather than letting buildResolvedAuth's exhaustiveness guard 500.
-    const rawAuthKind = (typeof decrypted.auth_kind === "string" ? decrypted.auth_kind : "none") as OpenApiAuthKind;
-    const authKind = narrowSupportedAuthKind(rawAuthKind);
-    if (!authKind) {
-      return c.json(
-        {
-          error: "bad_request",
-          message: "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable.",
-          requestId,
-        },
-        400,
-      );
+    // Narrow + build the credential via the glue shared with the workspace
+    // resolver. A drifted row could carry the deferred oauth2 kind (or garbage) —
+    // `ok: false` becomes an actionable 400 rather than letting buildResolvedAuth's
+    // exhaustiveness guard 500. Tailor the remediation: a deferred oauth2 row is
+    // "coming later"; any other unsupported/drifted kind needs the operator to fix
+    // the config, so don't tell them it's oauth2 when it isn't.
+    const authResult = resolveAuthFromDecryptedConfig(decrypted);
+    if (!authResult.ok) {
+      const message =
+        authResult.rawAuthKind === "oauth2"
+          ? "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable."
+          : `This datasource has an unsupported auth kind ("${authResult.rawAuthKind}") — fix its config before rediscovering.`;
+      return c.json({ error: "bad_request", message, requestId }, 400);
     }
-    const auth = buildResolvedAuth(
-      authKind,
-      typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined,
-      typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined,
-      typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined,
-    );
+    const auth = authResult.auth;
 
     let snapshot: OpenApiSnapshot;
     try {
@@ -366,6 +361,11 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
         WHERE workspace_id = $1 AND install_id = $2 AND catalog_id = $3 AND pillar = 'datasource'`,
       [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, JSON.stringify(snapshot)],
     );
+
+    // Drop the in-process graph cache for this install: the re-probe bumped
+    // `probedAt`, so the next resolve rebuilds under the fresh key and the now-
+    // orphaned prior-`probedAt` entry is reclaimed instead of leaking (#3009).
+    invalidateInstallGraphCache(orgId, installId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.probe,
@@ -453,6 +453,10 @@ adminOpenApiDatasources.openapi(deleteRoute, async (c) =>
     if (rows.length === 0) {
       return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
     }
+
+    // Reclaim the uninstalled datasource's cached graph(s) so a stale shape can't
+    // linger in-process after the row is gone (#3009).
+    invalidateInstallGraphCache(orgId, installId);
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.delete,

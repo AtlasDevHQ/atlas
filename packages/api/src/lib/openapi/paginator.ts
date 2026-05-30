@@ -410,13 +410,25 @@ export interface PageCacheIdentity {
 export interface PageCacheStore {
   get(key: string): Promise<CachedPage | undefined>;
   set(key: string, entry: CachedPage): Promise<void>;
-  /** The install's `cache_invalidated_at` watermark (epoch ms); `0` if never set. */
-  getWatermark(installId: string): Promise<number>;
-  /** Advance the watermark — entries cached at/before `at` become stale. */
-  bumpWatermark(installId: string, at: number): Promise<void>;
+  /**
+   * The install's `cache_invalidated_at` watermark (epoch ms); `0` if never set.
+   * `scopeKey` is the COMPOSITE flush scope {@link installCacheKey} mints —
+   * `${workspaceId}::${pluginInstallId}`, NOT a bare `install_id` (which is not
+   * globally unique). A Postgres-backed store (slice 2) MUST therefore key its
+   * watermark table on the composite (a composite PK or a `(workspace_id,
+   * plugin_install_id)` unique index) — keying on a bare `install_id` would let
+   * one workspace's "Rediscover schema" flush another workspace's pages.
+   */
+  getWatermark(scopeKey: string): Promise<number>;
+  /** Advance the watermark — entries cached at/before `at` become stale. See {@link getWatermark} on `scopeKey`. */
+  bumpWatermark(scopeKey: string, at: number): Promise<void>;
 }
 
-/** The flush scope key: one watermark per install. */
+/**
+ * The flush-scope key (the `scopeKey` watermark methods take): one watermark per
+ * `(workspace, install)`. Composite because `install_id` is not globally unique —
+ * see {@link PageCacheStore.getWatermark}.
+ */
 export function installCacheKey(identity: PageCacheIdentity): string {
   return `${identity.workspaceId}::${identity.pluginInstallId}`;
 }
@@ -489,13 +501,13 @@ export class InMemoryPageCacheStore implements PageCacheStore {
     return Promise.resolve();
   }
 
-  getWatermark(installId: string): Promise<number> {
-    return Promise.resolve(this.watermarks.get(installId) ?? 0);
+  getWatermark(scopeKey: string): Promise<number> {
+    return Promise.resolve(this.watermarks.get(scopeKey) ?? 0);
   }
 
-  bumpWatermark(installId: string, at: number): Promise<void> {
+  bumpWatermark(scopeKey: string, at: number): Promise<void> {
     // Monotonic: a stale clock can never lower an existing watermark.
-    this.watermarks.set(installId, Math.max(this.watermarks.get(installId) ?? 0, at));
+    this.watermarks.set(scopeKey, Math.max(this.watermarks.get(scopeKey) ?? 0, at));
     return Promise.resolve();
   }
 
@@ -699,11 +711,11 @@ async function fetchPage(
   const now = cache.now ?? Date.now;
   const ttlMs = cache.ttlMs ?? DEFAULT_PAGE_CACHE_TTL_MS;
   const key = derivePageCacheKey(cache.identity, request.operationId, request.params);
-  const installId = installCacheKey(cache.identity);
+  const scopeKey = installCacheKey(cache.identity);
 
   let lookup: [CachedPage | undefined, number];
   try {
-    lookup = await Promise.all([cache.store.get(key), cache.store.getWatermark(installId)]);
+    lookup = await Promise.all([cache.store.get(key), cache.store.getWatermark(scopeKey)]);
   } catch (err) {
     // Best-effort: a store read fault degrades to a live fetch (cache miss).
     reportCacheFault(cache, err);

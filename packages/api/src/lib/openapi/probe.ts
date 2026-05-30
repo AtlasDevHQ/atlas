@@ -26,6 +26,7 @@ import {
   type ResolvedAuth,
 } from "./types";
 import {
+  narrowSupportedAuthKind,
   type SupportedAuthKind,
   type OpenApiSnapshot,
   type DiscoveredOperationSummary,
@@ -145,6 +146,54 @@ export function buildResolvedAuth(
       throw new OpenApiProbeError("unparseable", `Unhandled auth kind: ${String(_exhaustive)}`);
     }
   }
+}
+
+/**
+ * The outcome of resolving auth from a decrypted `workspace_plugins.config` row.
+ * Discriminated on `ok` so callers handle the deferred/unsupported kind
+ * explicitly (skip + log on the resolve path, 400 on the rediscover route)
+ * instead of relying on a thrown-and-caught "unsupported kind".
+ */
+export type DecryptedAuthResult =
+  | { readonly ok: true; readonly auth: ResolvedAuth }
+  | { readonly ok: false; readonly rawAuthKind: string };
+
+/**
+ * Decrypt-glue shared by the two sites that build a {@link ResolvedAuth} from a
+ * decrypted install config — the workspace resolver
+ * (`workspace-datasource.ts`) and the admin rediscover route
+ * (`admin-openapi-datasources.ts`). Both read the same untyped JSONB fields
+ * (`auth_kind` / `auth_value` / `auth_header_name` / `auth_param_name`), narrow
+ * the kind through {@link narrowSupportedAuthKind}, and call
+ * {@link buildResolvedAuth}; the only divergence is how they react to an
+ * unsupported/deferred kind (skip vs 400), which is why this returns the
+ * discriminated {@link DecryptedAuthResult} rather than throwing.
+ *
+ * `ok: false` carries the raw kind string so the caller can log/surface it
+ * (the value is untyped at the trust boundary — it could be the deferred
+ * `oauth2` (slice 6 #2930) OR a drifted/hand-edited garbage value).
+ *
+ * An ABSENT `auth_kind` is a legitimate no-auth datasource (a public API) and
+ * resolves `ok: true` with `{ kind: "none" }`. But a PRESENT-but-non-string
+ * value is a drifted/corrupt row — surfaced as `ok: false` (stringified) rather
+ * than silently downgraded to no-auth, which would hide a misconfigured
+ * credential behind unauthenticated requests (CLAUDE.md: prefer errors over
+ * silent fallbacks).
+ */
+export function resolveAuthFromDecryptedConfig(
+  decrypted: Record<string, unknown>,
+): DecryptedAuthResult {
+  const rawAuthKind = decrypted.auth_kind;
+  if (rawAuthKind === undefined) return { ok: true, auth: { kind: "none" } };
+  if (typeof rawAuthKind !== "string") return { ok: false, rawAuthKind: String(rawAuthKind) };
+  const authKind = narrowSupportedAuthKind(rawAuthKind);
+  if (!authKind) return { ok: false, rawAuthKind };
+  const authValue = typeof decrypted.auth_value === "string" ? decrypted.auth_value : undefined;
+  const authHeaderName =
+    typeof decrypted.auth_header_name === "string" ? decrypted.auth_header_name : undefined;
+  const authParamName =
+    typeof decrypted.auth_param_name === "string" ? decrypted.auth_param_name : undefined;
+  return { ok: true, auth: buildResolvedAuth(authKind, authValue, authHeaderName, authParamName) };
 }
 
 /**
@@ -303,27 +352,74 @@ export function summarizeOperations(
 
 /**
  * In-process cache of the rebuilt {@link OperationGraph}, keyed by
- * `installId:probedAt`. The probe + normalize is the expensive,
- * credential-independent part; a 250KB Twenty spec rebuilt on every agent turn
- * would be wasteful. Keying on `probedAt` means a "Rediscover schema" re-probe
- * (which bumps `probedAt`) transparently invalidates the stale graph. Mirrors
- * the slice-1 `graphCache` rationale (cache the shape, never the credential).
+ * `${workspaceId}:${installId}:${probedAt}`. The probe + normalize is the
+ * expensive, credential-independent part; a 250KB Twenty spec rebuilt on every
+ * agent turn would be wasteful. Mirrors the slice-1 `graphCache` rationale
+ * (cache the shape, never the credential).
+ *
+ * **Why the `workspaceId` prefix (#3010):** `install_id` is NOT globally unique
+ * — the composite PK is `(workspace_id, catalog_id, install_id)`, and the schema
+ * permits human-readable ids (`prod-us`). Keying on `installId:probedAt` alone
+ * was safe only because the sole openapi-generic handler mints UUID install ids;
+ * a future non-UUID path (an `atlas.config.ts` plugins entry, the CLI seeder
+ * extended to REST, slice 6) could collide two workspaces' ids and serve one
+ * workspace's operation surface to another. The cached value is shape-only (no
+ * credential), so this is defense-in-depth — but it shares the page-L2 cache's
+ * workspace-prefixed scoping discipline ({@link installCacheKey} prefixes
+ * `${workspaceId}::…`) so neither cache can drift into a cross-tenant assumption.
+ * (The literal separators differ — single `:` here, `::` there — because the two
+ * are independent in-process namespaces; only the workspace-scoping is shared.)
+ *
+ * Keying on `probedAt` means a "Rediscover schema" re-probe (which bumps
+ * `probedAt`) lands under a fresh key; the now-orphaned prior key is dropped by
+ * {@link invalidateInstallGraphCache}, called from the rediscover + delete
+ * routes. Without that eviction the map would grow by one entry per rediscover
+ * (bounded by install × rediscover count, not install count).
  */
 const graphCache = new Map<string, OperationGraph>();
 
-/** Test seam — production never evicts (graphs are bounded by install count). */
+/** The composite cache key prefix for one install — see {@link graphCache}. */
+function graphCacheKeyPrefix(workspaceId: string, installId: string): string {
+  return `${workspaceId}:${installId}:`;
+}
+
+/** Test seam — drop every cached graph for hermetic isolation between tests. */
 export function __resetSnapshotGraphCacheForTests(): void {
   graphCache.clear();
 }
 
 /**
- * Rebuild the {@link OperationGraph} from a persisted snapshot, memoized per
- * `(installId, probedAt)`. Throws {@link OpenApiProbeError} `unparseable` if the
- * cached doc no longer parses (e.g. a snapshot written by an older builder) —
- * fail loud so a corrupt cache is diagnosable, never a silently empty surface.
+ * Evict every cached graph for one install across all `probedAt` revisions
+ * (prefix-delete on `${workspaceId}:${installId}:`). Called from the rediscover
+ * route (a re-probe bumps `probedAt`, orphaning the prior key) and the DELETE
+ * route (an uninstalled datasource's graph must not linger). The trailing `:` in
+ * the prefix is load-bearing: it stops `ds-1` from also matching `ds-10`.
+ *
+ * Scoped to `(workspaceId, installId)` so evicting one workspace's install never
+ * touches another workspace that happens to share the same (non-unique)
+ * `install_id` — the same isolation the {@link graphCache} key enforces (#3010).
  */
-export function snapshotToGraph(installId: string, snapshot: OpenApiSnapshot): OperationGraph {
-  const key = `${installId}:${snapshot.probedAt}`;
+export function invalidateInstallGraphCache(workspaceId: string, installId: string): void {
+  const prefix = graphCacheKeyPrefix(workspaceId, installId);
+  for (const key of graphCache.keys()) {
+    if (key.startsWith(prefix)) graphCache.delete(key);
+  }
+}
+
+/**
+ * Rebuild the {@link OperationGraph} from a persisted snapshot, memoized per
+ * `(workspaceId, installId, probedAt)`. Throws {@link OpenApiProbeError}
+ * `unparseable` if the cached doc no longer parses (e.g. a snapshot written by an
+ * older builder) — fail loud so a corrupt cache is diagnosable, never a silently
+ * empty surface. `workspaceId` is part of the key (not just `installId`) because
+ * `install_id` is not globally unique — see {@link graphCache}.
+ */
+export function snapshotToGraph(
+  workspaceId: string,
+  installId: string,
+  snapshot: OpenApiSnapshot,
+): OperationGraph {
+  const key = `${graphCacheKeyPrefix(workspaceId, installId)}${snapshot.probedAt}`;
   const cached = graphCache.get(key);
   if (cached) return cached;
 

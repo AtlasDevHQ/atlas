@@ -2198,3 +2198,34 @@ The store is an injected `PageCacheStore` interface (async, so the slice-2 Postg
 - **The mode is selectable per datasource**, threaded through `RestDatasource.representationMode` (env today, per-install config in slice 2) — the agent reads it off the resolved datasource, so slice 2's swap needs no agent-loop change.
 
 **Category:** Deep module + consumption discipline — narrow interface (one pure generator), broad implementation (the whole irregular surface of "turn an OpenAPI doc into entities"). It is simultaneously the generalization of a hardcoded reach (`getPersonRestSchema`, #2860) into a generic walk, and another consumer that reads `OperationGraph` rather than re-parsing — the win #72 boundary holding for a fourth consumer.
+
+---
+
+## 76. OpenAPI lib cohesion — dead Tag deletion, deduped auth glue, tenant-scoped graph cache (#3009 + #3010)
+
+**Date:** 2026-05-30
+**Issue:** #3009 (architecture cohesion) + #3010 (multi-tenant cache-keying defense-in-depth)
+**Branch:** refactor/openapi-cohesion-cache-keying-3009-3010
+
+**Problem:** The v0.0.2 global review surfaced four "code drifted from its declared shape" gaps in `lib/openapi/` plus one cache key that encoded an assumption the data model doesn't enforce — none a live bug, all maintainability/defense-in-depth:
+1. **Dead Effect Tag.** `registry.ts` shipped an `OpenApiDatasourceRegistry` `Context.Tag` + `Live` layer + two test-layer factories as the "Effect-facing handle" for the parallel REST registry — but every real consumer (`agent.ts`, `tools/rest-operation.ts`, `tools/python.ts`, `routes/rest-operations.ts`) calls the plain async resolver `resolveWorkspaceRestDatasources` directly. The Tag's only consumers were its own test and a re-export into `__test-utils__/layers.ts`. A whole DI seam with zero production load.
+2. **Duplicated auth glue.** The `decrypt → narrow auth_kind → buildResolvedAuth` config-plucking was copy-pasted across the workspace resolver (`workspace-datasource.ts`) and the admin rediscover route — the same four JSONB fields read the same way at two sites, diverging only in how they react to a deferred/garbage kind (skip vs 400).
+3. **Graph-cache key omitted `workspaceId`.** The process-global `graphCache` in `probe.ts` keyed on `installId:probedAt`, but `install_id` is NOT globally unique (composite PK `(workspace_id, catalog_id, install_id)`, human-readable ids permitted). Safe today only because the sole install path mints UUIDs; a future non-UUID path (atlas.config plugins entry, CLI seeder, slice 6) would silently serve one tenant's operation surface to another. The page-L2 cache already keyed composite — the two had drifted apart.
+4. **Graph cache never evicted.** `graphCache` only ever `.set()` — each "Rediscover schema" bumped `probedAt`, added a key, and orphaned the prior one forever. The comment claimed "bounded by install count"; the true bound was install × rediscover count.
+
+**Solution:**
+- **Deleted the dead Tag** (`registry.ts` + its test, −164 lines) and its `__test-utils__/layers.ts` re-exports. The plain resolver is the one resolution path; the `createOpenApiDatasourceMock` factory + the injected `deps.query` seam already give tests everything the Tag's test-layers did, without a DI wrapper no one provides.
+- **Extracted `resolveAuthFromDecryptedConfig(decrypted): DecryptedAuthResult`** into `probe.ts` (the natural home — it owns `buildResolvedAuth`, and importing `narrowSupportedAuthKind` from `catalog.ts` keeps the existing probe→catalog import direction, no cycle). Returns a discriminated union (`{ ok: true, auth, authKind } | { ok: false, rawAuthKind }`) rather than throwing, so each caller keeps its own reaction (resolver skips + logs, route 400s) over one shared parse.
+- **Threaded `workspaceId` into `snapshotToGraph(workspaceId, installId, snapshot)`** and keyed the cache on `${workspaceId}:${installId}:${probedAt}` — matching the page-L2 `${workspaceId}::${pluginInstallId}` scope. The resolver already had `workspaceId` in scope (`buildDatasourcesFromRows`); the detail route uses the authed `orgId`.
+- **Added `invalidateInstallGraphCache(workspaceId, installId)`** (scoped prefix-delete; the trailing `:` stops `ds-1` matching `ds-10`), called from the rediscover route (reclaim the orphaned prior-`probedAt` entry) and DELETE route (drop an uninstalled datasource's shape). Corrected the "never evicts" comment.
+- **Renamed the page-cache watermark param `installId` → `scopeKey`** with JSDoc that it's the composite `workspaceId::pluginInstallId` and a future Postgres watermark table MUST key composite (a bare `install_id` would let one tenant flush another's pages).
+- **Documented the dormant L2 wiring seam** (`client.ts`): when `#2970` wires `executeOperationPaged`, `identity.workspaceId` must come from request-context org id, never client input (cross-tenant poisoning vector) — with a cross-tenant regression test alongside.
+- **Forward-seam comment** for the write-less `rate_limit_per_minute` / `request_timeout_ms` config keys (read + validated, but no install-form/PATCH/schema write surface) — mirroring how `representation.ts` documents the dormant `pythonCompositionEnabled`. Intentional dead config, lighting it up is purely additive.
+
+**Impact:**
+- **−164 lines of dead code** (the unused Tag + its test); the remaining net-positive is the explicitly-requested forward-seam + cache-key-rationale documentation (consistent with the lib's heavy-JSDoc convention).
+- **One auth-resolution path** instead of two copy-pasted ones — a future auth field is read in one place.
+- **Cross-workspace shape-bleed is structurally impossible**, even on a future non-UUID install id — guarded by a regression test (two different specs, same `installId` + `probedAt`, distinct workspaces → distinct cached graphs, no operation bleed).
+- **The graph cache is now bounded by live install count**, not install × rediscover, and never serves an uninstalled datasource's shape.
+
+**Category:** Cohesion cleanup — remove a DI seam with no consumer, consolidate duplicated glue into one shared helper, and align two sibling caches on the same tenant-scoped key so neither can drift into a cross-tenant assumption.

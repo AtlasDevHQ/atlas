@@ -50,12 +50,6 @@ import {
   createPillarCatalogQueryTestLayer,
   type PillarCatalogQueryShape,
 } from "@atlas/api/lib/effect/pillar-catalog-query";
-import {
-  OpenApiDatasourceRegistry,
-  createOpenApiDatasourceTestLayer,
-  createOpenApiDatasourceRegistryLayer,
-  type OpenApiDatasourceRegistryShape,
-} from "@atlas/api/lib/openapi/registry";
 import { createConnectionTestLayer } from "../__mocks__/connection";
 
 // ── Re-exports for convenience ──────────────────────────────────────
@@ -67,22 +61,18 @@ export {
   createPluginTestLayer,
   createAnswerMeterTestLayer,
   createPillarCatalogQueryTestLayer,
-  createOpenApiDatasourceTestLayer,
-  createOpenApiDatasourceRegistryLayer,
   ConnectionRegistry,
   RequestContext,
   AuthContext,
   PluginRegistry,
   AnswerMeter,
   PillarCatalogQuery,
-  OpenApiDatasourceRegistry,
   type ConnectionRegistryShape,
   type RequestContextShape,
   type AuthContextShape,
   type PluginRegistryShape,
   type AnswerMeterShape,
   type PillarCatalogQueryShape,
-  type OpenApiDatasourceRegistryShape,
 };
 
 // ── Plugin registry test layer (real instance) ──────────────────────

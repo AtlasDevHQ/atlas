@@ -9,10 +9,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   buildResolvedAuth,
+  resolveAuthFromDecryptedConfig,
   probeSpec,
   buildSnapshot,
   summarizeOperations,
   snapshotToGraph,
+  invalidateInstallGraphCache,
   assertSpecUrlAllowed,
   OpenApiProbeError,
   __resetSnapshotGraphCacheForTests,
@@ -212,16 +214,134 @@ describe("buildSnapshot + summarizeOperations", () => {
 describe("snapshotToGraph", () => {
   const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
 
-  it("rebuilds the graph from a snapshot and memoizes by (installId, probedAt)", () => {
+  it("rebuilds the graph from a snapshot and memoizes by (workspaceId, installId, probedAt)", () => {
     const snap = buildSnapshot(MOCK_OPENAPI_SPEC, graph, "2026-05-29T00:00:00.000Z");
-    const g1 = snapshotToGraph("ds-1", snap);
-    const g2 = snapshotToGraph("ds-1", snap);
+    const g1 = snapshotToGraph("ws-1", "ds-1", snap);
+    const g2 = snapshotToGraph("ws-1", "ds-1", snap);
     expect(g1).toBe(g2); // same reference = cache hit
     expect(g1.operations.has("listWidgets")).toBe(true);
   });
 
   it("fail-loud (unparseable) on a corrupt cached doc", () => {
     const corrupt = { ...buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t"), doc: { not: "valid" } };
-    expect(() => snapshotToGraph("ds-corrupt", corrupt)).toThrow(OpenApiProbeError);
+    expect(() => snapshotToGraph("ws-1", "ds-corrupt", corrupt)).toThrow(OpenApiProbeError);
+  });
+
+  // The #3010 defense-in-depth regression guard: a process-global cache keyed on
+  // a non-globally-unique `install_id` would serve workspace A's operation
+  // surface to workspace B when both mint the SAME install_id (a future non-UUID
+  // install path). The workspaceId prefix makes that collision impossible.
+  it("scopes the cache by workspaceId — same installId + probedAt across two workspaces never collide (#3010)", () => {
+    // Two DIFFERENT specs (different operations), but SAME installId + SAME probedAt.
+    const specA = MOCK_OPENAPI_SPEC; // listWidgets / getWidget
+    const specB = {
+      openapi: "3.1.0",
+      info: { title: "Gadgets", version: "1.0.0" },
+      servers: [{ url: "https://gadgets.example.com/api" }],
+      paths: {
+        "/gadgets": {
+          get: { operationId: "listGadgets", responses: { "200": { description: "OK" } } },
+        },
+      },
+    };
+    const probedAt = "2026-05-29T00:00:00.000Z";
+    const snapA = buildSnapshot(specA, buildOperationGraph(specA), probedAt);
+    const snapB = buildSnapshot(specB, buildOperationGraph(specB), probedAt);
+
+    const gA = snapshotToGraph("ws-A", "shared-install-id", snapA);
+    const gB = snapshotToGraph("ws-B", "shared-install-id", snapB);
+
+    expect(gA).not.toBe(gB); // distinct cache entries — no cross-workspace bleed
+    expect(gA.operations.has("listWidgets")).toBe(true);
+    expect(gB.operations.has("listGadgets")).toBe(true);
+    // ws-B must NOT have received ws-A's cached shape.
+    expect(gB.operations.has("listWidgets")).toBe(false);
+  });
+});
+
+describe("invalidateInstallGraphCache", () => {
+  const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
+
+  it("evicts an install's cached graph so the next resolve rebuilds (#3009)", () => {
+    const snap = buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t1");
+    const g1 = snapshotToGraph("ws-1", "ds-1", snap);
+    expect(snapshotToGraph("ws-1", "ds-1", snap)).toBe(g1); // cached
+
+    invalidateInstallGraphCache("ws-1", "ds-1");
+
+    const g2 = snapshotToGraph("ws-1", "ds-1", snap);
+    expect(g2).not.toBe(g1); // rebuilt after eviction (fresh reference)
+  });
+
+  it("prefix-deletes every probedAt revision for the install (rediscover hygiene)", () => {
+    const gOld = snapshotToGraph("ws-1", "ds-1", buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t1"));
+    const gNew = snapshotToGraph("ws-1", "ds-1", buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t2"));
+
+    invalidateInstallGraphCache("ws-1", "ds-1");
+
+    expect(snapshotToGraph("ws-1", "ds-1", buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t1"))).not.toBe(gOld);
+    expect(snapshotToGraph("ws-1", "ds-1", buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t2"))).not.toBe(gNew);
+  });
+
+  it("is scoped to (workspaceId, installId) — never evicts another workspace's same installId", () => {
+    const snap = buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t1");
+    const g1 = snapshotToGraph("ws-1", "ds-1", snap);
+    const g2 = snapshotToGraph("ws-2", "ds-1", snap);
+
+    invalidateInstallGraphCache("ws-1", "ds-1");
+
+    expect(snapshotToGraph("ws-2", "ds-1", snap)).toBe(g2); // ws-2 untouched
+    expect(snapshotToGraph("ws-1", "ds-1", snap)).not.toBe(g1); // ws-1 rebuilt
+  });
+
+  it("does not evict a sibling install whose id is a prefix (the trailing `:` guard)", () => {
+    const snap = buildSnapshot(MOCK_OPENAPI_SPEC, graph, "t1");
+    const g1 = snapshotToGraph("ws-1", "ds-1", snap);
+    const g10 = snapshotToGraph("ws-1", "ds-10", snap);
+
+    invalidateInstallGraphCache("ws-1", "ds-1");
+
+    expect(snapshotToGraph("ws-1", "ds-10", snap)).toBe(g10); // ds-10 survives (not a ds-1 match)
+    expect(snapshotToGraph("ws-1", "ds-1", snap)).not.toBe(g1); // ds-1 evicted
+  });
+});
+
+describe("resolveAuthFromDecryptedConfig", () => {
+  it("builds a ResolvedAuth from a supported decrypted config (ok: true)", () => {
+    const result = resolveAuthFromDecryptedConfig({
+      auth_kind: "apikey-header",
+      auth_value: "k123",
+      auth_header_name: "X-My-Key",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.auth).toEqual({
+        kind: "apiKey",
+        value: "k123",
+        placement: { in: "header", name: "X-My-Key" },
+      });
+    }
+  });
+
+  it("defaults an ABSENT auth_kind to none (ok: true — a legitimate no-auth datasource)", () => {
+    const result = resolveAuthFromDecryptedConfig({});
+    expect(result).toEqual({ ok: true, auth: { kind: "none" } });
+  });
+
+  it("returns ok: false for a PRESENT-but-non-string auth_kind (drifted row, not a silent no-auth)", () => {
+    // The key distinction from the absent case above: a present-but-corrupt value
+    // must surface, not silently downgrade to no-auth (CLAUDE.md: prefer errors).
+    expect(resolveAuthFromDecryptedConfig({ auth_kind: 123 })).toEqual({ ok: false, rawAuthKind: "123" });
+    expect(resolveAuthFromDecryptedConfig({ auth_kind: null })).toEqual({ ok: false, rawAuthKind: "null" });
+  });
+
+  it("returns ok: false for the deferred oauth2 kind, carrying the raw value", () => {
+    const result = resolveAuthFromDecryptedConfig({ auth_kind: "oauth2" });
+    expect(result).toEqual({ ok: false, rawAuthKind: "oauth2" });
+  });
+
+  it("returns ok: false for a drifted / garbage auth_kind", () => {
+    const result = resolveAuthFromDecryptedConfig({ auth_kind: "totally-bogus" });
+    expect(result).toEqual({ ok: false, rawAuthKind: "totally-bogus" });
   });
 });

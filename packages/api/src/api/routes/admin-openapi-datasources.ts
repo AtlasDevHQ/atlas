@@ -165,7 +165,17 @@ const patchRoute = createRoute({
           schema: z
             .object({
               representationMode: z.enum(REPRESENTATION_MODES).optional(),
-              specRefreshInterval: z.string().min(1).optional(),
+              specRefreshInterval: z
+                .string()
+                .min(1)
+                .optional()
+                .openapi({
+                  description:
+                    "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), " +
+                    "'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). " +
+                    "Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
+                  example: "daily",
+                }),
             })
             .refine(
               (b) => b.representationMode !== undefined || b.specRefreshInterval !== undefined,

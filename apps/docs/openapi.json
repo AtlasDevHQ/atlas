@@ -52071,7 +52071,7 @@
                   "specRefreshInterval": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "Controls how often the OpenAPI spec is automatically refreshed. Accepts: 'off' (default, disables auto-refresh), named presets 'daily' or 'weekly', or custom interval '<N>h' where N is an integer between 1 and 720 hours. Out-of-range positive values are clamped to allowed bounds; invalid formats are rejected with an error.",
+                    "description": "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), 'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
                     "example": "daily"
                   }
                 }

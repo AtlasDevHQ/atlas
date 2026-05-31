@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.2",
+    title: "REST Datasources",
+    date: "2026-05-31",
+    summary:
+      "Atlas datasources are no longer SQL-only. A new generic OpenAPI primitive lets you connect any REST service that publishes an OpenAPI 3.x spec as a first-class, read-side datasource the agent can query in chat — right alongside your Postgres, MySQL, and warehouse connections. Install from Admin → Connections by pointing Atlas at a spec URL and supplying credentials (API key or OAuth2); Atlas discovers the available operations and the agent calls them through a new `executeRestOperation` tool, with pagination handled for you. Reads are the safe default — write operations are strictly opt-in, per endpoint, behind a confirm-before-write step — and an SSRF egress guard keeps every request scoped to the service you configured. Twenty, Stripe, GitHub, and Notion ship as ready-made connectors built on the same primitive.",
+    highlights: [
+      "Connect any OpenAPI/REST service as a datasource — point Atlas at an OpenAPI 3.x spec, add credentials, and the agent can query it in chat next to your SQL connections; install, rediscover, and toggle the operation representation from Admin → Connections",
+      "Ready-made connectors for Twenty, Stripe, GitHub, and Notion — thin wrappers over the generic primitive, each handling its own auth and vendor quirks (Stripe `expand[]`, Notion's required `Notion-Version` header, GitHub OAuth2)",
+      "Automatic pagination — cursor, offset, page, and link-header strategies are handled for you, with page-level caching so large result sets don't re-fetch",
+      "Read-safe by default, writes opt-in — every operation is validated before it runs; write endpoints require an explicit per-endpoint allowlist plus a confirm-before-write prompt before anything mutates",
+      "Credentials encrypted at rest + SSRF egress guard — API keys and OAuth tokens are stored encrypted, and requests are scoped to the configured base URL so a spec can't redirect Atlas at internal services",
+      "API-key and OAuth2 install paths — connect via a short credentials form or a full OAuth2 authorization flow, depending on the service",
+    ],
+  },
+  {
     version: "v0.0.1",
     title: "Release Process Bootstrap",
     date: "2026-05-29",

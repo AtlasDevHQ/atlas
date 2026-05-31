@@ -2,13 +2,13 @@
   "title": "Datasources",
   "pages": [
     "index",
+    "openapi-generic",
     "bigquery",
     "clickhouse",
     "duckdb",
     "mysql",
     "snowflake",
     "salesforce",
-    "obsidian-reader",
-    "openapi-generic"
+    "obsidian-reader"
   ]
 }

@@ -1,4 +1,4 @@
-import { CATEGORY_ROWS } from "./data";
+import { CATEGORY_ROWS, TOP_CATEGORY_QUESTION } from "./data";
 
 const YAML_LINES: ReadonlyArray<string> = [
   "name: Orders",
@@ -96,7 +96,7 @@ function YamlPane() {
   );
 }
 
-const QUESTION = "What's our top-performing category by GMV this month?";
+const QUESTION = TOP_CATEGORY_QUESTION;
 
 function AnswerPane() {
   return (
@@ -214,7 +214,7 @@ export function YamlSection() {
           The YAML format is the moat.
         </h2>
         <p className="m-0 text-base leading-[1.65] text-zinc-400">
-          Entities, dimensions, measures, joins, virtual dimensions, query patterns, glossary terms, and authoritative metrics — all in YAML, in your repo, code-reviewed in pull requests. Every field exists because an LLM needs it: <code className="font-mono text-zinc-300">sample_values</code> ground the agent in real data, <code className="font-mono text-zinc-300">glossary.status: ambiguous</code> forces clarifying questions, <code className="font-mono text-zinc-300">metrics.objective</code> picks <code className="font-mono text-zinc-300">MAX</code> vs <code className="font-mono text-zinc-300">MIN</code>.
+          Entities, dimensions, measures, joins, glossary terms, and authoritative metrics: all in YAML, in your repo, code-reviewed in pull requests. Every field exists because an LLM needs it. <code className="font-mono text-zinc-300">sample_values</code> ground the agent in real data, <code className="font-mono text-zinc-300">glossary.status: ambiguous</code> forces clarifying questions, <code className="font-mono text-zinc-300">metrics.objective</code> picks <code className="font-mono text-zinc-300">MAX</code> vs <code className="font-mono text-zinc-300">MIN</code>. The same semantic layer fronts REST/OpenAPI services too: Atlas reads their operation graph the way it reads your SQL entities, so databases and APIs answer through one model.
         </p>
       </header>
 

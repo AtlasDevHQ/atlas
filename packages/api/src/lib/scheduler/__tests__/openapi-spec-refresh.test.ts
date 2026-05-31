@@ -71,6 +71,17 @@ describe("lifecycle", () => {
     expect(isOpenApiSpecRefreshSchedulerRunning()).toBe(true);
     stopOpenApiSpecRefreshScheduler();
   });
+
+  it("falls back to the configured interval on a non-positive override (no hot loop)", () => {
+    // A 0 / negative / NaN interval would make setInterval fire continuously —
+    // start must clamp to the validated default rather than spin the event loop.
+    for (const bad of [0, -1000, Number.NaN]) {
+      startOpenApiSpecRefreshScheduler(bad);
+      expect(isOpenApiSpecRefreshSchedulerRunning()).toBe(true);
+      stopOpenApiSpecRefreshScheduler();
+      expect(isOpenApiSpecRefreshSchedulerRunning()).toBe(false);
+    }
+  });
 });
 
 describe("triggerOpenApiSpecRefreshCycle", () => {

@@ -474,46 +474,52 @@ export async function refreshSharedSpecsCycle(
   options: RefreshCycleOptions,
 ): Promise<SharedRefreshCycleResult> {
   const catalogIds = [...currentByCatalog.keys()];
-  const outcomes: SharedRefreshOutcome[] = [];
-  let notModified = 0;
-  let updated = 0;
-  let failed = 0;
 
-  for (const catalogId of catalogIds) {
-    const specUrl = options.specUrlFor(catalogId);
-    if (!specUrl) {
-      // A cached catalog with no resolvable spec URL is a registry drift — skip
-      // rather than refresh against a stale/guessed URL.
-      log.warn({ catalogId }, "Shared spec refresh: no spec URL for cached catalog — skipping");
-      continue;
-    }
-    try {
-      // `force: false` (the default) — the cycle does a CONDITIONAL GET (cheap
-      // 304) rather than an unconditional re-download. With the default cadence
-      // (interval ≫ TTL) every cached entry is past its window each cycle, so a
-      // real conditional GET fires; a `cache` short-circuit only happens if an
-      // operator sets the interval below the TTL, where the entry is genuinely
-      // still fresh — counted as "not modified" either way.
-      const result = await probeShared({
-        catalogId,
-        specUrl,
-        ...(options.probe ? { probe: options.probe } : {}),
-        ...(options.nowFn ? { nowFn: options.nowFn } : {}),
-      });
-      if (result.source === "network-304" || result.source === "cache") {
-        notModified++;
-        outcomes.push({ catalogId, kind: "not_modified" });
-      } else {
-        updated++;
-        outcomes.push({ catalogId, kind: "updated", version: result.identity.version });
+  // Probe every cached catalog CONCURRENTLY. The working set is a handful of
+  // DISTINCT public hosts (Stripe / GitHub / Notion CDNs), not one host per
+  // workspace — so there's no shared upstream rate limit to respect (the reason
+  // the BYOT cycle stays serial), and a slow/stuck upstream can't delay the
+  // others' refresh (no timeout amplification). Each `probeShared` touches only
+  // its own catalog's cache entries (keys are catalog-scoped), so concurrent
+  // calls never race on the shared maps. Each closure catches its own error and
+  // returns an outcome, so `Promise.all` never rejects; input order is preserved.
+  const settled = await Promise.all(
+    catalogIds.map(async (catalogId): Promise<SharedRefreshOutcome | null> => {
+      const specUrl = options.specUrlFor(catalogId);
+      if (!specUrl) {
+        // A cached catalog with no resolvable spec URL is a registry drift — skip
+        // (no outcome) rather than refresh against a stale/guessed URL.
+        log.warn({ catalogId }, "Shared spec refresh: no spec URL for cached catalog — skipping");
+        return null;
       }
-    } catch (err) {
-      failed++;
-      const message = err instanceof Error ? err.message : String(err);
-      log.warn({ catalogId, err: message }, "Shared spec refresh: per-catalog probe failed");
-      outcomes.push({ catalogId, kind: "failed", error: message });
-    }
-  }
+      try {
+        // `force: false` (the default) — a CONDITIONAL GET (cheap 304) rather than
+        // an unconditional re-download. With the default cadence (interval ≫ TTL)
+        // every cached entry is past its window each cycle, so a real conditional
+        // GET fires; a `cache` short-circuit only happens if an operator sets the
+        // interval below the TTL, where the entry is genuinely still fresh —
+        // counted as "not modified" either way.
+        const result = await probeShared({
+          catalogId,
+          specUrl,
+          ...(options.probe ? { probe: options.probe } : {}),
+          ...(options.nowFn ? { nowFn: options.nowFn } : {}),
+        });
+        return result.source === "network-200"
+          ? { catalogId, kind: "updated", version: result.identity.version }
+          : { catalogId, kind: "not_modified" };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn({ catalogId, err: message }, "Shared spec refresh: per-catalog probe failed");
+        return { catalogId, kind: "failed", error: message };
+      }
+    }),
+  );
+
+  const outcomes = settled.filter((o): o is SharedRefreshOutcome => o !== null);
+  const notModified = outcomes.filter((o) => o.kind === "not_modified").length;
+  const updated = outcomes.filter((o) => o.kind === "updated").length;
+  const failed = outcomes.filter((o) => o.kind === "failed").length;
 
   const result: SharedRefreshCycleResult = {
     inspected: catalogIds.length,

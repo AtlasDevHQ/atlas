@@ -82,29 +82,53 @@ export async function runOpenApiSpecRefreshCycle(): Promise<SharedRefreshCycleRe
 
 let _timer: ReturnType<typeof setInterval> | null = null;
 let _running = false;
+/** A still-running cycle, so a slow tick never overlaps the next one. */
+let _inFlight = false;
 
 function runCycleWithDefectGuard(): void {
-  runOpenApiSpecRefreshCycle().catch((err: unknown) => {
-    // The cycle catches per-catalog failures internally; this guard only fires
-    // on an unexpected defect (e.g. the registry import threw) so the loop
-    // survives and the next tick still runs.
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Shared OpenAPI spec refresh cycle defected past its internal catch",
-    );
-  });
+  // Overlap guard: a cycle does network I/O (conditional GETs). With the default
+  // 24h cadence overlap is impossible, but a misconfigured short interval — or a
+  // very slow upstream — could otherwise start a second cycle before the first
+  // finished, racing on the shared-cache pointers. Skip this tick if one is still
+  // in flight; the next tick picks the work back up.
+  if (_inFlight) {
+    log.debug("Shared OpenAPI spec refresh cycle still in flight — skipping this tick");
+    return;
+  }
+  _inFlight = true;
+  runOpenApiSpecRefreshCycle()
+    .catch((err: unknown) => {
+      // The cycle catches per-catalog failures internally; this guard only fires
+      // on an unexpected defect (e.g. the registry import threw) so the loop
+      // survives and the next tick still runs.
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Shared OpenAPI spec refresh cycle defected past its internal catch",
+      );
+    })
+    .finally(() => {
+      _inFlight = false;
+    });
 }
 
 /**
  * Start the shared OpenAPI spec refresh scheduler. Runs an initial cycle
  * immediately, then repeats at the configured interval. No-op if already running.
+ * A non-positive / non-finite `intervalMs` falls back to the configured default
+ * rather than hot-looping `setInterval`.
  */
 export function startOpenApiSpecRefreshScheduler(intervalMs?: number): void {
   if (_running) {
     log.debug("Shared OpenAPI spec refresh scheduler already running — skipping start");
     return;
   }
-  const interval = intervalMs ?? getSharedSpecRefreshIntervalMs();
+  // Validate the explicit override: a 0 / negative / NaN interval would make
+  // setInterval fire continuously. Fall back to the (already-validated) configured
+  // interval so a bad caller-supplied value can't spin the event loop.
+  const interval =
+    intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0
+      ? intervalMs
+      : getSharedSpecRefreshIntervalMs();
   _running = true;
   log.info({ intervalMs: interval }, "Starting shared OpenAPI spec refresh scheduler");
 

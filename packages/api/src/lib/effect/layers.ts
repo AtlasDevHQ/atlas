@@ -2402,6 +2402,27 @@ export function makeSchedulerLive(
             }),
           );
 
+          // Stop the shared OpenAPI spec refresh scheduler (#2970) symmetrically —
+          // clear its setInterval so the `unref()`'d handle is released and a
+          // test process (or a re-created ManagedRuntime) exits cleanly.
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { stopOpenApiSpecRefreshScheduler } = await import(
+                "@atlas/api/lib/scheduler/openapi-spec-refresh"
+              );
+              stopOpenApiSpecRefreshScheduler();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Failed to stop shared OpenAPI spec refresh scheduler",
+              );
+              return Effect.void;
+            }),
+          );
+
           log.info("Schedulers shut down via Effect scope");
         }),
       );

@@ -9,6 +9,8 @@ import {
   assertInvitationRoleAllowed,
   isTransportError,
   buildPlugins,
+  resolvePasskeyRpId,
+  DEFAULT_RP_ID,
 } from "../server";
 
 describe("Better Auth instance shape", () => {
@@ -187,5 +189,178 @@ describe("organization plugin wiring", () => {
     const plugins = buildPlugins();
     const org = plugins.find((p: { id?: string }) => p.id === "organization");
     expect(org).toBeDefined();
+  });
+});
+
+// #3045 — WebAuthn rpID silently defaulted to the prod domain on every deploy
+// whose ATLAS_RPID was unset, breaking passkeys with an opaque browser error
+// on staging / self-hosted custom domains / preview envs. The resolver derives
+// the rpID from the configured web origin when ATLAS_RPID is unset and fails
+// loud at boot when the effective rpID can't be valid for that origin.
+//
+// resolvePasskeyRpId takes (env, webOrigin) explicitly so these cases are pure
+// — no process.env / getWebOrigin() mutation, no shared-state leakage between
+// the subprocess-isolated test files.
+describe("resolvePasskeyRpId (#3045)", () => {
+  describe("ATLAS_RPID unset → derive from the web origin host", () => {
+    it("prod web origin derives app.useatlas.dev — unchanged from the legacy default, no passkey invalidation", () => {
+      expect(resolvePasskeyRpId({}, "https://app.useatlas.dev")).toBe("app.useatlas.dev");
+      // The pre-#3045 hardcoded default; deriving must reproduce it exactly so
+      // no enrolled prod passkey is invalidated.
+      expect(resolvePasskeyRpId({}, "https://app.useatlas.dev")).toBe(DEFAULT_RP_ID);
+    });
+
+    it("staging web origin derives app.staging.useatlas.dev (the value silently wrong before)", () => {
+      expect(resolvePasskeyRpId({}, "https://app.staging.useatlas.dev")).toBe(
+        "app.staging.useatlas.dev",
+      );
+    });
+
+    it("localhost dev origin derives localhost — passkeys now work locally without an explicit override", () => {
+      expect(resolvePasskeyRpId({}, "http://localhost:3000")).toBe("localhost");
+    });
+
+    it("an empty ATLAS_RPID is treated as unset (falls through to derive)", () => {
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "" }, "https://app.staging.useatlas.dev")).toBe(
+        "app.staging.useatlas.dev",
+      );
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "   " }, "https://app.staging.useatlas.dev")).toBe(
+        "app.staging.useatlas.dev",
+      );
+    });
+  });
+
+  describe("explicit ATLAS_RPID always overrides", () => {
+    it("explicit value wins over the derived origin host", () => {
+      // Origin host is app.useatlas.dev (what derivation would pick), but the
+      // operator pins the parent domain — the explicit value must win.
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "useatlas.dev" }, "https://app.useatlas.dev"),
+      ).toBe("useatlas.dev");
+    });
+
+    it("explicit value is trimmed", () => {
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "  app.useatlas.dev  " }, "https://app.useatlas.dev"),
+      ).toBe("app.useatlas.dev");
+    });
+  });
+
+  describe("registrable-domain suffix is valid", () => {
+    it("a parent domain of the origin host is accepted", () => {
+      // useatlas.dev is a registrable-domain suffix of app.staging.useatlas.dev.
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "useatlas.dev" }, "https://app.staging.useatlas.dev"),
+      ).toBe("useatlas.dev");
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "staging.useatlas.dev" }, "https://app.staging.useatlas.dev"),
+      ).toBe("staging.useatlas.dev");
+    });
+  });
+
+  describe("hostname comparison is case-insensitive (DNS)", () => {
+    it("a mixed-case explicit rpID is valid for a lowercase origin host — no false-positive fail-loud", () => {
+      // new URL().hostname lowercases the origin host; the operator-typed
+      // explicit value may carry case. The boot assertion must compare
+      // case-insensitively or it would wrongly refuse to boot a correctly
+      // configured deploy. The returned value is left verbatim (rpID stability).
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "App.UseAtlas.DEV" }, "https://app.useatlas.dev"),
+      ).toBe("App.UseAtlas.DEV");
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "UseAtlas.DEV" }, "https://app.staging.useatlas.dev"),
+      ).toBe("UseAtlas.DEV");
+    });
+
+    it("a mixed-case origin host derives a lowercase rpID (URL normalization is pinned)", () => {
+      // Locks in that derivation goes through new URL().hostname (which
+      // lowercases) — a future refactor to raw string slicing would silently
+      // shift the rpID and invalidate enrolled keys.
+      expect(resolvePasskeyRpId({}, "https://App.Staging.UseAtlas.DEV")).toBe(
+        "app.staging.useatlas.dev",
+      );
+    });
+  });
+
+  describe("invalid explicit rpID for the web origin → fail loud at boot", () => {
+    it("prod rpID on a staging origin throws an actionable error", () => {
+      expect(() =>
+        resolvePasskeyRpId({ ATLAS_RPID: "app.useatlas.dev" }, "https://app.staging.useatlas.dev"),
+      ).toThrow(/not valid for the configured web origin/);
+    });
+
+    it("error names both the rpID and the origin host, and how to fix it", () => {
+      try {
+        resolvePasskeyRpId({ ATLAS_RPID: "app.useatlas.dev" }, "https://app.staging.useatlas.dev");
+        throw new Error("expected resolvePasskeyRpId to throw");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        expect(message).toContain("app.useatlas.dev"); // the bad rpID
+        expect(message).toContain("app.staging.useatlas.dev"); // the origin host
+        expect(message).toContain("ATLAS_RPID"); // the env var to fix
+      }
+    });
+
+    it("an unrelated registrable domain throws (suffix without a dot boundary is not a match)", () => {
+      // "useatlas.dev" must NOT validate against "notuseatlas.dev" — a plain
+      // endsWith would falsely accept it; the dot-boundary check rejects it.
+      expect(() =>
+        resolvePasskeyRpId({ ATLAS_RPID: "useatlas.dev" }, "https://notuseatlas.dev"),
+      ).toThrow(/not valid for the configured web origin/);
+    });
+  });
+
+  describe("no web origin configured → legacy default, never a hard-fail", () => {
+    it("null web origin + ATLAS_RPID unset → legacy default, no throw", () => {
+      expect(resolvePasskeyRpId({}, null)).toBe(DEFAULT_RP_ID);
+    });
+
+    it("null web origin + explicit ATLAS_RPID → explicit wins, no assertion", () => {
+      // Self-hosted single-origin: nothing to validate against, so even an
+      // arbitrary explicit value is honored rather than rejected.
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, null)).toBe("auth.example.com");
+    });
+
+    it("unparseable web origin is treated as no-origin (no throw, no validation)", () => {
+      // An unparseable CORS/trusted-origin entry can't be validated against;
+      // the resolver logs at error level and degrades to the explicit/default
+      // value rather than crashing.
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, "not-a-url")).toBe(
+        "auth.example.com",
+      );
+      expect(resolvePasskeyRpId({}, "not-a-url")).toBe(DEFAULT_RP_ID);
+    });
+
+    it("scheme-less host:port origin parses to an empty host → no-origin, no throw", () => {
+      // "app.example.com:3000" parses as protocol "app.example.com:" with an
+      // empty hostname — not the validatable case, so validation is skipped
+      // (logged at error level) and an explicit-but-arbitrary value is honored
+      // rather than triggering a false fail-loud.
+      expect(resolvePasskeyRpId({}, "app.example.com:3000")).toBe(DEFAULT_RP_ID);
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, "localhost:3000")).toBe(
+        "auth.example.com",
+      );
+    });
+  });
+
+  describe("IP-literal origin → resolves but does not throw (passkeys can't work on an IP)", () => {
+    it("an IPv4 origin derives the IP rpID without throwing (suffix-equal), logged loud elsewhere", () => {
+      // WebAuthn rpIDs can't be IPs, so passkeys are effectively disabled here —
+      // but we must NOT throw (that would break non-passkey managed auth for a
+      // dev on an IP host, and there's no valid rpID to substitute).
+      expect(resolvePasskeyRpId({}, "http://127.0.0.1:3000")).toBe("127.0.0.1");
+      expect(resolvePasskeyRpId({}, "http://192.168.1.50:3000")).toBe("192.168.1.50");
+    });
+
+    it("an explicit IP rpID matching an IP origin resolves without throwing", () => {
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "127.0.0.1" }, "http://127.0.0.1:3000")).toBe(
+        "127.0.0.1",
+      );
+    });
+
+    it("localhost (a name, not an IP) derives normally", () => {
+      // Regression guard: the IP check must not catch the valid `localhost` rpID.
+      expect(resolvePasskeyRpId({}, "http://localhost:3000")).toBe("localhost");
+    });
   });
 });

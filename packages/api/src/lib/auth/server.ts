@@ -38,6 +38,11 @@ import {
   resolveCookiePrefix,
 } from "@atlas/api/lib/env-profile";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
+// rpID resolution lives in its own pure module so `startup.ts` can validate it
+// eagerly without importing better-auth (#3045). Re-exported here so the auth
+// surface (and its tests) keep a single import site.
+import { resolvePasskeyRpId } from "@atlas/api/lib/auth/rpid";
+export { resolvePasskeyRpId, DEFAULT_RP_ID } from "@atlas/api/lib/auth/rpid";
 import {
   assertInvitationRoleAllowed,
   dispatchInvitationEmail,
@@ -1454,12 +1459,18 @@ export function buildPlugins() {
   );
 
   // Passkeys — loaded unconditionally (see `twoFactor()` above for rationale:
-  // schema must persist for already-enrolled users). Changing `rpID` after
-  // enrollment invalidates every existing passkey, so the default is fixed
-  // and self-hosted overrides go through `ATLAS_RPID` / `ATLAS_RPNAME`.
+  // schema must persist for already-enrolled users). Changing the *effective*
+  // `rpID` after enrollment invalidates every existing passkey, so resolution
+  // is deliberately conservative — explicit `ATLAS_RPID` always wins, else we
+  // derive from the configured web origin's host (prod stays exactly
+  // `app.useatlas.dev`; staging becomes `app.staging.useatlas.dev` instead of
+  // silently inheriting prod's rpID), else the legacy default. The resolver
+  // also fails loud at boot if the effective rpID can't be valid for the web
+  // origin — turning an opaque browser-side "RP ID is invalid for this domain"
+  // into an actionable boot error. See `resolvePasskeyRpId`.
   plugins.push(
     passkey({
-      rpID: process.env.ATLAS_RPID ?? "app.useatlas.dev",
+      rpID: resolvePasskeyRpId(process.env, getWebOrigin()),
       rpName: process.env.ATLAS_RPNAME ?? "Atlas",
     }),
   );

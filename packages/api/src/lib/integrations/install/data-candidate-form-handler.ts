@@ -43,17 +43,19 @@ const AUTH_VALUE_MAX = 8192;
  * `raw.githubusercontent.com.` would not equal `raw.githubusercontent.com`, yet
  * DNS resolves them to the same host (Codex review, PR #3040). Compares the
  * hostname only (no port): the candidate's spec host is never a legitimate API
- * host for it on ANY port, so a port-varied form must be rejected too. Returns
- * `null` for an unparseable URL ⇒ no spurious match.
+ * host for it on ANY port, so a port-varied form must be rejected too.
+ *
+ * THROWS (does not swallow) on an unparseable URL — the spec-host check is a
+ * security gate, so it must fail CLOSED. A `catch { return null }` here would be
+ * the "false negative on a security check" anti-pattern CLAUDE.md forbids: an
+ * unparseable override would read as "no match" and slip the gate. In practice
+ * neither input can throw — `base_url_override` is already validated as a
+ * well-formed http(s) URL by {@link OptionalUrlSchema}, and the spec URL is a
+ * static candidate-registry constant — so this is defense-in-depth: if either
+ * ever became unparseable the install aborts loudly (500) rather than proceeding.
  */
-function normalizedHostname(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
-  } catch {
-    // intentionally ignored: an unparseable URL has no comparable host — the
-    // caller treats null as "no match" and lets the probe/SSRF guards handle it.
-    return null;
-  }
+function normalizedHostname(url: string): string {
+  return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
 }
 
 /**
@@ -61,12 +63,11 @@ function normalizedHostname(url: string): string | null {
  * `specUrl` (#3039) — used to reject a `base_url_override` that re-points at the
  * candidate's spec host. Both hostnames are normalized via
  * {@link normalizedHostname} so a trailing-dot / case-varied form can't bypass
- * the gate. An unparseable URL on either side ⇒ `false` (no spurious match).
+ * the gate; an unparseable URL on either side throws (fail closed), never a
+ * silent "no match".
  */
 function sharesHost(overrideUrl: string, specUrl: string): boolean {
-  const a = normalizedHostname(overrideUrl);
-  const b = normalizedHostname(specUrl);
-  return a !== null && b !== null && a === b;
+  return normalizedHostname(overrideUrl) === normalizedHostname(specUrl);
 }
 
 const OptionalUrlSchema = z

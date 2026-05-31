@@ -146,4 +146,83 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
     expect(probedHeaders[0]?.Authorization).toBeUndefined();
     expect(probedUrls[0]).not.toContain("sk_live_super_secret");
   });
+
+  it("rejects a base_url_override pointed at the locked spec host — never leaks the credential to the spec CDN (#3039)", async () => {
+    const { DataCandidateFormInstallHandler } = await import("../data-candidate-form-handler");
+    const { FormInstallValidationError } = await import("../email-form-handler");
+    const handler = new DataCandidateFormInstallHandler(STRIPE_DATA_CANDIDATE, {
+      idGenerator: () => "fixed-uuid",
+      now: () => "2026-05-30T00:00:00.000Z",
+      fetchImpl: (async (input: string | URL, init?: RequestInit) => {
+        probedUrls.push(typeof input === "string" ? input : input.toString());
+        const headers: Record<string, string> = {};
+        const h = init?.headers as Record<string, string> | undefined;
+        if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+        probedHeaders.push(headers);
+        return new Response(JSON.stringify(STRIPE_FIXTURE_SPEC), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    // The locked spec lives on raw.githubusercontent.com. An admin sets
+    // base_url_override to THAT host — which, under the #3034 gate's
+    // `baseUrlOverride ?? apiBaseUrl` precedence, would make specHost === apiHost
+    // and attach the secret key to the public spec-CDN fetch. The candidate's spec
+    // host is never a legitimate API host for it, so the override must be rejected.
+    let thrown: unknown;
+    try {
+      await handler.validateConfig("ws-1" as never, {
+        auth_value: "sk_live_super_secret",
+        base_url_override: "https://raw.githubusercontent.com/anything",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    // Rejected at validation with a field-level error on base_url_override.
+    expect(thrown).toBeInstanceOf(FormInstallValidationError);
+    expect(
+      (thrown as InstanceType<typeof FormInstallValidationError>).fieldErrors.base_url_override,
+    ).toBeDefined();
+
+    // The security invariant the precedence branch defeated: the secret key never
+    // reached the spec host — no probe fetch carried it in a header or the URL.
+    for (const headers of probedHeaders) expect(headers.Authorization).toBeUndefined();
+    for (const url of probedUrls) expect(url).not.toContain("sk_live_super_secret");
+  });
+
+  it("accepts a legitimate non-spec-host base_url_override (the gate is not over-broad)", async () => {
+    const { DataCandidateFormInstallHandler } = await import("../data-candidate-form-handler");
+    const handler = new DataCandidateFormInstallHandler(STRIPE_DATA_CANDIDATE, {
+      idGenerator: () => "fixed-uuid",
+      now: () => "2026-05-30T00:00:00.000Z",
+      fetchImpl: (async (input: string | URL, init?: RequestInit) => {
+        probedUrls.push(typeof input === "string" ? input : input.toString());
+        const headers: Record<string, string> = {};
+        const h = init?.headers as Record<string, string> | undefined;
+        if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+        probedHeaders.push(headers);
+        return new Response(JSON.stringify(STRIPE_FIXTURE_SPEC), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    // A regional API host (NOT the spec host) is a legitimate override — the install
+    // succeeds, the override is persisted, and the spec fetch still carries no
+    // credential (spec host ≠ override host, so the #3034 gate withholds it).
+    const result = await handler.validateConfig("ws-1" as never, {
+      auth_value: "sk_live_super_secret",
+      base_url_override: "https://api-eu.stripe.com",
+    });
+
+    expect(result.credentialWritten).toBe(true);
+    const insertCall = queryCalls.find((c) => c.sql.includes("INSERT INTO workspace_plugins"));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.params[3]).toContain("api-eu.stripe.com");
+    expect(probedHeaders[0]?.Authorization).toBeUndefined();
+  });
 });

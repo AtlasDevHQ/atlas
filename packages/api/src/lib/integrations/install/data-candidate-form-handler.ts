@@ -34,6 +34,24 @@ import type { FormBasedInstallHandler, InstallRecord } from "./types";
 /** Defensive upper bound on the credential — guards against pathological pastes. */
 const AUTH_VALUE_MAX = 8192;
 
+/**
+ * True iff two URLs share the same host (`hostname[:port]`, lowercased by the URL
+ * parser) — the exact-host comparison the #3034 probe gate uses
+ * ({@link import("../../openapi/probe").probeCredentialAllowed}). Used to reject a
+ * `base_url_override` that re-points at the candidate's locked spec host (#3039).
+ * An unparseable URL ⇒ `false` (no spurious match); both inputs are already
+ * URL-validated by the time this runs (the zod refine + the candidate registry).
+ */
+function sameHost(a: string, b: string): boolean {
+  try {
+    return new URL(a).host === new URL(b).host;
+  } catch {
+    // intentionally ignored: an unparseable URL has no comparable host — treat as
+    // "no match" and let the downstream probe/SSRF guards handle a malformed URL.
+    return false;
+  }
+}
+
 const OptionalUrlSchema = z
   .string()
   .transform((raw) => raw.trim())
@@ -95,6 +113,29 @@ export class DataCandidateFormInstallHandler implements FormBasedInstallHandler 
       throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
     }
     const data = parsed.data;
+
+    // Harden the #3034 host-match credential gate (#3039). A candidate's spec URL
+    // is LOCKED (raw.githubusercontent.com), and `persistOpenApiDatasourceInstall`
+    // resolves the gate's API host as `baseUrlOverride ?? apiBaseUrl`. So an admin
+    // who sets `base_url_override` to the candidate's OWN spec host would make
+    // specHost === apiHost — re-attaching the customer credential (e.g. sk_live_…)
+    // to the public spec-CDN fetch, defeating #3034 for this path. The candidate's
+    // spec host is a static spec location, never a legitimate API host for it (the
+    // executable API lives at `apiBaseUrl`), and an override pointed there would
+    // also misroute query-time requests — so reject it outright. The generic
+    // openapi-generic path has no locked spec, so this guard is candidate-only.
+    if (data.base_url_override && sameHost(data.base_url_override, this.candidate.openapiUrl)) {
+      throw FormInstallValidationError.fromZodFlatten({
+        fieldErrors: {
+          base_url_override: [
+            "Base URL override cannot point at this datasource's spec host — that is a static " +
+              "spec location, not an API host. Leave it blank to use the spec's declared API " +
+              "server, or set it to the real API host.",
+          ],
+        },
+        formErrors: [],
+      });
+    }
 
     // Delegate to the shared core, pre-filling the locked spec URL + auth kind
     // from the candidate registry. No forked install logic — same probe / encrypt

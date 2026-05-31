@@ -89,7 +89,7 @@ export const DATA_CANDIDATE_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
     required: true,
     secret: true,
     description:
-      "The API credential for this datasource (e.g. your Stripe secret key). Encrypted at rest.",
+      "The API credential for this datasource (e.g. a secret API key or access token). Encrypted at rest.",
   },
   {
     key: "base_url_override",
@@ -142,8 +142,65 @@ export const STRIPE_DATA_CANDIDATE: DataCandidate = {
   },
 };
 
+/**
+ * Notion — the second data candidate (#3029, slice 6b). The **required-static-
+ * header** proof: a per-vendor header (`Notion-Version`) that nothing else in the
+ * candidate set exercises and that NO part of the OpenAPI document can express as
+ * "send on every request". The spec models it as an OPTIONAL header parameter with
+ * a default; the generic client never auto-sends a param default, and the agent
+ * constructing a call won't set it — so it MUST be supplied by the declarative
+ * {@link VendorQuirk.requiredHeaders}, applied on every request (including every
+ * page of a cursor walk) with NO Notion-specific code branch. Dimensions:
+ *  - `bearer` auth (the Notion integration token, sent as `Authorization: Bearer …`),
+ *  - the required `Notion-Version` header (the dimension this candidate proves),
+ *  - cursor pagination via the existing `cursor` strategy — Notion's BODY-cursor
+ *    dialect: the response body carries `next_cursor` + a top-level `has_more`,
+ *    fed back on the `start_cursor` query param (the strategy's `cursorPath` +
+ *    `hasMorePath`, a DIFFERENT dialect than Stripe's last-item-id, same file).
+ *
+ * The pinned `Notion-Version` (`2025-09-03`) matches the spec edition the
+ * {@link openapiUrl} serves (makenotion/notion-mcp-server's "Data Source Edition")
+ * — header and spec must agree, since that edition's data-source endpoints require
+ * the matching version. The body-cursor default targets Notion's GET list surface
+ * (`get-users`, `get-block-children`, `retrieve-a-comment`); the POST `post-search`
+ * endpoint behind "list pages in my workspace" carries its cursor in the body, a
+ * per-operation override that arrives with slice 2 (#2926) — its first page (≤100
+ * results) returns un-paginated today.
+ */
+export const NOTION_DATA_CANDIDATE: DataCandidate = {
+  slug: "notion-data",
+  catalogId: "catalog:notion-data",
+  name: "Notion",
+  description:
+    "Query your Notion workspace (pages, databases, users, comments, …) as a read-only REST " +
+    "datasource. Pre-wired to Notion's published OpenAPI spec — paste your integration token, no " +
+    "spec URL needed. The agent discovers operations from the spec and queries them directly.",
+  openapiUrl:
+    "https://raw.githubusercontent.com/makenotion/notion-mcp-server/main/scripts/notion-openapi.json",
+  authKind: "bearer",
+  quirk: {
+    // Notion mandates a version header on every request; the spec declares it as an
+    // optional `in: header` param with a default, which the client never auto-sends.
+    // The quirk supplies it as a non-clobbering default on every call. DATA, not a
+    // code branch — pinned to the spec edition `openapiUrl` serves.
+    requiredHeaders: { "Notion-Version": "2025-09-03" },
+  },
+  pagination: {
+    strategy: "cursor",
+    itemsPath: "results",
+    cursorParam: "start_cursor",
+    // Body-cursor dialect: the next cursor is the response body's `next_cursor`
+    // (vs Stripe's last list item id), with a top-level `has_more` flag.
+    cursorPath: "next_cursor",
+    hasMorePath: "has_more",
+  },
+};
+
 /** Every built-in data candidate. Append a new vendor here (the one-line thesis). */
-export const DATA_CANDIDATES: ReadonlyArray<DataCandidate> = [STRIPE_DATA_CANDIDATE];
+export const DATA_CANDIDATES: ReadonlyArray<DataCandidate> = [
+  STRIPE_DATA_CANDIDATE,
+  NOTION_DATA_CANDIDATE,
+];
 
 const BY_CATALOG_ID = new Map<string, DataCandidate>(
   DATA_CANDIDATES.map((c) => [c.catalogId, c]),

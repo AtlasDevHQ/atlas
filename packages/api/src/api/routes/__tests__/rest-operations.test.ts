@@ -210,6 +210,34 @@ describe("POST /rest-operations/confirm", () => {
     expect(req?.headers["authorization"]).toBe("Bearer confirm-token");
   });
 
+  it("forwards the datasource quirk so required headers ride the confirmed write (#3029)", async () => {
+    // A data-candidate (e.g. Notion) carries a declarative quirk — required static
+    // headers / query shaping — applied via the client's header/query seams. The
+    // confirm path must forward it exactly like the read tool path; otherwise an
+    // allowlisted, human-confirmed write reaches the upstream WITHOUT the required
+    // header (Notion-Version) and the vendor rejects it. Regression guard for the
+    // confirm-path/read-path parity gap.
+    const app = appWith([
+      datasource({
+        writeAllowlist: new Set(["createOnePerson"]),
+        quirk: { requiredHeaders: { "X-Vendor-Version": "2025-09-03" } },
+      }),
+    ]);
+    const res = await post(
+      app,
+      confirmBody({
+        datasourceId: "twenty",
+        operationId: "createOnePerson",
+        body: { name: { firstName: "Ada" } },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const req = twentyMock.matching("/rest/people").at(-1);
+    // The quirk's required header rode the confirmed write, alongside bearer auth.
+    expect(req?.headers["x-vendor-version"]).toBe("2025-09-03");
+    expect(req?.headers["authorization"]).toBe("Bearer confirm-token");
+  });
+
   it("REFUSES a write that is NOT allowlisted, even on the confirm path (403, no upstream write)", async () => {
     // Defense in depth: the banner should never let an op past the allowlist,
     // but a tampered client payload is re-checked server-side.

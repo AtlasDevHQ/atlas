@@ -12,6 +12,7 @@ import {
   DATA_CANDIDATES,
   DATA_CANDIDATE_CONFIG_SCHEMA,
   STRIPE_DATA_CANDIDATE,
+  NOTION_DATA_CANDIDATE,
 } from "../data-candidates";
 
 function captureDb(returnRowsPerCall: (callIndex: number) => Array<{ slug: string }>): {
@@ -88,5 +89,38 @@ describe("migration 0109 ↔ code alignment", () => {
     const esc = (s: string) => s.replace(/'/g, "''");
     expect(sql).toContain(`'${esc(STRIPE_DATA_CANDIDATE.name)}'`);
     expect(sql).toContain(esc(STRIPE_DATA_CANDIDATE.description));
+  });
+});
+
+describe("migration 0110 ↔ code alignment (notion-data, slice 6b #3029)", () => {
+  function migrationSql(): string {
+    return fs.readFileSync(
+      path.join(import.meta.dir, "..", "..", "db", "migrations", "0110_notion_data_catalog.sql"),
+      "utf8",
+    );
+  }
+
+  it("the migration's config_schema matches the shared DATA_CANDIDATE_CONFIG_SCHEMA", () => {
+    const sql = migrationSql();
+    const start = sql.indexOf("'[");
+    const end = sql.indexOf("]'::jsonb");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const jsonText = sql.slice(start + 1, end + 1).replace(/''/g, "'");
+    expect(JSON.parse(jsonText)).toEqual(DATA_CANDIDATE_CONFIG_SCHEMA);
+  });
+
+  it("seeds the notion-data canonical id + slug, idempotently", () => {
+    const sql = migrationSql();
+    expect(sql).toContain(NOTION_DATA_CANDIDATE.catalogId);
+    expect(sql).toContain("'notion-data'");
+    expect(sql).toContain("ON CONFLICT DO NOTHING");
+  });
+
+  it("the migration's name + description match the NOTION_DATA_CANDIDATE registry literal", () => {
+    const sql = migrationSql();
+    const esc = (s: string) => s.replace(/'/g, "''");
+    expect(sql).toContain(`'${esc(NOTION_DATA_CANDIDATE.name)}'`);
+    expect(sql).toContain(esc(NOTION_DATA_CANDIDATE.description));
   });
 });

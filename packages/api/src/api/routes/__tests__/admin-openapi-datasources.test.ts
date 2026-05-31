@@ -45,6 +45,8 @@ let probeShouldFail = false;
 let authResultOverride: { ok: false; rawAuthKind: string } | null = null;
 /** Extra config fields merged into the loaded install row (e.g. base_url_override). */
 let configExtra: Record<string, unknown> = {};
+/** #3044 — controllable verdict for the group-existence guard on group_id assignment. */
+let mockGroupVerdict: "ok" | "not_found" | "error" | "no_db" = "ok";
 /** The `options` the route last passed to `probeSpec` — asserts the #3034 host gate is threaded. */
 let lastProbeOptions: { apiBaseUrl?: string } | undefined;
 
@@ -143,6 +145,12 @@ mock.module("@atlas/api/lib/plugins/secrets", () => ({
   decryptSecretFields: (config: Record<string, unknown>) => ({ ...config }),
 }));
 
+// #3044 — the group_id assignment guard calls verifyGroupBelongsToOrg; mock it
+// so the existence verdict is controllable without seeding the db recorder.
+mock.module("@atlas/api/lib/conversations", () => ({
+  verifyGroupBelongsToOrg: async () => mockGroupVerdict,
+}));
+
 /**
  * Spy on the graph-cache eviction so the rediscover/DELETE wiring (#3009) is
  * asserted at the ROUTE level — the unit tests in `probe.test.ts` prove the
@@ -236,6 +244,7 @@ beforeEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
   configExtra = {};
+  mockGroupVerdict = "ok";
   lastProbeOptions = undefined;
   db.clear();
   invalidateGraphCacheSpy.mockClear();
@@ -622,5 +631,96 @@ describe("admin-openapi-datasources — spec_refresh_interval set / clear / clam
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("admin-openapi-datasources — env scope (group_id, #3044)", () => {
+  it("GET detail surfaces groupId from config (null when ungrouped)", async () => {
+    const ungrouped = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      groupId: string | null;
+    };
+    expect(ungrouped.groupId).toBeNull();
+
+    configExtra = { group_id: "prod" };
+    const scoped = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      groupId: string | null;
+    };
+    expect(scoped.groupId).toBe("prod");
+  });
+
+  it("PATCH assigns a group_id, writing only group_id (never auth_value)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: "prod" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { groupId: string | null }).toMatchObject({ groupId: "prod" });
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("jsonb_build_object('group_id'");
+    expect(update?.[0]).not.toContain("auth_value");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "prod"]);
+  });
+
+  it("PATCH clears the scope back to workspace-global by binding null", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: null }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { groupId: string | null }).toMatchObject({ groupId: null });
+    // The merge binds null → JSON null → read back as workspace-global.
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
+  });
+
+  it("PATCH treats a whitespace-only group id as a clear (null), never a literal scope", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: "   " }),
+    });
+    expect(res.status).toBe(200);
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
+  });
+
+  it("PATCH can set representation mode and group scope together", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ representationMode: "semantic-yaml", groupId: "eu" }),
+    });
+    expect(res.status).toBe(200);
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("representation_mode");
+    expect(update?.[0]).toContain("group_id");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "semantic-yaml", "eu"]);
+  });
+
+  it("PATCH rejects a group_id that doesn't exist in the workspace — no UPDATE", async () => {
+    mockGroupVerdict = "not_found";
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: "typo-env" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_connection_group");
+    // The bad assignment never reached the database.
+    expect(findConfigUpdate()).toBeUndefined();
+  });
+
+  it("PATCH does NOT gate a clear-to-workspace-global on group existence", async () => {
+    // Clearing (groupId: null) must always work — even if the group-existence
+    // check would say "not_found" for some value, null is never validated.
+    mockGroupVerdict = "not_found";
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: null }),
+    });
+    expect(res.status).toBe(200);
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
   });
 });

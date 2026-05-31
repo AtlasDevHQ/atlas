@@ -39,6 +39,9 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 let lastSystemPrompt: string | undefined;
+// #3044 — capture how the agent loop calls the REST resolver so we can pin that
+// the conversation's `connectionGroupId` is threaded as `activeGroupId`.
+let capturedRestResolveArgs: { orgId: string; deps: unknown } | undefined;
 
 mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
@@ -92,12 +95,13 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 // Inject a fixed routing context — three members, primary us-int.
 mock.module("@atlas/api/lib/env-routing/lookup", () => ({
-  loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) => ({
-    groupId: "prod",
-    members: ["us-int", "eu", "apac"],
-    primaryMember: "us-int",
-    currentMember,
-  }),
+  loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
+    // A sentinel connection that resolves to NO group (1×1, ungrouped) so the
+    // #3044 "no environment context" path is reachable; everything else is the
+    // 3-member `prod` group the scope-routing tests rely on.
+    currentMember === "ungrouped-conn"
+      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember }
+      : { groupId: "prod", members: ["us-int", "eu", "apac"], primaryMember: "us-int", currentMember },
 }));
 
 mock.module("@atlas/api/lib/cache/index", () => ({
@@ -108,6 +112,20 @@ mock.module("@atlas/api/lib/cache/index", () => ({
   flushCache: () => {},
   setCacheBackend: () => {},
   _resetCache: () => {},
+}));
+
+// #3044 — capture the agent loop's REST resolver call. Returns [] so the REST
+// block is a no-op (no representation built); the existing scope-routing tests
+// don't set an org id, so `agent.ts` short-circuits to [] before this is reached.
+mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
+  resolveWorkspaceRestDatasources: async (orgId: string, deps: unknown) => {
+    capturedRestResolveArgs = { orgId, deps };
+    return [];
+  },
+  resolveWorkspaceRestDatasourcesOrThrow: async () => [],
+  resolveWorkspacePrimaryRestDatasource: async () => null,
+  defaultQuery: async () => [],
+  RestDatasourceReconnectError: class extends Error {},
 }));
 
 // Spy on the LLM `doStream` call so we can capture the rendered system prompt
@@ -160,7 +178,7 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
 }
 
 const { runAgent } = await import("@atlas/api/lib/agent");
-const { buildSystemParam } = await import("@atlas/api/lib/agent");
+const { buildSystemParam, buildRestDatasourceScopeNote } = await import("@atlas/api/lib/agent");
 const { withRequestContext } = await import("@atlas/api/lib/logger");
 
 function userMessages(content: string): UIMessage[] {
@@ -256,6 +274,53 @@ describe("buildSystemParam — scope guidance section (slice 2)", () => {
     );
     const prompt = result as string;
     expect(prompt).toMatch(/current member is `eu`/);
+  });
+});
+
+describe("buildRestDatasourceScopeNote — REST env-scope framing (#3044)", () => {
+  it("frames a workspace-global datasource as not constrained by the pin (bound to an env)", () => {
+    const note = buildRestDatasourceScopeNote({}, { boundToEnvironment: true });
+    expect(note).toContain("workspace-global");
+    expect(note).toContain("NOT");
+    expect(note.toLowerCase()).toContain("environment selection/pin");
+    // The crux of the bug: the model must not present the chat as env-limited.
+    expect(note).toContain("Do not describe the conversation as limited to one environment");
+  });
+
+  it("softens the framing in a single-connection workspace (no environment to contrast)", () => {
+    const note = buildRestDatasourceScopeNote({}, { boundToEnvironment: false });
+    expect(note).toContain("workspace-global");
+    expect(note).toContain("available in every environment");
+    // No environment selection exists, so the contrast clause is omitted.
+    expect(note).not.toContain("NOT constrained");
+  });
+
+  it("frames a scoped datasource as bound to its environment group", () => {
+    const note = buildRestDatasourceScopeNote({ groupId: "prod" }, { boundToEnvironment: true });
+    expect(note).toContain("`prod`");
+    expect(note).toContain("only reachable");
+    expect(note).not.toContain("workspace-global");
+  });
+
+  it("a provided restRepresentation is appended to the system prompt verbatim", () => {
+    // The run loop prepends buildRestDatasourceScopeNote() to each datasource's
+    // section; buildSystemParam appends the whole restRepresentation string.
+    const scopeNote = buildRestDatasourceScopeNote({}, { boundToEnvironment: true });
+    const rep = `${scopeNote}\n\n### REST Datasource\nuse executeRestOperation…`;
+    const result = buildSystemParam(
+      "openai",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "developer",
+      rep,
+    );
+    const prompt = result as string;
+    expect(prompt).toContain("workspace-global");
+    expect(prompt).toContain("### REST Datasource");
   });
 });
 
@@ -355,4 +420,89 @@ describe("agent integration — scope routing via mocked LLM (slice 2)", () => {
   // `routingContext: undefined` and `routingContext.members: [x]` (current
   // member only) omit the Cross-Environment Routing section, which is the
   // same logical assertion at a stricter boundary.
+});
+
+describe("agent loop — REST datasource scope threading (#3044)", () => {
+  // A text-only model so the resolver is exercised during prompt-build without
+  // running the executeSQL path (which would need an org-aware connection mock).
+  function makeTextOnlyModel(): InstanceType<typeof MockLanguageModelV3> {
+    return new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doStream: async (opts: any) => {
+        const systemMsg = opts?.prompt?.find((p: { role: string }) => p.role === "system");
+        if (systemMsg) {
+          lastSystemPrompt =
+            typeof systemMsg.content === "string"
+              ? systemMsg.content
+              : Array.isArray(systemMsg.content)
+                ? systemMsg.content.map((c: { text?: string }) => c.text ?? "").join("")
+                : "";
+        }
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "text-delta", id: "t0", delta: "Hi." },
+            {
+              type: "finish",
+              usage: {
+                inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
+                outputTokens: { total: 5, text: 5, reasoning: undefined },
+              },
+              finishReason: { unified: "stop", raw: "end_turn" },
+            },
+          ]),
+        };
+      },
+    });
+  }
+
+  beforeEach(() => {
+    capturedRestResolveArgs = undefined;
+    mockModel = makeTextOnlyModel();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+  });
+
+  it("threads the conversation's explicit connectionGroupId into the REST resolver", async () => {
+    await withRequestContext(
+      {
+        requestId: "rest-1",
+        connectionId: "us-int",
+        connectionGroupId: "prod",
+        user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
+      },
+      () => runAgent({ messages: userMessages("hello") }),
+    );
+    expect(capturedRestResolveArgs).toBeDefined();
+    expect(capturedRestResolveArgs!.orgId).toBe("org-1");
+    expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod" });
+  });
+
+  it("infers the active group from connectionId when connectionGroupId is omitted (Codex review)", async () => {
+    // A legacy / API caller sends only connectionId. The connection resolves to
+    // group `prod`, so its environment-local REST datasources stay reachable
+    // instead of being filtered out as if the turn were ungrouped.
+    await withRequestContext(
+      {
+        requestId: "rest-2",
+        connectionId: "us-int",
+        user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
+      },
+      () => runAgent({ messages: userMessages("hello") }),
+    );
+    expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod" });
+  });
+
+  it("passes activeGroupId: null (NOT undefined) when the connection resolves to no group", async () => {
+    await withRequestContext(
+      {
+        requestId: "rest-3",
+        connectionId: "ungrouped-conn",
+        user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
+      },
+      () => runAgent({ messages: userMessages("hello") }),
+    );
+    expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: null });
+    // `undefined` would disable scoping in the resolver (the confirm-replay path)
+    // and re-leak a scoped datasource into the chat — the regression #3044 closes.
+    expect((capturedRestResolveArgs!.deps as { activeGroupId: unknown }).activeGroupId).not.toBeUndefined();
+  });
 });

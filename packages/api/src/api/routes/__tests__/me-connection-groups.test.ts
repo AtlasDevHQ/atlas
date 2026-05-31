@@ -63,7 +63,17 @@ type GroupRow = {
   db_type: string | null;
   description: string | null;
 };
+// #3044 — the route now also reads REST datasource installs (group_id may be
+// NULL) for the picker's scope footer. Routed by SQL content in the mock.
+type RestRow = {
+  install_id: string;
+  display_name: string | null;
+  snapshot_title: string | null;
+  group_id: string | null;
+};
 let rowsForOrg: Record<string, GroupRow[]> = {};
+let restRowsForOrg: Record<string, RestRow[]> = {};
+let capturedQueries: string[] = [];
 
 mock.module("@atlas/api/lib/db/internal", () => {
   const notUsed = () => {
@@ -71,8 +81,12 @@ mock.module("@atlas/api/lib/db/internal", () => {
   };
   return {
     hasInternalDB: () => dbAvailable,
-    internalQuery: async (_sql: string, params: unknown[]) => {
+    internalQuery: async (sql: string, params: unknown[]) => {
+      capturedQueries.push(sql);
       const [orgId] = params as [string];
+      // The REST-datasource query is the one projecting `display_name`; the
+      // SQL-member query projects `install_id AS connection_id`.
+      if (sql.includes("display_name")) return restRowsForOrg[orgId] ?? [];
       return rowsForOrg[orgId] ?? [];
     },
     getInternalDB: () => null,
@@ -153,6 +167,7 @@ async function getJson(res: Response) {
       primaryConnectionId: string | null;
       members: Array<{ connectionId: string; dbType: string; description: string | null }>;
     }>;
+    restDatasources: Array<{ id: string; displayName: string; groupId: string | null }>;
     reason: "no_active_org" | "no_internal_db" | null;
   };
 }
@@ -161,6 +176,8 @@ beforeEach(() => {
   fakeAuth = null;
   dbAvailable = true;
   rowsForOrg = {};
+  restRowsForOrg = {};
+  capturedQueries = [];
 });
 
 describe("GET /api/v1/me/connection-groups — reason field (#2422)", () => {
@@ -338,5 +355,73 @@ describe("GET /api/v1/me/connection-groups — primaryConnectionId surfacing (po
     const res = await meConnectionGroups.request("/", { method: "GET" });
     const body = await getJson(res);
     expect(body.groups[0]?.members[0]?.dbType).toBe("unknown");
+  });
+});
+
+describe("GET /api/v1/me/connection-groups — REST datasource scope (#3044)", () => {
+  it("surfaces REST datasources with their groupId (workspace-global vs scoped)", async () => {
+    fakeAuth = userAuth();
+    restRowsForOrg["org-1"] = [
+      { install_id: "stripe-1", display_name: "Stripe", snapshot_title: null, group_id: null },
+      { install_id: "intl-api", display_name: null, snapshot_title: "Intl API", group_id: "eu" },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    expect(res.status).toBe(200);
+    const body = await getJson(res);
+    expect(body.restDatasources).toEqual([
+      { id: "stripe-1", displayName: "Stripe", groupId: null },
+      // display_name blank → falls back to the spec title.
+      { id: "intl-api", displayName: "Intl API", groupId: "eu" },
+    ]);
+  });
+
+  it("always includes restDatasources (empty array when the workspace has none)", async () => {
+    fakeAuth = userAuth();
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.restDatasources).toEqual([]);
+  });
+
+  it("falls back to install_id for displayName when both display_name and spec title are blank", async () => {
+    fakeAuth = userAuth();
+    restRowsForOrg["org-1"] = [
+      { install_id: "anon-ds", display_name: null, snapshot_title: null, group_id: null },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.restDatasources).toEqual([
+      { id: "anon-ds", displayName: "anon-ds", groupId: null },
+    ]);
+  });
+
+  it("the SQL-member query excludes REST catalog_ids; the REST query selects them", async () => {
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [];
+    await meConnectionGroups.request("/", { method: "GET" });
+
+    const memberQuery = capturedQueries.find((q) => q.includes("install_id           AS connection_id"));
+    const restQuery = capturedQueries.find((q) => q.includes("display_name"));
+    expect(memberQuery).toBeDefined();
+    expect(restQuery).toBeDefined();
+    // Members EXCLUDE REST; the REST list INCLUDES exactly those catalogs.
+    expect(memberQuery!.replace(/\s+/g, " ")).toContain("catalog_id <> ALL($2)");
+    expect(restQuery!.replace(/\s+/g, " ")).toContain("catalog_id = ANY($2)");
+  });
+
+  it("REST datasources do NOT appear as SQL group members", async () => {
+    // A REST install scoped to a SQL group must never be returned as a pickable
+    // member (it can't run SQL). The route's catalog exclusion + separate query
+    // keep the two surfaces disjoint.
+    fakeAuth = userAuth();
+    rowsForOrg["org-1"] = [
+      { group_id: "prod", connection_id: "us-prod", db_type: "postgres", description: null },
+    ];
+    restRowsForOrg["org-1"] = [
+      { install_id: "rest-prod", display_name: "Prod API", snapshot_title: null, group_id: "prod" },
+    ];
+    const res = await meConnectionGroups.request("/", { method: "GET" });
+    const body = await getJson(res);
+    expect(body.groups[0]?.members.map((m) => m.connectionId)).toEqual(["us-prod"]);
+    expect(body.restDatasources.map((d) => d.id)).toEqual(["rest-prod"]);
   });
 });

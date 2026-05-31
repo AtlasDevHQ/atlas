@@ -218,6 +218,19 @@ export type ShareStatus =
 export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";
 
 /**
+ * A REST/OpenAPI datasource's cross-environment scope (#3044, ADR-0010), mirrored
+ * from the `restDatasources` array on `GET /api/v1/me/connection-groups`. Lets the
+ * chat env picker frame what a pinned conversation can actually reach: a
+ * `groupId === null` datasource is **workspace-global** (answers in every
+ * environment, NOT constrained by the pin); a string scopes it to that group.
+ */
+export interface ChatRestDatasourceScope {
+  readonly id: string;
+  readonly displayName: string;
+  readonly groupId: string | null;
+}
+
+/**
  * Wire-compat-safe read of {@link ConnectionInfo.billable}.
  *
  * `billable: false` excludes the row from billing/trial counts;

@@ -26,9 +26,8 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
-import type { RestDatasource } from "./datasource";
+import { normalizeGroupId, type RestDatasource } from "./datasource";
 import {
-  OPENAPI_GENERIC_CATALOG_ID,
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
   isValidSnapshot,
@@ -38,8 +37,8 @@ import {
   parseWriteAllowlist,
 } from "./catalog";
 import {
-  DATA_CANDIDATE_CATALOG_IDS,
   DATA_CANDIDATE_CONFIG_SCHEMA,
+  REST_DATASOURCE_CATALOG_IDS,
   findDataCandidateByCatalogId,
   isOAuthDatasourceCandidate,
   type DataCandidate,
@@ -116,6 +115,45 @@ export interface ResolveWorkspaceDeps {
    * App-JWT minter runs); tests inject a stub so no network / key is needed.
    */
   readonly mintInstallationToken?: MintInstallationTokenFn;
+  /**
+   * Cross-environment scope filter (#3044, [ADR-0010]). Tri-state:
+   *   - **omitted (`undefined`)** — no scoping; resolve every install. The
+   *     authorized confirm-replay path (`tools/rest-operation.ts`'s
+   *     `resolveFromContext`) relies on this: a staged write is bound by a
+   *     signed token and must replay regardless of the request's group context.
+   *   - **`null`** — the conversation has no active connection group; resolve
+   *     ONLY workspace-global datasources (those with no `group_id`). A scoped
+   *     datasource never leaks into a context whose group can't be confirmed.
+   *   - **`string`** — the active group id; resolve workspace-global datasources
+   *     PLUS those scoped to this exact group.
+   * The agent loop always passes an explicit value (string or null) so the
+   * prompt + tool see a strictly-scoped set; only the workspace-global default
+   * carries over the legacy "always available" behaviour.
+   */
+  readonly activeGroupId?: string | null;
+}
+
+/**
+ * Tenant + cross-environment row filter. Keeps a row iff it is in scope for the
+ * caller's `activeGroupId` (see {@link ResolveWorkspaceDeps.activeGroupId}). Pure
+ * — operates on the raw `config.group_id` (plain, non-secret JSONB), so it runs
+ * before credential decryption / build and the reconnect tally is computed only
+ * over in-scope rows.
+ */
+function rowsInActiveGroup(
+  rows: ReadonlyArray<OpenApiInstallRow>,
+  activeGroupId: string | null | undefined,
+): ReadonlyArray<OpenApiInstallRow> {
+  // Omitted ⇒ no scoping (confirm-replay + any non-opted-in caller).
+  if (activeGroupId === undefined) return rows;
+  return rows.filter((row) => {
+    const rowGroupId = normalizeGroupId(row.config?.group_id);
+    // Workspace-global (no group) is always in scope.
+    if (rowGroupId === null) return true;
+    // Scoped: in scope only when the active group matches. `null` activeGroupId
+    // (no active group) admits no scoped datasource.
+    return activeGroupId !== null && rowGroupId === activeGroupId;
+  });
 }
 
 /**
@@ -158,7 +196,7 @@ export async function defaultQuery(
         AND pillar = 'datasource'
         AND status != 'archived'
       ORDER BY installed_at ASC`;
-  const params = [workspaceId, [OPENAPI_GENERIC_CATALOG_ID, ...DATA_CANDIDATE_CATALOG_IDS]];
+  const params = [workspaceId, [...REST_DATASOURCE_CATALOG_IDS]];
   if (exec) return exec(sql, params);
   const { internalQuery } = await import("@atlas/api/lib/db/internal");
   return internalQuery<OpenApiInstallRow>(sql, params);
@@ -310,6 +348,12 @@ function buildDatasource(
 
   const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
   const baseUrlOverride = typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
+  // #3044 — cross-environment scope. A non-empty `group_id` scopes this
+  // datasource to that connection group; absent/empty = workspace-global. The
+  // field is plain (non-secret) JSONB so it survives `decryptSecretFields`
+  // untouched. `normalizeGroupId` centralizes the empty-string exclusion; the
+  // domain object prefers the optional idiom, so `null` maps to `undefined`.
+  const groupId = normalizeGroupId(decrypted.group_id) ?? undefined;
   const displayName =
     typeof decrypted.display_name === "string" && decrypted.display_name.length > 0
       ? decrypted.display_name
@@ -390,6 +434,7 @@ function buildDatasource(
   return {
     id: installId,
     displayName,
+    ...(groupId !== undefined ? { groupId } : {}),
     graph,
     baseUrl,
     auth,
@@ -475,7 +520,10 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
   // A query failure propagates here, on purpose — the caller turns it into a
   // distinct "temporarily unavailable" signal rather than an empty result.
   const rows = await query(workspaceId);
-  return buildDatasourcesFromRows(workspaceId, rows, mint);
+  // #3044 — drop out-of-scope datasources BEFORE build, so the reconnect tally
+  // (and the never-rejects `[]` contract) is computed only over the in-scope set.
+  const scopedRows = rowsInActiveGroup(rows, deps.activeGroupId);
+  return buildDatasourcesFromRows(workspaceId, scopedRows, mint);
 }
 
 /**

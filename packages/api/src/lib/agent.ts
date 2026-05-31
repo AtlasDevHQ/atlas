@@ -236,6 +236,46 @@ Each \`executeSQL\` call can carry a \`scope\` argument that decides which envir
 The result of a fanned-out query carries an \`envContributions\` array describing each environment's row count, duration, and error (if any). Use it to surface partial failures to the user instead of silently treating a failed env as zero rows.`;
 }
 
+/**
+ * #3044 — REST datasource environment-scope framing ([ADR-0010]). Returns the
+ * one-line scope banner prepended to a REST datasource's prompt section so the
+ * agent (and, downstream, the user) knows whether the datasource is constrained
+ * by the conversation's environment selection.
+ *
+ * The bug this closes: a chat pinned to one SQL environment LOOKS fully
+ * constrained, but a workspace-global REST datasource answers regardless of the
+ * pin. Making the reach explicit means the model never implies the conversation
+ * is scoped tighter than it is.
+ *
+ * Pure. `boundToEnvironment` toggles the extra "not constrained by the pin"
+ * emphasis — it is true whenever the conversation targets a specific environment
+ * group (an explicit picker selection or the group resolved from the pinned
+ * connection, including the 0062 single-member-group shape). In a true
+ * single-connection workspace there is no environment to contrast against, so the
+ * softer phrasing avoids implying a selection that isn't there.
+ */
+export function buildRestDatasourceScopeNote(
+  ds: { readonly groupId?: string },
+  opts: { readonly boundToEnvironment: boolean },
+): string {
+  if (ds.groupId) {
+    return (
+      `**Environment scope:** scoped to environment group \`${ds.groupId}\` — ` +
+      `this REST datasource is part of that environment and is only reachable ` +
+      `while that group is the conversation's active environment.`
+    );
+  }
+  const pinClause = opts.boundToEnvironment
+    ? " It is **NOT** constrained by this conversation's environment selection/pin — " +
+      "querying it reaches the same upstream account regardless of which SQL environment is active. " +
+      "Do not describe the conversation as limited to one environment when answering from it."
+    : "";
+  return (
+    `**Environment scope:** workspace-global — available in every environment.` +
+    pinClause
+  );
+}
+
 function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
@@ -874,6 +914,37 @@ export async function runAgent({
   // Resolve async work before entering otelContext.with() (sync callback).
   const modelMessages = await convertToModelMessages(messages);
 
+  // #2517 — load active-group routing context so the system prompt can
+  // teach the agent when to set `scope` on `executeSQL`. Falls back to
+  // a 1×1 result (no prompt section) when no group is bound or the
+  // lookup fails — single-env workspaces see no behavioural change.
+  // Resolved BEFORE the REST block (#3044) so each REST datasource's
+  // representation can be framed against whether a multi-env pin exists.
+  let scopeRoutingContext: ScopeRoutingContext | undefined;
+  let resolvedGroupId: string | undefined;
+  if (connectionId) {
+    const ctx = await loadGroupRoutingContext(orgId, connectionId);
+    resolvedGroupId = ctx.groupId;
+    if (ctx.members.length > 1) {
+      scopeRoutingContext = {
+        members: ctx.members,
+        currentMember: ctx.currentMember,
+        ...(ctx.groupId ? { groupId: ctx.groupId } : {}),
+      };
+    }
+  }
+  // #3044 — the environment this turn is bound to: the picker's explicit
+  // `connectionGroupId`, else (legacy / API callers that send only
+  // `connectionId`) the group resolved from the pinned connection's membership.
+  // REST datasources scoped to it are reachable; a workspace-global one escapes
+  // it. `null` ⇒ no environment context → only workspace-global datasources.
+  const activeRestGroupId = connectionGroupId ?? resolvedGroupId ?? null;
+  // The chat targets a specific environment whenever a group resolved — a
+  // multi-member group OR a single-member environment the user selected from a
+  // multi-environment picker (the 0062 1:1 backfill shape). A workspace-global
+  // REST datasource escapes that selection, so the framing must say so.
+  const chatBoundToEnvironment = activeRestGroupId !== null;
+
   // #2926 — REST datasources (slice 2: per-workspace `openapi-generic` installs).
   // Resolve every REST datasource the workspace has installed (Twenty, Stripe,
   // an internal service…) from `workspace_plugins`, merge the
@@ -882,10 +953,20 @@ export async function runAgent({
   // common case) resolve `[]` and pay nothing. The slice-1 `ATLAS_OPENAPI_TWENTY*`
   // env path is retired. Fail-soft: a preflight error degrades to "no REST
   // datasource" rather than breaking the chat turn.
+  //
+  // #3044 — scope filter: a datasource scoped to a different environment group
+  // resolves out (the resolver keeps workspace-global + active-group matches).
+  // `activeRestGroupId` is the explicit OR connection-inferred active group, so a
+  // chat whose environment is known (even via connectionId alone) still reaches
+  // that environment's scoped REST datasources; a scoped one never leaks past it.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
   try {
-    const restDatasources = orgId ? await resolveWorkspaceRestDatasources(orgId) : [];
+    const restDatasources = orgId
+      ? await resolveWorkspaceRestDatasources(orgId, {
+          activeGroupId: activeRestGroupId,
+        })
+      : [];
     if (restDatasources.length > 0) {
       const restRegistry = new ToolRegistry();
       restRegistry.register({
@@ -911,7 +992,12 @@ export async function runAgent({
           displayName: ds.displayName,
           ...(multiple ? { datasourceId: ds.id } : {}),
         });
-        sections.push(rep.promptContext);
+        // #3044 — prepend the environment-scope banner so the agent never
+        // implies the conversation is constrained tighter than it is.
+        const scopeNote = buildRestDatasourceScopeNote(ds, {
+          boundToEnvironment: chatBoundToEnvironment,
+        });
+        sections.push(`${scopeNote}\n\n${rep.promptContext}`);
         if (rep.unresolvedResources.length > 0) {
           log.warn(
             { datasource: ds.id, resources: rep.unresolvedResources },
@@ -931,22 +1017,6 @@ export async function runAgent({
 
   const rawTools = activeRegistry.getAll();
   const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
-
-  // #2517 — load active-group routing context so the system prompt can
-  // teach the agent when to set `scope` on `executeSQL`. Falls back to
-  // a 1×1 result (no prompt section) when no group is bound or the
-  // lookup fails — single-env workspaces see no behavioural change.
-  let scopeRoutingContext: ScopeRoutingContext | undefined;
-  if (connectionId) {
-    const ctx = await loadGroupRoutingContext(orgId, connectionId);
-    if (ctx.members.length > 1) {
-      scopeRoutingContext = {
-        members: ctx.members,
-        currentMember: ctx.currentMember,
-        ...(ctx.groupId ? { groupId: ctx.groupId } : {}),
-      };
-    }
-  }
 
   let result;
   try {

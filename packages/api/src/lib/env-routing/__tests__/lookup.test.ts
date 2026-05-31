@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { REST_DATASOURCE_CATALOG_IDS } from "@atlas/api/lib/openapi/data-candidates";
 
 // Per-test mock state for the internal-DB module.
 let mockHasInternalDB = true;
@@ -138,5 +139,34 @@ describe("loadGroupRoutingContext — multi-member resolution (post-cutover)", (
     const ctx = await loadGroupRoutingContext("org-1", "eu");
     expect(ctx.members).toEqual(["eu"]);
     expect(ctx.primaryMember).toBe("eu");
+  });
+});
+
+describe("loadGroupRoutingContext — excludes REST datasource catalogs (#3044)", () => {
+  // REST datasources share `pillar = 'datasource'` and CAN carry a
+  // `config.group_id` (ADR-0010). Without the `catalog_id <> ALL(...)` guard a
+  // REST install sharing a SQL group's id would be returned as a SQL "member"
+  // and the agent's `scope: "all"` fanout would try to run SQL against a
+  // connection that isn't in the registry. This pins the exclusion on BOTH
+  // the install-anchor query and the member-aggregation query.
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockConnRows = [{ group_id: "prod" }];
+    mockMemberRows = [{ id: "apac" }, { id: "eu" }];
+    mockShouldThrow = null;
+    mockQueryCalls = [];
+  });
+
+  it("passes the REST catalog-id array as the exclusion bind on both queries", async () => {
+    await loadGroupRoutingContext("org-1", "eu");
+
+    expect(mockQueryCalls).toHaveLength(2);
+    for (const call of mockQueryCalls) {
+      const flat = call.sql.replace(/\s+/g, " ");
+      expect(flat).toContain("catalog_id <> ALL($3)");
+      // The 3rd bind ($3) is the REST datasource catalog-id discriminator —
+      // never client input, so a regression that drops it is a routing-pollution hole.
+      expect(call.params?.[2]).toEqual([...REST_DATASOURCE_CATALOG_IDS]);
+    }
   });
 });

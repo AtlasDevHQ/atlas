@@ -36,6 +36,8 @@ import {
   summarizeOperations,
 } from "@atlas/api/lib/openapi/probe";
 import { REPRESENTATION_MODES } from "@atlas/api/lib/openapi/representation";
+import { normalizeGroupId } from "@atlas/api/lib/openapi/datasource";
+import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   coerceSpecRefreshInterval,
   normalizeSpecRefreshInterval,
@@ -74,6 +76,10 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
     openapiUrl: typeof c.openapi_url === "string" ? c.openapi_url : null,
     baseUrlOverride: typeof c.base_url_override === "string" ? c.base_url_override : null,
     representationMode: coerceRepresentationMode(c.representation_mode),
+    // #3044 — cross-environment scope (ADR-0010). `null` ⇒ workspace-global;
+    // a string ⇒ scoped to that connection group. `normalizeGroupId` is the
+    // shared empty→workspace-global coercion the resolver also uses.
+    groupId: normalizeGroupId(c.group_id),
     // Per-install spec-refresh interval (#2977). Fail-soft display coercion so a
     // drifted / absent value renders as the `off` default rather than undefined.
     specRefreshInterval: coerceSpecRefreshInterval(c.spec_refresh_interval),
@@ -173,10 +179,28 @@ const patchRoute = createRoute({
                     "Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
                   example: "daily",
                 }),
+              // #3044 — cross-environment scope (ADR-0010). A non-empty string
+              // scopes the datasource to that connection group; `null` clears the
+              // assignment back to workspace-global. Omitted ⇒ left unchanged.
+              groupId: z
+                .string()
+                .min(1)
+                .nullable()
+                .optional()
+                .openapi({
+                  description:
+                    "Connection group this REST datasource is scoped to. A group id restricts the " +
+                    "datasource to conversations whose active environment is that group; null clears the " +
+                    "scope back to workspace-global (available in every environment).",
+                  example: "prod",
+                }),
             })
             .refine(
-              (b) => b.representationMode !== undefined || b.specRefreshInterval !== undefined,
-              { message: "Provide representationMode and/or specRefreshInterval." },
+              (b) =>
+                b.representationMode !== undefined ||
+                b.specRefreshInterval !== undefined ||
+                b.groupId !== undefined,
+              { message: "Provide representationMode, specRefreshInterval, and/or groupId." },
             ),
         },
       },
@@ -416,7 +440,7 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
   runHandler(c, "update openapi datasource", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const { installId } = c.req.valid("param");
-    const { representationMode, specRefreshInterval } = c.req.valid("json");
+    const { representationMode, specRefreshInterval, groupId } = c.req.valid("json");
     const row = await loadInstall(orgId, installId);
     if (!row) {
       return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
@@ -426,8 +450,9 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
     // (snake_case) it writes, and the camelCase wire shape echoed in the response
     // + audit metadata. Each column key is from a fixed allow-set (never user
     // input) so interpolating it into the SQL is safe; the value is always bound.
-    const updates: Record<string, string> = {};
-    const changed: Record<string, string> = {};
+    // A `null` value clears a field (writes JSON null) — used to unassign group_id.
+    const updates: Record<string, string | null> = {};
+    const changed: Record<string, string | null> = {};
     if (representationMode !== undefined) {
       updates.representation_mode = representationMode;
       changed.representationMode = representationMode;
@@ -442,6 +467,40 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
       }
       updates.spec_refresh_interval = normalized.value;
       changed.specRefreshInterval = normalized.value;
+    }
+    if (groupId !== undefined) {
+      // #3044 — assign (string) or clear (null → JSON null, read back as
+      // workspace-global) the cross-environment scope. `normalizeGroupId`
+      // collapses null / "" / whitespace to the workspace-global clear.
+      const value = normalizeGroupId(groupId);
+      // A non-null assignment must reference an environment group that actually
+      // exists in this workspace — otherwise the new scope filter hides the
+      // datasource from every real environment until someone notices (Codex
+      // review on #3048). Mirror the chat route's `verifyGroupBelongsToOrg`
+      // org-scoped existence guard; clearing to workspace-global is never gated.
+      if (value !== null) {
+        const verdict = await verifyGroupBelongsToOrg(value, orgId);
+        if (verdict === "not_found") {
+          return c.json(
+            {
+              error: "invalid_connection_group",
+              message: `Environment group "${value}" doesn't exist in this workspace. Create it by assigning a connection to it first, or pick an existing environment.`,
+              requestId,
+            },
+            400,
+          );
+        }
+        if (verdict === "error") {
+          return c.json(
+            { error: "internal_error", message: "Could not verify the environment group. Please retry.", requestId },
+            500,
+          );
+        }
+        // "ok" → exists; "no_db" → can't check (self-hosted without internal DB,
+        // where REST installs can't exist anyway) → allow the write.
+      }
+      updates.group_id = value;
+      changed.groupId = value;
     }
 
     // JSONB merge of only the provided fields — the encrypted auth_value is

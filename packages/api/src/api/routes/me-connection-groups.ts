@@ -24,6 +24,8 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { REST_DATASOURCE_CATALOG_IDS } from "@atlas/api/lib/openapi/data-candidates";
+import { normalizeGroupId } from "@atlas/api/lib/openapi/datasource";
 import { standardAuth, type AuthEnv } from "./middleware";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
@@ -44,6 +46,22 @@ const ConnectionGroupSchema = z.object({
 });
 
 /**
+ * A REST/OpenAPI datasource's cross-environment scope (#3044, ADR-0010), surfaced
+ * so the chat env picker can frame what a pinned conversation can actually reach.
+ * REST datasources are NOT SQL `members` (they're not execution targets for the
+ * Pin/All routing), so they ride a parallel array rather than polluting `groups`.
+ *
+ * `groupId === null` ⇒ **workspace-global** (available in every conversation,
+ * NOT constrained by the env pin). A string ⇒ **scoped** to that connection
+ * group (in-scope only when that group is active).
+ */
+const RestDatasourceScopeSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  groupId: z.string().nullable(),
+});
+
+/**
  * Why an empty `groups` list. `null` ⇒ the workspace genuinely has no
  * groups configured (picker stays hidden, legacy single-connection
  * routing kicks in). Anything else is a degraded state the user should
@@ -57,6 +75,9 @@ export type MeConnectionGroupsEmptyReason = "no_active_org" | "no_internal_db";
 
 const ResponseSchema = z.object({
   groups: z.array(ConnectionGroupSchema),
+  // #3044 — REST datasources + their env scope, for the picker's scope summary.
+  // Always present (possibly empty) so the frontend never branches on absence.
+  restDatasources: z.array(RestDatasourceScopeSchema),
   reason: z.enum(["no_active_org", "no_internal_db"]).nullable(),
 });
 
@@ -105,7 +126,7 @@ meConnectionGroups.openapi(listRoute, async (c) => {
   // for the load-bearing test on this precedence.
   if (!hasInternalDB()) {
     return c.json(
-      { groups: [], reason: "no_internal_db" as const },
+      { groups: [], restDatasources: [], reason: "no_internal_db" as const },
       200,
     );
   }
@@ -119,7 +140,7 @@ meConnectionGroups.openapi(listRoute, async (c) => {
       "me/connection-groups: no active organization for user",
     );
     return c.json(
-      { groups: [], reason: "no_active_org" as const },
+      { groups: [], restDatasources: [], reason: "no_active_org" as const },
       200,
     );
   }
@@ -133,24 +154,53 @@ meConnectionGroups.openapi(listRoute, async (c) => {
     // id" collapse to the same value (the JSONB string). There's no
     // `primary_connection_id` — the picker falls back to the deterministic
     // first-by-install_id ordering when no explicit pin exists.
-    const rows = await internalQuery<{
-      group_id: string;
-      connection_id: string;
-      db_type: string | null;
-      description: string | null;
-    }>(
-      `SELECT config->>'group_id' AS group_id,
-              install_id           AS connection_id,
-              config->>'db_type'   AS db_type,
-              config->>'description' AS description
-         FROM workspace_plugins
-        WHERE workspace_id = $1
-          AND pillar = 'datasource'
-          AND status != 'archived'
-          AND config->>'group_id' IS NOT NULL
-        ORDER BY config->>'group_id' ASC, install_id ASC`,
-      [orgId],
-    );
+    // #3044 — SQL connection groups + REST datasource scope resolve in one
+    // round-trip. SQL members EXCLUDE REST `catalog_id`s (REST datasources share
+    // `pillar = 'datasource'` but are not SQL execution targets — listing them as
+    // pickable members would route the agent to a connection that can't run SQL,
+    // ADR-0010); REST datasources ride their own array with their `group_id`.
+    const restCatalogIds = [...REST_DATASOURCE_CATALOG_IDS];
+    const [rows, restRows] = await Promise.all([
+      internalQuery<{
+        group_id: string;
+        connection_id: string;
+        db_type: string | null;
+        description: string | null;
+      }>(
+        `SELECT config->>'group_id' AS group_id,
+                install_id           AS connection_id,
+                config->>'db_type'   AS db_type,
+                config->>'description' AS description
+           FROM workspace_plugins
+          WHERE workspace_id = $1
+            AND pillar = 'datasource'
+            AND catalog_id <> ALL($2)
+            AND status != 'archived'
+            AND config->>'group_id' IS NOT NULL
+          ORDER BY config->>'group_id' ASC, install_id ASC`,
+        [orgId, restCatalogIds],
+      ),
+      // REST datasources — group_id may be NULL (workspace-global) or set
+      // (scoped). The picker frames the cross-env reach from this.
+      internalQuery<{
+        install_id: string;
+        display_name: string | null;
+        snapshot_title: string | null;
+        group_id: string | null;
+      }>(
+        `SELECT install_id,
+                config->>'display_name'                  AS display_name,
+                config->'openapi_snapshot'->>'title'     AS snapshot_title,
+                config->>'group_id'                      AS group_id
+           FROM workspace_plugins
+          WHERE workspace_id = $1
+            AND catalog_id = ANY($2)
+            AND pillar = 'datasource'
+            AND status != 'archived'
+          ORDER BY install_id ASC`,
+        [orgId, restCatalogIds],
+      ),
+    ]);
 
     // Pivot the flat rows into one entry per group with a `members` array.
     const byGroup = new Map<string, z.infer<typeof ConnectionGroupSchema>>();
@@ -171,12 +221,26 @@ meConnectionGroups.openapi(listRoute, async (c) => {
         description: row.description,
       });
     }
+    // Project REST datasources into the scope shape. A blank display name falls
+    // back to the spec title, then the install id — mirrors the admin summary.
+    const restDatasources = restRows.map((r) => ({
+      id: r.install_id,
+      displayName:
+        (r.display_name && r.display_name.length > 0 ? r.display_name : null) ??
+        (r.snapshot_title && r.snapshot_title.length > 0 ? r.snapshot_title : null) ??
+        r.install_id,
+      groupId: normalizeGroupId(r.group_id),
+    }));
+
     // `reason: null` covers both "workspace has groups" and the
     // ordinary "workspace has no groups configured yet" — the picker
     // treats null as "no banner; just hide if the array is empty". A
     // populated `reason` is reserved for genuinely degraded states the
     // caller couldn't reach a usable query for.
-    return c.json({ groups: Array.from(byGroup.values()), reason: null }, 200);
+    return c.json(
+      { groups: Array.from(byGroup.values()), restDatasources, reason: null },
+      200,
+    );
   } catch (err) {
     log.error(
       { err: errorMessage(err), requestId, orgId },

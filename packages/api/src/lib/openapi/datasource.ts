@@ -21,6 +21,23 @@ import type { RepresentationMode } from "./representation";
 import type { VendorQuirk } from "./vendor-quirk";
 
 /**
+ * Normalize a raw `workspace_plugins.config.group_id` JSONB value to its
+ * cross-environment scope identity (#3044, [ADR-0010]). Empty / whitespace /
+ * non-string ⇒ `null` (**workspace-global**); a non-empty string is trimmed and
+ * returned (**scoped** to that connection group).
+ *
+ * The single definition of "scoped vs workspace-global", so the empty-string
+ * exclusion can't be forgotten by a new read path — every site that reads
+ * `config.group_id` (the resolver build, the scope filter, the admin summary)
+ * funnels through here. Internal callers that prefer the optional idiom
+ * (`RestDatasource.groupId?: string`) map the `null` to `undefined` at their own
+ * boundary; wire/DTO callers keep the `null` (JSON has no `undefined`).
+ */
+export function normalizeGroupId(raw: unknown): string | null {
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/**
  * A resolved REST datasource the agent can read from. The normalized operation
  * graph, the base URL operations execute against, the credential the slice-0
  * client applies, and the representation mode (#2931 bake-off knob, per-install).
@@ -32,6 +49,18 @@ export interface RestDatasource {
   readonly id: string;
   /** Human-facing name for the prompt header (the install's `display_name` or spec title). */
   readonly displayName: string;
+  /**
+   * Cross-environment scope (#3044, [ADR-0010]). `undefined` ⇒ **workspace-global**:
+   * the datasource is available in every conversation regardless of the env pin
+   * (one Stripe/GitHub/Twenty account isn't region-specific). A string ⇒
+   * **environment-scoped** to the connection group with this `group_id`: in-scope
+   * only when the conversation's active group matches. Resolved from the
+   * per-install `workspace_plugins.config.group_id` (the same field SQL
+   * connections use). The agent representation frames this so a pinned chat
+   * never silently appears constrained while a workspace-global datasource is
+   * reachable.
+   */
+  readonly groupId?: string;
   /** The normalized operation graph (slice-0), rebuilt from the cached snapshot. */
   readonly graph: OperationGraph;
   /** Base URL operations execute against, e.g. `https://crm.example.com/rest`. */

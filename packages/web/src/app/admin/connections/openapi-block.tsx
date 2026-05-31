@@ -136,6 +136,9 @@ const DatasourceSummarySchema = z.object({
   representationMode: z.string(),
   specRefreshInterval: z.string(),
   status: z.string(),
+  // #3044 — cross-environment scope (ADR-0010). `null` ⇒ workspace-global.
+  // Optional/nullable for back-compat with responses serialized before the field.
+  groupId: z.string().nullable().optional(),
   snapshot: SnapshotSchema,
   // Optional for back-compat with any cached/old list response; absent → no banner.
   lastRefresh: LastRefreshSchema.optional(),
@@ -143,6 +146,19 @@ const DatasourceSummarySchema = z.object({
 type DatasourceSummary = z.infer<typeof DatasourceSummarySchema>;
 
 const ListSchema = z.object({ datasources: z.array(DatasourceSummarySchema) });
+
+/**
+ * #3044 — the workspace's connection groups, for the per-datasource environment
+ * picker. Sourced from `/api/v1/me/connection-groups` (admins can read it). Only
+ * the id is load-bearing; `name` drives the human label. Extra response fields
+ * (`restDatasources`, `reason`) are ignored by the non-strict object.
+ */
+const ConnectionGroupsSchema = z.object({
+  groups: z.array(z.object({ id: z.string(), name: z.string() })),
+});
+
+/** Select sentinel for "no group" — shadcn `Select` items can't carry an empty value. */
+const WORKSPACE_GLOBAL = "__workspace_global__";
 
 const OperationSchema = z.object({
   operationId: z.string(),
@@ -221,6 +237,11 @@ interface OpenApiProviderBlockProps {
 /** Block for the OpenAPI (generic REST) datasources on `/admin/connections`. */
 export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProviderBlockProps) {
   const listQuery = useAdminFetch("/api/v1/admin/openapi-datasources", { schema: ListSchema });
+  // #3044 — connection groups for the per-datasource environment picker. A
+  // failure degrades to "no groups" (the picker offers only Workspace-global).
+  const groupsQuery = useAdminFetch("/api/v1/me/connection-groups", {
+    schema: ConnectionGroupsSchema,
+  });
   const [installOpen, setInstallOpen] = useState(false);
 
   const refresh = () => {
@@ -294,7 +315,12 @@ export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProvider
             {addButton}
           </div>
           {datasources.map((ds) => (
-            <OpenApiInstallCard key={ds.id} ds={ds} onChange={refresh} />
+            <OpenApiInstallCard
+              key={ds.id}
+              ds={ds}
+              groups={groupsQuery.data?.groups ?? []}
+              onChange={refresh}
+            />
           ))}
         </>
       )}
@@ -313,7 +339,15 @@ export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProvider
 
 // ── Per-install card ─────────────────────────────────────────────────────────
 
-function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange: () => void }) {
+function OpenApiInstallCard({
+  ds,
+  groups,
+  onChange,
+}: {
+  ds: DatasourceSummary;
+  groups: ReadonlyArray<{ id: string; name: string }>;
+  onChange: () => void;
+}) {
   const [opsOpen, setOpsOpen] = useState(false);
 
   const rediscover = useAdminMutation<{
@@ -331,6 +365,12 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
     invalidates: onChange,
   });
   const setRefresh = useAdminMutation<{ updated: boolean; specRefreshInterval: string }>({
+    path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}`,
+    method: "PATCH",
+    invalidates: onChange,
+  });
+  // #3044 — assign/clear the cross-environment scope (ADR-0010).
+  const setGroup = useAdminMutation<{ updated: boolean; groupId: string | null }>({
     path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}`,
     method: "PATCH",
     invalidates: onChange,
@@ -405,6 +445,21 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
       );
     } else {
       toast.error(friendlyErrorOrNull(result.error) ?? "Couldn't change the refresh interval");
+    }
+  }
+
+  async function handleSetGroup(nextValue: string) {
+    // Sentinel → null clears the scope back to workspace-global.
+    const groupId = nextValue === WORKSPACE_GLOBAL ? null : nextValue;
+    const result = await setGroup.mutate({ body: { groupId } });
+    if (result.ok) {
+      toast.success(
+        groupId === null
+          ? `${ds.displayName} is now workspace-global`
+          : `${ds.displayName} scoped to ${groupId}`,
+      );
+    } else {
+      toast.error(friendlyErrorOrNull(result.error) ?? "Couldn't change the environment");
     }
   }
 
@@ -530,6 +585,45 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
                   ) : null}
                 </SelectContent>
               </Select>
+            }
+          />
+          <DetailRow
+            label="Environment"
+            value={
+              <span className="flex items-center gap-2">
+                <Select
+                  value={ds.groupId ?? WORKSPACE_GLOBAL}
+                  disabled={setGroup.saving}
+                  onValueChange={handleSetGroup}
+                >
+                  <SelectTrigger
+                    className="h-7 w-44 text-xs"
+                    aria-label="Environment scope"
+                    data-testid="openapi-group-select"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={WORKSPACE_GLOBAL}>Workspace-global</SelectItem>
+                    {groups.map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name}
+                      </SelectItem>
+                    ))}
+                    {/* Current scope points at a group not in the live list (no SQL
+                        members yet, or the groups fetch failed) — surface it so the
+                        Select shows the stored value rather than blanking. */}
+                    {ds.groupId && !groups.some((g) => g.id === ds.groupId) ? (
+                      <SelectItem value={ds.groupId}>{ds.groupId}</SelectItem>
+                    ) : null}
+                  </SelectContent>
+                </Select>
+                {ds.groupId ? null : (
+                  <span className="text-[11px] text-muted-foreground">
+                    available in every environment
+                  </span>
+                )}
+              </span>
             }
           />
         </DetailList>

@@ -20,7 +20,7 @@ import { buildSnapshot, __resetSnapshotGraphCacheForTests } from "../probe";
 import { __resetSharedSpecCacheForTests, sharedSpecCacheStats } from "../shared-spec-cache";
 import { MOCK_OPENAPI_SPEC } from "@atlas/api/testing/openapi-datasource";
 import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "../catalog";
-import { DATA_CANDIDATE_CATALOG_IDS, STRIPE_DATA_CANDIDATE } from "../data-candidates";
+import { REST_DATASOURCE_CATALOG_IDS, STRIPE_DATA_CANDIDATE } from "../data-candidates";
 
 const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
 
@@ -357,13 +357,106 @@ describe("defaultQuery — tenant-scope clause", () => {
     );
 
     // Param ORDER is load-bearing: $1 is the caller's workspace (never client
-    // input), $2 is the array of built-in catalog ids — the generic datasource
-    // plus every data candidate (slice 6a, #3028). Flipping these would scope the
-    // query to the wrong dimension; dropping a candidate id would hide its installs.
+    // input), $2 is the array of built-in REST catalog ids — the generic
+    // datasource plus every data candidate (slice 6a, #3028). Pinned to the shared
+    // `REST_DATASOURCE_CATALOG_IDS` constant (not a stale literal) so a future
+    // reorder/extension of that source of truth can't silently drift this query
+    // apart from the env-routing exclusion lists that share it (#3044).
     expect(capturedParams).toEqual([
       "org-CALLER",
-      [OPENAPI_GENERIC_CATALOG_ID, ...DATA_CANDIDATE_CATALOG_IDS],
+      [...REST_DATASOURCE_CATALOG_IDS],
     ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  Cross-environment scope filtering (#3044, ADR-0010)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("resolveWorkspaceRestDatasources — env scope (activeGroupId)", () => {
+  const rows: OpenApiInstallRow[] = [
+    { install_id: "ds-global", config: config({ display_name: "Global" }) }, // no group_id
+    { install_id: "ds-prod", config: config({ display_name: "Prod", group_id: "prod" }) },
+    { install_id: "ds-eu", config: config({ display_name: "EU", group_id: "eu" }) },
+  ];
+
+  it("populates groupId on the resolved datasource (and leaves it undefined for workspace-global)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+    });
+    const byId = new Map(result.map((d) => [d.id, d]));
+    expect(byId.get("ds-global")?.groupId).toBeUndefined();
+    expect(byId.get("ds-prod")?.groupId).toBe("prod");
+    expect(byId.get("ds-eu")?.groupId).toBe("eu");
+  });
+
+  it("omitted activeGroupId resolves every install (back-compat / confirm-replay path)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("a string activeGroupId keeps workspace-global + that group's datasources only", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: "prod",
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-global", "ds-prod"]);
+    // The off-scope (eu) datasource is gone — a pinned chat can't reach it.
+    expect(result.some((d) => d.id === "ds-eu")).toBe(false);
+  });
+
+  it("a null activeGroupId (no active group) keeps ONLY workspace-global datasources", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: null,
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-global"]);
+  });
+
+  it("treats a blank / whitespace group_id as workspace-global", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-blank", config: config({ group_id: "   " }) },
+      ]),
+      activeGroupId: null,
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-blank"]);
+    expect(result[0].groupId).toBeUndefined();
+  });
+
+  it("preserves the [] fail-soft contract when every datasource is scoped out", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-prod", config: config({ group_id: "prod" }) },
+      ]),
+      activeGroupId: "eu",
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("the strict resolver returns [] (never throws) when every install is scoped out", async () => {
+    // Scope filtering runs BEFORE build, so an out-of-scope workspace resolves to
+    // an empty in-scope set without engaging the reconnect tally — the strict path
+    // can't surface a false "reconnect needed" for datasources that simply belong
+    // to another environment.
+    const result = await resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+      query: queryReturning([
+        { install_id: "ds-eu", config: config({ group_id: "eu" }) },
+      ]),
+      activeGroupId: "prod",
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("the primary resolver honours activeGroupId (python egress lockstep)", async () => {
+    const primary = await resolveWorkspacePrimaryRestDatasource("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: "eu",
+    });
+    // Earliest in-scope install: ds-global (workspace-global) sorts before ds-eu by install order.
+    expect(primary?.id).toBe("ds-global");
   });
 });
 

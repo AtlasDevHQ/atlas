@@ -501,6 +501,30 @@ describe("POST /rest-operations/confirm — single-use token gate (#3007)", () =
     expect(twentyMock.requests.length).toBe(0);
   });
 
+  it("REJECTS a candidate-declared read-safe POST through the confirm endpoint (400, no dispatch) (#3035)", async () => {
+    // A demoted read-safe POST reaches `not_a_write` through a DIFFERENT validator
+    // branch than the GET above (the #3035 demotion, not the GET=read default), so
+    // it needs its own guard: the route MUST thread `readSafePostOperations` into
+    // the confirm policy. If that threading regressed, this POST would classify as a
+    // write and a minted token could fire it as a confirmed mutation. The Twenty
+    // mock has no read-over-POST, so `createOnePerson` exercises the mechanism (the
+    // realistic notion-data `post-search` case is covered by the candidate/resolver/
+    // validator tests). With an EMPTY write allowlist it is demoted, never gated.
+    const app = appWith([datasource({ readSafePostOperations: new Set(["createOnePerson"]) })]);
+    const res = await post(
+      app,
+      confirmBody({
+        datasourceId: "twenty",
+        operationId: "createOnePerson",
+        body: { name: { firstName: "Ada" } },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("not_a_write");
+    // The demoted read was refused BEFORE any upstream call — never fired as a write.
+    expect(twentyMock.requests.length).toBe(0);
+  });
+
   it("is single-use under CONCURRENCY — two simultaneous replays yield one 200 + one 400, one write", async () => {
     // The burn is a synchronous check-and-set with no `await` between verify and
     // burn, so concurrent replays of the same token can't both reach the upstream.

@@ -69,6 +69,7 @@ Use executeRestOperation to call a single operation on a connected REST API (des
 - For multi-step questions, call this tool once per step and feed each result into the next (e.g. find a person, then list their note targets, then fetch each note)
 - GET operations execute and return data immediately — UNLESS that GET is flagged side-effecting (by the datasource's spec or its admin config). Some legacy/internal APIs mutate via GET (e.g. \`GET /jobs/{id}/cancel\`); a flagged GET is treated exactly like a write — it needs allowlisting and is staged for confirmation, never run silently.
 - Write operations (POST/PATCH/PUT/DELETE) only run if the datasource's admin has allowlisted them. A non-allowlisted write returns \`writes_disabled\` — tell the user writes are off for that datasource; never claim it happened.
+- EXCEPTION: a few operations use POST for a READ (e.g. a search endpoint like Notion's \`post-search\`). When the datasource marks such a POST read-safe it executes and returns data immediately, exactly like a GET — so if the operation that answers a read question is a POST, call it. (A genuine write still comes back as \`needs_confirmation\`, never silently.)
 - An allowlisted write does NOT run immediately: it returns \`needs_confirmation\`. Tell the user plainly what the write will do (e.g. "This will permanently delete 3 people in Twenty — confirm?") and STOP. The user confirms via the banner; do not retry, and never claim the write succeeded until you see a confirmed result.`;
 
 /**
@@ -148,7 +149,7 @@ const ExecuteRestOperationInput = z.object({
     .unknown()
     .optional()
     .describe(
-      "JSON request body for an allowlisted write operation. The write is staged for the user to confirm (it does not fire immediately); a non-allowlisted write is rejected.",
+      "JSON request body. For a write (POST/PATCH/PUT/DELETE) it must be allowlisted and is staged for the user to confirm (it does not fire immediately); a non-allowlisted write is rejected. A read-safe POST (e.g. a search endpoint) takes its body too and runs immediately, like a read.",
     ),
 });
 
@@ -193,7 +194,8 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       "datasource's spec or its admin config (some legacy APIs mutate via GET). Those, like write " +
       "operations (POST/PATCH/PUT/DELETE), run only if allowlisted, and an allowlisted write / " +
       "side-effecting GET is staged for the user to confirm before it fires (never claim a write " +
-      "happened until confirmed).",
+      "happened until confirmed). A few operations use POST for a READ (e.g. a search endpoint); a " +
+      "datasource-configured read-safe POST runs immediately and returns data like a GET.",
     inputSchema: ExecuteRestOperationInput,
     execute: async ({ operationId, datasourceId, pathParams, query, header, body }): Promise<ExecuteRestOperationResult> => {
       let datasources: ReadonlyArray<RestDatasource>;
@@ -277,9 +279,16 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
       const peeked = datasource.graph.operations.get(operationId);
       // Side-effecting (#3008) GET/HEADs count as writes here too, so they are
-      // staged for confirmation (dispatch:false) rather than run immediately.
+      // staged for confirmation (dispatch:false) rather than run immediately. A
+      // candidate-declared read-safe POST (#3035) is demoted to a read by the same
+      // predicate, so it dispatches immediately (debits the read quota) rather than
+      // staging for a confirm that would be refused.
       const isWrite = peeked
-        ? isSideEffectingOperation(peeked, datasource.sideEffectingOperations)
+        ? isSideEffectingOperation(
+            peeked,
+            datasource.sideEffectingOperations,
+            datasource.readSafePostOperations,
+          )
         : false;
 
       const policy: RestOperationPolicy = {
@@ -292,6 +301,9 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         datasourceId: datasource.id,
         writeAllowlist: datasource.writeAllowlist,
         sideEffectingOperations: datasource.sideEffectingOperations,
+        ...(datasource.readSafePostOperations !== undefined
+          ? { readSafePostOperations: datasource.readSafePostOperations }
+          : {}),
         dispatch: !isWrite,
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

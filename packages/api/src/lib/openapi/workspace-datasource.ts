@@ -360,6 +360,16 @@ function buildDatasource(
     throw err;
   }
 
+  // #3035: a candidate's declared read-safe POSTs (e.g. notion-data's `post-search`)
+  // are CODE-resident like the quirk — resolved from the registry, never config.
+  // Threaded onto the datasource so the validator demotes those POSTs to reads.
+  // Omitted when the candidate declares none (or it's a plain generic install) so a
+  // datasource with no read-over-POST surface carries no field, mirroring `quirk`.
+  const readSafePostOperations =
+    candidate?.readSafePostOperations && candidate.readSafePostOperations.length > 0
+      ? new Set(candidate.readSafePostOperations)
+      : undefined;
+
   // Slice 6a (#3028): a built-in data-candidate install carries its declarative
   // quirk in the code-resident registry (resolved by the caller, passed in here),
   // never in config — attach it so the agent tool can thread it into the client.
@@ -376,6 +386,7 @@ function buildDatasource(
     ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),
     ...(requestTimeoutMs !== undefined ? { requestTimeoutMs } : {}),
     ...(candidate?.quirk !== undefined ? { quirk: candidate.quirk } : {}),
+    ...(readSafePostOperations !== undefined ? { readSafePostOperations } : {}),
   };
 }
 

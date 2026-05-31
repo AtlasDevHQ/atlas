@@ -111,6 +111,21 @@ export interface RestOperationPolicy {
    * config-level overrides. See #3008 and {@link isSideEffectingOperation}.
    */
   readonly sideEffectingOperations?: ReadonlySet<string>;
+  /**
+   * `operationId`s a built-in data candidate declares to be GENUINE READS over
+   * the POST method (#3035) — e.g. Notion's workspace search, `POST /v1/search`.
+   * A POST in this set is DEMOTED to a read: it passes the write allowlist
+   * (layer 2) without an entry, and never stages a confirm-before-write step.
+   * CODE-resident + curated (the vendor fact lives in `DATA_CANDIDATES`, not in
+   * admin-supplied Notion expertise); this is the ONLY signal that can DROP an
+   * operation's write classification, and it is strictly subordinate to the
+   * #3008 escalation signals — an `x-atlas-side-effecting` spec extension or a
+   * `side_effecting_operations` entry always WINS ("this mutates" can never be
+   * overridden by "this reads"). Demotion is POST-only, so a misdeclared
+   * DELETE/PUT id is inert. Omit → classification is unchanged. See
+   * {@link isSideEffectingOperation}.
+   */
+  readonly readSafePostOperations?: ReadonlySet<string>;
   /** Per-install rate-limit override (calls/min). Default {@link DEFAULT_RATE_LIMIT_PER_MINUTE}. */
   readonly rateLimitPerMinute?: number;
   /**
@@ -136,9 +151,12 @@ export type RestOperationVerdict =
       readonly allowed: true;
       readonly operation: Operation;
       /**
-       * `true` for every effective write — a non-GET/HEAD method, OR a GET/HEAD
-       * escalated by an #3008 side-effecting override. The caller MUST obtain
-       * human confirmation (the confirm-before-write banner) before dispatching.
+       * `true` for every effective write — a non-GET/HEAD method (EXCEPT a
+       * candidate-declared read-safe POST, demoted to a read per #3035), OR a
+       * GET/HEAD escalated by an #3008 side-effecting override. Tracks `isWrite`,
+       * which already accounts for both the escalation and the demotion. The
+       * caller MUST obtain human confirmation (the confirm-before-write banner)
+       * before dispatching.
        */
       readonly requiresConfirmation: boolean;
       /** The effective per-request timeout the client should use. */
@@ -314,7 +332,8 @@ export function isWriteMethod(method: string): boolean {
 
 /**
  * Whether an operation must be authorized as a WRITE — gated by the write
- * allowlist and staged for human confirmation. Combines the three #3008 signals:
+ * allowlist and staged for human confirmation. Combines the #3008 escalation
+ * signals with the #3035 read-safe-POST demotion:
  *   1. its HTTP method mutates ({@link isWriteMethod} — the default), OR
  *   2. its spec carried `x-atlas-side-effecting: true` ({@link Operation.sideEffecting}), OR
  *   3. the install config lists its `operationId` in `side_effecting_operations`.
@@ -322,18 +341,40 @@ export function isWriteMethod(method: string): boolean {
  * GET=read is only a DEFAULT here, never ground truth: a mutating RPC-over-GET
  * (`GET /jobs/{id}/cancel`, `GET /admin/resetPassword`) — common in the
  * legacy/internal services this milestone targets — is escalated by (2) or (3).
- * The combination is monotonic: an override can only ADD safety (escalate a read
- * to a write), never strip it (a POST stays a write whatever the flags say).
+ *
+ * The one DEMOTION (#3035): a POST whose `operationId` a built-in data candidate
+ * declares read-safe (`readSafePostOperations` — e.g. Notion search,
+ * `POST /v1/search`) reads, so it is NOT gated as a write. This is the only
+ * way a flag can DROP the classification, and it is strictly subordinate: an
+ * explicit escalation signal — (2) or (3) — always WINS over the demotion, and
+ * the demotion fires only for the POST method (a misdeclared DELETE/PUT id is
+ * inert). So the invariant holds in both directions — "this mutates" (spec/
+ * operator) can never be overridden by "this reads" (curated), and a write
+ * method other than a declared read-safe POST stays a write.
  */
 export function isSideEffectingOperation(
   operation: Operation,
   sideEffectingOperations?: ReadonlySet<string>,
+  readSafePostOperations?: ReadonlySet<string>,
 ): boolean {
-  return (
-    isWriteMethod(operation.method) ||
+  // An explicit escalation signal (vendor spec extension or operator config)
+  // always wins — a curated read-safe declaration can never strip it.
+  if (
     operation.sideEffecting === true ||
     (sideEffectingOperations?.has(operation.operationId) ?? false)
-  );
+  ) {
+    return true;
+  }
+  // #3035: a candidate-declared read-safe POST is demoted to a read. POST-only,
+  // so a misdeclared non-POST id can never silently demote a real mutation.
+  if (
+    operation.method === "POST" &&
+    (readSafePostOperations?.has(operation.operationId) ?? false)
+  ) {
+    return false;
+  }
+  // Otherwise classify by method (GET/HEAD read; everything else writes).
+  return isWriteMethod(operation.method);
 }
 
 /**
@@ -364,8 +405,14 @@ export function validateRestOperation(
   }
 
   // Not method-only (#3008): a GET/HEAD flagged side-effecting (spec extension or
-  // install config) is authorized as a write too — allowlist + confirm.
-  const isWrite = isSideEffectingOperation(operation, policy.sideEffectingOperations);
+  // install config) is authorized as a write too — allowlist + confirm. And not
+  // method-only the other way (#3035): a candidate-declared read-safe POST is
+  // demoted to a read here, so it clears layer 2 without a write-allowlist entry.
+  const isWrite = isSideEffectingOperation(
+    operation,
+    policy.sideEffectingOperations,
+    policy.readSafePostOperations,
+  );
 
   // ── Layer 2 — write allowlist (default-deny writes) ──────────────────────
   if (isWrite && !policy.writeAllowlist.has(operationId)) {

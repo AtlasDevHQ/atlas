@@ -82,6 +82,24 @@ export interface BaseDataCandidate {
    * wires in when pagination reaches the tool (#2970).
    */
   readonly pagination?: PaginationConfig;
+  /**
+   * `operationId`s whose POST is a GENUINE READ (#3035) — e.g. Notion's
+   * workspace search, `POST /v1/search`. The validator gates every non-GET/HEAD
+   * as a write, so without this a vendor's read-over-POST surface is unreachable
+   * on a default install (empty write allowlist → `writes-disabled`). The
+   * resolver threads this onto the {@link import("./datasource").RestDatasource}
+   * (`readSafePostOperations`) so {@link
+   * import("./validate-rest-operation").isSideEffectingOperation} DEMOTES the POST
+   * to a read — it passes the read gate WITHOUT an admin write-allowlist edit.
+   *
+   * This is a curated VENDOR FACT, in code (the admin shouldn't need Notion API
+   * expertise). It is strictly a safety-DROP: an `x-atlas-side-effecting` spec
+   * extension or a per-install `side_effecting_operations` entry always overrides
+   * it (escalation wins), and the demotion is POST-only. The slice-2 (#2926)
+   * per-operation override remains the per-INSTALL escape hatch; this is the
+   * candidate-level default. Omit for a candidate with no read-over-POST surface.
+   */
+  readonly readSafePostOperations?: ReadonlyArray<string>;
 }
 
 /**
@@ -344,6 +362,13 @@ export const NOTION_DATA_CANDIDATE: DataCandidate = {
     cursorPath: "next_cursor",
     hasMorePath: "has_more",
   },
+  // #3035: Notion's "list pages in my workspace" is `POST /v1/search` — a genuine
+  // READ. The validator gates every non-GET as a write, so without declaring it
+  // read-safe `post-search` would be unreachable on a default install (empty write
+  // allowlist). This is a curated vendor fact, in code: the resolver demotes it to a
+  // read so it passes the read gate with no admin write-allowlist edit. Genuine
+  // Notion writes (create/update pages) stay gated behind allowlist + confirm.
+  readSafePostOperations: ["post-search"],
 };
 
 /** Every built-in data candidate. Append a new vendor here (the one-line thesis). */

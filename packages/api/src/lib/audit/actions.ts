@@ -109,6 +109,19 @@ export const ADMIN_ACTIONS = {
     probe: "connection.probe",
     healthCheck: "connection.health_check",
     poolDrain: "connection.pool_drain",
+    /**
+     * `specRefreshCycle` (#2978) — emitted once per tick by the Tier-2 OpenAPI
+     * per-install re-discovery scheduler, even at zero candidates. The absence of a
+     * cycle row over a multi-tick window is the signal the loop stopped (same
+     * forensic invariant as `model_config.catalog_refresh_cycle` /
+     * `audit_log.purge_cycle`). Status is `success` on a healthy cycle; `failure` if
+     * the candidate query itself threw before producing per-install counts. Uses the
+     * reserved `system:openapi-install-rediscover` actor; metadata carries the full
+     * `RediscoverCycleResult` counts. The per-install re-probes themselves reuse
+     * `connection.probe` with `triggeredBy: "scheduler"`, so an operator filtering by
+     * install id sees manual and scheduled refreshes uniformly.
+     */
+    specRefreshCycle: "connection.spec_refresh_cycle",
   },
   /**
    * Connection-group admin actions. Renames are display-label changes

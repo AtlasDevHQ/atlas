@@ -28,7 +28,7 @@ Successor to v0.0.2 ([milestone #58](https://github.com/AtlasDevHQ/atlas/milesto
 - [x] **Scheduler-driven auto re-discovery** ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)) — background fiber walks due installs and re-probes on the configured interval; Tier-2 per-install loop sharing the manual "Refresh now" core. Shipped in [#3046](https://github.com/AtlasDevHQ/atlas/pull/3046).
 - [x] **Breaking-change drift signal** ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)) — surface when scheduled re-discovery removes or changes operations the agent depends on. Shipped in [#3049](https://github.com/AtlasDevHQ/atlas/pull/3049).
 
-All 5 shipped ahead of a formal kickoff — promoted from "Planned tags" on v0.0.2 closeout (2026-05-31) since work was already underway. Feature-complete; tag-gated on one pre-tag follow-up ([#3050](https://github.com/AtlasDevHQ/atlas/issues/3050) — breaking-change classifier over-flags required children of optional request bodies/refs).
+All 5 shipped ahead of a formal kickoff — promoted from "Planned tags" on v0.0.2 closeout (2026-05-31) since work was already underway. Feature-complete and ready to tag — the one pre-tag follow-up ([#3050](https://github.com/AtlasDevHQ/atlas/issues/3050) — breaking-change classifier over-flagged required children of optional request bodies/refs) shipped in [#3051](https://github.com/AtlasDevHQ/atlas/pull/3051).
 
 ---
 

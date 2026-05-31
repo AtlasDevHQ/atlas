@@ -46,7 +46,7 @@ VALUES
     true,
     true,
     '[
-      {"key": "auth_value", "type": "string", "label": "API key / token", "required": true, "secret": true, "description": "The API credential for this datasource (e.g. your Stripe secret key). Encrypted at rest."},
+      {"key": "auth_value", "type": "string", "label": "API key / token", "required": true, "secret": true, "description": "The API credential for this datasource (e.g. a secret API key or access token). Encrypted at rest."},
       {"key": "base_url_override", "type": "string", "label": "Base URL override", "description": "When the spec''s servers[0].url is wrong (dev/staging/regional host)."},
       {"key": "display_name", "type": "string", "label": "Display name", "description": "Friendly name shown in /admin/connections."}
     ]'::jsonb,

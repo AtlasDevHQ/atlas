@@ -324,6 +324,12 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         const result = await executeOperation(datasource.graph, input.operationId, params, datasource.auth, {
           baseUrl: datasource.baseUrl,
           timeoutMs: verdict.timeoutMs,
+          // #3029: forward the datasource's declarative quirk on the confirmed-write
+          // path too — same as the read tool path (lib/tools/rest-operation.ts). A
+          // candidate's required headers (Notion-Version) / query shaping (Stripe's
+          // expand[]) must ride the upstream call; without this an allowlisted,
+          // human-confirmed write would omit them and the vendor would reject it.
+          ...(datasource.quirk ? { quirk: datasource.quirk } : {}),
           ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         });
 

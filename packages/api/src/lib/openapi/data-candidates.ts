@@ -89,7 +89,7 @@ export const DATA_CANDIDATE_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
     required: true,
     secret: true,
     description:
-      "The API credential for this datasource (e.g. your Stripe secret key). Encrypted at rest.",
+      "The API credential for this datasource (e.g. a secret API key or access token). Encrypted at rest.",
   },
   {
     key: "base_url_override",

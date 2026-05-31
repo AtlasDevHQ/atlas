@@ -177,8 +177,9 @@ describe("notion-data candidate (slice 6b, #3029 — required-header proof)", ()
     // Notion's "list pages in my workspace" is POST /v1/search — a genuine read.
     // The candidate declares it read-safe so it passes the read gate on a default
     // install WITHOUT an admin write-allowlist edit (the vendor fact lives in code,
-    // not in Notion API expertise the admin must supply).
-    expect(NOTION_DATA_CANDIDATE.readSafePostOperations).toContain("post-search");
+    // not in Notion API expertise the admin must supply). Exact equality (not
+    // toContain) so a stray extra declaration must be a deliberate edit here.
+    expect(NOTION_DATA_CANDIDATE.readSafePostOperations).toEqual(["post-search"]);
   });
 
   it("each declared read-safe id resolves to a real POST in Notion's surface (#3035 — no silent-inert misdeclaration)", () => {

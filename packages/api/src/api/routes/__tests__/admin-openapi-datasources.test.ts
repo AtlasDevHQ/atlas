@@ -14,10 +14,26 @@
  * exercised in `admin-router.test.ts`; here `./admin-router` is replaced with
  * pass-throughs (the org context comes from the per-test `CURRENT_ORG`) so the
  * assertions are about THIS file, not the perimeter.
+ *
+ * Test-infra note (#2991): the DB seam is an Effect test layer, not a
+ * `mock.module()`. `createOpenApiDatasourceTestLayer` installs a recording fake
+ * SqlClient into the module-level slot `internalQuery()` prefers, so the route's
+ * REAL `internalQuery()` runs end-to-end and every statement lands in `db.calls`
+ * (the typed replacement for `mock.fn.mock.calls`). The remaining `mock.module()`
+ * calls cover dependencies with no Effect-layer seam: `openapi/probe` (the route
+ * imports its functions directly — we need a controllable probe + a spy on
+ * `invalidateInstallGraphCache`), `../admin-router` (Hono middleware, no layer),
+ * `plugins/secrets` (a deliberate decrypt passthrough), `effect/hono` (run the
+ * handler without booting the enterprise runtime), the `audit` modules
+ * (`audit` + `audit/error-scrub` — silence + keep audit's DB writes out of
+ * `db.calls`), and `logger`. Converting those would mean reshaping the route
+ * into an Effect program — out of scope for this chore.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { Effect, ManagedRuntime } from "effect";
+import { createOpenApiDatasourceTestLayer } from "@atlas/api/__test-utils__/layers";
 
 // ── Mutable per-test state the mock factories close over ─────────────────────
 
@@ -31,10 +47,10 @@ let authResultOverride: { ok: false; rawAuthKind: string } | null = null;
 const CATALOG_ID = "catalog:openapi-generic";
 
 /**
- * One install owned by `org-owner`. The `internalQuery` mock emulates the SQL's
- * `WHERE workspace_id = $1` predicate — it only returns this row when the query
- * is scoped to its owner, so a request authenticated as any other workspace
- * resolves `[]` (→ 404), proving the scope clause is load-bearing.
+ * One install owned by `org-owner`. The `db` recorder's `query` callback (below)
+ * emulates the SQL's `WHERE workspace_id = $1` predicate — it only returns this
+ * row when the query is scoped to its owner, so a request authenticated as any
+ * other workspace resolves `[]` (→ 404), proving the scope clause is load-bearing.
  */
 const FIXTURE = {
   install_id: "ds-1",
@@ -57,33 +73,35 @@ const FIXTURE = {
   } as Record<string, unknown>,
 };
 
-// ── Mocks (declared before importing the SUT) ────────────────────────────────
+// ── DB seam — a recording Effect layer (NOT a module mock), see #2991 ────────
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  async (sql: string, params: unknown[] = []) => {
-    const ws = params[0];
-    const ownedRow = { install_id: FIXTURE.install_id, config: FIXTURE.config, status: FIXTURE.status };
+/**
+ * Routes the route's module-level `internalQuery()` through a recording fake.
+ * The `query` callback emulates the SQL behaviour the assertions rely on: the
+ * `WHERE workspace_id = $1` scoping predicate, the DELETE `RETURNING` rowcount,
+ * and the unused UPDATE rowcount. Every statement is captured in `db.calls`.
+ * Built/disposed by the suite-level `beforeAll`/`afterAll` below.
+ */
+const db = createOpenApiDatasourceTestLayer((sql, params) => {
+  const ws = params[0];
+  const ownedRow = { install_id: FIXTURE.install_id, config: FIXTURE.config, status: FIXTURE.status };
 
-    if (sql.includes("DELETE FROM workspace_plugins")) {
-      const instId = params[1];
-      return ws === FIXTURE.owner && instId === FIXTURE.install_id ? [{ install_id: FIXTURE.install_id }] : [];
-    }
-    if (sql.includes("UPDATE workspace_plugins")) {
-      return []; // rediscover/patch UPDATE — rowcount unused (loadInstall already gated)
-    }
-    if (sql.includes("ORDER BY installed_at")) {
-      return ws === FIXTURE.owner ? [ownedRow] : []; // list
-    }
-    // loadInstall SELECT (LIMIT 1, install_id = $2)
+  if (sql.includes("DELETE FROM workspace_plugins")) {
     const instId = params[1];
-    return ws === FIXTURE.owner && instId === FIXTURE.install_id ? [ownedRow] : [];
-  },
-);
+    return ws === FIXTURE.owner && instId === FIXTURE.install_id ? [{ install_id: FIXTURE.install_id }] : [];
+  }
+  if (sql.includes("UPDATE workspace_plugins")) {
+    return []; // rediscover/patch UPDATE — rowcount unused (loadInstall already gated)
+  }
+  if (sql.includes("ORDER BY installed_at")) {
+    return ws === FIXTURE.owner ? [ownedRow] : []; // list
+  }
+  // loadInstall SELECT (LIMIT 1, install_id = $2)
+  const instId = params[1];
+  return ws === FIXTURE.owner && instId === FIXTURE.install_id ? [ownedRow] : [];
+});
 
-mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
-  hasInternalDB: () => true,
-}));
+// ── Mocks (declared before importing the SUT) ────────────────────────────────
 
 mock.module("@atlas/api/lib/effect/hono", () => ({
   runHandler: async (_c: unknown, _label: string, fn: () => unknown) => fn(),
@@ -189,10 +207,22 @@ const { adminOpenApiDatasources } = await import("../admin-openapi-datasources")
 
 const JSON_HEADERS = { "content-type": "application/json" };
 
+// Build the DB layer once for the file: `runPromise(Effect.void)` forces the
+// scoped acquire (installs the recording client into the module slot), and
+// `dispose()` runs the finalizer (restores the slot to null) so nothing leaks.
+let dbRuntime: ManagedRuntime.ManagedRuntime<never, never>;
+beforeAll(async () => {
+  dbRuntime = ManagedRuntime.make(db.layer);
+  await dbRuntime.runPromise(Effect.void);
+});
+afterAll(async () => {
+  await dbRuntime.dispose();
+});
+
 beforeEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
-  mockInternalQuery.mockClear();
+  db.clear();
   invalidateGraphCacheSpy.mockClear();
 });
 afterEach(() => {
@@ -226,10 +256,10 @@ describe("admin-openapi-datasources — workspace scoping", () => {
 
   it("scopes loadInstall by both workspace_id ($1) and install_id ($2), passing the authed org", async () => {
     await adminOpenApiDatasources.request("/ds-1");
-    const select = mockInternalQuery.mock.calls.find(([sql]) => sql.includes("LIMIT 1"));
+    const select = db.calls.find(([sql]) => sql.includes("LIMIT 1"));
     expect(select?.[0]).toContain("workspace_id = $1");
     expect(select?.[0]).toContain("install_id = $2");
-    expect((select?.[1] as unknown[])[0]).toBe(FIXTURE.owner); // authed org is $1
+    expect(select?.[1][0]).toBe(FIXTURE.owner); // authed org is $1
   });
 
   it("list only returns the calling workspace's datasources", async () => {
@@ -257,7 +287,7 @@ describe("admin-openapi-datasources — mutations never rewrite the credential",
       body: JSON.stringify({ representationMode: "semantic-yaml" }),
     });
     expect(res.status).toBe(200);
-    const update = mockInternalQuery.mock.calls.find(
+    const update = db.calls.find(
       ([sql]) => sql.includes("UPDATE") && sql.includes("representation_mode"),
     );
     expect(update).toBeDefined();
@@ -269,13 +299,13 @@ describe("admin-openapi-datasources — mutations never rewrite the credential",
   it("rediscover writes only openapi_snapshot — no auth_value in the SQL or the payload", async () => {
     const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
     expect(res.status).toBe(200);
-    const update = mockInternalQuery.mock.calls.find(
+    const update = db.calls.find(
       ([sql]) => sql.includes("UPDATE") && sql.includes("openapi_snapshot"),
     );
     expect(update).toBeDefined();
     expect(update![0]).toContain("jsonb_build_object('openapi_snapshot'");
     expect(update![0]).not.toContain("auth_value");
-    const snapshotJson = (update![1] as unknown[])[3] as string;
+    const snapshotJson = update![1][3] as string;
     expect(snapshotJson).not.toContain("auth_value");
     expect(snapshotJson).not.toContain("should-never-be-rewritten");
   });
@@ -296,8 +326,8 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
     // proof the manual "Refresh now" triggered a live re-probe (AC: re-probe).
     const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
     expect(res.status).toBe(200);
-    const update = mockInternalQuery.mock.calls.find(
-      ([sql]) => (sql as string).includes("UPDATE") && (sql as string).includes("openapi_snapshot"),
+    const update = db.calls.find(
+      ([sql]) => sql.includes("UPDATE") && sql.includes("openapi_snapshot"),
     );
     expect(update).toBeDefined();
   });
@@ -310,7 +340,7 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
     expect(body.error).toBe("bad_request");
     expect(body.message).toContain("oauth2");
     // Failed auth resolution short-circuits before the snapshot UPDATE + eviction.
-    expect(mockInternalQuery.mock.calls.find(([sql]) => (sql as string).includes("UPDATE"))).toBeUndefined();
+    expect(db.calls.find(([sql]) => sql.includes("UPDATE"))).toBeUndefined();
     expect(invalidateGraphCacheSpy).not.toHaveBeenCalled();
   });
 
@@ -362,7 +392,7 @@ describe("admin-openapi-datasources — graph-cache eviction wiring", () => {
 
 /** The merge UPDATE the PATCH handler issues, if any. */
 function findConfigUpdate() {
-  return mockInternalQuery.mock.calls.find(([sql]) => (sql as string).includes("UPDATE"));
+  return db.calls.find(([sql]) => sql.includes("UPDATE"));
 }
 
 describe("admin-openapi-datasources — spec_refresh_interval set / clear / clamp", () => {

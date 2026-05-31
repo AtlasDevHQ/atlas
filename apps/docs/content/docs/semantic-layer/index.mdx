@@ -10,10 +10,10 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 
 The semantic layer is the **product**. Everything else in Atlas — the agent loop, the MCP server, the chat widget, the validation pipeline — exists to make the YAML you write the source of truth for how questions become answers.
 
-Every field in the Atlas YAML format exists because an LLM needs it to query your data correctly. `sample_values` ground the agent in real data. `glossary.status: ambiguous` forces the agent to ask a clarifying question instead of guessing. `metrics.objective` tells it whether `MAX` or `MIN` is the right answer to "what's our best month?". `query_patterns` teach the canonical join shapes for your domain.
+Every field in the Atlas YAML format earns its place by helping an LLM query your data correctly. `sample_values` ground the agent in real data. `glossary.status: ambiguous` forces the agent to ask a clarifying question instead of guessing. `metrics.objective` tells it whether `MAX` or `MIN` is the right answer to "what's our best month?". `query_patterns` teach the canonical join shapes for your domain.
 
 <Callout type="info" title="SQL or REST — one semantic layer">
-  The same YAML paradigm covers REST/OpenAPI datasources, not only SQL databases. For a REST service — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x spec — Atlas reads the spec into an operation graph, and operations, parameters, and response schemas become the model the agent queries through the `executeRestOperation` tool. It flows through the same read-only-by-default safety pipeline as SQL (`validateRestOperation`, per-endpoint `write_allowlist`, SSRF guard). See [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic).
+  The same YAML paradigm covers REST/OpenAPI datasources, not only SQL databases. For a REST service — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x spec — Atlas reads the spec into an operation graph, and operations, parameters, and response schemas become the model the agent queries through the `executeRestOperation` tool. It's read-only by default too, enforced by `validateRestOperation` — a parallel safety stack purpose-built for REST (per-endpoint `write_allowlist`, SSRF guard), the sibling to the SQL validator. See [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic).
 </Callout>
 
 ## What's in the YAML?

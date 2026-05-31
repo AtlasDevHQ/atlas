@@ -64,6 +64,8 @@ const MANAGED_VARS = [
   "BETTER_AUTH_SECRET",
   "BETTER_AUTH_URL",
   "BETTER_AUTH_TRUSTED_ORIGINS",
+  "ATLAS_CORS_ORIGIN",
+  "ATLAS_RPID",
   "ATLAS_AUTH_JWKS_URL",
   "ATLAS_AUTH_ISSUER",
   "ATLAS_AUTH_AUDIENCE",
@@ -91,6 +93,8 @@ beforeEach(() => {
   delete process.env.BETTER_AUTH_SECRET;
   delete process.env.BETTER_AUTH_URL;
   delete process.env.BETTER_AUTH_TRUSTED_ORIGINS;
+  delete process.env.ATLAS_CORS_ORIGIN;
+  delete process.env.ATLAS_RPID;
   delete process.env.ATLAS_AUTH_JWKS_URL;
   delete process.env.ATLAS_AUTH_ISSUER;
   delete process.env.ATLAS_AUTH_AUDIENCE;
@@ -225,6 +229,51 @@ describe("auth diagnostics — mode managed", () => {
     const dbErr = errors.find((e) => e.code === "INTERNAL_DB_UNREACHABLE");
     expect(dbErr).toBeDefined();
     expect(dbErr!.message).toContain("session storage");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Auth mode: managed — WebAuthn rpID validity (#3045)
+//
+// The passkey rpID throw lives in buildPlugins() (lazy / boot-migration, where
+// the migration path swallows it into a generic log), so startup diagnostics
+// resolve the same env/origin pair eagerly and surface an actionable error.
+// ---------------------------------------------------------------------------
+
+describe("auth diagnostics — mode managed — rpID (#3045)", () => {
+  beforeEach(() => {
+    delete process.env.ATLAS_API_KEY;
+    delete process.env.ATLAS_AUTH_JWKS_URL;
+    delete process.env.ATLAS_AUTH_ISSUER;
+    process.env.BETTER_AUTH_SECRET = "a".repeat(32); // managed mode, valid secret
+  });
+
+  it("reports INVALID_RP_ID when explicit ATLAS_RPID can't be valid for the web origin", async () => {
+    process.env.BETTER_AUTH_TRUSTED_ORIGINS = "https://app.staging.useatlas.dev";
+    process.env.ATLAS_RPID = "app.useatlas.dev"; // prod rpID on a staging origin
+
+    const errors = await validateEnvironment();
+    const rpErr = errors.find((e) => e.code === "INVALID_RP_ID");
+    expect(rpErr).toBeDefined();
+    expect(rpErr!.message).toContain("app.staging.useatlas.dev"); // the origin host
+    expect(rpErr!.message).toContain("ATLAS_RPID"); // the env var to fix
+  });
+
+  it("no INVALID_RP_ID when ATLAS_RPID is unset (derived from origin)", async () => {
+    process.env.BETTER_AUTH_TRUSTED_ORIGINS = "https://app.staging.useatlas.dev";
+    delete process.env.ATLAS_RPID;
+
+    const errors = await validateEnvironment();
+    expect(errors.some((e) => e.code === "INVALID_RP_ID")).toBe(false);
+  });
+
+  it("no INVALID_RP_ID when no web origin is configured (single-origin / self-hosted)", async () => {
+    delete process.env.BETTER_AUTH_TRUSTED_ORIGINS;
+    delete process.env.ATLAS_CORS_ORIGIN;
+    process.env.ATLAS_RPID = "auth.example.com"; // arbitrary, but nothing to validate against
+
+    const errors = await validateEnvironment();
+    expect(errors.some((e) => e.code === "INVALID_RP_ID")).toBe(false);
   });
 });
 

@@ -91,6 +91,13 @@ export function parsePasskeySignInError(input: PasskeySignInErrorInput): Passkey
   // user-cancelled WebAuthn assertions as `AUTH_CANCELLED` regardless of
   // the HTTP status (some browsers report 401 here, others 400).
   if (code === "AUTH_CANCELLED" || code === "REGISTRATION_CANCELLED") {
+    // A misconfigured rpID can surface UNDER a cancellation code carrying the
+    // browser's "RP ID invalid for this domain" message (see the outcome doc
+    // above — rpID misconfig wears the same NotAllowedError shape). That's a
+    // setup error, not a user cancellation, so surface it instead of silently
+    // swallowing it. Genuine cancellations carry generic messages and won't
+    // match the two-term guard, so this can't hijack a real cancellation.
+    if (isInvalidRpIdError(message)) return { kind: "user", message: INVALID_RP_ID_MESSAGE };
     return { kind: "silent" };
   }
 

@@ -342,4 +342,25 @@ describe("resolvePasskeyRpId (#3045)", () => {
       );
     });
   });
+
+  describe("IP-literal origin → resolves but does not throw (passkeys can't work on an IP)", () => {
+    it("an IPv4 origin derives the IP rpID without throwing (suffix-equal), logged loud elsewhere", () => {
+      // WebAuthn rpIDs can't be IPs, so passkeys are effectively disabled here —
+      // but we must NOT throw (that would break non-passkey managed auth for a
+      // dev on an IP host, and there's no valid rpID to substitute).
+      expect(resolvePasskeyRpId({}, "http://127.0.0.1:3000")).toBe("127.0.0.1");
+      expect(resolvePasskeyRpId({}, "http://192.168.1.50:3000")).toBe("192.168.1.50");
+    });
+
+    it("an explicit IP rpID matching an IP origin resolves without throwing", () => {
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "127.0.0.1" }, "http://127.0.0.1:3000")).toBe(
+        "127.0.0.1",
+      );
+    });
+
+    it("localhost (a name, not an IP) derives normally", () => {
+      // Regression guard: the IP check must not catch the valid `localhost` rpID.
+      expect(resolvePasskeyRpId({}, "http://localhost:3000")).toBe("localhost");
+    });
+  });
 });

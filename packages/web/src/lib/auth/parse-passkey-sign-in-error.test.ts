@@ -151,6 +151,34 @@ describe("parsePasskeySignInError — invalid rpID (#3045)", () => {
     }
   });
 
+  test("invalid-rpID message UNDER a cancellation code → setup-issue copy, not silent", () => {
+    // rpID misconfig can wear the NotAllowedError/AUTH_CANCELLED shape. The
+    // cancellation fast-path must not silently swallow it when the message
+    // clearly identifies an rpID/domain mismatch.
+    const result = parsePasskeySignInError({
+      kind: "wire",
+      error: {
+        code: "AUTH_CANCELLED",
+        message: 'The RP ID "app.useatlas.dev" is invalid for this domain',
+        status: 400,
+      },
+    });
+    expect(result.kind).toBe("user");
+    if (result.kind === "user") {
+      expect(result.message).toContain("aren't set up correctly for this site");
+    }
+  });
+
+  test("a genuine cancellation (generic message) under AUTH_CANCELLED stays silent", () => {
+    // Guards the two-term boundary: a real cancellation must not be hijacked.
+    expect(
+      parsePasskeySignInError({
+        kind: "wire",
+        error: { code: "AUTH_CANCELLED", message: "The operation was not allowed", status: 400 },
+      }),
+    ).toEqual({ kind: "silent" });
+  });
+
   test("a message that merely mentions 'domain' (no RP term) does NOT match", () => {
     // Guards the two-term requirement: 'domain' alone must not hijack an
     // unrelated error into the rpID branch.

@@ -8,7 +8,10 @@
  * `next` link is present, the walk is done.
  *
  * Config fields:
- *  - `itemsPath` (req) — dot-path to the item array (for merging).
+ *  - `itemsPath` (opt) — dot-path to the item array. DEFAULTS to the response
+ *    root (`""`), because GitHub — the canonical `Link`-header API — returns a
+ *    TOP-LEVEL array from its list endpoints (`GET /repos/{}/{}/pulls` → `[…]`),
+ *    not a wrapped `{ data: [...] }`. Set it only when a vendor wraps its list.
  *  - `rel`       (opt) — link relation to follow (default `"next"`).
  */
 import {
@@ -17,7 +20,6 @@ import {
   optionalString,
   PAGE_DONE,
   pageError,
-  requireString,
   withQuery,
   type PaginationConfig,
   type PaginationStrategy,
@@ -27,7 +29,9 @@ import {
 export const linkHeaderStrategy: PaginationStrategyFactory = {
   name: "link-header",
   create(config: PaginationConfig): PaginationStrategy {
-    const itemsPath = requireString(config, "itemsPath");
+    // Root (`""`) by default — `extractItems("")` returns the body itself, the
+    // GitHub bare-array shape. A wrapped vendor overrides with a dot-path.
+    const itemsPath = optionalString(config, "itemsPath") ?? "";
     const rel = optionalString(config, "rel") ?? "next";
 
     return {

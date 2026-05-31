@@ -68,6 +68,10 @@ import {
   verifyOAuthStateToken,
 } from "./oauth-state-token";
 import {
+  exchangeUserCodeForToken,
+  findUserInstallation,
+} from "./github-app-oauth";
+import {
   GITHUB_APP_SECRET_FIELDS_SCHEMA,
   GITHUB_CATALOG_ID,
   GitHubInstallationConfigSchema,
@@ -89,14 +93,6 @@ export const GITHUB_SLUG: CatalogId = "github";
 export { GITHUB_CATALOG_ID };
 
 const APP_INSTALL_URL_BASE = "https://github.com/apps";
-const USER_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token";
-const USER_INSTALLATIONS_URL = "https://api.github.com/user/installations";
-
-/** Hard timeout on install-time GitHub round-trips — see Jira sibling. */
-const INSTALL_FETCH_TIMEOUT_MS = 15_000;
-
-/** Cap on `/user/installations` pages we'll walk before giving up. */
-const MAX_INSTALLATIONS_PAGES = 10;
 
 /**
  * Operator-side GitHub App config. Read once from env in `register.ts`
@@ -135,211 +131,6 @@ export interface GitHubOAuthHandlerConfig {
    * AND "Callback URL" (since user-OAuth-during-install is required).
    */
   readonly redirectUri: string;
-}
-
-// ---------------------------------------------------------------------------
-// GitHub API response shapes (narrow subsets we consume)
-// ---------------------------------------------------------------------------
-
-interface UserTokenResponse {
-  readonly access_token?: string;
-  readonly token_type?: string;
-  readonly scope?: string;
-  readonly error?: string;
-  readonly error_description?: string;
-}
-
-interface UserInstallationsResponse {
-  readonly total_count?: number;
-  readonly installations?: ReadonlyArray<{
-    readonly id?: number;
-    readonly account?: {
-      readonly login?: string;
-      readonly type?: string;
-    };
-  }>;
-}
-
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Exchange the user OAuth `code` for a user access token. GitHub's
- * OAuth-during-install flow uses the standard
- * `https://github.com/login/oauth/access_token` endpoint with
- * `client_id` + `client_secret` + `code`. Returns the parsed
- * `access_token`; throws `PlatformOAuthExchangeError` on any
- * non-success path.
- */
-async function exchangeUserCodeForToken(args: {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  readonly code: string;
-  readonly redirectUri: string;
-}): Promise<string> {
-  let resp: Response;
-  try {
-    resp = await fetchWithTimeout(
-      USER_OAUTH_TOKEN_URL,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
-        },
-        body: new URLSearchParams({
-          client_id: args.clientId,
-          client_secret: args.clientSecret,
-          code: args.code,
-          redirect_uri: args.redirectUri,
-        }).toString(),
-      },
-      INSTALL_FETCH_TIMEOUT_MS,
-    );
-  } catch (err) {
-    const isAbort = err instanceof Error && err.name === "AbortError";
-    log.warn(
-      {
-        err: err instanceof Error ? err.message : String(err),
-        timedOut: isAbort,
-      },
-      isAbort
-        ? "GitHub user-OAuth token endpoint timed out"
-        : "GitHub user-OAuth token endpoint unreachable",
-    );
-    throw new PlatformOAuthExchangeError({
-      message: isAbort
-        ? "GitHub token endpoint timed out. Restart the install."
-        : "Failed to reach GitHub token endpoint. Restart the install.",
-      platform: GITHUB_SLUG,
-      upstreamError: isAbort ? "timeout" : err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  let parsed: UserTokenResponse;
-  try {
-    parsed = (await resp.json()) as UserTokenResponse;
-  } catch {
-    throw new PlatformOAuthExchangeError({
-      message: "GitHub returned an unparseable token response. Restart the install.",
-      platform: GITHUB_SLUG,
-      upstreamError: `non-json ${resp.status}`,
-    });
-  }
-
-  if (!resp.ok || typeof parsed.access_token !== "string" || parsed.access_token.length === 0) {
-    throw new PlatformOAuthExchangeError({
-      message: "GitHub rejected the OAuth code. Restart the install.",
-      platform: GITHUB_SLUG,
-      upstreamError: parsed.error ?? `http_${resp.status}`,
-    });
-  }
-  return parsed.access_token;
-}
-
-/**
- * Walk `/user/installations` looking for `targetInstallationId`. Returns
- * the matching installation's account info when found, or `null` when
- * the user does NOT have access to that installation — the signal that
- * the callback was tampered.
- *
- * GitHub paginates this endpoint; we follow the `Link: <…>; rel="next"`
- * header up to `MAX_INSTALLATIONS_PAGES` (covers users who belong to
- * hundreds of orgs without unbounded looping). A user with more
- * installations than that limit and the target in a later page will
- * fail closed — acceptable trade-off; the operator can raise the cap
- * if needed.
- */
-async function findUserInstallation(
-  userAccessToken: string,
-  targetInstallationId: string,
-): Promise<{ login: string | null; type: string | null } | null> {
-  let url: string | null = `${USER_INSTALLATIONS_URL}?per_page=100`;
-  let page = 0;
-  while (url !== null && page < MAX_INSTALLATIONS_PAGES) {
-    page++;
-    let resp: Response;
-    try {
-      resp = await fetchWithTimeout(
-        url,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${userAccessToken}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-        },
-        INSTALL_FETCH_TIMEOUT_MS,
-      );
-    } catch (err) {
-      const isAbort = err instanceof Error && err.name === "AbortError";
-      throw new PlatformOAuthExchangeError({
-        message: isAbort
-          ? "GitHub API timed out while verifying installation ownership. Restart the install."
-          : "Failed to reach GitHub API while verifying installation ownership. Restart the install.",
-        platform: GITHUB_SLUG,
-        upstreamError: isAbort ? "timeout" : err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    if (!resp.ok) {
-      throw new PlatformOAuthExchangeError({
-        message: "GitHub rejected the user-installations lookup. Restart the install.",
-        platform: GITHUB_SLUG,
-        upstreamError: `user_installations_http_${resp.status}`,
-      });
-    }
-
-    let parsed: UserInstallationsResponse;
-    try {
-      parsed = (await resp.json()) as UserInstallationsResponse;
-    } catch (err) {
-      throw new PlatformOAuthExchangeError({
-        message: "GitHub returned an unparseable user-installations response. Restart the install.",
-        platform: GITHUB_SLUG,
-        upstreamError: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    const match = parsed.installations?.find(
-      (i) => typeof i.id === "number" && String(i.id) === targetInstallationId,
-    );
-    if (match) {
-      return {
-        login: typeof match.account?.login === "string" ? match.account.login : null,
-        type: typeof match.account?.type === "string" ? match.account.type : null,
-      };
-    }
-    url = parseNextLinkHeader(resp.headers.get("link"));
-  }
-  return null;
-}
-
-/**
- * Parse the `Link` header per RFC 5988 / GitHub pagination — extracts
- * the `rel="next"` URL or returns null when absent. Permissive parser:
- * any malformed segment is silently skipped, since GitHub's emitter is
- * standardized but downstream proxies sometimes mangle whitespace.
- */
-function parseNextLinkHeader(header: string | null): string | null {
-  if (!header) return null;
-  for (const segment of header.split(",")) {
-    const match = segment.match(/<([^>]+)>\s*;\s*rel="next"/);
-    if (match && typeof match[1] === "string") return match[1];
-  }
-  return null;
 }
 
 export class GitHubOAuthInstallHandler implements OAuthPlatformInstallHandler {
@@ -434,8 +225,11 @@ export class GitHubOAuthInstallHandler implements OAuthPlatformInstallHandler {
       clientSecret: this.config.clientSecret,
       code,
       redirectUri: this.config.redirectUri,
+      platform: GITHUB_SLUG,
     });
-    const ownership = await findUserInstallation(userToken, installationId);
+    const ownership = await findUserInstallation(userToken, installationId, {
+      platform: GITHUB_SLUG,
+    });
     if (!ownership) {
       log.warn(
         { workspaceId, installationIdTail: installationId.slice(-4) },

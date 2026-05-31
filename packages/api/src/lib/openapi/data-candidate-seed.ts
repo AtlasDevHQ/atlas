@@ -23,7 +23,11 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { DATA_CANDIDATES, DATA_CANDIDATE_CONFIG_SCHEMA } from "./data-candidates";
+import {
+  DATA_CANDIDATES,
+  candidateConfigSchema,
+  candidateInstallModel,
+} from "./data-candidates";
 import type { OpenApiDatasourceCatalogSeedDb } from "./catalog-seed";
 
 const log = createLogger("openapi.data-candidate-seed");
@@ -35,29 +39,39 @@ export interface DataCandidateCatalogSeedResult {
 
 /**
  * Idempotently seed every data-candidate catalog row. Column order + the
- * `'datasource'` type+pillar / `'available'` status / `'form'` install_model /
- * `'starter'` min_plan / `true` enabled+saas_eligible literals all mirror
- * migration 0109 and the generic-row seed so the admin catalog surfaces these
- * identically. One INSERT per row keeps the SQL trivial and the idempotency
- * per-row (a partially-seeded catalog converges on the next boot).
+ * `'datasource'` type+pillar / `'available'` status / `'starter'` min_plan /
+ * `true` enabled+saas_eligible literals all mirror migrations 0109 / 0111 and
+ * the generic-row seed so the admin catalog surfaces these identically. The
+ * `install_model` and `config_schema` are PER-CANDIDATE (a `form` candidate
+ * carries the credential form; an `oauth-datasource` candidate is `oauth-datasource`
+ * with an empty form), bound rather than literal so one loop seeds both shapes.
+ * One INSERT per row keeps the idempotency per-row (a partially-seeded catalog
+ * converges on the next boot).
  */
 export async function seedDataCandidateCatalog(
   db: OpenApiDatasourceCatalogSeedDb,
 ): Promise<DataCandidateCatalogSeedResult> {
   const insertedSlugs: string[] = [];
-  const configSchemaJson = JSON.stringify(DATA_CANDIDATE_CONFIG_SCHEMA);
 
   for (const candidate of DATA_CANDIDATES) {
+    const configSchemaJson = JSON.stringify(candidateConfigSchema(candidate));
     const { rows } = await db.query<{ slug: string }>(
       `INSERT INTO plugin_catalog
          (id, name, slug, description, type, install_model, pillar,
           implementation_status, auto_install, min_plan, enabled, saas_eligible,
           config_schema, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'datasource', 'form', 'datasource', 'available',
-               false, 'starter', true, true, $5::jsonb, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, 'datasource', $5, 'datasource', 'available',
+               false, 'starter', true, true, $6::jsonb, NOW(), NOW())
        ON CONFLICT DO NOTHING
        RETURNING slug`,
-      [candidate.catalogId, candidate.name, candidate.slug, candidate.description, configSchemaJson],
+      [
+        candidate.catalogId,
+        candidate.name,
+        candidate.slug,
+        candidate.description,
+        candidateInstallModel(candidate),
+        configSchemaJson,
+      ],
     );
     if (rows.length > 0) insertedSlugs.push(candidate.slug);
   }

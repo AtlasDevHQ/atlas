@@ -18,6 +18,7 @@ import {
   _resetInstallHandlerRegistries,
   getInstallHandler,
   registerFormHandler,
+  registerOAuthDatasourceHandler,
   registerOAuthHandler,
   registerStaticBotHandler,
 } from "../dispatch";
@@ -25,6 +26,7 @@ import type {
   CatalogRowForDispatch,
   FormBasedInstallHandler,
   InstallRecord,
+  OAuthDatasourceInstallHandler,
   OAuthPlatformInstallHandler,
   StaticBotInstallHandler,
 } from "../types";
@@ -70,6 +72,24 @@ function makeStaticBotHandler(slug: string): StaticBotInstallHandler {
     kind: "static-bot",
     async confirmInstall() {
       return { installRecord: record };
+    },
+  };
+}
+
+function makeOAuthDatasourceHandler(slug: string): OAuthDatasourceInstallHandler {
+  const record: InstallRecord = { id: `install-${slug}`, workspaceId: wsid, catalogId: slug };
+  return {
+    kind: "oauth-datasource",
+    async startInstall() {
+      return { redirectUrl: `https://example.test/${slug}/installations/new`, stateToken: "tok" };
+    },
+    async handleCallback() {
+      return {
+        workspaceId: wsid,
+        catalogId: slug,
+        installRecord: record,
+        credentialResult: { written: true },
+      };
     },
   };
 }
@@ -177,6 +197,40 @@ describe("getInstallHandler — install_model: 'static-bot'", () => {
     expect(
       getInstallHandler({ slug: "telegram", install_model: "static-bot" }),
     ).toBe(replacement);
+  });
+});
+
+describe("getInstallHandler — install_model: 'oauth-datasource'", () => {
+  it("returns the registered OAuth-datasource handler for a known slug", () => {
+    const handler = makeOAuthDatasourceHandler("github-data");
+    registerOAuthDatasourceHandler("github-data", handler);
+
+    const row: CatalogRowForDispatch = { slug: "github-data", install_model: "oauth-datasource" };
+    const resolved = getInstallHandler(row);
+    expect(resolved.kind).toBe("oauth-datasource");
+    expect(resolved).toBe(handler);
+  });
+
+  it("keeps the oauth-datasource registry distinct from the chat/action oauth registry", () => {
+    // Same slug must NOT collide across the two registries — an oauth row and an
+    // oauth-datasource row are independent install paths.
+    const datasource = makeOAuthDatasourceHandler("github-data");
+    registerOAuthDatasourceHandler("github-data", datasource);
+    // The plain-oauth registry has no "github-data" entry → dispatching the same
+    // slug as install_model: 'oauth' must throw, not return the datasource handler.
+    expect(() =>
+      getInstallHandler({ slug: "github-data", install_model: "oauth" }),
+    ).toThrow(/No OAuth install handler registered for catalog slug "github-data"/);
+    expect(
+      getInstallHandler({ slug: "github-data", install_model: "oauth-datasource" }),
+    ).toBe(datasource);
+  });
+
+  it("throws an actionable error when no oauth-datasource handler is registered", () => {
+    const row: CatalogRowForDispatch = { slug: "github-data", install_model: "oauth-datasource" };
+    expect(() => getInstallHandler(row)).toThrow(
+      /No OAuth-datasource install handler registered for catalog slug "github-data"/,
+    );
   });
 });
 

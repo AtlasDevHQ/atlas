@@ -92,6 +92,9 @@ const log = createLogger("integrations");
 const INSTALLATION_ID_PLATFORMS: ReadonlySet<string> = new Set([
   "github",
   "github-single-tenant",
+  // github-data (#3030) — the OAuth-datasource row reusing the SAME GitHub App
+  // install dance (code + installation_id) as the action `github` row.
+  "github-data",
 ]);
 
 /**
@@ -456,7 +459,12 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   );
   if (rows.length === 0) return null;
   const row = rows[0];
-  if (row.install_model !== "oauth" && row.install_model !== "form" && row.install_model !== "static-bot") {
+  if (
+    row.install_model !== "oauth" &&
+    row.install_model !== "form" &&
+    row.install_model !== "static-bot" &&
+    row.install_model !== "oauth-datasource"
+  ) {
     log.warn({ slug, install_model: row.install_model }, "Unknown install_model in plugin_catalog row");
     return null;
   }
@@ -624,7 +632,9 @@ integrations.openapi(installRoute, async (c) =>
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
-    if (row.install_model !== "oauth") {
+    // `oauth-datasource` (github-data, #3030) shares this OAuth install/callback
+    // route — the HTTP dance is identical; only the handler's persistence differs.
+    if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
         400,
@@ -693,10 +703,10 @@ integrations.openapi(installRoute, async (c) =>
         501,
       );
     }
-    if (handler.kind !== "oauth") {
-      // Catalog said OAuth, dispatch returned a non-OAuth handler — a
-      // config drift; treat as 500-equivalent for the route's invariants.
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='oauth' but dispatch returned non-OAuth handler");
+    if (handler.kind !== "oauth" && handler.kind !== "oauth-datasource") {
+      // Catalog said OAuth(-datasource), dispatch returned a different handler —
+      // a config drift; treat as 500-equivalent for the route's invariants.
+      log.error({ platform, kind: handler.kind }, "Catalog install_model is OAuth-shaped but dispatch returned a non-OAuth handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
@@ -912,7 +922,10 @@ integrations.openapi(callbackRoute, async (c) =>
     // GitHub multi-tenant. Other handlers ignore extras.
     let handlerPositionalCode: string;
     let handlerExtras: { installationId?: string } | undefined;
-    if (platform === "github") {
+    if (platform === "github" || platform === "github-data") {
+      // Multi-tenant GitHub App dance — `github` (action) and `github-data`
+      // (datasource, #3030) are identical here: both need `code` (user OAuth, for
+      // installation-ownership verification) + `installation_id` (the credential).
       if (typeof code !== "string" || code.length === 0) {
         return c.json(
           {
@@ -969,7 +982,8 @@ integrations.openapi(callbackRoute, async (c) =>
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
-    if (row.install_model !== "oauth") {
+    // `oauth-datasource` (github-data, #3030) shares this callback route.
+    if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
         400,
@@ -989,8 +1003,8 @@ integrations.openapi(callbackRoute, async (c) =>
         501,
       );
     }
-    if (handler.kind !== "oauth") {
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='oauth' but dispatch returned non-OAuth handler");
+    if (handler.kind !== "oauth" && handler.kind !== "oauth-datasource") {
+      log.error({ platform, kind: handler.kind }, "Catalog install_model is OAuth-shaped but dispatch returned a non-OAuth handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 

@@ -9,9 +9,13 @@ import {
   DATA_CANDIDATES,
   DATA_CANDIDATE_CATALOG_IDS,
   DATA_CANDIDATE_CONFIG_SCHEMA,
+  GITHUB_DATA_CANDIDATE,
   STRIPE_DATA_CANDIDATE,
+  candidateConfigSchema,
+  candidateInstallModel,
   findDataCandidateByCatalogId,
   findDataCandidateBySlug,
+  isOAuthDatasourceCandidate,
 } from "../data-candidates";
 import { OPENAPI_SUPPORTED_AUTH_KINDS } from "../catalog";
 import { defaultPaginatorRegistry } from "../strategies";
@@ -23,8 +27,12 @@ describe("DATA_CANDIDATES registry invariants", () => {
     }
   });
 
-  it("uses only executable (non-oauth2) auth kinds in slice 6a", () => {
+  it("form candidates use only executable (non-oauth2) auth kinds", () => {
+    // OAuth-datasource candidates carry a credentialMode, not a static authKind —
+    // their credential is acquired by the OAuth dance, so the auth-kind invariant
+    // applies only to the form candidates.
     for (const c of DATA_CANDIDATES) {
+      if (isOAuthDatasourceCandidate(c)) continue;
       expect(OPENAPI_SUPPORTED_AUTH_KINDS).toContain(c.authKind);
     }
   });
@@ -78,6 +86,31 @@ describe("stripe-data candidate", () => {
       cursorItemField: "id",
       hasMorePath: "has_more",
     });
+  });
+});
+
+describe("github-data candidate (oauth-datasource)", () => {
+  it("is an oauth-datasource candidate with the github-app-installation credential mode", () => {
+    expect(isOAuthDatasourceCandidate(GITHUB_DATA_CANDIDATE)).toBe(true);
+    expect(candidateInstallModel(GITHUB_DATA_CANDIDATE)).toBe("oauth-datasource");
+    expect(GITHUB_DATA_CANDIDATE.credentialMode).toBe("github-app-installation");
+  });
+
+  it("pre-fills GitHub's published OpenAPI spec URL (admin never pastes one)", () => {
+    expect(GITHUB_DATA_CANDIDATE.openapiUrl).toMatch(/^https:\/\//);
+    expect(GITHUB_DATA_CANDIDATE.openapiUrl).toContain("github");
+  });
+
+  it("declares link-header pagination with itemsPath omitted (GitHub bare-array shape)", () => {
+    expect(GITHUB_DATA_CANDIDATE.pagination?.strategy).toBe("link-header");
+    expect(GITHUB_DATA_CANDIDATE.pagination?.itemsPath).toBeUndefined();
+    // Resolving over the GENERIC registry proves it's a thin wrapper (no forked strategy).
+    const strategy = defaultPaginatorRegistry.resolve(GITHUB_DATA_CANDIDATE.pagination!);
+    expect(strategy.name).toBe("link-header");
+  });
+
+  it("carries an EMPTY admin form schema (credential comes from the OAuth dance)", () => {
+    expect(candidateConfigSchema(GITHUB_DATA_CANDIDATE)).toEqual([]);
   });
 });
 

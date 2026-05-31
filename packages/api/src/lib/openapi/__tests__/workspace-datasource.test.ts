@@ -389,3 +389,94 @@ describe("resolveWorkspaceRestDatasources — SSRF guard at resolve time", () =>
     expect(result[0].baseUrl).toBe("https://169.254.169.254");
   });
 });
+
+// ── github-data (oauth-datasource): credential minted at resolve time ─────────
+describe("resolveWorkspaceRestDatasources — github-data (oauth-datasource)", () => {
+  const GITHUB_DOC = {
+    openapi: "3.1.0",
+    info: { title: "GitHub", version: "1.1.4" },
+    servers: [{ url: "https://api.github.com" }],
+    paths: {
+      "/repos/{owner}/{repo}/pulls": {
+        get: {
+          operationId: "pulls/list",
+          parameters: [
+            { name: "owner", in: "path", required: true, schema: { type: "string" } },
+            { name: "repo", in: "path", required: true, schema: { type: "string" } },
+          ],
+          responses: { "200": { description: "OK" } },
+        },
+      },
+    },
+  };
+  const githubSnapshot = () =>
+    buildSnapshot(GITHUB_DOC, buildOperationGraph(GITHUB_DOC), "2026-05-30T00:00:00.000Z");
+
+  /** A decrypted github-data install config — installation_id is plaintext here (decrypt passthrough). */
+  function githubConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      openapi_url:
+        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+      auth_kind: "oauth2",
+      installation_id: "987654321",
+      display_name: "GitHub",
+      representation_mode: "operation-graph",
+      status: "ok",
+      openapi_snapshot: githubSnapshot(),
+      ...overrides,
+    };
+  }
+
+  const githubRow = (overrides: Record<string, unknown> = {}): OpenApiInstallRow => ({
+    install_id: "gh-1",
+    catalog_id: "catalog:github-data",
+    config: githubConfig(overrides),
+  });
+
+  it("mints an installation token and resolves it as bearer auth against api.github.com", async () => {
+    const minted: string[] = [];
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([githubRow()]),
+      mintInstallationToken: async (installationId) => {
+        minted.push(installationId);
+        return `ghs_for_${installationId}`;
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    const ds = result[0];
+    // The minter received the decrypted installation_id from THIS workspace's row.
+    expect(minted).toEqual(["987654321"]);
+    expect(ds.auth).toEqual({ kind: "bearer", token: "ghs_for_987654321" });
+    expect(ds.baseUrl).toBe("https://api.github.com"); // from the spec's servers[0]
+    expect(ds.graph.operations.has("pulls/list")).toBe(true);
+    expect(ds.displayName).toBe("GitHub");
+  });
+
+  it("skips the github-data datasource when minting fails (fail-soft), not the whole set", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        githubRow(),
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-30T01:00:00.000Z") }) },
+      ]),
+      mintInstallationToken: async () => {
+        throw new Error("App access revoked");
+      },
+    });
+    // The healthy generic install survives; the un-mintable github-data is dropped.
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
+  });
+
+  it("skips a github-data row with no installation_id (drifted/corrupt), without minting", async () => {
+    let called = false;
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([githubRow({ installation_id: undefined })]),
+      mintInstallationToken: async () => {
+        called = true;
+        return "should-not-be-called";
+      },
+    });
+    expect(result).toHaveLength(0);
+    expect(called).toBe(false);
+  });
+});

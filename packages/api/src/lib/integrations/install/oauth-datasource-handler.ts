@@ -49,12 +49,8 @@ import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import { isPlaintextCredentialRisk } from "@atlas/api/lib/db/secret-encryption";
-import {
-  buildSnapshot,
-  OpenApiProbeError,
-  probeSpec,
-  type ProbeOptions,
-} from "@atlas/api/lib/openapi/probe";
+import { buildSnapshot, OpenApiProbeError } from "@atlas/api/lib/openapi/probe";
+import { probeShared } from "@atlas/api/lib/openapi/shared-spec-cache";
 import { DEFAULT_REPRESENTATION_MODE } from "@atlas/api/lib/openapi/catalog";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import type { WorkspaceId } from "@useatlas/types";
@@ -250,12 +246,21 @@ export class OAuthDatasourceInstallHandler implements OAuthDatasourceInstallHand
     }
 
     // ── 6. Probe the pre-wired spec → snapshot ───────────────────
-    // The GitHub OpenAPI spec is public, so the probe needs no credential. A
-    // probe failure is a hard install failure (no snapshot ⇒ no datasource).
+    // The GitHub OpenAPI spec is public — the probe needs no credential (the
+    // installation token is minted at query time, never sent to the spec host).
+    // That makes an oauth-datasource spec UNCONDITIONALLY shareable (#2970): the
+    // document + normalized graph are fetched ONCE across all workspaces, so a
+    // second org connecting GitHub reuses the cached doc with no re-download (a
+    // fresh shared entry skips the network; a stale one does a cheap conditional
+    // GET). A probe failure is still a hard install failure (no snapshot ⇒ no
+    // datasource).
     let snapshot;
     try {
-      const probeOpts: ProbeOptions = this.fetchImpl ? { fetchImpl: this.fetchImpl } : {};
-      const { doc, graph } = await probeSpec(this.config.openapiUrl, { kind: "none" }, probeOpts);
+      const { doc, graph } = await probeShared({
+        catalogId: this.config.catalogId,
+        specUrl: this.config.openapiUrl,
+        ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      });
       snapshot = buildSnapshot(doc, graph, this.now());
     } catch (err) {
       if (err instanceof OpenApiProbeError) {

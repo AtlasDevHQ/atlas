@@ -392,6 +392,150 @@ export async function probeSpec(
   return { doc, graph };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+//  Conditional, credential-free probe — the shared-cache fetch primitive
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ConditionalProbeOptions {
+  /** `fetch` override for tests. Defaults to `globalThis.fetch`. */
+  readonly fetchImpl?: typeof globalThis.fetch;
+  /** Prior `ETag` — sent as `If-None-Match` so an unchanged spec returns `304`. */
+  readonly etag?: string;
+  /** Prior `Last-Modified` — sent as `If-Modified-Since` (the weaker validator). */
+  readonly lastModified?: string;
+}
+
+/**
+ * The outcome of a {@link conditionalProbe}. Discriminated on `notModified`:
+ *   - `true` — the upstream returned `304`; the caller reuses its cached doc and
+ *     re-arms freshness from the echoed validators (no body is parsed).
+ *   - `false` — a `2xx` with a fresh document, already normalized to a graph.
+ */
+export type ConditionalProbeResult =
+  | { readonly notModified: true; readonly etag?: string; readonly lastModified?: string }
+  | {
+      readonly notModified: false;
+      readonly doc: unknown;
+      readonly graph: OperationGraph;
+      readonly etag?: string;
+      readonly lastModified?: string;
+    };
+
+/**
+ * Fetch a PUBLIC OpenAPI document with NO credential, optionally conditionally
+ * (`If-None-Match` / `If-Modified-Since`). This is the fetch primitive the
+ * cross-workspace shared spec cache (#2970, `shared-spec-cache.ts`) is built on:
+ * a shared spec is shareable PRECISELY because it is credential-independent, so
+ * this function never attaches auth — guaranteeing a cached shared document can
+ * never carry one tenant's authenticated view (the isolation invariant).
+ *
+ * Same SSRF posture as {@link probeSpec}: the up-front {@link assertSpecUrlAllowed}
+ * guard plus {@link guardedFetch}'s per-redirect re-validation. On `304` it
+ * returns `notModified: true` (the cached doc stays authoritative); on any other
+ * non-2xx it throws {@link OpenApiProbeError} `http_error`; on `2xx` it parses +
+ * normalizes exactly like the probe and echoes the response validators so the
+ * caller can store them for the next conditional check.
+ *
+ * Conditional headers are plain cache validators (not auth), so — unlike a
+ * credential — they survive a cross-origin redirect; a CDN that strips them on a
+ * hop merely costs an occasional full re-download (a `200` instead of a `304`),
+ * never a correctness problem.
+ */
+export async function conditionalProbe(
+  specUrl: string,
+  options: ConditionalProbeOptions = {},
+): Promise<ConditionalProbeResult> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  assertSpecUrlAllowed(specUrl);
+
+  const conditionalHeaders: Record<string, string> = {
+    ...(options.etag ? { "If-None-Match": options.etag } : {}),
+    ...(options.lastModified ? { "If-Modified-Since": options.lastModified } : {}),
+  };
+
+  let response: Response;
+  try {
+    response = await guardedFetch(
+      specUrl,
+      {
+        method: "GET",
+        headers: { Accept: "application/json", ...conditionalHeaders },
+        signal: AbortSignal.timeout(probeTimeoutMs()),
+      },
+      { fetchImpl },
+    );
+  } catch (err) {
+    if (err instanceof EgressBlockedError) {
+      throw new OpenApiProbeError("unreachable", err.message);
+    }
+    throw new OpenApiProbeError(
+      "unreachable",
+      `Could not fetch the OpenAPI spec: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const etag = response.headers.get("etag") ?? undefined;
+  const lastModified = response.headers.get("last-modified") ?? undefined;
+
+  // Check 304 BEFORE `!response.ok` — a 304 is not in the 2xx range but is the
+  // success-by-reuse case, not an error.
+  if (response.status === 304) {
+    return {
+      notModified: true,
+      ...(etag ? { etag } : {}),
+      ...(lastModified ? { lastModified } : {}),
+    };
+  }
+  if (!response.ok) {
+    throw new OpenApiProbeError(
+      "http_error",
+      `Fetching the OpenAPI spec returned HTTP ${response.status}. Check the spec URL.`,
+      response.status,
+    );
+  }
+
+  let doc: unknown;
+  try {
+    doc = await response.json();
+  } catch (err) {
+    throw new OpenApiProbeError(
+      "unparseable",
+      `The OpenAPI document body was not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  let graph: OperationGraph;
+  try {
+    graph = buildOperationGraph(doc);
+  } catch (err) {
+    if (err instanceof OpenApiSpecError) {
+      throw new OpenApiProbeError(
+        "unparseable",
+        `The OpenAPI document did not parse (${err.reason}). It must be a valid OpenAPI 3.x spec.`,
+      );
+    }
+    throw new OpenApiProbeError(
+      "unparseable",
+      `The OpenAPI document could not be normalized: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (graph.operations.size === 0) {
+    throw new OpenApiProbeError(
+      "no_operations",
+      "The OpenAPI document parsed but declared no operations — nothing for the agent to query.",
+    );
+  }
+
+  return {
+    notModified: false,
+    doc,
+    graph,
+    ...(etag ? { etag } : {}),
+    ...(lastModified ? { lastModified } : {}),
+  };
+}
+
 /**
  * Assemble the persisted {@link OpenApiSnapshot} from a probed doc + graph.
  * `probedAt` is injected (not read from a clock) so the install handler and

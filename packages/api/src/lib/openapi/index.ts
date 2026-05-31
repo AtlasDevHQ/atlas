@@ -145,3 +145,31 @@ export { applyQuirkHeaders, applyQuirkQueryShaping } from "./vendor-quirk";
 export type { VendorQuirk, QueryParamShapeRule } from "./vendor-quirk";
 export { seedDataCandidateCatalog } from "./data-candidate-seed";
 export type { DataCandidateCatalogSeedResult } from "./data-candidate-seed";
+
+// ── Shared cross-workspace spec/graph cache (#2970) ──────────────────────────
+// Generalizes the per-install in-process graph cache into a cross-workspace
+// cache for PUBLIC catalog specs (credential-withheld, workspace-independent):
+// download + normalize once per canonical spec identity, reused by every
+// workspace. Generic admin-supplied installs stay strictly per-workspace.
+export {
+  isShareableSpec,
+  sharedGraphFromSnapshot,
+  probeShared,
+  refreshSharedSpecsCycle,
+  invalidateSharedSpec,
+  canonicalSpecKey,
+  contentHashOf,
+  sharedSpecCacheStats,
+  __resetSharedSpecCacheForTests,
+} from "./shared-spec-cache";
+export type {
+  SharedSpecIdentity,
+  SharedSpecEntry,
+  SharedProbeResult,
+  SharedProbeSource,
+  ProbeSharedParams,
+  ConditionalProbeFn,
+  RefreshCycleOptions,
+  SharedRefreshCycleResult,
+  SharedRefreshOutcome,
+} from "./shared-spec-cache";

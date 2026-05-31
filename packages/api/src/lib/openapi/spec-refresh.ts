@@ -5,11 +5,11 @@
  * surface) that says how often the cached spec snapshot should be re-discovered.
  *
  * This slice ships only the stored setting + its validation + a read accessor —
- * **no background scheduler**. The admin "Refresh now" reuses the existing manual
- * re-discovery path; the periodic fiber that consumes {@link getSpecRefreshIntervalMs}
- * lands in #2978 (modeled on the `Effect.repeat(Schedule.spaced(...))` pattern in
- * `layers.ts`, the way `getExpertSchedulerIntervalMs` feeds the semantic-expert
- * tick).
+ * **no background scheduler in this module**. The admin "Refresh now" reuses the
+ * existing manual re-discovery path; the periodic fiber that consumes the due-check
+ * ({@link evaluateSpecRefreshDue}, which wraps {@link getSpecRefreshIntervalMs})
+ * shipped in #2978 as `scheduler/openapi-install-rediscover.ts` — a `setInterval`-
+ * based loop mirroring `byot-catalog-refresh.ts`.
  *
  * Stored canonical value — one of:
  *   - `"off"` (default) — never auto-refresh.

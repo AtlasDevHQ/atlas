@@ -447,7 +447,8 @@ describe("openapi install rediscover — cycle behavior", () => {
     expect(rec.stampCalls.map((c) => c.installId)).toEqual(["b"]);
     const failRow = probeRows().find((c) => c.targetId === "b");
     expect(failRow!.status).toBe("failure");
-    expect((failRow!.metadata as Record<string, unknown>).reason).toBe("error");
+    // A rediscover-phase fault is negative-cached (stamped) → deferred a full interval.
+    expect((failRow!.metadata as Record<string, unknown>).reason).toBe("rediscover_fault");
   });
 
   it("CONFIG SKIP: decrypt/no-url/unsupported-auth stamp the watermark + audit as failures", async () => {
@@ -498,6 +499,9 @@ describe("openapi install rediscover — cycle behavior", () => {
     expect(rec.stampCalls).toHaveLength(0);
     const failRow = probeRows().find((c) => c.targetId === "ds-1");
     expect(failRow!.status).toBe("failure");
+    // persist-phase failure is the retry-next-tick mode, distinct from a deferred
+    // rediscover fault — the audit reason must reflect that.
+    expect((failRow!.metadata as Record<string, unknown>).reason).toBe("persist_failed");
   });
 
   it("emits one cycle audit row carrying the full RediscoverCycleResult counts", async () => {

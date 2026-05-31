@@ -10,13 +10,15 @@
  * the logic lives here and both call it. The route maps the result to HTTP; the
  * scheduler maps it to an audit row + a watermark bump.
  *
- * Why this is the RIGHT seam for "respect the SaaS egress allowlist": the spec
- * fetch goes through {@link probeSpec}, which runs the same SSRF guard
- * (`assertSpecUrlAllowed`) + redirect-revalidating `guardedFetch` + #3034 host-match
- * credential gate as a resolve-time probe. Scheduled probing is therefore the
- * SAME server-side egress as resolve-time, just on a timer — sharing this function
- * is what guarantees that, rather than re-deriving (and risking divergence in) the
- * egress posture in the scheduler.
+ * Why this is the RIGHT seam for honoring the egress controls: the spec fetch goes
+ * through {@link probeSpec}, which runs the same fail-closed SSRF guard
+ * (`assertSpecUrlAllowed` → `isSafeExternalUrl` — private/loopback/link-local/CGNAT
+ * IPs + internal hostnames blocked unless `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` opts
+ * out) + redirect-revalidating `guardedFetch` + #3034 host-match credential gate as a
+ * resolve-time probe. Scheduled probing is therefore the SAME server-side egress as
+ * resolve-time, just on a timer — sharing this function is what guarantees that,
+ * rather than re-deriving (and risking divergence in) the egress posture in the
+ * scheduler.
  *
  * {@link performRediscovery} is pure of side effects (no DB write, no audit) and
  * returns a discriminated {@link RediscoveryResult}. Persistence is split out into
@@ -130,6 +132,10 @@ export type RediscoveryResult =
       readonly kind: "ok";
       readonly snapshot: OpenApiSnapshot;
       readonly diffRecord: SpecDiffRecord;
+      // The projected summary of `diffRecord`, carried so both consumers (route
+      // response + scheduler audit) avoid re-projecting. `null` is defensive only:
+      // a record just built by `buildSpecDiffRecord` always has a `currentProbedAt`,
+      // so `summarizeSpecDiffRecord` can't actually return null on this path.
       readonly drift: SpecDiffSummary | null;
     }
   | { readonly kind: "decrypt_failed" }

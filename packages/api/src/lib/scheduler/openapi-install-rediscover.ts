@@ -24,8 +24,9 @@
  * Re-discovery goes through `performRediscovery` → `probeSpec`, which runs the
  * identical SSRF guard + redirect-revalidating `guardedFetch` + #3034 host-match
  * credential gate as a resolve-time probe. Scheduled probing is therefore the SAME
- * server-side egress as resolve-time, just on a timer — including the SaaS egress
- * allowlist and the per-tenant `base_url_override` host gate.
+ * server-side egress as resolve-time, just on a timer — the same fail-closed SSRF
+ * guard (private/internal targets blocked unless `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS`
+ * opts out) and the per-tenant `base_url_override` host gate.
  *
  * ## Due-selection (per-install interval, not a global TTL)
  * Unlike `byot-catalog-refresh.ts` (one global TTL) the interval is PER INSTALL, so
@@ -219,7 +220,12 @@ type InstallOutcome =
   | { readonly kind: "refreshed"; readonly operationCount: number; readonly drift: SpecDiffSummary | null }
   | { readonly kind: "probe_failed"; readonly reason: string }
   | { readonly kind: "config_skip"; readonly reason: "decrypt_failed" | "no_url" | "unsupported_auth"; readonly detail?: string }
-  | { readonly kind: "failed"; readonly error: string };
+  // `phase` distinguishes the two failure modes, which have OPPOSITE retry
+  // semantics an operator must tell apart: `"rediscover"` (probe/normalize fault)
+  // is negative-cached (watermark stamped) → not retried until the full interval
+  // elapses; `"persist"` (a good snapshot that failed to write) is NOT stamped →
+  // retried on the very next tick.
+  | { readonly kind: "failed"; readonly phase: "rediscover" | "persist"; readonly error: string };
 
 interface CycleDeps {
   readonly rediscover: RediscoverFn;
@@ -272,7 +278,7 @@ async function runInstall(
     // Unexpected fault during re-probe/normalize — fail-soft: negative-cache it,
     // leave the live snapshot intact.
     await safeStamp(deps, row, nowIso);
-    return { kind: "failed", error: errorMessage(err) };
+    return { kind: "failed", phase: "rediscover", error: errorMessage(err) };
   }
 
   switch (result.kind) {
@@ -288,8 +294,15 @@ async function runInstall(
       } catch (err) {
         // The re-probe succeeded but persisting the fresh snapshot failed. Do NOT
         // stamp the watermark — leaving it stale means the next tick retries the
-        // persist instead of negatively-caching a half-applied refresh.
-        return { kind: "failed", error: errorMessage(err) };
+        // persist instead of negatively-caching a half-applied refresh. Log it
+        // directly: unlike the negative-cached paths this one retries immediately,
+        // and we're discarding a good snapshot, so a sustained DB problem should be
+        // visible beyond the audit row (which writes to the same DB that just failed).
+        log.warn(
+          { workspaceId: row.workspace_id, installId: row.install_id, err: errorMessage(err) },
+          "OpenAPI rediscover: persisting a freshly re-probed snapshot failed — discarding it, will retry next tick",
+        );
+        return { kind: "failed", phase: "persist", error: errorMessage(err) };
       }
       return { kind: "refreshed", operationCount: result.snapshot.operationCount, drift: result.drift };
     case "probe_failed":
@@ -504,8 +517,10 @@ export const runOpenApiInstallRediscoverCycle = (
             }).pipe(
               // runInstall is designed never to throw; this is belt-and-braces so a
               // surprise defect counts as a failure rather than aborting the loop.
+              // Phase it "rediscover": runInstall stamps internally on its own fault
+              // paths, so a defect that escapes it left nothing persisted.
               Effect.catchAll((err) =>
-                Effect.succeed({ kind: "failed" as const, error: errorMessage(err) }),
+                Effect.succeed({ kind: "failed" as const, phase: "rediscover" as const, error: errorMessage(err) }),
               ),
             );
 
@@ -537,7 +552,12 @@ export const runOpenApiInstallRediscoverCycle = (
               case "failed":
                 result.due++;
                 result.failed++;
-                emitInstallAudit(row, "failure", { reason: "error", error: outcome.error });
+                // Surface the retry semantics in the audit `reason`: `persist_failed`
+                // retries next tick; `rediscover_fault` is deferred a full interval.
+                emitInstallAudit(row, "failure", {
+                  reason: outcome.phase === "persist" ? "persist_failed" : "rediscover_fault",
+                  error: outcome.error,
+                });
                 return;
             }
           }),

@@ -5,7 +5,7 @@
  * the validator classifies every non-GET/HEAD as a write — so a vendor whose
  * READ surface uses POST (Notion's workspace search is `POST /v1/search`) is
  * unreachable on a default install (it returns `writes-disabled` before
- * dispatch). A {@link DataCandidate} declares its genuinely read-only POSTs
+ * dispatch). A {@link import("../data-candidates").DataCandidate} declares its genuinely read-only POSTs
  * (`readSafePostOperations`); the resolver threads them onto the policy as
  * `readSafePostOperations`, and {@link isSideEffectingOperation} demotes such a
  * POST to a READ — it passes the write allowlist (layer 2) without an entry.

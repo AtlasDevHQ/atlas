@@ -5,6 +5,8 @@
  * registry (no forked strategy file).
  */
 import { describe, it, expect } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import {
   DATA_CANDIDATES,
   DATA_CANDIDATE_CATALOG_IDS,
@@ -20,6 +22,7 @@ import {
 } from "../data-candidates";
 import { OPENAPI_SUPPORTED_AUTH_KINDS } from "../catalog";
 import { defaultPaginatorRegistry } from "../strategies";
+import { buildOperationGraph } from "../spec";
 
 describe("DATA_CANDIDATES registry invariants", () => {
   it("derives every catalogId as catalog:${slug}", () => {
@@ -58,6 +61,18 @@ describe("DATA_CANDIDATES registry invariants", () => {
       // built-in strategy — a forked/unknown strategy would throw here.
       const strategy = defaultPaginatorRegistry.resolve(c.pagination);
       expect(defaultPaginatorRegistry.has(strategy.name)).toBe(true);
+    }
+  });
+
+  it("every declared readSafePostOperations list is non-empty + duplicate-free (#3035 shape)", () => {
+    // The type can't express "non-empty distinct operationIds"; lock the registry
+    // shape so a stray empty array (which the resolver treats as 'declares none')
+    // or an accidental duplicate is caught here rather than silently doing nothing.
+    for (const c of DATA_CANDIDATES) {
+      if (c.readSafePostOperations === undefined) continue;
+      expect(c.readSafePostOperations.length).toBeGreaterThan(0);
+      for (const id of c.readSafePostOperations) expect(id.length).toBeGreaterThan(0);
+      expect(new Set(c.readSafePostOperations).size).toBe(c.readSafePostOperations.length);
     }
   });
 });
@@ -164,6 +179,22 @@ describe("notion-data candidate (slice 6b, #3029 — required-header proof)", ()
     // install WITHOUT an admin write-allowlist edit (the vendor fact lives in code,
     // not in Notion API expertise the admin must supply).
     expect(NOTION_DATA_CANDIDATE.readSafePostOperations).toContain("post-search");
+  });
+
+  it("each declared read-safe id resolves to a real POST in Notion's surface (#3035 — no silent-inert misdeclaration)", () => {
+    // The demotion is POST-only, so a misdeclared non-POST (or typo'd) operationId
+    // is silently inert. Guard against that by checking the declared ids against the
+    // candidate's actual spec: every id must exist AND be a POST. The excerpt fixture
+    // is the same Notion spec edition the candidate's openapiUrl serves.
+    const NOTION_SPEC = JSON.parse(
+      fs.readFileSync(path.join(import.meta.dir, "fixtures", "notion.excerpt.json"), "utf8"),
+    );
+    const graph = buildOperationGraph(NOTION_SPEC);
+    for (const id of NOTION_DATA_CANDIDATE.readSafePostOperations ?? []) {
+      const op = graph.operations.get(id);
+      expect(op).toBeDefined();
+      expect(op?.method).toBe("POST");
+    }
   });
 });
 

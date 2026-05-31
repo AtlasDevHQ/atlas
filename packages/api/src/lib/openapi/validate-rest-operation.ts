@@ -151,9 +151,12 @@ export type RestOperationVerdict =
       readonly allowed: true;
       readonly operation: Operation;
       /**
-       * `true` for every effective write — a non-GET/HEAD method, OR a GET/HEAD
-       * escalated by an #3008 side-effecting override. The caller MUST obtain
-       * human confirmation (the confirm-before-write banner) before dispatching.
+       * `true` for every effective write — a non-GET/HEAD method (EXCEPT a
+       * candidate-declared read-safe POST, demoted to a read per #3035), OR a
+       * GET/HEAD escalated by an #3008 side-effecting override. Tracks `isWrite`,
+       * which already accounts for both the escalation and the demotion. The
+       * caller MUST obtain human confirmation (the confirm-before-write banner)
+       * before dispatching.
        */
       readonly requiresConfirmation: boolean;
       /** The effective per-request timeout the client should use. */

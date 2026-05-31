@@ -136,6 +136,7 @@ export {
   DATA_CANDIDATE_CATALOG_IDS,
   DATA_CANDIDATE_CONFIG_SCHEMA,
   STRIPE_DATA_CANDIDATE,
+  NOTION_DATA_CANDIDATE,
   findDataCandidateByCatalogId,
   findDataCandidateBySlug,
 } from "./data-candidates";

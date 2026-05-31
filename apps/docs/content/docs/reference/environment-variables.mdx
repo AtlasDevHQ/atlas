@@ -742,6 +742,22 @@ JIRA_DEFAULT_PROJECT=PROJ
 
 ---
 
+## OpenAPI Datasources
+
+The generic [OpenAPI (REST) datasource](/plugins/datasources/openapi-generic) is configured **per-install** from Admin → Connections — spec URL, credential, write allowlist, and representation mode are all per-workspace config, not env vars. The variables below are global operator knobs that apply across every install.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_OPENAPI_TIMEOUT` | `30000` | Global per-request timeout **cap** in ms — bounds both spec probes and operation execution. A per-install `request_timeout_ms` above this cap is rejected |
+| `ATLAS_OPENAPI_CONFIRM_TTL_SECONDS` | `600` | Lifetime of the single-use confirm-before-write token. How long a staged REST write stays confirmable before it must be re-staged. Clamped `[60, 3600]`. Signed with the encryption keyset — no separate signing secret |
+| `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` | `false` | SSRF egress guard opt-out. By default, spec probes and operation execution are blocked from reaching private/loopback/link-local/CGNAT IPs and internal hostnames (e.g. cloud metadata at `169.254.169.254`). Set `=true` only on **self-hosted** to connect an internal OpenAPI service — **never set on SaaS** |
+| `ATLAS_OPENAPI_SHARED_SPEC_TTL_MS` | `3600000` | Freshness window for the cross-workspace shared spec cache — within it, a fresh install of an already-cached **public** upstream (Stripe/GitHub/Notion, credential withheld at probe) skips the network entirely. Generic admin-supplied installs are never shared |
+| `ATLAS_OPENAPI_SPEC_REFRESH_INTERVAL_HOURS` | `24` | Cadence of the periodic conditional-GET refresh of the shared public-spec cache (a `304` is free for every workspace) |
+
+> Credentials are encrypted at rest in `workspace_plugins.config`. The slice-1 `ATLAS_OPENAPI_TWENTY*` / `ATLAS_OPENAPI_REPRESENTATION` env shortcuts have been **retired** — install, representation, and the write allowlist are all per-install config. See the [OpenAPI datasource guide](/plugins/datasources/openapi-generic).
+
+---
+
 ## Stripe Billing
 
 Stripe billing integration for SaaS deployments. Self-hosted deployments do not need these — the self-hosted experience has no billing or usage limits.

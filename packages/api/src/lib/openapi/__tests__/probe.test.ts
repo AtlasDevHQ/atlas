@@ -11,6 +11,7 @@ import {
   buildResolvedAuth,
   resolveAuthFromDecryptedConfig,
   probeSpec,
+  conditionalProbe,
   buildSnapshot,
   summarizeOperations,
   snapshotToGraph,
@@ -444,5 +445,79 @@ describe("resolveAuthFromDecryptedConfig", () => {
   it("returns ok: false for a drifted / garbage auth_kind", () => {
     const result = resolveAuthFromDecryptedConfig({ auth_kind: "totally-bogus" });
     expect(result).toEqual({ ok: false, rawAuthKind: "totally-bogus" });
+  });
+});
+
+describe("conditionalProbe (the shared-cache fetch primitive)", () => {
+  const PUBLIC_SPEC_URL = "https://raw.githubusercontent.com/example/openapi/master/spec.json";
+
+  /**
+   * A fetch mock that records the outgoing request headers and returns a Response
+   * with a scripted status + headers, so a test can assert which conditional
+   * validators were sent and how each status is interpreted.
+   */
+  function recordingFetch(
+    response: { status: number; body?: unknown; etag?: string; lastModified?: string },
+  ): { fetchImpl: typeof globalThis.fetch; headers: () => Headers } {
+    let seen: Headers = new Headers();
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      seen = new Headers(init?.headers);
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (response.etag) headers.etag = response.etag;
+      if (response.lastModified) headers["last-modified"] = response.lastModified;
+      const body = response.status === 304 ? null : JSON.stringify(response.body ?? MOCK_OPENAPI_SPEC);
+      return new Response(body, { status: response.status, headers });
+    }) as unknown as typeof globalThis.fetch;
+    return { fetchImpl, headers: () => seen };
+  }
+
+  it("returns the normalized doc + graph + validators on a 200", async () => {
+    const { fetchImpl } = recordingFetch({ status: 200, etag: 'W/"abc"', lastModified: "Wed, 21 Oct 2026 07:28:00 GMT" });
+    const result = await conditionalProbe(PUBLIC_SPEC_URL, { fetchImpl });
+    expect(result.notModified).toBe(false);
+    if (result.notModified) throw new Error("unreachable");
+    expect(result.graph.operations.size).toBeGreaterThan(0);
+    expect(result.etag).toBe('W/"abc"');
+    expect(result.lastModified).toBe("Wed, 21 Oct 2026 07:28:00 GMT");
+  });
+
+  it("returns notModified on a 304 (no body parsed)", async () => {
+    const { fetchImpl } = recordingFetch({ status: 304, etag: 'W/"abc"' });
+    const result = await conditionalProbe(PUBLIC_SPEC_URL, { fetchImpl, etag: 'W/"abc"' });
+    expect(result.notModified).toBe(true);
+    expect(result.etag).toBe('W/"abc"');
+  });
+
+  it("sends If-None-Match / If-Modified-Since when validators are supplied", async () => {
+    const recorder = recordingFetch({ status: 304 });
+    await conditionalProbe(PUBLIC_SPEC_URL, {
+      fetchImpl: recorder.fetchImpl,
+      etag: 'W/"v1"',
+      lastModified: "Wed, 21 Oct 2026 07:28:00 GMT",
+    });
+    expect(recorder.headers().get("if-none-match")).toBe('W/"v1"');
+    expect(recorder.headers().get("if-modified-since")).toBe("Wed, 21 Oct 2026 07:28:00 GMT");
+  });
+
+  it("sends NO conditional headers and NO credential when no validators are supplied", async () => {
+    const recorder = recordingFetch({ status: 200 });
+    await conditionalProbe(PUBLIC_SPEC_URL, { fetchImpl: recorder.fetchImpl });
+    expect(recorder.headers().get("if-none-match")).toBeNull();
+    expect(recorder.headers().get("authorization")).toBeNull(); // credential-free by construction
+  });
+
+  it("throws OpenApiProbeError http_error on a non-2xx, non-304 status", async () => {
+    const { fetchImpl } = recordingFetch({ status: 500 });
+    await expect(conditionalProbe(PUBLIC_SPEC_URL, { fetchImpl })).rejects.toMatchObject({
+      name: "OpenApiProbeError",
+      reason: "http_error",
+    });
+  });
+
+  it("rejects a private/internal spec URL via the SSRF guard", async () => {
+    const { fetchImpl } = recordingFetch({ status: 200 });
+    await expect(
+      conditionalProbe("http://169.254.169.254/openapi.json", { fetchImpl }),
+    ).rejects.toMatchObject({ name: "OpenApiProbeError", reason: "unreachable" });
   });
 });

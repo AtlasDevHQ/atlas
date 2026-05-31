@@ -48,6 +48,7 @@ import { GITHUB_APP_SECRET_FIELDS_SCHEMA } from "@atlas/api/lib/integrations/ins
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
 import { resolveAuthFromDecryptedConfig, snapshotToGraph } from "./probe";
+import { isShareableSpec, sharedGraphFromSnapshot } from "./shared-spec-cache";
 import type { OperationGraph, ResolvedAuth } from "./types";
 
 const log = createLogger("openapi.workspace-datasource");
@@ -314,9 +315,21 @@ function buildDatasource(
       ? decrypted.display_name
       : snapshot.title;
 
+  // #2970: a SHAREABLE install (a built-in data candidate whose public spec is
+  // fetched credential-free — spec host ≠ API host) normalizes its graph ONCE
+  // per canonical spec identity (`catalogId@version#hash`), reused across every
+  // workspace on that spec/version, instead of once per (workspace, install).
+  // A plain `openapi-generic` install — admin-supplied URL, possibly tenant-
+  // private, credential possibly sent to the spec host — stays strictly per-
+  // workspace via `snapshotToGraph`. The shareability gate is the credential-
+  // withheld host-mismatch test, derived from the candidate's CODE-resident URLs
+  // (never config), so the isolation boundary can't be moved by a hand-edited row.
+  const shareable = candidate !== undefined && isShareableSpec(candidate.openapiUrl, candidate.apiBaseUrl);
   let graph: OperationGraph;
   try {
-    graph = snapshotToGraph(workspaceId, installId, snapshot);
+    graph = shareable
+      ? sharedGraphFromSnapshot(candidate.catalogId, snapshot)
+      : snapshotToGraph(workspaceId, installId, snapshot);
   } catch (err) {
     log.warn(
       { installId, err: err instanceof Error ? err.message : String(err) },

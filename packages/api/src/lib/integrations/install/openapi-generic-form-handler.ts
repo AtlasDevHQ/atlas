@@ -62,6 +62,8 @@ import {
   OpenApiProbeError,
   type ProbeOptions,
 } from "@atlas/api/lib/openapi/probe";
+import { findDataCandidateBySlug } from "@atlas/api/lib/openapi/data-candidates";
+import { isShareableSpec, probeShared } from "@atlas/api/lib/openapi/shared-spec-cache";
 import { FormInstallValidationError } from "./email-form-handler";
 import type { FormBasedInstallHandler, InstallRecord } from "./types";
 
@@ -387,9 +389,25 @@ export async function persistOpenApiDatasourceInstall(
     ...(fetchImpl ? { fetchImpl } : {}),
     ...(resolvedApiBaseUrl ? { apiBaseUrl: resolvedApiBaseUrl } : {}),
   };
+  // #2970: a built-in data candidate's PUBLIC spec (credential withheld — spec
+  // host ≠ API host) is fetched + normalized ONCE across all workspaces. A second
+  // workspace installing the same upstream pays no re-download: a fresh shared
+  // entry short-circuits the network entirely, a stale one does a cheap conditional
+  // GET. A plain generic install (admin-supplied URL) never shares — it probes
+  // per-workspace with its credential as before. Shareability is derived from the
+  // candidate's CODE-resident URLs, so config can't widen the sharing scope.
+  const candidate = findDataCandidateBySlug(catalogSlug);
+  const shareable =
+    candidate !== undefined && isShareableSpec(candidate.openapiUrl, candidate.apiBaseUrl);
   let snapshot;
   try {
-    const { doc, graph } = await probeSpec(openapiUrl, auth, probeOpts);
+    const { doc, graph } = shareable
+      ? await probeShared({
+          catalogId: candidate.catalogId,
+          specUrl: openapiUrl,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        })
+      : await probeSpec(openapiUrl, auth, probeOpts);
     snapshot = buildSnapshot(doc, graph, now());
   } catch (err) {
     if (err instanceof OpenApiProbeError) {

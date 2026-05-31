@@ -801,6 +801,21 @@ describe("admin-openapi-datasources — acknowledge-drift endpoint (#2979)", () 
     const res = await adminOpenApiDatasources.request("/does-not-exist/acknowledge-drift", { method: "POST" });
     expect(res.status).toBe(404);
   });
+
+  it("is an idempotent no-op on an install with no raised alert (guarded by jsonb_typeof)", async () => {
+    // beforeEach leaves configExtra empty → the install carries no openapi_drift_alert.
+    // The handler still 200s and issues the UPDATE, but the WHERE clause carries the
+    // `jsonb_typeof(...) = 'object'` guard, so in real Postgres the row is untouched
+    // (no JSON null gets coerced into a malformed object). This documents the
+    // "already-cleared / not-yet-raised install" path called out in the handler.
+    const res = await adminOpenApiDatasources.request("/ds-1/acknowledge-drift", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { acknowledged: boolean }).toEqual({ acknowledged: true });
+
+    const update = db.calls.find(([sql]) => sql.includes("UPDATE") && sql.includes("jsonb_set"));
+    expect(update).toBeDefined();
+    expect(update![0]).toContain("jsonb_typeof(config->'openapi_drift_alert') = 'object'");
+  });
 });
 
 describe("admin-openapi-datasources — manual rediscover drift lifecycle (#2979)", () => {

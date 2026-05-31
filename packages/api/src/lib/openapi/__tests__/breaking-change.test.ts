@@ -537,4 +537,37 @@ describe("projectDriftAlert — fail-soft persistence projection", () => {
     expect(s?.reasons).toHaveLength(1);
     expect(s?.reasons[0].operationId).toBe("getThing");
   });
+
+  it("clamps negative / fractional counts to non-negative integers", () => {
+    const s = projectDriftAlert({
+      raisedAt: "x",
+      currentProbedAt: "y",
+      counts: { operationsRemoved: -5, fieldsRetyped: 2.9, schemasAdded: 3 },
+      breakingCount: -1,
+    });
+    expect(s?.counts.operationsRemoved).toBe(0);
+    expect(s?.counts.fieldsRetyped).toBe(2);
+    expect(s?.counts.schemasAdded).toBe(3);
+    // breakingCount clamps to a non-negative int (not the reasons-length fallback).
+    expect(s?.breakingCount).toBe(0);
+  });
+
+  it("caps an oversized reasons array at MAX_STORED_DRIFT_REASONS", () => {
+    const reasons = Array.from({ length: MAX_STORED_DRIFT_REASONS + 25 }, (_, i) => ({
+      kind: "operation_removed",
+      operationId: `op${i}`,
+      detail: "gone",
+    }));
+    const s = projectDriftAlert({ raisedAt: "x", currentProbedAt: "y", reasons });
+    expect(s?.reasons).toHaveLength(MAX_STORED_DRIFT_REASONS);
+  });
+
+  it("truncates an oversized reason string field", () => {
+    const s = projectDriftAlert({
+      raisedAt: "x",
+      currentProbedAt: "y",
+      reasons: [{ kind: "operation_removed", operationId: "getThing", detail: "z".repeat(5_000) }],
+    });
+    expect(s?.reasons[0].detail.length).toBeLessThanOrEqual(500);
+  });
 });

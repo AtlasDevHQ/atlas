@@ -272,6 +272,14 @@ export const OPENAPI_DRIFT_ALERT_FIELD = "openapi_drift_alert" as const;
 export const MAX_STORED_DRIFT_REASONS = 20;
 
 /**
+ * Per-string cap applied when projecting reason fields read back from JSONB. The
+ * writer's reasons are short one-liners, but a hand-edited / drifted row could
+ * carry a megabyte string; truncating at read keeps a malformed row from inflating
+ * the admin response. Generous enough never to clip a real `detail`.
+ */
+const MAX_DRIFT_REASON_FIELD_CHARS = 500;
+
+/**
  * The persisted breaking-change signal stored at
  * `workspace_plugins.config.openapi_drift_alert` when a SCHEDULED re-discovery
  * detects breaking drift (#2979). Distinct from `openapi_last_diff` (the full,
@@ -391,6 +399,20 @@ export interface SpecDriftAlertSummary {
   readonly acknowledgedAt: string | null;
 }
 
+/**
+ * Clamp a JSONB-read tally to a NON-NEGATIVE INTEGER. A count is a cardinality, so
+ * a negative or fractional value from a malformed/edited row is nonsense; coerce it
+ * to the nearest sane integer rather than letting it surface in the admin response.
+ */
+function clampCount(v: number): number {
+  return Math.max(0, Math.trunc(v));
+}
+
+/** Truncate a JSONB-read reason field to {@link MAX_DRIFT_REASON_FIELD_CHARS}. */
+function clampField(s: string): string {
+  return s.length > MAX_DRIFT_REASON_FIELD_CHARS ? s.slice(0, MAX_DRIFT_REASON_FIELD_CHARS) : s;
+}
+
 /** Validate + coerce the 9 numeric tallies, or {@link ZERO_COUNTS} when missing/wrong-typed. */
 function coerceCounts(raw: unknown): DiffCounts {
   if (typeof raw !== "object" || raw === null) return ZERO_COUNTS;
@@ -398,26 +420,32 @@ function coerceCounts(raw: unknown): DiffCounts {
   const out: Record<keyof DiffCounts, number> = { ...ZERO_COUNTS };
   for (const key of Object.keys(ZERO_COUNTS) as Array<keyof DiffCounts>) {
     const v = r[key];
-    if (typeof v === "number" && Number.isFinite(v)) out[key] = v;
+    if (typeof v === "number" && Number.isFinite(v)) out[key] = clampCount(v);
   }
   return out;
 }
 
-/** Drop malformed entries; keep well-formed {@link BreakingReason}s with a known kind. */
+/**
+ * Drop malformed entries; keep well-formed {@link BreakingReason}s with a known kind.
+ * Caps the result at {@link MAX_STORED_DRIFT_REASONS} (the same bound the writer
+ * applies) and truncates each string field, so a bloated/edited row can't inflate
+ * the projected payload past the writer's own ceiling.
+ */
 function coerceReasons(raw: unknown): BreakingReason[] {
   if (!Array.isArray(raw)) return [];
   const out: BreakingReason[] = [];
   for (const item of raw) {
+    if (out.length >= MAX_STORED_DRIFT_REASONS) break;
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
     if (typeof r.kind !== "string" || !BREAKING_REASON_KINDS.has(r.kind)) continue;
     if (typeof r.detail !== "string") continue;
     out.push({
       kind: r.kind as BreakingReasonKind,
-      detail: r.detail,
-      ...(typeof r.operationId === "string" ? { operationId: r.operationId } : {}),
-      ...(typeof r.schema === "string" ? { schema: r.schema } : {}),
-      ...(typeof r.path === "string" ? { path: r.path } : {}),
+      detail: clampField(r.detail),
+      ...(typeof r.operationId === "string" ? { operationId: clampField(r.operationId) } : {}),
+      ...(typeof r.schema === "string" ? { schema: clampField(r.schema) } : {}),
+      ...(typeof r.path === "string" ? { path: clampField(r.path) } : {}),
     });
   }
   return out;
@@ -440,7 +468,7 @@ export function projectDriftAlert(raw: unknown): SpecDriftAlertSummary | null {
   const reasons = coerceReasons(r.reasons);
   const breakingCount =
     typeof r.breakingCount === "number" && Number.isFinite(r.breakingCount)
-      ? r.breakingCount
+      ? clampCount(r.breakingCount)
       : reasons.length;
   return {
     raisedAt: r.raisedAt,

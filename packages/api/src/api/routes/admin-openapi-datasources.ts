@@ -52,6 +52,7 @@ import {
   diffOperationGraphs,
   summarizeSpecDiffRecord,
   baselineSpecDiffRecord,
+  unparseablePriorDiffRecord,
   type SpecDiffRecord,
 } from "@atlas/api/lib/openapi/diff";
 import type { OperationGraph } from "@atlas/api/lib/openapi/types";
@@ -132,12 +133,15 @@ function buildSpecDiffRecord(
     priorGraph = buildOperationGraph(rawPrior.doc);
   } catch (err) {
     // Older builder / corrupt cached doc — record a baseline rather than failing
-    // the rediscover. The fresh snapshot is still written by the caller.
+    // the rediscover. The fresh snapshot is still written by the caller. Flag it
+    // `priorParseFailed` so the UI/audit show "comparison unavailable" instead of
+    // mistaking a dropped compare for a clean first-ever baseline (drift may have
+    // gone unseen).
     log.warn(
       { installId, err: errorMessage(err) },
-      "Prior OpenAPI snapshot no longer parses — recording a baseline diff",
+      "Prior OpenAPI snapshot no longer parses — recording an unparseable-prior baseline diff",
     );
-    return { previousProbedAt: rawPrior.probedAt, currentProbedAt, diff: null };
+    return unparseablePriorDiffRecord(rawPrior.probedAt, currentProbedAt);
   }
   return {
     previousProbedAt: rawPrior.probedAt,
@@ -415,6 +419,9 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
         log.warn({ installId, reason: err.reason }, "Rediscover probe failed");
         return c.json({ error: "probe_failed", message: err.message, requestId }, 400);
       }
+      // Unexpected fault from probe / snapshot-build / diff — attach the install
+      // context its siblings log before letting runHandler map it to a 500.
+      log.warn({ installId, err: errorMessage(err) }, "Rediscover failed unexpectedly");
       throw err;
     }
 
@@ -435,6 +442,16 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
     invalidateInstallGraphCache(orgId, installId);
 
     const drift = summarizeSpecDiffRecord(diffRecord);
+    if (!drift) {
+      // We just built and persisted `diffRecord`; if it fails to project, the
+      // writer/reader contract has drifted (or the record is corrupt). The UI
+      // still degrades to "no banner", but this self-written round-trip failure
+      // must not be silent — surface it for log correlation.
+      log.error(
+        { installId, requestId },
+        "Spec-diff record failed to project immediately after persist — drift summary unavailable",
+      );
+    }
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.probe,
       targetType: "connection",
@@ -446,15 +463,28 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
         operationCount: snapshot.operationCount,
         kind: "openapi-rediscover",
         // Roll-up tallies so the audit log shows what a refresh moved, not just
-        // that one ran. Baseline (first discovery) carries no counts.
+        // that one ran — the same operation/schema/field counts the UI surfaces.
         ...(drift && !drift.baseline
           ? {
               driftUnchanged: drift.unchanged,
               operationsAdded: drift.counts.operationsAdded,
               operationsRemoved: drift.counts.operationsRemoved,
               operationsChanged: drift.counts.operationsChanged,
+              schemasAdded: drift.counts.schemasAdded,
+              schemasRemoved: drift.counts.schemasRemoved,
+              schemasChanged: drift.counts.schemasChanged,
+              fieldsAdded: drift.counts.fieldsAdded,
+              fieldsRemoved: drift.counts.fieldsRemoved,
+              fieldsRetyped: drift.counts.fieldsRetyped,
             }
-          : { baseline: true }),
+          : {
+              // Baseline: a first-ever discovery, OR a dropped comparison because
+              // the prior snapshot no longer parsed. Stamp `priorParseFailed` so a
+              // reset drift history that was actually a parse regression isn't
+              // invisible in the audit trail.
+              baseline: true,
+              ...(drift?.priorParseFailed ? { priorParseFailed: true } : {}),
+            }),
       },
     });
 

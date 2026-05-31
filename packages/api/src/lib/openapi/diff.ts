@@ -60,7 +60,11 @@ export interface FieldDescriptor {
   readonly ref?: string;
   /** True when the field is nullable. */
   readonly nullable?: boolean;
-  /** True when the parent object lists this property as required. */
+  /**
+   * True when the parent object lists this property as required. Canonicalized to
+   * absent (never `false`) by {@link describeNode}, so {@link descriptorsEqual}'s
+   * `undefined !== false` comparison never reads a non-required field as changed.
+   */
   readonly required?: boolean;
   /** Allowed enumerated values, normalized to a sorted string array for stable comparison. */
   readonly enum?: ReadonlyArray<string>;
@@ -69,21 +73,37 @@ export interface FieldDescriptor {
 /** Whether a field appeared, vanished, or changed type between snapshots. */
 export type FieldChangeKind = "added" | "removed" | "retyped";
 
-/** A single field-level change at a dotted path within an operation or schema. */
-export interface FieldChange {
-  /**
-   * The field's location. For an operation: `param:<in>:<name>`,
-   * `requestBody:<media>[.prop…]`, or `response:<status>:<media>[.prop…]`. For a
-   * named schema: the bare property path (`""` denotes the schema root itself —
-   * a scalar/enum/ref alias whose root type changed). Array elements append `[]`.
-   */
-  readonly path: string;
-  readonly kind: FieldChangeKind;
-  /** The prior descriptor — present for `removed` and `retyped`. */
-  readonly before?: FieldDescriptor;
-  /** The new descriptor — present for `added` and `retyped`. */
-  readonly after?: FieldDescriptor;
-}
+/**
+ * A single field-level change at a dotted path within an operation or schema.
+ *
+ * A discriminated union on {@link FieldChangeKind} so the descriptor invariant is
+ * encoded in the type, not merely asserted in prose: `added` carries only `after`,
+ * `removed` only `before`, `retyped` both. Illegal shapes (an `added` with a
+ * `before`, a `retyped` missing a side) are unrepresentable, and the #2979
+ * classifier can `switch (change.kind)` and read `before`/`after` without a
+ * non-null assertion.
+ *
+ * **`path` grammar** (the field's location — shared by every arm):
+ *   - Operation param: `param:<in>:<name>` (e.g. `param:query:limit`).
+ *   - Request body: `requestBody:<media>[.prop…]`.
+ *   - Response body: `response:<status>:<media>[.prop…]`.
+ *   - Named schema: the bare property path. `""` is the schema root itself, which
+ *     surfaces a change when the root's own type/ref/enum moved (a scalar/enum/ref
+ *     alias retyped, or an object↔array flip at the top level).
+ *   - Array elements append `[]`. Composition branches append `|<keyword>[<i>]`
+ *     (e.g. `…|oneOf[0]`), where `<keyword>` is `allOf`/`oneOf`/`anyOf` and `<i>`
+ *     is the branch's index AFTER a stable content sort — so reordering branches
+ *     in the source spec never shifts a path (see {@link flattenSchema}).
+ */
+export type FieldChange =
+  | { readonly path: string; readonly kind: "added"; readonly after: FieldDescriptor }
+  | { readonly path: string; readonly kind: "removed"; readonly before: FieldDescriptor }
+  | {
+      readonly path: string;
+      readonly kind: "retyped";
+      readonly before: FieldDescriptor;
+      readonly after: FieldDescriptor;
+    };
 
 /** The operation-level scalar attributes a stable `operationId` can change under. */
 export type OperationAttributeName = "method" | "path" | "security" | "sideEffecting";
@@ -187,6 +207,17 @@ function describeNode(schema: OpenApiSchema, required: boolean): FieldDescriptor
   return d;
 }
 
+/**
+ * Canonical string form of a descriptor, used to content-key composition branches.
+ * Fields are emitted positionally in a FIXED order (and `enum` is pre-sorted by
+ * {@link normalizeEnum}), so the output is deterministic — equal descriptors
+ * always serialize to equal strings, and `undefined` members are preserved as
+ * `null` by `JSON.stringify` so position never shifts.
+ */
+function serializeDescriptor(d: FieldDescriptor): string {
+  return JSON.stringify([d.type, d.format, d.ref, d.nullable, d.required, d.enum]);
+}
+
 /** Join a property name onto a base path (no leading dot when the base is the root). */
 function joinProp(base: string, name: string): string {
   return base === "" ? name : `${base}.${name}`;
@@ -228,12 +259,42 @@ function flattenSchema(
     ["oneOf", schema.oneOf],
     ["anyOf", schema.anyOf],
   ] as const) {
-    if (branches) {
-      branches.forEach((branch, i) =>
-        flattenSchema(branch, `${path}|${keyword}[${i}]`, out, depth + 1, false),
-      );
-    }
+    if (!branches) continue;
+    // Composition branches are an UNORDERED set — `allOf` is an intersection,
+    // `oneOf`/`anyOf` a union; JSON Schema assigns no meaning to their array
+    // order. A generator that merely reorders branches between probes must
+    // therefore read as `unchanged`, not field churn. So sort branches by a
+    // stable key derived from their own flattened content BEFORE assigning the
+    // positional index in the path — a pure reorder then yields byte-identical
+    // paths, preserving the module's order-insensitive contract. (A genuine
+    // add/remove of a branch still surfaces.) Keys are computed once, not on
+    // every comparator call, to keep the sort cheap.
+    const keyed = branches.map((branch) => ({
+      key: stableSchemaKey(branch, depth + 1),
+      branch,
+    }));
+    keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    keyed.forEach(({ branch }, i) =>
+      flattenSchema(branch, `${path}|${keyword}[${i}]`, out, depth + 1, false),
+    );
   }
+}
+
+/**
+ * A stable, content-derived key for one composition branch: its own flattened
+ * `path → descriptor` leaves serialized in sorted order. Used to sort
+ * `allOf`/`oneOf`/`anyOf` branches deterministically so their array order in the
+ * source spec never leaks into the diff (see {@link flattenSchema}). Recurses
+ * through {@link flattenSchema}, so it is bounded by {@link MAX_FIELD_DEPTH} the
+ * same way the main walk is.
+ */
+function stableSchemaKey(schema: OpenApiSchema, depth: number): string {
+  const tmp = new Map<string, FieldDescriptor>();
+  flattenSchema(schema, "", tmp, depth, false);
+  return [...tmp.keys()]
+    .toSorted()
+    .map((p) => `${p}=${serializeDescriptor(tmp.get(p)!)}`)
+    .join("|");
 }
 
 /** Flatten a named component schema's fields (root under the empty path). */
@@ -444,19 +505,43 @@ export function diffOperationGraphs(
  * The spec-diff record persisted at `workspace_plugins.config.openapi_last_diff`
  * on every re-discovery (AC2). Wraps the structured {@link OperationGraphDiff}
  * with the two probe timestamps it was computed across, so the detail page can
- * say "since last refresh (probed at …)". A BASELINE (first-ever discovery, or a
- * re-probe where the prior snapshot no longer parsed) carries `diff: null` and
- * `previousProbedAt: null` — there was nothing to compare against. The full diff
- * is retained (not just the summary) so #2979's breaking-change classifier can
- * run over the same changeset without re-probing.
+ * say "since last refresh (probed at …)". The full diff is retained (not just the
+ * summary) so #2979's breaking-change classifier can run over the same changeset
+ * without re-probing.
+ *
+ * There are THREE legitimate states, discriminated by `diff` + `priorParseFailed`:
+ *   1. FIRST-EVER DISCOVERY — `diff: null`, `previousProbedAt: null`. Nothing to
+ *      compare against (the install baseline). Built by {@link baselineSpecDiffRecord}.
+ *   2. UNPARSEABLE PRIOR — `diff: null`, `previousProbedAt` SET, `priorParseFailed:
+ *      true`. A prior snapshot existed but no longer rebuilds (older builder /
+ *      corrupt cached doc), so the comparison was *abandoned* — distinct from (1),
+ *      because real drift may have gone unseen. Built by {@link unparseablePriorDiffRecord}.
+ *   3. COMPUTED DIFF — `diff` present; `diff.unchanged` says whether anything moved.
+ *
+ * Depth note for #2979: the field walk is bounded by {@link MAX_FIELD_DEPTH}, so
+ * two specs differing ONLY below that depth read as `unchanged`. The bound is
+ * symmetric (both sides truncate identically) so it never invents drift, but a
+ * consumer treating `unchanged` as "provably no breaking change" should read it as
+ * "no change down to depth {@link MAX_FIELD_DEPTH}".
  */
 export interface SpecDiffRecord {
-  /** ISO-8601 `probedAt` of the snapshot diffed FROM — `null` for a baseline. */
+  /**
+   * ISO-8601 `probedAt` of the snapshot diffed FROM. `null` only for a first-ever
+   * discovery (state 1); SET for an unparseable-prior baseline (state 2) and a
+   * computed diff (state 3).
+   */
   readonly previousProbedAt: string | null;
   /** ISO-8601 `probedAt` of the freshly re-probed snapshot. */
   readonly currentProbedAt: string;
-  /** The structured changeset — `null` for a baseline (no prior to compare). */
+  /** The structured changeset — `null` for either baseline (states 1 and 2). */
   readonly diff: OperationGraphDiff | null;
+  /**
+   * `true` only in state 2 — a prior snapshot existed but no longer parsed, so the
+   * comparison was dropped. Absent for states 1 and 3. Lets the UI/audit say
+   * "comparison unavailable" rather than mislabeling a dropped compare as a clean
+   * baseline. See {@link unparseablePriorDiffRecord}.
+   */
+  readonly priorParseFailed?: boolean;
 }
 
 /**
@@ -470,6 +555,21 @@ export function baselineSpecDiffRecord(currentProbedAt: string): SpecDiffRecord 
 }
 
 /**
+ * Build an UNPARSEABLE-PRIOR baseline record (state 2 of {@link SpecDiffRecord}):
+ * a prior snapshot existed (so `previousProbedAt` is known) but no longer rebuilds
+ * into a graph, so the re-discovery records a baseline rather than failing — and
+ * flags `priorParseFailed` so the UI/audit don't mistake the dropped comparison
+ * for a clean first-ever baseline. The fresh snapshot is still persisted by the
+ * caller; only the *comparison* was lost.
+ */
+export function unparseablePriorDiffRecord(
+  previousProbedAt: string,
+  currentProbedAt: string,
+): SpecDiffRecord {
+  return { previousProbedAt, currentProbedAt, diff: null, priorParseFailed: true };
+}
+
+/**
  * Lightweight projection of a {@link SpecDiffRecord} for the list/detail card —
  * the timestamps, the roll-up counts, and the two flags the UI branches on. Omits
  * the per-field detail so the list endpoint stays small; the full diff lives in
@@ -478,8 +578,14 @@ export function baselineSpecDiffRecord(currentProbedAt: string): SpecDiffRecord 
 export interface SpecDiffSummary {
   readonly previousProbedAt: string | null;
   readonly currentProbedAt: string;
-  /** True when this was a baseline (first discovery / no prior snapshot to compare). */
+  /** True when this was a baseline (first discovery, OR an unparseable prior — see {@link priorParseFailed}). */
   readonly baseline: boolean;
+  /**
+   * True only when `baseline` is true BECAUSE the prior snapshot no longer parsed
+   * (state 2) — the comparison was dropped, not absent. Drives the UI's
+   * "comparison unavailable" wording vs. a clean "Baseline recorded".
+   */
+  readonly priorParseFailed: boolean;
   /** True when a comparison ran and nothing moved — drives the "no changes" UI. */
   readonly unchanged: boolean;
   readonly counts: DiffCounts;
@@ -517,7 +623,10 @@ function coerceCounts(raw: unknown): DiffCounts | null {
  * absent field, or a hand-edited row could be malformed — so a record missing its
  * `currentProbedAt` or its numeric `counts` coerces to `null` (the card shows
  * nothing) rather than rendering `undefined`/`NaN`. A record whose `diff` is
- * `null` is a legitimate baseline, surfaced as `baseline: true`.
+ * `null` is a legitimate baseline, surfaced as `baseline: true`; when that baseline
+ * is due to an unparseable prior (`priorParseFailed: true` on the record), the flag
+ * is carried through so the UI can distinguish a dropped comparison from a clean
+ * first-ever baseline.
  */
 export function summarizeSpecDiffRecord(raw: unknown): SpecDiffSummary | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -528,7 +637,14 @@ export function summarizeSpecDiffRecord(raw: unknown): SpecDiffSummary | null {
   // Baseline: no prior snapshot was compared against (first discovery, or the
   // prior snapshot no longer parsed) — `diff` is explicitly null/absent.
   if (r.diff === null || r.diff === undefined) {
-    return { previousProbedAt, currentProbedAt: r.currentProbedAt, baseline: true, unchanged: false, counts: ZERO_COUNTS };
+    return {
+      previousProbedAt,
+      currentProbedAt: r.currentProbedAt,
+      baseline: true,
+      priorParseFailed: r.priorParseFailed === true,
+      unchanged: false,
+      counts: ZERO_COUNTS,
+    };
   }
 
   if (typeof r.diff !== "object") return null;
@@ -538,6 +654,7 @@ export function summarizeSpecDiffRecord(raw: unknown): SpecDiffSummary | null {
     previousProbedAt,
     currentProbedAt: r.currentProbedAt,
     baseline: false,
+    priorParseFailed: false,
     unchanged: (r.diff as Record<string, unknown>).unchanged === true,
     counts,
   };

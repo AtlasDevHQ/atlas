@@ -118,6 +118,9 @@ const LastRefreshSchema = z
     previousProbedAt: z.string().nullable(),
     currentProbedAt: z.string(),
     baseline: z.boolean(),
+    // Optional for back-compat with responses serialized before this field landed;
+    // absent → treated as false (a clean baseline, not a dropped comparison).
+    priorParseFailed: z.boolean().optional(),
     unchanged: z.boolean(),
     counts: DriftCountsSchema,
   })
@@ -198,7 +201,13 @@ function formatDriftSummary(c: DriftCounts): string {
 /** The card's "Last refresh" line, or `null` when the datasource hasn't been rediscovered yet. */
 function driftLabel(lastRefresh: DatasourceSummary["lastRefresh"]): string | null {
   if (!lastRefresh) return null;
-  if (lastRefresh.baseline) return "Baseline recorded";
+  if (lastRefresh.baseline) {
+    // A dropped comparison (prior spec no longer parsed) is NOT a clean baseline —
+    // real drift may have gone unseen, so say so rather than "Baseline recorded".
+    return lastRefresh.priorParseFailed
+      ? "Comparison unavailable — previous spec couldn't be read"
+      : "Baseline recorded";
+  }
   if (lastRefresh.unchanged) return "No changes";
   return formatDriftSummary(lastRefresh.counts);
 }
@@ -345,7 +354,10 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
   // Spec-drift since the last re-discovery (#2976). `null` until rediscovered.
   const lastRefresh = ds.lastRefresh;
   const driftSummary = driftLabel(lastRefresh);
+  // Emphasize the line when a real change moved OR the comparison was dropped
+  // (prior spec unreadable) — both warrant the operator's attention.
   const driftIsChange = !!lastRefresh && !lastRefresh.baseline && !lastRefresh.unchanged;
+  const driftNeedsAttention = driftIsChange || !!lastRefresh?.priorParseFailed;
   const refreshedAt = (() => {
     if (!lastRefresh) return null;
     const d = new Date(lastRefresh.currentProbedAt);
@@ -358,12 +370,15 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
       // Lead with what moved (#2976) so the admin sees drift at the moment of
       // re-probe, not just the operation count.
       const drift = result.data?.drift;
-      const summary =
-        drift && !drift.baseline
-          ? drift.unchanged
-            ? "no changes"
-            : formatDriftSummary(drift.counts)
-          : `${result.data?.operationCount ?? 0} operations`;
+      let summary: string;
+      if (drift && !drift.baseline) {
+        summary = drift.unchanged ? "no changes" : formatDriftSummary(drift.counts);
+      } else if (drift?.priorParseFailed) {
+        // A dropped comparison — don't imply a clean baseline.
+        summary = "previous spec couldn't be read, drift comparison unavailable";
+      } else {
+        summary = `${result.data?.operationCount ?? 0} operations`;
+      }
       toast.success(`Schema rediscovered — ${summary}`);
     } else {
       toast.error(friendlyErrorOrNull(result.error) ?? "Rediscover failed");
@@ -459,7 +474,7 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
               label="Last refresh"
               value={
                 <span className="flex items-center gap-2" data-testid="openapi-drift-summary">
-                  <span className={driftIsChange ? "text-xs font-medium" : "text-xs text-muted-foreground"}>
+                  <span className={driftNeedsAttention ? "text-xs font-medium" : "text-xs text-muted-foreground"}>
                     {driftSummary}
                   </span>
                   {refreshedAt ? (

@@ -22,7 +22,14 @@
 import { describe, it, expect } from "bun:test";
 import { buildOperationGraph } from "../spec";
 import type { OperationGraph } from "../types";
-import { diffOperationGraphs, summarizeSpecDiffRecord, type SpecDiffRecord } from "../diff";
+import {
+  diffOperationGraphs,
+  summarizeSpecDiffRecord,
+  unparseablePriorDiffRecord,
+  type SpecDiffRecord,
+  type FieldChange,
+  type FieldChangeKind,
+} from "../diff";
 
 // ── Fixture shape (mutable, so each scenario can edit a clone freely) ─────────
 
@@ -31,8 +38,13 @@ interface SchemaNode {
   format?: string;
   $ref?: string;
   required?: string[];
+  nullable?: boolean;
+  enum?: unknown[];
   properties?: Record<string, SchemaNode>;
   items?: SchemaNode;
+  allOf?: SchemaNode[];
+  oneOf?: SchemaNode[];
+  anyOf?: SchemaNode[];
 }
 interface MediaType {
   schema: SchemaNode;
@@ -53,6 +65,7 @@ interface Op {
   parameters?: Param[];
   requestBody?: { required: boolean; content: Record<string, MediaType> };
   responses: Record<string, ResponseObj>;
+  "x-atlas-side-effecting"?: boolean;
 }
 interface PathItem {
   get?: Op;
@@ -85,6 +98,21 @@ function emptyGraph(): OperationGraph {
     servers: [],
     info: { title: "", version: "", openapiVersion: "3.0.0" },
   };
+}
+
+/**
+ * Find a field change by path, assert its kind, and narrow the discriminated
+ * {@link FieldChange} union to that arm so `before`/`after` are accessible without
+ * a cast at every call site.
+ */
+function expectChange<K extends FieldChangeKind>(
+  changes: ReadonlyArray<FieldChange>,
+  path: string,
+  kind: K,
+): Extract<FieldChange, { kind: K }> {
+  const change = changes.find((f) => f.path === path);
+  expect(change?.kind).toBe(kind);
+  return change as Extract<FieldChange, { kind: K }>;
 }
 
 /** A small but realistic CRM spec: list + get people, with a `$ref` join. */
@@ -226,10 +254,9 @@ describe("diffOperationGraphs — changed operations", () => {
     const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
     expect(diff.operations.changed.map((c) => c.operationId)).toEqual(["listPeople"]);
     const change = diff.operations.changed[0];
-    const limit = change.fields.find((f) => f.path === "param:query:limit");
-    expect(limit?.kind).toBe("retyped");
-    expect(limit?.before).toMatchObject({ type: "integer" });
-    expect(limit?.after).toMatchObject({ type: "string" });
+    const limit = expectChange(change.fields, "param:query:limit", "retyped");
+    expect(limit.before).toMatchObject({ type: "integer" });
+    expect(limit.after).toMatchObject({ type: "string" });
     expect(diff.counts.fieldsRetyped).toBe(1);
   });
 
@@ -285,9 +312,9 @@ describe("diffOperationGraphs — changed operations", () => {
 
     const diff = diffOperationGraphs(graph(withBody), graph(next));
     const change = diff.operations.changed.find((c) => c.operationId === "createPerson");
-    const added = change?.fields.find((f) => f.path === "requestBody:application/json.email");
-    expect(added?.kind).toBe("added");
-    expect(added?.after).toMatchObject({ type: "string" });
+    expect(change).toBeDefined();
+    const added = expectChange(change!.fields, "requestBody:application/json.email", "added");
+    expect(added.after).toMatchObject({ type: "string" });
   });
 });
 
@@ -308,10 +335,10 @@ describe("diffOperationGraphs — schema fields + $ref joins", () => {
     next.components.schemas.Person.properties!.id.format = "int64"; // uuid -> int64
     const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
     const personChange = diff.schemas.changed.find((s) => s.name === "Person");
-    const idField = personChange?.fields.find((f) => f.path === "id");
-    expect(idField?.kind).toBe("retyped");
-    expect(idField?.before).toMatchObject({ format: "uuid" });
-    expect(idField?.after).toMatchObject({ format: "int64" });
+    expect(personChange).toBeDefined();
+    const idField = expectChange(personChange!.fields, "id", "retyped");
+    expect(idField.before).toMatchObject({ format: "uuid" });
+    expect(idField.after).toMatchObject({ format: "int64" });
   });
 
   it("detects a re-targeted `$ref` join as a retyped field", () => {
@@ -326,10 +353,10 @@ describe("diffOperationGraphs — schema fields + $ref joins", () => {
 
     const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
     const personChange = diff.schemas.changed.find((s) => s.name === "Person");
-    const join = personChange?.fields.find((f) => f.path === "company");
-    expect(join?.kind).toBe("retyped");
-    expect(join?.before).toMatchObject({ ref: "Company" });
-    expect(join?.after).toMatchObject({ ref: "Org" });
+    expect(personChange).toBeDefined();
+    const join = expectChange(personChange!.fields, "company", "retyped");
+    expect(join.before).toMatchObject({ ref: "Company" });
+    expect(join.after).toMatchObject({ ref: "Org" });
     // The component set also moved.
     expect(diff.schemas.added).toContain("Org");
     expect(diff.schemas.removed).toContain("Company");
@@ -342,6 +369,150 @@ describe("diffOperationGraphs — schema fields + $ref joins", () => {
     const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
     expect(diff.schemas.added).toContain("Extra");
     expect(diff.schemas.removed).toContain("Unused");
+  });
+});
+
+// ── Composition branches (allOf / oneOf / anyOf) — order-insensitive ─────────
+
+describe("diffOperationGraphs — composition branches", () => {
+  // A response modeled as a `oneOf` of two inline branches. Composition arrays
+  // are an unordered set, so reordering them between probes must NOT read as
+  // drift — the bug the #3041 review + CodeRabbit/Codex flagged: index-based
+  // paths (`…|oneOf[0]`) turned a pure reorder into phantom field churn.
+  const ONEOF_DOC: OpenApiDoc = {
+    openapi: "3.0.0",
+    info: { title: "CRM", version: "1.0.0" },
+    paths: {
+      "/search": {
+        get: {
+          operationId: "search",
+          responses: {
+            "200": {
+              description: "ok",
+              content: {
+                "application/json": {
+                  schema: {
+                    oneOf: [
+                      { type: "object", properties: { a: { type: "string" } } },
+                      { type: "object", properties: { b: { type: "integer" } } },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    components: { schemas: {} },
+  };
+
+  /** The `oneOf` array of `/search`'s 200 response, for a scenario to mutate. */
+  function oneOfBranches(doc: OpenApiDoc): SchemaNode[] {
+    return doc.paths["/search"].get!.responses["200"].content!["application/json"].schema.oneOf!;
+  }
+
+  it("reports `unchanged` when oneOf branches are merely reordered", () => {
+    const reordered = clone(ONEOF_DOC);
+    const branches = oneOfBranches(reordered);
+    oneOfBranches(reordered).splice(0, branches.length, branches[1], branches[0]);
+    const diff = diffOperationGraphs(graph(clone(ONEOF_DOC)), graph(reordered));
+    expect(diff.unchanged).toBe(true);
+  });
+
+  it("still detects a genuinely added composition branch", () => {
+    const next = clone(ONEOF_DOC);
+    oneOfBranches(next).push({ type: "object", properties: { c: { type: "boolean" } } });
+    const diff = diffOperationGraphs(graph(clone(ONEOF_DOC)), graph(next));
+    expect(diff.unchanged).toBe(false);
+    const change = diff.operations.changed.find((c) => c.operationId === "search");
+    expect(change).toBeDefined();
+    // The new branch's field surfaces as `added` at a composition path.
+    expect(change!.fields.some((f) => f.kind === "added" && f.path.includes("|oneOf["))).toBe(true);
+  });
+});
+
+// ── Required ↔ optional flip ─────────────────────────────────────────────────
+
+describe("diffOperationGraphs — required flip", () => {
+  it("reads a property losing `required` as a retype (folded into the descriptor)", () => {
+    const next = clone(BASE_DOC);
+    next.components.schemas.Person.required = []; // `id` was required
+    const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
+    const personChange = diff.schemas.changed.find((s) => s.name === "Person");
+    expect(personChange).toBeDefined();
+    const idField = expectChange(personChange!.fields, "id", "retyped");
+    expect(idField.before).toMatchObject({ required: true });
+    expect(idField.after.required).toBeUndefined();
+  });
+});
+
+// ── Enum descriptors — sorted, so member order is not drift ──────────────────
+
+describe("diffOperationGraphs — enum descriptors", () => {
+  const ENUM_DOC: OpenApiDoc = {
+    openapi: "3.0.0",
+    info: { title: "CRM", version: "1.0.0" },
+    paths: {
+      "/people": {
+        get: {
+          operationId: "listPeople",
+          parameters: [{ name: "status", in: "query", schema: { type: "string", enum: ["a", "b", "c"] } }],
+          responses: { "200": { description: "ok" } },
+        },
+      },
+    },
+    components: { schemas: {} },
+  };
+
+  it("treats enum member reordering as unchanged (members are sorted)", () => {
+    const reordered = clone(ENUM_DOC);
+    reordered.paths["/people"].get!.parameters![0].schema!.enum = ["c", "a", "b"];
+    const diff = diffOperationGraphs(graph(clone(ENUM_DOC)), graph(reordered));
+    expect(diff.unchanged).toBe(true);
+  });
+
+  it("flags an added enum member as a retype", () => {
+    const next = clone(ENUM_DOC);
+    next.paths["/people"].get!.parameters![0].schema!.enum = ["a", "b", "c", "d"];
+    const diff = diffOperationGraphs(graph(clone(ENUM_DOC)), graph(next));
+    const change = diff.operations.changed.find((c) => c.operationId === "listPeople");
+    expect(change).toBeDefined();
+    const status = expectChange(change!.fields, "param:query:status", "retyped");
+    expect(status.before.enum).toEqual(["a", "b", "c"]);
+    expect(status.after.enum).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+// ── Array element paths ──────────────────────────────────────────────────────
+
+describe("diffOperationGraphs — array element paths", () => {
+  it("flags a retyped array element via its `[]` path", () => {
+    // PersonList.records is an array of `$ref` Person — retarget the element type.
+    const next = clone(BASE_DOC);
+    next.components.schemas.PersonList.properties!.records.items = { type: "string" };
+    const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
+    const listChange = diff.schemas.changed.find((s) => s.name === "PersonList");
+    expect(listChange).toBeDefined();
+    const elem = expectChange(listChange!.fields, "records[]", "retyped");
+    expect(elem.before).toMatchObject({ ref: "Person" });
+    expect(elem.after).toMatchObject({ type: "string" });
+  });
+});
+
+// ── Operation attributes — safety-relevant routing facts ─────────────────────
+
+describe("diffOperationGraphs — operation attributes", () => {
+  it("flags a sideEffecting escalation (absent → true) as an attribute change", () => {
+    const next = clone(BASE_DOC);
+    next.paths["/people/{id}"].get!["x-atlas-side-effecting"] = true;
+    const diff = diffOperationGraphs(graph(clone(BASE_DOC)), graph(next));
+    const change = diff.operations.changed.find((c) => c.operationId === "getPerson");
+    expect(change).toBeDefined();
+    expect(change!.attributes.find((a) => a.name === "sideEffecting")).toMatchObject({
+      before: "false",
+      after: "true",
+    });
   });
 });
 
@@ -385,13 +556,14 @@ describe("summarizeSpecDiffRecord — list/detail projection", () => {
     const summary = summarizeSpecDiffRecord(record);
     expect(summary).not.toBeNull();
     expect(summary?.baseline).toBe(false);
+    expect(summary?.priorParseFailed).toBe(false);
     expect(summary?.unchanged).toBe(false);
     expect(summary?.previousProbedAt).toBe("2026-05-29T00:00:00.000Z");
     expect(summary?.counts.schemasChanged).toBe(1);
     expect(summary?.counts.fieldsAdded).toBe(1);
   });
 
-  it("marks a null-diff record as a baseline", () => {
+  it("marks a null-diff record as a clean first-ever baseline", () => {
     const record: SpecDiffRecord = {
       previousProbedAt: null,
       currentProbedAt: "2026-05-30T00:00:00.000Z",
@@ -399,8 +571,22 @@ describe("summarizeSpecDiffRecord — list/detail projection", () => {
     };
     const summary = summarizeSpecDiffRecord(record);
     expect(summary?.baseline).toBe(true);
+    expect(summary?.priorParseFailed).toBe(false);
     expect(summary?.unchanged).toBe(false);
     expect(summary?.counts.operationsAdded).toBe(0);
+  });
+
+  it("distinguishes an unparseable-prior baseline from a clean one", () => {
+    // A prior snapshot existed (timestamp retained) but no longer parsed — the
+    // comparison was DROPPED, not absent. The UI must not call this a clean baseline.
+    const record = unparseablePriorDiffRecord(
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-30T00:00:00.000Z",
+    );
+    const summary = summarizeSpecDiffRecord(record);
+    expect(summary?.baseline).toBe(true);
+    expect(summary?.priorParseFailed).toBe(true);
+    expect(summary?.previousProbedAt).toBe("2026-05-29T00:00:00.000Z");
   });
 
   it("surfaces an unchanged re-probe", () => {

@@ -386,6 +386,53 @@ describe("admin-openapi-datasources — mutations never rewrite the credential",
     expect(body.drift?.unchanged).toBe(false);
     expect(body.drift?.counts.operationsRemoved).toBe(1);
   });
+
+  it("records an unparseable-prior baseline when the prior snapshot no longer parses (#2976)", async () => {
+    // The prior snapshot is structurally valid (passes isValidSnapshot) but its
+    // cached `doc` no longer rebuilds — a `get` missing its operationId makes the
+    // REAL buildOperationGraph throw (probe is mocked; spec.ts is not). The
+    // rediscover must NOT fail: it records a baseline FLAGGED priorParseFailed and
+    // still persists the fresh snapshot, so a dropped comparison is distinguishable
+    // from a clean first-ever baseline.
+    configExtra = {
+      openapi_snapshot: {
+        probedAt: "2026-05-27T00:00:00.000Z",
+        title: "Widget API",
+        version: "1.0.0",
+        openapiVersion: "3.1.0",
+        operationCount: 1,
+        doc: {
+          openapi: "3.1.0",
+          info: { title: "Widget API", version: "1.0.0" },
+          // `get` with no operationId → buildOperationGraph throws missing-operation-id.
+          paths: { "/things": { get: { responses: { "200": { description: "ok" } } } } },
+        },
+      },
+    };
+
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    const update = db.calls.find(
+      ([sql]) => sql.includes("UPDATE") && sql.includes("openapi_last_diff"),
+    );
+    expect(update).toBeDefined();
+    const diffJson = JSON.parse(update![1][4] as string) as {
+      previousProbedAt: string | null;
+      diff: unknown;
+      priorParseFailed?: boolean;
+    };
+    // Prior probedAt retained, comparison dropped, dropped-compare flag set.
+    expect(diffJson.previousProbedAt).toBe("2026-05-27T00:00:00.000Z");
+    expect(diffJson.diff).toBeNull();
+    expect(diffJson.priorParseFailed).toBe(true);
+
+    const body = (await res.json()) as {
+      drift: { baseline: boolean; priorParseFailed: boolean } | null;
+    };
+    expect(body.drift?.baseline).toBe(true);
+    expect(body.drift?.priorParseFailed).toBe(true);
+  });
 });
 
 // ── Rediscover probe-failure mapping ─────────────────────────────────────────

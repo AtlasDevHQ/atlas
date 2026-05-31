@@ -397,6 +397,155 @@ describe("classifyBreakingChanges — mixed changesets", () => {
   });
 });
 
+// ── #3050: effective-required gating (optional containers + ref'd components) ─
+
+describe("classifyBreakingChanges — effective-required gating (#3050)", () => {
+  /** Classify the diff between two arbitrary docs (not clones of BASE_DOC). */
+  function classifyBetween(prev: OpenApiDoc, next: OpenApiDoc) {
+    return classifyBreakingChanges(diffOperationGraphs(graph(prev), graph(next)));
+  }
+  /** A doc with one POST whose request body wraps `bodySchema` at the given requiredness. */
+  function postBodyDoc(bodyRequired: boolean, bodySchema: SchemaNode): OpenApiDoc {
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: bodyRequired, content: { "application/json": { schema: bodySchema } } },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: {} },
+    };
+  }
+
+  it("adding a required child to an OPTIONAL request body is additive", () => {
+    const prev = postBodyDoc(false, { type: "object", required: ["a"], properties: { a: { type: "string" } } });
+    const next = postBodyDoc(false, {
+      type: "object",
+      required: ["a", "b"],
+      properties: { a: { type: "string" }, b: { type: "string" } },
+    });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("adding a required child under an OPTIONAL ancestor (in a required body) is additive", () => {
+    // Body IS required, but `address` is optional → a caller omitting it keeps working.
+    const addr = (zipRequired: boolean): SchemaNode => ({
+      type: "object",
+      ...(zipRequired ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zipRequired ? { zip: { type: "string" } } : {}) },
+    });
+    const prev = postBodyDoc(true, { type: "object", required: [], properties: { address: addr(false) } });
+    const next = postBodyDoc(true, { type: "object", required: [], properties: { address: addr(true) } });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("adding a required child under a REQUIRED ancestor (in a required body) IS breaking", () => {
+    const addr = (zipRequired: boolean): SchemaNode => ({
+      type: "object",
+      ...(zipRequired ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zipRequired ? { zip: { type: "string" } } : {}) },
+    });
+    const prev = postBodyDoc(true, { type: "object", required: ["address"], properties: { address: addr(false) } });
+    const next = postBodyDoc(true, { type: "object", required: ["address"], properties: { address: addr(true) } });
+    const a = classifyBetween(prev, next);
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/json.address.zip",
+      }),
+    ).toBe(true);
+  });
+
+  /** A doc using `WidgetInput` only on a required request body — request-EXCLUSIVE. */
+  function requestOnlyComponentDoc(inputRequired: string[], extraProp?: string): OpenApiDoc {
+    const props: Record<string, SchemaNode> = { name: { type: "string" } };
+    if (extraProp) props[extraProp] = { type: "string" };
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/widgets": {
+          post: {
+            operationId: "createWidget",
+            requestBody: {
+              required: true,
+              content: { "application/json": { schema: { $ref: "#/components/schemas/WidgetInput" } } },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: { WidgetInput: { type: "object", required: inputRequired, properties: props } } },
+    };
+  }
+
+  it("adding a required prop to a request-EXCLUSIVE component IS breaking", () => {
+    const prev = requestOnlyComponentDoc(["name"]);
+    const next = requestOnlyComponentDoc(["name", "sku"], "sku");
+    const a = classifyBetween(prev, next);
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "WidgetInput", path: "sku" })).toBe(true);
+  });
+
+  /** A doc using `Widget` on a response (and optionally also a required request body). */
+  function widgetDoc(opts: { alsoRequest: boolean; required: string[]; extraProp?: string }): OpenApiDoc {
+    const props: Record<string, SchemaNode> = { id: { type: "string" } };
+    if (opts.extraProp) props[opts.extraProp] = { type: "string" };
+    const paths: Record<string, PathItem> = {
+      "/widgets/{id}": {
+        get: {
+          operationId: "getWidget",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": {
+              description: "ok",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Widget" } } },
+            },
+          },
+        },
+      },
+    };
+    if (opts.alsoRequest) {
+      paths["/widgets"] = {
+        post: {
+          operationId: "createWidget",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Widget" } } },
+          },
+          responses: { "200": { description: "ok" } },
+        },
+      };
+    }
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths,
+      components: { schemas: { Widget: { type: "object", required: opts.required, properties: props } } },
+    };
+  }
+
+  it("adding a required prop to a RESPONSE-reachable component stays quiet (no false positive)", () => {
+    const prev = widgetDoc({ alsoRequest: false, required: ["id"] });
+    const next = widgetDoc({ alsoRequest: false, required: ["id", "color"], extraProp: "color" });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("a component used by BOTH a required request body AND a response stays quiet on added-required", () => {
+    // Response reachability dominates: the conservative policy keeps an ambiguous
+    // (read-too) surface quiet rather than nagging on a benign response-shape growth.
+    const prev = widgetDoc({ alsoRequest: true, required: ["id"] });
+    const next = widgetDoc({ alsoRequest: true, required: ["id", "sku"], extraProp: "sku" });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+});
+
 // ── resolveDriftAlertWrite — the trigger-aware raise/clear/leave lifecycle ────
 
 describe("resolveDriftAlertWrite — signal lifecycle decision", () => {

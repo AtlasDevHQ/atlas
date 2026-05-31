@@ -92,6 +92,38 @@ const SnapshotSchema = z
   })
   .nullable();
 
+/**
+ * Spec-drift roll-up counts from the last re-discovery (#2976) — the tallies the
+ * card renders into a human summary. Mirrors the API's `DiffCounts`.
+ */
+const DriftCountsSchema = z.object({
+  operationsAdded: z.number(),
+  operationsRemoved: z.number(),
+  operationsChanged: z.number(),
+  schemasAdded: z.number(),
+  schemasRemoved: z.number(),
+  schemasChanged: z.number(),
+  fieldsAdded: z.number(),
+  fieldsRemoved: z.number(),
+  fieldsRetyped: z.number(),
+});
+
+/**
+ * Summary of the last spec re-discovery (#2976). `null` until the datasource has
+ * been rediscovered at least once; `baseline` when there was no prior snapshot to
+ * compare against; `unchanged` when a comparison ran and nothing moved.
+ */
+const LastRefreshSchema = z
+  .object({
+    previousProbedAt: z.string().nullable(),
+    currentProbedAt: z.string(),
+    baseline: z.boolean(),
+    unchanged: z.boolean(),
+    counts: DriftCountsSchema,
+  })
+  .nullable();
+type DriftCounts = z.infer<typeof DriftCountsSchema>;
+
 const DatasourceSummarySchema = z.object({
   id: z.string(),
   displayName: z.string(),
@@ -102,6 +134,8 @@ const DatasourceSummarySchema = z.object({
   specRefreshInterval: z.string(),
   status: z.string(),
   snapshot: SnapshotSchema,
+  // Optional for back-compat with any cached/old list response; absent → no banner.
+  lastRefresh: LastRefreshSchema.optional(),
 });
 type DatasourceSummary = z.infer<typeof DatasourceSummarySchema>;
 
@@ -138,6 +172,35 @@ function formatRefreshLabel(value: string): string {
   if (preset) return preset.label;
   const custom = /^(\d+(?:\.\d+)?)h$/.exec(value);
   return custom ? `Every ${custom[1]}h` : value;
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * Render the spec-drift counts (#2976) into a human one-liner like
+ * "2 new operations, 1 removed operation, 3 changed fields". Field-level changes
+ * (added + removed + retyped, across operations and shared schemas) collapse to
+ * "changed fields"; an attribute-only operation change (e.g. method) surfaces as
+ * "changed operations" when no field moved. Empty → "no changes".
+ */
+function formatDriftSummary(c: DriftCounts): string {
+  const fieldChanges = c.fieldsAdded + c.fieldsRemoved + c.fieldsRetyped;
+  const parts: string[] = [];
+  if (c.operationsAdded) parts.push(`${plural(c.operationsAdded, "new operation")}`);
+  if (c.operationsRemoved) parts.push(`${plural(c.operationsRemoved, "removed operation")}`);
+  if (c.schemasAdded) parts.push(`${plural(c.schemasAdded, "new schema")}`);
+  if (c.schemasRemoved) parts.push(`${plural(c.schemasRemoved, "removed schema")}`);
+  if (fieldChanges) parts.push(`${plural(fieldChanges, "changed field")}`);
+  else if (c.operationsChanged) parts.push(`${plural(c.operationsChanged, "changed operation")}`);
+  return parts.length > 0 ? parts.join(", ") : "no changes";
+}
+
+/** The card's "Last refresh" line, or `null` when the datasource hasn't been rediscovered yet. */
+function driftLabel(lastRefresh: DatasourceSummary["lastRefresh"]): string | null {
+  if (!lastRefresh) return null;
+  if (lastRefresh.baseline) return "Baseline recorded";
+  if (lastRefresh.unchanged) return "No changes";
+  return formatDriftSummary(lastRefresh.counts);
 }
 
 interface OpenApiProviderBlockProps {
@@ -244,7 +307,11 @@ export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProvider
 function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange: () => void }) {
   const [opsOpen, setOpsOpen] = useState(false);
 
-  const rediscover = useAdminMutation<{ rediscovered: boolean; operationCount: number }>({
+  const rediscover = useAdminMutation<{
+    rediscovered: boolean;
+    operationCount: number;
+    drift: z.infer<typeof LastRefreshSchema>;
+  }>({
     path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}/rediscover`,
     method: "POST",
     invalidates: onChange,
@@ -275,10 +342,29 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
     }
   })();
 
+  // Spec-drift since the last re-discovery (#2976). `null` until rediscovered.
+  const lastRefresh = ds.lastRefresh;
+  const driftSummary = driftLabel(lastRefresh);
+  const driftIsChange = !!lastRefresh && !lastRefresh.baseline && !lastRefresh.unchanged;
+  const refreshedAt = (() => {
+    if (!lastRefresh) return null;
+    const d = new Date(lastRefresh.currentProbedAt);
+    return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString();
+  })();
+
   async function handleRediscover() {
     const result = await rediscover.mutate({});
     if (result.ok) {
-      toast.success(`Schema rediscovered — ${result.data?.operationCount ?? 0} operations`);
+      // Lead with what moved (#2976) so the admin sees drift at the moment of
+      // re-probe, not just the operation count.
+      const drift = result.data?.drift;
+      const summary =
+        drift && !drift.baseline
+          ? drift.unchanged
+            ? "no changes"
+            : formatDriftSummary(drift.counts)
+          : `${result.data?.operationCount ?? 0} operations`;
+      toast.success(`Schema rediscovered — ${summary}`);
     } else {
       toast.error(friendlyErrorOrNull(result.error) ?? "Rediscover failed");
     }
@@ -367,6 +453,21 @@ function OpenApiInstallCard({ ds, onChange }: { ds: DatasourceSummary; onChange:
           />
           {ds.snapshot ? (
             <DetailRow label="Spec" value={`${ds.snapshot.title} v${ds.snapshot.version}`} truncate />
+          ) : null}
+          {driftSummary ? (
+            <DetailRow
+              label="Last refresh"
+              value={
+                <span className="flex items-center gap-2" data-testid="openapi-drift-summary">
+                  <span className={driftIsChange ? "text-xs font-medium" : "text-xs text-muted-foreground"}>
+                    {driftSummary}
+                  </span>
+                  {refreshedAt ? (
+                    <span className="text-[11px] text-muted-foreground">· {refreshedAt}</span>
+                  ) : null}
+                </span>
+              }
+            />
           ) : null}
           <DetailRow
             label="Representation"

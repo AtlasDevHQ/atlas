@@ -55,6 +55,7 @@ import {
   probeSpec,
   type ProbeOptions,
 } from "@atlas/api/lib/openapi/probe";
+import { baselineSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
 import { DEFAULT_REPRESENTATION_MODE } from "@atlas/api/lib/openapi/catalog";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import type { WorkspaceId } from "@useatlas/types";
@@ -308,6 +309,9 @@ export class OAuthDatasourceInstallHandler implements OAuthDatasourceInstallHand
       display_name: snapshot.title,
       status: credentialStatus,
       openapi_snapshot: snapshot,
+      // First-ever discovery records a baseline (no diff); re-discovery overwrites
+      // it with the computed drift against this snapshot (#2976).
+      openapi_last_diff: baselineSpecDiffRecord(snapshot.probedAt),
       ...(ownership.login ? { account_login: ownership.login } : {}),
       ...(ownership.type ? { account_type: ownership.type } : {}),
     };

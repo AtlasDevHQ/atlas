@@ -322,6 +322,70 @@ describe("admin-openapi-datasources — mutations never rewrite the credential",
     expect(snapshotJson).not.toContain("auth_value");
     expect(snapshotJson).not.toContain("should-never-be-rewritten");
   });
+
+  it("rediscover persists the computed spec diff and returns its summary (#2976)", async () => {
+    // Prior snapshot declares one operation; the mocked re-probe returns an empty
+    // graph → the diff is "1 operation removed". This drives the REAL diff +
+    // persistence end-to-end through the route (probe is mocked; diff is not).
+    configExtra = {
+      openapi_snapshot: {
+        probedAt: "2026-05-28T00:00:00.000Z",
+        title: "Widget API",
+        version: "1.0.0",
+        openapiVersion: "3.1.0",
+        operationCount: 1,
+        doc: {
+          openapi: "3.1.0",
+          info: { title: "Widget API", version: "1.0.0" },
+          paths: {
+            "/things/{id}": {
+              get: {
+                operationId: "getThing",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: {
+                  "200": {
+                    description: "ok",
+                    content: {
+                      "application/json": {
+                        schema: { type: "object", properties: { id: { type: "string" } } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+
+    // The UPDATE merges BOTH the snapshot and the diff record in one statement.
+    const update = db.calls.find(
+      ([sql]) => sql.includes("UPDATE") && sql.includes("openapi_last_diff"),
+    );
+    expect(update).toBeDefined();
+    expect(update![0]).toContain("jsonb_build_object('openapi_snapshot'");
+    expect(update![0]).toContain("openapi_last_diff");
+    const diffJson = JSON.parse(update![1][4] as string) as {
+      previousProbedAt: string | null;
+      currentProbedAt: string;
+      diff: { counts: { operationsRemoved: number }; unchanged: boolean } | null;
+    };
+    expect(diffJson.previousProbedAt).toBe("2026-05-28T00:00:00.000Z");
+    expect(diffJson.diff?.unchanged).toBe(false);
+    expect(diffJson.diff?.counts.operationsRemoved).toBe(1);
+
+    // …and the response surfaces the projected drift summary for the toast.
+    const body = (await res.json()) as {
+      drift: { baseline: boolean; unchanged: boolean; counts: { operationsRemoved: number } } | null;
+    };
+    expect(body.drift?.baseline).toBe(false);
+    expect(body.drift?.unchanged).toBe(false);
+    expect(body.drift?.counts.operationsRemoved).toBe(1);
+  });
 });
 
 // ── Rediscover probe-failure mapping ─────────────────────────────────────────

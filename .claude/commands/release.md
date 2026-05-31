@@ -58,35 +58,6 @@ First dev tag. Establishes tag-gated prod deploys, stability contract,
 and the /release flow. Slice 6 bun-test-parallel cutover; docs polish.
 ```
 
-**Step 4b: Append the docs-site changelog entry (before tagging)**
-
-The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-0008 — *not* banked for `v0.1.0`). Add one entry for this tag so the docs site reflects the release. This must land on `main` **before** the tag is cut, so the tagged SHA carries its own changelog entry (the docs service deploys from `main`).
-
-1. Add a new object to the **top** of the `releases` array in `apps/docs/src/components/changelog-data.ts`:
-   ```ts
-   {
-     version: "<version>",          // the git tag, e.g. "v0.0.2"
-     title: "<theme>",              // milestone theme, e.g. "REST Datasources"
-     date: "<YYYY-MM-DD>",          // tag date
-     summary: "<2–4 sentences, customer-facing — what shipped and why it matters>",
-     highlights: ["<bullet>", "<bullet>", "..."],  // optional, 3–8 curated items
-   },
-   ```
-   Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Use `/changelog` to help draft the prose if useful.
-
-2. Commit + push to `main`:
-   ```bash
-   git add apps/docs/src/components/changelog-data.ts
-   git commit -m "docs(changelog): <version> — <theme>"
-   git push origin main
-   ```
-
-3. Re-confirm the Step 1 invariant (clean + synced) before tagging — HEAD must now equal `origin/main` with this commit included:
-   ```bash
-   git fetch origin && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo OK
-   ```
-   The tag in Step 5 points at this commit, so the release and its docs-site changelog entry ship together.
-
 **Step 5: Create the annotated tag and push**
 
 ```bash
@@ -123,9 +94,36 @@ gh release create <version> -R AtlasDevHQ/atlas --generate-notes --verify-tag
 
 `--generate-notes` produces a commit + PR list as the body. `--verify-tag` makes sure the tag we just pushed exists on the remote (sanity check).
 
-The GitHub Release `--generate-notes` body is the raw commit/PR list; the curated, customer-facing summary lives in the docs-site changelog entry from Step 4b (`docs.useatlas.dev/changelog`), which links back to this Release. For minor tags, optionally edit the GitHub Release body to lead with that user-facing summary; patches typically ship with the auto-notes as-is.
+The GitHub Release `--generate-notes` body is the raw commit/PR list; the curated, customer-facing summary lives in the docs-site changelog entry added in the next step (`docs.useatlas.dev/changelog`), which links back to this Release. For minor tags, optionally edit the GitHub Release body to lead with that user-facing summary; patches typically ship with the auto-notes as-is.
 
-**Step 8: Watch the prod deploy**
+**Step 8: Append the docs-site changelog entry (now that the Release exists)**
+
+The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-0008 — *not* banked for `v0.1.0`). Add one entry for this tag so the docs site reflects the release. Do this **after** the GitHub Release exists (Step 7), never before: the entry links to `releases/tag/<version>`, so publishing it earlier would advertise a dead link, and a failure in tagging / prod / release-create would strand a stale entry on the live docs site.
+
+1. Add a new object to the **top** of the `releases` array in `apps/docs/src/components/changelog-data.ts`:
+   ```ts
+   {
+     version: "<version>",          // the git tag, e.g. "v0.0.2"
+     title: "<theme>",              // milestone theme, e.g. "REST Datasources"
+     date: "<YYYY-MM-DD>",          // tag date (matches the Release)
+     summary: "<2–4 sentences, customer-facing — what shipped and why it matters>",
+     highlights: ["<bullet>", "<bullet>", "..."],  // optional, 3–8 curated items
+   },
+   ```
+   Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Use `/changelog` to help draft the prose if useful.
+
+2. Type-check the docs app so a broken entry can't reach the docs build (the docs service deploys from `main`), then commit + push:
+   ```bash
+   node_modules/.bin/tsgo --noEmit -p apps/docs/tsconfig.json   # from repo root
+   git add apps/docs/src/components/changelog-data.ts
+   git commit -m "docs(changelog): <version> — <theme>"
+   git push origin main
+   ```
+   This commit is docs-data only and is intentionally **not** part of the tagged release SHA — `/ci` (Step 3) already gated the release code, and decoupling keeps the changelog from ever advertising a release that doesn't exist.
+
+3. Rollback (rare): if the release is later superseded or rolled back, revert this commit so the changelog doesn't advertise a withdrawn release — `git revert <changelog-commit> && git push origin main`.
+
+**Step 9: Watch the prod deploy**
 
 The `prod`-branch push (step 6) triggers Railway prod deploys across the 5 services watching `prod` (`api`, `api-eu`, `api-apac`, `web`, `www`). Output the watch commands:
 
@@ -136,7 +134,7 @@ gh api repos/AtlasDevHQ/atlas/deployments?ref=prod --jq '.[0:5][] | "\(.created_
 
 Tell the user where the GitHub Release lives, and that prod deploy is in flight. Don't wait — the deploy takes ~5 min; user can monitor.
 
-**Step 9: Output summary**
+**Step 10: Output summary**
 
 ```
 Tagged: v0.0.1

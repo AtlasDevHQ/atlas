@@ -66,7 +66,7 @@ The skill runs:
 4. **`git push origin <version>^{}:prod --force-with-lease`** — fast-forwards the `prod` branch to the tagged commit. This is what Railway watches; the prod-side deploy fires from this push. `--force-with-lease` (never `--force`) refuses to rewind if someone else has advanced `prod` since the local fetch — a safety net against concurrent `/release` runs.
 5. **`gh release create v0.0.1 --generate-notes`** — creates a GitHub Release with auto-generated commit + PR list.
 
-The curated, customer-facing changelog for each tag lives in the docs-site changelog feed (`apps/docs/src/components/changelog-data.ts` → [docs.useatlas.dev/changelog](https://docs.useatlas.dev/changelog)) — `/release` appends one entry per tag before tagging (Step 4b), and that entry links back to the GitHub Release. The `--generate-notes` body is the raw commit/PR list; edit it on GitHub if it needs polish. See [ADR-0008 § Amendment (2026-05-31)](../adr/0008-versioning-and-release-tags.md).
+The curated, customer-facing changelog for each tag lives in the docs-site changelog feed (`apps/docs/src/components/changelog-data.ts` → [docs.useatlas.dev/changelog](https://docs.useatlas.dev/changelog)) — `/release` appends one entry per tag right after the GitHub Release is created (so the entry's link is never dead), and that entry links back to the Release. The `--generate-notes` body is the raw commit/PR list; edit it on GitHub if it needs polish. See [ADR-0008 § Amendment (2026-05-31)](../adr/0008-versioning-and-release-tags.md).
 
 ### 4. Watch prod
 

@@ -39,6 +39,9 @@ interface SchemaNode {
   enum?: unknown[];
   properties?: Record<string, SchemaNode>;
   items?: SchemaNode;
+  allOf?: SchemaNode[];
+  oneOf?: SchemaNode[];
+  anyOf?: SchemaNode[];
 }
 interface MediaType {
   schema: SchemaNode;
@@ -543,6 +546,136 @@ describe("classifyBreakingChanges — effective-required gating (#3050)", () => 
     const prev = widgetDoc({ alsoRequest: true, required: ["id"] });
     const next = widgetDoc({ alsoRequest: true, required: ["id", "sku"], extraProp: "sku" });
     expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  // ── chain-propagation edges: items + allOf preserve, oneOf/anyOf break ───────
+
+  it("a required field added under an array's items (in a required body) IS breaking", () => {
+    // "array present ⟹ its elements present" — the chain propagates through items.
+    const items = (zip: boolean): SchemaNode => ({
+      type: "object",
+      ...(zip ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zip ? { zip: { type: "string" } } : {}) },
+    });
+    const body = (zip: boolean): SchemaNode => ({
+      type: "object",
+      required: ["tags"],
+      properties: { tags: { type: "array", items: items(zip) } },
+    });
+    const a = classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true)));
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/json.tags[].zip",
+      }),
+    ).toBe(true);
+  });
+
+  it("a required field added under an allOf branch (in a required body) IS breaking", () => {
+    // allOf is an intersection — every branch applies, so the chain is preserved.
+    const body = (zip: boolean): SchemaNode => ({
+      allOf: [
+        { type: "object", ...(zip ? { required: ["zip"] } : {}), properties: zip ? { zip: { type: "string" } } : {} },
+      ],
+    });
+    const a = classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true)));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { operationId: "createThing" })).toBe(true);
+  });
+
+  it("a required field added under a oneOf branch (in a required body) is additive", () => {
+    // oneOf is a union — a branch member is not guaranteed present, so the chain breaks.
+    const body = (sku: boolean): SchemaNode => ({
+      oneOf: [
+        { type: "object", ...(sku ? { required: ["sku"] } : {}), properties: sku ? { sku: { type: "string" } } : {} },
+      ],
+    });
+    expect(classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true))).breaking).toBe(false);
+  });
+
+  // ── cyclic $ref must terminate (the Twenty Person↔NoteTarget shape) ──────────
+
+  it("a self-referential request-exclusive component terminates AND flags an added-required prop", () => {
+    // `Node.child` -> $ref Node is a cycle; the reachability walk's visited-set guard
+    // must terminate. Node is request-exclusive (required body $ref, never a response).
+    const nodeDoc = (sku: boolean): OpenApiDoc => ({
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/nodes": {
+          post: {
+            operationId: "createNode",
+            requestBody: {
+              required: true,
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Node" } } },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          Node: {
+            type: "object",
+            required: sku ? ["child", "sku"] : ["child"],
+            properties: {
+              child: { $ref: "#/components/schemas/Node" },
+              ...(sku ? { sku: { type: "string" } } : {}),
+            },
+          },
+        },
+      },
+    });
+    const a = classifyBetween(nodeDoc(false), nodeDoc(true));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "Node", path: "sku" })).toBe(true);
+  });
+
+  // ── AC4: a dotted media type must not break the (now path-parse-free) verdict ─
+
+  it("a required field under a dotted media type (application/vnd.api+json) IS breaking", () => {
+    // Pins AC4: the verdict reads `effectiveRequired`, never parses the dotted path —
+    // a media type containing `.`/`+` can't desync the request-surface determination.
+    const doc = (zip: boolean): OpenApiDoc => ({
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: {
+              required: true,
+              content: {
+                "application/vnd.api+json": {
+                  schema: {
+                    type: "object",
+                    required: ["address"],
+                    properties: {
+                      address: {
+                        type: "object",
+                        ...(zip ? { required: ["zip"] } : {}),
+                        properties: { street: { type: "string" }, ...(zip ? { zip: { type: "string" } } : {}) },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const a = classifyBetween(doc(false), doc(true));
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/vnd.api+json.address.zip",
+      }),
+    ).toBe(true);
   });
 });
 

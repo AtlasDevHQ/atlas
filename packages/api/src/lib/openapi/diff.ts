@@ -73,8 +73,8 @@ export interface FieldDescriptor {
    * (#3050). Distinct from {@link required} (the IMMEDIATE-parent flag): a required
    * child of an OPTIONAL request body / optional ancestor has `required: true` but
    * `effectiveRequired` ABSENT, because a caller omitting the optional container
-   * keeps working. Set on request surfaces (the operation's params + required
-   * request body) and on named-component fields the diff has proven reachable from
+   * keeps working. Set on request surfaces (the operation's REQUIRED params +
+   * required request body) and on named-component fields the diff has proven reachable from
    * a request surface *exclusively* (never also a response — see
    * {@link computeRequestExclusiveSchemas}). Always ABSENT on response/quiet
    * surfaces. It is the SINGLE input the #2979 classifier reads to decide an

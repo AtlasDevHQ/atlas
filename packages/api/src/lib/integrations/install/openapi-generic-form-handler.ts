@@ -62,6 +62,7 @@ import {
   OpenApiProbeError,
   type ProbeOptions,
 } from "@atlas/api/lib/openapi/probe";
+import { baselineSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
 import { findDataCandidateBySlug } from "@atlas/api/lib/openapi/data-candidates";
 import { isShareableSpec, probeShared } from "@atlas/api/lib/openapi/shared-spec-cache";
 import { FormInstallValidationError } from "./email-form-handler";
@@ -441,6 +442,10 @@ export async function persistOpenApiDatasourceInstall(
     display_name: displayName || snapshot.title,
     representation_mode: DEFAULT_REPRESENTATION_MODE,
     openapi_snapshot: snapshot,
+    // First-ever discovery records a baseline (no diff) so the detail page reads
+    // "Baseline recorded"; the first re-discovery overwrites it with the computed
+    // drift against this snapshot (#2976).
+    openapi_last_diff: baselineSpecDiffRecord(snapshot.probedAt),
   };
   const schema = parseConfigSchema(configSchema);
   const encryptedConfig = encryptSecretFields(rawConfig, schema);

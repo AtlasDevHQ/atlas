@@ -47,6 +47,15 @@ import {
   coerceSpecRefreshInterval,
   normalizeSpecRefreshInterval,
 } from "@atlas/api/lib/openapi/spec-refresh";
+import { buildOperationGraph } from "@atlas/api/lib/openapi/spec";
+import {
+  diffOperationGraphs,
+  summarizeSpecDiffRecord,
+  baselineSpecDiffRecord,
+  unparseablePriorDiffRecord,
+  type SpecDiffRecord,
+} from "@atlas/api/lib/openapi/diff";
+import type { OperationGraph } from "@atlas/api/lib/openapi/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -94,6 +103,50 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
           probedAt: snapshot.probedAt,
         }
       : null,
+    // Spec-drift summary from the last re-discovery (#2976). Fail-soft: a missing
+    // / malformed `openapi_last_diff` projects to `null` (no banner) instead of
+    // rendering NaN counts. The full structured diff stays in config for #2979.
+    lastRefresh: summarizeSpecDiffRecord(c.openapi_last_diff),
+  };
+}
+
+/**
+ * Compute the spec-diff record (#2976) for a re-discovery: rebuild the PRIOR
+ * snapshot's graph and diff it against the freshly re-probed `nextGraph`. Returns
+ * a BASELINE (`diff: null`) when there's no valid prior snapshot to compare
+ * against, or when the prior snapshot's cached doc no longer parses — in either
+ * case the fresh snapshot still persists; we just can't show what moved. Pure
+ * apart from the warn log; the caller stamps `currentProbedAt` and persists.
+ */
+function buildSpecDiffRecord(
+  priorConfig: Record<string, unknown>,
+  nextGraph: OperationGraph,
+  currentProbedAt: string,
+  installId: string,
+): SpecDiffRecord {
+  const rawPrior = priorConfig.openapi_snapshot;
+  if (!isValidSnapshot(rawPrior)) {
+    return baselineSpecDiffRecord(currentProbedAt);
+  }
+  let priorGraph: OperationGraph;
+  try {
+    priorGraph = buildOperationGraph(rawPrior.doc);
+  } catch (err) {
+    // Older builder / corrupt cached doc — record a baseline rather than failing
+    // the rediscover. The fresh snapshot is still written by the caller. Flag it
+    // `priorParseFailed` so the UI/audit show "comparison unavailable" instead of
+    // mistaking a dropped compare for a clean first-ever baseline (drift may have
+    // gone unseen).
+    log.warn(
+      { installId, err: errorMessage(err) },
+      "Prior OpenAPI snapshot no longer parses — recording an unparseable-prior baseline diff",
+    );
+    return unparseablePriorDiffRecord(rawPrior.probedAt, currentProbedAt);
+  }
+  return {
+    previousProbedAt: rawPrior.probedAt,
+    currentProbedAt,
+    diff: diffOperationGraphs(priorGraph, nextGraph),
   };
 }
 
@@ -351,25 +404,36 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
       typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
 
     let snapshot: OpenApiSnapshot;
+    let diffRecord: SpecDiffRecord;
     try {
       const { doc, graph } = await probeSpec(openapiUrl, auth, {
         ...(baseUrlOverride ? { apiBaseUrl: baseUrlOverride } : {}),
       });
       snapshot = buildSnapshot(doc, graph, new Date().toISOString());
+      // Spec-drift diff (#2976): compare the freshly-probed graph against the
+      // PRIOR snapshot (still in `row.config`, pre-update). A first-ever
+      // discovery / unparseable prior records a baseline (`diff: null`).
+      diffRecord = buildSpecDiffRecord(row.config ?? {}, graph, snapshot.probedAt, installId);
     } catch (err) {
       if (err instanceof OpenApiProbeError) {
         log.warn({ installId, reason: err.reason }, "Rediscover probe failed");
         return c.json({ error: "probe_failed", message: err.message, requestId }, 400);
       }
+      // Unexpected fault from probe / snapshot-build / diff — attach the install
+      // context its siblings log before letting runHandler map it to a 500.
+      log.warn({ installId, err: errorMessage(err) }, "Rediscover failed unexpectedly");
       throw err;
     }
 
+    // Persist the fresh snapshot AND the computed diff against the install in one
+    // JSONB merge (AC2). Both are non-secret, so the encrypted `auth_value` is
+    // never round-tripped through this write.
     await internalQuery(
       `UPDATE workspace_plugins
-          SET config = config || jsonb_build_object('openapi_snapshot', $4::jsonb),
+          SET config = config || jsonb_build_object('openapi_snapshot', $4::jsonb, 'openapi_last_diff', $5::jsonb),
               updated_at = NOW()
         WHERE workspace_id = $1 AND install_id = $2 AND catalog_id = $3 AND pillar = 'datasource'`,
-      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, JSON.stringify(snapshot)],
+      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, JSON.stringify(snapshot), JSON.stringify(diffRecord)],
     );
 
     // Drop the in-process graph cache for this install: the re-probe bumped
@@ -377,17 +441,63 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
     // orphaned prior-`probedAt` entry is reclaimed instead of leaking (#3009).
     invalidateInstallGraphCache(orgId, installId);
 
+    const drift = summarizeSpecDiffRecord(diffRecord);
+    if (!drift) {
+      // We just built and persisted `diffRecord`; if it fails to project, the
+      // writer/reader contract has drifted (or the record is corrupt). The UI
+      // still degrades to "no banner", but this self-written round-trip failure
+      // must not be silent — surface it for log correlation.
+      log.error(
+        { installId, requestId },
+        "Spec-diff record failed to project immediately after persist — drift summary unavailable",
+      );
+    }
     logAdminAction({
       actionType: ADMIN_ACTIONS.connection.probe,
       targetType: "connection",
       targetId: installId,
       scope: "workspace",
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { installId, operationCount: snapshot.operationCount, kind: "openapi-rediscover" },
+      metadata: {
+        installId,
+        operationCount: snapshot.operationCount,
+        kind: "openapi-rediscover",
+        // Roll-up tallies so the audit log shows what a refresh moved, not just
+        // that one ran — the same operation/schema/field counts the UI surfaces.
+        ...(drift && !drift.baseline
+          ? {
+              driftUnchanged: drift.unchanged,
+              operationsAdded: drift.counts.operationsAdded,
+              operationsRemoved: drift.counts.operationsRemoved,
+              operationsChanged: drift.counts.operationsChanged,
+              schemasAdded: drift.counts.schemasAdded,
+              schemasRemoved: drift.counts.schemasRemoved,
+              schemasChanged: drift.counts.schemasChanged,
+              fieldsAdded: drift.counts.fieldsAdded,
+              fieldsRemoved: drift.counts.fieldsRemoved,
+              fieldsRetyped: drift.counts.fieldsRetyped,
+            }
+          : {
+              // Baseline: a first-ever discovery, OR a dropped comparison because
+              // the prior snapshot no longer parsed. Stamp `priorParseFailed` so a
+              // reset drift history that was actually a parse regression isn't
+              // invisible in the audit trail.
+              baseline: true,
+              ...(drift?.priorParseFailed ? { priorParseFailed: true } : {}),
+            }),
+      },
     });
 
     return c.json(
-      { rediscovered: true, operationCount: snapshot.operationCount, probedAt: snapshot.probedAt },
+      {
+        rediscovered: true,
+        operationCount: snapshot.operationCount,
+        probedAt: snapshot.probedAt,
+        // The drift summary so the UI can confirm what moved at the moment of
+        // re-probe ("2 new operations, …" / "no changes"). `null` only if the
+        // record we just wrote somehow fails projection — defensive.
+        drift,
+      },
       200,
     );
   }),

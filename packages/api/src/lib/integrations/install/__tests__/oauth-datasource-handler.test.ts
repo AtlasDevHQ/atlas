@@ -245,6 +245,13 @@ describe("OAuthDatasourceInstallHandler.handleCallback — successful install", 
     expect(config.openapi_snapshot).toBeDefined();
     expect(config.status).toBe("ok");
     expect(config.openapi_url).toBe(SPEC_URL);
+    // First-ever discovery seeds a baseline diff (#2976) keyed off the snapshot's
+    // probedAt — re-discovery later overwrites it with a computed drift.
+    expect(config.openapi_last_diff).toMatchObject({
+      previousProbedAt: null,
+      currentProbedAt: (config.openapi_snapshot as { probedAt: string }).probedAt,
+      diff: null,
+    });
     // the raw installation id never lands in plaintext anywhere in the row.
     expect(JSON.stringify(config)).not.toContain(`"${INSTALLATION_ID}"`);
   });

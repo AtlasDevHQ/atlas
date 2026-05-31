@@ -277,6 +277,14 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     expect(snapshot.operationCount).toBe(1);
     expect(snapshot.probedAt).toBe("2026-05-29T12:00:00.000Z");
     expect(snapshot.doc).toBeDefined();
+
+    // First-ever discovery seeds a baseline diff (#2976) so the detail page reads
+    // "Baseline recorded" before any rediscovery — keyed off this snapshot's probedAt.
+    expect(stored.openapi_last_diff).toMatchObject({
+      previousProbedAt: null,
+      currentProbedAt: "2026-05-29T12:00:00.000Z",
+      diff: null,
+    });
   });
 
   it("sends the bearer credential when the spec host matches the API host (base_url_override)", async () => {

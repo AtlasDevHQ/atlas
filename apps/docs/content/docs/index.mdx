@@ -7,7 +7,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 
-Ask questions of your data in plain English. Atlas is the trust layer between your business questions and your SQL warehouse — agent-native, YAML-defined, deploy-anywhere.
+Ask questions of your data in plain English. Atlas is the trust layer between your business questions and your data — SQL warehouses or REST/OpenAPI services — agent-native, YAML-defined, deploy-anywhere.
 
 > Atlas is a YAML-defined semantic layer for analytics — authored by humans, consumed by AI agents.
 
@@ -40,7 +40,7 @@ Atlas works across four onboarding shapes. Pick the one that matches what you wa
 
 ## The semantic layer is the product
 
-Everything else — the agent loop, the MCP server, the chat widget, the SQL validation pipeline — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
+Everything else — the agent loop, the MCP server, the chat widget, the validation pipelines for SQL and REST/OpenAPI — exists to make the YAML you write the source of truth for how questions become answers. Every field in the format exists because an LLM needs it: `sample_values` to ground the agent, `glossary.status: ambiguous` to force clarifying questions, `metrics.objective` to pick `MAX` vs `MIN`, `query_patterns` to teach canonical join shapes.
 
 The fastest way to feel why this works: try the [hosted demo](https://app.useatlas.dev/demo) and ask one of these canonical NovaMart questions, then read the SQL the agent wrote:
 
@@ -100,7 +100,7 @@ The YAML format is a first-class concept. Read these before authoring anything i
 - [Bring Your Own Frontend](/frameworks/overview) — Use Atlas with any frontend framework (Nuxt, SvelteKit, React/Vite, TanStack Start)
 - [Plugin Authoring Guide](/plugins/authoring-guide) — Build datasource, context, interaction, action, and sandbox plugins
 - [Sandbox Architecture](/architecture/sandbox) — Platform-agnostic code execution sandboxing design
-- [SQL Validation Pipeline](/security/sql-validation) — 7-layer defense-in-depth for read-only SQL enforcement
+- [SQL Validation Pipeline](/security/sql-validation) — 7-layer defense-in-depth for read-only SQL enforcement; REST/OpenAPI operations get their own parallel safety stack via `validateRestOperation` (see [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic))
 - [Atlas vs Alternatives](/comparisons) — Feature matrix comparing Atlas, WrenAI, Vanna, Metabase, Cube, and ThoughtSpot
 
 </Accordion>

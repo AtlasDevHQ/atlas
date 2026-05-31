@@ -5,7 +5,7 @@ description: A glossary of Atlas-specific terms and how the semantic layer piece
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The semantic layer is how you teach Atlas about your data — a set of YAML files in `semantic/` that describe your tables, columns, relationships, business terms, and key metrics. The agent reads these files before writing any SQL. This page defines the key terms and explains how the pieces connect.
+The semantic layer is how you teach Atlas about your data — a set of YAML files in `semantic/` that describe your tables, columns, relationships, business terms, and key metrics. The agent reads these files before querying your data. The same paradigm covers REST/OpenAPI datasources too, where an entity describes API operations, parameters, and response schemas instead of SQL tables (see [REST/OpenAPI datasource](#restopenapi-datasource) below). This page defines the key terms and explains how the pieces connect.
 
 For the full YAML field reference and generation commands, see [Semantic Layer](/getting-started/semantic-layer).
 
@@ -13,9 +13,9 @@ For the full YAML field reference and generation commands, see [Semantic Layer](
 
 ### Entity
 
-A YAML file that describes one database table or view. Each entity lives in `semantic/entities/` and tells the agent what columns exist, what they mean, how to join to other tables, and what questions this table can answer.
+A YAML file that describes one database table or view. Each SQL entity lives in `semantic/entities/` and tells the agent what columns exist, what they mean, how to join to other tables, and what questions this table can answer. A REST/OpenAPI datasource is modeled differently — as a graph of API operations read from the spec, not hand-authored entity files (see [REST/OpenAPI datasource](#restopenapi-datasource)).
 
-Entities have a **type** that reflects their role in the semantic layer:
+For SQL datasources, entities have a **type** that reflects their role in the semantic layer:
 
 | Type | Purpose | Example |
 |------|---------|---------|
@@ -27,6 +27,18 @@ Entities have a **type** that reflects their role in the semantic layer:
 <Callout type="info">
 `atlas init` assigns `fact_table` to all non-view tables by default. Set `dimension_table` manually for lookup/reference tables, or use `--enrich` to let the LLM classify them.
 </Callout>
+
+### REST/OpenAPI datasource
+
+Not every datasource is a SQL database. Atlas also models REST services that ship an OpenAPI 3.x spec — Stripe, GitHub, Notion, Twenty, or any generic `openapi-generic` service. Instead of tables and columns, the agent works with:
+
+- **Operations** — the endpoints it can call (e.g. `GET /customers`, `POST /charges`), read from the spec into an operation graph.
+- **Parameters** — the path, query, and body inputs an operation accepts.
+- **Response schemas** — the shape of what each operation returns, so the agent knows which fields it can use.
+
+The agent calls operations through the `executeRestOperation` tool rather than `executeSQL`, but the modeling approach is the same: a semantic layer the agent reads before it queries. REST operations are **read-only by default** — writes require a per-endpoint `write_allowlist` plus confirm-before-write, and every call passes through an SSRF egress guard. Enforcement runs through `validateRestOperation`, a parallel safety stack purpose-built for REST — a sibling to the SQL validator, not the same pipeline.
+
+See [OpenAPI / Generic REST datasources](/plugins/datasources/openapi-generic) for the full reference.
 
 ### Grain
 

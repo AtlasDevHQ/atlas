@@ -744,6 +744,107 @@ export function deriveCookieDomain(
 }
 
 /**
+ * Legacy WebAuthn rpID default. Retained as the fallback for single-origin /
+ * self-hosted deploys that configure neither `ATLAS_CORS_ORIGIN` nor
+ * `BETTER_AUTH_TRUSTED_ORIGINS` — there is no web origin to derive from, so
+ * preserving the historical value keeps minimal setups working unchanged.
+ * Prod also resolves to exactly this string (its web origin host IS
+ * `app.useatlas.dev`), so the derive path below is a no-op for prod.
+ */
+export const DEFAULT_RP_ID = "app.useatlas.dev";
+
+/**
+ * WebAuthn's "registrable domain suffix of, or equal to" rule: `rpID` is valid
+ * for `host` when it equals the host or is a parent domain (dot-boundary
+ * suffix) of it — e.g. `useatlas.dev` is valid for `app.staging.useatlas.dev`,
+ * but `app.useatlas.dev` is NOT (the exact footgun this module fixes: prod's
+ * rpID silently inherited on a staging host).
+ *
+ * No public-suffix-list awareness (same caveat as `deriveCookieDomain`): a
+ * plain dotted-label check. Atlas's app host and rpID are always the same
+ * registrable domain, and the browser is the backstop for a pathological rpID
+ * like a bare public suffix.
+ */
+function isRegistrableDomainSuffixOrEqual(rpID: string, host: string): boolean {
+  if (rpID === host) return true;
+  return host.endsWith(`.${rpID}`);
+}
+
+/**
+ * Resolve the WebAuthn Relying Party ID (`rpID`) for the passkey plugin, and
+ * fail loud at boot if it can't possibly be valid for the deploy's web origin.
+ *
+ * `rpID` is the registrable domain a passkey is bound to. It MUST stay stable
+ * across enrollment — changing the *effective* value invalidates every passkey
+ * already registered (see the comment above the `passkey({...})` call). The
+ * resolution order is therefore deliberately conservative:
+ *
+ *   1. Explicit `ATLAS_RPID` always wins. SaaS multi-region deploys MUST set
+ *      it so a reorder of `ATLAS_CORS_ORIGIN` (which `getWebOrigin()` reads)
+ *      can never shift the derived rpID out from under enrolled keys.
+ *   2. Otherwise derive it from the configured web origin's host
+ *      (`getWebOrigin()` — first `ATLAS_CORS_ORIGIN`, then the first trusted
+ *      origin). Prod's app origin is `https://app.useatlas.dev`, so the
+ *      derived value is exactly `app.useatlas.dev` — identical to the old
+ *      hardcoded default, so no prod passkey is invalidated. Staging now
+ *      derives `app.staging.useatlas.dev` instead of silently inheriting
+ *      prod's rpID and breaking every staging passkey.
+ *   3. If no web origin is configured (single-origin / self-hosted with
+ *      neither var set), fall back to {@link DEFAULT_RP_ID} so minimal setups
+ *      keep working unchanged — no hard-fail.
+ *
+ * The failure this guards against — `The RP ID "..." is invalid for this
+ * domain` — fires only at ceremony time, in the user's browser, with no
+ * boot-time signal. So whenever a web origin IS configured we assert the
+ * effective rpID is valid for it and throw with an actionable message
+ * otherwise, mirroring the cross-origin cookie-domain fail-loud in
+ * `getAuthInstance()`. A bogus *explicit* `ATLAS_RPID` is caught here too; the
+ * derived path can never produce an invalid value, so unset deploys never
+ * throw. Hostnames aren't secrets (CLAUDE.md), so they're safe to log/surface.
+ */
+export function resolvePasskeyRpId(env: NodeJS.ProcessEnv, webOrigin: string | null): string {
+  const explicit = env.ATLAS_RPID?.trim();
+
+  // The web origin's host, when one is configured and parseable. A malformed
+  // origin is treated as "no origin" (legacy behavior) rather than a crash —
+  // a bad CORS/trusted-origin URL surfaces through CORS itself, not here.
+  let originHost: string | null = null;
+  if (webOrigin) {
+    try {
+      originHost = new URL(webOrigin).hostname || null;
+    } catch (err) {
+      log.warn(
+        { webOrigin, err: err instanceof Error ? err.message : String(err) },
+        "Could not parse the configured web origin while resolving the WebAuthn rpID — "
+          + "skipping rpID/origin validation and using the explicit or default value. Verify the "
+          + "first ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry is an absolute URL.",
+      );
+    }
+  }
+
+  // 1. explicit env  >  2. derive from origin host  >  3. legacy default.
+  const rpID = explicit || originHost || DEFAULT_RP_ID;
+
+  // Fail loud when the effective rpID cannot be valid for the configured
+  // origin. Only reachable when an origin is configured AND parseable; the
+  // derived path always equals originHost (so always passes), meaning in
+  // practice this only trips on an explicit-but-wrong ATLAS_RPID.
+  if (originHost && !isRegistrableDomainSuffixOrEqual(rpID, originHost)) {
+    throw new Error(
+      `WebAuthn rpID "${rpID}" is not valid for the configured web origin "${webOrigin}" `
+        + `(host "${originHost}"): rpID must equal the origin host or be a parent domain of it. `
+        + (explicit
+          ? `ATLAS_RPID="${explicit}" is set explicitly but is not a registrable-domain suffix of `
+            + `the origin — set ATLAS_RPID to "${originHost}" (or a parent domain), or correct the `
+            + `first ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry.`
+          : `Set ATLAS_RPID explicitly to "${originHost}" (or a parent domain), or correct the web origin.`),
+    );
+  }
+
+  return rpID;
+}
+
+/**
  * Default Better Auth `session.cookieCache.maxAge`, in seconds.
  *
  * F-07 — the earlier value of 5 minutes meant `auth.api.banUser(...)` and
@@ -1454,12 +1555,18 @@ export function buildPlugins() {
   );
 
   // Passkeys — loaded unconditionally (see `twoFactor()` above for rationale:
-  // schema must persist for already-enrolled users). Changing `rpID` after
-  // enrollment invalidates every existing passkey, so the default is fixed
-  // and self-hosted overrides go through `ATLAS_RPID` / `ATLAS_RPNAME`.
+  // schema must persist for already-enrolled users). Changing the *effective*
+  // `rpID` after enrollment invalidates every existing passkey, so resolution
+  // is deliberately conservative — explicit `ATLAS_RPID` always wins, else we
+  // derive from the configured web origin's host (prod stays exactly
+  // `app.useatlas.dev`; staging becomes `app.staging.useatlas.dev` instead of
+  // silently inheriting prod's rpID), else the legacy default. The resolver
+  // also fails loud at boot if the effective rpID can't be valid for the web
+  // origin — turning an opaque browser-side "RP ID is invalid for this domain"
+  // into an actionable boot error. See `resolvePasskeyRpId`.
   plugins.push(
     passkey({
-      rpID: process.env.ATLAS_RPID ?? "app.useatlas.dev",
+      rpID: resolvePasskeyRpId(process.env, getWebOrigin()),
       rpName: process.env.ATLAS_RPNAME ?? "Atlas",
     }),
   );

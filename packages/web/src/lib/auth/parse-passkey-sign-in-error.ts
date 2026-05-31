@@ -51,6 +51,18 @@ export type PasskeySignInOutcome =
 
 const FALLBACK_MESSAGE = "Passkey sign-in didn't complete. Try again, or use email and password.";
 
+// Server-misconfiguration copy for the `SecurityError` the browser throws
+// synchronously when the page origin isn't valid for the configured rpID
+// ("The RP ID \"...\" is invalid for this domain"). This is a deploy setup
+// issue (rpID ≠ the deploy's origin), not anything the end user can fix — so
+// route it to a clear "contact your administrator" message instead of leaking
+// the raw DOMException string. The server-side `resolvePasskeyRpId` boot
+// assertion (packages/api) makes this unreachable on deploys that DO configure
+// a web origin; this branch covers the residual self-hosted / single-origin
+// case where no origin is configured to validate against.
+const INVALID_RP_ID_MESSAGE =
+  "Passkeys aren't set up correctly for this site — the server's WebAuthn domain doesn't match this address. Contact your administrator, or sign in with email and password.";
+
 export function parsePasskeySignInError(input: PasskeySignInErrorInput): PasskeySignInOutcome {
   if (input.kind === "thrown") {
     if (input.value instanceof TypeError) {
@@ -60,6 +72,11 @@ export function parsePasskeySignInError(input: PasskeySignInErrorInput): Passkey
       };
     }
     if (input.value instanceof Error && input.value.message) {
+      // Misconfigured rpID surfaces here as a thrown SecurityError/DOMException.
+      // Catch it before the raw message bubbles to the user.
+      if (isInvalidRpIdError(input.value.message)) {
+        return { kind: "user", message: INVALID_RP_ID_MESSAGE };
+      }
       return { kind: "user", message: input.value.message };
     }
     return { kind: "user", message: FALLBACK_MESSAGE };
@@ -104,6 +121,13 @@ export function parsePasskeySignInError(input: PasskeySignInErrorInput): Passkey
     return { kind: "user", message: "The sign-in challenge expired. Tap the passkey button again." };
   }
 
+  // Misconfigured rpID — the browser's SecurityError ("The RP ID is invalid
+  // for this domain") can also arrive folded into the wire envelope's message.
+  // Checked before the fuzzy-cancellation match so it routes to actionable
+  // setup copy rather than the raw blob (it doesn't match the cancellation
+  // substrings, but keep it ahead to make the precedence explicit).
+  if (isInvalidRpIdError(message)) return { kind: "user", message: INVALID_RP_ID_MESSAGE };
+
   // Fuzzy-message cancellation — older browsers / pre-`@simplewebauthn/
   // browser` v9 wiring surface NotAllowedError in the message field
   // without a stable code. Treat as silent.
@@ -115,4 +139,19 @@ export function parsePasskeySignInError(input: PasskeySignInErrorInput): Passkey
 function isFuzzyCancellation(message: string): boolean {
   const m = message.toLowerCase();
   return m.includes("notallowed") || m.includes("cancelled") || m.includes("canceled");
+}
+
+/**
+ * Detect the WebAuthn invalid-rpID `SecurityError` across browser phrasings:
+ * Chrome/Safari say `The RP ID "x" is invalid for this domain`; some engines
+ * say the rpID `is not a registrable domain suffix of` the origin. Both pair a
+ * relying-party term with a domain-mismatch term, so require one of each to
+ * avoid false-positives on unrelated messages that merely mention "domain".
+ */
+function isInvalidRpIdError(message: string): boolean {
+  const m = message.toLowerCase();
+  const mentionsRp = m.includes("rp id") || m.includes("relying party");
+  const mentionsDomainMismatch =
+    m.includes("invalid for this domain") || m.includes("registrable domain");
+  return mentionsRp && mentionsDomainMismatch;
 }

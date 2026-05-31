@@ -1,6 +1,6 @@
 ---
 title: Connect Your Data
-description: Connect Atlas to PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce.
+description: Connect Atlas to PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB, Salesforce, or any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -8,13 +8,15 @@ import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
-Connect Atlas to your database. Atlas has built-in support for **PostgreSQL** and **MySQL**. Additional datasources — **BigQuery**, **ClickHouse**, **Snowflake**, **DuckDB** (CSV/Parquet), and **Salesforce** — are available as plugins.
+Atlas is a semantic layer for any query layer — SQL warehouses **and** REST/OpenAPI services — answered through one model and one safety pipeline. Atlas has built-in support for **PostgreSQL** and **MySQL**. Additional SQL datasources — **BigQuery**, **ClickHouse**, **Snowflake**, **DuckDB** (CSV/Parquet), and **Salesforce** — are available as plugins.
+
+You can also connect any **REST API with an OpenAPI 3.x spec** — **Stripe**, **GitHub**, **Notion**, **Twenty**, or your own service. The agent reads the spec into an operation graph and calls operations through the `executeRestOperation` tool, under the same read-only-by-default safety model as SQL. See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide, or jump to [REST & OpenAPI APIs](#rest--openapi-apis) below.
 
 <Callout type="info" title="Using app.useatlas.dev?">
   On the hosted SaaS platform, go to **Admin &gt; Connections** to add a datasource through the UI. You do not need to set environment variables or edit config files — the platform manages connection configuration, SSL, and pooling for you. The database-specific setup below (creating read-only users, SSL settings) still applies when preparing your database for Atlas access.
 </Callout>
 
-Pick your database below and follow the steps. Each section is self-contained.
+Pick your database below and follow the steps. Each section is self-contained. For non-SQL sources, see [REST & OpenAPI APIs](#rest--openapi-apis).
 
 ---
 
@@ -720,6 +722,20 @@ Confirm the health response includes a source with `dbType` set to `"salesforce"
 
 ---
 
+## REST & OpenAPI APIs
+
+Atlas datasources are not limited to SQL. Point Atlas at any REST service that publishes an **OpenAPI 3.x spec** — **Stripe**, **GitHub**, **Notion**, **Twenty**, or your own internal API — and the agent queries it the same way it queries a database.
+
+- **How it works:** Atlas reads the OpenAPI spec into an operation graph. The agent calls operations through the `executeRestOperation` tool (instead of `executeSQL`), passing an `operationId` and its parameters.
+- **Same safety model as SQL:** read-only by default. Writes require an explicit per-endpoint `write_allowlist` plus confirm-before-write, and an SSRF egress guard restricts which hosts Atlas can reach.
+- **Stays current automatically:** a per-install refresh interval (plus a "Rediscover schema" action and background auto re-discovery) keeps the operation graph in sync with the upstream spec, surfacing a structured drift diff and a breaking-change alert when the API changes.
+
+REST/OpenAPI datasources install from **Admin &gt; Connections** like any other datasource — paste the spec URL and a credential. No `bun run atlas -- init` step is needed; the operation surface comes from the spec.
+
+See the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) guide for the full walkthrough, and [Multi-Datasource Routing](/deployment/multi-datasource) for mixing REST and SQL sources in one deployment.
+
+---
+
 ## Generate the semantic layer
 
 <Callout type="info" title="Using app.useatlas.dev?">
@@ -833,7 +849,8 @@ For multi-tenant deployments, see [Row-Level Security](/security/row-level-secur
 
 ## See Also
 
-- [Multi-Datasource Routing](/deployment/multi-datasource) — Connect multiple databases in a single deployment
+- [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic) — Connect Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service
+- [Multi-Datasource Routing](/deployment/multi-datasource) — Connect multiple databases and REST APIs in a single deployment
 - [Configuration](/reference/config#datasources) — Declarative datasource configuration in `atlas.config.ts`
 - [Semantic Layer](/getting-started/semantic-layer) — Generate entity YAML files from your connected database
 - [CLI Reference](/reference/cli#init) — `atlas init` command for profiling your database

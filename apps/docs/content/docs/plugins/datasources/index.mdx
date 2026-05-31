@@ -1,12 +1,12 @@
 ---
 title: Datasource Plugins
-description: Connect BigQuery, ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
+description: Connect any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty) plus BigQuery, ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Cards, Card } from "fumadocs-ui/components/card";
 
-Atlas supports PostgreSQL and MySQL natively via `ATLAS_DATASOURCE_URL`. For other databases and APIs, use datasource plugins. Each plugin provides a connection factory, SQL dialect hints for the agent, query validation rules, and health checks.
+Atlas is a semantic layer for any query layer — SQL warehouses **and** REST/OpenAPI services. PostgreSQL and MySQL are supported natively via `ATLAS_DATASOURCE_URL`. For other SQL databases, use a datasource plugin — each provides a connection factory, SQL dialect hints for the agent, query validation rules, and health checks. To query a REST service, use the built-in **[OpenAPI (Generic REST)](/plugins/datasources/openapi-generic)** datasource: point Atlas at any OpenAPI 3.x spec (Stripe, GitHub, Notion, Twenty, or your own API) and the agent calls its operations through the `executeRestOperation` tool, under the same read-only-by-default safety model as SQL.
 
 All datasource plugins follow the same pattern:
 
@@ -21,6 +21,7 @@ Never commit credentials to version control. Use environment variables (`process
 ## Available Datasource Plugins
 
 <Cards>
+  <Card title="OpenAPI (Generic REST)" href="/plugins/datasources/openapi-generic" description="Any REST API with an OpenAPI 3.x spec (Stripe, GitHub, Notion, Twenty) — read by default, with a per-endpoint write allowlist + confirm-before-write" />
   <Card title="BigQuery" href="/plugins/datasources/bigquery" description="Google Cloud data warehouse via REST API" />
   <Card title="ClickHouse" href="/plugins/datasources/clickhouse" description="Column-oriented analytics database via HTTP transport" />
   <Card title="DuckDB" href="/plugins/datasources/duckdb" description="Embedded analytics engine, file-based or in-memory" />
@@ -28,7 +29,6 @@ Never commit credentials to version control. Use environment variables (`process
   <Card title="Snowflake" href="/plugins/datasources/snowflake" description="Snowflake Data Cloud with pool management" />
   <Card title="Salesforce" href="/plugins/datasources/salesforce" description="Salesforce CRM via SOQL (not SQL)" />
   <Card title="Obsidian Reader" href="/plugins/datasources/obsidian-reader" description="Read-only access to an Obsidian vault via the Local REST API" />
-  <Card title="OpenAPI (Generic REST)" href="/plugins/datasources/openapi-generic" description="Any REST API with an OpenAPI 3.x spec — read by default, with a per-endpoint write allowlist + confirm-before-write" />
 </Cards>
 
 ## Comparison
@@ -42,3 +42,7 @@ Never commit credentials to version control. Use environment variables (`process
 | Read-only enforcement | SQL validation + IAM | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
 | Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
 | Connection caching | No (stateless REST) | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |
+
+<Callout type="info">
+The table above compares the **SQL** datasources. REST services are connected through the built-in [OpenAPI (Generic REST)](/plugins/datasources/openapi-generic) datasource instead — the agent calls operations via the `executeRestOperation` tool (not `executeSQL`), reads are allowed by default, and writes require a per-endpoint `write_allowlist` plus confirm-before-write. See [Multi-Datasource Routing](/deployment/multi-datasource) for mixing REST and SQL sources in one deployment.
+</Callout>

@@ -56,6 +56,7 @@ import {
   type SpecDiffSummary,
 } from "./diff";
 import { SPEC_LAST_CHECKED_AT_FIELD } from "./spec-refresh";
+import { OPENAPI_DRIFT_ALERT_FIELD, type DriftAlertWrite } from "./breaking-change";
 import type { OperationGraph } from "./types";
 
 const log = createLogger("openapi.rediscover");
@@ -226,11 +227,18 @@ export async function performRediscovery(
 
 /**
  * Persist a successful re-discovery against an install in one JSONB merge: the fresh
- * `openapi_snapshot`, the computed `openapi_last_diff`, and — when `lastCheckedAtIso`
- * is supplied (the scheduler) — the {@link SPEC_LAST_CHECKED_AT_FIELD} watermark.
- * The manual route omits the watermark, so its merge is byte-for-byte the pre-#2978
- * statement. All written fields are non-secret, so the encrypted `auth_value` is
- * never round-tripped through this write.
+ * `openapi_snapshot`, the computed `openapi_last_diff`, — when `lastCheckedAtIso`
+ * is supplied (the scheduler) — the {@link SPEC_LAST_CHECKED_AT_FIELD} watermark, and
+ * — when `alertWrite.op !== "leave"` (#2979) — the {@link OPENAPI_DRIFT_ALERT_FIELD}
+ * breaking-change signal (a fresh record on `raise`, JSON `null` on `clear`). With no
+ * watermark and a `leave` alert, the merge is byte-for-byte the pre-#2978 statement.
+ * All written fields are non-secret, so the encrypted `auth_value` is never
+ * round-tripped through this write.
+ *
+ * The `alertWrite` decision is computed by `resolveDriftAlertWrite` (pure, in
+ * `breaking-change.ts`) and threaded identically from the manual route and the
+ * scheduler, so the raise/clear/leave lifecycle stays in lockstep without `lib/`
+ * importing `api/routes/`.
  *
  * Then evicts the install's in-process graph cache: the re-probe bumped `probedAt`,
  * so the next resolve rebuilds under the fresh key and the now-orphaned prior-
@@ -238,7 +246,9 @@ export async function performRediscovery(
  * `(workspaceId, installId)` — the same tenant isolation the load/delete paths use.
  *
  * The interpolated field names are code-resident constants (never user input), so
- * splicing them into `jsonb_build_object` is safe; every value is bound.
+ * splicing them into `jsonb_build_object` is safe; every value is bound. Param
+ * indices are derived from `params.length` so the optional watermark + alert append
+ * in order without a hand-counted `$N`.
  */
 export async function persistRediscoverySnapshot(
   workspaceId: string,
@@ -246,6 +256,7 @@ export async function persistRediscoverySnapshot(
   snapshot: OpenApiSnapshot,
   diffRecord: SpecDiffRecord,
   lastCheckedAtIso?: string,
+  alertWrite: DriftAlertWrite = { op: "leave" },
 ): Promise<void> {
   const params: unknown[] = [
     workspaceId,
@@ -256,8 +267,14 @@ export async function persistRediscoverySnapshot(
   ];
   let pairs = `'openapi_snapshot', $4::jsonb, 'openapi_last_diff', $5::jsonb`;
   if (lastCheckedAtIso !== undefined) {
-    pairs += `, '${SPEC_LAST_CHECKED_AT_FIELD}', $6::text`;
+    pairs += `, '${SPEC_LAST_CHECKED_AT_FIELD}', $${params.length + 1}::text`;
     params.push(lastCheckedAtIso);
+  }
+  if (alertWrite.op !== "leave") {
+    // `raise` serializes the record; `clear` binds null → jsonb_build_object emits
+    // a JSON null for the field (the "all good now" / acknowledged-cleared signal).
+    pairs += `, '${OPENAPI_DRIFT_ALERT_FIELD}', $${params.length + 1}::jsonb`;
+    params.push(alertWrite.op === "raise" ? JSON.stringify(alertWrite.record) : null);
   }
   await internalQuery(
     `UPDATE workspace_plugins

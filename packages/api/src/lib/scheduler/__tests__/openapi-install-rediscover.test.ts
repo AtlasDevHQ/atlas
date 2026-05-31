@@ -64,6 +64,7 @@ mock.module("@atlas/api/lib/audit", () => ({
     connection: {
       probe: "connection.probe",
       specRefreshCycle: "connection.spec_refresh_cycle",
+      breakingDrift: "connection.spec_drift_breaking",
     },
   },
 }));
@@ -90,6 +91,8 @@ type RediscoveryResult = import("@atlas/api/lib/openapi/rediscover").Rediscovery
 type OpenApiSnapshot = import("@atlas/api/lib/openapi/catalog").OpenApiSnapshot;
 type SpecDiffRecord = import("@atlas/api/lib/openapi/diff").SpecDiffRecord;
 type SpecDiffSummary = import("@atlas/api/lib/openapi/diff").SpecDiffSummary;
+type OperationGraphDiff = import("@atlas/api/lib/openapi/diff").OperationGraphDiff;
+type DriftAlertWrite = import("@atlas/api/lib/openapi/breaking-change").DriftAlertWrite;
 
 // ── Fixtures / helpers ───────────────────────────────────────────────────────
 
@@ -150,7 +153,13 @@ function okResult(operationCount = 3, drift: SpecDiffSummary | null = null): Red
 
 /** Recording fakes for the persistence seams. */
 interface Recorder {
-  persistCalls: Array<{ workspaceId: string; installId: string; snapshot: OpenApiSnapshot; lastCheckedAtIso: string }>;
+  persistCalls: Array<{
+    workspaceId: string;
+    installId: string;
+    snapshot: OpenApiSnapshot;
+    lastCheckedAtIso: string;
+    alertWrite: DriftAlertWrite;
+  }>;
   stampCalls: Array<{ workspaceId: string; installId: string; lastCheckedAtIso: string }>;
   rediscoverCalls: Array<{ installId: string; config: Record<string, unknown> | null }>;
 }
@@ -179,9 +188,9 @@ function runCycle(args: RunArgs) {
         args.rec.rediscoverCalls.push({ installId, config });
         return args.rediscover(config, installId);
       },
-      persistSuccess: async (workspaceId, installId, snap, _diff, lastCheckedAtIso) => {
+      persistSuccess: async (workspaceId, installId, snap, _diff, lastCheckedAtIso, alertWrite) => {
         if (args.persistThrows) throw new Error("persist boom");
-        args.rec.persistCalls.push({ workspaceId, installId, snapshot: snap, lastCheckedAtIso });
+        args.rec.persistCalls.push({ workspaceId, installId, snapshot: snap, lastCheckedAtIso, alertWrite });
       },
       stampChecked: async (workspaceId, installId, lastCheckedAtIso) => {
         args.rec.stampCalls.push({ workspaceId, installId, lastCheckedAtIso });
@@ -528,10 +537,116 @@ describe("openapi install rediscover — cycle behavior", () => {
       inspected: 4,
       due: 3,
       refreshed: 1,
+      breaking: 0,
       failed: 1,
       skippedNotDue: 1,
       skippedConfig: 1,
     });
+  });
+});
+
+// ── Breaking-change drift signal (#2979) ─────────────────────────────────────
+
+const breakingRows = () => auditCalls.filter((c) => c.actionType === "connection.spec_drift_breaking");
+
+/** A real breaking diff: one operation the agent relied on was removed. */
+const breakingDiff: OperationGraphDiff = {
+  operations: {
+    added: [],
+    removed: [{ operationId: "getThing", method: "GET", path: "/things/{id}" }],
+    changed: [],
+  },
+  schemas: { added: [], removed: [], changed: [] },
+  counts: { ...ZERO_COUNTS, operationsRemoved: 1 },
+  unchanged: false,
+};
+/** A real additive-only diff: one new operation, nothing removed/retyped. */
+const additiveDiff: OperationGraphDiff = {
+  operations: {
+    added: [{ operationId: "listThings", method: "GET", path: "/things" }],
+    removed: [],
+    changed: [],
+  },
+  schemas: { added: [], removed: [], changed: [] },
+  counts: { ...ZERO_COUNTS, operationsAdded: 1 },
+  unchanged: false,
+};
+
+function okResultWithDiff(diff: OperationGraphDiff | null): RediscoveryResult {
+  const record: SpecDiffRecord = {
+    previousProbedAt: iso(NOW - DAY_MS),
+    currentProbedAt: NOW_ISO,
+    diff,
+  };
+  return { kind: "ok", snapshot: snapshot(3), diffRecord: record, drift: changedDrift(diff?.counts.operationsAdded ?? 0) };
+}
+
+describe("openapi install rediscover — breaking-change drift signal (#2979)", () => {
+  beforeEach(resetAll);
+
+  it("RAISES the persisted signal + writes the breaking audit row on scheduled breaking drift", async () => {
+    const rec = makeRecorder();
+    const result = await runCycle({
+      rows: [candidate("ds-1", dueConfig())],
+      rec,
+      rediscover: async () => okResultWithDiff(breakingDiff),
+    });
+
+    expect(result.refreshed).toBe(1);
+    expect(result.breaking).toBe(1);
+
+    // The persisted snapshot write carries a RAISE alert (the pill).
+    expect(rec.persistCalls).toHaveLength(1);
+    const write = rec.persistCalls[0].alertWrite;
+    expect(write.op).toBe("raise");
+    if (write.op === "raise") {
+      expect(write.record.raisedAt).toBe(NOW_ISO);
+      expect(write.record.acknowledgedAt).toBeNull();
+      expect(write.record.breakingCount).toBeGreaterThan(0);
+      expect(write.record.reasons.some((r) => r.kind === "operation_removed")).toBe(true);
+    }
+
+    // The success probe row still fires…
+    expect(probeRows().find((c) => c.targetId === "ds-1")?.status).toBe("success");
+    // …PLUS the dedicated breaking-drift attention row (success status, by design).
+    const breaking = breakingRows().find((c) => c.targetId === "ds-1");
+    expect(breaking).toBeDefined();
+    expect(breaking!.status).toBe("success");
+    expect(breaking!.systemActor).toBe(OPENAPI_REDISCOVER_ACTOR);
+    expect(breaking!.scope).toBe("platform");
+    const meta = breaking!.metadata as Record<string, unknown>;
+    expect(meta.workspaceId).toBe("ws-ds-1");
+    expect(meta.triggeredBy).toBe("scheduler");
+    expect(meta.breakingCount).toBe(1);
+    expect(Array.isArray(meta.reasons)).toBe(true);
+  });
+
+  it("CLEARS the signal on a scheduled additive-only refresh — no breaking row", async () => {
+    const rec = makeRecorder();
+    const result = await runCycle({
+      rows: [candidate("ds-1", dueConfig())],
+      rec,
+      rediscover: async () => okResultWithDiff(additiveDiff),
+    });
+
+    expect(result.refreshed).toBe(1);
+    expect(result.breaking).toBe(0);
+    expect(rec.persistCalls[0].alertWrite.op).toBe("clear");
+    expect(breakingRows()).toHaveLength(0);
+  });
+
+  it("LEAVES the signal on a scheduled baseline refresh (no prior comparison)", async () => {
+    const rec = makeRecorder();
+    const result = await runCycle({
+      rows: [candidate("ds-1", dueConfig())],
+      rec,
+      rediscover: async () => okResultWithDiff(null),
+    });
+
+    expect(result.refreshed).toBe(1);
+    expect(result.breaking).toBe(0);
+    expect(rec.persistCalls[0].alertWrite.op).toBe("leave");
+    expect(breakingRows()).toHaveLength(0);
   });
 });
 
@@ -544,8 +659,8 @@ describe("openapi install rediscover — triggerOpenApiInstallRediscoverCycle wr
       now: () => NOW,
       query: async () => [candidate("ds-1", dueConfig())],
       rediscover: async () => okResult(),
-      persistSuccess: async (workspaceId, installId, snap, _diff, lastCheckedAtIso) => {
-        rec.persistCalls.push({ workspaceId, installId, snapshot: snap, lastCheckedAtIso });
+      persistSuccess: async (workspaceId, installId, snap, _diff, lastCheckedAtIso, alertWrite) => {
+        rec.persistCalls.push({ workspaceId, installId, snapshot: snap, lastCheckedAtIso, alertWrite });
       },
       stampChecked: async () => {},
     });

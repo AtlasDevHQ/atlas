@@ -72,6 +72,12 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "@atlas/api/lib/openapi/catalog";
 import { evaluateSpecRefreshDue } from "@atlas/api/lib/openapi/spec-refresh";
+import {
+  resolveDriftAlertWrite,
+  MAX_STORED_DRIFT_REASONS,
+  type BreakingAssessment,
+  type DriftAlertWrite,
+} from "@atlas/api/lib/openapi/breaking-change";
 import type { SpecDiffRecord, SpecDiffSummary } from "@atlas/api/lib/openapi/diff";
 import type { RediscoveryResult } from "@atlas/api/lib/openapi/rediscover";
 
@@ -181,6 +187,7 @@ type PersistSuccessFn = (
   snapshot: OpenApiSnapshot,
   diffRecord: SpecDiffRecord,
   lastCheckedAtIso: string,
+  alertWrite: DriftAlertWrite,
 ) => Promise<void>;
 
 type StampCheckedFn = (
@@ -200,9 +207,10 @@ const defaultPersistSuccess: PersistSuccessFn = async (
   snapshot,
   diffRecord,
   lastCheckedAtIso,
+  alertWrite,
 ) => {
   const { persistRediscoverySnapshot } = await import("@atlas/api/lib/openapi/rediscover");
-  await persistRediscoverySnapshot(workspaceId, installId, snapshot, diffRecord, lastCheckedAtIso);
+  await persistRediscoverySnapshot(workspaceId, installId, snapshot, diffRecord, lastCheckedAtIso, alertWrite);
 };
 
 const defaultStampChecked: StampCheckedFn = async (workspaceId, installId, lastCheckedAtIso) => {
@@ -217,7 +225,15 @@ const defaultStampChecked: StampCheckedFn = async (workspaceId, installId, lastC
 /** Terminal outcome for one candidate install — drives both the tally + the audit. */
 type InstallOutcome =
   | { readonly kind: "not_due" }
-  | { readonly kind: "refreshed"; readonly operationCount: number; readonly drift: SpecDiffSummary | null }
+  | {
+      readonly kind: "refreshed";
+      readonly operationCount: number;
+      readonly drift: SpecDiffSummary | null;
+      // #2979 — the breaking assessment when this scheduled refresh RAISED a
+      // signal (op === "raise"), else null. Drives the dedicated breaking-drift
+      // audit row + the cycle's `breaking` tally; additive/clean refreshes carry null.
+      readonly breaking: BreakingAssessment | null;
+    }
   | { readonly kind: "probe_failed"; readonly reason: string }
   | { readonly kind: "config_skip"; readonly reason: "decrypt_failed" | "no_url" | "unsupported_auth"; readonly detail?: string }
   // `phase` distinguishes the two failure modes, which have OPPOSITE retry
@@ -282,7 +298,12 @@ async function runInstall(
   }
 
   switch (result.kind) {
-    case "ok":
+    case "ok": {
+      // #2979 — classify the drift + resolve the persisted-signal write. The
+      // scheduled path RAISES on breaking drift, CLEARS on a clean/additive refresh,
+      // and LEAVEs on a baseline. `nowIso` (the cycle's single instant) is the
+      // signal's `raisedAt`, so every watermark + alert this tick is consistent.
+      const { assessment, write } = resolveDriftAlertWrite(result.diffRecord, "scheduled", nowIso);
       try {
         await deps.persistSuccess(
           row.workspace_id,
@@ -290,6 +311,7 @@ async function runInstall(
           result.snapshot,
           result.diffRecord,
           nowIso,
+          write,
         );
       } catch (err) {
         // The re-probe succeeded but persisting the fresh snapshot failed. Do NOT
@@ -304,7 +326,16 @@ async function runInstall(
         );
         return { kind: "failed", phase: "persist", error: errorMessage(err) };
       }
-      return { kind: "refreshed", operationCount: result.snapshot.operationCount, drift: result.drift };
+      return {
+        kind: "refreshed",
+        operationCount: result.snapshot.operationCount,
+        drift: result.drift,
+        // Only surface the assessment when we actually raised — a clean/additive
+        // refresh (write.op === "clear") carries a non-breaking assessment we don't
+        // want to mistake for a raised signal downstream.
+        breaking: write.op === "raise" ? assessment : null,
+      };
+    }
     case "probe_failed":
       await safeStamp(deps, row, nowIso);
       return { kind: "probe_failed", reason: result.reason };
@@ -331,6 +362,8 @@ export interface RediscoverCycleResult {
   due: number;
   /** Successful re-probes (snapshot + watermark written). */
   refreshed: number;
+  /** Of `refreshed`, how many surfaced BREAKING drift (raised a signal, #2979). */
+  breaking: number;
   /** Probe/network/persist failures — fail-soft, snapshot left intact. */
   failed: number;
   /** Selected by the SQL pre-filter but not yet due app-side. */
@@ -345,6 +378,7 @@ const ZERO_COUNTS = {
   inspected: 0,
   due: 0,
   refreshed: 0,
+  breaking: 0,
   failed: 0,
   skippedNotDue: 0,
   skippedConfig: 0,
@@ -412,6 +446,41 @@ function emitInstallAudit(
     log.warn(
       { workspaceId: row.workspace_id, installId: row.install_id, err: errorMessage(err) },
       "OpenAPI rediscover: per-install audit emission threw",
+    );
+  }
+}
+
+/**
+ * Emit the dedicated breaking-drift attention row (#2979) when a SCHEDULED re-probe
+ * raised a signal. Separate from the `connection.probe` success row (which always
+ * fires) so an operator can filter the attention condition — `connection.spec_drift_breaking`
+ * — without sifting probes. `status: "success"` is deliberate: the re-probe SUCCEEDED;
+ * the breaking-change condition is carried by the action type + metadata + the persisted
+ * pill, not a failure status (see the action's JSDoc). Reasons are capped to the same
+ * sample the persisted alert stores. Fire-and-forget; a thrown audit must not sink the loop.
+ */
+function emitBreakingDriftAudit(row: DueCandidateRow, assessment: BreakingAssessment): void {
+  try {
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.breakingDrift,
+      targetType: "connection",
+      targetId: row.install_id,
+      scope: "platform",
+      systemActor: OPENAPI_REDISCOVER_ACTOR,
+      status: "success",
+      metadata: {
+        workspaceId: row.workspace_id,
+        installId: row.install_id,
+        kind: "openapi-rediscover",
+        triggeredBy: "scheduler",
+        breakingCount: assessment.reasons.length,
+        reasons: assessment.reasons.slice(0, MAX_STORED_DRIFT_REASONS),
+      },
+    });
+  } catch (err) {
+    log.warn(
+      { workspaceId: row.workspace_id, installId: row.install_id, err: errorMessage(err) },
+      "OpenAPI rediscover: breaking-drift audit emission threw",
     );
   }
 }
@@ -535,6 +604,13 @@ export const runOpenApiInstallRediscoverCycle = (
                   operationCount: outcome.operationCount,
                   ...driftMetadata(outcome.drift),
                 });
+                // #2979 — a SCHEDULED breaking re-probe also raises the attention
+                // signal: count it + write the dedicated audit row. Additive/clean
+                // refreshes carry `breaking: null` and stay quiet.
+                if (outcome.breaking) {
+                  result.breaking++;
+                  emitBreakingDriftAudit(row, outcome.breaking);
+                }
                 return;
               case "probe_failed":
                 result.due++;
@@ -573,6 +649,7 @@ export const runOpenApiInstallRediscoverCycle = (
       "atlas.openapi_rediscover.inspected": result.inspected,
       "atlas.openapi_rediscover.due": result.due,
       "atlas.openapi_rediscover.refreshed": result.refreshed,
+      "atlas.openapi_rediscover.breaking": result.breaking,
       "atlas.openapi_rediscover.failed": result.failed,
     }),
   );

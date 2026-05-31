@@ -111,8 +111,18 @@ Atlas caches the probed spec per install. When the upstream API ships new operat
 
 The interval is stored per install (it's not a secret, so it's a plain `workspace_plugins.config` field). An out-of-range custom value is **clamped** into the bounds; an unparseable value is **rejected** with a message — it never silently falls back to `off`.
 
+A background scheduler walks due installs on their per-install interval, re-probes the spec, and updates the cached snapshot unattended — so once you set `daily` / `weekly` / `<N>h`, the agent's view stays current without anyone clicking **Rediscover schema**. A failed scheduled probe never degrades the live snapshot.
+
+### Breaking-change alerts
+
+When a **scheduled** re-discovery finds that the upstream spec **removed or retyped** something the agent relied on — an operation disappeared, an operation re-routed (method/path/auth changed) or became side-effecting, a field the agent reads or sends was removed/retyped, or a new **required** request field appeared — Atlas raises a **breaking-change alert** on the datasource card (Admin → Connections) and writes an audit-log entry (`connection.spec_drift_breaking`). The point is that you learn your upstream API changed under you *before* the agent's calls start failing.
+
+Purely **additive** drift (new operations, new optional params, new response fields) stays quiet — it's surfaced in the **Last refresh** line but doesn't raise the alert.
+
+The alert is **dismissible**: click **Acknowledge** on the card to clear it. It also clears on its own on the next **clean** refresh (manual or scheduled) — i.e. once the upstream stops changing, the "all good now" refresh removes it. A manual **Rediscover schema** never raises the persisted alert (you're already looking at the inline diff), but a clean manual refresh still clears a standing one.
+
 <Callout type="info">
-This release ships the setting, the manual **Refresh now**, and validation. The background fiber that walks due installs and auto-re-discovers on the interval lands in a follow-up — until then `off` and the manual button are the active paths, and any configured interval is honored once that scheduler ships.
+Breaking-vs-additive is a heuristic over the structured diff, bounded by the same field-walk depth the diff uses — treat the alert as "worth a look", not a proof. Always confirm against the upstream API's own changelog.
 </Callout>
 
 ## Configuration fields

@@ -122,6 +122,28 @@ export const ADMIN_ACTIONS = {
      * install id sees manual and scheduled refreshes uniformly.
      */
     specRefreshCycle: "connection.spec_refresh_cycle",
+    /**
+     * `breakingDrift` (#2979) — emitted by the Tier-2 OpenAPI per-install
+     * re-discovery scheduler when an UNATTENDED re-probe surfaces BREAKING spec
+     * drift (an operation/field the agent relied on was removed/retyped, an
+     * operation re-routed, or a new required request field appeared). The
+     * companion to the persisted `openapi_drift_alert` pill — the queryable,
+     * retention-aligned trace that an upstream API changed under a customer
+     * before their agent's calls started failing. Additive-only drift does NOT
+     * emit this row (it stays quiet). Uses the reserved
+     * `system:openapi-install-rediscover` actor; metadata carries
+     * `{ workspaceId, installId, kind: "openapi-rediscover", triggeredBy:
+     * "scheduler", breakingCount, reasons[] }` (reasons capped, same sample the
+     * pill stores).
+     *
+     * Status is `success`, deliberately: the re-probe itself SUCCEEDED — this is
+     * an attention row, not an operation failure. The dedicated action type + the
+     * persisted alert ARE the signal; keeping status `success` means a healthy
+     * refresh that happens to detect a breaking change doesn't trip dashboards
+     * that alert on `connection.probe` failures. Operators monitor for the
+     * PRESENCE of `connection.spec_drift_breaking` rows, not for a failure status.
+     */
+    breakingDrift: "connection.spec_drift_breaking",
   },
   /**
    * Connection-group admin actions. Renames are display-label changes

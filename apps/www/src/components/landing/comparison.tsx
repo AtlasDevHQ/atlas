@@ -71,7 +71,7 @@ const ROWS: ReadonlyArray<Row> = [
   {
     feature: "REST APIs as datasources",
     atlas:
-      "Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated, spec auto-refreshed",
+      "Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh",
     bi: "None",
     textToSql: "None",
   },

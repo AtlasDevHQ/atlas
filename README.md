@@ -136,7 +136,7 @@ The widget supports programmatic control (`Atlas.open()`, `Atlas.ask("...")`, `A
 | **Plugin ecosystem** | 21 plugins across 5 types — extend anything | Closed | Limited |
 | **Open source** | AGPL-3.0 core, MIT client libs | Proprietary | Varies |
 | **Multi-database** | PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce | Usually one | Usually one |
-| **REST APIs as datasources** | Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated, spec auto-refreshed | None | None |
+| **REST APIs as datasources** | Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated; generic OpenAPI installs auto-refresh | None | None |
 
 ## Deploy
 

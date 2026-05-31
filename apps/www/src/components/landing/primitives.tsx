@@ -103,7 +103,7 @@ export function Primitives() {
           kind="db"
           name="datasources"
           title="Query-layer native"
-          blurb="SQL warehouses and REST/OpenAPI services are one primitive — one spec the agent reads, same 7 validators, same audit. On self-host, data stays in your VPC."
+          blurb="SQL warehouses and REST/OpenAPI services are one primitive — one spec the agent reads. SQL runs 7 validators; REST a parallel write-gated guard. Self-host and Atlas runs in your network."
           ports={["postgres", "snowflake", "stripe", "github", "openapi"]}
         />
         <PrimitiveCard

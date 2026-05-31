@@ -123,16 +123,38 @@ The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-000
 
 3. Rollback (rare): if the release is later superseded or rolled back, revert this commit so the changelog doesn't advertise a withdrawn release — `git revert <changelog-commit> && git push origin main`.
 
-**Step 9: Watch the prod deploy**
+**Step 9: Confirm each prod service is serving the tagged commit**
 
-The `prod`-branch push (step 6) triggers Railway prod deploys across the 5 services watching `prod` (`api`, `api-eu`, `api-apac`, `web`, `www`). Output the watch commands:
+The `prod`-branch push (step 6) triggers Railway prod deploys across the 5 services watching `prod` (`api`, `api-eu`, `api-apac`, `web`, `www`). **Health checks and a green "SUCCESS" do not, on their own, prove the release landed:** `/api/health` returns `ok` for *whatever* build is running (it carries no git SHA), and Railway keeps the previous deployment serving when a new build fails. The authoritative signal is the **commit hash of each service's active deployment**.
+
+First, the fast view (live health + GitHub-reported statuses — useful, but not conclusive):
 
 ```bash
-gh api repos/AtlasDevHQ/atlas/commits/<sha>/statuses --jq '.[] | "\(.context)\t\(.state)\t\(.description)"'
-gh api repos/AtlasDevHQ/atlas/deployments?ref=prod --jq '.[0:5][] | "\(.created_at)\t\(.sha[0:8])\t\(.description // .task)"'
+SHA=$(git rev-parse v<version>^{})   # the tagged commit, e.g. v0.0.2^{} → ca72ca1c…
+gh api repos/AtlasDevHQ/atlas/commits/$SHA/statuses \
+  --jq '[.[]|{context,state,description}]|group_by(.context)|map(.[0])[]|"\(.context)\t\(.state)\t\(.description)"'
+for r in api api-eu api-apac; do curl -sf "https://$r.useatlas.dev/api/health" | jq -c '{r:.region,s:.status}'; done
 ```
 
-Tell the user where the GitHub Release lives, and that prod deploy is in flight. Don't wait — the deploy takes ~5 min; user can monitor.
+Note: the prod runtime services (`api`/`web`/…) **do not reliably post a commit status** on the tag SHA — often only `www` reports (and only to say "no deployment needed"). So the `statuses` call is a hint, not the proof.
+
+Then **assert the deployed commit per service** via the Railway MCP `list_deployments` (project `08fe35c3-d1c7-4e34-b6a4-ec5e51c6f241`, env `production` = `a0a5532e-8e2a-416f-bd24-ae8d2088b330`):
+
+| Service | service_id |
+|---------|-----------|
+| api | `0ec88244-06d9-47cc-8874-0884eea6548b` |
+| api-eu | `5de4ea32-0d74-4ce5-907d-67d0d785bcd4` |
+| api-apac | `4b47dffe-aa4d-4eb0-bb5b-009de2735e05` |
+| web | `9c00bb31-808a-40d5-92d4-184a03a10bdc` |
+| www | `86d6e4e8-a2f0-4e6e-9dcf-c7f052c4cdde` |
+
+`list_deployments` returns `id | status | timestamp | commit-hash`. **Pass condition per service:** the latest deployment is `SUCCESS` at the tagged commit **and** the prior tag's deployment is now `REMOVED` (so the old build is fully retired, not running in parallel). Railway dashboard equivalent: service → Deployments → the live deployment's source commit. If the Railway MCP is logged out, `list_deployments` errors `Unauthorized` — ask the user to reconnect (`/mcp`) or read the SHA from the dashboard.
+
+**Legitimate exception — "watched paths not modified":** a service whose watched paths weren't in the tag's diff won't rebuild; it stays `SUCCESS` on its *previous* SHA and its commit status reads `No deployment needed - watched paths not modified`. That is a pass — it's running unchanged code by design (e.g. `www` when a release only touches `packages/api`). What is **not** a pass: a latest deployment in `FAILED`/`CRASHED`/`WAITING` that never settles, or one still `SUCCESS` on the old SHA with no skip reason — that service did not take the release even though its endpoint may still look healthy on the old build.
+
+`docs` is not in this set — it tracks `main`, so it lands the Step-8 changelog commit, not the tag SHA. Verify it separately at `docs.useatlas.dev/changelog` (the new `<version>` entry should render as the latest).
+
+Don't block on the rollout (~5 min). If watching to completion, re-poll `list_deployments` until each service flips `WAITING`/`BUILDING` → `SUCCESS` at the tagged commit. Tell the user where the GitHub Release lives.
 
 **Step 10: Output summary**
 
@@ -140,10 +162,13 @@ Tell the user where the GitHub Release lives, and that prod deploy is in flight.
 Tagged: v0.0.1
 SHA: <abbrev>
 prod branch advanced to: <abbrev>
+prod services on tagged commit: api ✓  api-eu ✓  api-apac ✓  web ✓   (www: unchanged — watched paths not modified)
 Release: https://github.com/AtlasDevHQ/atlas/releases/tag/v0.0.1
 Milestone: v0.0.1 — Release Process Bootstrap (if one exists)
-Next: watch Railway prod deploy (~5 min)
+docs changelog: <version> entry live at docs.useatlas.dev/changelog
 ```
+
+Only claim "deployed" once Step 9's per-service commit-hash assertion passes — not on health `ok` alone.
 
 **Rules:**
 

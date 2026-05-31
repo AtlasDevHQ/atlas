@@ -59,6 +59,18 @@ Run these in parallel:
    git fetch origin prod --quiet 2>/dev/null; echo "prod branch at: $(git rev-parse --short origin/prod 2>/dev/null || echo 'unknown')"
    ```
 
+6. **Authoritative — is each prod service running the expected commit?** Health (`ok`) and a green check only prove a service is *up*, not *which build* it's on: the API health endpoint exposes no git SHA, and Railway keeps the previous deployment serving when a new build fails. Confirm the commit hash of each prod service's active deployment via the Railway MCP `list_deployments` (project `08fe35c3-d1c7-4e34-b6a4-ec5e51c6f241`, env `production` = `a0a5532e-8e2a-416f-bd24-ae8d2088b330`):
+
+   | Service | service_id |
+   |---------|-----------|
+   | api | `0ec88244-06d9-47cc-8874-0884eea6548b` |
+   | api-eu | `5de4ea32-0d74-4ce5-907d-67d0d785bcd4` |
+   | api-apac | `4b47dffe-aa4d-4eb0-bb5b-009de2735e05` |
+   | web | `9c00bb31-808a-40d5-92d4-184a03a10bdc` |
+   | www | `86d6e4e8-a2f0-4e6e-9dcf-c7f052c4cdde` |
+
+   Returns `id | status | timestamp | commit-hash`. **Pass:** latest deployment is `SUCCESS` with commit-hash == `git rev-parse origin/prod`, prior deployment `REMOVED`. **Legit skip:** a service unchanged by the diff stays `SUCCESS` on the old SHA with note `No deployment needed - watched paths not modified` (e.g. `www` for an api-only release). **Fail:** latest `FAILED`/`CRASHED`/stuck `WAITING`, or `SUCCESS` still on an older SHA with no skip reason — the endpoint may still look healthy on the old build. `docs` tracks `main` (not `prod`), so it won't match the tag SHA — verify it at `docs.useatlas.dev`. (Railway MCP logged out → `Unauthorized`; reconnect via `/mcp` or read the source commit from the dashboard.)
+
 **Step 2: Diagnose any failures**
 
 If any health check fails:
@@ -128,7 +140,7 @@ Last push to main: <commit hash> <message> (<time>) → deploys staging
 prod branch at: <tag> / <sha>
 ```
 
-**IMPORTANT:** A service can show "healthy" via curl (live endpoint) but have a **failed deploy** in the commit check runs. This happens because Railway keeps the previous deployment running when a new build/deploy fails. Always cross-reference the commit check runs — if a check shows `conclusion: "failure"`, the latest code is NOT deployed even if the endpoint is up.
+**IMPORTANT:** A service can show "healthy" via curl (live endpoint) but be running **stale or failed-over code** — Railway keeps the previous deployment serving when a new build/deploy fails, and the health endpoint carries no git SHA to give it away. Health `ok` ≠ "latest code is live." The definitive cross-reference is the **active deployment's commit hash** (Step 1, item 6): only when it equals `origin/prod`'s SHA (or the service legitimately skipped with "watched paths not modified") is the latest code actually deployed. The commit check runs are a secondary signal — a `conclusion: "failure"` there also means the latest code is NOT deployed even if the endpoint is up.
 
 If everything is healthy AND all commit checks passed, stop here.
 

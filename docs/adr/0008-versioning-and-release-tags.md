@@ -36,7 +36,13 @@ The grilling-session decision: introduce git tags as the **third independent ver
 
 The git-tag train **starts at `v0.0.1`** (not `v0.1.0`, not `v1.0.0`), cut as soon as the v0.0.1 bundle is ready. The `v0.0.x` series is the **pre-launch development train**: each bump banks a milestone of pre-launch work (release-process bootstrap, REST datasources, …) and gives prod a real release identifier without claiming the product is publicly launched. The internal milestone `1.0.0 — SaaS Launch` (#24) keeps its number in the archive as a historical record of the SaaS-launch event but is **not** the git tag `v1.0.0`; that tag is reserved.
 
-**`v0.1.0` is the public launch (target: July 2026).** The first minor bump out of the `v0.0.x` development train marks the public launch announcement — the moment Atlas is presented to the world with a banked changelog (the accumulated `v0.0.x` train: release-process plumbing, REST datasources, staging environment live, etc.). Cutting `v0.0.x` tags now validates the release-process plumbing on low-stakes surfaces while nobody is watching; `v0.1.0` is held back so it means something. The launch event is tracked outside the tag train (#2919).
+**`v0.1.0` is the public launch (target: July 2026).** The first minor bump out of the `v0.0.x` development train marks the public launch announcement — the moment Atlas is presented to the world. The launch *announcement* aggregates the accumulated `v0.0.x` train (release-process plumbing, REST datasources, staging environment live, etc.) into a single narrative for the launch blog / marketing surface. The public **changelog page** is not held back for that moment, though — it tracks the tag train continuously (see the Amendment below). Cutting `v0.0.x` tags now validates the release-process plumbing on low-stakes surfaces while nobody is watching; `v0.1.0` is held back so it means something. The launch event is tracked outside the tag train (#2919).
+
+### Amendment (2026-05-31): the public changelog is a live per-tag feed
+
+The original cut of this ADR implied the docs-site changelog (`apps/docs/src/components/changelog-data.ts`, rendered at `docs.useatlas.dev/changelog`) was *banked* — held empty during `v0.0.x` and populated only at the `v0.1.0` launch, with each tag's customer-facing notes living solely in its GitHub Release `--generate-notes`. That left the public changelog showing stale internal milestone numbers (newest: `1.6.0`) as if they were the latest release, contradicting the tag train — a visitor saw `1.6.0` "above" `v0.0.1` and read it as a regression.
+
+**Superseded:** the docs-site changelog is now a **continuous per-tag feed**. One entry is appended to `changelog-data.ts` for every `v0.0.x`+ tag at `/release` time, newest first, each linking to its GitHub Release. The pre-public-versioning internal milestones (`1.6.0` … `0.1`) move to a separate `developmentHistory` track rendered below the tag train under a "Development history" divider, clearly labelled as not-public-semver. The GitHub Release `--generate-notes` remains the raw commit/PR list; the `changelog-data.ts` entry is the curated customer-facing summary. The `v0.1.0` launch *announcement* still aggregates the train — that's a separate marketing artifact, not the changelog page.
 
 ### Semver discipline rules for git tags
 
@@ -105,8 +111,9 @@ Bump every train together — npm package versions match the git tag, milestone 
 - The dual Railway trigger (Q5) hangs off this ADR. `main` push → staging autodeploy (3 services: api/web/www). Annotated tag → `/release` fast-forwards `prod` branch to the tag SHA → prod autodeploy across 5 services (api/api-eu/api-apac/web/www). `docs` continues watching `main` directly. See `docs/development/release-process.md`.
 - The first prod deploy under tag-gating was `v0.0.1`, cut 2026-05-29 (`9c68fc17`). The prior "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, July 2026) is a separate event, tracked independently.
 
-**For CHANGELOG.md:**
+**For the changelog:**
 - The existing `CHANGELOG.md` link to `CLAUDE.md#versioning--release-strategy` resolves to this ADR going forward. CHANGELOG sections will be reorganized around git tags (`## v0.0.1 — 2026-05-XX`) once tagging starts; internal-milestone-labeled sections remain in place as historical record.
+- **Docs-site changelog** (`changelog-data.ts` → `docs.useatlas.dev/changelog`): a live per-tag feed (see the 2026-05-31 Amendment above). `/release` appends one `releases[]` entry per tag, linking the GitHub Release; the pre-versioning `1.x`/`0.x` milestones live in a separate `developmentHistory` track. Not banked for `v0.1.0`.
 
 **For internal milestones:**
 - Going forward, GitHub milestone titles use the tag name as a prefix: `v0.0.2 — REST Datasources` (rename of `1.7.0 — Generic REST / Non-SQL Datasources` per [ADR-0009](./0009-tag-organized-roadmap.md)).

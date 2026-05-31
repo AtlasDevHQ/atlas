@@ -9,9 +9,36 @@ export interface Release {
 
 /**
  * Changelog release data — single source of truth for the changelog page.
- * Ordered reverse chronologically, newest first.
+ *
+ * Two tracks, each ordered newest-first:
+ *  - `releases`           — the public git-tag train (`v0.0.1`, `v0.0.2`, …). Mirrors GitHub
+ *                           Releases; one entry per tag cut via `/release`.
+ *  - `developmentHistory` — internal milestone numbers (`1.6.0` … `0.1`) that predate public
+ *                           versioning. Kept as a pre-launch development record, not public semver.
+ *
+ * See ADR-0008 for the versioning model. New tags are appended to `releases` at /release time.
  */
 export const releases: Release[] = [
+  {
+    version: "v0.0.1",
+    title: "Release Process Bootstrap",
+    date: "2026-05-29",
+    summary:
+      "The first tagged release of Atlas — and the start of versioned, tag-gated production deploys. From here, prod advances only when an annotated git tag is cut, rather than auto-deploying on every merge: `main` continuously ships to staging, and a release tag promotes that exact commit to production. The headline deliverable is the customer-facing Stability Contract, which spells out what's stable to build on today (the REST API surface, the MCP tool surface, the plugin SDK, the semantic-layer wire format) and what may still change before v1.0.0. Docs + release tooling only — no runtime feature ships under this tag; it's the foundation the rest of the v0.0.x train is cut from.",
+    highlights: [
+      "Tag-gated production deploys — prod advances only on an annotated `v*.*.*` tag via the `/release` flow; `main` continuously deploys to staging, so production is always a deliberately tagged commit",
+      "Stability Contract published — explicit stability commitments for the REST API, MCP tool surface, plugin SDK, and semantic-layer wire format, at Reference → Stability",
+      "Versioning policy (ADR-0008) — the `v0.0.x` series is the pre-launch development train; `v0.1.0` is reserved to mark the public launch (target July 2026)",
+    ],
+  },
+];
+
+/**
+ * Pre-public-versioning development history. These are internal milestone numbers, not public
+ * semver — they predate the git-tag train (ADR-0008) and are kept as a record of what shipped
+ * during development. The public version train is `releases` above.
+ */
+export const developmentHistory: Release[] = [
   {
     version: "1.6.0",
     title: "CRM & lead capture",

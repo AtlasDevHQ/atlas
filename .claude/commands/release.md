@@ -58,6 +58,35 @@ First dev tag. Establishes tag-gated prod deploys, stability contract,
 and the /release flow. Slice 6 bun-test-parallel cutover; docs polish.
 ```
 
+**Step 4b: Append the docs-site changelog entry (before tagging)**
+
+The public changelog at `docs.useatlas.dev/changelog` is a per-tag feed (ADR-0008 — *not* banked for `v0.1.0`). Add one entry for this tag so the docs site reflects the release. This must land on `main` **before** the tag is cut, so the tagged SHA carries its own changelog entry (the docs service deploys from `main`).
+
+1. Add a new object to the **top** of the `releases` array in `apps/docs/src/components/changelog-data.ts`:
+   ```ts
+   {
+     version: "<version>",          // the git tag, e.g. "v0.0.2"
+     title: "<theme>",              // milestone theme, e.g. "REST Datasources"
+     date: "<YYYY-MM-DD>",          // tag date
+     summary: "<2–4 sentences, customer-facing — what shipped and why it matters>",
+     highlights: ["<bullet>", "<bullet>", "..."],  // optional, 3–8 curated items
+   },
+   ```
+   Curate from the milestone scope / the Step 4 tag message — customer-facing prose, not a commit dump. The component derives the GitHub Release link from `version`, so **do not** set `githubMilestone` on tag entries (that field belongs to the `developmentHistory` track only). Use `/changelog` to help draft the prose if useful.
+
+2. Commit + push to `main`:
+   ```bash
+   git add apps/docs/src/components/changelog-data.ts
+   git commit -m "docs(changelog): <version> — <theme>"
+   git push origin main
+   ```
+
+3. Re-confirm the Step 1 invariant (clean + synced) before tagging — HEAD must now equal `origin/main` with this commit included:
+   ```bash
+   git fetch origin && [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo OK
+   ```
+   The tag in Step 5 points at this commit, so the release and its docs-site changelog entry ship together.
+
 **Step 5: Create the annotated tag and push**
 
 ```bash
@@ -94,7 +123,7 @@ gh release create <version> -R AtlasDevHQ/atlas --generate-notes --verify-tag
 
 `--generate-notes` produces a commit + PR list as the body. `--verify-tag` makes sure the tag we just pushed exists on the remote (sanity check).
 
-For minor tags, edit the GitHub Release body afterward to lead with the user-facing summary; the auto-notes are good but verbose. Patches typically ship with the auto-notes as-is.
+The GitHub Release `--generate-notes` body is the raw commit/PR list; the curated, customer-facing summary lives in the docs-site changelog entry from Step 4b (`docs.useatlas.dev/changelog`), which links back to this Release. For minor tags, optionally edit the GitHub Release body to lead with that user-facing summary; patches typically ship with the auto-notes as-is.
 
 **Step 8: Watch the prod deploy**
 

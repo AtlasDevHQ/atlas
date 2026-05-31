@@ -125,7 +125,7 @@ Three independent version trains, none coordinate. See [ADR-0008](docs/adr/0008-
 
 The shipped internal milestone `1.0.0 — SaaS Launch` (#24) is **not** the future git tag `v1.0.0`. Reference it as "internal milestone 1.0.0" to disambiguate. `v1.0.0` is reserved for the moment REST + MCP + plugin SDK contracts freeze.
 
-The `/release` skill bundles `/ci` + annotated tag + push + `gh release create --generate-notes`. Customer-facing stability commitments live at [apps/docs/content/docs/reference/stability.mdx](apps/docs/content/docs/reference/stability.mdx).
+The `/release` skill bundles `/ci` + a docs-changelog entry + annotated tag + push + `gh release create --generate-notes`. The public changelog at [docs.useatlas.dev/changelog](https://docs.useatlas.dev/changelog) is a **per-tag feed** — `/release` appends one `apps/docs/src/components/changelog-data.ts` `releases[]` entry per tag (curated, links the GitHub Release), and the pre-public-versioning `1.x`/`0.x` internal milestones live in a separate `developmentHistory` track. It is **not** banked for `v0.1.0` — see [ADR-0008 § Amendment (2026-05-31)](docs/adr/0008-versioning-and-release-tags.md). Customer-facing stability commitments live at [apps/docs/content/docs/reference/stability.mdx](apps/docs/content/docs/reference/stability.mdx).
 
 **Operational rule:** when adding a new integration (chat platform, action target, datasource), create the staging app/credentials first — staging is the soak environment for tag-gated prod deploys. Don't OAuth-register a new platform straight against prod.
 

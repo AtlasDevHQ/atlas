@@ -2,7 +2,7 @@
 
 How Atlas ships to prod. Two flows: **normal release** (merge → soak → tag) and **hotfix** (merge → tag immediately).
 
-> **Live as of `v0.0.1`** (first tag of the pre-launch `v0.0.x` train, cut 2026-05-29 at `9c68fc17`): the dual Railway trigger described below is the active flow — `main` → staging, annotated tag → `prod` branch → prod. The pre-`v0.0.1` "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, target July 2026) is tracked separately and points at the banked changelog accumulated under the `v0.0.x` train.
+> **Live as of `v0.0.1`** (first tag of the pre-launch `v0.0.x` train, cut 2026-05-29 at `9c68fc17`): the dual Railway trigger described below is the active flow — `main` → staging, annotated tag → `prod` branch → prod. The pre-`v0.0.1` "every merge to `main` auto-deploys prod" flow is retired. The public launch (`v0.1.0`, target July 2026) is tracked separately; its announcement aggregates the work accumulated across the `v0.0.x` train (the per-tag docs changelog feed is live the whole time, not held back — [ADR-0008 § Amendment (2026-05-31)](../adr/0008-versioning-and-release-tags.md)).
 
 ## Mental model
 
@@ -66,7 +66,7 @@ The skill runs:
 4. **`git push origin <version>^{}:prod --force-with-lease`** — fast-forwards the `prod` branch to the tagged commit. This is what Railway watches; the prod-side deploy fires from this push. `--force-with-lease` (never `--force`) refuses to rewind if someone else has advanced `prod` since the local fetch — a safety net against concurrent `/release` runs.
 5. **`gh release create v0.0.1 --generate-notes`** — creates a GitHub Release with auto-generated commit + PR list.
 
-The `--generate-notes` output is the customer-facing changelog for that tag. Edit it on GitHub afterward if it needs polish.
+The curated, customer-facing changelog for each tag lives in the docs-site changelog feed (`apps/docs/src/components/changelog-data.ts` → [docs.useatlas.dev/changelog](https://docs.useatlas.dev/changelog)) — `/release` appends one entry per tag before tagging (Step 4b), and that entry links back to the GitHub Release. The `--generate-notes` body is the raw commit/PR list; edit it on GitHub if it needs polish. See [ADR-0008 § Amendment (2026-05-31)](../adr/0008-versioning-and-release-tags.md).
 
 ### 4. Watch prod
 

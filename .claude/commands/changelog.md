@@ -95,7 +95,7 @@ Wait for approval before writing.
 After approval:
 
 1. Insert the new entry into `CHANGELOG.md` — below `## [Unreleased]` and above the previous entry
-2. If this is a customer-meaningful release, also add an entry to `apps/docs/src/components/changelog-data.ts` (the public changelog)
+2. For the public docs changelog (`apps/docs/src/components/changelog-data.ts` → `docs.useatlas.dev/changelog`): this is a **per-tag feed** (ADR-0008). Add a curated entry to the **top** of the `releases` array, keyed by the git tag (`version: "v0.0.2"`). In the normal flow `/release` does this at tag time (Step 4b) — only add it here directly if you're drafting ahead of the tag. Don't touch the `developmentHistory` array (frozen pre-versioning milestones). Don't set `githubMilestone` on tag entries — the component derives the GitHub Release link from `version`.
 3. Commit:
    ```
    git add CHANGELOG.md

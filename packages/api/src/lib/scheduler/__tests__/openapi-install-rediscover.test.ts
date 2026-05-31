@@ -29,6 +29,7 @@ import { Effect } from "effect";
 
 let mockHasDB = true;
 let auditCalls: Array<Record<string, unknown>> = [];
+let dbQueryCalls: Array<{ sql: string; params: unknown[] }> = [];
 
 // ── Mocks (declared before importing the SUT) ────────────────────────────────
 
@@ -44,7 +45,10 @@ mock.module("@atlas/api/lib/logger", () => {
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasDB,
-  internalQuery: async () => [],
+  internalQuery: async (sql: string, params: unknown[]) => {
+    dbQueryCalls.push({ sql, params });
+    return [];
+  },
   internalExecute: () => {},
   getInternalDB: () => ({}),
 }));
@@ -190,6 +194,7 @@ function resetAll() {
   _resetOpenApiInstallRediscoverScheduler();
   mockHasDB = true;
   auditCalls = [];
+  dbQueryCalls = [];
 }
 
 const cycleRows = () => auditCalls.filter((c) => c.actionType === "connection.spec_refresh_cycle");
@@ -291,6 +296,22 @@ describe("openapi install rediscover — cycle behavior", () => {
     expect(cycleRows()[0].targetType).toBe("connection");
     expect(cycleRows()[0].targetId).toBe("scheduler");
     expect(cycleRows()[0].status).toBe("success");
+  });
+
+  it("default candidate query orders by effective activity (GREATEST of watermark + probedAt), not the bare watermark", async () => {
+    // No injected `query` → the real defaultQuery runs against the mocked
+    // internalQuery, so we can assert the SELECT it issues. Ordering by the bare
+    // `spec_last_checked_at NULLS FIRST` would starve due rows behind not-yet-due
+    // fresh installs (#3046 Codex review); GREATEST(watermark, probedAt) mirrors
+    // evaluateSpecRefreshDue so the most-overdue install sorts first.
+    await Effect.runPromise(runOpenApiInstallRediscoverCycle({ now: () => NOW }));
+    const select = dbQueryCalls.find((c) => c.sql.includes("FROM workspace_plugins"));
+    expect(select).toBeDefined();
+    expect(select!.sql).toContain("GREATEST(config->>'spec_last_checked_at', config->'openapi_snapshot'->>'probedAt')");
+    expect(select!.sql).toContain("NULLS FIRST");
+    expect(select!.sql).toContain("<> 'off'");
+    expect(select!.sql).toContain("status != 'archived'");
+    expect(select!.params).toEqual(["catalog:openapi-generic", 100]);
   });
 
   it("survives an internal-DB-disabled state — emits a success cycle row with zero counts", async () => {

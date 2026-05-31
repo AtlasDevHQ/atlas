@@ -50,6 +50,14 @@
  * `openapi-spec-refresh.ts`. No-op without an internal DB (it reads
  * `workspace_plugins`).
  *
+ * Like every other per-process scheduler here (BYOT, Tier-1, semantic-expert), this
+ * takes no distributed lock — it relies on the deploy invariant that each regional
+ * API service runs `numReplicas: 1` (`deploy/README.md`: "intentional, not
+ * aspirational"). Re-discovery is idempotent regardless (a duplicate re-probe writes
+ * the same snapshot + watermark), so the worst case under an accidental scale-up is
+ * duplicate egress + audit rows, not corruption. A cross-scheduler distributed
+ * singleton is the right home for replica gating if that invariant is ever lifted.
+ *
  * @see ./byot-catalog-refresh.ts — the periodic-fiber pattern this follows.
  * @see ./openapi-spec-refresh.ts — the Tier-1 sibling this is deliberately NOT.
  * @see ../openapi/rediscover.ts — the shared re-probe → snapshot → diff core.
@@ -117,11 +125,28 @@ export type DueCandidateRow = {
 /**
  * The coarse SQL pre-filter: every non-archived generic OpenAPI datasource install,
  * across all workspaces, whose `spec_refresh_interval` is set and not `'off'`,
- * ordered least-recently-checked-first so a backlog drains fairly under the batch
- * cap. The canonical stored interval is exactly `'off'`/`'daily'`/`'weekly'`/`'<N>h'`
- * (see `normalizeSpecRefreshInterval`), so excluding `'off'` here is safe; a drifted
- * value slips through and is rejected app-side by `evaluateSpecRefreshDue` (defense
- * in depth). `$2` is the catalog id (a code constant, never client input).
+ * ordered most-overdue-first so a backlog drains fairly under the batch cap. The
+ * canonical stored interval is exactly `'off'`/`'daily'`/`'weekly'`/`'<N>h'` (see
+ * `normalizeSpecRefreshInterval`), so excluding `'off'` here is safe; a drifted value
+ * slips through and is rejected app-side by `evaluateSpecRefreshDue` (defense in
+ * depth). `$1` is the catalog id (a code constant, never client input).
+ *
+ * **Ordering matches the due-check watermark.** The order key is
+ * `GREATEST(spec_last_checked_at, openapi_snapshot.probedAt)` — the SAME effective
+ * activity `evaluateSpecRefreshDue` compares against — so a freshly-installed
+ * datasource (no watermark yet but a recent `probedAt`) sorts by its `probedAt` and
+ * does NOT crowd genuinely-overdue installs out of the batch. Ordering by the bare
+ * watermark `NULLS FIRST` would repeatedly select those not-yet-due fresh rows
+ * (which `runInstall` returns `not_due` for, without stamping), starving older due
+ * rows past the `LIMIT`. ISO-8601 strings sort lexicographically = chronologically;
+ * Postgres `GREATEST` ignores NULLs and yields NULL only when both are NULL (a
+ * never-probed install → `NULLS FIRST` → most due).
+ *
+ * **Status-only scope, by design.** This mirrors the datasource RESOLVER
+ * (`workspace-datasource.ts`, also `status != 'archived'`, NOT `enabled`): the
+ * scheduler must refresh exactly the set the agent is served, or a still-served
+ * install would carry a stale snapshot. If the resolver ever gains an `enabled`
+ * gate, this predicate must move in lockstep.
  */
 const CANDIDATE_QUERY_SQL = `SELECT workspace_id, install_id, config
      FROM workspace_plugins
@@ -130,7 +155,7 @@ const CANDIDATE_QUERY_SQL = `SELECT workspace_id, install_id, config
       AND status != 'archived'
       AND config->>'spec_refresh_interval' IS NOT NULL
       AND config->>'spec_refresh_interval' <> 'off'
-    ORDER BY config->>'spec_last_checked_at' ASC NULLS FIRST
+    ORDER BY GREATEST(config->>'spec_last_checked_at', config->'openapi_snapshot'->>'probedAt') ASC NULLS FIRST
     LIMIT $2`;
 
 async function defaultQuery(limit: number): Promise<ReadonlyArray<DueCandidateRow>> {

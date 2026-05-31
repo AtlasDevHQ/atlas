@@ -143,6 +143,26 @@ describe("getSpecRefreshIntervalMs — read-path reader (mirrors getExpertSchedu
   });
 });
 
+describe("preset lookup is prototype-pollution safe (own-keys only)", () => {
+  // `toString` / `constructor` / `__proto__` are inherited keys on the preset
+  // object — `in` would match them and `obj[key] * HOUR_MS` → NaN. Both the write
+  // gate and the read path must treat them as garbage, not presets.
+  for (const proto of ["toString", "constructor", "__proto__", "valueOf", "hasOwnProperty"]) {
+    it(`rejects "${proto}" on the write path (not accepted as a preset)`, () => {
+      expect(normalizeSpecRefreshInterval(proto).ok).toBe(false);
+    });
+    it(`reads "${proto}" as null (never a non-finite interval)`, () => {
+      expect(getSpecRefreshIntervalMs(proto)).toBeNull();
+    });
+  }
+
+  it("a prototype-key interval is never due (no NaN leaks into the scheduler)", () => {
+    const d = evaluateSpecRefreshDue({ spec_refresh_interval: "toString" }, 1_700_000_000_000);
+    expect(d.intervalMs).toBeNull();
+    expect(d.due).toBe(false);
+  });
+});
+
 const NOW = 1_700_000_000_000; // fixed clock for due-calc determinism
 const iso = (ms: number) => new Date(ms).toISOString();
 

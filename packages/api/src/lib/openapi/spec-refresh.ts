@@ -116,7 +116,11 @@ export function normalizeSpecRefreshInterval(raw: unknown): NormalizedSpecRefres
   if (typeof raw === "string") {
     const lower = raw.trim().toLowerCase();
     if (lower === SPEC_REFRESH_OFF) return { ok: true, value: SPEC_REFRESH_OFF };
-    if (lower in SPEC_REFRESH_PRESET_HOURS) return { ok: true, value: lower };
+    // `Object.hasOwn`, not `in` — `in` matches inherited prototype keys
+    // (`toString`, `constructor`, `__proto__`), which would otherwise pass
+    // validation here and then index to a non-number (→ NaN) in
+    // `getSpecRefreshIntervalMs`. Only the real preset keys are valid.
+    if (Object.hasOwn(SPEC_REFRESH_PRESET_HOURS, lower)) return { ok: true, value: lower };
   }
   if (typeof raw === "string" || typeof raw === "number") {
     const hours = parseCustomHours(raw);
@@ -150,7 +154,12 @@ export function getSpecRefreshIntervalMs(raw: unknown): number | null {
   if (typeof raw === "string") {
     const lower = raw.trim().toLowerCase();
     if (lower === SPEC_REFRESH_OFF) return null;
-    const presetHours = SPEC_REFRESH_PRESET_HOURS[lower];
+    // Own-property guard (not bracket-index alone): a prototype key like
+    // `"toString"` would index to a function and `fn * HOUR_MS` → NaN, which
+    // would then leak a non-finite interval into the scheduler's due-check.
+    const presetHours = Object.hasOwn(SPEC_REFRESH_PRESET_HOURS, lower)
+      ? SPEC_REFRESH_PRESET_HOURS[lower]
+      : undefined;
     if (presetHours !== undefined) return presetHours * HOUR_MS;
   }
   const hours = parseCustomHours(raw);

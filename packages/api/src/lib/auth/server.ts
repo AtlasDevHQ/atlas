@@ -748,8 +748,11 @@ export function deriveCookieDomain(
  * self-hosted deploys that configure neither `ATLAS_CORS_ORIGIN` nor
  * `BETTER_AUTH_TRUSTED_ORIGINS` — there is no web origin to derive from, so
  * preserving the historical value keeps minimal setups working unchanged.
- * Prod also resolves to exactly this string (its web origin host IS
- * `app.useatlas.dev`), so the derive path below is a no-op for prod.
+ * Prod also resolves to exactly this string, but *because* its first
+ * `ATLAS_CORS_ORIGIN` entry is `https://app.useatlas.dev` (deploy/README.md) —
+ * so the derive path below is a no-op for prod only as long as that stays
+ * true. If prod ever prepends a different origin, the derived rpID shifts and
+ * `ATLAS_RPID` must be pinned explicitly to avoid invalidating enrolled keys.
  */
 export const DEFAULT_RP_ID = "app.useatlas.dev";
 
@@ -766,8 +769,61 @@ export const DEFAULT_RP_ID = "app.useatlas.dev";
  * like a bare public suffix.
  */
 function isRegistrableDomainSuffixOrEqual(rpID: string, host: string): boolean {
-  if (rpID === host) return true;
-  return host.endsWith(`.${rpID}`);
+  // Hostnames are case-insensitive (DNS), and browsers lowercase the rpID
+  // before matching it against the page origin — so compare case-insensitively.
+  // An explicit `ATLAS_RPID=App.useatlas.dev` is valid for origin host
+  // `app.useatlas.dev` and must NOT trip the boot assertion. (`originHost` is
+  // already lowercased by `new URL().hostname`; only the operator-typed
+  // explicit rpID can carry case. The *returned* rpID is left verbatim — see
+  // `resolvePasskeyRpId` — so this comparison never mutates the enrolled value.)
+  const r = rpID.toLowerCase();
+  const h = host.toLowerCase();
+  if (r === h) return true;
+  return h.endsWith(`.${r}`);
+}
+
+/**
+ * Extract the host from a configured web origin so the rpID can be validated
+ * against it, or `null` (with a loud error log) when the origin is unusable.
+ *
+ * `getWebOrigin()` returns the operator's raw `ATLAS_CORS_ORIGIN` /
+ * `BETTER_AUTH_TRUSTED_ORIGINS` entry — it does NOT guarantee an absolute URL.
+ * Two realistic misconfigurations yield no host: a scheme-less bare host
+ * (`new URL` throws) and a scheme-less host:port like `app.example.com:3000`
+ * (`new URL` parses it as a protocol, leaving `hostname === ""`). Both mean
+ * the rpID can't be validated, so a wrong rpID would still break passkeys in
+ * the browser — exactly the silent failure this module exists to prevent.
+ * We log at error level (not warn — this belongs above boot noise) and name
+ * the consequence + fix, then return null so the caller degrades to the
+ * explicit/default rpID rather than crashing. This is the only logged path;
+ * the caller does not double-log.
+ */
+function parseOriginHostForRpId(webOrigin: string): string | null {
+  let host: string;
+  try {
+    host = new URL(webOrigin).hostname;
+  } catch (err) {
+    log.error(
+      { webOrigin, err: err instanceof Error ? err.message : String(err) },
+      "Configured web origin is not a parseable absolute URL while resolving the WebAuthn rpID — "
+        + "the rpID can't be validated against it, so a wrong rpID will break passkeys in the browser "
+        + "with no further server signal. Ensure the first ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS "
+        + "entry includes the scheme (e.g. https://app.example.com).",
+    );
+    return null;
+  }
+  if (!host) {
+    log.error(
+      { webOrigin },
+      "Configured web origin has no host while resolving the WebAuthn rpID (scheme missing? — a value "
+        + 'like "app.example.com:3000" parses as a protocol, not a host) — the rpID can\'t be validated '
+        + "against it, so a wrong rpID will break passkeys in the browser with no further server signal. "
+        + "Ensure the first ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry includes the scheme "
+        + "(e.g. https://app.example.com).",
+    );
+    return null;
+  }
+  return host;
 }
 
 /**
@@ -797,30 +853,25 @@ function isRegistrableDomainSuffixOrEqual(rpID: string, host: string): boolean {
  * domain` — fires only at ceremony time, in the user's browser, with no
  * boot-time signal. So whenever a web origin IS configured we assert the
  * effective rpID is valid for it and throw with an actionable message
- * otherwise, mirroring the cross-origin cookie-domain fail-loud in
- * `getAuthInstance()`. A bogus *explicit* `ATLAS_RPID` is caught here too; the
- * derived path can never produce an invalid value, so unset deploys never
- * throw. Hostnames aren't secrets (CLAUDE.md), so they're safe to log/surface.
+ * otherwise. (This is stronger than the cross-origin cookie-domain check in
+ * `getAuthInstance()`, which only `log.warn`s — a wrong rpID can't work at
+ * all, so it warrants a hard fail.) A bogus *explicit* `ATLAS_RPID` is caught
+ * here too; the derived path can never produce an invalid value, so unset
+ * deploys never throw. Hostnames aren't secrets (CLAUDE.md), so they're safe
+ * to log/surface.
  */
 export function resolvePasskeyRpId(env: NodeJS.ProcessEnv, webOrigin: string | null): string {
   const explicit = env.ATLAS_RPID?.trim();
 
-  // The web origin's host, when one is configured and parseable. A malformed
-  // origin is treated as "no origin" (legacy behavior) rather than a crash —
-  // a bad CORS/trusted-origin URL surfaces through CORS itself, not here.
-  let originHost: string | null = null;
-  if (webOrigin) {
-    try {
-      originHost = new URL(webOrigin).hostname || null;
-    } catch (err) {
-      log.warn(
-        { webOrigin, err: err instanceof Error ? err.message : String(err) },
-        "Could not parse the configured web origin while resolving the WebAuthn rpID — "
-          + "skipping rpID/origin validation and using the explicit or default value. Verify the "
-          + "first ATLAS_CORS_ORIGIN / BETTER_AUTH_TRUSTED_ORIGINS entry is an absolute URL.",
-      );
-    }
-  }
+  // The web origin's host, when one is configured and usable. A configured but
+  // UNUSABLE origin (unparseable, or scheme-less so `new URL` yields an empty
+  // host — e.g. "app.example.com:3000" parses as a protocol, not a host) is a
+  // misconfiguration, NOT the "no origin configured" minimal-setup case — so
+  // `parseOriginHostForRpId` logs it at error level with the consequence
+  // spelled out, rather than letting it slip past as a silent null. We still
+  // degrade to the explicit/default rpID (no host → nothing to validate
+  // against → can't assert), but the boot log is loud instead of silent.
+  const originHost = webOrigin ? parseOriginHostForRpId(webOrigin) : null;
 
   // 1. explicit env  >  2. derive from origin host  >  3. legacy default.
   const rpID = explicit || originHost || DEFAULT_RP_ID;

@@ -258,6 +258,30 @@ describe("resolvePasskeyRpId (#3045)", () => {
     });
   });
 
+  describe("hostname comparison is case-insensitive (DNS)", () => {
+    it("a mixed-case explicit rpID is valid for a lowercase origin host — no false-positive fail-loud", () => {
+      // new URL().hostname lowercases the origin host; the operator-typed
+      // explicit value may carry case. The boot assertion must compare
+      // case-insensitively or it would wrongly refuse to boot a correctly
+      // configured deploy. The returned value is left verbatim (rpID stability).
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "App.UseAtlas.DEV" }, "https://app.useatlas.dev"),
+      ).toBe("App.UseAtlas.DEV");
+      expect(
+        resolvePasskeyRpId({ ATLAS_RPID: "UseAtlas.DEV" }, "https://app.staging.useatlas.dev"),
+      ).toBe("UseAtlas.DEV");
+    });
+
+    it("a mixed-case origin host derives a lowercase rpID (URL normalization is pinned)", () => {
+      // Locks in that derivation goes through new URL().hostname (which
+      // lowercases) — a future refactor to raw string slicing would silently
+      // shift the rpID and invalidate enrolled keys.
+      expect(resolvePasskeyRpId({}, "https://App.Staging.UseAtlas.DEV")).toBe(
+        "app.staging.useatlas.dev",
+      );
+    });
+  });
+
   describe("invalid explicit rpID for the web origin → fail loud at boot", () => {
     it("prod rpID on a staging origin throws an actionable error", () => {
       expect(() =>
@@ -297,13 +321,25 @@ describe("resolvePasskeyRpId (#3045)", () => {
       expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, null)).toBe("auth.example.com");
     });
 
-    it("malformed web origin is treated as no-origin (no throw, no validation)", () => {
-      // A bad CORS/trusted-origin entry surfaces through CORS itself; the rpID
-      // resolver degrades to the explicit/default value rather than crashing.
+    it("unparseable web origin is treated as no-origin (no throw, no validation)", () => {
+      // An unparseable CORS/trusted-origin entry can't be validated against;
+      // the resolver logs at error level and degrades to the explicit/default
+      // value rather than crashing.
       expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, "not-a-url")).toBe(
         "auth.example.com",
       );
       expect(resolvePasskeyRpId({}, "not-a-url")).toBe(DEFAULT_RP_ID);
+    });
+
+    it("scheme-less host:port origin parses to an empty host → no-origin, no throw", () => {
+      // "app.example.com:3000" parses as protocol "app.example.com:" with an
+      // empty hostname — not the validatable case, so validation is skipped
+      // (logged at error level) and an explicit-but-arbitrary value is honored
+      // rather than triggering a false fail-loud.
+      expect(resolvePasskeyRpId({}, "app.example.com:3000")).toBe(DEFAULT_RP_ID);
+      expect(resolvePasskeyRpId({ ATLAS_RPID: "auth.example.com" }, "localhost:3000")).toBe(
+        "auth.example.com",
+      );
     });
   });
 });

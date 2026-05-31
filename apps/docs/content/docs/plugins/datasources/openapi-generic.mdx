@@ -138,3 +138,29 @@ Advanced overrides (set on the install's `config` via `atlas.config.ts`, not sur
 | `rate_limit_per_minute` | Per-operation rate limit override (default 60) |
 | `request_timeout_ms` | Per-request timeout override; must be ≤ `ATLAS_OPENAPI_TIMEOUT` (the cap), else the operation is rejected |
 | `spec_refresh_interval` | How often to auto-re-discover the spec: `off` (default) / `daily` / `weekly` / `<N>h` (1h–720h, clamped). Also settable from the **Auto-refresh** control on the datasource card. |
+
+## Pre-wired vendor datasources
+
+Some vendors ship as their own cards in Admin → Connections, pre-wired over this same generic primitive — the spec URL and auth kind are filled in for you, so you only supply the credential. They are not separate clients: the operation graph, validator, paginator, and client are the same generic machinery.
+
+| Card | Auth | What you supply |
+|------|------|-----------------|
+| **Stripe** (`stripe-data`) | Bearer | Your Stripe secret key |
+| **GitHub** (`github-data`) | **OAuth2 (GitHub App)** | Nothing to paste — connect your GitHub App installation |
+
+### GitHub (`github-data`) — OAuth2 via GitHub App
+
+GitHub connects through **OAuth2**, not a pasted token. It reuses the **same GitHub App** as the GitHub *action* integration, so a deploy already wired for GitHub gets the datasource for free. Clicking **Connect** runs the GitHub App install dance; Atlas stores the resulting `installation_id` (encrypted) and mints a short-lived installation access token on demand at query time (re-minted automatically on ~1-hour expiry — there is no long-lived token to rotate or leak). GitHub's list endpoints are paged via the standard `Link` header.
+
+Operators must set the GitHub App env for the handler to register (the same variables the GitHub action integration uses):
+
+| Variable | Notes |
+|----------|-------|
+| `GITHUB_APP_ID` / `GITHUB_APP_SLUG` | App identity (the `iss` claim + the `github.com/apps/<slug>` install URL) |
+| `GITHUB_APP_PRIVATE_KEY` | PKCS8 PEM — signs the App JWT used to mint installation tokens |
+| `GITHUB_APP_CLIENT_ID` / `GITHUB_APP_CLIENT_SECRET` | User-OAuth-during-install credentials — used to verify the installing user owns the installation (cross-tenant binding guard) |
+| `ATLAS_PUBLIC_API_URL` | The API origin, so the OAuth callback URL resolves |
+
+If the App access is later revoked, the next query simply fails to mint a token and the datasource is skipped — reconnect from Admin → Connections to restore it.
+
+> The generic form's own `oauth2` `auth_kind` (above) remains deferred — `github-data`'s OAuth lives in its dedicated install handler, not the generic credential form.

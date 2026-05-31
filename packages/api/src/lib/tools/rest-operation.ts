@@ -43,7 +43,10 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError, type OpenApiClientErrorReason } from "@atlas/api/lib/openapi/types";
 import { type RestDatasource } from "@atlas/api/lib/openapi/datasource";
-import { resolveWorkspaceRestDatasourcesOrThrow } from "@atlas/api/lib/openapi/workspace-datasource";
+import {
+  resolveWorkspaceRestDatasourcesOrThrow,
+  RestDatasourceReconnectError,
+} from "@atlas/api/lib/openapi/workspace-datasource";
 import {
   validateRestOperation,
   isSideEffectingOperation,
@@ -83,10 +86,13 @@ export type ExecuteRestOperationResult =
   | { status: "http_error"; httpStatus: number; body: unknown; message: string }
   | { status: "no_datasource"; message: string }
   /**
-   * The workspace's REST datasource registry couldn't be loaded (a transient
-   * failure reaching the config store) — distinct from `no_datasource` (the
-   * workspace genuinely has none). The agent must NOT tell the user no datasource
-   * is connected; it's temporarily unavailable. See #2929 review.
+   * The workspace's REST datasource exists but couldn't be made usable right now —
+   * either the registry couldn't be loaded (a transient config-store failure) or a
+   * connected datasource's credential is unresolvable and needs reconnecting (e.g.
+   * a github-data install whose GitHub App access was revoked, #3030). Distinct
+   * from `no_datasource` (the workspace genuinely has none): the agent must NOT
+   * tell the user no datasource is connected — the `message` says whether to retry
+   * shortly or to reconnect. See #2929 review.
    */
   | { status: "datasource_unavailable"; message: string }
   | { status: "datasource_not_found"; message: string; availableDatasources: string[] }
@@ -194,10 +200,27 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       try {
         datasources = await resolveDatasources();
       } catch (err) {
+        const requestId = getRequestContext()?.requestId;
+        // A connected datasource exists but its credential couldn't be resolved
+        // (e.g. a github-data install whose GitHub App access was revoked) — this
+        // is NOT "no datasource connected", it's "reconnect needed". Surface that
+        // distinctly so the agent points the user at a reconnect, not a dead end.
+        if (err instanceof RestDatasourceReconnectError) {
+          log.warn(
+            { requestId, reconnectableCount: err.reconnectableCount },
+            "executeRestOperation: workspace's REST datasource(s) need reconnecting — credential unresolvable",
+          );
+          return {
+            status: "datasource_unavailable",
+            message:
+              "This workspace's REST datasource is connected but Atlas couldn't authenticate to it right now — " +
+              "its credential needs to be refreshed (the connection may have been revoked or expired). Tell the " +
+              "user to reconnect it from Admin → Connections; do NOT claim no datasource is connected.",
+          };
+        }
         // The registry load failed (DB outage) — surface it as temporarily
         // unavailable, NOT as "no datasource connected". A false "none is
         // connected" claim would hide the outage from the user.
-        const requestId = getRequestContext()?.requestId;
         const message = err instanceof Error ? err.message : String(err);
         log.error(
           { requestId, err: message },

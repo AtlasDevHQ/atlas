@@ -30,6 +30,7 @@
 import type {
   CatalogRowForDispatch,
   FormBasedInstallHandler,
+  OAuthDatasourceInstallHandler,
   OAuthPlatformInstallHandler,
   PlatformInstallHandler,
   StaticBotInstallHandler,
@@ -42,6 +43,11 @@ import type {
 const oauthHandlers = new Map<string, OAuthPlatformInstallHandler>();
 const formHandlers = new Map<string, FormBasedInstallHandler>();
 const staticBotHandlers = new Map<string, StaticBotInstallHandler>();
+// Kept distinct from `oauthHandlers` even though the wire shape is compatible:
+// an `oauth` row (chat/action, single-instance) and an `oauth-datasource` row
+// (datasource, multi-instance) are independent install paths that may share a
+// slug namespace, so they must never collide in one map. v0.0.2 slice 6c (#3030).
+const oauthDatasourceHandlers = new Map<string, OAuthDatasourceInstallHandler>();
 
 /**
  * Register an OAuth install handler for a given catalog slug. Idempotent
@@ -84,11 +90,27 @@ export function registerStaticBotHandler(
   staticBotHandlers.set(slug, handler);
 }
 
-/** @internal Test-only — clears all three registries between tests. */
+/**
+ * Register an OAuth-datasource install handler for a given catalog slug
+ * (v0.0.2 slice 6c, #3030 — GitHub-as-datasource). Same idempotency contract
+ * as {@link registerOAuthHandler}. Distinct registry from the chat/action
+ * `oauth` one: the two install models persist differently (multi-instance
+ * datasource vs single-instance chat/action), so the same slug must not
+ * resolve across them.
+ */
+export function registerOAuthDatasourceHandler(
+  slug: string,
+  handler: OAuthDatasourceInstallHandler,
+): void {
+  oauthDatasourceHandlers.set(slug, handler);
+}
+
+/** @internal Test-only — clears all four registries between tests. */
 export function _resetInstallHandlerRegistries(): void {
   oauthHandlers.clear();
   formHandlers.clear();
   staticBotHandlers.clear();
+  oauthDatasourceHandlers.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +160,15 @@ export function getInstallHandler(
       }
       return handler;
     }
+    case "oauth-datasource": {
+      const handler = oauthDatasourceHandlers.get(catalogRow.slug);
+      if (!handler) {
+        throw new Error(
+          `No OAuth-datasource install handler registered for catalog slug "${catalogRow.slug}". Register via registerOAuthDatasourceHandler() at module load (set the operator env vars the handler needs — GITHUB_APP_ID + GITHUB_APP_SLUG + GITHUB_APP_PRIVATE_KEY + GITHUB_APP_CLIENT_ID + GITHUB_APP_CLIENT_SECRET for github-data).`,
+        );
+      }
+      return handler;
+    }
     default: {
       const _exhaustive: never = catalogRow.install_model;
       throw new Error(
@@ -153,5 +184,6 @@ export type {
   OAuthPlatformInstallHandler,
   FormBasedInstallHandler,
   StaticBotInstallHandler,
+  OAuthDatasourceInstallHandler,
   PlatformInstallHandler,
 };

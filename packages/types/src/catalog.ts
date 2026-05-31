@@ -34,8 +34,17 @@
  *   `guild_id`, Telegram `chat_id`, Teams `tenant_id`, WhatsApp phone
  *   number) via form. No per-Workspace bot token. Chat: Teams, Discord,
  *   Google Chat, Telegram, WhatsApp.
+ * - `oauth-datasource` — OAuth credential acquisition (the same
+ *   operator-owned App dance as `oauth`) but DATASOURCE persistence:
+ *   multi-instance (`install_id` composite PK), credential written to
+ *   `workspace_plugins.config` via selective-field encryption, and
+ *   probe-on-install caches the `openapi_snapshot`. Distinct from `oauth`
+ *   (single-instance chat/action, credential in `chat_cache` / per-plugin
+ *   store). v0.0.2 slice 6c (#3030): GitHub-as-datasource reuses GitHub's
+ *   existing App registration; the "refresh" path is App-JWT installation-
+ *   token minting, not refresh-token rotation. Pillar: datasource.
  */
-export const CATALOG_INSTALL_MODELS = ["oauth", "form", "static-bot"] as const;
+export const CATALOG_INSTALL_MODELS = ["oauth", "form", "static-bot", "oauth-datasource"] as const;
 export type CatalogInstallModel = (typeof CATALOG_INSTALL_MODELS)[number];
 
 // ---------------------------------------------------------------------------

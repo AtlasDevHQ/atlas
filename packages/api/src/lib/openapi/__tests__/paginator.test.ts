@@ -354,6 +354,24 @@ const NEXT_CASES: NextCase[] = [
     response: ok({ items: [{ id: 1 }] }, { link: '<https://api.example.com/things?page=1>; rel="prev"' }),
     expected: PAGE_DONE,
   },
+  {
+    // GitHub (the canonical Link-header API) returns a TOP-LEVEL array — itemsPath
+    // omitted defaults to the response root, so the walk follows rel=next.
+    title: "link-header: itemsPath omitted defaults to the root array (GitHub shape)",
+    config: { strategy: "link-header" },
+    request: { operationId: "list", params: { query: { per_page: 2 } } },
+    response: ok([{ id: 1 }], {
+      link: '<https://api.github.com/repos/o/r/pulls?page=2&per_page=2>; rel="next"',
+    }),
+    expected: continueWith({ operationId: "list", params: { query: { per_page: "2", page: "2" } } }),
+  },
+  {
+    title: "link-header: a root array stops the walk when empty even with rel=next",
+    config: { strategy: "link-header" },
+    request: { operationId: "list", params: {} },
+    response: ok([], { link: '<https://api.github.com/repos/o/r/pulls?page=2>; rel="next"' }),
+    expected: PAGE_DONE,
+  },
 ];
 
 describe("paginator — strategy.next() (table-driven, no HTTP)", () => {

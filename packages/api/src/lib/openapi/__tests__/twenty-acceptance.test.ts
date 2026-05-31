@@ -103,10 +103,13 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 let activeDatasources: RestDatasource[] = [];
 mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   // Mock ALL exports — the tool + confirm route now import the strict
-  // `…OrThrow` sibling (#2929 review); omitting it trips "export not found".
+  // `…OrThrow` sibling (#2929 review) and the `RestDatasourceReconnectError`
+  // class (#3030); omitting either trips "export not found". The resolvers here
+  // never throw it, so a stub class (matching the value-export shape) suffices.
   resolveWorkspaceRestDatasources: async () => activeDatasources,
   resolveWorkspaceRestDatasourcesOrThrow: async () => activeDatasources,
   resolveWorkspacePrimaryRestDatasource: async () => activeDatasources[0] ?? null,
+  RestDatasourceReconnectError: class RestDatasourceReconnectError extends Error {},
 }));
 
 const { runAgent } = await import("@atlas/api/lib/agent");

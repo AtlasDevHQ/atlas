@@ -56,6 +56,7 @@ import {
   parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
 import { verifyOAuthStateToken } from "@atlas/api/lib/integrations/install/oauth-state-token";
+import { findDataCandidateBySlug } from "@atlas/api/lib/openapi/data-candidates";
 import {
   detectMisrouting,
   isStrictRoutingEnabled,
@@ -92,6 +93,9 @@ const log = createLogger("integrations");
 const INSTALLATION_ID_PLATFORMS: ReadonlySet<string> = new Set([
   "github",
   "github-single-tenant",
+  // github-data (#3030) — the OAuth-datasource row reusing the SAME GitHub App
+  // install dance (code + installation_id) as the action `github` row.
+  "github-data",
 ]);
 
 /**
@@ -407,13 +411,20 @@ function prefersHtml(req: Request): boolean {
  * Per-platform admin destination for browser-facing redirects after the
  * OAuth dance (success, reconnect, plan_upgrade_required, invalid_state,
  * upstream_error). Most platforms render on `/admin/integrations`, but
- * Salesforce moved to `/admin/connections` in #2745 — sending its
- * callbacks to the old page would land users on a screen that no longer
- * lists Salesforce. Add new exceptions here when a future platform
- * follows the same pattern (Jira, etc.).
+ * datasource-pillar installs render on `/admin/connections`:
+ *   - Salesforce moved there in #2745, and
+ *   - every built-in REST data candidate (stripe-data form, github-data
+ *     oauth-datasource — #3028/#3030) is a `pillar='datasource'` card on
+ *     that page.
+ * Sending their callbacks to `/admin/integrations` would land users on a
+ * screen that doesn't list the card they just connected. Add new
+ * exceptions here when a future non-datasource platform follows the
+ * Salesforce pattern (Jira, etc.).
  */
 function adminDestinationForPlatform(platform: string): string {
   if (platform === "salesforce") return "/admin/connections";
+  // A built-in REST data candidate (e.g. github-data) is a datasource card.
+  if (findDataCandidateBySlug(platform) !== undefined) return "/admin/connections";
   return "/admin/integrations";
 }
 
@@ -456,7 +467,12 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   );
   if (rows.length === 0) return null;
   const row = rows[0];
-  if (row.install_model !== "oauth" && row.install_model !== "form" && row.install_model !== "static-bot") {
+  if (
+    row.install_model !== "oauth" &&
+    row.install_model !== "form" &&
+    row.install_model !== "static-bot" &&
+    row.install_model !== "oauth-datasource"
+  ) {
     log.warn({ slug, install_model: row.install_model }, "Unknown install_model in plugin_catalog row");
     return null;
   }
@@ -624,7 +640,9 @@ integrations.openapi(installRoute, async (c) =>
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
-    if (row.install_model !== "oauth") {
+    // `oauth-datasource` (github-data, #3030) shares this OAuth install/callback
+    // route — the HTTP dance is identical; only the handler's persistence differs.
+    if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
         400,
@@ -693,10 +711,10 @@ integrations.openapi(installRoute, async (c) =>
         501,
       );
     }
-    if (handler.kind !== "oauth") {
-      // Catalog said OAuth, dispatch returned a non-OAuth handler — a
-      // config drift; treat as 500-equivalent for the route's invariants.
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='oauth' but dispatch returned non-OAuth handler");
+    if (handler.kind !== "oauth" && handler.kind !== "oauth-datasource") {
+      // Catalog said OAuth(-datasource), dispatch returned a different handler —
+      // a config drift; treat as 500-equivalent for the route's invariants.
+      log.error({ platform, kind: handler.kind }, "Catalog install_model is OAuth-shaped but dispatch returned a non-OAuth handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
@@ -912,7 +930,10 @@ integrations.openapi(callbackRoute, async (c) =>
     // GitHub multi-tenant. Other handlers ignore extras.
     let handlerPositionalCode: string;
     let handlerExtras: { installationId?: string } | undefined;
-    if (platform === "github") {
+    if (platform === "github" || platform === "github-data") {
+      // Multi-tenant GitHub App dance — `github` (action) and `github-data`
+      // (datasource, #3030) are identical here: both need `code` (user OAuth, for
+      // installation-ownership verification) + `installation_id` (the credential).
       if (typeof code !== "string" || code.length === 0) {
         return c.json(
           {
@@ -969,7 +990,8 @@ integrations.openapi(callbackRoute, async (c) =>
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
-    if (row.install_model !== "oauth") {
+    // `oauth-datasource` (github-data, #3030) shares this callback route.
+    if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
         400,
@@ -989,8 +1011,8 @@ integrations.openapi(callbackRoute, async (c) =>
         501,
       );
     }
-    if (handler.kind !== "oauth") {
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='oauth' but dispatch returned non-OAuth handler");
+    if (handler.kind !== "oauth" && handler.kind !== "oauth-datasource") {
+      log.error({ platform, kind: handler.kind }, "Catalog install_model is OAuth-shaped but dispatch returned a non-OAuth handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
@@ -1142,8 +1164,9 @@ integrations.openapi(callbackRoute, async (c) =>
     // Success — redirect to admin UI. Partial-failure (credential write
     // didn't land) flips the query param so the admin page shows a
     // Reconnect affordance per ADR-0003. Destination is per-platform
-    // (`adminDestinationForPlatform`) — Salesforce lives on
-    // `/admin/connections`, everything else on `/admin/integrations`.
+    // (`adminDestinationForPlatform`) — datasource-pillar installs
+    // (Salesforce + the REST data candidates like github-data) live on
+    // `/admin/connections`, chat/action platforms on `/admin/integrations`.
     const queryParam = result.credentialResult.written ? "installed" : "reconnect";
     return c.redirect(buildPlatformAdminUrl(queryParam, platform));
   }),

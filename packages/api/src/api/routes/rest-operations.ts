@@ -25,7 +25,10 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { executeOperation } from "@atlas/api/lib/openapi/client";
 import { OpenApiClientError } from "@atlas/api/lib/openapi/types";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
-import { resolveWorkspaceRestDatasourcesOrThrow } from "@atlas/api/lib/openapi/workspace-datasource";
+import {
+  resolveWorkspaceRestDatasourcesOrThrow,
+  RestDatasourceReconnectError,
+} from "@atlas/api/lib/openapi/workspace-datasource";
 import {
   validateRestOperation,
   type RestOperationPolicy,
@@ -97,6 +100,7 @@ const confirmRoute = createRoute({
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Server / configuration error", content: { "application/json": { schema: ErrorSchema } } },
     502: { description: "Upstream REST client/transport fault", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Datasource connected but its credential needs reconnecting before the write can run (#3030)", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -145,6 +149,25 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
       try {
         datasources = await resolveDatasources(orgId);
       } catch (err) {
+        // A connected datasource's credential is unresolvable (e.g. github-data's
+        // GitHub App access was revoked) — the staged write can't run until it's
+        // reconnected. 503 + reconnect guidance, not a misleading 500 "retry".
+        if (err instanceof RestDatasourceReconnectError) {
+          log.warn(
+            { orgId, operationId: input.operationId, requestId, reconnectableCount: err.reconnectableCount },
+            "Confirm blocked — the workspace's REST datasource needs reconnecting",
+          );
+          return c.json(
+            {
+              error: "datasource_unavailable",
+              message:
+                "This workspace's REST datasource needs to be reconnected before this write can run — " +
+                "reconnect it from Admin → Connections, then try again.",
+              requestId,
+            },
+            503,
+          );
+        }
         // The registry load failed (DB outage). Return a correlated 500 rather
         // than letting the throw escape to the global handler (which would mint a
         // fresh, log-unrelated requestId) or masquerade as a 404 not-found.

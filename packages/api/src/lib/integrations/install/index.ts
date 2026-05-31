@@ -19,6 +19,8 @@ export type {
   CredentialResult,
   FormBasedInstallHandler,
   InstallRecord,
+  OAuthCallbackExtras,
+  OAuthDatasourceInstallHandler,
   OAuthPlatformInstallHandler,
   PlatformInstallHandler,
   StaticBotInstallHandler,
@@ -27,6 +29,7 @@ export type {
 export {
   getInstallHandler,
   registerFormHandler,
+  registerOAuthDatasourceHandler,
   registerOAuthHandler,
   registerStaticBotHandler,
   _resetInstallHandlerRegistries,

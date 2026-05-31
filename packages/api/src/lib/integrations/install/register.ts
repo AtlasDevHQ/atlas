@@ -19,6 +19,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   registerFormHandler,
+  registerOAuthDatasourceHandler,
   registerOAuthHandler,
   registerStaticBotHandler,
 } from "./dispatch";
@@ -28,7 +29,12 @@ import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
 import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
-import { DATA_CANDIDATES } from "@atlas/api/lib/openapi/data-candidates";
+import { OAuthDatasourceInstallHandler } from "./oauth-datasource-handler";
+import {
+  DATA_CANDIDATES,
+  GITHUB_DATA_CANDIDATE,
+  isOAuthDatasourceCandidate,
+} from "@atlas/api/lib/openapi/data-candidates";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
 import { TwentyFormInstallHandler, TWENTY_SLUG } from "./twenty-form-handler";
 import {
@@ -157,15 +163,18 @@ export function registerBuiltinInstallHandlers(): void {
   registerFormHandler(OPENAPI_GENERIC_SLUG, new OpenApiGenericFormInstallHandler());
   log.info("Registered OpenApiGenericFormInstallHandler");
   // Built-in vendor *-data candidates (#3028). Each is a thin pre-wired wrapper
-  // over the generic OpenAPI primitive — same form-handler shape, no env gate
-  // (the admin supplies the credential at install). One handler per candidate,
-  // registered under its slug (e.g. "stripe-data"). Adding a candidate is a
-  // one-line registry entry (data-candidates.ts), not a new handler class.
-  for (const candidate of DATA_CANDIDATES) {
+  // over the generic OpenAPI primitive. FORM candidates (Stripe, Notion) register
+  // a `DataCandidateFormInstallHandler` with no env gate (the admin supplies the
+  // credential at install). OAUTH-DATASOURCE candidates (github-data, #3030) need
+  // operator App env, so they register separately below. Adding a form candidate
+  // is a one-line registry entry (data-candidates.ts), not a new handler class.
+  const formCandidates = DATA_CANDIDATES.filter((c) => !isOAuthDatasourceCandidate(c));
+  for (const candidate of formCandidates) {
+    if (isOAuthDatasourceCandidate(candidate)) continue; // narrow for TS — handled below
     registerFormHandler(candidate.slug, new DataCandidateFormInstallHandler(candidate));
   }
   log.info(
-    { candidates: DATA_CANDIDATES.map((c) => c.slug) },
+    { candidates: formCandidates.map((c) => c.slug) },
     "Registered DataCandidateFormInstallHandler(s)",
   );
   registerFormHandler("webhook", new WebhookFormInstallHandler());
@@ -215,6 +224,9 @@ export function registerBuiltinInstallHandlers(): void {
   registerSalesforceOAuthHandler();
   registerGitHubAppOAuthHandler();
   registerGitHubSingleTenantOAuthHandler();
+  // GitHub-as-datasource (#3030) — OAuth-datasource install reusing the SAME
+  // GitHub App registration as the action `github` row. Env-gated identically.
+  registerGitHubDataOAuthDatasourceHandler();
 
   // ── Static-bot platforms (1.5.3 — Phase D, #2748+) ────────────────
   // Telegram (#2748 keystone), Discord (#2749), Teams (#2752), and
@@ -832,6 +844,81 @@ function registerGitHubSingleTenantOAuthHandler(): void {
   log.info(
     { publicApiUrl, appSlug },
     "Registered GitHubSingleTenantOAuthInstallHandler (no lazy builder yet — agent tool ships in follow-up)",
+  );
+}
+
+/**
+ * Register the GitHub-as-datasource OAuth-datasource handler (#3030 — the OQ5
+ * deliverable) when the operator's GitHub App env is wired. Reuses the SAME App
+ * registration as the multi-tenant `github` action row (`GITHUB_APP_*`), so a
+ * deploy that runs GitHub-as-action gets GitHub-as-datasource for free. The
+ * credential it acquires (installation_id) is persisted as a datasource install;
+ * its bearer token is minted on demand from the App JWT (`installation-token.ts`)
+ * at query time — `GITHUB_APP_PRIVATE_KEY` is required for that mint, hence gated
+ * here too.
+ */
+function registerGitHubDataOAuthDatasourceHandler(): void {
+  // Pinned to the github-data candidate specifically — NOT
+  // `DATA_CANDIDATES.find(isOAuthDatasourceCandidate)`, which would hand a future
+  // second oauth-datasource vendor GitHub's env gate + callback wiring. Each new
+  // oauth-datasource vendor must get its own dedicated registration helper.
+  const candidate = GITHUB_DATA_CANDIDATE;
+
+  const appId = process.env.GITHUB_APP_ID;
+  const appSlug = process.env.GITHUB_APP_SLUG;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const clientId = process.env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+  const publicApiUrl = resolvePublicApiUrl();
+
+  const required = {
+    GITHUB_APP_ID: appId,
+    GITHUB_APP_SLUG: appSlug,
+    GITHUB_APP_PRIVATE_KEY: privateKey,
+    GITHUB_APP_CLIENT_ID: clientId,
+    GITHUB_APP_CLIENT_SECRET: clientSecret,
+  };
+  const missing = Object.entries(required)
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+
+  if (missing.length > 0) {
+    if (isCatalogSlugEnabled(candidate.slug)) {
+      log.error(
+        { slug: candidate.slug, requiredEnv: Object.keys(required), missing },
+        "github-data catalog row is enabled but one of GITHUB_APP_ID / GITHUB_APP_SLUG / GITHUB_APP_PRIVATE_KEY / GITHUB_APP_CLIENT_ID / GITHUB_APP_CLIENT_SECRET is unset — the github-data install route will return 501 until configured.",
+      );
+    } else {
+      log.info(
+        "github-data OAuth-datasource handler not registered — required env unset and the 'github-data' catalog row is not enabled (operator hasn't opted in).",
+      );
+    }
+    return;
+  }
+  if (!publicApiUrl) {
+    log.warn(
+      "github-data OAuth-datasource handler not registered — ATLAS_PUBLIC_API_URL is unset, so the redirect URI cannot be resolved.",
+    );
+    return;
+  }
+
+  registerOAuthDatasourceHandler(
+    candidate.slug,
+    new OAuthDatasourceInstallHandler({
+      slug: candidate.slug,
+      catalogId: candidate.catalogId,
+      openapiUrl: candidate.openapiUrl,
+      appId: appId!,
+      appSlug: appSlug!,
+      clientId: clientId!,
+      clientSecret: clientSecret!,
+      privateKey: privateKey!,
+      redirectUri: `${publicApiUrl}/api/v1/integrations/${candidate.slug}/callback`,
+    }),
+  );
+  log.info(
+    { publicApiUrl, appSlug, slug: candidate.slug },
+    "Registered OAuthDatasourceInstallHandler for github-data",
   );
 }
 

@@ -41,10 +41,14 @@ import {
   DATA_CANDIDATE_CATALOG_IDS,
   DATA_CANDIDATE_CONFIG_SCHEMA,
   findDataCandidateByCatalogId,
+  isOAuthDatasourceCandidate,
+  type DataCandidate,
 } from "./data-candidates";
+import { GITHUB_APP_SECRET_FIELDS_SCHEMA } from "@atlas/api/lib/integrations/install/github-oauth-secret-schema";
+import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
 import { resolveAuthFromDecryptedConfig, snapshotToGraph } from "./probe";
-import type { OperationGraph } from "./types";
+import type { OperationGraph, ResolvedAuth } from "./types";
 
 const log = createLogger("openapi.workspace-datasource");
 
@@ -74,8 +78,43 @@ export type OpenApiInstallQuery = (
   workspaceId: string,
 ) => Promise<ReadonlyArray<OpenApiInstallRow>>;
 
+/**
+ * Mint a GitHub App installation token for a github-data datasource's stored
+ * `installation_id` (v0.0.2 slice 6c, #3030). Injected so the resolver is tested
+ * without the network / App private key; production defaults to
+ * {@link getGitHubInstallationToken} (App-JWT mint, cached + re-minted on expiry).
+ */
+export type MintInstallationTokenFn = (installationId: string) => Promise<string>;
+
+/**
+ * Thrown by {@link resolveWorkspaceRestDatasourcesOrThrow} when a workspace HAS
+ * REST datasource installs but EVERY one resolved to a recoverable credential
+ * failure (e.g. a github-data install whose GitHub App access was revoked, or a
+ * drifted row missing its `installation_id`) — so the usable set is empty for a
+ * reason that is NOT "the workspace has none". User-facing callers surface this
+ * as "reconnect needed", distinct from `no_datasource`, so the agent never
+ * tells the user nothing is connected when something just needs reconnecting.
+ * The never-rejects {@link resolveWorkspaceRestDatasources} swallows it (degrades
+ * to `[]`, since prompt-build makes no presence claim).
+ */
+export class RestDatasourceReconnectError extends Error {
+  readonly reconnectableCount: number;
+  constructor(reconnectableCount: number) {
+    super(
+      `${reconnectableCount} REST datasource install(s) need reconnecting — their credentials could not be resolved.`,
+    );
+    this.name = "RestDatasourceReconnectError";
+    this.reconnectableCount = reconnectableCount;
+  }
+}
+
 export interface ResolveWorkspaceDeps {
   readonly query?: OpenApiInstallQuery;
+  /**
+   * Override the github-data credential minter. Production omits it (the real
+   * App-JWT minter runs); tests inject a stub so no network / key is needed.
+   */
+  readonly mintInstallationToken?: MintInstallationTokenFn;
 }
 
 /**
@@ -127,6 +166,87 @@ export async function defaultQuery(
 const GENERIC_SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
 const CANDIDATE_SECRET_SCHEMA = parseConfigSchema(DATA_CANDIDATE_CONFIG_SCHEMA);
 
+/**
+ * Pick the selective-encryption schema for a row's config by candidate. The
+ * three shapes differ only in WHICH field is the secret:
+ *   - github-data (oauth-datasource): `installation_id` — reuse the App schema.
+ *   - other data candidates / generic: `auth_value`.
+ * Selecting the matching schema keeps decrypt in lockstep with the handler's
+ * encrypt (a write that encrypts more than the read decrypts corrupts the value).
+ */
+function secretSchemaFor(candidate: DataCandidate | undefined) {
+  if (candidate && isOAuthDatasourceCandidate(candidate)) return GITHUB_APP_SECRET_FIELDS_SCHEMA;
+  return candidate ? CANDIDATE_SECRET_SCHEMA : GENERIC_SECRET_SCHEMA;
+}
+
+/**
+ * The outcome of resolving one install's credential. `skip` distinguishes a
+ * **reconnectable** miss (a connected datasource whose credential is temporarily
+ * unresolvable — a github-data mint failure or a drifted row missing its
+ * `installation_id`; an admin reconnect fixes it) from a non-reconnectable one
+ * (an unsupported / deferred static auth kind — re-installing won't help). The
+ * caller uses this to tell "this workspace has no datasource" apart from "its
+ * datasource needs reconnecting" instead of conflating both into an empty set.
+ */
+type AuthResolution =
+  | { readonly kind: "ok"; readonly auth: ResolvedAuth }
+  | { readonly kind: "skip"; readonly reconnectable: boolean };
+
+/**
+ * Resolve the executable credential for one install. Two paths:
+ *   - **github-data (oauth-datasource):** mint a GitHub App installation token
+ *     from the decrypted `installation_id` (cached + re-minted on ~1hr expiry) →
+ *     `bearer`. A mint failure or a missing `installation_id` is a
+ *     **reconnectable** skip (App access revoked, key drift, transient GitHub
+ *     outage) — fail-soft so it doesn't sink the workspace's other datasources,
+ *     but flagged so an all-reconnectable workspace surfaces "reconnect needed".
+ *   - **everything else:** the static credential from config via the shared
+ *     decrypt-glue — `oauth2` / unrecognized kinds are a NON-reconnectable skip
+ *     (slice-6 deferred for the generic row; github-data uses the mint path).
+ */
+async function resolveInstallAuth(
+  installId: string,
+  candidate: DataCandidate | undefined,
+  decrypted: Record<string, unknown>,
+  mint: MintInstallationTokenFn,
+): Promise<AuthResolution> {
+  if (candidate && isOAuthDatasourceCandidate(candidate)) {
+    const installationId =
+      typeof decrypted.installation_id === "string" ? decrypted.installation_id : "";
+    if (installationId.length === 0) {
+      log.warn(
+        { installId, catalogId: candidate.catalogId },
+        "github-data install has no installation_id — skipping (reconnect the datasource)",
+      );
+      return { kind: "skip", reconnectable: true };
+    }
+    try {
+      const token = await mint(installationId);
+      return { kind: "ok", auth: { kind: "bearer", token } };
+    } catch (err) {
+      log.warn(
+        { installId, catalogId: candidate.catalogId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to mint a GitHub installation token — skipping this datasource (reconnect may be needed)",
+      );
+      return { kind: "skip", reconnectable: true };
+    }
+  }
+
+  // Static-credential path (generic + form candidates). A drifted / hand-edited
+  // row could carry the deferred `oauth2` (generic) or a garbage value — both
+  // resolve to skip rather than passing a bad string to buildResolvedAuth. This
+  // is NOT reconnectable: it's a config/spec gap, not an expired credential.
+  const authResult = resolveAuthFromDecryptedConfig(decrypted);
+  if (!authResult.ok) {
+    log.warn(
+      { installId, authKind: authResult.rawAuthKind },
+      "OpenAPI install uses an unsupported or deferred auth kind — skipping",
+    );
+    return { kind: "skip", reconnectable: false };
+  }
+  return { kind: "ok", auth: authResult.auth };
+}
+
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
 }
@@ -162,12 +282,18 @@ function resolveBaseUrl(
   }
 }
 
-/** Build a single {@link RestDatasource} from a decrypted install row, or `null` to skip. */
+/**
+ * Build a single {@link RestDatasource} from a decrypted install row + its
+ * already-resolved credential, or `null` to skip. The credential is resolved by
+ * the caller ({@link resolveInstallAuth}) because it can be async (a github-data
+ * install mints an installation token), so this stays a synchronous assembler.
+ */
 function buildDatasource(
   workspaceId: string,
   installId: string,
-  catalogId: string | undefined,
+  candidate: DataCandidate | undefined,
   decrypted: Record<string, unknown>,
+  auth: ResolvedAuth,
 ): RestDatasource | null {
   // Validate the snapshot read back from JSONB, rather than an unchecked cast: a
   // drifted / older-builder row is treated as "no snapshot" (skip), not a
@@ -182,20 +308,6 @@ function buildDatasource(
   }
 
   const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
-  // Narrow + build the credential from the decrypted JSONB via the glue shared
-  // with the rediscover route. A drifted / hand-edited row could carry the
-  // deferred `oauth2` (slice 6 #2930) OR an outright unrecognized value — both
-  // resolve to `ok: false` and skip here, rather than passing a garbage string
-  // through to a buildResolvedAuth throw.
-  const authResult = resolveAuthFromDecryptedConfig(decrypted);
-  if (!authResult.ok) {
-    log.warn(
-      { installId, authKind: authResult.rawAuthKind },
-      "OpenAPI install uses an unsupported or deferred auth kind — skipping (oauth2 lands in slice 6)",
-    );
-    return null;
-  }
-  const auth = authResult.auth;
   const baseUrlOverride = typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
   const displayName =
     typeof decrypted.display_name === "string" && decrypted.display_name.length > 0
@@ -249,12 +361,9 @@ function buildDatasource(
   }
 
   // Slice 6a (#3028): a built-in data-candidate install carries its declarative
-  // quirk in the code-resident registry (keyed by catalog id), never in config —
-  // attach it so the agent tool can thread it into the client. A plain
-  // openapi-generic install (or an unknown catalog id) has none.
-  const candidate =
-    catalogId !== undefined ? findDataCandidateByCatalogId(catalogId) : undefined;
-
+  // quirk in the code-resident registry (resolved by the caller, passed in here),
+  // never in config — attach it so the agent tool can thread it into the client.
+  // A plain openapi-generic install (or an unknown catalog id) has none.
   return {
     id: installId,
     displayName,
@@ -272,28 +381,31 @@ function buildDatasource(
 
 /**
  * Decrypt + build the resolvable subset of already-loaded install rows.
- * Per-install failures (decrypt / snapshot / deferred-auth) are skipped and
- * logged — one broken install must never sink the workspace's others. Pure
- * (modulo logging); the query that loads `rows` is the caller's concern, so the
- * strict / soft variants below differ only in how a *query* failure is handled.
+ * Per-install failures (decrypt / snapshot / deferred-auth / mint) are skipped
+ * and logged — one broken install must never sink the workspace's others. Async
+ * because a github-data install mints its credential per resolve; the per-row
+ * resolution is sequential (a workspace has a handful of datasources, and the
+ * minter caches, so serial keeps the code simple without meaningful latency).
+ *
+ * Throws {@link RestDatasourceReconnectError} when the resolved set is empty but
+ * ≥1 install was skipped for a **reconnectable** credential reason — so a
+ * user-facing caller can say "reconnect needed" instead of "none connected".
+ * (A partial success — some resolve, one needs reconnect — still returns the
+ * healthy ones; the throw fires only when nothing usable remains.)
  */
-function buildDatasourcesFromRows(
+async function buildDatasourcesFromRows(
   workspaceId: string,
   rows: ReadonlyArray<OpenApiInstallRow>,
-): RestDatasource[] {
+  mint: MintInstallationTokenFn,
+): Promise<RestDatasource[]> {
   const out: RestDatasource[] = [];
+  let reconnectableSkips = 0;
   for (const row of rows) {
-    // Pick the decryption schema by catalog: a data candidate's config (slice 6a)
-    // carries fewer fields than the generic one, but both mark `auth_value` as the
-    // sole secret — so decryption is identical in practice; selecting the matching
-    // schema keeps the seam correct if a future candidate adds its own secret field.
-    const secretSchema =
-      row.catalog_id !== undefined && findDataCandidateByCatalogId(row.catalog_id) !== undefined
-        ? CANDIDATE_SECRET_SCHEMA
-        : GENERIC_SECRET_SCHEMA;
+    const candidate =
+      row.catalog_id !== undefined ? findDataCandidateByCatalogId(row.catalog_id) : undefined;
     let decrypted: Record<string, unknown>;
     try {
-      decrypted = decryptSecretFields(row.config ?? {}, secretSchema);
+      decrypted = decryptSecretFields(row.config ?? {}, secretSchemaFor(candidate));
     } catch (err) {
       log.warn(
         { workspaceId, installId: row.install_id, err: err instanceof Error ? err.message : String(err) },
@@ -301,8 +413,19 @@ function buildDatasourcesFromRows(
       );
       continue;
     }
-    const ds = buildDatasource(workspaceId, row.install_id, row.catalog_id, decrypted);
+    const resolution = await resolveInstallAuth(row.install_id, candidate, decrypted, mint);
+    if (resolution.kind === "skip") {
+      // unsupported/deferred kind, missing credential, or mint failure (logged)
+      if (resolution.reconnectable) reconnectableSkips++;
+      continue;
+    }
+    const ds = buildDatasource(workspaceId, row.install_id, candidate, decrypted, resolution.auth);
     if (ds) out.push(ds);
+  }
+  // Nothing usable resolved, but at least one install is merely awaiting a
+  // reconnect — signal that distinctly so callers don't claim "none connected".
+  if (out.length === 0 && reconnectableSkips > 0) {
+    throw new RestDatasourceReconnectError(reconnectableSkips);
   }
   return out;
 }
@@ -324,10 +447,11 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
   deps: ResolveWorkspaceDeps = {},
 ): Promise<ReadonlyArray<RestDatasource>> {
   const query = deps.query ?? defaultQuery;
+  const mint = deps.mintInstallationToken ?? ((id: string) => getGitHubInstallationToken(id));
   // A query failure propagates here, on purpose — the caller turns it into a
   // distinct "temporarily unavailable" signal rather than an empty result.
   const rows = await query(workspaceId);
-  return buildDatasourcesFromRows(workspaceId, rows);
+  return buildDatasourcesFromRows(workspaceId, rows, mint);
 }
 
 /**
@@ -345,6 +469,16 @@ export async function resolveWorkspaceRestDatasources(
   try {
     return await resolveWorkspaceRestDatasourcesOrThrow(workspaceId, deps);
   } catch (err) {
+    // A reconnect-needed signal isn't a load failure — the rows loaded fine, the
+    // credential just needs refreshing. Degrade to `[]` either way (this path
+    // makes no presence claim), but log accurately.
+    if (err instanceof RestDatasourceReconnectError) {
+      log.warn(
+        { workspaceId, reconnectableCount: err.reconnectableCount },
+        "OpenAPI datasource install(s) need reconnecting — continuing with none for this non-claiming path",
+      );
+      return [];
+    }
     log.warn(
       { workspaceId, err: err instanceof Error ? err.message : String(err) },
       "Failed to load OpenAPI datasource installs — continuing with none",

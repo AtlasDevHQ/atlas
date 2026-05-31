@@ -1531,7 +1531,7 @@ export const pluginCatalog = pgTable(
       .on(t.type, t.installModel)
       .where(sql`enabled = true`),
     check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox', 'chat', 'integration')`),
-    check("chk_plugin_catalog_install_model", sql`install_model IN ('oauth', 'form', 'static-bot')`),
+    check("chk_plugin_catalog_install_model", sql`install_model IN ('oauth', 'form', 'static-bot', 'oauth-datasource')`),
     check("chk_plugin_catalog_pillar", sql`pillar IN ('datasource', 'chat', 'action')`),
     check("chk_plugin_catalog_implementation_status", sql`implementation_status IN ('available', 'coming_soon')`),
   ],

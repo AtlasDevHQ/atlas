@@ -151,6 +151,83 @@ export interface OAuthCallbackExtras {
 }
 
 // ---------------------------------------------------------------------------
+// OAuth-datasource install handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handler for `install_model: "oauth-datasource"` catalog entries — the OAuth2
+ * dimension of the generic OpenAPI Datasource primitive (v0.0.2 slice 6c, #3030;
+ * the OQ5 deliverable). GitHub-as-datasource is the first consumer.
+ *
+ * Wire shape is method-compatible with {@link OAuthPlatformInstallHandler}
+ * (`startInstall` → redirect, `handleCallback` → install+credential result), so
+ * the integrations route drives BOTH through one HTTP dance (`/install` →
+ * provider consent → `/callback`). What differs is the PERSISTENCE shape, and
+ * that difference is the whole reason this is a distinct handler family rather
+ * than a reuse of {@link OAuthPlatformInstallHandler} (OQ5 resolution):
+ *
+ *   1. **Multi-instance.** Like {@link FormBasedInstallHandler}'s datasource
+ *      installs (`OpenApiGenericFormInstallHandler`), each install mints a fresh
+ *      `install_id` (composite PK `(workspace_id, catalog_id, install_id)`) under
+ *      `pillar='datasource'` — NOT the single-instance
+ *      `(workspace_id, catalog_id)` chat/action singleton an
+ *      {@link OAuthPlatformInstallHandler} writes.
+ *   2. **Credential in `workspace_plugins.config`.** The credential is written
+ *      inline via selective-field encryption (`encryptSecretFields`,
+ *      `secret: true`), NOT to `chat_cache` / a per-plugin store.
+ *   3. **Probe-on-install.** It fetches the (pre-wired, code-resident) OpenAPI
+ *      spec and caches the normalized `openapi_snapshot` in config so the agent
+ *      loop resolves the operation surface from the DB row, never a live re-probe.
+ *
+ * The OAuth credential acquisition itself REUSES the provider's existing App
+ * registration (GitHub: `github-app-oauth.ts` ownership verification + the same
+ * `GITHUB_APP_*` env), so no new vendor app is stood up. The "refresh" path is
+ * App-JWT installation-token minting (`github/installation-token.ts`), minted on
+ * demand and re-minted transparently on ~1hr expiry — not refresh-token rotation.
+ *
+ * Per-handler return-shape note mirrors {@link OAuthPlatformInstallHandler}: a
+ * partial install (row written, credential health-check failed) returns
+ * `credentialResult.written: false` so the route surfaces "Reconnect needed".
+ */
+export interface OAuthDatasourceInstallHandler {
+  readonly kind: "oauth-datasource";
+
+  /**
+   * Begin the OAuth dance. Mints a CSRF state token bound to
+   * `(workspaceId, catalogId)` and returns the provider's authorize/install URL
+   * with that state baked in — same contract as
+   * {@link OAuthPlatformInstallHandler.startInstall}.
+   */
+  startInstall(workspaceId: WorkspaceId): Promise<{
+    readonly redirectUrl: string;
+    readonly stateToken: string;
+  }>;
+
+  /**
+   * Handle the OAuth callback. Verifies the state token, completes provider-side
+   * credential acquisition (GitHub: user-OAuth-code ownership verification +
+   * installation-token health-check mint), probes the pre-wired spec to cache an
+   * `openapi_snapshot`, then writes the datasource install record + encrypted
+   * credential to `workspace_plugins.config`.
+   *
+   * Returns `null` on state-token failure (forged, expired, replayed). Bubbles a
+   * tagged error on provider-side failures so the route surfaces an actionable
+   * user error. `extras` carries provider-specific callback params (GitHub's
+   * `installation_id`), same slot as {@link OAuthPlatformInstallHandler}.
+   */
+  handleCallback(
+    code: string,
+    stateToken: string,
+    extras?: OAuthCallbackExtras,
+  ): Promise<{
+    readonly workspaceId: WorkspaceId;
+    readonly catalogId: CatalogId;
+    readonly installRecord: InstallRecord;
+    readonly credentialResult: CredentialResult;
+  } | null>;
+}
+
+// ---------------------------------------------------------------------------
 // Form-based install handler
 // ---------------------------------------------------------------------------
 
@@ -283,7 +360,8 @@ export interface StaticBotInstallHandler {
 export type PlatformInstallHandler =
   | OAuthPlatformInstallHandler
   | FormBasedInstallHandler
-  | StaticBotInstallHandler;
+  | StaticBotInstallHandler
+  | OAuthDatasourceInstallHandler;
 
 /**
  * Subset of the catalog row that the dispatch needs — kept narrow so

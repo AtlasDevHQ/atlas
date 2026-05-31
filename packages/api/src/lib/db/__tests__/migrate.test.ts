@@ -128,7 +128,9 @@ describe("runMigrations", () => {
     //   Plus 0108 (openapi-generic catalog row, #2926) = 109.
     //   Plus 0109 (data-candidate catalog rows: stripe-data, #3028) = 110.
     //   Plus 0110 (notion-data catalog row, slice 6b, #3029) = 111.
-    expect(count).toBe(111);
+    //   Plus 0111 (github-data oauth-datasource catalog row + install_model
+    //   CHECK widen, slice 6c, #3030) = 112.
+    expect(count).toBe(112);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -268,6 +270,7 @@ describe("runMigrations", () => {
         "0108_openapi_generic_catalog.sql",
         "0109_data_candidate_catalog.sql",
         "0110_notion_data_catalog.sql",
+        "0111_github_data_catalog.sql",
       ],
     });
 

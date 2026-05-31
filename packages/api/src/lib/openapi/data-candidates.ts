@@ -25,25 +25,27 @@
  * ## Seeding + resolution
  * Each candidate is a real `plugin_catalog` row (datasource pillar) so it surfaces
  * in `/admin/connections` as its own installable card. The boot seed
- * (`data-candidate-seed.ts`) re-asserts every row idempotently; migration
- * 0109 inserts them on fresh DBs. An install writes a `workspace_plugins` row
+ * (`data-candidate-seed.ts`) re-asserts every row idempotently; migrations
+ * 0109 (stripe-data) / 0110 (notion-data) / 0111 (github-data) insert them on
+ * fresh DBs. An install writes a `workspace_plugins` row
  * under the candidate's {@link DataCandidate.catalogId}; the workspace resolver
  * (`workspace-datasource.ts`) matches those ids alongside `openapi-generic` and
  * attaches the candidate's {@link DataCandidate.quirk} to the resolved
  * {@link import("./datasource").RestDatasource}.
  */
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
+import type { CatalogInstallModel } from "@useatlas/types";
 import type { SupportedAuthKind } from "./catalog";
 import type { PaginationConfig } from "./paginator";
 import type { VendorQuirk } from "./vendor-quirk";
 
 /**
- * A built-in vendor REST datasource, pre-wired over the generic primitive. The
- * `slug` / `catalogId` follow the same `catalog:${slug}` derivation the seeder
- * uses for every catalog row (so `workspace_plugins.catalog_id` FK-targets
- * `catalog:stripe-data`).
+ * Fields shared by every built-in vendor REST datasource, pre-wired over the
+ * generic primitive. The `slug` / `catalogId` follow the same `catalog:${slug}`
+ * derivation the seeder uses for every catalog row (so
+ * `workspace_plugins.catalog_id` FK-targets e.g. `catalog:stripe-data`).
  */
-export interface DataCandidate {
+export interface BaseDataCandidate {
   /** Catalog slug + install-handler dispatch key, e.g. "stripe-data". */
   readonly slug: string;
   /** Stable `plugin_catalog.id` (`catalog:${slug}`), the FK target. */
@@ -54,8 +56,6 @@ export interface DataCandidate {
   readonly description: string;
   /** Pre-filled OpenAPI 3.x spec URL — the admin never pastes this. */
   readonly openapiUrl: string;
-  /** Pre-filled auth kind — the admin only supplies the credential value. */
-  readonly authKind: SupportedAuthKind;
   /**
    * Declarative deviations the generic client applies per request (required
    * static headers / query param-shaping). Omit for a perfectly-generic API.
@@ -63,13 +63,74 @@ export interface DataCandidate {
   readonly quirk?: VendorQuirk;
   /**
    * Default pagination config for the candidate's list operations, resolved
-   * against the SAME `defaultPaginatorRegistry` (no new strategy file). Stripe's
-   * whole list surface uses one cursor dialect, so a single default suffices.
+   * against the SAME `defaultPaginatorRegistry` (no new strategy file).
    * Forward-looking: the live tool calls the un-paginated primitive today
    * (`executeOperationPaged` is dormant, see paginator.test.ts) — this is what
    * wires in when pagination reaches the tool (#2970).
    */
   readonly pagination?: PaginationConfig;
+}
+
+/**
+ * A FORM candidate (Stripe, Notion): the admin pastes a static credential. The
+ * `install_model` is `form`; the install handler pre-fills `openapiUrl` +
+ * `authKind` from here so the admin supplies only the credential value.
+ */
+export interface FormDataCandidate extends BaseDataCandidate {
+  /** Omitted = the default `form` install model. */
+  readonly installModel?: "form";
+  /** Pre-filled auth kind — the admin only supplies the credential value. */
+  readonly authKind: SupportedAuthKind;
+  /**
+   * Never set on a form candidate — its credential is a static form field, not
+   * an OAuth dance. Present as `?: never` so the union makes the both-fields
+   * combination (`authKind` + `credentialMode`) a compile error rather than a
+   * convention the JSDoc only asserts.
+   */
+  readonly credentialMode?: never;
+}
+
+/**
+ * An OAUTH-DATASOURCE candidate (GitHub, v0.0.2 slice 6c #3030): the credential
+ * is acquired via an OAuth dance, not a pasted secret, and minted on demand at
+ * query time. The install model is `oauth-datasource` (a NEW handler family —
+ * see `oauth-datasource-handler.ts`). `credentialMode` tells the workspace
+ * resolver HOW to produce the executable bearer credential.
+ */
+export interface OAuthDatasourceDataCandidate extends BaseDataCandidate {
+  readonly installModel: "oauth-datasource";
+  /**
+   * How the query-time resolver turns the persisted credential into a bearer
+   * token. `github-app-installation` = mint an installation token from the App
+   * JWT + the stored `installation_id` (`github/installation-token.ts`), cached
+   * + re-minted on ~1hr expiry.
+   */
+  readonly credentialMode: "github-app-installation";
+  /**
+   * Never set on an oauth-datasource candidate — its credential comes from the
+   * OAuth dance, not a static `authKind`. `?: never` makes a candidate that
+   * declares both an OAuth credential mode and a static auth kind unrepresentable.
+   */
+  readonly authKind?: never;
+}
+
+/**
+ * A built-in vendor REST datasource. Discriminated on `installModel` — a `form`
+ * candidate carries a static `authKind`; an `oauth-datasource` candidate carries
+ * a `credentialMode` instead (its credential comes from the OAuth dance).
+ */
+export type DataCandidate = FormDataCandidate | OAuthDatasourceDataCandidate;
+
+/** The catalog `install_model` for a candidate (`form` unless overridden). */
+export function candidateInstallModel(candidate: DataCandidate): CatalogInstallModel {
+  return candidate.installModel ?? "form";
+}
+
+/** Narrow to an OAuth-datasource candidate (credential via OAuth, not a form field). */
+export function isOAuthDatasourceCandidate(
+  candidate: DataCandidate,
+): candidate is OAuthDatasourceDataCandidate {
+  return candidate.installModel === "oauth-datasource";
 }
 
 /**
@@ -106,6 +167,28 @@ export const DATA_CANDIDATE_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
 ];
 
 /**
+ * The install-form `config_schema` for an OAUTH-DATASOURCE candidate (github-data,
+ * #3030). DELIBERATELY EMPTY: the credential is acquired via the OAuth dance, not
+ * a form field — the admin only clicks "Connect", so there is nothing to render.
+ * The persisted credential's encryption is driven by a code-resident schema
+ * (`GITHUB_APP_SECRET_FIELDS_SCHEMA`, `installation_id` secret), NOT this catalog
+ * form schema.
+ */
+export const OAUTH_DATASOURCE_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [];
+
+/**
+ * The catalog `config_schema` (admin form) for a candidate. Form candidates share
+ * the credential form; oauth-datasource candidates have no form fields.
+ */
+export function candidateConfigSchema(
+  candidate: DataCandidate,
+): ReadonlyArray<ConfigSchemaField> {
+  return isOAuthDatasourceCandidate(candidate)
+    ? OAUTH_DATASOURCE_CONFIG_SCHEMA
+    : DATA_CANDIDATE_CONFIG_SCHEMA;
+}
+
+/**
  * Stripe — the first data candidate (#3028). Proves three dimensions the
  * candidate set deliberately spans:
  *  - `bearer` auth (the secret key, sent as `Authorization: Bearer …`),
@@ -115,7 +198,7 @@ export const DATA_CANDIDATE_CONFIG_SCHEMA: ReadonlyArray<ConfigSchemaField> = [
  *    top-level `has_more` flag (handled by the strategy's `cursorFromLastItem` +
  *    `hasMorePath`, no new strategy file).
  */
-export const STRIPE_DATA_CANDIDATE: DataCandidate = {
+export const STRIPE_DATA_CANDIDATE: FormDataCandidate = {
   slug: "stripe-data",
   catalogId: "catalog:stripe-data",
   name: "Stripe",
@@ -139,6 +222,47 @@ export const STRIPE_DATA_CANDIDATE: DataCandidate = {
     cursorFromLastItem: true,
     cursorItemField: "id",
     hasMorePath: "has_more",
+  },
+};
+
+/**
+ * GitHub — the OAuth2 data candidate (#3030; the OQ5 deliverable). Proves the
+ * OAuth dimension of the generic primitive:
+ *  - OAuth2 credential acquisition via GitHub's EXISTING App registration (no new
+ *    vendor app) — install handler `oauth-datasource-handler.ts`,
+ *  - `Link`-header pagination — ALREADY a generic strategy (`strategies/link-header.ts`),
+ *    so github-data is a thin wrapper (OQ6): no GitHub-specific walker/paginator/
+ *    validator. The GitHub-ness lives only in the install handler + the
+ *    credential resolver, never the query path.
+ *
+ * The credential is the App `installation_id`; the executable bearer token is
+ * minted on demand from the App JWT (`credentialMode: "github-app-installation"`)
+ * and re-minted transparently on ~1hr expiry — NOT a refresh-token rotation.
+ *
+ * NOTE (generalization watch, #2930 AC): GitHub's published OpenAPI document is
+ * large; probe-on-install fetches + snapshots it into `workspace_plugins.config`.
+ * If the full spec proves too big to snapshot in practice, the follow-up is a
+ * size cap or a curated subset URL — filed rather than forked (the walker/
+ * paginator/validator stay generic).
+ */
+export const GITHUB_DATA_CANDIDATE: OAuthDatasourceDataCandidate = {
+  slug: "github-data",
+  catalogId: "catalog:github-data",
+  name: "GitHub",
+  description:
+    "Query your GitHub organization (repositories, pull requests, issues, …) as a read-only REST " +
+    "datasource. Connects through your GitHub App installation — no token to paste. The agent " +
+    "discovers operations from GitHub's published OpenAPI spec and queries them directly, " +
+    "following Link-header pagination.",
+  openapiUrl:
+    "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+  installModel: "oauth-datasource",
+  credentialMode: "github-app-installation",
+  pagination: {
+    // GitHub list endpoints return a TOP-LEVEL array (no wrapper), so `itemsPath`
+    // is omitted (defaults to the response root). Next-page URL comes from the
+    // RFC 8288 `Link: …; rel="next"` header — the existing generic strategy.
+    strategy: "link-header",
   },
 };
 
@@ -199,6 +323,7 @@ export const NOTION_DATA_CANDIDATE: DataCandidate = {
 /** Every built-in data candidate. Append a new vendor here (the one-line thesis). */
 export const DATA_CANDIDATES: ReadonlyArray<DataCandidate> = [
   STRIPE_DATA_CANDIDATE,
+  GITHUB_DATA_CANDIDATE,
   NOTION_DATA_CANDIDATE,
 ];
 

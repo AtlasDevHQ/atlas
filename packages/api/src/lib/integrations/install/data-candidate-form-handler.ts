@@ -22,7 +22,7 @@ import { z } from "zod";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   DATA_CANDIDATE_CONFIG_SCHEMA,
-  type DataCandidate,
+  type FormDataCandidate,
 } from "@atlas/api/lib/openapi/data-candidates";
 import { FormInstallValidationError } from "./email-form-handler";
 import {
@@ -74,12 +74,12 @@ export type DataCandidateFormData = z.infer<typeof DataCandidateFormDataSchema>;
 export class DataCandidateFormInstallHandler implements FormBasedInstallHandler {
   readonly kind = "form" as const;
 
-  private readonly candidate: DataCandidate;
+  private readonly candidate: FormDataCandidate;
   private readonly newId: () => string;
   private readonly now: () => string;
   private readonly fetchImpl: typeof globalThis.fetch | undefined;
 
-  constructor(candidate: DataCandidate, options: OpenApiGenericFormInstallHandlerOptions = {}) {
+  constructor(candidate: FormDataCandidate, options: OpenApiGenericFormInstallHandlerOptions = {}) {
     this.candidate = candidate;
     this.newId = options.idGenerator ?? (() => crypto.randomUUID());
     this.now = options.now ?? (() => new Date().toISOString());

@@ -600,10 +600,13 @@ function checkManagedAuthMode(errors: DiagnosticError[]): void {
   try {
     resolvePasskeyRpId(process.env, getWebOrigin());
   } catch (err) {
-    errors.push({
-      code: "INVALID_RP_ID",
-      message: err instanceof Error ? err.message : String(err),
-    });
+    const message = err instanceof Error ? err.message : String(err);
+    // Surface in the server log too, not just the diagnostics response —
+    // resolvePasskeyRpId throws (it doesn't log) and the lazy buildPlugins
+    // path buries the same throw under a generic "migration failed" line, so
+    // without this the misconfig is invisible in logs.
+    log.warn({ err: message }, "Invalid WebAuthn rpID for the configured web origin");
+    errors.push({ code: "INVALID_RP_ID", message });
   }
 }
 

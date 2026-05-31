@@ -19,3 +19,10 @@ export const CATEGORY_ROWS: ReadonlyArray<CategoryRow> = [
   { category: "Outdoor",     gmv: "$71,288",  orders: "812"   },
   { category: "Accessories", gmv: "$54,011",  orders: "693"   },
 ];
+
+/**
+ * The canonical demo question. Shared by the hero answer card and the YAML
+ * section's reply pane so the prompt text never drifts between surfaces.
+ */
+export const TOP_CATEGORY_QUESTION =
+  "What's our top-performing category by GMV this month?";

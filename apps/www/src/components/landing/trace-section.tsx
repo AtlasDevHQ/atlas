@@ -23,9 +23,17 @@ export function TraceSection() {
 
       <Trace />
 
-      <div className="mt-4 flex flex-wrap gap-3 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
-        <span className="text-brand">// playback</span>
-        <span>autoplays on scroll · click any step or gate to inspect</span>
+      <div className="mt-4 flex flex-col gap-1.5 font-mono text-[11px] tracking-[0.04em] text-zinc-400">
+        <div className="flex flex-wrap gap-3">
+          <span className="text-brand">// playback</span>
+          <span>autoplays on scroll · click any step or gate to inspect</span>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <span className="text-brand">// rest/openapi</span>
+          <span>
+            the same trace, with a parallel write-gated guard in place of the SQL validators
+          </span>
+        </div>
       </div>
     </section>
   );

@@ -52,7 +52,7 @@ const TRACE_STEPS: ReadonlyArray<TraceStep> = [
     kind: "gate",
     n: 1,
     detail:
-      "Statement parses cleanly to a single SELECT with one CTE. Anything unparseable is rejected before reaching the warehouse.",
+      "Statement parses cleanly to a single SELECT with one CTE. Anything unparseable is rejected before it reaches your datasource.",
   },
   {
     t: 0.146,
@@ -70,7 +70,7 @@ const TRACE_STEPS: ReadonlyArray<TraceStep> = [
     kind: "gate",
     n: 3,
     detail:
-      "Every referenced table is checked against the operator's role. Atlas mirrors warehouse RBAC; if you can't query it directly, you can't query it through Atlas.",
+      "Every referenced table is checked against the operator's role. Atlas mirrors your datasource's RBAC; if you can't query it directly, you can't query it through Atlas.",
   },
   {
     t: 0.174,

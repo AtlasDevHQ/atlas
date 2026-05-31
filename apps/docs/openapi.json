@@ -10439,6 +10439,31 @@
                         ]
                       }
                     },
+                    "restDatasources": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "displayName": {
+                            "type": "string"
+                          },
+                          "groupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "displayName",
+                          "groupId"
+                        ]
+                      }
+                    },
                     "reason": {
                       "type": [
                         "string",
@@ -10453,6 +10478,7 @@
                   },
                   "required": [
                     "groups",
+                    "restDatasources",
                     "reason"
                   ]
                 }
@@ -52103,6 +52129,15 @@
                     "minLength": 1,
                     "description": "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), 'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
                     "example": "daily"
+                  },
+                  "groupId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1,
+                    "description": "Connection group this REST datasource is scoped to. A group id restricts the datasource to conversations whose active environment is that group; null clears the scope back to workspace-global (available in every environment).",
+                    "example": "prod"
                   }
                 }
               }

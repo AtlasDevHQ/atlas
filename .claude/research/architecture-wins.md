@@ -2229,3 +2229,26 @@ The store is an injected `PageCacheStore` interface (async, so the slice-2 Postg
 - **The graph cache is now bounded by live install count**, not install × rediscover, and never serves an uninstalled datasource's shape.
 
 **Category:** Cohesion cleanup — remove a DI seam with no consumer, consolidate duplicated glue into one shared helper, and align two sibling caches on the same tenant-scoped key so neither can drift into a cross-tenant assumption.
+
+## 77. `OAuthDatasourceInstallHandler` — OAuth credential acquisition + datasource persistence as a fourth install shape (slice 6c, #3030)
+
+**Date:** 2026-05-30
+**Issue:** #3030 (v0.0.2 slice 6c — the OQ5 deliverable) — parent #2930, PRD #2868
+**Branch:** feat/v0.0.2-slice-6c-oauth-datasource-github
+
+**Problem:** GitHub-as-datasource needs OAuth2 credential acquisition, but the existing `OAuthPlatformInstallHandler` bakes in the WRONG persistence shape for a datasource: single-instance per `(workspace_id, catalog_id)`, credential to `chat_cache`/a per-plugin store. A datasource OAuth install must be **multi-instance** (`install_id` composite PK, `pillar='datasource'`), write the credential **inline in `workspace_plugins.config`** via selective-field encryption, and **probe-on-install** to cache the `openapi_snapshot` — the `OpenApiGenericFormInstallHandler` shape, but with OAuth acquisition instead of a form. Folding OAuth-datasource into the chat/action OAuth handler would have either contorted its persistence or grown a `pillar`-branch inside one class. Separately, GitHub Apps have no long-lived bearer token: the executable credential is a ~1hr installation token minted from the App JWT — a *credential lifecycle* the form/static handlers don't model.
+
+**Solution:** A fourth install shape, dispatched by a new `oauth-datasource` `install_model` (the dispatch `switch`'s exhaustive `never` branch forces the new case; no silent drift):
+- **`OAuthDatasourceInstallHandler`** owns the datasource-multi-instance persistence path and *borrows* OAuth credential-acquisition primitives — it is not a reuse of `OAuthPlatformInstallHandler` (OQ5 resolution). The HTTP dance (`startInstall`→redirect, `handleCallback`) is method-compatible with the chat/action handler, so the install/callback route drives both through ONE code path; only the handler's persistence differs.
+- **`github-app-oauth.ts`** — the GitHub App ownership-verification primitives (user-code exchange + `/user/installations` walk, the cross-tenant binding guard) extracted from `github-oauth-handler.ts` and parametrized by `platform` + an injected `fetch`. The action handler (`github`) and the datasource handler (`github-data`) now consume ONE verified-ownership implementation instead of two copies — the datasource install inherits the exact threat-model coverage the action install already had.
+- **`github/installation-token.ts`** — a deep module that turns an `installation_id` into a usable bearer credential: sign a short App JWT (RS256), POST to `/app/installations/<id>/access_tokens`, cache the token until shortly before its stated expiry, re-mint transparently afterward. "Cache the shape, mint the secret" — the credential lifecycle lives behind `getGitHubInstallationToken(id)`, and both call sites (install health-check + query-time resolver) are oblivious to JWT signing, expiry math, and HTTP.
+- The query-time resolver (`workspace-datasource.ts`) gained ONE async credential seam (`resolveInstallAuth`): a `github-app-installation` candidate mints→`bearer`; everything else keeps the static decrypt-glue. `buildDatasource` became a pure assembler taking a pre-resolved `ResolvedAuth`, so the sync/async split is contained at the loop, not smeared through the builder.
+- A surfaced primitive gap, fixed not forked: the `link-header` strategy's `itemsPath` is now optional (defaults to the response root), so GitHub's bare-array list endpoints paginate with the existing generic strategy.
+
+**Impact:**
+- **A new install dimension lands as data + one handler class**, not a fork: `github-data` is a ~25-line `DataCandidate` registry entry; the OAuth complexity is isolated in the handler, and the query path reuses the generic walker/paginator/validator/client unchanged (OQ6 — thin wrapper).
+- **The GitHub App install dance has one verified-ownership implementation** across the action and datasource pillars — a future GitHub-App-backed pillar reuses it by passing its slug.
+- **The installation-token lifecycle is one module with one cache**; "re-mints transparently on expiry" is a property of the module, not scattered expiry checks at call sites. App-private-key-in-env never reaches the DB (only `installation_id` does).
+- **A partial install (snapshot good, mint failed) is a first-class state** (`config.status='reconnect_needed'` + `credentialResult.written=false`) the route already maps to a Reconnect affordance — the resolver re-mints regardless, so recovery needs no re-install.
+
+**Category:** Module-deepening — a new install-handler shape that separates "how the credential is acquired" (borrowed OAuth primitives) from "how the datasource is persisted + how its credential is minted at query time" (owned), with the GitHub-specific machinery confined to the install handler + a credential-minting module and never the query path.

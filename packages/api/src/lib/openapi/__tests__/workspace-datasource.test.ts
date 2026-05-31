@@ -17,9 +17,10 @@ import {
 } from "../workspace-datasource";
 import { buildOperationGraph } from "../spec";
 import { buildSnapshot, __resetSnapshotGraphCacheForTests } from "../probe";
+import { __resetSharedSpecCacheForTests, sharedSpecCacheStats } from "../shared-spec-cache";
 import { MOCK_OPENAPI_SPEC } from "@atlas/api/testing/openapi-datasource";
 import { OPENAPI_GENERIC_CATALOG_ID, type OpenApiSnapshot } from "../catalog";
-import { DATA_CANDIDATE_CATALOG_IDS } from "../data-candidates";
+import { DATA_CANDIDATE_CATALOG_IDS, STRIPE_DATA_CANDIDATE } from "../data-candidates";
 
 const graph = buildOperationGraph(MOCK_OPENAPI_SPEC);
 
@@ -42,8 +43,14 @@ function config(overrides: Record<string, unknown> = {}): Record<string, unknown
 
 const queryReturning = (rows: OpenApiInstallRow[]) => async () => rows;
 
-beforeEach(() => __resetSnapshotGraphCacheForTests());
-afterEach(() => __resetSnapshotGraphCacheForTests());
+beforeEach(() => {
+  __resetSnapshotGraphCacheForTests();
+  __resetSharedSpecCacheForTests();
+});
+afterEach(() => {
+  __resetSnapshotGraphCacheForTests();
+  __resetSharedSpecCacheForTests();
+});
 
 describe("resolveWorkspaceRestDatasources", () => {
   it("resolves an install into a RestDatasource (graph + bearer auth + baseUrl)", async () => {
@@ -548,5 +555,55 @@ describe("resolveWorkspaceRestDatasources — github-data (oauth-datasource)", (
       },
     });
     expect(result).toEqual([]);
+  });
+});
+
+describe("shared cross-workspace spec cache (#2970)", () => {
+  /** A stripe-data (shareable data-candidate) install row for a workspace. */
+  const stripeRow = (): OpenApiInstallRow => ({
+    install_id: "stripe-1",
+    catalog_id: STRIPE_DATA_CANDIDATE.catalogId,
+    config: config(),
+  });
+
+  it("two workspaces on the same public candidate share ONE normalized graph", async () => {
+    const a = await resolveWorkspaceRestDatasources("org-1", { query: queryReturning([stripeRow()]) });
+    const b = await resolveWorkspaceRestDatasources("org-2", { query: queryReturning([stripeRow()]) });
+
+    expect(a[0].graph.operations.has("listWidgets")).toBe(true);
+    // Referential identity ⇒ the (large) document was normalized exactly once and
+    // reused across both workspaces — the whole point of the shared cache.
+    expect(b[0].graph).toBe(a[0].graph);
+    // One identity, one catalog cached — not one entry per workspace.
+    expect(sharedSpecCacheStats().identities).toBe(1);
+    expect(sharedSpecCacheStats().catalogs).toBe(1);
+  });
+
+  it("a GENERIC install is NEVER shared — each workspace normalizes its own graph", async () => {
+    const genericRow = (): OpenApiInstallRow => ({
+      install_id: "gen-1",
+      catalog_id: OPENAPI_GENERIC_CATALOG_ID,
+      config: config(),
+    });
+    const a = await resolveWorkspaceRestDatasources("org-1", { query: queryReturning([genericRow()]) });
+    const b = await resolveWorkspaceRestDatasources("org-2", { query: queryReturning([genericRow()]) });
+
+    expect(a[0].graph.operations.has("listWidgets")).toBe(true);
+    // Distinct objects: the per-install cache keys by (workspace, install, probedAt),
+    // and a generic admin-supplied spec must never leak across tenants.
+    expect(b[0].graph).not.toBe(a[0].graph);
+    // The shared cache stayed empty — a generic install never enters it.
+    expect(sharedSpecCacheStats().identities).toBe(0);
+  });
+
+  it("per-workspace base_url_override composes with the shared graph", async () => {
+    const a = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([{ ...stripeRow(), config: config({ base_url_override: "https://eu.example.com/api" }) }]),
+    });
+    const b = await resolveWorkspaceRestDatasources("org-2", { query: queryReturning([stripeRow()]) });
+
+    expect(a[0].graph).toBe(b[0].graph); // same shared graph
+    expect(a[0].baseUrl).toBe("https://eu.example.com/api"); // but workspace-A's own override
+    expect(b[0].baseUrl).toBe("https://widgets.example.com/api"); // workspace-B uses servers[0]
   });
 });

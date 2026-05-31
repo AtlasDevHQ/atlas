@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
+import { __resetSharedSpecCacheForTests } from "@atlas/api/lib/openapi/shared-spec-cache";
 import { DataCandidateFormDataSchema } from "../data-candidate-form-handler";
 import { STRIPE_DATA_CANDIDATE } from "@atlas/api/lib/openapi/data-candidates";
 
@@ -65,6 +66,12 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
     delete process.env.BETTER_AUTH_SECRET;
     delete process.env.ATLAS_DEPLOY_MODE;
     _resetEncryptionKeyCache();
+    // #2970: a data candidate's spec is fetched through the SHARED cross-workspace
+    // cache (`probeShared`), a process-global singleton. Reset it between tests so
+    // an earlier Stripe install doesn't serve a cached spec to the next — which
+    // would short-circuit the network and leave `probedUrls` empty (singleton-leak
+    // discipline, CLAUDE.md). Each test then observes its own probe.
+    __resetSharedSpecCacheForTests();
     // Mock every export the install graph might import (partial mock.module trips
     // "Export not found" on a transitive import — CLAUDE.md).
     mock.module("@atlas/api/lib/db/internal", () => ({

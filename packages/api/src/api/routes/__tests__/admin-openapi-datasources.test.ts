@@ -183,6 +183,10 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
       if (probeShouldFail) throw new OpenApiProbeError("unreachable", "probe boom");
       return { doc: { openapi: "3.1.0" }, graph: emptyGraph };
     },
+    // The credential-free conditional probe (#2970) — mocked for completeness
+    // (the rediscover route under test is generic-only and never reaches it; the
+    // "mock all exports" rule requires it so `shared-spec-cache`'s import resolves).
+    conditionalProbe: async () => ({ notModified: false, doc: { openapi: "3.1.0" }, graph: emptyGraph }),
     buildSnapshot: (doc: unknown, _g: unknown, probedAt: string) => ({
       probedAt,
       title: "Widget API",

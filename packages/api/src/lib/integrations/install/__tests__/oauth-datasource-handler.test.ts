@@ -22,6 +22,7 @@ import type { WorkspaceId } from "@useatlas/types";
 import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 import { decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import { __resetInstallationTokenCacheForTests } from "@atlas/api/lib/github/installation-token";
+import { __resetSharedSpecCacheForTests } from "@atlas/api/lib/openapi/shared-spec-cache";
 import { mintOAuthStateToken } from "../oauth-state-token";
 import {
   OAuthDatasourceInstallHandler,
@@ -141,6 +142,10 @@ beforeEach(() => {
   delete process.env.ATLAS_DEPLOY_MODE;
   _resetEncryptionKeyCache();
   __resetInstallationTokenCacheForTests();
+  // #2970: the shared spec cache is a process-global singleton — reset it so a
+  // github-data install in one test never serves a cached spec to the next
+  // (order-independence per the CLAUDE.md singleton-leak discipline).
+  __resetSharedSpecCacheForTests();
 
   mock.module("@atlas/api/lib/db/internal", () => ({
     internalQuery: async (sql: string, params: unknown[]) => {

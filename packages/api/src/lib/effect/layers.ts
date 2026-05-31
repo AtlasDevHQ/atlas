@@ -1439,6 +1439,29 @@ export function makeSchedulerLive(
         }),
       );
 
+      // Start shared OpenAPI spec refresh scheduler (#2970, Tier-1) — periodic
+      // conditional-GET of the cross-workspace public-spec cache (Stripe/GitHub/
+      // Notion). A `304` re-arms freshness for every workspace for free; a `200`
+      // re-normalizes the changed doc once. Process-local cache (no DB), so it's
+      // safe to start unconditionally; an empty cache makes the cycle a no-op.
+      yield* Effect.tryPromise({
+        try: async () => {
+          const { startOpenApiSpecRefreshScheduler } = await import(
+            "@atlas/api/lib/scheduler/openapi-spec-refresh"
+          );
+          startOpenApiSpecRefreshScheduler();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { err: errorMessage(err) },
+            "Shared OpenAPI spec refresh scheduler failed to start",
+          );
+          return Effect.void;
+        }),
+      );
+
       // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
       const oauthTick = Effect.tryPromise({
         try: async () => {
@@ -2375,6 +2398,27 @@ export function makeSchedulerLive(
           }).pipe(
             Effect.catchAll((err) => {
               log.warn({ err: errorMessage(err) }, "Failed to stop BYOT catalog refresh scheduler");
+              return Effect.void;
+            }),
+          );
+
+          // Stop the shared OpenAPI spec refresh scheduler (#2970) symmetrically —
+          // clear its setInterval so the `unref()`'d handle is released and a
+          // test process (or a re-created ManagedRuntime) exits cleanly.
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { stopOpenApiSpecRefreshScheduler } = await import(
+                "@atlas/api/lib/scheduler/openapi-spec-refresh"
+              );
+              stopOpenApiSpecRefreshScheduler();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Failed to stop shared OpenAPI spec refresh scheduler",
+              );
               return Effect.void;
             }),
           );

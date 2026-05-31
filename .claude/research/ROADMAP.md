@@ -18,17 +18,9 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ---
 
-## Next: v0.0.3 — Spec Lifecycle
+## Next
 
-Successor to v0.0.2 ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58)), split out per [#3013](https://github.com/AtlasDevHQ/atlas/issues/3013) to keep v0.0.2 inside its PRD contract. Keeps an installed OpenAPI datasource's view of its upstream current — refresh cadence, auto re-discovery, drift detection, and a shared cross-workspace spec cache so a public upstream is downloaded once.
-
-- [x] **Per-install spec refresh interval** ([#2977](https://github.com/AtlasDevHQ/atlas/issues/2977)) — customer-configurable cadence + "Refresh now". Shipped in [#3002](https://github.com/AtlasDevHQ/atlas/pull/3002).
-- [x] **Structured drift diff** ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) — added/removed/changed-operation changeset on (re-)discovery. Shipped in [#3041](https://github.com/AtlasDevHQ/atlas/pull/3041).
-- [x] **Shared cross-workspace spec/graph cache** ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)) — public upstream (Stripe/GitHub/Notion) downloaded + normalized once across workspaces, refreshed by conditional GET; the credential is never shared. Shipped in [#3042](https://github.com/AtlasDevHQ/atlas/pull/3042).
-- [x] **Scheduler-driven auto re-discovery** ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)) — background fiber walks due installs and re-probes on the configured interval; Tier-2 per-install loop sharing the manual "Refresh now" core. Shipped in [#3046](https://github.com/AtlasDevHQ/atlas/pull/3046).
-- [x] **Breaking-change drift signal** ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)) — surface when scheduled re-discovery removes or changes operations the agent depends on. Shipped in [#3049](https://github.com/AtlasDevHQ/atlas/pull/3049).
-
-All 5 shipped ahead of a formal kickoff — promoted from "Planned tags" on v0.0.2 closeout (2026-05-31) since work was already underway. Feature-complete and ready to tag — the one pre-tag follow-up ([#3050](https://github.com/AtlasDevHQ/atlas/issues/3050) — breaking-change classifier over-flagged required children of optional request bodies/refs) shipped in [#3051](https://github.com/AtlasDevHQ/atlas/pull/3051).
+No `v0.0.x` dev tag is currently in flight. **v0.0.3 — Spec Lifecycle** shipped 2026-05-31 (archived below); cut the prod tag with `/release v0.0.3`. The next dev tag is undecided — run `/next` to promote a [Planned tag](#planned-tags) or a cluster out of the [Architecture Backlog](https://github.com/AtlasDevHQ/atlas/milestone/49). The active build right now is the **Staging environment** track (below), which ships independently of the tag train.
 
 ---
 

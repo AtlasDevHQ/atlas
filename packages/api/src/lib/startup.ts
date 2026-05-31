@@ -12,6 +12,8 @@ import { detectDBType, resolveDatasourceUrl } from "./db/connection";
 import { maskConnectionUrl } from "./security";
 import { getDefaultProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
+import { resolvePasskeyRpId } from "./auth/rpid";
+import { getWebOrigin } from "./web-origin";
 import { createLogger } from "./logger";
 import { errorMessage } from "./audit/error-scrub";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./semantic/files";
@@ -24,6 +26,7 @@ export type DiagnosticCode =
   | "WEAK_AUTH_SECRET" | "INVALID_JWKS_URL" | "MISSING_AUTH_ISSUER"
   | "MISSING_AUTH_PREREQ"
   | "ACTIONS_REQUIRE_AUTH" | "ACTIONS_MISSING_CREDENTIALS"
+  | "INVALID_RP_ID"
   | "INVALID_CONFIG";
 
 export interface DiagnosticError {
@@ -584,6 +587,26 @@ function checkManagedAuthMode(errors: DiagnosticError[]): void {
       _startupWarnings.push(msg);
     }
     log.warn(msg);
+  }
+
+  // WebAuthn rpID validity (#3045). The passkey plugin's rpID throw lives in
+  // `buildPlugins()`, which only runs lazily (first managed-auth request / boot
+  // migration, where the migration path catches the throw into a generic log).
+  // Resolve it here too so an rpID that can't be valid for the configured web
+  // origin surfaces as an eager, actionable startup diagnostic (on /health and
+  // route 503s) instead of an opaque browser-side error later. resolvePasskeyRpId
+  // is the single source of truth — it throws only on an explicit-but-invalid
+  // ATLAS_RPID; the derived path and a null origin never throw.
+  try {
+    resolvePasskeyRpId(process.env, getWebOrigin());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Surface in the server log too, not just the diagnostics response —
+    // resolvePasskeyRpId throws (it doesn't log) and the lazy buildPlugins
+    // path buries the same throw under a generic "migration failed" line, so
+    // without this the misconfig is invisible in logs.
+    log.warn({ err: message }, "Invalid WebAuthn rpID for the configured web origin");
+    errors.push({ code: "INVALID_RP_ID", message });
   }
 }
 

@@ -69,7 +69,7 @@ FLUSH PRIVILEGES;
 Atlas enforces SELECT-only queries at the application level, but a read-only user provides defense-in-depth.
 
 <Callout type="info">
-For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-specific setup in [Connect Your Data](/getting-started/connect-your-data). The database preparation steps (creating users, granting permissions) apply to all deployment modes. To connect a REST API instead — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service — see the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic); add it from **Admin &gt; Connections** with a spec URL and a credential.
+For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-specific setup in [Connect Your Data](/getting-started/connect-your-data). The database preparation steps (creating users, granting permissions) apply to all deployment modes. To connect a REST API instead — Stripe, GitHub, Notion, Twenty, or any OpenAPI 3.x service — see the [OpenAPI (Generic REST) datasource](/plugins/datasources/openapi-generic); add it from **Admin &gt; Connections** (a credential for pre-wired vendors, or a spec URL plus credential for any other API).
 </Callout>
 </Step>
 

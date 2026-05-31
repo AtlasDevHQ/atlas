@@ -95,12 +95,13 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 // Inject a fixed routing context — three members, primary us-int.
 mock.module("@atlas/api/lib/env-routing/lookup", () => ({
-  loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) => ({
-    groupId: "prod",
-    members: ["us-int", "eu", "apac"],
-    primaryMember: "us-int",
-    currentMember,
-  }),
+  loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
+    // A sentinel connection that resolves to NO group (1×1, ungrouped) so the
+    // #3044 "no environment context" path is reachable; everything else is the
+    // 3-member `prod` group the scope-routing tests rely on.
+    currentMember === "ungrouped-conn"
+      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember }
+      : { groupId: "prod", members: ["us-int", "eu", "apac"], primaryMember: "us-int", currentMember },
 }));
 
 mock.module("@atlas/api/lib/cache/index", () => ({
@@ -277,8 +278,8 @@ describe("buildSystemParam — scope guidance section (slice 2)", () => {
 });
 
 describe("buildRestDatasourceScopeNote — REST env-scope framing (#3044)", () => {
-  it("frames a workspace-global datasource as not constrained by the pin (multi-env)", () => {
-    const note = buildRestDatasourceScopeNote({}, { inMultiEnvGroup: true });
+  it("frames a workspace-global datasource as not constrained by the pin (bound to an env)", () => {
+    const note = buildRestDatasourceScopeNote({}, { boundToEnvironment: true });
     expect(note).toContain("workspace-global");
     expect(note).toContain("NOT");
     expect(note.toLowerCase()).toContain("environment selection/pin");
@@ -286,16 +287,16 @@ describe("buildRestDatasourceScopeNote — REST env-scope framing (#3044)", () =
     expect(note).toContain("Do not describe the conversation as limited to one environment");
   });
 
-  it("softens the framing in a single-env workspace (no pin to contrast)", () => {
-    const note = buildRestDatasourceScopeNote({}, { inMultiEnvGroup: false });
+  it("softens the framing in a single-connection workspace (no environment to contrast)", () => {
+    const note = buildRestDatasourceScopeNote({}, { boundToEnvironment: false });
     expect(note).toContain("workspace-global");
     expect(note).toContain("available in every environment");
-    // No pin exists, so the contrast clause is omitted.
+    // No environment selection exists, so the contrast clause is omitted.
     expect(note).not.toContain("NOT constrained");
   });
 
   it("frames a scoped datasource as bound to its environment group", () => {
-    const note = buildRestDatasourceScopeNote({ groupId: "prod" }, { inMultiEnvGroup: true });
+    const note = buildRestDatasourceScopeNote({ groupId: "prod" }, { boundToEnvironment: true });
     expect(note).toContain("`prod`");
     expect(note).toContain("only reachable");
     expect(note).not.toContain("workspace-global");
@@ -304,7 +305,7 @@ describe("buildRestDatasourceScopeNote — REST env-scope framing (#3044)", () =
   it("a provided restRepresentation is appended to the system prompt verbatim", () => {
     // The run loop prepends buildRestDatasourceScopeNote() to each datasource's
     // section; buildSystemParam appends the whole restRepresentation string.
-    const scopeNote = buildRestDatasourceScopeNote({}, { inMultiEnvGroup: true });
+    const scopeNote = buildRestDatasourceScopeNote({}, { boundToEnvironment: true });
     const rep = `${scopeNote}\n\n### REST Datasource\nuse executeRestOperation…`;
     const result = buildSystemParam(
       "openai",
@@ -460,7 +461,7 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
   });
 
-  it("threads the conversation's connectionGroupId into the REST resolver as activeGroupId", async () => {
+  it("threads the conversation's explicit connectionGroupId into the REST resolver", async () => {
     await withRequestContext(
       {
         requestId: "rest-1",
@@ -475,11 +476,26 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
     expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod" });
   });
 
-  it("passes activeGroupId: null (NOT undefined) when the conversation has no active group", async () => {
+  it("infers the active group from connectionId when connectionGroupId is omitted (Codex review)", async () => {
+    // A legacy / API caller sends only connectionId. The connection resolves to
+    // group `prod`, so its environment-local REST datasources stay reachable
+    // instead of being filtered out as if the turn were ungrouped.
     await withRequestContext(
       {
         requestId: "rest-2",
         connectionId: "us-int",
+        user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
+      },
+      () => runAgent({ messages: userMessages("hello") }),
+    );
+    expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod" });
+  });
+
+  it("passes activeGroupId: null (NOT undefined) when the connection resolves to no group", async () => {
+    await withRequestContext(
+      {
+        requestId: "rest-3",
+        connectionId: "ungrouped-conn",
         user: { id: "u1", mode: "managed", label: "u@test", role: "member", activeOrganizationId: "org-1" },
       },
       () => runAgent({ messages: userMessages("hello") }),

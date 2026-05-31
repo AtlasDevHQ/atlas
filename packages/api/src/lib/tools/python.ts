@@ -439,18 +439,27 @@ export interface ExecutePythonDeps {
  * sandbox egress is a follow-up — the read path the slice ACs exercise is the
  * host-side tool).
  */
-export function defaultResolveRestDatasource(): Promise<RestDatasource | null> {
+export async function defaultResolveRestDatasource(): Promise<RestDatasource | null> {
   const reqCtx = getRequestContext();
   const orgId = reqCtx?.user?.activeOrganizationId;
-  if (!orgId) return Promise.resolve(null);
+  if (!orgId) return null;
   // #3044 — keep the sandbox egress allowlist in lockstep with the agent's
   // in-scope datasources: a datasource scoped to a different environment group
-  // must not be reachable from Python either. `null` (no active group) admits
-  // only workspace-global datasources.
-  const activeGroupId = reqCtx?.connectionGroupId ?? null;
-  return import("@atlas/api/lib/openapi/workspace-datasource").then((m) =>
-    m.resolveWorkspacePrimaryRestDatasource(orgId, { activeGroupId }),
+  // must not be reachable from Python either. Resolve the active environment the
+  // same way the agent loop does — the explicit `connectionGroupId`, else the
+  // group inferred from the pinned connection's membership — so an
+  // environment-local REST API stays reachable for legacy connectionId-only
+  // callers. `null` (no environment context) admits only workspace-global ones.
+  let activeGroupId = reqCtx?.connectionGroupId ?? null;
+  if (activeGroupId === null && reqCtx?.connectionId) {
+    const { loadGroupRoutingContext } = await import("@atlas/api/lib/env-routing/lookup");
+    const ctx = await loadGroupRoutingContext(orgId, reqCtx.connectionId);
+    activeGroupId = ctx.groupId ?? null;
+  }
+  const { resolveWorkspacePrimaryRestDatasource } = await import(
+    "@atlas/api/lib/openapi/workspace-datasource"
   );
+  return resolveWorkspacePrimaryRestDatasource(orgId, { activeGroupId });
 }
 
 /**

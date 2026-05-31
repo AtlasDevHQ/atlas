@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // Controllable request context (default: none).
 let mockReqCtx:
-  | { user?: { activeOrganizationId?: string }; connectionGroupId?: string }
+  | { user?: { activeOrganizationId?: string }; connectionGroupId?: string; connectionId?: string }
   | undefined;
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -24,6 +24,15 @@ mock.module("@atlas/api/lib/logger", () => ({
 mock.module("@atlas/api/lib/tracing", () => ({
   withSpan: async (_n: string, _a: unknown, fn: () => Promise<unknown>) => fn(),
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
+}));
+
+// The connection→group inference: a connection in `prod` resolves to it, an
+// `ungrouped-conn` resolves to no group.
+mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+  loadGroupRoutingContext: async (_orgId: string | undefined, currentMember: string) =>
+    currentMember === "ungrouped-conn"
+      ? { members: ["ungrouped-conn"], primaryMember: "ungrouped-conn", currentMember }
+      : { groupId: "prod", members: [currentMember], primaryMember: currentMember, currentMember },
 }));
 
 // Capture how the egress path calls the primary resolver. Mock every export the
@@ -56,13 +65,25 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
   });
 
-  it("passes activeGroupId: null (NOT undefined) when no group is bound", async () => {
-    mockReqCtx = { user: { activeOrganizationId: "org-1" } };
+  it("infers the active group from connectionId when connectionGroupId is omitted", async () => {
+    mockReqCtx = { user: { activeOrganizationId: "org-1" }, connectionId: "us-prod" };
+    await defaultResolveRestDatasource();
+    expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "prod" });
+  });
+
+  it("passes activeGroupId: null (NOT undefined) when the connection resolves to no group", async () => {
+    mockReqCtx = { user: { activeOrganizationId: "org-1" }, connectionId: "ungrouped-conn" };
     await defaultResolveRestDatasource();
     expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: null });
     // The distinction is load-bearing: `undefined` would disable scoping in the
     // resolver and re-leak a scoped datasource into the sandbox egress allowlist.
     expect((primaryCalls[0]!.deps as { activeGroupId: unknown }).activeGroupId).not.toBeUndefined();
+  });
+
+  it("passes activeGroupId: null when there is no group and no connection to infer from", async () => {
+    mockReqCtx = { user: { activeOrganizationId: "org-1" } };
+    await defaultResolveRestDatasource();
+    expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: null });
   });
 
   it("returns null without resolving when there is no active org", async () => {

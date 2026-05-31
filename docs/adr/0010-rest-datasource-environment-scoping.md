@@ -30,7 +30,7 @@ An admin **may optionally scope** a REST datasource to a connection group by ass
 
 A REST datasource is **in-scope for a chat turn** iff:
 
-```
+```text
 groupId == null              // workspace-global — always available
   OR groupId === activeGroupId  // scoped — available only when its group is active
 ```

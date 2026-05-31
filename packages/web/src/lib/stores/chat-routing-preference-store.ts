@@ -18,10 +18,20 @@ import type { ConversationRoutingMode } from "@useatlas/types/conversation";
  * preference is the seed; a stored selection that no longer matches an available
  * group/member is ignored (the picker falls back to the default seed).
  *
+ * **Workspace-scoped (#3044 Codex review).** `localStorage` is one bucket for the
+ * whole browser, but group/connection ids are only unique *within* a workspace —
+ * two workspaces can both have a `prod` group with a `warehouse` connection. The
+ * stored `workspaceId` lets the consumer ignore a preference left by a different
+ * workspace (SaaS org switch / shared browser) instead of seeding a new chat with
+ * the wrong environment. `null` workspaceId = self-hosted / no active org (a
+ * single workspace, so it always matches).
+ *
  * Follows the `tour-store.ts` pattern: `persist` + `createJSONStorage(localStorage)`,
  * `partialize` to the persisted fields only.
  */
 export interface ChatRoutingPreference {
+  /** Workspace (active org) this preference belongs to. `null` = self-hosted / no org. */
+  readonly workspaceId: string | null;
   /** Active connection group id, or null when none was chosen. */
   readonly groupId: string | null;
   /** Pinned member / execution-target connection id, or null. */
@@ -38,6 +48,7 @@ interface ChatRoutingPreferenceStore extends ChatRoutingPreference {
 }
 
 const EMPTY: ChatRoutingPreference = {
+  workspaceId: null,
   groupId: null,
   connectionId: null,
   routingMode: null,
@@ -49,6 +60,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
       ...EMPTY,
       setPreference: (next) =>
         set({
+          workspaceId: next.workspaceId,
           groupId: next.groupId,
           connectionId: next.connectionId,
           routingMode: next.routingMode,
@@ -59,6 +71,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
       name: "atlas:chat:routing-preference",
       storage: createJSONStorage(() => localStorage),
       partialize: (s) => ({
+        workspaceId: s.workspaceId,
         groupId: s.groupId,
         connectionId: s.connectionId,
         routingMode: s.routingMode,

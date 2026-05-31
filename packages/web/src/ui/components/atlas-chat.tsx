@@ -137,6 +137,7 @@ export function AtlasChat() {
   // #3044 — persisted env-picker preference so a reload restores the user's
   // last selection instead of re-seeding from the first group. Select fields
   // individually so the store object identity doesn't churn effect deps.
+  const prefWorkspaceId = useChatRoutingPreferenceStore((s) => s.workspaceId);
   const prefGroupId = useChatRoutingPreferenceStore((s) => s.groupId);
   const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
   const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
@@ -179,6 +180,10 @@ export function AtlasChat() {
   const managedSession = authClient.useSession();
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
+  // #3044 — the active workspace, used to scope the persisted routing preference
+  // so a different workspace (SaaS org switch / shared browser) can't seed a new
+  // chat with this one's environment. `null` for self-hosted / no active org.
+  const activeWorkspaceId = managedSession.data?.session?.activeOrganizationId ?? null;
 
   // #2345 — populate the env/member picker from the user-facing
   // `/api/v1/me/connection-groups` route. Fetched only once auth has
@@ -201,7 +206,11 @@ export function AtlasChat() {
     if (selectedConnectionId !== null) return;
     if (envGroupsQuery.groups.length === 0) return;
 
-    const prefGroup = prefGroupId
+    // Only restore a preference that belongs to the active workspace — a stored
+    // selection from another workspace must not seed this one (#3044), even when
+    // group/connection ids collide across workspaces.
+    const prefMatchesWorkspace = prefWorkspaceId === activeWorkspaceId;
+    const prefGroup = prefMatchesWorkspace && prefGroupId
       ? envGroupsQuery.groups.find((g) => g.id === prefGroupId)
       : undefined;
     const prefMember = prefGroup?.members.find(
@@ -221,9 +230,11 @@ export function AtlasChat() {
   }, [
     envGroupsQuery.groups,
     selectedConnectionId,
+    prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
     prefRoutingMode,
+    activeWorkspaceId,
   ]);
 
   const convos = useConversations({
@@ -604,8 +615,14 @@ export function AtlasChat() {
                       setSelectedGroupId(groupId);
                       setSelectedConnectionId(connectionId);
                       setSelectedRoutingMode(routingMode);
-                      // #3044 — remember this pick so a reload restores it.
-                      setRoutingPreference({ groupId, connectionId, routingMode });
+                      // #3044 — remember this pick (scoped to the active
+                      // workspace) so a reload restores it.
+                      setRoutingPreference({
+                        workspaceId: activeWorkspaceId,
+                        groupId,
+                        connectionId,
+                        routingMode,
+                      });
                     }}
                   />
                   <Button

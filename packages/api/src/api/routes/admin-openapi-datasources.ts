@@ -44,6 +44,7 @@ import {
 } from "@atlas/api/lib/openapi/probe";
 import { REPRESENTATION_MODES } from "@atlas/api/lib/openapi/representation";
 import { normalizeGroupId } from "@atlas/api/lib/openapi/datasource";
+import { verifyGroupBelongsToOrg } from "@atlas/api/lib/conversations";
 import {
   coerceSpecRefreshInterval,
   normalizeSpecRefreshInterval,
@@ -560,11 +561,35 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
     }
     if (groupId !== undefined) {
       // #3044 — assign (string) or clear (null → JSON null, read back as
-      // workspace-global) the cross-environment scope. The group id is free-form
-      // (mirrors SQL connections' `config.group_id` JSONB string); the admin UI
-      // sources it from the workspace's existing groups. `normalizeGroupId`
+      // workspace-global) the cross-environment scope. `normalizeGroupId`
       // collapses null / "" / whitespace to the workspace-global clear.
       const value = normalizeGroupId(groupId);
+      // A non-null assignment must reference an environment group that actually
+      // exists in this workspace — otherwise the new scope filter hides the
+      // datasource from every real environment until someone notices (Codex
+      // review on #3048). Mirror the chat route's `verifyGroupBelongsToOrg`
+      // org-scoped existence guard; clearing to workspace-global is never gated.
+      if (value !== null) {
+        const verdict = await verifyGroupBelongsToOrg(value, orgId);
+        if (verdict === "not_found") {
+          return c.json(
+            {
+              error: "invalid_connection_group",
+              message: `Environment group "${value}" doesn't exist in this workspace. Create it by assigning a connection to it first, or pick an existing environment.`,
+              requestId,
+            },
+            400,
+          );
+        }
+        if (verdict === "error") {
+          return c.json(
+            { error: "internal_error", message: "Could not verify the environment group. Please retry.", requestId },
+            500,
+          );
+        }
+        // "ok" → exists; "no_db" → can't check (self-hosted without internal DB,
+        // where REST installs can't exist anyway) → allow the write.
+      }
       updates.group_id = value;
       changed.groupId = value;
     }

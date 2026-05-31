@@ -247,13 +247,16 @@ The result of a fanned-out query carries an \`envContributions\` array describin
  * pin. Making the reach explicit means the model never implies the conversation
  * is scoped tighter than it is.
  *
- * Pure. `inMultiEnvGroup` toggles the extra "not constrained by the pin"
- * emphasis — in a single-environment workspace there is no pin to contrast
- * against, so the softer phrasing avoids implying a selection that isn't there.
+ * Pure. `boundToEnvironment` toggles the extra "not constrained by the pin"
+ * emphasis — it is true whenever the conversation targets a specific environment
+ * group (an explicit picker selection or the group resolved from the pinned
+ * connection, including the 0062 single-member-group shape). In a true
+ * single-connection workspace there is no environment to contrast against, so the
+ * softer phrasing avoids implying a selection that isn't there.
  */
 export function buildRestDatasourceScopeNote(
   ds: { readonly groupId?: string },
-  opts: { readonly inMultiEnvGroup: boolean },
+  opts: { readonly boundToEnvironment: boolean },
 ): string {
   if (ds.groupId) {
     return (
@@ -262,7 +265,7 @@ export function buildRestDatasourceScopeNote(
       `while that group is the conversation's active environment.`
     );
   }
-  const pinClause = opts.inMultiEnvGroup
+  const pinClause = opts.boundToEnvironment
     ? " It is **NOT** constrained by this conversation's environment selection/pin — " +
       "querying it reaches the same upstream account regardless of which SQL environment is active. " +
       "Do not describe the conversation as limited to one environment when answering from it."
@@ -918,8 +921,10 @@ export async function runAgent({
   // Resolved BEFORE the REST block (#3044) so each REST datasource's
   // representation can be framed against whether a multi-env pin exists.
   let scopeRoutingContext: ScopeRoutingContext | undefined;
+  let resolvedGroupId: string | undefined;
   if (connectionId) {
     const ctx = await loadGroupRoutingContext(orgId, connectionId);
+    resolvedGroupId = ctx.groupId;
     if (ctx.members.length > 1) {
       scopeRoutingContext = {
         members: ctx.members,
@@ -928,9 +933,17 @@ export async function runAgent({
       };
     }
   }
-  // A multi-env group means a pin exists that a workspace-global REST
-  // datasource silently escapes — the framing must call that out (#3044).
-  const inMultiEnvGroup = scopeRoutingContext !== undefined;
+  // #3044 — the environment this turn is bound to: the picker's explicit
+  // `connectionGroupId`, else (legacy / API callers that send only
+  // `connectionId`) the group resolved from the pinned connection's membership.
+  // REST datasources scoped to it are reachable; a workspace-global one escapes
+  // it. `null` ⇒ no environment context → only workspace-global datasources.
+  const activeRestGroupId = connectionGroupId ?? resolvedGroupId ?? null;
+  // The chat targets a specific environment whenever a group resolved — a
+  // multi-member group OR a single-member environment the user selected from a
+  // multi-environment picker (the 0062 1:1 backfill shape). A workspace-global
+  // REST datasource escapes that selection, so the framing must say so.
+  const chatBoundToEnvironment = activeRestGroupId !== null;
 
   // #2926 — REST datasources (slice 2: per-workspace `openapi-generic` installs).
   // Resolve every REST datasource the workspace has installed (Twenty, Stripe,
@@ -943,14 +956,15 @@ export async function runAgent({
   //
   // #3044 — scope filter: a datasource scoped to a different environment group
   // resolves out (the resolver keeps workspace-global + active-group matches).
-  // `connectionGroupId ?? null` ⇒ a chat with no active group sees only
-  // workspace-global datasources; a scoped one never leaks past its environment.
+  // `activeRestGroupId` is the explicit OR connection-inferred active group, so a
+  // chat whose environment is known (even via connectionId alone) still reaches
+  // that environment's scoped REST datasources; a scoped one never leaks past it.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
   try {
     const restDatasources = orgId
       ? await resolveWorkspaceRestDatasources(orgId, {
-          activeGroupId: connectionGroupId ?? null,
+          activeGroupId: activeRestGroupId,
         })
       : [];
     if (restDatasources.length > 0) {
@@ -980,7 +994,9 @@ export async function runAgent({
         });
         // #3044 — prepend the environment-scope banner so the agent never
         // implies the conversation is constrained tighter than it is.
-        const scopeNote = buildRestDatasourceScopeNote(ds, { inMultiEnvGroup });
+        const scopeNote = buildRestDatasourceScopeNote(ds, {
+          boundToEnvironment: chatBoundToEnvironment,
+        });
         sections.push(`${scopeNote}\n\n${rep.promptContext}`);
         if (rep.unresolvedResources.length > 0) {
           log.warn(

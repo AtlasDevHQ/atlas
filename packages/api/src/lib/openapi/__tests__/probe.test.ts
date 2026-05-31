@@ -202,6 +202,19 @@ describe("probeSpec — credential-host gate (#3034)", () => {
     expect(calls[0].url).toContain("api_key=secret-query-key");
   });
 
+  it("withholds the credential when the API base host is an empty-host URL (opaque scheme, fail-safe)", async () => {
+    // `urlHost` collapses both unparseable AND empty-host (opaque-scheme) URLs to
+    // null, so two empty hosts must never compare equal and send the credential —
+    // the gate stays fail-safe without leaning on an upstream scheme check.
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://spec.example.com/o.json",
+      { kind: "bearer", token: "tok" },
+      { fetchImpl, apiBaseUrl: "data:text/plain,not-a-host" },
+    );
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
   it("withholds an apikey-header credential from a cross-origin spec host", async () => {
     const { fetchImpl, calls } = capturingFetch();
     await probeSpec(

@@ -115,10 +115,18 @@ export interface ProbeOptions {
   readonly apiBaseUrl?: string;
 }
 
-/** A URL's host (`hostname[:port]`, already lowercased by the URL parser), or `null` when unparseable. */
+/**
+ * A URL's host (`hostname[:port]`, already lowercased by the URL parser), or
+ * `null` when the URL is unparseable OR has no host (opaque-scheme URLs like
+ * `data:` / `javascript:` parse successfully with an empty host). Collapsing both
+ * "unparseable" and "empty host" to `null` keeps {@link probeCredentialAllowed}
+ * self-defending: two empty hosts must never compare equal and send the
+ * credential — the gate fails safe without depending on an upstream scheme check.
+ */
 function urlHost(url: string): string | null {
   try {
-    return new URL(url).host;
+    const host = new URL(url).host;
+    return host.length > 0 ? host : null;
   } catch {
     // intentionally ignored: an unparseable URL has no comparable host — the
     // caller treats null as "no host match" and withholds the credential.
@@ -136,6 +144,11 @@ function urlHost(url: string): string | null {
  * unparseable, ⇒ `false` (fail-safe: never send the credential to an un-vetted
  * host). Deliberately NO opt-in flag — the bug was an unsafe default, and the fix
  * must not add a lever that re-enables sending to an arbitrary host.
+ *
+ * Match is intentionally EXACT host (`hostname[:port]`) — `api.stripe.com` does
+ * NOT match `files.stripe.com` or `stripe.com`. Only the host is compared (scheme
+ * and path are ignored, so a same-host spec on a sub-path still authenticates).
+ * Relaxing this to suffix/subdomain matching would be a security regression.
  */
 function probeCredentialAllowed(specUrl: string, apiBaseUrl: string | undefined): boolean {
   if (!apiBaseUrl) return false;

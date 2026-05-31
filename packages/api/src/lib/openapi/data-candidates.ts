@@ -58,12 +58,15 @@ export interface BaseDataCandidate {
   readonly openapiUrl: string;
   /**
    * The candidate's real API base URL (host), e.g. `https://api.stripe.com`.
-   * Used SOLELY to gate the install/rediscover probe credential (#3034): the
-   * credential is sent to {@link openapiUrl} iff the two share a host. Every
-   * built-in candidate pins its spec to a public host (raw.githubusercontent.com)
-   * while its API lives elsewhere, so this differs from {@link openapiUrl}'s host
-   * — which is exactly why the customer credential must NOT be sent to the spec
-   * host. An admin `base_url_override` takes precedence over this at probe time.
+   * Used SOLELY to gate the install-time probe credential (#3034) — only its HOST
+   * is consulted, and NOT at query time (the executable base URL is re-derived from
+   * the spec's `servers[]` / `base_url_override`; see `workspace-datasource.ts`).
+   * The probe credential is sent to {@link openapiUrl} iff the two share a host.
+   * Today every built-in candidate pins its spec to a public host
+   * (raw.githubusercontent.com) while its API lives elsewhere, so for them this
+   * differs from {@link openapiUrl}'s host — exactly the case the gate is designed
+   * to catch (withhold the credential from the spec host). An admin
+   * `base_url_override` takes precedence over this at probe time.
    */
   readonly apiBaseUrl: string;
   /**

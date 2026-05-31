@@ -43,6 +43,10 @@ let CURRENT_ORG = "org-owner";
 let probeShouldFail = false;
 /** Force resolveAuthFromDecryptedConfig to its ok:false arm (rediscover 400 tests). */
 let authResultOverride: { ok: false; rawAuthKind: string } | null = null;
+/** Extra config fields merged into the loaded install row (e.g. base_url_override). */
+let configExtra: Record<string, unknown> = {};
+/** The `options` the route last passed to `probeSpec` — asserts the #3034 host gate is threaded. */
+let lastProbeOptions: { apiBaseUrl?: string } | undefined;
 
 const CATALOG_ID = "catalog:openapi-generic";
 
@@ -84,7 +88,11 @@ const FIXTURE = {
  */
 const db = createOpenApiDatasourceTestLayer((sql, params) => {
   const ws = params[0];
-  const ownedRow = { install_id: FIXTURE.install_id, config: FIXTURE.config, status: FIXTURE.status };
+  const ownedRow = {
+    install_id: FIXTURE.install_id,
+    config: { ...FIXTURE.config, ...configExtra },
+    status: FIXTURE.status,
+  };
 
   if (sql.includes("DELETE FROM workspace_plugins")) {
     const instId = params[1];
@@ -170,7 +178,8 @@ mock.module("@atlas/api/lib/openapi/probe", () => {
     // auth_kind is "none", so the success arm (ok: true) is the relevant one;
     // the 400 (ok: false) branch is exercised by the workspace-resolver tests.
     resolveAuthFromDecryptedConfig: () => authResultOverride ?? { ok: true, auth: { kind: "none" } },
-    probeSpec: async () => {
+    probeSpec: async (_url: string, _auth: unknown, options?: { apiBaseUrl?: string }) => {
+      lastProbeOptions = options;
       if (probeShouldFail) throw new OpenApiProbeError("unreachable", "probe boom");
       return { doc: { openapi: "3.1.0" }, graph: emptyGraph };
     },
@@ -222,6 +231,8 @@ afterAll(async () => {
 beforeEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
+  configExtra = {};
+  lastProbeOptions = undefined;
   db.clear();
   invalidateGraphCacheSpy.mockClear();
 });
@@ -229,6 +240,8 @@ afterEach(() => {
   CURRENT_ORG = FIXTURE.owner;
   probeShouldFail = false;
   authResultOverride = null;
+  configExtra = {};
+  lastProbeOptions = undefined;
 });
 
 // ── Workspace scoping (tenant isolation) ─────────────────────────────────────
@@ -330,6 +343,25 @@ describe("admin-openapi-datasources — rediscover error mapping", () => {
       ([sql]) => sql.includes("UPDATE") && sql.includes("openapi_snapshot"),
     );
     expect(update).toBeDefined();
+  });
+
+  it("threads base_url_override as the probe host gate (apiBaseUrl) on re-probe (#3034)", async () => {
+    // The stored API host is the admin's base_url_override. The route must forward
+    // it to probeSpec so the host-match gate decides whether to re-attach the
+    // credential — install + rediscover stay symmetric. A regression that drops the
+    // `{ apiBaseUrl }` thread would silently re-open the leak on the refresh path.
+    configExtra = { base_url_override: "https://crm.example.com" };
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(lastProbeOptions?.apiBaseUrl).toBe("https://crm.example.com");
+  });
+
+  it("passes NO apiBaseUrl when the stored config has no base_url_override (fail-safe withhold)", async () => {
+    // The fixture config has no base_url_override → the gate host is unknown, so the
+    // re-probe must withhold the credential (probeSpec receives no apiBaseUrl).
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect(lastProbeOptions?.apiBaseUrl).toBeUndefined();
   });
 
   it("maps a deferred oauth2 row to a 400 with the oauth2-specific message (no UPDATE)", async () => {

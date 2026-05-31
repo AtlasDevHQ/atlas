@@ -153,7 +153,13 @@ export interface InternalQueryRecorder {
    * throws — no fake leaks into sibling files sharing the worker (#2799).
    */
   readonly layer: Layer.Layer<never>;
-  /** Every `(sql, params)` the route passed to `internalQuery()`, in order. */
+  /**
+   * Every `(sql, params)` the route passed to `internalQuery()`, in order.
+   * This is a LIVE view of the recorder's internal array — it grows as the
+   * route runs and is truncated by {@link clear}, so assert against it only
+   * after the request resolves. Snapshot with `[...db.calls]` if you need a
+   * frozen point-in-time copy (`readonly` blocks your writes, not the fake's).
+   */
   readonly calls: ReadonlyArray<readonly [string, readonly unknown[]]>;
   /** Drop recorded calls between tests (call in `beforeEach`). */
   readonly clear: () => void;
@@ -197,7 +203,11 @@ export function createOpenApiDatasourceTestLayer(
   // `internalQuery()` only ever calls `_sqlClient.unsafe(sql, params)` and awaits
   // the resulting Effect. A minimal recording stub of that one method is all the
   // route exercises — the rest of the broad SqlClient surface is never touched,
-  // so narrowing through `unknown` is sound and confined to test infra.
+  // so narrowing through `unknown` is sound and confined to test infra. NB this
+  // stub is route-shaped, not a general SqlClient: a SUT that reaches the other
+  // `_sqlClient` consumers in internal.ts (`internalExecute` is also `.unsafe`,
+  // but `cascadeWorkspaceDelete` uses `.withTransaction` + the tagged-template
+  // form) would hit `undefined is not a function` — extend the stub before reuse.
   const recordingClient = {
     unsafe: (sql: string, params?: ReadonlyArray<unknown>) => {
       const bound = params ?? [];

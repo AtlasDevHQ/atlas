@@ -24,9 +24,10 @@
  * imports its functions directly — we need a controllable probe + a spy on
  * `invalidateInstallGraphCache`), `../admin-router` (Hono middleware, no layer),
  * `plugins/secrets` (a deliberate decrypt passthrough), `effect/hono` (run the
- * handler without booting the enterprise runtime), and `audit` / `logger`
- * (silence + keep audit's DB writes out of `db.calls`). Converting those would
- * mean reshaping the route into an Effect program — out of scope for this chore.
+ * handler without booting the enterprise runtime), the `audit` modules
+ * (`audit` + `audit/error-scrub` — silence + keep audit's DB writes out of
+ * `db.calls`), and `logger`. Converting those would mean reshaping the route
+ * into an Effect program — out of scope for this chore.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";

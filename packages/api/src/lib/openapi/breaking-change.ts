@@ -35,20 +35,28 @@
  *   - **Removed / retyped field** (param, request body, response, or named-schema
  *     field) → a field the agent read/sent is gone, or its type/`$ref`/`required`
  *     changed under it.
- *   - **Added REQUIRED field on a REQUEST surface** (`param:*` / `requestBody:*`) →
- *     calls the agent already composes omit it and now fail.
+ *   - **Added EFFECTIVELY-REQUIRED field on a REQUEST surface** → the field is
+ *     required AND every enclosing container up to the request is too, so calls the
+ *     agent already composes omit it and now fail. The diff proves this with its
+ *     `effectiveRequired` flag (#3050) — set on a required param, a required child of
+ *     a REQUIRED request body, or a required field on a named component that was
+ *     request-exclusive in the PRIOR spec (so an existing caller already sends it) —
+ *     so this layer reads a boolean rather than parsing the dotted path.
  *   - **Removed named schema** → a shape the agent's representation referenced is gone.
  *
  * ADDITIVE (quiet) — the agent's existing contract still holds:
  *   - **Added operation / added named schema** → new capability, nothing broke.
- *   - **Added OPTIONAL request field, or ANY added RESPONSE field** → the agent can
- *     read more or send more, but every existing call still type-checks.
- *   - **Added field on a NAMED SCHEMA** → a named component is reachable from BOTH
- *     request and response surfaces, and the diff's bare schema-field path carries
- *     no surface prefix to tell which. Rather than guess "request" and nag on a
- *     benign response-shape growth, an *added* schema field is treated as additive.
- *     (Removed / retyped schema fields are still breaking — those break a read no
- *     matter the surface.)
+ *   - **Added field whose chain is NOT effectively-required** → an optional request
+ *     field, a required child of an OPTIONAL request body / optional ancestor (a
+ *     caller omitting the optional container keeps working — #3050), or ANY added
+ *     RESPONSE field. The agent can read more or send more, but every existing call
+ *     still type-checks.
+ *   - **Added field on a NAMED SCHEMA reachable from a RESPONSE (or unreachable)** →
+ *     a read surface (or dead component); growing it can't break a caller, so it
+ *     stays quiet. Only a schema the diff proved request-EXCLUSIVE (reachable from a
+ *     required request chain and never a response) carries `effectiveRequired` on its
+ *     added fields and so flags. (Removed / retyped schema fields are still breaking —
+ *     those break a read no matter the surface.)
  *
  * ## `MAX_FIELD_DEPTH` caveat (inherited from `diff.ts`)
  * The diff's field walk is bounded by `MAX_FIELD_DEPTH`; two specs differing ONLY
@@ -128,16 +136,6 @@ const ZERO_COUNTS: DiffCounts = {
 //  Internals — per-change classification
 // ─────────────────────────────────────────────────────────────────────
 
-/**
- * A field path the agent SENDS on a request (a query/header/path/cookie param, or
- * a request-body field). An added-required field here breaks calls that omit it.
- * A response-body path (`response:*`) or a bare named-schema path is NOT a request
- * surface — see the module header for why an added schema field stays quiet.
- */
-function isRequestSurfacePath(path: string): boolean {
-  return path.startsWith("param:") || path.startsWith("requestBody:");
-}
-
 /** Whether an operation-attribute change is contract-breaking (see module header). */
 function isBreakingAttribute(attr: AttributeChange): boolean {
   switch (attr.name) {
@@ -182,7 +180,14 @@ function classifyField(
     case "retyped":
       return { kind: "field_retyped", ...locate, detail: `Field "${fc.path}" was retyped on ${where}` };
     case "added":
-      if (fc.after.required === true && isRequestSurfacePath(fc.path)) {
+      // `effectiveRequired` is the diff's verdict that this added field is required
+      // AND every enclosing container up to a request surface is too (#3050): a
+      // required param, a required child of a REQUIRED request body, or a field on a
+      // request-exclusive named component. A required child of an OPTIONAL container,
+      // or any response/ambiguous-surface field, has it absent → additive. Reading
+      // the boolean replaces the old request-surface path-prefix sniff — no dotted
+      // media-type / property-name parsing, so no false negatives on `.`-bearing names.
+      if (fc.after.effectiveRequired === true) {
         return {
           kind: "field_required_added",
           ...locate,

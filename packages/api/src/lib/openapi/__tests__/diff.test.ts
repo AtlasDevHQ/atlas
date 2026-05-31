@@ -445,6 +445,50 @@ describe("diffOperationGraphs — required flip", () => {
     expect(idField.before).toMatchObject({ required: true });
     expect(idField.after.required).toBeUndefined();
   });
+
+  it("an ANCESTOR-only requiredness flip does NOT retype the unchanged descendant", () => {
+    // #3050 invariant: `effectiveRequired` is a derived classification hint excluded
+    // from `descriptorsEqual`. When `address` flips optional→required, its child
+    // `zip`'s `effectiveRequired` flips false→true, but `zip`'s structural descriptor
+    // is unchanged — so the diff must emit a retype at `address` (it gained required)
+    // and NOTHING at `address.zip`. If the hint ever leaked into equality, the child
+    // would spuriously retype (and the breaking signal would misattribute the change).
+    const doc = (addressRequired: boolean): OpenApiDoc => ({
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    ...(addressRequired ? { required: ["address"] } : {}),
+                    properties: {
+                      address: { type: "object", required: ["zip"], properties: { zip: { type: "string" } } },
+                    },
+                  },
+                },
+              },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const diff = diffOperationGraphs(graph(doc(false)), graph(doc(true)));
+    const change = diff.operations.changed.find((c) => c.operationId === "createThing");
+    expect(change).toBeDefined();
+    // `address` gained `required` → a retype.
+    expectChange(change!.fields, "requestBody:application/json.address", "retyped");
+    // `zip` is structurally identical on both sides → NOT in the changeset, despite
+    // its `effectiveRequired` having flipped.
+    expect(change!.fields.find((f) => f.path === "requestBody:application/json.address.zip")).toBeUndefined();
+  });
 });
 
 // ── Enum descriptors — sorted, so member order is not drift ──────────────────

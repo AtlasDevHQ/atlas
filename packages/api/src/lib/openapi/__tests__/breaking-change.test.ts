@@ -39,6 +39,9 @@ interface SchemaNode {
   enum?: unknown[];
   properties?: Record<string, SchemaNode>;
   items?: SchemaNode;
+  allOf?: SchemaNode[];
+  oneOf?: SchemaNode[];
+  anyOf?: SchemaNode[];
 }
 interface MediaType {
   schema: SchemaNode;
@@ -394,6 +397,390 @@ describe("classifyBreakingChanges — mixed changesets", () => {
     const a = classify(next);
     expect(a.breaking).toBe(false);
     expect(a.reasons).toEqual([]);
+  });
+});
+
+// ── #3050: effective-required gating (optional containers + ref'd components) ─
+
+describe("classifyBreakingChanges — effective-required gating (#3050)", () => {
+  /** Classify the diff between two arbitrary docs (not clones of BASE_DOC). */
+  function classifyBetween(prev: OpenApiDoc, next: OpenApiDoc) {
+    return classifyBreakingChanges(diffOperationGraphs(graph(prev), graph(next)));
+  }
+  /** A doc with one POST whose request body wraps `bodySchema` at the given requiredness. */
+  function postBodyDoc(bodyRequired: boolean, bodySchema: SchemaNode): OpenApiDoc {
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: bodyRequired, content: { "application/json": { schema: bodySchema } } },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: {} },
+    };
+  }
+
+  it("adding a required child to an OPTIONAL request body is additive", () => {
+    const prev = postBodyDoc(false, { type: "object", required: ["a"], properties: { a: { type: "string" } } });
+    const next = postBodyDoc(false, {
+      type: "object",
+      required: ["a", "b"],
+      properties: { a: { type: "string" }, b: { type: "string" } },
+    });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("adding a required child under an OPTIONAL ancestor (in a required body) is additive", () => {
+    // Body IS required, but `address` is optional → a caller omitting it keeps working.
+    const addr = (zipRequired: boolean): SchemaNode => ({
+      type: "object",
+      ...(zipRequired ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zipRequired ? { zip: { type: "string" } } : {}) },
+    });
+    const prev = postBodyDoc(true, { type: "object", required: [], properties: { address: addr(false) } });
+    const next = postBodyDoc(true, { type: "object", required: [], properties: { address: addr(true) } });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("adding a required child under a REQUIRED ancestor (in a required body) IS breaking", () => {
+    const addr = (zipRequired: boolean): SchemaNode => ({
+      type: "object",
+      ...(zipRequired ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zipRequired ? { zip: { type: "string" } } : {}) },
+    });
+    const prev = postBodyDoc(true, { type: "object", required: ["address"], properties: { address: addr(false) } });
+    const next = postBodyDoc(true, { type: "object", required: ["address"], properties: { address: addr(true) } });
+    const a = classifyBetween(prev, next);
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/json.address.zip",
+      }),
+    ).toBe(true);
+  });
+
+  /** A doc using `WidgetInput` only on a required request body — request-EXCLUSIVE. */
+  function requestOnlyComponentDoc(inputRequired: string[], extraProp?: string): OpenApiDoc {
+    const props: Record<string, SchemaNode> = { name: { type: "string" } };
+    if (extraProp) props[extraProp] = { type: "string" };
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/widgets": {
+          post: {
+            operationId: "createWidget",
+            requestBody: {
+              required: true,
+              content: { "application/json": { schema: { $ref: "#/components/schemas/WidgetInput" } } },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: { WidgetInput: { type: "object", required: inputRequired, properties: props } } },
+    };
+  }
+
+  it("adding a required prop to a request-EXCLUSIVE component IS breaking", () => {
+    const prev = requestOnlyComponentDoc(["name"]);
+    const next = requestOnlyComponentDoc(["name", "sku"], "sku");
+    const a = classifyBetween(prev, next);
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "WidgetInput", path: "sku" })).toBe(true);
+  });
+
+  /** A doc using `Widget` on a response (and optionally also a required request body). */
+  function widgetDoc(opts: { alsoRequest: boolean; required: string[]; extraProp?: string }): OpenApiDoc {
+    const props: Record<string, SchemaNode> = { id: { type: "string" } };
+    if (opts.extraProp) props[opts.extraProp] = { type: "string" };
+    const paths: Record<string, PathItem> = {
+      "/widgets/{id}": {
+        get: {
+          operationId: "getWidget",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": {
+              description: "ok",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Widget" } } },
+            },
+          },
+        },
+      },
+    };
+    if (opts.alsoRequest) {
+      paths["/widgets"] = {
+        post: {
+          operationId: "createWidget",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Widget" } } },
+          },
+          responses: { "200": { description: "ok" } },
+        },
+      };
+    }
+    return {
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths,
+      components: { schemas: { Widget: { type: "object", required: opts.required, properties: props } } },
+    };
+  }
+
+  it("adding a required prop to a RESPONSE-reachable component stays quiet (no false positive)", () => {
+    const prev = widgetDoc({ alsoRequest: false, required: ["id"] });
+    const next = widgetDoc({ alsoRequest: false, required: ["id", "color"], extraProp: "color" });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  it("a component used by BOTH a required request body AND a response stays quiet on added-required", () => {
+    // Response reachability dominates: the conservative policy keeps an ambiguous
+    // (read-too) surface quiet rather than nagging on a benign response-shape growth.
+    const prev = widgetDoc({ alsoRequest: true, required: ["id"] });
+    const next = widgetDoc({ alsoRequest: true, required: ["id", "sku"], extraProp: "sku" });
+    expect(classifyBetween(prev, next).breaking).toBe(false);
+  });
+
+  // ── chain-propagation edges: items + allOf preserve, oneOf/anyOf break ───────
+
+  it("a required field added under an array's items (in a required body) IS breaking", () => {
+    // "array present ⟹ its elements present" — the chain propagates through items.
+    const items = (zip: boolean): SchemaNode => ({
+      type: "object",
+      ...(zip ? { required: ["zip"] } : {}),
+      properties: { street: { type: "string" }, ...(zip ? { zip: { type: "string" } } : {}) },
+    });
+    const body = (zip: boolean): SchemaNode => ({
+      type: "object",
+      required: ["tags"],
+      properties: { tags: { type: "array", items: items(zip) } },
+    });
+    const a = classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true)));
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/json.tags[].zip",
+      }),
+    ).toBe(true);
+  });
+
+  it("a required field added under an allOf branch (in a required body) IS breaking", () => {
+    // allOf is an intersection — every branch applies, so the chain is preserved.
+    const body = (zip: boolean): SchemaNode => ({
+      allOf: [
+        { type: "object", ...(zip ? { required: ["zip"] } : {}), properties: zip ? { zip: { type: "string" } } : {} },
+      ],
+    });
+    const a = classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true)));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { operationId: "createThing" })).toBe(true);
+  });
+
+  it("a required field added under a oneOf branch (in a required body) is additive", () => {
+    // oneOf is a union — a branch member is not guaranteed present, so the chain breaks.
+    const body = (sku: boolean): SchemaNode => ({
+      oneOf: [
+        { type: "object", ...(sku ? { required: ["sku"] } : {}), properties: sku ? { sku: { type: "string" } } : {} },
+      ],
+    });
+    expect(classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true))).breaking).toBe(false);
+  });
+
+  // ── cyclic $ref must terminate (the Twenty Person↔NoteTarget shape) ──────────
+
+  it("a self-referential request-exclusive component terminates AND flags an added-required prop", () => {
+    // `Node.child` -> $ref Node is a cycle; the reachability walk's visited-set guard
+    // must terminate. Node is request-exclusive (required body $ref, never a response).
+    const nodeDoc = (sku: boolean): OpenApiDoc => ({
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/nodes": {
+          post: {
+            operationId: "createNode",
+            requestBody: {
+              required: true,
+              content: { "application/json": { schema: { $ref: "#/components/schemas/Node" } } },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          Node: {
+            type: "object",
+            required: sku ? ["child", "sku"] : ["child"],
+            properties: {
+              child: { $ref: "#/components/schemas/Node" },
+              ...(sku ? { sku: { type: "string" } } : {}),
+            },
+          },
+        },
+      },
+    });
+    const a = classifyBetween(nodeDoc(false), nodeDoc(true));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "Node", path: "sku" })).toBe(true);
+  });
+
+  // ── AC4: a dotted media type must not break the (now path-parse-free) verdict ─
+
+  it("a required field under a dotted media type (application/vnd.api+json) IS breaking", () => {
+    // Pins AC4: the verdict reads `effectiveRequired`, never parses the dotted path —
+    // a media type containing `.`/`+` can't desync the request-surface determination.
+    const doc = (zip: boolean): OpenApiDoc => ({
+      openapi: "3.0.0",
+      info: { title: "T", version: "1.0.0" },
+      paths: {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: {
+              required: true,
+              content: {
+                "application/vnd.api+json": {
+                  schema: {
+                    type: "object",
+                    required: ["address"],
+                    properties: {
+                      address: {
+                        type: "object",
+                        ...(zip ? { required: ["zip"] } : {}),
+                        properties: { street: { type: "string" }, ...(zip ? { zip: { type: "string" } } : {}) },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+      components: { schemas: {} },
+    });
+    const a = classifyBetween(doc(false), doc(true));
+    expect(a.breaking).toBe(true);
+    expect(
+      hasReason(a.reasons, "field_required_added", {
+        operationId: "createThing",
+        path: "requestBody:application/vnd.api+json.address.zip",
+      }),
+    ).toBe(true);
+  });
+
+  // ── breaking = breaks a PRE-EXISTING caller (seed from the prior spec) ────────
+
+  it("gaining an all-optional allOf branch on a required body is additive (branch root not flagged)", () => {
+    // The newly-added `…|allOf[1]` branch ROOT carries chainRequired but is not itself
+    // a required field — it must not surface as field_required_added, and its only
+    // (optional) member `b` is additive too.
+    const body = (withBranch: boolean): SchemaNode => ({
+      allOf: [
+        { type: "object", properties: { a: { type: "string" } } },
+        ...(withBranch ? [{ type: "object", properties: { b: { type: "string" } } } as SchemaNode] : []),
+      ],
+    });
+    expect(classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true))).breaking).toBe(false);
+  });
+
+  it("a NEW required op reusing a previously response-only component + an added required prop is additive", () => {
+    // Codex P2 (#3050 follow-up): the new operation has no existing callers, so a
+    // required prop added to the component it newly references can't break anyone.
+    // Thing is response-only in `prev` → not a prior request-exclusive surface.
+    const doc = (withCreate: boolean, sku: boolean): OpenApiDoc => {
+      const paths: Record<string, PathItem> = {
+        "/things/{id}": {
+          get: {
+            operationId: "getThing",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: {
+              "200": { description: "ok", content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            },
+          },
+        },
+      };
+      if (withCreate) {
+        paths["/things"] = {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            responses: { "200": { description: "ok" } },
+          },
+        };
+      }
+      return {
+        openapi: "3.0.0",
+        info: { title: "T", version: "1.0.0" },
+        paths,
+        components: {
+          schemas: {
+            Thing: {
+              type: "object",
+              required: sku ? ["id", "sku"] : ["id"],
+              properties: { id: { type: "string" }, ...(sku ? { sku: { type: "string" } } : {}) },
+            },
+          },
+        },
+      };
+    };
+    // prev: Thing response-only; next: a new createThing reuses it AND it gains required `sku`.
+    expect(classifyBetween(doc(false, false), doc(true, true)).breaking).toBe(false);
+  });
+
+  it("a NEW response on a PRE-EXISTING required-request component does NOT mask an added required prop", () => {
+    // Codex P2 (#3050 follow-up): Thing was already on createThing's required body, so
+    // existing callers break when it gains a required prop — a freshly-added response
+    // surface in the same diff must not suppress that signal.
+    const doc = (withGet: boolean, sku: boolean): OpenApiDoc => {
+      const paths: Record<string, PathItem> = {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      };
+      if (withGet) {
+        paths["/things/{id}"] = {
+          get: {
+            operationId: "getThing",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: {
+              "200": { description: "ok", content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            },
+          },
+        };
+      }
+      return {
+        openapi: "3.0.0",
+        info: { title: "T", version: "1.0.0" },
+        paths,
+        components: {
+          schemas: {
+            Thing: {
+              type: "object",
+              required: sku ? ["id", "sku"] : ["id"],
+              properties: { id: { type: "string" }, ...(sku ? { sku: { type: "string" } } : {}) },
+            },
+          },
+        },
+      };
+    };
+    // prev: Thing on required request only; next: a new getThing also returns it AND it gains required `sku`.
+    const a = classifyBetween(doc(false, false), doc(true, true));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "Thing", path: "sku" })).toBe(true);
   });
 });
 

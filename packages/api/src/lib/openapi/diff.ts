@@ -66,6 +66,27 @@ export interface FieldDescriptor {
    * `undefined !== false` comparison never reads a non-required field as changed.
    */
   readonly required?: boolean;
+  /**
+   * True when this field is required AND *every enclosing container* up to the
+   * request surface is also required — i.e. an existing caller must already be
+   * sending this field's whole parent chain, so newly requiring it breaks them
+   * (#3050). Distinct from {@link required} (the IMMEDIATE-parent flag): a required
+   * child of an OPTIONAL request body / optional ancestor has `required: true` but
+   * `effectiveRequired` ABSENT, because a caller omitting the optional container
+   * keeps working. Set on request surfaces (the operation's REQUIRED params +
+   * required request body) and on named-component fields the diff has proven reachable from
+   * a request surface *exclusively* (never also a response — see
+   * {@link computeRequestExclusiveSchemas}). Always ABSENT on response/quiet
+   * surfaces. It is the SINGLE input the #2979 classifier reads to decide an
+   * added-field-is-breaking, so the rule needs no dotted-path parsing.
+   *
+   * DELIBERATELY EXCLUDED from {@link descriptorsEqual} / {@link serializeDescriptor}:
+   * it is a derived classification hint, not a structural fact. A node flipping
+   * `effectiveRequired` because an *ancestor* gained/lost `required` must not read as
+   * a retype (the requiredness change at the actual node is already caught via
+   * {@link required}); and composition-branch keys must stay stable.
+   */
+  readonly effectiveRequired?: boolean;
   /** Allowed enumerated values, normalized to a sorted string array for stable comparison. */
   readonly enum?: ReadonlyArray<string>;
 }
@@ -184,14 +205,30 @@ function normalizeEnum(values: ReadonlyArray<unknown>): ReadonlyArray<string> {
   return values.map((v) => (typeof v === "string" ? v : JSON.stringify(v))).toSorted();
 }
 
-/** Describe a single schema node as the minimal comparable {@link FieldDescriptor}. */
-function describeNode(schema: OpenApiSchema, required: boolean): FieldDescriptor {
+/**
+ * Describe a single schema node as the minimal comparable {@link FieldDescriptor}.
+ * `required` is the immediate-parent flag (structural, compared); `chainRequired`
+ * is whether the chain ABOVE this node is required. {@link FieldDescriptor.effectiveRequired}
+ * (a classification hint, NOT compared) is set only when BOTH hold — i.e. this node
+ * is itself required AND every enclosing container is too. The `required` conjunct is
+ * load-bearing: a container the chain passes THROUGH (an `allOf` branch root, an
+ * array-items node) has `chainRequired: true` but `required: false`, and must NOT be
+ * flagged — gaining an `allOf` branch of all-optional fields forces no existing
+ * caller to send anything new (#3050 follow-up: the classifier would otherwise emit a
+ * false `field_required_added` on the `…|allOf[n]` root).
+ */
+function describeNode(
+  schema: OpenApiSchema,
+  required: boolean,
+  chainRequired: boolean,
+): FieldDescriptor {
   const d: {
     type?: string;
     format?: string;
     ref?: string;
     nullable?: boolean;
     required?: boolean;
+    effectiveRequired?: boolean;
     enum?: ReadonlyArray<string>;
   } = {};
   if (schema.ref !== undefined) {
@@ -204,6 +241,7 @@ function describeNode(schema: OpenApiSchema, required: boolean): FieldDescriptor
     if (schema.enum !== undefined) d.enum = normalizeEnum(schema.enum);
   }
   if (required) d.required = true;
+  if (required && chainRequired) d.effectiveRequired = true;
   return d;
 }
 
@@ -212,7 +250,9 @@ function describeNode(schema: OpenApiSchema, required: boolean): FieldDescriptor
  * Fields are emitted positionally in a FIXED order (and `enum` is pre-sorted by
  * {@link normalizeEnum}), so the output is deterministic — equal descriptors
  * always serialize to equal strings, and `undefined` members are preserved as
- * `null` by `JSON.stringify` so position never shifts.
+ * `null` by `JSON.stringify` so position never shifts. `effectiveRequired` is
+ * DELIBERATELY omitted (mirroring {@link descriptorsEqual}): a derived
+ * classification hint must not perturb branch keys (see {@link FieldDescriptor}).
  */
 function serializeDescriptor(d: FieldDescriptor): string {
   return JSON.stringify([d.type, d.format, d.ref, d.nullable, d.required, d.enum]);
@@ -233,6 +273,15 @@ function joinItems(base: string): string {
  * a terminal leaf (the named target is diffed in the schema pass — following it
  * here would both double-count and risk a cycle). Inline objects/arrays/
  * compositions recurse with a dotted path, bounded by {@link MAX_FIELD_DEPTH}.
+ *
+ * `required` is the immediate-parent flag (folded into the descriptor + compared);
+ * `chainRequired` is whether the WHOLE chain from the request surface down to and
+ * including this node is required, surfaced as `effectiveRequired` (#3050). It
+ * propagates only through required-preserving edges: a required object property
+ * (`chainRequired && requiredNames.has(name)`), array items (an array present ⟹ its
+ * elements present), and `allOf` branches (an intersection — every branch applies).
+ * `oneOf`/`anyOf` branches break the chain (a union member is not guaranteed), so
+ * they recurse with `chainRequired: false`.
  */
 function flattenSchema(
   schema: OpenApiSchema,
@@ -240,19 +289,22 @@ function flattenSchema(
   out: Map<string, FieldDescriptor>,
   depth: number,
   required: boolean,
+  chainRequired: boolean,
 ): void {
-  out.set(path, describeNode(schema, required));
+  out.set(path, describeNode(schema, required, chainRequired));
   if (schema.ref !== undefined || depth >= MAX_FIELD_DEPTH) return;
 
   if (schema.properties) {
     const requiredNames = new Set(schema.required ?? []);
     for (const name of [...schema.properties.keys()].toSorted()) {
       const child = schema.properties.get(name);
-      if (child) flattenSchema(child, joinProp(path, name), out, depth + 1, requiredNames.has(name));
+      const childRequired = requiredNames.has(name);
+      if (child)
+        flattenSchema(child, joinProp(path, name), out, depth + 1, childRequired, chainRequired && childRequired);
     }
   }
   if (schema.items) {
-    flattenSchema(schema.items, joinItems(path), out, depth + 1, false);
+    flattenSchema(schema.items, joinItems(path), out, depth + 1, false, chainRequired);
   }
   for (const [keyword, branches] of [
     ["allOf", schema.allOf],
@@ -260,6 +312,7 @@ function flattenSchema(
     ["anyOf", schema.anyOf],
   ] as const) {
     if (!branches) continue;
+    const branchChainRequired = keyword === "allOf" && chainRequired;
     // Composition branches are an UNORDERED set — `allOf` is an intersection,
     // `oneOf`/`anyOf` a union; JSON Schema assigns no meaning to their array
     // order. A generator that merely reorders branches between probes must
@@ -275,7 +328,7 @@ function flattenSchema(
     }));
     keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     keyed.forEach(({ branch }, i) =>
-      flattenSchema(branch, `${path}|${keyword}[${i}]`, out, depth + 1, false),
+      flattenSchema(branch, `${path}|${keyword}[${i}]`, out, depth + 1, false, branchChainRequired),
     );
   }
 }
@@ -290,36 +343,55 @@ function flattenSchema(
  */
 function stableSchemaKey(schema: OpenApiSchema, depth: number): string {
   const tmp = new Map<string, FieldDescriptor>();
-  flattenSchema(schema, "", tmp, depth, false);
+  flattenSchema(schema, "", tmp, depth, false, false);
   return [...tmp.keys()]
     .toSorted()
     .map((p) => `${p}=${serializeDescriptor(tmp.get(p)!)}`)
     .join("|");
 }
 
-/** Flatten a named component schema's fields (root under the empty path). */
-function flattenSchemaFields(schema: OpenApiSchema): Map<string, FieldDescriptor> {
+/**
+ * Flatten a named component schema's fields (root under the empty path).
+ * `requestExclusive` seeds the chain-required flag and is the caller's verdict that
+ * the schema was request-exclusive *in the prior spec* — reachable from a request
+ * surface via an all-required chain and NEVER from a response (see
+ * {@link computeRequestExclusiveSchemas}). True ⇒ a newly-required field on it breaks
+ * the spec's pre-existing request callers (#3050). For any other schema
+ * (response-reachable, unreachable, or only newly request-reachable in this diff) the
+ * chain starts broken, so added fields stay quiet — preserving both the conservative
+ * "ambiguous surface ⇒ additive" policy and the "additive change can't break an
+ * existing caller" rule.
+ */
+function flattenSchemaFields(
+  schema: OpenApiSchema,
+  requestExclusive: boolean,
+): Map<string, FieldDescriptor> {
   const out = new Map<string, FieldDescriptor>();
-  flattenSchema(schema, "", out, 0, false);
+  flattenSchema(schema, "", out, 0, false, requestExclusive);
   return out;
 }
 
 /**
  * Flatten an operation's agent-relevant fields: query-pattern parameters, the
  * request body, and every response body — each under a location-prefixed path so
- * a `limit` query param and a `limit` response field never collide.
+ * a `limit` query param and a `limit` response field never collide. Request
+ * surfaces seed `chainRequired` from their own requiredness (a param's `required`,
+ * the request body's `required`); responses seed it `false` (an added response
+ * field can never break a caller). #3050: a required child of an OPTIONAL request
+ * body therefore carries `required: true` but NOT `effectiveRequired`.
  */
 function flattenOperationFields(op: Operation): Map<string, FieldDescriptor> {
   const out = new Map<string, FieldDescriptor>();
   for (const p of op.parameters) {
     const base = `param:${p.in}:${p.name}`;
-    if (p.schema) flattenSchema(p.schema, base, out, 0, p.required);
-    else out.set(base, p.required ? { required: true } : {});
+    if (p.schema) flattenSchema(p.schema, base, out, 0, p.required, p.required);
+    else out.set(base, p.required ? { required: true, effectiveRequired: true } : {});
   }
   if (op.requestBody) {
     for (const media of [...op.requestBody.content.keys()].toSorted()) {
       const schema = op.requestBody.content.get(media);
-      if (schema) flattenSchema(schema, `requestBody:${media}`, out, 0, op.requestBody.required);
+      if (schema)
+        flattenSchema(schema, `requestBody:${media}`, out, 0, op.requestBody.required, op.requestBody.required);
     }
   }
   for (const status of [...op.responses.keys()].toSorted()) {
@@ -327,10 +399,90 @@ function flattenOperationFields(op: Operation): Map<string, FieldDescriptor> {
     if (!resp) continue;
     for (const media of [...resp.content.keys()].toSorted()) {
       const schema = resp.content.get(media);
-      if (schema) flattenSchema(schema, `response:${status}:${media}`, out, 0, false);
+      if (schema) flattenSchema(schema, `response:${status}:${media}`, out, 0, false, false);
     }
   }
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  Internals — named-schema request/response reachability (#3050)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The named component schemas reachable from a request surface via an ALL-REQUIRED
+ * chain and NEVER from a response surface. An added-required field on such a schema
+ * breaks request callers exactly as an inline required request field would (#3050),
+ * so {@link flattenSchemaFields} seeds those fields' `effectiveRequired`. A schema
+ * also reachable from a response (a read surface) is excluded — matching the
+ * standing conservative policy that an added field on an ambiguous surface is
+ * additive (the agent reads more, not less).
+ *
+ * Pure graph walk over `$ref` pointers, bounded by per-side visited sets so a
+ * cyclic spec (Twenty's Person ↔ NoteTarget) terminates. The required walk only
+ * follows required-preserving edges (required properties, array items, `allOf`
+ * branches); `oneOf`/`anyOf` members and optional properties break the chain. The
+ * response walk follows EVERY edge — any response appearance makes a schema a read
+ * surface, which is enough to keep it quiet.
+ */
+function computeRequestExclusiveSchemas(graph: OperationGraph): ReadonlySet<string> {
+  const requestRequired = new Set<string>();
+  const response = new Set<string>();
+
+  // Required walk: contributes a ref target only while the chain stays required.
+  const visitedReq = new Set<string>();
+  function walkRequired(schema: OpenApiSchema, chainRequired: boolean): void {
+    if (!chainRequired) return;
+    if (schema.ref !== undefined) {
+      if (visitedReq.has(schema.ref)) return;
+      visitedReq.add(schema.ref);
+      requestRequired.add(schema.ref);
+      const target = graph.schemas.get(schema.ref);
+      if (target) walkRequired(target, true);
+      return;
+    }
+    if (schema.properties) {
+      const requiredNames = new Set(schema.required ?? []);
+      for (const [name, child] of schema.properties) walkRequired(child, requiredNames.has(name));
+    }
+    if (schema.items) walkRequired(schema.items, true);
+    if (schema.allOf) for (const branch of schema.allOf) walkRequired(branch, true);
+    // oneOf/anyOf members are not guaranteed present → the chain breaks (skip).
+  }
+
+  // Response walk: any appearance under a response marks a schema a read surface.
+  const visitedResp = new Set<string>();
+  function walkResponse(schema: OpenApiSchema): void {
+    if (schema.ref !== undefined) {
+      if (visitedResp.has(schema.ref)) return;
+      visitedResp.add(schema.ref);
+      response.add(schema.ref);
+      const target = graph.schemas.get(schema.ref);
+      if (target) walkResponse(target);
+      return;
+    }
+    if (schema.properties) for (const child of schema.properties.values()) walkResponse(child);
+    if (schema.items) walkResponse(schema.items);
+    for (const branches of [schema.allOf, schema.oneOf, schema.anyOf]) {
+      if (branches) for (const branch of branches) walkResponse(branch);
+    }
+  }
+
+  for (const op of graph.operations.values()) {
+    for (const p of op.parameters) {
+      if (p.required && p.schema) walkRequired(p.schema, true);
+    }
+    if (op.requestBody?.required) {
+      for (const schema of op.requestBody.content.values()) walkRequired(schema, true);
+    }
+    for (const resp of op.responses.values()) {
+      for (const schema of resp.content.values()) walkResponse(schema);
+    }
+  }
+
+  const exclusive = new Set<string>();
+  for (const name of requestRequired) if (!response.has(name)) exclusive.add(name);
+  return exclusive;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -443,6 +595,21 @@ export function diffOperationGraphs(
   const removedSchemas: string[] = [];
   const changedSchemas: SchemaChange[] = [];
 
+  // Which named schemas were request-exclusive in the PRIOR spec — seeds the
+  // `effectiveRequired` for a schema present in BOTH graphs (a "changed" schema). A
+  // breaking change is one that breaks a PRE-EXISTING caller, and a caller exists only
+  // for a request surface that already existed; so an added-required field on a
+  // component reads as breaking iff the component was *already* a request-exclusive
+  // surface — NOT iff it merely becomes one in this diff (#3050 follow-up). Seeding
+  // from `next` would both false-POSITIVE (a brand-new required request body referencing
+  // a previously-unused/response-only component + a new required prop has no existing
+  // callers to break) and false-NEGATIVE (a component already on a required request
+  // body that newly also appears in a response would have its real request break masked
+  // by the fresh response reachability). Both flatten sides use the same prior seed —
+  // `effectiveRequired` is excluded from equality, so the seed never perturbs detection;
+  // it only sets the verdict on the `added` side.
+  const priorRequestExclusive = computeRequestExclusiveSchemas(prev);
+
   for (const name of [...next.schemas.keys()].toSorted()) {
     if (!prev.schemas.has(name)) addedSchemas.push(name);
   }
@@ -453,7 +620,8 @@ export function diffOperationGraphs(
     const prevSchema = prev.schemas.get(name);
     const nextSchema = next.schemas.get(name);
     if (!prevSchema || !nextSchema) continue;
-    const fields = diffFieldMaps(flattenSchemaFields(prevSchema), flattenSchemaFields(nextSchema));
+    const seed = priorRequestExclusive.has(name);
+    const fields = diffFieldMaps(flattenSchemaFields(prevSchema, seed), flattenSchemaFields(nextSchema, seed));
     if (fields.length > 0) changedSchemas.push({ name, fields });
   }
 

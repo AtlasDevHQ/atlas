@@ -255,6 +255,13 @@ export function createRestOperationsRoute(deps: RestOperationsDeps = {}) {
         // covered, since `operation.sideEffecting` is read from the graph). Without
         // this, a direct confirm POST for such a GET would bypass the allowlist.
         sideEffectingOperations: datasource.sideEffectingOperations,
+        // #3035: thread the candidate's read-safe POSTs so the verdict classifies
+        // identically to the tool path. A demoted read-safe POST resolves to
+        // `requiresConfirmation: false` here and is refused below as "not a write" —
+        // the confirm endpoint fires confirmed WRITES, never reads.
+        ...(datasource.readSafePostOperations !== undefined
+          ? { readSafePostOperations: datasource.readSafePostOperations }
+          : {}),
         dispatch: true, // this IS the upstream call — debit the quota
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

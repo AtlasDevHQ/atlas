@@ -385,6 +385,39 @@ describe("executeRestOperation — write-side opt-in", () => {
     expect(result.method).toBe("GET");
     expect(mock.requests).toHaveLength(0);
   });
+
+  // #3035 — a candidate-declared read-safe POST (e.g. Notion search) dispatches as
+  // a READ on a default install, with an EMPTY write allowlist and no confirm step.
+  // The Twenty mock has no read-over-POST, so these exercise the demotion MECHANISM
+  // through the tool's policy wiring using `createOnePerson` (the realistic vendor
+  // example, notion-data's `post-search`, is covered by the candidate + resolver +
+  // validator tests). The point is the gate, not that createOnePerson is really a read.
+  it("dispatches a declared read-safe POST as a read — no confirmation, no allowlist (#3035)", async () => {
+    const ds = datasource({ readSafePostOperations: new Set(["createOnePerson"]) });
+    const result = await call(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("ok"); // NOT needs_confirmation, NOT writes_disabled
+    if (result.status !== "ok") return;
+    expect(result.httpStatus).toBe(201);
+    // It reached the upstream as a POST — dispatched immediately, never staged.
+    const req = mock.matching("/rest/people").at(-1);
+    expect(req?.method).toBe("POST");
+  });
+
+  it("still gates a NON-declared POST as a write (writes_disabled), never dispatching (#3035)", async () => {
+    // A different POST is declared read-safe; createOnePerson is not → gated.
+    const ds = datasource({ readSafePostOperations: new Set(["post-search"]) });
+    const result = await call(
+      { operationId: "createOnePerson", body: { name: "Ada" } },
+      async () => ds,
+    );
+    expect(result.status).toBe("writes_disabled");
+    if (result.status !== "writes_disabled") return;
+    expect(result.method).toBe("POST");
+    expect(mock.requests).toHaveLength(0); // never reached the upstream
+  });
 });
 
 // ── Multi-datasource routing (slice 2, #2926) ────────────────────────────────

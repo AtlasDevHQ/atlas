@@ -277,9 +277,16 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
       // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
       const peeked = datasource.graph.operations.get(operationId);
       // Side-effecting (#3008) GET/HEADs count as writes here too, so they are
-      // staged for confirmation (dispatch:false) rather than run immediately.
+      // staged for confirmation (dispatch:false) rather than run immediately. A
+      // candidate-declared read-safe POST (#3035) is demoted to a read by the same
+      // predicate, so it dispatches immediately (debits the read quota) rather than
+      // staging for a confirm that would be refused.
       const isWrite = peeked
-        ? isSideEffectingOperation(peeked, datasource.sideEffectingOperations)
+        ? isSideEffectingOperation(
+            peeked,
+            datasource.sideEffectingOperations,
+            datasource.readSafePostOperations,
+          )
         : false;
 
       const policy: RestOperationPolicy = {
@@ -292,6 +299,9 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         datasourceId: datasource.id,
         writeAllowlist: datasource.writeAllowlist,
         sideEffectingOperations: datasource.sideEffectingOperations,
+        ...(datasource.readSafePostOperations !== undefined
+          ? { readSafePostOperations: datasource.readSafePostOperations }
+          : {}),
         dispatch: !isWrite,
         ...(datasource.rateLimitPerMinute !== undefined
           ? { rateLimitPerMinute: datasource.rateLimitPerMinute }

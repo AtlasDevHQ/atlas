@@ -65,6 +65,18 @@ export interface RestDatasource {
    */
   readonly sideEffectingOperations: ReadonlySet<string>;
   /**
+   * `operationId`s whose POST is a GENUINE READ (#3035), DEMOTED past the write
+   * allowlist — e.g. Notion search, `POST /v1/search`. Present only for a built-in
+   * data candidate that declares them ({@link import("./data-candidates").DataCandidate.readSafePostOperations});
+   * `undefined` for a plain `openapi-generic` install or a candidate with no
+   * read-over-POST surface. Like {@link quirk}, this is CODE-resident — the
+   * resolver looks it up from the `DATA_CANDIDATES` registry by catalog id, never
+   * from config. Unlike {@link sideEffectingOperations} (which can only ESCALATE),
+   * this is the one signal that DROPS a write classification, and it is overridden
+   * by any escalation signal. See {@link import("./validate-rest-operation").isSideEffectingOperation}.
+   */
+  readonly readSafePostOperations?: ReadonlySet<string>;
+  /**
    * Per-install rate-limit override (calls/min) for the per-operation token
    * bucket. Omitted → {@link import("./validate-rest-operation").DEFAULT_RATE_LIMIT_PER_MINUTE}
    * (60/min). Resolved from `workspace_plugins.config.rate_limit_per_minute`.

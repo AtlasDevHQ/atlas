@@ -272,6 +272,28 @@ describe("resolveWorkspaceRestDatasources — data-candidate quirk attachment (s
     expect(result).toHaveLength(1);
     expect(result[0].quirk).toBeUndefined();
   });
+
+  it("attaches the candidate's readSafePostOperations for a notion-data install (#3035)", async () => {
+    // notion-data declares `post-search` read-safe (Notion search is POST /v1/search,
+    // a read). The resolver threads that code-resident declaration onto the
+    // RestDatasource so the validator demotes it to a read on a default install.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "inst-notion", catalog_id: "catalog:notion-data", config: config() },
+      ]),
+    });
+    expect(result).toHaveLength(1);
+    expect([...(result[0].readSafePostOperations ?? [])]).toContain("post-search");
+  });
+
+  it("leaves readSafePostOperations undefined for a candidate that declares none (stripe-data)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "inst-stripe", catalog_id: "catalog:stripe-data", config: config() },
+      ]),
+    });
+    expect(result[0].readSafePostOperations).toBeUndefined();
+  });
 });
 
 describe("resolveWorkspacePrimaryRestDatasource", () => {

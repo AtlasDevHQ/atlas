@@ -157,6 +157,14 @@ describe("notion-data candidate (slice 6b, #3029 — required-header proof)", ()
     // NOT the Stripe last-item-id dialect.
     expect(NOTION_DATA_CANDIDATE.pagination?.cursorFromLastItem).toBeUndefined();
   });
+
+  it("declares post-search as a read-safe POST (#3035 — Notion search is POST /v1/search, a READ)", () => {
+    // Notion's "list pages in my workspace" is POST /v1/search — a genuine read.
+    // The candidate declares it read-safe so it passes the read gate on a default
+    // install WITHOUT an admin write-allowlist edit (the vendor fact lives in code,
+    // not in Notion API expertise the admin must supply).
+    expect(NOTION_DATA_CANDIDATE.readSafePostOperations).toContain("post-search");
+  });
 });
 
 describe("DATA_CANDIDATE_CONFIG_SCHEMA", () => {

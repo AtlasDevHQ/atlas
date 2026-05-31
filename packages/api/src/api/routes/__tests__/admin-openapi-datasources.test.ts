@@ -724,3 +724,145 @@ describe("admin-openapi-datasources — env scope (group_id, #3044)", () => {
     expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
   });
 });
+
+// ── Breaking-change drift signal (#2979) ─────────────────────────────────────
+
+/** A persisted breaking-change alert as it'd sit in `config.openapi_drift_alert`. */
+const DRIFT_ALERT = {
+  raisedAt: "2026-05-31T01:00:00.000Z",
+  previousProbedAt: "2026-05-30T00:00:00.000Z",
+  currentProbedAt: "2026-05-31T00:00:00.000Z",
+  breakingCount: 1,
+  reasons: [{ kind: "operation_removed", operationId: "getThing", detail: "Operation \"getThing\" was removed" }],
+  counts: {
+    operationsAdded: 0,
+    operationsRemoved: 1,
+    operationsChanged: 0,
+    schemasAdded: 0,
+    schemasRemoved: 0,
+    schemasChanged: 0,
+    fieldsAdded: 0,
+    fieldsRemoved: 0,
+    fieldsRetyped: 0,
+  },
+  acknowledgedAt: null as string | null,
+};
+
+describe("admin-openapi-datasources — breaking-drift signal projection (#2979)", () => {
+  it("GET detail surfaces driftAlert when the install carries one", async () => {
+    configExtra = { openapi_drift_alert: DRIFT_ALERT };
+    const body = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      driftAlert: { breakingCount: number; acknowledgedAt: string | null; reasons: unknown[] } | null;
+    };
+    expect(body.driftAlert).not.toBeNull();
+    expect(body.driftAlert?.breakingCount).toBe(1);
+    expect(body.driftAlert?.acknowledgedAt).toBeNull();
+    expect(body.driftAlert?.reasons).toHaveLength(1);
+  });
+
+  it("GET detail projects driftAlert to null when the field is absent or malformed", async () => {
+    // Absent (the fixture default) → null.
+    const noAlert = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as { driftAlert: unknown };
+    expect(noAlert.driftAlert).toBeNull();
+
+    // A malformed record (missing the load-bearing raisedAt) → null, never garbage.
+    configExtra = { openapi_drift_alert: { currentProbedAt: "x" } };
+    const malformed = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as { driftAlert: unknown };
+    expect(malformed.driftAlert).toBeNull();
+  });
+});
+
+describe("admin-openapi-datasources — acknowledge-drift endpoint (#2979)", () => {
+  it("stamps acknowledgedAt via jsonb_set, scoped to the workspace", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1/acknowledge-drift", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { acknowledged: boolean }).toEqual({ acknowledged: true });
+
+    const update = db.calls.find(([sql]) => sql.includes("UPDATE") && sql.includes("jsonb_set"));
+    expect(update).toBeDefined();
+    expect(update![0]).toContain("openapi_drift_alert,acknowledgedAt");
+    expect(update![0]).toContain("workspace_id = $1");
+    expect(update![0]).not.toContain("auth_value");
+    // [orgId, installId, catalogId, <iso acknowledgedAt>]
+    expect(update![1][0]).toBe(FIXTURE.owner);
+    expect(update![1][1]).toBe("ds-1");
+    expect(update![1][2]).toBe(CATALOG_ID);
+    expect(typeof update![1][3]).toBe("string");
+  });
+
+  it("404s acknowledge for a workspace that does not own the install (no UPDATE)", async () => {
+    CURRENT_ORG = "org-attacker";
+    const res = await adminOpenApiDatasources.request("/ds-1/acknowledge-drift", { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(db.calls.find(([sql]) => sql.includes("jsonb_set"))).toBeUndefined();
+  });
+
+  it("404s acknowledge for a nonexistent install", async () => {
+    const res = await adminOpenApiDatasources.request("/does-not-exist/acknowledge-drift", { method: "POST" });
+    expect(res.status).toBe(404);
+  });
+
+  it("is an idempotent no-op on an install with no raised alert (guarded by jsonb_typeof)", async () => {
+    // beforeEach leaves configExtra empty → the install carries no openapi_drift_alert.
+    // The handler still 200s and issues the UPDATE, but the WHERE clause carries the
+    // `jsonb_typeof(...) = 'object'` guard, so in real Postgres the row is untouched
+    // (no JSON null gets coerced into a malformed object). This documents the
+    // "already-cleared / not-yet-raised install" path called out in the handler.
+    const res = await adminOpenApiDatasources.request("/ds-1/acknowledge-drift", { method: "POST" });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { acknowledged: boolean }).toEqual({ acknowledged: true });
+
+    const update = db.calls.find(([sql]) => sql.includes("UPDATE") && sql.includes("jsonb_set"));
+    expect(update).toBeDefined();
+    expect(update![0]).toContain("jsonb_typeof(config->'openapi_drift_alert') = 'object'");
+  });
+});
+
+describe("admin-openapi-datasources — manual rediscover drift lifecycle (#2979)", () => {
+  it("CLEARS the standing signal on a clean manual refresh (writes openapi_drift_alert null)", async () => {
+    // The fixture's prior snapshot has empty paths; the mocked re-probe returns an
+    // empty graph → the diff is `unchanged` (clean) → manual refresh CLEARS the pill.
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    const update = db.calls.find(([sql]) => sql.includes("UPDATE") && sql.includes("openapi_snapshot"));
+    expect(update).toBeDefined();
+    expect(update![0]).toContain("openapi_drift_alert");
+    // No watermark on the manual path, so the alert is bound at $6 → JSON null clear.
+    expect(update![1]).toHaveLength(6);
+    expect(update![1][5]).toBeNull();
+  });
+
+  it("does NOT raise a persisted pill on a breaking manual refresh (admin sees the inline diff)", async () => {
+    // Prior snapshot declares an operation; the empty re-probe makes the diff
+    // "1 operation removed" = BREAKING. A MANUAL refresh must LEAVE the persisted
+    // signal alone (no openapi_drift_alert in the merge) — only the scheduler raises.
+    configExtra = {
+      openapi_snapshot: {
+        probedAt: "2026-05-28T00:00:00.000Z",
+        title: "Widget API",
+        version: "1.0.0",
+        openapiVersion: "3.1.0",
+        operationCount: 1,
+        doc: {
+          openapi: "3.1.0",
+          info: { title: "Widget API", version: "1.0.0" },
+          paths: {
+            "/things/{id}": {
+              get: {
+                operationId: "getThing",
+                parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+                responses: { "200": { description: "ok" } },
+              },
+            },
+          },
+        },
+      },
+    };
+    const res = await adminOpenApiDatasources.request("/ds-1/rediscover", { method: "POST" });
+    expect(res.status).toBe(200);
+    const update = db.calls.find(([sql]) => sql.includes("UPDATE") && sql.includes("openapi_snapshot"));
+    expect(update).toBeDefined();
+    expect(update![0]).not.toContain("openapi_drift_alert"); // LEAVE — no pill raised
+    expect(update![1]).toHaveLength(5); // snapshot + diff only, no alert param
+  });
+});

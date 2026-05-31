@@ -44,6 +44,11 @@ import {
 } from "@atlas/api/lib/openapi/spec-refresh";
 import { performRediscovery, persistRediscoverySnapshot } from "@atlas/api/lib/openapi/rediscover";
 import { summarizeSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
+import {
+  resolveDriftAlertWrite,
+  projectDriftAlert,
+  OPENAPI_DRIFT_ALERT_FIELD,
+} from "@atlas/api/lib/openapi/breaking-change";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -97,6 +102,13 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
     // / malformed `openapi_last_diff` projects to `null` (no banner) instead of
     // rendering NaN counts. The full structured diff stays in config for #2979.
     lastRefresh: summarizeSpecDiffRecord(c.openapi_last_diff),
+    // Persisted breaking-change signal raised by a SCHEDULED re-discovery (#2979).
+    // Fail-soft: a missing / cleared (JSON null) / malformed record projects to
+    // `null` (no pill). Distinct from `lastRefresh` — this is the standing BREAKING
+    // alert (operations/fields the agent relied on were removed/retyped under it),
+    // acknowledgeable via POST {id}/acknowledge-drift and auto-cleared on the next
+    // clean refresh.
+    driftAlert: projectDriftAlert(c[OPENAPI_DRIFT_ALERT_FIELD]),
   };
 }
 
@@ -209,6 +221,23 @@ const patchRoute = createRoute({
   responses: {
     200: { description: "Updated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Bad request", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const acknowledgeDriftRoute = createRoute({
+  method: "post",
+  path: "/{installId}/acknowledge-drift",
+  tags: ["Admin — OpenAPI Datasources"],
+  summary: "Acknowledge (dismiss) the breaking-change drift signal on a datasource",
+  request: {
+    params: z.object({ installId: z.string().min(1).openapi({ param: { name: "installId", in: "path" } }) }),
+  },
+  responses: {
+    200: { description: "Acknowledged", content: { "application/json": { schema: z.object({ acknowledged: z.boolean() }) } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -370,10 +399,18 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
 
     const { snapshot, diffRecord, drift } = result;
 
+    // #2979 — resolve the breaking-change signal write for the MANUAL trigger:
+    // "Refresh now" never RAISES a persisted pill (the admin is already looking at
+    // the inline diff), but a genuinely-clean refresh CLEARS any standing alert (the
+    // "all good now" signal) and a baseline LEAVEs it. Same pure helper the scheduler
+    // threads, so manual + scheduled stay in lockstep.
+    const { write: alertWrite } = resolveDriftAlertWrite(diffRecord, "manual", new Date().toISOString());
+
     // Persist the fresh snapshot AND the computed diff against the install in one
     // JSONB merge (AC2) + evict the in-process graph cache (#3009). The manual route
-    // passes no watermark, so the merge is the pre-#2978 statement byte-for-byte.
-    await persistRediscoverySnapshot(orgId, installId, snapshot, diffRecord);
+    // passes no watermark; the alert write is the only addition vs. the pre-#2978
+    // statement (and only on a clean refresh's clear — breaking/baseline leave it).
+    await persistRediscoverySnapshot(orgId, installId, snapshot, diffRecord, undefined, alertWrite);
 
     if (!drift) {
       // We just built and persisted `diffRecord`; if it fails to project, the
@@ -433,6 +470,47 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
       },
       200,
     );
+  }),
+);
+
+adminOpenApiDatasources.openapi(acknowledgeDriftRoute, async (c) =>
+  runHandler(c, "acknowledge openapi drift signal", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    const { installId } = c.req.valid("param");
+    const row = await loadInstall(orgId, installId);
+    if (!row) {
+      return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
+    }
+
+    // Stamp `acknowledgedAt` on the persisted alert — the projection then hides the
+    // pill while the alert record (and its forensic detail) is retained until the
+    // next clean refresh clears it. `jsonb_set(..., create_missing = false)` only
+    // sets the nested key when the alert object already carries it (a raised record
+    // always does); the `jsonb_typeof = 'object'` guard makes acknowledging a
+    // not-yet-raised / already-cleared install an idempotent no-op rather than
+    // coercing JSON null into a malformed object. The field name is a code constant
+    // (never client input), so splicing it into the path is safe; the timestamp is
+    // bound. No graph-cache eviction — the snapshot is untouched.
+    const acknowledgedAt = new Date().toISOString();
+    await internalQuery(
+      `UPDATE workspace_plugins
+          SET config = jsonb_set(config, '{${OPENAPI_DRIFT_ALERT_FIELD},acknowledgedAt}', to_jsonb($4::text), false),
+              updated_at = NOW()
+        WHERE workspace_id = $1 AND install_id = $2 AND catalog_id = $3 AND pillar = 'datasource'
+          AND jsonb_typeof(config->'${OPENAPI_DRIFT_ALERT_FIELD}') = 'object'`,
+      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, acknowledgedAt],
+    );
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.connection.update,
+      targetType: "connection",
+      targetId: installId,
+      scope: "workspace",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { installId, kind: "openapi-drift-acknowledge", acknowledgedAt },
+    });
+
+    return c.json({ acknowledged: true }, 200);
   }),
 );
 

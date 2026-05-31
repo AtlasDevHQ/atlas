@@ -20,6 +20,7 @@ import { useState } from "react";
 import { z } from "zod";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   ExternalLink,
   Loader2,
   Network,
@@ -77,6 +78,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { getApiUrl } from "@/lib/api-url";
+import { cn } from "@/lib/utils";
 
 const OPENAPI_SLUG = "openapi-generic";
 
@@ -127,6 +129,37 @@ const LastRefreshSchema = z
   .nullable();
 type DriftCounts = z.infer<typeof DriftCountsSchema>;
 
+/**
+ * One breaking change in the persisted drift signal (#2979) — a legible descriptor
+ * the pill renders. Mirrors the API's `BreakingReason`. Non-strict so a future
+ * reason kind doesn't fail validation; the pill shows whatever `detail` it carries.
+ */
+const BreakingReasonSchema = z.object({
+  kind: z.string(),
+  operationId: z.string().optional(),
+  schema: z.string().optional(),
+  path: z.string().optional(),
+  detail: z.string(),
+});
+
+/**
+ * The persisted breaking-change signal (#2979), raised by a SCHEDULED re-discovery
+ * when the upstream spec removed/retyped something the agent relied on. `null` (or
+ * absent) when there's no standing alert; `acknowledgedAt` is set once an admin
+ * dismisses it (the pill then hides). Mirrors the API's `SpecDriftAlertSummary`.
+ */
+const DriftAlertSchema = z
+  .object({
+    raisedAt: z.string(),
+    previousProbedAt: z.string().nullable(),
+    currentProbedAt: z.string(),
+    breakingCount: z.number(),
+    reasons: z.array(BreakingReasonSchema),
+    counts: DriftCountsSchema,
+    acknowledgedAt: z.string().nullable(),
+  })
+  .nullable();
+
 const DatasourceSummarySchema = z.object({
   id: z.string(),
   displayName: z.string(),
@@ -142,6 +175,8 @@ const DatasourceSummarySchema = z.object({
   snapshot: SnapshotSchema,
   // Optional for back-compat with any cached/old list response; absent → no banner.
   lastRefresh: LastRefreshSchema.optional(),
+  // Persisted breaking-change signal (#2979). Optional for back-compat; absent → no pill.
+  driftAlert: DriftAlertSchema.optional(),
 });
 type DatasourceSummary = z.infer<typeof DatasourceSummarySchema>;
 
@@ -226,6 +261,18 @@ function driftLabel(lastRefresh: DatasourceSummary["lastRefresh"]): string | nul
   }
   if (lastRefresh.unchanged) return "No changes";
   return formatDriftSummary(lastRefresh.counts);
+}
+
+/**
+ * The breaking-drift pill's secondary line (#2979): up to two reason details, then
+ * "+N more" against the TRUE total (`breakingCount`, which may exceed the capped
+ * `reasons` sample). Falls back to a generic line if the sample is empty.
+ */
+function formatBreakingReasons(reasons: ReadonlyArray<{ detail: string }>, total: number): string {
+  if (reasons.length === 0) return "Operations or fields the agent relied on changed.";
+  const shown = reasons.slice(0, 2).map((r) => r.detail);
+  const remaining = total - shown.length;
+  return remaining > 0 ? `${shown.join("; ")}; +${remaining} more` : shown.join("; ");
 }
 
 interface OpenApiProviderBlockProps {
@@ -380,6 +427,12 @@ function OpenApiInstallCard({
     method: "DELETE",
     invalidates: onChange,
   });
+  // #2979 — dismiss the persisted breaking-change pill.
+  const acknowledgeDrift = useAdminMutation<{ acknowledged: boolean }>({
+    path: `/api/v1/admin/openapi-datasources/${encodeURIComponent(ds.id)}/acknowledge-drift`,
+    method: "POST",
+    invalidates: onChange,
+  });
 
   const host = (() => {
     const url = ds.baseUrlOverride ?? ds.openapiUrl;
@@ -398,6 +451,10 @@ function OpenApiInstallCard({
   // (prior spec unreadable) — both warrant the operator's attention.
   const driftIsChange = !!lastRefresh && !lastRefresh.baseline && !lastRefresh.unchanged;
   const driftNeedsAttention = driftIsChange || !!lastRefresh?.priorParseFailed;
+  // #2979 — the persisted BREAKING signal, distinct from the transient `lastRefresh`
+  // line above. Shown only while raised AND not yet acknowledged; a clean refresh or
+  // an acknowledge clears it server-side and the pill disappears on the next fetch.
+  const breakingAlert = ds.driftAlert && !ds.driftAlert.acknowledgedAt ? ds.driftAlert : null;
   const refreshedAt = (() => {
     if (!lastRefresh) return null;
     const d = new Date(lastRefresh.currentProbedAt);
@@ -472,6 +529,15 @@ function OpenApiInstallCard({
     }
   }
 
+  async function handleAcknowledgeDrift() {
+    const result = await acknowledgeDrift.mutate({});
+    if (result.ok) {
+      toast.success("Drift alert dismissed");
+    } else {
+      toast.error(friendlyErrorOrNull(result.error) ?? "Couldn't dismiss the alert");
+    }
+  }
+
   return (
     <>
       <Shell
@@ -511,6 +577,37 @@ function OpenApiInstallCard({
           </>
         }
       >
+        {breakingAlert ? (
+          <div
+            role="alert"
+            data-testid="openapi-drift-alert"
+            className={cn(
+              "mb-2 flex items-start gap-2 rounded-md border px-3 py-2",
+              "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+            )}
+          >
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium">
+                Upstream API changed — {plural(breakingAlert.breakingCount, "breaking change")}
+              </p>
+              <p className="mt-0.5 break-words text-[11px] text-amber-700/80 dark:text-amber-400/80">
+                {formatBreakingReasons(breakingAlert.reasons, breakingAlert.breakingCount)}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-amber-700 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300"
+              onClick={handleAcknowledgeDrift}
+              disabled={acknowledgeDrift.saving}
+              data-testid="openapi-drift-acknowledge"
+            >
+              {acknowledgeDrift.saving ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+              Acknowledge
+            </Button>
+          </div>
+        ) : null}
         <DetailList>
           {ds.openapiUrl ? <DetailRow label="Spec URL" value={ds.openapiUrl} mono truncate /> : null}
           {ds.baseUrlOverride ? (

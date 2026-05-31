@@ -24,8 +24,10 @@ import {
 import {
   _resetInstallHandlerRegistries,
   registerFormHandler,
+  registerOAuthDatasourceHandler,
   registerOAuthHandler,
   type FormBasedInstallHandler,
+  type OAuthDatasourceInstallHandler,
   type OAuthPlatformInstallHandler,
 } from "@atlas/api/lib/integrations/install";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
@@ -785,6 +787,111 @@ describe("GET /api/v1/integrations/salesforce/callback — redirects to /admin/c
     expect(location).toContain("https://app.atlas.example/admin/connections");
     expect(location).toContain("error=salesforce");
     expect(location).toContain("reason=invalid_state");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// github-data — oauth-datasource callback (v0.0.2 slice 6c, #3030).
+//
+// github-data shares the OAuth install/callback route with `oauth` but is a
+// `pillar='datasource'` install that renders on `/admin/connections`. Two
+// route-level invariants this suite pins (both untested when the slice landed):
+//   1. The `install_model: 'oauth-datasource'` row is accepted on this route
+//      and the github-data callback requires BOTH code + installation_id (the
+//      same INSTALLATION_ID_PLATFORMS branch as the `github` action row).
+//   2. The success / reconnect redirect lands on `/admin/connections` — NOT
+//      `/admin/integrations` — because a datasource card lives there. A
+//      regression collapsing `adminDestinationForPlatform` back to a single
+//      path (or dropping github-data from INSTALLATION_ID_PLATFORMS) is caught
+//      here.
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/integrations/github-data/callback — oauth-datasource flow", () => {
+  let githubDataCallbackImpl: () => Promise<CallbackResult> = async () => null;
+
+  const githubDataHandler: OAuthDatasourceInstallHandler = {
+    kind: "oauth-datasource" as const,
+    startInstall: async () => ({
+      redirectUrl: "https://github.com/apps/atlas-test/installations/new?state=stub",
+      stateToken: "stub",
+    }),
+    handleCallback: async () => githubDataCallbackImpl(),
+  };
+
+  beforeAll(() => {
+    registerOAuthDatasourceHandler("github-data", githubDataHandler);
+  });
+
+  beforeEach(() => {
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: "business", is_operator_workspace: false }];
+      }
+      return [{ slug: "github-data", install_model: "oauth-datasource", enabled: true, min_plan: "starter" }];
+    });
+    githubDataCallbackImpl = async () => null;
+  });
+
+  it("accepts code + installation_id and redirects to /admin/connections?installed=github-data on success", async () => {
+    githubDataCallbackImpl = async () => ({
+      workspaceId: "ws-1" as never,
+      catalogId: "github-data",
+      installRecord: { id: "install-gh-data-1", workspaceId: "ws-1" as never, catalogId: "github-data" },
+      credentialResult: { written: true },
+    });
+
+    const res = await request(
+      "/api/v1/integrations/github-data/callback?code=user-oauth&installation_id=123456789&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    // The fix: a datasource install lands on /admin/connections, not /admin/integrations.
+    expect(res.headers.get("location")).toBe(
+      "https://app.atlas.example/admin/connections?installed=github-data",
+    );
+  });
+
+  it("routes reconnect= to /admin/connections when the credential health-check missed", async () => {
+    githubDataCallbackImpl = async () => ({
+      workspaceId: "ws-1" as never,
+      catalogId: "github-data",
+      installRecord: { id: "install-gh-data-2", workspaceId: "ws-1" as never, catalogId: "github-data" },
+      credentialResult: { written: false, reason: "mint failed" },
+    });
+
+    const res = await request(
+      "/api/v1/integrations/github-data/callback?code=user-oauth&installation_id=123456789&state=stub",
+      { headers: { Accept: "text/html" } },
+    );
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(
+      "https://app.atlas.example/admin/connections?reconnect=github-data",
+    );
+  });
+
+  it("rejects github-data callback missing `installation_id` with 400 missing_credential_identifier", async () => {
+    const res = await request(
+      "/api/v1/integrations/github-data/callback?code=user-oauth&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; requestId?: string };
+    expect(body.error).toBe("missing_credential_identifier");
+    expect(body.requestId).toBeDefined();
+  });
+
+  it("rejects github-data callback missing `code` with 400 missing_credential_identifier", async () => {
+    const res = await request(
+      "/api/v1/integrations/github-data/callback?installation_id=123456789&state=stub",
+      { headers: { Accept: "application/json" } },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("missing_credential_identifier");
   });
 });
 

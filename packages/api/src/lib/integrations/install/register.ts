@@ -32,6 +32,7 @@ import { DataCandidateFormInstallHandler } from "./data-candidate-form-handler";
 import { OAuthDatasourceInstallHandler } from "./oauth-datasource-handler";
 import {
   DATA_CANDIDATES,
+  GITHUB_DATA_CANDIDATE,
   isOAuthDatasourceCandidate,
 } from "@atlas/api/lib/openapi/data-candidates";
 import { WebhookFormInstallHandler } from "./webhook-form-handler";
@@ -857,8 +858,11 @@ function registerGitHubSingleTenantOAuthHandler(): void {
  * here too.
  */
 function registerGitHubDataOAuthDatasourceHandler(): void {
-  const candidate = DATA_CANDIDATES.find(isOAuthDatasourceCandidate);
-  if (!candidate) return; // no oauth-datasource candidate in the registry
+  // Pinned to the github-data candidate specifically — NOT
+  // `DATA_CANDIDATES.find(isOAuthDatasourceCandidate)`, which would hand a future
+  // second oauth-datasource vendor GitHub's env gate + callback wiring. Each new
+  // oauth-datasource vendor must get its own dedicated registration helper.
+  const candidate = GITHUB_DATA_CANDIDATE;
 
   const appId = process.env.GITHUB_APP_ID;
   const appSlug = process.env.GITHUB_APP_SLUG;

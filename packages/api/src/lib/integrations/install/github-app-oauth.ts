@@ -233,6 +233,18 @@ export async function findUserInstallation(
     }
     url = parseNextLinkHeader(resp.headers.get("link"));
   }
+  // Two ways out of the loop, with very different meanings — log the cap-hit so
+  // a legitimate user whose target sits past the cap (whom we fail closed below,
+  // surfacing the same "not owned" error as a genuine cross-tenant tamper) is
+  // diagnosable from logs rather than from a confused operator. `url !== null`
+  // means we stopped because we hit MAX_INSTALLATIONS_PAGES with more pages left.
+  if (url !== null) {
+    log.warn(
+      { platform: opts.platform, pagesWalked: page, installationIdTail: targetInstallationId.slice(-4) },
+      "Installation-ownership walk hit the page cap without matching — failing closed. " +
+        "If a legitimate user owns many installations, raise MAX_INSTALLATIONS_PAGES.",
+    );
+  }
   return null;
 }
 

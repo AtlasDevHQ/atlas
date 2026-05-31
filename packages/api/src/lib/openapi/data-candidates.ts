@@ -25,8 +25,9 @@
  * ## Seeding + resolution
  * Each candidate is a real `plugin_catalog` row (datasource pillar) so it surfaces
  * in `/admin/connections` as its own installable card. The boot seed
- * (`data-candidate-seed.ts`) re-asserts every row idempotently; migration
- * 0109 inserts them on fresh DBs. An install writes a `workspace_plugins` row
+ * (`data-candidate-seed.ts`) re-asserts every row idempotently; migrations
+ * 0109 (stripe-data) / 0111 (github-data) insert them on fresh DBs. An install
+ * writes a `workspace_plugins` row
  * under the candidate's {@link DataCandidate.catalogId}; the workspace resolver
  * (`workspace-datasource.ts`) matches those ids alongside `openapi-generic` and
  * attaches the candidate's {@link DataCandidate.quirk} to the resolved
@@ -80,6 +81,13 @@ export interface FormDataCandidate extends BaseDataCandidate {
   readonly installModel?: "form";
   /** Pre-filled auth kind — the admin only supplies the credential value. */
   readonly authKind: SupportedAuthKind;
+  /**
+   * Never set on a form candidate — its credential is a static form field, not
+   * an OAuth dance. Present as `?: never` so the union makes the both-fields
+   * combination (`authKind` + `credentialMode`) a compile error rather than a
+   * convention the JSDoc only asserts.
+   */
+  readonly credentialMode?: never;
 }
 
 /**
@@ -98,6 +106,12 @@ export interface OAuthDatasourceDataCandidate extends BaseDataCandidate {
    * + re-minted on ~1hr expiry.
    */
   readonly credentialMode: "github-app-installation";
+  /**
+   * Never set on an oauth-datasource candidate — its credential comes from the
+   * OAuth dance, not a static `authKind`. `?: never` makes a candidate that
+   * declares both an OAuth credential mode and a static auth kind unrepresentable.
+   */
+  readonly authKind?: never;
 }
 
 /**

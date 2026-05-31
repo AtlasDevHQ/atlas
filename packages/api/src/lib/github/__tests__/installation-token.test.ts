@@ -209,3 +209,89 @@ describe("getGitHubInstallationToken — failure modes", () => {
     expect(ok.calls).toHaveLength(1);
   });
 });
+
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000; // mirror the module constant
+
+/** A fetch stub that returns a 201 mint WITHOUT an `expires_at` field. */
+function noExpiryFetch(token: string): {
+  fetchImpl: typeof globalThis.fetch;
+  calls: number;
+} {
+  const state = { calls: 0 };
+  const fetchImpl = (async () => {
+    state.calls++;
+    return new Response(JSON.stringify({ token }), {
+      status: 201,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof globalThis.fetch;
+  return {
+    fetchImpl,
+    get calls() {
+      return state.calls;
+    },
+  };
+}
+
+describe("getGitHubInstallationToken — missing/unparseable expires_at fallback", () => {
+  it("returns the token and caps validity to the safety margin (re-mints after it, using the injected clock)", async () => {
+    const fetch1 = noExpiryFetch("ghs_no_expiry");
+    const first = await getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: fetch1.fetchImpl, now: () => T0_MS,
+    });
+    expect(first).toBe("ghs_no_expiry");
+    expect(fetch1.calls).toBe(1);
+
+    // Capped expiry = now + margin*2, so refreshAtMs = now + margin. Within the
+    // margin the cache serves; the injected clock (not wall-clock) drives this.
+    const withinMargin = await getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: fetch1.fetchImpl, now: () => T0_MS + TOKEN_REFRESH_MARGIN_MS - 1,
+    });
+    expect(withinMargin).toBe("ghs_no_expiry");
+    expect(fetch1.calls).toBe(1); // still cached — no re-mint
+
+    // Past the capped refresh point → a fresh mint.
+    const fetch2 = noExpiryFetch("ghs_no_expiry_2");
+    const afterMargin = await getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: fetch2.fetchImpl, now: () => T0_MS + TOKEN_REFRESH_MARGIN_MS + 1,
+    });
+    expect(afterMargin).toBe("ghs_no_expiry_2");
+    expect(fetch2.calls).toBe(1);
+  });
+});
+
+describe("getGitHubInstallationToken — single-flight", () => {
+  it("coalesces concurrent cold-cache callers onto ONE mint", async () => {
+    const { fetchImpl, calls } = mintFetch({ token: "ghs_shared", expiresInMs: 3_600_000 });
+    // Both promises are created before either is awaited → the second sees the
+    // in-flight mint registered synchronously by the first and shares it.
+    const p1 = getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl, now: () => T0_MS,
+    });
+    const p2 = getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl, now: () => T0_MS,
+    });
+    const [t1, t2] = await Promise.all([p1, p2]);
+
+    expect(t1).toBe("ghs_shared");
+    expect(t2).toBe("ghs_shared");
+    expect(calls).toHaveLength(1); // ONE mint round-trip, not two
+  });
+
+  it("clears the in-flight entry after a failed mint so the next call retries", async () => {
+    const failing = mintFetch({ token: "", expiresInMs: 0, status: 500 });
+    await expect(
+      getGitHubInstallationToken(INSTALLATION_ID, {
+        appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: failing.fetchImpl, now: () => T0_MS,
+      }),
+    ).rejects.toBeInstanceOf(GitHubInstallationTokenError);
+
+    // The in-flight slot was released in `finally`, so a fresh mint can proceed.
+    const ok = mintFetch({ token: "ghs_after_inflight_fail", expiresInMs: 3_600_000 });
+    const token = await getGitHubInstallationToken(INSTALLATION_ID, {
+      appId: APP_ID, privateKey: APP_PRIVATE_KEY, fetchImpl: ok.fetchImpl, now: () => T0_MS,
+    });
+    expect(token).toBe("ghs_after_inflight_fail");
+    expect(ok.calls).toHaveLength(1);
+  });
+});

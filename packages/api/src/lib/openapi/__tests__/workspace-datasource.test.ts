@@ -12,6 +12,7 @@ import {
   resolveWorkspaceRestDatasourcesOrThrow,
   resolveWorkspacePrimaryRestDatasource,
   defaultQuery,
+  RestDatasourceReconnectError,
   type OpenApiInstallRow,
 } from "../workspace-datasource";
 import { buildOperationGraph } from "../spec";
@@ -478,5 +479,52 @@ describe("resolveWorkspaceRestDatasources — github-data (oauth-datasource)", (
     });
     expect(result).toHaveLength(0);
     expect(called).toBe(false);
+  });
+
+  // ── reconnect-needed: present-but-unresolvable, distinct from "none" ────────
+  it("STRICT resolver throws RestDatasourceReconnectError when the only datasource needs reconnect (mint fails)", async () => {
+    // A user-facing caller (the executeRestOperation tool) must be able to tell
+    // "your datasource needs reconnecting" apart from "no datasource connected".
+    await expect(
+      resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+        query: queryReturning([githubRow()]),
+        mintInstallationToken: async () => {
+          throw new Error("App access revoked");
+        },
+      }),
+    ).rejects.toBeInstanceOf(RestDatasourceReconnectError);
+  });
+
+  it("STRICT resolver throws RestDatasourceReconnectError when the only datasource is missing its installation_id", async () => {
+    await expect(
+      resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+        query: queryReturning([githubRow({ installation_id: undefined })]),
+        mintInstallationToken: async () => "unused",
+      }),
+    ).rejects.toBeInstanceOf(RestDatasourceReconnectError);
+  });
+
+  it("STRICT resolver does NOT throw when a healthy datasource coexists with a reconnect-needed one", async () => {
+    // Partial success — the reconnect signal fires only when nothing usable remains.
+    const result = await resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+      query: queryReturning([
+        githubRow(),
+        { install_id: "ok", config: config({ openapi_snapshot: snapshot("2026-05-30T02:00:00.000Z") }) },
+      ]),
+      mintInstallationToken: async () => {
+        throw new Error("App access revoked");
+      },
+    });
+    expect(result.map((d) => d.id)).toEqual(["ok"]);
+  });
+
+  it("never-rejects resolver degrades to [] (no throw) for a reconnect-needed-only workspace", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([githubRow()]),
+      mintInstallationToken: async () => {
+        throw new Error("App access revoked");
+      },
+    });
+    expect(result).toEqual([]);
   });
 });

@@ -38,7 +38,13 @@ const log = createLogger("github.installation-token");
 
 const GITHUB_API_BASE = "https://api.github.com";
 const JWT_ALG = "RS256";
-/** App-JWT lifetime. GitHub caps this at 10min; 9 leaves headroom for skew. */
+/**
+ * App-JWT lifetime measured from `now` (the `exp` claim is `now + this`). GitHub
+ * rejects a JWT whose `exp` is more than 10min after its `iat`; with the 60s
+ * back-date below the `exp − iat` span is 540 + 60 = 600s = exactly that 10min
+ * cap. Do NOT raise either constant independently — together they sit on the
+ * limit, so any increase pushes the span over it and GitHub rejects the JWT.
+ */
 const APP_JWT_TTL_SECONDS = 9 * 60;
 /** Back-date `iat` so a fast/slow clock at GitHub doesn't reject a just-minted JWT. */
 const APP_JWT_BACKDATE_SECONDS = 60;
@@ -87,9 +93,20 @@ interface CacheEntry {
 /** Process-local cache keyed by installation id. */
 const cache = new Map<string, CacheEntry>();
 
-/** @internal Test-only — drops every cached installation token. */
+/**
+ * In-flight mints keyed by installation id. Coalesces concurrent cold-cache
+ * callers (e.g. two chat turns in the same workspace racing on a just-expired
+ * token) onto ONE mint round-trip rather than each firing its own. A failed
+ * mint rejects all waiters and is removed (never cached), so the next call
+ * retries. Concurrent callers share the first caller's `deps` — fine in
+ * production where deps are env-derived and identical.
+ */
+const inFlight = new Map<string, Promise<string>>();
+
+/** @internal Test-only — drops every cached + in-flight installation token. */
 export function __resetInstallationTokenCacheForTests(): void {
   cache.clear();
+  inFlight.clear();
 }
 
 /** Minimal subset of GitHub's access-token response we consume. */
@@ -122,6 +139,26 @@ export async function getGitHubInstallationToken(
     return cached.token;
   }
 
+  // Single-flight: a concurrent caller already minting for this installation
+  // shares that promise instead of issuing a duplicate mint.
+  const existing = inFlight.get(installationId);
+  if (existing) return existing;
+
+  const minting = mintAndCache(installationId, deps, now);
+  inFlight.set(installationId, minting);
+  try {
+    return await minting;
+  } finally {
+    inFlight.delete(installationId);
+  }
+}
+
+/** Sign the App JWT, exchange it for an installation token, and cache the result. */
+async function mintAndCache(
+  installationId: string,
+  deps: InstallationTokenDeps,
+  now: () => number,
+): Promise<string> {
   const appId = deps.appId ?? process.env.GITHUB_APP_ID;
   const privateKey = deps.privateKey ?? process.env.GITHUB_APP_PRIVATE_KEY;
   if (!appId || !privateKey) {
@@ -131,13 +168,16 @@ export async function getGitHubInstallationToken(
     );
   }
 
-  const appJwt = await signAppJwt(appId, privateKey, now());
-  const minted = await mintInstallationToken(installationId, appJwt, deps.fetchImpl);
+  // Snapshot the clock once so the JWT claims, the expiry-cap fallback, and the
+  // debug log all share one timestamp.
+  const nowMs = now();
+  const appJwt = await signAppJwt(appId, privateKey, nowMs);
+  const minted = await mintInstallationToken(installationId, appJwt, deps.fetchImpl, nowMs);
 
   const refreshAtMs = minted.expiresAtMs - TOKEN_REFRESH_MARGIN_MS;
   cache.set(installationId, { token: minted.token, refreshAtMs });
   log.debug(
-    { installationIdTail: installationId.slice(-4), refreshInSeconds: Math.round((refreshAtMs - now()) / 1000) },
+    { installationIdTail: installationId.slice(-4), refreshInSeconds: Math.round((refreshAtMs - nowMs) / 1000) },
     "Minted GitHub installation token",
   );
   return minted.token;
@@ -175,6 +215,7 @@ async function mintInstallationToken(
   installationId: string,
   appJwt: string,
   fetchImpl: typeof globalThis.fetch | undefined,
+  nowMs: number,
 ): Promise<{ token: string; expiresAtMs: number }> {
   const fetcher = fetchImpl ?? globalThis.fetch;
   const url = `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`;
@@ -241,7 +282,15 @@ async function mintInstallationToken(
   if (!Number.isFinite(expiresAtMs)) {
     // No (or unparseable) expiry — treat the token as valid only for the safety
     // margin so we re-mint promptly rather than caching an unbounded credential.
-    return { token: parsed.token, expiresAtMs: Date.now() + TOKEN_REFRESH_MARGIN_MS * 2 };
+    // Log it: GitHub always sends `expires_at`, so a miss signals an upstream
+    // contract change / a proxy stripping the field, and the cap silently ~12×es
+    // mint traffic otherwise. Use the injected clock (not wall-clock) so the
+    // capped expiry stays consistent with the cache check in the caller.
+    log.warn(
+      { installationIdTail: installationId.slice(-4) },
+      "GitHub installation-token response had no parseable expires_at — capping validity to the safety margin",
+    );
+    return { token: parsed.token, expiresAtMs: nowMs + TOKEN_REFRESH_MARGIN_MS * 2 };
   }
   return { token: parsed.token, expiresAtMs };
 }

@@ -82,13 +82,18 @@ describe("probeSpec", () => {
     expect(graph.info.title).toBe("Mock Widget API");
   });
 
-  it("sends bearer auth on the probe request", async () => {
+  it("sends bearer auth on the probe request (spec host == API host)", async () => {
     let seen: Record<string, string> = {};
     const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
       seen = (init?.headers as Record<string, string>) ?? {};
       return new Response(JSON.stringify(MOCK_OPENAPI_SPEC), { status: 200 });
     }) as unknown as typeof globalThis.fetch;
-    await probeSpec("https://x.com/o.json", { kind: "bearer", token: "abc" }, { fetchImpl });
+    // The credential is only attached when the spec is on the API host (#3034) —
+    // pass a same-host apiBaseUrl so this asserts the happy-path send.
+    await probeSpec("https://x.com/o.json", { kind: "bearer", token: "abc" }, {
+      fetchImpl,
+      apiBaseUrl: "https://x.com",
+    });
     expect(seen.Authorization).toBe("Bearer abc");
   });
 
@@ -122,6 +127,102 @@ describe("probeSpec", () => {
       fetchImpl: fetchReturning(empty),
     }).catch((e) => e);
     expect((err as OpenApiProbeError).reason).toBe("no_operations");
+  });
+});
+
+describe("probeSpec — credential-host gate (#3034)", () => {
+  /** A probe `fetch` that serves the mock spec and captures the URL + headers it saw. */
+  function capturingFetch(spec: unknown = MOCK_OPENAPI_SPEC): {
+    fetchImpl: typeof globalThis.fetch;
+    calls: Array<{ url: string; headers: Record<string, string> }>;
+  } {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : String(input);
+      const headers: Record<string, string> = {};
+      const h = init?.headers as Record<string, string> | undefined;
+      if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+      calls.push({ url, headers });
+      return new Response(JSON.stringify(spec), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    return { fetchImpl, calls };
+  }
+
+  it("withholds the credential when the spec host differs from the API host (third-party spec)", async () => {
+    // The leak the issue describes: a built-in data candidate (stripe-data) pins its
+    // spec to raw.githubusercontent.com while its API lives on api.stripe.com — the
+    // customer's bearer token must NOT reach GitHub.
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
+      { kind: "bearer", token: "sk_live_super_secret" },
+      { fetchImpl, apiBaseUrl: "https://api.stripe.com" },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
+  it("sends the credential when the spec host equals the API host (Twenty same-host spec)", async () => {
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://api.twenty.example/rest/open-api/core",
+      { kind: "bearer", token: "twenty-token" },
+      { fetchImpl, apiBaseUrl: "https://api.twenty.example/rest" },
+    );
+    expect(calls[0].headers.Authorization).toBe("Bearer twenty-token");
+  });
+
+  it("withholds the credential when the API host is unknown (no apiBaseUrl — fail-safe)", async () => {
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec("https://spec.example.com/o.json", { kind: "bearer", token: "tok" }, { fetchImpl });
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
+  it("withholds the apiKey-query credential from a cross-origin spec URL (no key in the query string)", async () => {
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://raw.githubusercontent.com/x/spec.json",
+      { kind: "apiKey", value: "secret-query-key", placement: { in: "query", name: "api_key" } },
+      { fetchImpl, apiBaseUrl: "https://api.vendor.com" },
+    );
+    expect(calls[0].url).not.toContain("api_key");
+    expect(calls[0].url).not.toContain("secret-query-key");
+  });
+
+  it("appends the apiKey-query credential to a same-host spec URL", async () => {
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://api.vendor.com/open-api",
+      { kind: "apiKey", value: "secret-query-key", placement: { in: "query", name: "api_key" } },
+      { fetchImpl, apiBaseUrl: "https://api.vendor.com" },
+    );
+    expect(calls[0].url).toContain("api_key=secret-query-key");
+  });
+
+  it("withholds the credential when the API base host is an empty-host URL (opaque scheme, fail-safe)", async () => {
+    // `urlHost` collapses both unparseable AND empty-host (opaque-scheme) URLs to
+    // null, so two empty hosts must never compare equal and send the credential —
+    // the gate stays fail-safe without leaning on an upstream scheme check.
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://spec.example.com/o.json",
+      { kind: "bearer", token: "tok" },
+      { fetchImpl, apiBaseUrl: "data:text/plain,not-a-host" },
+    );
+    expect(calls[0].headers.Authorization).toBeUndefined();
+  });
+
+  it("withholds an apikey-header credential from a cross-origin spec host", async () => {
+    const { fetchImpl, calls } = capturingFetch();
+    await probeSpec(
+      "https://raw.githubusercontent.com/x/spec.json",
+      { kind: "apiKey", value: "secret-hdr-key", placement: { in: "header", name: "X-API-Key" } },
+      { fetchImpl, apiBaseUrl: "https://api.vendor.com" },
+    );
+    expect(calls[0].headers["X-API-Key"]).toBeUndefined();
   });
 });
 

@@ -57,6 +57,19 @@ export interface BaseDataCandidate {
   /** Pre-filled OpenAPI 3.x spec URL — the admin never pastes this. */
   readonly openapiUrl: string;
   /**
+   * The candidate's real API base URL (host), e.g. `https://api.stripe.com`.
+   * Used SOLELY to gate the install-time probe credential (#3034) — only its HOST
+   * is consulted, and NOT at query time (the executable base URL is re-derived from
+   * the spec's `servers[]` / `base_url_override`; see `workspace-datasource.ts`).
+   * The probe credential is sent to {@link openapiUrl} iff the two share a host.
+   * Today every built-in candidate pins its spec to a public host
+   * (raw.githubusercontent.com) while its API lives elsewhere, so for them this
+   * differs from {@link openapiUrl}'s host — exactly the case the gate is designed
+   * to catch (withhold the credential from the spec host). An admin
+   * `base_url_override` takes precedence over this at probe time.
+   */
+  readonly apiBaseUrl: string;
+  /**
    * Declarative deviations the generic client applies per request (required
    * static headers / query param-shaping). Omit for a perfectly-generic API.
    */
@@ -207,6 +220,10 @@ export const STRIPE_DATA_CANDIDATE: FormDataCandidate = {
     "REST datasource. Pre-wired to Stripe's published OpenAPI spec — paste your secret key, no " +
     "spec URL needed. The agent discovers operations from the spec and queries them directly.",
   openapiUrl: "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
+  // The spec is on GitHub; the API (and the only host the secret key may reach) is
+  // api.stripe.com — so the host-match gate (#3034) withholds the key from the
+  // spec fetch and only sends it at query time.
+  apiBaseUrl: "https://api.stripe.com",
   authKind: "bearer",
   quirk: {
     // Stripe wants array params as `expand[]=a&expand[]=b`; the spec declares a
@@ -256,6 +273,11 @@ export const GITHUB_DATA_CANDIDATE: OAuthDatasourceDataCandidate = {
     "following Link-header pagination.",
   openapiUrl:
     "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+  // The published spec is on GitHub's raw CDN; the API host is api.github.com.
+  // github-data probes with `{ kind: "none" }` (no credential at probe — the
+  // installation token is minted at query time), so the gate is moot here, but the
+  // real API host is declared for accuracy + the host-match contract (#3034).
+  apiBaseUrl: "https://api.github.com",
   installModel: "oauth-datasource",
   credentialMode: "github-app-installation",
   pagination: {
@@ -301,6 +323,10 @@ export const NOTION_DATA_CANDIDATE: DataCandidate = {
     "spec URL needed. The agent discovers operations from the spec and queries them directly.",
   openapiUrl:
     "https://raw.githubusercontent.com/makenotion/notion-mcp-server/main/scripts/notion-openapi.json",
+  // The spec is on GitHub; the API (and the only host the integration token may
+  // reach) is api.notion.com — the host-match gate (#3034) withholds the token
+  // from the spec fetch.
+  apiBaseUrl: "https://api.notion.com",
   authKind: "bearer",
   quirk: {
     // Notion mandates a version header on every request; the spec declares it as an

@@ -342,9 +342,19 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
     }
     const auth = authResult.auth;
 
+    // Host-match credential gate (#3034): the re-probe attaches the stored
+    // credential ONLY when the spec host matches the datasource's API host. This
+    // route manages generic OpenAPI installs, whose API host is the admin-supplied
+    // `base_url_override` (absent ⇒ the credential is withheld — the same fail-safe
+    // the install path applies, so install + rediscover stay symmetric).
+    const baseUrlOverride =
+      typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
+
     let snapshot: OpenApiSnapshot;
     try {
-      const { doc, graph } = await probeSpec(openapiUrl, auth);
+      const { doc, graph } = await probeSpec(openapiUrl, auth, {
+        ...(baseUrlOverride ? { apiBaseUrl: baseUrlOverride } : {}),
+      });
       snapshot = buildSnapshot(doc, graph, new Date().toISOString());
     } catch (err) {
       if (err instanceof OpenApiProbeError) {

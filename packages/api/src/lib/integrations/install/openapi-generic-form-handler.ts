@@ -274,6 +274,14 @@ export interface PersistOpenApiDatasourceInstallParams {
   readonly authHeaderName?: string;
   readonly authParamName?: string;
   readonly baseUrlOverride?: string;
+  /**
+   * The candidate's declared API base URL (host), used only to gate the probe
+   * credential (#3034): the credential is sent to the spec host iff it matches
+   * this host (or the `baseUrlOverride` host, which takes precedence). Absent for
+   * a generic install with no `baseUrlOverride` ⇒ the credential is withheld
+   * (fail-safe). See {@link import("../../openapi/probe").ProbeOptions.apiBaseUrl}.
+   */
+  readonly apiBaseUrl?: string;
   readonly writeAllowlist?: string;
   readonly displayName?: string;
   readonly newId: () => string;
@@ -308,6 +316,7 @@ export async function persistOpenApiDatasourceInstall(
     authHeaderName,
     authParamName,
     baseUrlOverride,
+    apiBaseUrl,
     writeAllowlist,
     displayName,
     newId,
@@ -366,10 +375,18 @@ export async function persistOpenApiDatasourceInstall(
   }
 
   // ── Probe the spec (slice-0) → snapshot ───────────────────────────
-  // The credential is needed because some specs require auth to read. A probe
+  // Some specs require the credential to read (Twenty's same-host /open-api/core);
+  // others are public (the built-in candidates pin their spec to GitHub's raw CDN).
+  // The probe attaches the credential ONLY when the spec host matches the resolved
+  // API host (#3034): `base_url_override` if the admin supplied one, else the
+  // candidate's declared `apiBaseUrl`, else unknown ⇒ withheld (fail-safe). A probe
   // failure is a user-fixable input error → 400 on `openapi_url`, not a 500.
   const auth = buildResolvedAuth(authKind, authValue, authHeaderName, authParamName);
-  const probeOpts: ProbeOptions = fetchImpl ? { fetchImpl } : {};
+  const resolvedApiBaseUrl = baseUrlOverride ?? apiBaseUrl;
+  const probeOpts: ProbeOptions = {
+    ...(fetchImpl ? { fetchImpl } : {}),
+    ...(resolvedApiBaseUrl ? { apiBaseUrl: resolvedApiBaseUrl } : {}),
+  };
   let snapshot;
   try {
     const { doc, graph } = await probeSpec(openapiUrl, auth, probeOpts);

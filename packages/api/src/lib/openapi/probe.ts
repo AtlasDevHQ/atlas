@@ -18,6 +18,7 @@
  * the route layer maps them to actionable 4xx/5xx envelopes instead of a 500.
  */
 
+import { createLogger } from "@atlas/api/lib/logger";
 import { assertBaseUrlAllowed, guardedFetch, EgressBlockedError } from "./egress-guard";
 import { buildOperationGraph } from "./spec";
 import {
@@ -31,6 +32,8 @@ import {
   type OpenApiSnapshot,
   type DiscoveredOperationSummary,
 } from "./catalog";
+
+const log = createLogger("openapi.probe");
 
 /** Per-probe fetch timeout. Configurable via `ATLAS_OPENAPI_TIMEOUT` (ms). */
 function probeTimeoutMs(): number {
@@ -99,6 +102,59 @@ export function assertSpecUrlAllowed(specUrl: string): void {
 export interface ProbeOptions {
   /** `fetch` override for tests. Defaults to `globalThis.fetch`. */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /**
+   * The datasource's resolved API base URL (or any URL on its API host) — the
+   * admin's `base_url_override` if supplied, else a candidate-declared
+   * `apiBaseUrl`. Used SOLELY to gate the probe credential (#3034): the
+   * credential is attached to the spec fetch iff this URL's host equals the spec
+   * URL's host. ABSENT ⇒ the credential is never attached (fail-safe) — so a spec
+   * pinned to a public third-party host (raw.githubusercontent.com for
+   * stripe-data / notion-data) cannot receive the workspace credential, while a
+   * same-host authenticated spec (Twenty's `/open-api/core`) still authenticates.
+   */
+  readonly apiBaseUrl?: string;
+}
+
+/**
+ * A URL's host (`hostname[:port]`, already lowercased by the URL parser), or
+ * `null` when the URL is unparseable OR has no host (opaque-scheme URLs like
+ * `data:` / `javascript:` parse successfully with an empty host). Collapsing both
+ * "unparseable" and "empty host" to `null` keeps {@link probeCredentialAllowed}
+ * self-defending: two empty hosts must never compare equal and send the
+ * credential — the gate fails safe without depending on an upstream scheme check.
+ */
+function urlHost(url: string): string | null {
+  try {
+    const host = new URL(url).host;
+    return host.length > 0 ? host : null;
+  } catch {
+    // intentionally ignored: an unparseable URL has no comparable host — the
+    // caller treats null as "no host match" and withholds the credential.
+    return null;
+  }
+}
+
+/**
+ * The host-match credential gate (#3034). The probe credential may be attached to
+ * the spec fetch ONLY when the resolved API host is known AND equals the spec
+ * URL's host — so a same-host authenticated spec (Twenty: `/open-api/core` on the
+ * API host) still authenticates, while a spec pinned to a public third-party host
+ * (stripe-data / notion-data both fetch from raw.githubusercontent.com) never
+ * receives the workspace credential. An unknown API host, or either URL
+ * unparseable, ⇒ `false` (fail-safe: never send the credential to an un-vetted
+ * host). Deliberately NO opt-in flag — the bug was an unsafe default, and the fix
+ * must not add a lever that re-enables sending to an arbitrary host.
+ *
+ * Match is intentionally EXACT host (`hostname[:port]`) — `api.stripe.com` does
+ * NOT match `files.stripe.com` or `stripe.com`. Only the host is compared (scheme
+ * and path are ignored, so a same-host spec on a sub-path still authenticates).
+ * Relaxing this to suffix/subdomain matching would be a security regression.
+ */
+function probeCredentialAllowed(specUrl: string, apiBaseUrl: string | undefined): boolean {
+  if (!apiBaseUrl) return false;
+  const specHost = urlHost(specUrl);
+  const apiHost = urlHost(apiBaseUrl);
+  return specHost !== null && apiHost !== null && specHost === apiHost;
 }
 
 /**
@@ -201,6 +257,11 @@ export function resolveAuthFromDecryptedConfig(
  * endpoint is usually unauthenticated, but some APIs (Twenty) require the same
  * credential to read `/open-api/core`, so we send it. apiKey-query placement is
  * applied to the URL by {@link probeSpec}; this only handles header-borne auth.
+ *
+ * Whether the credential is attached at all is decided UPSTREAM by
+ * {@link probeSpec}'s host-match gate (#3034) — this helper is called only when
+ * the spec host equals the datasource's API host. It always emits the header for
+ * the kind it's given.
  */
 function authHeadersForProbe(auth: ResolvedAuth): Record<string, string> {
   switch (auth.kind) {
@@ -236,10 +297,26 @@ export async function probeSpec(
   // private/internal targets before the fetch. #3006.
   assertSpecUrlAllowed(openapiUrl);
 
+  // Host-match credential gate (#3034): the credential is attached to the spec
+  // fetch ONLY when the spec is hosted on the datasource's API host. A spec pinned
+  // to a public third-party host (raw.githubusercontent.com for stripe-data /
+  // notion-data) must NEVER receive the workspace credential; a same-host
+  // authenticated spec (Twenty) still does. Gates BOTH the header credential and
+  // the apiKey-query string param below.
+  const hasCredential = auth.kind !== "none";
+  const sendCredential = hasCredential && probeCredentialAllowed(openapiUrl, options.apiBaseUrl);
+  if (hasCredential && !sendCredential) {
+    log.debug(
+      { specHost: urlHost(openapiUrl) ?? "<unparseable>", authKind: auth.kind },
+      "Withholding probe credential: spec host does not match the datasource API host (#3034)",
+    );
+  }
+
   // apiKey-query placement: the spec endpoint may itself need the key in the
-  // query string. Append it without clobbering an existing query.
+  // query string. Append it only when the host-match gate allows — and without
+  // clobbering an existing query.
   let url = openapiUrl;
-  if (auth.kind === "apiKey" && auth.placement?.in === "query") {
+  if (sendCredential && auth.kind === "apiKey" && auth.placement?.in === "query") {
     try {
       const u = new URL(openapiUrl);
       u.searchParams.set(auth.placement.name, auth.value);
@@ -260,7 +337,10 @@ export async function probeSpec(
       url,
       {
         method: "GET",
-        headers: { Accept: "application/json", ...authHeadersForProbe(auth) },
+        headers: {
+          Accept: "application/json",
+          ...(sendCredential ? authHeadersForProbe(auth) : {}),
+        },
         signal: AbortSignal.timeout(probeTimeoutMs()),
       },
       { fetchImpl },

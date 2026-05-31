@@ -23,45 +23,29 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   OPENAPI_GENERIC_CATALOG_ID,
-  OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
   isValidSnapshot,
-  type OpenApiSnapshot,
   type OpenApiAuthKind,
 } from "@atlas/api/lib/openapi/catalog";
 import {
-  resolveAuthFromDecryptedConfig,
-  probeSpec,
-  buildSnapshot,
   snapshotToGraph,
   invalidateInstallGraphCache,
   summarizeOperations,
-  OpenApiProbeError,
 } from "@atlas/api/lib/openapi/probe";
 import { REPRESENTATION_MODES } from "@atlas/api/lib/openapi/representation";
 import {
   coerceSpecRefreshInterval,
   normalizeSpecRefreshInterval,
 } from "@atlas/api/lib/openapi/spec-refresh";
-import { buildOperationGraph } from "@atlas/api/lib/openapi/spec";
-import {
-  diffOperationGraphs,
-  summarizeSpecDiffRecord,
-  baselineSpecDiffRecord,
-  unparseablePriorDiffRecord,
-  type SpecDiffRecord,
-} from "@atlas/api/lib/openapi/diff";
-import type { OperationGraph } from "@atlas/api/lib/openapi/types";
+import { performRediscovery, persistRediscoverySnapshot } from "@atlas/api/lib/openapi/rediscover";
+import { summarizeSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
 const log = createLogger("admin.openapi-datasources");
-
-const SECRET_SCHEMA = parseConfigSchema(OPENAPI_GENERIC_CONFIG_SCHEMA);
 
 /**
  * Raw install row shape this router reads. A `type` (not `interface`) so it
@@ -107,46 +91,6 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
     // / malformed `openapi_last_diff` projects to `null` (no banner) instead of
     // rendering NaN counts. The full structured diff stays in config for #2979.
     lastRefresh: summarizeSpecDiffRecord(c.openapi_last_diff),
-  };
-}
-
-/**
- * Compute the spec-diff record (#2976) for a re-discovery: rebuild the PRIOR
- * snapshot's graph and diff it against the freshly re-probed `nextGraph`. Returns
- * a BASELINE (`diff: null`) when there's no valid prior snapshot to compare
- * against, or when the prior snapshot's cached doc no longer parses — in either
- * case the fresh snapshot still persists; we just can't show what moved. Pure
- * apart from the warn log; the caller stamps `currentProbedAt` and persists.
- */
-function buildSpecDiffRecord(
-  priorConfig: Record<string, unknown>,
-  nextGraph: OperationGraph,
-  currentProbedAt: string,
-  installId: string,
-): SpecDiffRecord {
-  const rawPrior = priorConfig.openapi_snapshot;
-  if (!isValidSnapshot(rawPrior)) {
-    return baselineSpecDiffRecord(currentProbedAt);
-  }
-  let priorGraph: OperationGraph;
-  try {
-    priorGraph = buildOperationGraph(rawPrior.doc);
-  } catch (err) {
-    // Older builder / corrupt cached doc — record a baseline rather than failing
-    // the rediscover. The fresh snapshot is still written by the caller. Flag it
-    // `priorParseFailed` so the UI/audit show "comparison unavailable" instead of
-    // mistaking a dropped compare for a clean first-ever baseline (drift may have
-    // gone unseen).
-    log.warn(
-      { installId, err: errorMessage(err) },
-      "Prior OpenAPI snapshot no longer parses — recording an unparseable-prior baseline diff",
-    );
-    return unparseablePriorDiffRecord(rawPrior.probedAt, currentProbedAt);
-  }
-  return {
-    previousProbedAt: rawPrior.probedAt,
-    currentProbedAt,
-    diff: diffOperationGraphs(priorGraph, nextGraph),
   };
 }
 
@@ -355,15 +299,22 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
       return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
     }
 
-    // Decrypt ONLY to read the credential + URL for the upstream probe; the
-    // snapshot we write back is non-secret, merged via JSONB || so the encrypted
-    // auth_value never round-trips through this layer. A decrypt failure (e.g. a
-    // rotated-away key version) is surfaced as an actionable 400, not a generic 500.
-    let decrypted: Record<string, unknown>;
+    // Re-probe + re-normalize + diff via the shared core (#2978) — the exact same
+    // egress-guarded path the scheduler uses, so manual and scheduled refreshes
+    // can't drift. Decrypt happens inside (the encrypted `auth_value` never
+    // round-trips through this layer); the result is a discriminated outcome we map
+    // to an actionable 4xx, never a generic 500.
+    let result: Awaited<ReturnType<typeof performRediscovery>>;
     try {
-      decrypted = decryptSecretFields(row.config ?? {}, SECRET_SCHEMA);
+      result = await performRediscovery(row.config, installId);
     } catch (err) {
-      log.warn({ installId, err: errorMessage(err) }, "Rediscover credential decrypt failed");
+      // Unexpected fault from probe / snapshot-build / diff — attach the install
+      // context before letting runHandler map it to a 500.
+      log.warn({ installId, err: errorMessage(err) }, "Rediscover failed unexpectedly");
+      throw err;
+    }
+
+    if (result.kind === "decrypt_failed") {
       return c.json(
         {
           error: "decrypt_failed",
@@ -375,73 +326,31 @@ adminOpenApiDatasources.openapi(rediscoverRoute, async (c) =>
         400,
       );
     }
-    const openapiUrl = typeof decrypted.openapi_url === "string" ? decrypted.openapi_url : "";
-    if (!openapiUrl) {
+    if (result.kind === "no_url") {
       return c.json({ error: "bad_request", message: "Datasource has no spec URL to rediscover.", requestId }, 400);
     }
-    // Narrow + build the credential via the glue shared with the workspace
-    // resolver. A drifted row could carry the deferred oauth2 kind (or garbage) —
-    // `ok: false` becomes an actionable 400 rather than letting buildResolvedAuth's
-    // exhaustiveness guard 500. Tailor the remediation: a deferred oauth2 row is
-    // "coming later"; any other unsupported/drifted kind needs the operator to fix
-    // the config, so don't tell them it's oauth2 when it isn't.
-    const authResult = resolveAuthFromDecryptedConfig(decrypted);
-    if (!authResult.ok) {
+    if (result.kind === "unsupported_auth") {
+      // Tailor the remediation: a deferred oauth2 row is "coming later"; any other
+      // unsupported/drifted kind needs the operator to fix the config, so don't tell
+      // them it's oauth2 when it isn't.
       const message =
-        authResult.rawAuthKind === "oauth2"
+        result.rawAuthKind === "oauth2"
           ? "This datasource uses oauth2 auth, which is not supported yet — rediscover is unavailable."
-          : `This datasource has an unsupported auth kind ("${authResult.rawAuthKind}") — fix its config before rediscovering.`;
+          : `This datasource has an unsupported auth kind ("${result.rawAuthKind}") — fix its config before rediscovering.`;
       return c.json({ error: "bad_request", message, requestId }, 400);
     }
-    const auth = authResult.auth;
-
-    // Host-match credential gate (#3034): the re-probe attaches the stored
-    // credential ONLY when the spec host matches the datasource's API host. This
-    // route manages generic OpenAPI installs, whose API host is the admin-supplied
-    // `base_url_override` (absent ⇒ the credential is withheld — the same fail-safe
-    // the install path applies, so install + rediscover stay symmetric).
-    const baseUrlOverride =
-      typeof decrypted.base_url_override === "string" ? decrypted.base_url_override : undefined;
-
-    let snapshot: OpenApiSnapshot;
-    let diffRecord: SpecDiffRecord;
-    try {
-      const { doc, graph } = await probeSpec(openapiUrl, auth, {
-        ...(baseUrlOverride ? { apiBaseUrl: baseUrlOverride } : {}),
-      });
-      snapshot = buildSnapshot(doc, graph, new Date().toISOString());
-      // Spec-drift diff (#2976): compare the freshly-probed graph against the
-      // PRIOR snapshot (still in `row.config`, pre-update). A first-ever
-      // discovery / unparseable prior records a baseline (`diff: null`).
-      diffRecord = buildSpecDiffRecord(row.config ?? {}, graph, snapshot.probedAt, installId);
-    } catch (err) {
-      if (err instanceof OpenApiProbeError) {
-        log.warn({ installId, reason: err.reason }, "Rediscover probe failed");
-        return c.json({ error: "probe_failed", message: err.message, requestId }, 400);
-      }
-      // Unexpected fault from probe / snapshot-build / diff — attach the install
-      // context its siblings log before letting runHandler map it to a 500.
-      log.warn({ installId, err: errorMessage(err) }, "Rediscover failed unexpectedly");
-      throw err;
+    if (result.kind === "probe_failed") {
+      log.warn({ installId, reason: result.reason }, "Rediscover probe failed");
+      return c.json({ error: "probe_failed", message: result.message, requestId }, 400);
     }
 
+    const { snapshot, diffRecord, drift } = result;
+
     // Persist the fresh snapshot AND the computed diff against the install in one
-    // JSONB merge (AC2). Both are non-secret, so the encrypted `auth_value` is
-    // never round-tripped through this write.
-    await internalQuery(
-      `UPDATE workspace_plugins
-          SET config = config || jsonb_build_object('openapi_snapshot', $4::jsonb, 'openapi_last_diff', $5::jsonb),
-              updated_at = NOW()
-        WHERE workspace_id = $1 AND install_id = $2 AND catalog_id = $3 AND pillar = 'datasource'`,
-      [orgId, installId, OPENAPI_GENERIC_CATALOG_ID, JSON.stringify(snapshot), JSON.stringify(diffRecord)],
-    );
+    // JSONB merge (AC2) + evict the in-process graph cache (#3009). The manual route
+    // passes no watermark, so the merge is the pre-#2978 statement byte-for-byte.
+    await persistRediscoverySnapshot(orgId, installId, snapshot, diffRecord);
 
-    // Drop the in-process graph cache for this install: the re-probe bumped
-    // `probedAt`, so the next resolve rebuilds under the fresh key and the now-
-    // orphaned prior-`probedAt` entry is reclaimed instead of leaking (#3009).
-    invalidateInstallGraphCache(orgId, installId);
-
-    const drift = summarizeSpecDiffRecord(diffRecord);
     if (!drift) {
       // We just built and persisted `diffRecord`; if it fails to project, the
       // writer/reader contract has drifted (or the record is corrupt). The UI

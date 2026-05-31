@@ -1462,6 +1462,30 @@ export function makeSchedulerLive(
         }),
       );
 
+      // Start Tier-2 per-install OpenAPI re-discovery scheduler (#2978) — periodic
+      // re-probe of each installed openapi-generic datasource whose per-install
+      // `spec_refresh_interval` has elapsed, updating the persisted snapshot + drift
+      // diff + watermark. Orthogonal to the Tier-1 shared-cache refresh above (this
+      // one mutates per-install snapshots; that one only warms the process-local
+      // public-spec cache). No-ops when the internal DB is unavailable.
+      yield* Effect.tryPromise({
+        try: async () => {
+          const { startOpenApiInstallRediscoverScheduler } = await import(
+            "@atlas/api/lib/scheduler/openapi-install-rediscover"
+          );
+          startOpenApiInstallRediscoverScheduler();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.error(
+            { err: errorMessage(err) },
+            "OpenAPI install rediscover scheduler failed to start",
+          );
+          return Effect.void;
+        }),
+      );
+
       // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
       const oauthTick = Effect.tryPromise({
         try: async () => {
@@ -2418,6 +2442,27 @@ export function makeSchedulerLive(
               log.warn(
                 { err: errorMessage(err) },
                 "Failed to stop shared OpenAPI spec refresh scheduler",
+              );
+              return Effect.void;
+            }),
+          );
+
+          // Stop the Tier-2 OpenAPI re-discovery scheduler (#2978) symmetrically —
+          // clear its setInterval so the `unref()`'d handle is released and a test
+          // process (or a re-created ManagedRuntime) exits cleanly.
+          yield* Effect.tryPromise({
+            try: async () => {
+              const { stopOpenApiInstallRediscoverScheduler } = await import(
+                "@atlas/api/lib/scheduler/openapi-install-rediscover"
+              );
+              stopOpenApiInstallRediscoverScheduler();
+            },
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Failed to stop OpenAPI install rediscover scheduler",
               );
               return Effect.void;
             }),

@@ -26,9 +26,9 @@ Successor to v0.0.2 ([milestone #58](https://github.com/AtlasDevHQ/atlas/milesto
 - [x] **Structured drift diff** ([#2976](https://github.com/AtlasDevHQ/atlas/issues/2976)) — added/removed/changed-operation changeset on (re-)discovery. Shipped in [#3041](https://github.com/AtlasDevHQ/atlas/pull/3041).
 - [x] **Shared cross-workspace spec/graph cache** ([#2970](https://github.com/AtlasDevHQ/atlas/issues/2970)) — public upstream (Stripe/GitHub/Notion) downloaded + normalized once across workspaces, refreshed by conditional GET; the credential is never shared. Shipped in [#3042](https://github.com/AtlasDevHQ/atlas/pull/3042).
 - [x] **Scheduler-driven auto re-discovery** ([#2978](https://github.com/AtlasDevHQ/atlas/issues/2978)) — background fiber walks due installs and re-probes on the configured interval; Tier-2 per-install loop sharing the manual "Refresh now" core. Shipped in [#3046](https://github.com/AtlasDevHQ/atlas/pull/3046).
-- [ ] **Breaking-change drift signal** ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)) — surface when scheduled re-discovery removes or changes operations the agent depends on.
+- [x] **Breaking-change drift signal** ([#2979](https://github.com/AtlasDevHQ/atlas/issues/2979)) — surface when scheduled re-discovery removes or changes operations the agent depends on. Shipped in [#3049](https://github.com/AtlasDevHQ/atlas/pull/3049).
 
-4 of 5 shipped ahead of a formal kickoff — promoted from "Planned tags" on v0.0.2 closeout (2026-05-31) since work was already underway. Only the breaking-change drift signal (#2979) remains — the consumer half of the scheduler arm.
+All 5 shipped ahead of a formal kickoff — promoted from "Planned tags" on v0.0.2 closeout (2026-05-31) since work was already underway. Feature-complete; tag-gated on one pre-tag follow-up ([#3050](https://github.com/AtlasDevHQ/atlas/issues/3050) — breaking-change classifier over-flags required children of optional request bodies/refs).
 
 ---
 

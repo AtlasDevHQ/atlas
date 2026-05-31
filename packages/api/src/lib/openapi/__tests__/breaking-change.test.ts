@@ -677,6 +677,111 @@ describe("classifyBreakingChanges — effective-required gating (#3050)", () => 
       }),
     ).toBe(true);
   });
+
+  // ── breaking = breaks a PRE-EXISTING caller (seed from the prior spec) ────────
+
+  it("gaining an all-optional allOf branch on a required body is additive (branch root not flagged)", () => {
+    // The newly-added `…|allOf[1]` branch ROOT carries chainRequired but is not itself
+    // a required field — it must not surface as field_required_added, and its only
+    // (optional) member `b` is additive too.
+    const body = (withBranch: boolean): SchemaNode => ({
+      allOf: [
+        { type: "object", properties: { a: { type: "string" } } },
+        ...(withBranch ? [{ type: "object", properties: { b: { type: "string" } } } as SchemaNode] : []),
+      ],
+    });
+    expect(classifyBetween(postBodyDoc(true, body(false)), postBodyDoc(true, body(true))).breaking).toBe(false);
+  });
+
+  it("a NEW required op reusing a previously response-only component + an added required prop is additive", () => {
+    // Codex P2 (#3050 follow-up): the new operation has no existing callers, so a
+    // required prop added to the component it newly references can't break anyone.
+    // Thing is response-only in `prev` → not a prior request-exclusive surface.
+    const doc = (withCreate: boolean, sku: boolean): OpenApiDoc => {
+      const paths: Record<string, PathItem> = {
+        "/things/{id}": {
+          get: {
+            operationId: "getThing",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: {
+              "200": { description: "ok", content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            },
+          },
+        },
+      };
+      if (withCreate) {
+        paths["/things"] = {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            responses: { "200": { description: "ok" } },
+          },
+        };
+      }
+      return {
+        openapi: "3.0.0",
+        info: { title: "T", version: "1.0.0" },
+        paths,
+        components: {
+          schemas: {
+            Thing: {
+              type: "object",
+              required: sku ? ["id", "sku"] : ["id"],
+              properties: { id: { type: "string" }, ...(sku ? { sku: { type: "string" } } : {}) },
+            },
+          },
+        },
+      };
+    };
+    // prev: Thing response-only; next: a new createThing reuses it AND it gains required `sku`.
+    expect(classifyBetween(doc(false, false), doc(true, true)).breaking).toBe(false);
+  });
+
+  it("a NEW response on a PRE-EXISTING required-request component does NOT mask an added required prop", () => {
+    // Codex P2 (#3050 follow-up): Thing was already on createThing's required body, so
+    // existing callers break when it gains a required prop — a freshly-added response
+    // surface in the same diff must not suppress that signal.
+    const doc = (withGet: boolean, sku: boolean): OpenApiDoc => {
+      const paths: Record<string, PathItem> = {
+        "/things": {
+          post: {
+            operationId: "createThing",
+            requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      };
+      if (withGet) {
+        paths["/things/{id}"] = {
+          get: {
+            operationId: "getThing",
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: {
+              "200": { description: "ok", content: { "application/json": { schema: { $ref: "#/components/schemas/Thing" } } } },
+            },
+          },
+        };
+      }
+      return {
+        openapi: "3.0.0",
+        info: { title: "T", version: "1.0.0" },
+        paths,
+        components: {
+          schemas: {
+            Thing: {
+              type: "object",
+              required: sku ? ["id", "sku"] : ["id"],
+              properties: { id: { type: "string" }, ...(sku ? { sku: { type: "string" } } : {}) },
+            },
+          },
+        },
+      };
+    };
+    // prev: Thing on required request only; next: a new getThing also returns it AND it gains required `sku`.
+    const a = classifyBetween(doc(false, false), doc(true, true));
+    expect(a.breaking).toBe(true);
+    expect(hasReason(a.reasons, "field_required_added", { schema: "Thing", path: "sku" })).toBe(true);
+  });
 });
 
 // ── resolveDriftAlertWrite — the trigger-aware raise/clear/leave lifecycle ────

@@ -208,8 +208,14 @@ function normalizeEnum(values: ReadonlyArray<unknown>): ReadonlyArray<string> {
 /**
  * Describe a single schema node as the minimal comparable {@link FieldDescriptor}.
  * `required` is the immediate-parent flag (structural, compared); `chainRequired`
- * is the whole-chain flag surfaced as {@link FieldDescriptor.effectiveRequired}
- * (a classification hint, NOT compared).
+ * is whether the chain ABOVE this node is required. {@link FieldDescriptor.effectiveRequired}
+ * (a classification hint, NOT compared) is set only when BOTH hold — i.e. this node
+ * is itself required AND every enclosing container is too. The `required` conjunct is
+ * load-bearing: a container the chain passes THROUGH (an `allOf` branch root, an
+ * array-items node) has `chainRequired: true` but `required: false`, and must NOT be
+ * flagged — gaining an `allOf` branch of all-optional fields forces no existing
+ * caller to send anything new (#3050 follow-up: the classifier would otherwise emit a
+ * false `field_required_added` on the `…|allOf[n]` root).
  */
 function describeNode(
   schema: OpenApiSchema,
@@ -235,7 +241,7 @@ function describeNode(
     if (schema.enum !== undefined) d.enum = normalizeEnum(schema.enum);
   }
   if (required) d.required = true;
-  if (chainRequired) d.effectiveRequired = true;
+  if (required && chainRequired) d.effectiveRequired = true;
   return d;
 }
 
@@ -346,12 +352,15 @@ function stableSchemaKey(schema: OpenApiSchema, depth: number): string {
 
 /**
  * Flatten a named component schema's fields (root under the empty path).
- * `requestExclusive` seeds the chain-required flag: it is `true` only when the
- * named schema is reachable from a request surface via an all-required chain and
- * NEVER from a response (see {@link computeRequestExclusiveSchemas}) — so a
- * newly-required field on it breaks request callers (#3050). For any other schema
- * (response-reachable, or unreachable) the chain starts broken, so added fields
- * stay quiet, preserving the conservative "ambiguous surface ⇒ additive" policy.
+ * `requestExclusive` seeds the chain-required flag and is the caller's verdict that
+ * the schema was request-exclusive *in the prior spec* — reachable from a request
+ * surface via an all-required chain and NEVER from a response (see
+ * {@link computeRequestExclusiveSchemas}). True ⇒ a newly-required field on it breaks
+ * the spec's pre-existing request callers (#3050). For any other schema
+ * (response-reachable, unreachable, or only newly request-reachable in this diff) the
+ * chain starts broken, so added fields stay quiet — preserving both the conservative
+ * "ambiguous surface ⇒ additive" policy and the "additive change can't break an
+ * existing caller" rule.
  */
 function flattenSchemaFields(
   schema: OpenApiSchema,
@@ -586,11 +595,20 @@ export function diffOperationGraphs(
   const removedSchemas: string[] = [];
   const changedSchemas: SchemaChange[] = [];
 
-  // Which named schemas are request-exclusive on each side — seeds the per-side
-  // `effectiveRequired` so an added-required field on a request-only component
-  // reads as breaking while one on a response-reachable component stays quiet (#3050).
-  const prevExclusive = computeRequestExclusiveSchemas(prev);
-  const nextExclusive = computeRequestExclusiveSchemas(next);
+  // Which named schemas were request-exclusive in the PRIOR spec — seeds the
+  // `effectiveRequired` for a schema present in BOTH graphs (a "changed" schema). A
+  // breaking change is one that breaks a PRE-EXISTING caller, and a caller exists only
+  // for a request surface that already existed; so an added-required field on a
+  // component reads as breaking iff the component was *already* a request-exclusive
+  // surface — NOT iff it merely becomes one in this diff (#3050 follow-up). Seeding
+  // from `next` would both false-POSITIVE (a brand-new required request body referencing
+  // a previously-unused/response-only component + a new required prop has no existing
+  // callers to break) and false-NEGATIVE (a component already on a required request
+  // body that newly also appears in a response would have its real request break masked
+  // by the fresh response reachability). Both flatten sides use the same prior seed —
+  // `effectiveRequired` is excluded from equality, so the seed never perturbs detection;
+  // it only sets the verdict on the `added` side.
+  const priorRequestExclusive = computeRequestExclusiveSchemas(prev);
 
   for (const name of [...next.schemas.keys()].toSorted()) {
     if (!prev.schemas.has(name)) addedSchemas.push(name);
@@ -602,10 +620,8 @@ export function diffOperationGraphs(
     const prevSchema = prev.schemas.get(name);
     const nextSchema = next.schemas.get(name);
     if (!prevSchema || !nextSchema) continue;
-    const fields = diffFieldMaps(
-      flattenSchemaFields(prevSchema, prevExclusive.has(name)),
-      flattenSchemaFields(nextSchema, nextExclusive.has(name)),
-    );
+    const seed = priorRequestExclusive.has(name);
+    const fields = diffFieldMaps(flattenSchemaFields(prevSchema, seed), flattenSchemaFields(nextSchema, seed));
     if (fields.length > 0) changedSchemas.push({ name, fields });
   }
 

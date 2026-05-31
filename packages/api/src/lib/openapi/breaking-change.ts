@@ -39,7 +39,8 @@
  *     required AND every enclosing container up to the request is too, so calls the
  *     agent already composes omit it and now fail. The diff proves this with its
  *     `effectiveRequired` flag (#3050) — set on a required param, a required child of
- *     a REQUIRED request body, or a field on a request-exclusive named component —
+ *     a REQUIRED request body, or a required field on a named component that was
+ *     request-exclusive in the PRIOR spec (so an existing caller already sends it) —
  *     so this layer reads a boolean rather than parsing the dotted path.
  *   - **Removed named schema** → a shape the agent's representation referenced is gone.
  *

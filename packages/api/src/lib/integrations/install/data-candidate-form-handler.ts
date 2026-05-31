@@ -35,21 +35,38 @@ import type { FormBasedInstallHandler, InstallRecord } from "./types";
 const AUTH_VALUE_MAX = 8192;
 
 /**
- * True iff two URLs share the same host (`hostname[:port]`, lowercased by the URL
- * parser) — the exact-host comparison the #3034 probe gate uses
- * ({@link import("../../openapi/probe").probeCredentialAllowed}). Used to reject a
- * `base_url_override` that re-points at the candidate's locked spec host (#3039).
- * An unparseable URL ⇒ `false` (no spurious match); both inputs are already
- * URL-validated by the time this runs (the zod refine + the candidate registry).
+ * A URL's hostname, normalized for comparison: lowercased (redundant — the URL
+ * parser already lowercases the hostname — but explicit) with any trailing FQDN
+ * dot(s) stripped. Mirrors the egress guard's hostname normalization (see
+ * `sandbox/validate.ts`) so the spec-host check below can't be slipped by an
+ * equivalent fully-qualified form: WHATWG `URL.host` KEEPS the trailing dot, so
+ * `raw.githubusercontent.com.` would not equal `raw.githubusercontent.com`, yet
+ * DNS resolves them to the same host (Codex review, PR #3040). Compares the
+ * hostname only (no port): the candidate's spec host is never a legitimate API
+ * host for it on ANY port, so a port-varied form must be rejected too. Returns
+ * `null` for an unparseable URL ⇒ no spurious match.
  */
-function sameHost(a: string, b: string): boolean {
+function normalizedHostname(url: string): string | null {
   try {
-    return new URL(a).host === new URL(b).host;
+    return new URL(url).hostname.toLowerCase().replace(/\.+$/, "");
   } catch {
-    // intentionally ignored: an unparseable URL has no comparable host — treat as
-    // "no match" and let the downstream probe/SSRF guards handle a malformed URL.
-    return false;
+    // intentionally ignored: an unparseable URL has no comparable host — the
+    // caller treats null as "no match" and lets the probe/SSRF guards handle it.
+    return null;
   }
+}
+
+/**
+ * True iff `overrideUrl` resolves to the same host as the candidate's locked
+ * `specUrl` (#3039) — used to reject a `base_url_override` that re-points at the
+ * candidate's spec host. Both hostnames are normalized via
+ * {@link normalizedHostname} so a trailing-dot / case-varied form can't bypass
+ * the gate. An unparseable URL on either side ⇒ `false` (no spurious match).
+ */
+function sharesHost(overrideUrl: string, specUrl: string): boolean {
+  const a = normalizedHostname(overrideUrl);
+  const b = normalizedHostname(specUrl);
+  return a !== null && b !== null && a === b;
 }
 
 const OptionalUrlSchema = z
@@ -124,7 +141,7 @@ export class DataCandidateFormInstallHandler implements FormBasedInstallHandler 
     // executable API lives at `apiBaseUrl`), and an override pointed there would
     // also misroute query-time requests — so reject it outright. The generic
     // openapi-generic path has no locked spec, so this guard is candidate-only.
-    if (data.base_url_override && sameHost(data.base_url_override, this.candidate.openapiUrl)) {
+    if (data.base_url_override && sharesHost(data.base_url_override, this.candidate.openapiUrl)) {
       throw FormInstallValidationError.fromZodFlatten({
         fieldErrors: {
           base_url_override: [

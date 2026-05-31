@@ -193,6 +193,47 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
     for (const url of probedUrls) expect(url).not.toContain("sk_live_super_secret");
   });
 
+  it("also rejects a trailing-dot FQDN form of the locked spec host (#3040 review — no normalization bypass)", async () => {
+    const { DataCandidateFormInstallHandler } = await import("../data-candidate-form-handler");
+    const { FormInstallValidationError } = await import("../email-form-handler");
+    const handler = new DataCandidateFormInstallHandler(STRIPE_DATA_CANDIDATE, {
+      idGenerator: () => "fixed-uuid",
+      now: () => "2026-05-30T00:00:00.000Z",
+      fetchImpl: (async (input: string | URL, init?: RequestInit) => {
+        probedUrls.push(typeof input === "string" ? input : input.toString());
+        const headers: Record<string, string> = {};
+        const h = init?.headers as Record<string, string> | undefined;
+        if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+        probedHeaders.push(headers);
+        return new Response(JSON.stringify(STRIPE_FIXTURE_SPEC), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    // `raw.githubusercontent.com.` (trailing FQDN dot) DNS-resolves to the same host
+    // as the locked spec, but WHATWG `URL.host` keeps the dot — an exact-host check
+    // would let it through, persist it as the ops base URL, and leak the credential
+    // to the spec CDN at query time. The normalized check must reject it too.
+    let thrown: unknown;
+    try {
+      await handler.validateConfig("ws-1" as never, {
+        auth_value: "sk_live_super_secret",
+        base_url_override: "https://raw.githubusercontent.com./anything",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(FormInstallValidationError);
+    expect(
+      (thrown as InstanceType<typeof FormInstallValidationError>).fieldErrors.base_url_override,
+    ).toBeDefined();
+    for (const headers of probedHeaders) expect(headers.Authorization).toBeUndefined();
+    for (const url of probedUrls) expect(url).not.toContain("sk_live_super_secret");
+  });
+
   it("accepts a legitimate non-spec-host base_url_override (the gate is not over-broad)", async () => {
     const { DataCandidateFormInstallHandler } = await import("../data-candidate-form-handler");
     const handler = new DataCandidateFormInstallHandler(STRIPE_DATA_CANDIDATE, {

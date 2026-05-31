@@ -9581,6 +9581,31 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Datasource connected but its credential needs reconnecting before the write can run (#3030)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
           }
         },
         "operationId": "postRestOperationsConfirm"

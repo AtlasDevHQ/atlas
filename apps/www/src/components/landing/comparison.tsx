@@ -68,6 +68,13 @@ const ROWS: ReadonlyArray<Row> = [
     bi: "Usually one",
     textToSql: "Usually one",
   },
+  {
+    feature: "REST APIs as datasources",
+    atlas:
+      "Stripe, GitHub, Notion, any OpenAPI spec — read like a datasource, write-gated, spec auto-refreshed",
+    bi: "None",
+    textToSql: "None",
+  },
 ];
 
 export function Comparison() {

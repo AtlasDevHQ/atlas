@@ -10,6 +10,7 @@ import {
   DATA_CANDIDATE_CATALOG_IDS,
   DATA_CANDIDATE_CONFIG_SCHEMA,
   GITHUB_DATA_CANDIDATE,
+  NOTION_DATA_CANDIDATE,
   STRIPE_DATA_CANDIDATE,
   candidateConfigSchema,
   candidateInstallModel,
@@ -111,6 +112,50 @@ describe("github-data candidate (oauth-datasource)", () => {
 
   it("carries an EMPTY admin form schema (credential comes from the OAuth dance)", () => {
     expect(candidateConfigSchema(GITHUB_DATA_CANDIDATE)).toEqual([]);
+  });
+});
+
+describe("notion-data candidate (slice 6b, #3029 — required-header proof)", () => {
+  it("is registered in DATA_CANDIDATES, findable by catalogId + slug", () => {
+    expect(DATA_CANDIDATES.map((c) => c.slug)).toContain("notion-data");
+    expect(findDataCandidateByCatalogId("catalog:notion-data")).toBe(NOTION_DATA_CANDIDATE);
+    expect(findDataCandidateBySlug("notion-data")).toBe(NOTION_DATA_CANDIDATE);
+  });
+
+  it("is bearer-auth, pre-fills Notion's official spec URL, and never asks for one", () => {
+    expect(NOTION_DATA_CANDIDATE.authKind).toBe("bearer");
+    expect(NOTION_DATA_CANDIDATE.openapiUrl).toMatch(/^https:\/\//);
+    expect(NOTION_DATA_CANDIDATE.openapiUrl).toContain("notion-openapi.json");
+    // Same shared form as every candidate — openapi_url / auth_kind are pre-filled.
+    const formKeys = DATA_CANDIDATE_CONFIG_SCHEMA.map((f) => f.key);
+    expect(formKeys).not.toContain("openapi_url");
+    expect(formKeys).not.toContain("auth_kind");
+  });
+
+  it("declares the required Notion-Version header as a STATIC quirk (data, not a code path)", () => {
+    // The dimension this candidate exists to prove: a per-vendor required header
+    // that nothing in OpenAPI can model ("send on every request"). It is a literal
+    // in the registry, pinned to the spec edition the openapiUrl serves.
+    expect(NOTION_DATA_CANDIDATE.quirk?.requiredHeaders).toEqual({
+      "Notion-Version": "2025-09-03",
+    });
+    // The header is the ONLY deviation — no query param shaping (unlike Stripe).
+    expect(NOTION_DATA_CANDIDATE.quirk?.queryParamShaping).toBeUndefined();
+  });
+
+  it("declares body-cursor pagination (next_cursor → start_cursor, has_more) over the GENERIC strategy", () => {
+    // A DIFFERENT cursor dialect than Stripe's last-item-id: the body carries the
+    // next cursor (`next_cursor`), fed back on the `start_cursor` query param. Same
+    // `cursor` strategy file, config-only — proving the strategy is genuinely generic.
+    expect(NOTION_DATA_CANDIDATE.pagination).toMatchObject({
+      strategy: "cursor",
+      itemsPath: "results",
+      cursorParam: "start_cursor",
+      cursorPath: "next_cursor",
+      hasMorePath: "has_more",
+    });
+    // NOT the Stripe last-item-id dialect.
+    expect(NOTION_DATA_CANDIDATE.pagination?.cursorFromLastItem).toBeUndefined();
   });
 });
 

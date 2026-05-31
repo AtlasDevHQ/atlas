@@ -35,7 +35,7 @@
  */
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { CatalogInstallModel } from "@useatlas/types";
-import type { SupportedAuthKind } from "./catalog";
+import { OPENAPI_GENERIC_CATALOG_ID, type SupportedAuthKind } from "./catalog";
 import type { PaginationConfig } from "./paginator";
 import type { VendorQuirk } from "./vendor-quirk";
 
@@ -387,6 +387,25 @@ const BY_SLUG = new Map<string, DataCandidate>(DATA_CANDIDATES.map((c) => [c.slu
 export const DATA_CANDIDATE_CATALOG_IDS: ReadonlyArray<string> = DATA_CANDIDATES.map(
   (c) => c.catalogId,
 );
+
+/**
+ * Every `catalog_id` that identifies a REST / OpenAPI datasource install — the
+ * generic `openapi-generic` row plus every built-in data candidate. The single
+ * source of truth for "is this `workspace_plugins` row a REST datasource?".
+ *
+ * Two uses:
+ *  - `workspace-datasource.ts` matches ON this set to resolve the workspace's
+ *    REST datasources.
+ *  - The SQL routing-group member queries (`env-routing/lookup.ts` and
+ *    `GET /api/v1/me/connection-groups`) EXCLUDE this set so a REST install that
+ *    shares a `config.group_id` with SQL connections never pollutes the SQL
+ *    member list — SQL connections and REST installs share `pillar = 'datasource'`
+ *    and are distinguishable only by `catalog_id`. See [ADR-0010](../../../../../docs/adr/0010-rest-datasource-environment-scoping.md).
+ */
+export const REST_DATASOURCE_CATALOG_IDS: ReadonlyArray<string> = [
+  OPENAPI_GENERIC_CATALOG_ID,
+  ...DATA_CANDIDATE_CATALOG_IDS,
+];
 
 /** Look up a candidate by its `plugin_catalog.id` (resolver path), or `undefined`. */
 export function findDataCandidateByCatalogId(catalogId: string): DataCandidate | undefined {

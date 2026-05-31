@@ -34,7 +34,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check } from "lucide-react";
+import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check, Network } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,8 +45,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
-import type { MeConnectionGroupsEmptyReason } from "@/ui/lib/types";
+import type {
+  ChatRestDatasourceScope,
+  MeConnectionGroupsEmptyReason,
+} from "@/ui/lib/types";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
+
+export type { ChatRestDatasourceScope };
 
 export type { ConversationRoutingMode };
 
@@ -107,6 +112,13 @@ export interface ChatEnvPickerProps {
    * pinned to that member".
    */
   readonly activeRoutingMode?: ConversationRoutingMode | null;
+  /**
+   * #3044 — the workspace's REST datasources + their env scope. Rendered as a
+   * read-only footer so the user can see what a pinned conversation still
+   * reaches (workspace-global datasources answer regardless of the pin).
+   * Optional / defaults to empty for back-compat with callers that don't pass it.
+   */
+  readonly restDatasources?: ReadonlyArray<ChatRestDatasourceScope>;
   /**
    * Called when the user picks a new group / member / mode triple from
    * the dropdown. The parent decides whether this is a per-turn
@@ -196,6 +208,7 @@ export function ChatEnvPicker({
   activeGroupId,
   activeConnectionId,
   activeRoutingMode = null,
+  restDatasources = [],
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
   // Empty list + a reason ⇒ render a diagnostic chip instead of
@@ -420,8 +433,90 @@ export function ChatEnvPicker({
             </DropdownMenuLabel>
           </>
         )}
+
+        <ChatEnvRestScopeSection
+          restDatasources={restDatasources}
+          activeGroupId={activeGroup?.id ?? null}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * #3044 — read-only footer summarizing the workspace's REST datasources and
+ * their environment scope, so the routing chip never overstates what the
+ * conversation is constrained to. Workspace-global datasources answer
+ * regardless of the pin (the bug this surfaces); datasources scoped to the
+ * active group are in scope; ones scoped elsewhere are flagged out of scope.
+ */
+function ChatEnvRestScopeSection({
+  restDatasources,
+  activeGroupId,
+}: {
+  restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
+  activeGroupId: string | null;
+}): React.ReactElement | null {
+  if (restDatasources.length === 0) return null;
+
+  const workspaceGlobal = restDatasources.filter((d) => d.groupId === null);
+  const inActiveGroup = restDatasources.filter(
+    (d) => d.groupId !== null && d.groupId === activeGroupId,
+  );
+  const otherScoped = restDatasources.filter(
+    (d) => d.groupId !== null && d.groupId !== activeGroupId,
+  );
+
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+        REST datasources
+      </DropdownMenuLabel>
+
+      {workspaceGlobal.length > 0 && (
+        <div
+          className="px-2 py-1 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300"
+          data-testid="chat-env-picker-rest-global"
+        >
+          <span className="flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-200">
+            <Globe2 className="size-3 text-zinc-400" aria-hidden />
+            Workspace-global — answers in every environment
+          </span>
+          <span className="mt-0.5 block text-zinc-500 dark:text-zinc-400">
+            {workspaceGlobal.map((d) => d.displayName).join(", ")} — not limited by
+            the routing above.
+          </span>
+        </div>
+      )}
+
+      {inActiveGroup.length > 0 && (
+        <div
+          className="px-2 py-1 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300"
+          data-testid="chat-env-picker-rest-in-scope"
+        >
+          <span className="flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-200">
+            <Network className="size-3 text-zinc-400" aria-hidden />
+            In this environment
+          </span>
+          <span className="mt-0.5 block text-zinc-500 dark:text-zinc-400">
+            {inActiveGroup.map((d) => d.displayName).join(", ")}
+          </span>
+        </div>
+      )}
+
+      {otherScoped.length > 0 && (
+        <div
+          className="px-2 py-1 text-[11px] leading-snug text-zinc-400 dark:text-zinc-500"
+          data-testid="chat-env-picker-rest-out-of-scope"
+        >
+          <span className="flex items-center gap-1.5">
+            <Network className="size-3" aria-hidden />
+            {otherScoped.length} scoped to other environments — not reachable here
+          </span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -519,6 +614,8 @@ export interface UseChatEnvGroupsOptions {
 
 export interface UseChatEnvGroupsResult {
   readonly groups: ReadonlyArray<ChatEnvGroup>;
+  /** #3044 — REST datasources + their env scope, for the picker's scope footer. */
+  readonly restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
   readonly reason: MeConnectionGroupsEmptyReason | null;
   readonly loading: boolean;
   readonly error: string | null;
@@ -535,6 +632,9 @@ export function useChatEnvGroups(
   opts: UseChatEnvGroupsOptions,
 ): UseChatEnvGroupsResult {
   const [groups, setGroups] = useState<ReadonlyArray<ChatEnvGroup>>([]);
+  const [restDatasources, setRestDatasources] = useState<
+    ReadonlyArray<ChatRestDatasourceScope>
+  >([]);
   const [reason, setReason] = useState<MeConnectionGroupsEmptyReason | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -556,10 +656,14 @@ export function useChatEnvGroups(
         }
         const body = (await res.json()) as {
           groups?: ChatEnvGroup[];
+          restDatasources?: ChatRestDatasourceScope[];
           reason?: unknown;
         };
         if (!cancelled) {
           setGroups(body.groups ?? []);
+          // #3044 — older API servers (pre-this-change) omit the field; default
+          // to empty so the scope footer simply doesn't render on mixed deploys.
+          setRestDatasources(body.restDatasources ?? []);
           // Narrow unknown / unrecognized reason values to `null` —
           // never index into `EMPTY_REASON_COPY` with a value the
           // frontend hasn't been built to render.
@@ -576,6 +680,7 @@ export function useChatEnvGroups(
           console.warn("[atlas-chat] failed to load connection groups", msg);
           setError(msg);
           setGroups([]);
+          setRestDatasources([]);
           // Don't synthesize a `reason` on transport failure — the
           // server is the only source of truth for "empty because of
           // X". A flaky network reading as "no_internal_db" would be
@@ -591,5 +696,5 @@ export function useChatEnvGroups(
     };
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials]);
 
-  return { groups, reason, loading, error };
+  return { groups, restDatasources, reason, loading, error };
 }

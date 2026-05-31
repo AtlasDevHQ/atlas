@@ -624,3 +624,67 @@ describe("admin-openapi-datasources — spec_refresh_interval set / clear / clam
     expect(res.status).toBe(400);
   });
 });
+
+describe("admin-openapi-datasources — env scope (group_id, #3044)", () => {
+  it("GET detail surfaces groupId from config (null when ungrouped)", async () => {
+    const ungrouped = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      groupId: string | null;
+    };
+    expect(ungrouped.groupId).toBeNull();
+
+    configExtra = { group_id: "prod" };
+    const scoped = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      groupId: string | null;
+    };
+    expect(scoped.groupId).toBe("prod");
+  });
+
+  it("PATCH assigns a group_id, writing only group_id (never auth_value)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: "prod" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { groupId: string | null }).toMatchObject({ groupId: "prod" });
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("jsonb_build_object('group_id'");
+    expect(update?.[0]).not.toContain("auth_value");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "prod"]);
+  });
+
+  it("PATCH clears the scope back to workspace-global by binding null", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: null }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { groupId: string | null }).toMatchObject({ groupId: null });
+    // The merge binds null → JSON null → read back as workspace-global.
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
+  });
+
+  it("PATCH treats a whitespace-only group id as a clear (null), never a literal scope", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ groupId: "   " }),
+    });
+    expect(res.status).toBe(200);
+    expect(findConfigUpdate()?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, null]);
+  });
+
+  it("PATCH can set representation mode and group scope together", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ representationMode: "semantic-yaml", groupId: "eu" }),
+    });
+    expect(res.status).toBe(200);
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("representation_mode");
+    expect(update?.[0]).toContain("group_id");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "semantic-yaml", "eu"]);
+  });
+});

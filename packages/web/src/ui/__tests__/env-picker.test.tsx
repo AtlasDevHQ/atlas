@@ -649,6 +649,80 @@ describe("pickDefaultEnvSeed — atlas-chat first-load seeding", () => {
 // API), and resetting reason to null on transport failure so a flaky
 // network can't pin a stale chip on screen. See #2422.
 
+describe("ChatEnvPicker — REST datasource scope footer (#3044)", () => {
+  const multiGroup: ChatEnvGroup[] = [
+    {
+      id: "prod",
+      name: "prod",
+      primaryConnectionId: null,
+      members: [
+        { connectionId: "us-prod", dbType: "postgres", description: null },
+        { connectionId: "eu-prod", dbType: "postgres", description: null },
+      ],
+    },
+  ];
+
+  test("frames workspace-global REST datasources as not limited by the pin", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={[{ id: "stripe", displayName: "Stripe", groupId: null }]}
+        onSelect={noop}
+      />,
+    );
+    const global = container.querySelector('[data-testid="chat-env-picker-rest-global"]');
+    expect(global).not.toBeNull();
+    expect(global?.textContent).toContain("Stripe");
+    expect(global?.textContent?.toLowerCase()).toContain("every environment");
+    expect(global?.textContent?.toLowerCase()).toContain("not limited by");
+  });
+
+  test("separates in-scope (active group) from out-of-scope scoped datasources", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={[
+          { id: "prod-api", displayName: "Prod API", groupId: "prod" },
+          { id: "eu-api", displayName: "EU API", groupId: "eu" },
+        ]}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-rest-in-scope"]')?.textContent,
+    ).toContain("Prod API");
+    const outOfScope = container.querySelector(
+      '[data-testid="chat-env-picker-rest-out-of-scope"]',
+    );
+    expect(outOfScope?.textContent).toContain("other environments");
+    // The out-of-scope datasource's name is NOT leaked into the in-scope list.
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-rest-in-scope"]')?.textContent,
+    ).not.toContain("EU API");
+  });
+
+  test("renders no REST footer when the workspace has no REST datasources", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        restDatasources={[]}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-rest-global"]'),
+    ).toBeNull();
+  });
+});
+
 const originalFetch = globalThis.fetch;
 
 function mockFetch(
@@ -747,6 +821,32 @@ describe("useChatEnvGroups (#2422)", () => {
     // going to.
     await new Promise((r) => setTimeout(r, 0));
     expect(callCount()).toBe(0);
+  });
+
+  test("echoes restDatasources from the wire (#3044)", async () => {
+    mockFetch(() =>
+      jsonResponse({
+        groups: [],
+        restDatasources: [{ id: "stripe", displayName: "Stripe", groupId: null }],
+        reason: null,
+      }),
+    );
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.restDatasources).toEqual([
+      { id: "stripe", displayName: "Stripe", groupId: null },
+    ]);
+  });
+
+  test("defaults restDatasources to [] when an older API omits the field (#3044)", async () => {
+    mockFetch(() => jsonResponse({ groups: [] }));
+    const { result } = renderHook(() => useChatEnvGroups(opts));
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.restDatasources).toEqual([]);
   });
 });
 

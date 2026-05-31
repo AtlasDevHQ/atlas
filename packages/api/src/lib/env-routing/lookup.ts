@@ -20,6 +20,7 @@
 
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { REST_DATASOURCE_CATALOG_IDS } from "@atlas/api/lib/openapi/data-candidates";
 
 const log = createLogger("env-routing:lookup");
 
@@ -54,6 +55,15 @@ export async function loadGroupRoutingContext(
   }
 
   try {
+    // #3044 — SQL routing members are SQL connections only. REST datasources
+    // share `pillar = 'datasource'` and CAN carry a `config.group_id` (ADR-0010
+    // environment scoping), so without the `catalog_id <> ALL($N)` guard a
+    // REST install sharing a SQL group's id would be returned as a SQL "member"
+    // and `executeSQL`'s `all`-fanout would try to run SQL against a connection
+    // that isn't in the ConnectionRegistry. The exclusion list is the shared
+    // `REST_DATASOURCE_CATALOG_IDS` discriminator (never client input).
+    const restCatalogIds = [...REST_DATASOURCE_CATALOG_IDS];
+
     // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): groups are
     // free-form JSONB strings in `workspace_plugins.config.group_id` with
     // no separate `connection_groups` row and no `primary_connection_id`.
@@ -63,9 +73,10 @@ export async function loadGroupRoutingContext(
         WHERE install_id = $1
           AND (workspace_id = $2 OR workspace_id = '__global__')
           AND pillar = 'datasource'
+          AND catalog_id <> ALL($3)
           AND status != 'archived'
         LIMIT 1`,
-      [currentConnectionId, orgId],
+      [currentConnectionId, orgId, restCatalogIds],
     );
     const groupId = connRows[0]?.group_id ?? null;
     if (!groupId) {
@@ -91,9 +102,10 @@ export async function loadGroupRoutingContext(
         WHERE config->>'group_id' = $1
           AND (workspace_id = $2 OR workspace_id = '__global__')
           AND pillar = 'datasource'
+          AND catalog_id <> ALL($3)
           AND status != 'archived'
         ORDER BY install_id`,
-      [groupId, orgId],
+      [groupId, orgId, restCatalogIds],
     );
 
     const members = memberRows.map((r) => r.id);

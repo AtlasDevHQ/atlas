@@ -236,6 +236,43 @@ Each \`executeSQL\` call can carry a \`scope\` argument that decides which envir
 The result of a fanned-out query carries an \`envContributions\` array describing each environment's row count, duration, and error (if any). Use it to surface partial failures to the user instead of silently treating a failed env as zero rows.`;
 }
 
+/**
+ * #3044 — REST datasource environment-scope framing ([ADR-0010]). Returns the
+ * one-line scope banner prepended to a REST datasource's prompt section so the
+ * agent (and, downstream, the user) knows whether the datasource is constrained
+ * by the conversation's environment selection.
+ *
+ * The bug this closes: a chat pinned to one SQL environment LOOKS fully
+ * constrained, but a workspace-global REST datasource answers regardless of the
+ * pin. Making the reach explicit means the model never implies the conversation
+ * is scoped tighter than it is.
+ *
+ * Pure. `inMultiEnvGroup` toggles the extra "not constrained by the pin"
+ * emphasis — in a single-environment workspace there is no pin to contrast
+ * against, so the softer phrasing avoids implying a selection that isn't there.
+ */
+export function buildRestDatasourceScopeNote(
+  ds: { readonly groupId?: string },
+  opts: { readonly inMultiEnvGroup: boolean },
+): string {
+  if (ds.groupId) {
+    return (
+      `**Environment scope:** scoped to environment group \`${ds.groupId}\` — ` +
+      `this REST datasource is part of that environment and is only reachable ` +
+      `while that group is the conversation's active environment.`
+    );
+  }
+  const pinClause = opts.inMultiEnvGroup
+    ? " It is **NOT** constrained by this conversation's environment selection/pin — " +
+      "querying it reaches the same upstream account regardless of which SQL environment is active. " +
+      "Do not describe the conversation as limited to one environment when answering from it."
+    : "";
+  return (
+    `**Environment scope:** workspace-global — available in every environment.` +
+    pinClause
+  );
+}
+
 function buildMultiSourceSection(
   sources: ConnectionMetadata[],
 ): string {
@@ -874,6 +911,27 @@ export async function runAgent({
   // Resolve async work before entering otelContext.with() (sync callback).
   const modelMessages = await convertToModelMessages(messages);
 
+  // #2517 — load active-group routing context so the system prompt can
+  // teach the agent when to set `scope` on `executeSQL`. Falls back to
+  // a 1×1 result (no prompt section) when no group is bound or the
+  // lookup fails — single-env workspaces see no behavioural change.
+  // Resolved BEFORE the REST block (#3044) so each REST datasource's
+  // representation can be framed against whether a multi-env pin exists.
+  let scopeRoutingContext: ScopeRoutingContext | undefined;
+  if (connectionId) {
+    const ctx = await loadGroupRoutingContext(orgId, connectionId);
+    if (ctx.members.length > 1) {
+      scopeRoutingContext = {
+        members: ctx.members,
+        currentMember: ctx.currentMember,
+        ...(ctx.groupId ? { groupId: ctx.groupId } : {}),
+      };
+    }
+  }
+  // A multi-env group means a pin exists that a workspace-global REST
+  // datasource silently escapes — the framing must call that out (#3044).
+  const inMultiEnvGroup = scopeRoutingContext !== undefined;
+
   // #2926 — REST datasources (slice 2: per-workspace `openapi-generic` installs).
   // Resolve every REST datasource the workspace has installed (Twenty, Stripe,
   // an internal service…) from `workspace_plugins`, merge the
@@ -882,10 +940,19 @@ export async function runAgent({
   // common case) resolve `[]` and pay nothing. The slice-1 `ATLAS_OPENAPI_TWENTY*`
   // env path is retired. Fail-soft: a preflight error degrades to "no REST
   // datasource" rather than breaking the chat turn.
+  //
+  // #3044 — scope filter: a datasource scoped to a different environment group
+  // resolves out (the resolver keeps workspace-global + active-group matches).
+  // `connectionGroupId ?? null` ⇒ a chat with no active group sees only
+  // workspace-global datasources; a scoped one never leaks past its environment.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
   try {
-    const restDatasources = orgId ? await resolveWorkspaceRestDatasources(orgId) : [];
+    const restDatasources = orgId
+      ? await resolveWorkspaceRestDatasources(orgId, {
+          activeGroupId: connectionGroupId ?? null,
+        })
+      : [];
     if (restDatasources.length > 0) {
       const restRegistry = new ToolRegistry();
       restRegistry.register({
@@ -911,7 +978,10 @@ export async function runAgent({
           displayName: ds.displayName,
           ...(multiple ? { datasourceId: ds.id } : {}),
         });
-        sections.push(rep.promptContext);
+        // #3044 — prepend the environment-scope banner so the agent never
+        // implies the conversation is constrained tighter than it is.
+        const scopeNote = buildRestDatasourceScopeNote(ds, { inMultiEnvGroup });
+        sections.push(`${scopeNote}\n\n${rep.promptContext}`);
         if (rep.unresolvedResources.length > 0) {
           log.warn(
             { datasource: ds.id, resources: rep.unresolvedResources },
@@ -931,22 +1001,6 @@ export async function runAgent({
 
   const rawTools = activeRegistry.getAll();
   const tools = wrapToolsWithHooks(rawTools, { userId: userId ?? undefined, conversationId });
-
-  // #2517 — load active-group routing context so the system prompt can
-  // teach the agent when to set `scope` on `executeSQL`. Falls back to
-  // a 1×1 result (no prompt section) when no group is bound or the
-  // lookup fails — single-env workspaces see no behavioural change.
-  let scopeRoutingContext: ScopeRoutingContext | undefined;
-  if (connectionId) {
-    const ctx = await loadGroupRoutingContext(orgId, connectionId);
-    if (ctx.members.length > 1) {
-      scopeRoutingContext = {
-        members: ctx.members,
-        currentMember: ctx.currentMember,
-        ...(ctx.groupId ? { groupId: ctx.groupId } : {}),
-      };
-    }
-  }
 
   let result;
   try {

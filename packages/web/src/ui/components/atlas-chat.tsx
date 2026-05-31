@@ -44,6 +44,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
 import { useUiStore } from "@/lib/stores/ui-store";
+import { useChatRoutingPreferenceStore } from "@/lib/stores/chat-routing-preference-store";
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
@@ -133,6 +134,13 @@ export function AtlasChat() {
   // #2518 — three-state Auto/Pin/All cross-environment routing picker.
   const [selectedRoutingMode, setSelectedRoutingMode] =
     useState<ConversationRoutingMode | null>(null);
+  // #3044 — persisted env-picker preference so a reload restores the user's
+  // last selection instead of re-seeding from the first group. Select fields
+  // individually so the store object identity doesn't churn effect deps.
+  const prefGroupId = useChatRoutingPreferenceStore((s) => s.groupId);
+  const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
+  const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
+  const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -185,13 +193,38 @@ export function AtlasChat() {
   });
 
   // Seed selection only when empty — never override a user pick or a
-  // conversation-restored value.
+  // conversation-restored value. #3044 — prefer the persisted preference (a
+  // reload restores the user's last environment); fall back to the default
+  // seed when there is no stored preference or it no longer matches an
+  // available group/member (e.g. the connection was removed).
   useEffect(() => {
+    if (selectedConnectionId !== null) return;
+    if (envGroupsQuery.groups.length === 0) return;
+
+    const prefGroup = prefGroupId
+      ? envGroupsQuery.groups.find((g) => g.id === prefGroupId)
+      : undefined;
+    const prefMember = prefGroup?.members.find(
+      (m) => m.connectionId === prefConnectionId,
+    );
+    if (prefGroup && prefMember) {
+      setSelectedGroupId(prefGroup.id);
+      setSelectedConnectionId(prefMember.connectionId);
+      if (prefRoutingMode) setSelectedRoutingMode(prefRoutingMode);
+      return;
+    }
+
     const seed = pickDefaultEnvSeed(envGroupsQuery.groups, selectedConnectionId);
     if (!seed) return;
     setSelectedGroupId(seed.groupId);
     setSelectedConnectionId(seed.connectionId);
-  }, [envGroupsQuery.groups, selectedConnectionId]);
+  }, [
+    envGroupsQuery.groups,
+    selectedConnectionId,
+    prefGroupId,
+    prefConnectionId,
+    prefRoutingMode,
+  ]);
 
   const convos = useConversations({
     apiUrl,
@@ -566,10 +599,13 @@ export function AtlasChat() {
                     activeGroupId={selectedGroupId}
                     activeConnectionId={selectedConnectionId}
                     activeRoutingMode={selectedRoutingMode}
+                    restDatasources={envGroupsQuery.restDatasources}
                     onSelect={({ groupId, connectionId, routingMode }) => {
                       setSelectedGroupId(groupId);
                       setSelectedConnectionId(connectionId);
                       setSelectedRoutingMode(routingMode);
+                      // #3044 — remember this pick so a reload restores it.
+                      setRoutingPreference({ groupId, connectionId, routingMode });
                     }}
                   />
                   <Button

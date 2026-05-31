@@ -50,11 +50,13 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
 
   let queryCalls: Array<{ sql: string; params: unknown[] }>;
   let probedUrls: string[];
+  let probedHeaders: Array<Record<string, string>>;
   const ORIGINAL_ENV = { ...process.env };
 
   beforeEach(() => {
     queryCalls = [];
     probedUrls = [];
+    probedHeaders = [];
     // Set an encryption keyset so auth_value is actually encrypted at rest
     // (mirrors openapi-generic-form-handler.test.ts:setKeys) — without it the
     // keyless dev passthrough stores plaintext and the encryption assertions fail.
@@ -113,5 +115,35 @@ describe("DataCandidateFormInstallHandler.validateConfig", () => {
     expect(configJson).not.toContain("sk_live_secret");
     // The locked spec URL + auth kind are persisted from the candidate, not the form.
     expect(configJson).toContain(STRIPE_DATA_CANDIDATE.openapiUrl);
+  });
+
+  it("does NOT send the customer credential to the third-party spec host (#3034)", async () => {
+    const { DataCandidateFormInstallHandler } = await import("../data-candidate-form-handler");
+    const handler = new DataCandidateFormInstallHandler(STRIPE_DATA_CANDIDATE, {
+      idGenerator: () => "fixed-uuid",
+      now: () => "2026-05-30T00:00:00.000Z",
+      fetchImpl: (async (input: string | URL, init?: RequestInit) => {
+        probedUrls.push(typeof input === "string" ? input : input.toString());
+        const headers: Record<string, string> = {};
+        const h = init?.headers as Record<string, string> | undefined;
+        if (h) for (const [k, v] of Object.entries(h)) headers[k] = v;
+        probedHeaders.push(headers);
+        return new Response(JSON.stringify(STRIPE_FIXTURE_SPEC), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as unknown as typeof globalThis.fetch,
+    });
+
+    await handler.validateConfig("ws-1" as never, { auth_value: "sk_live_super_secret" });
+
+    // The spec is fetched from raw.githubusercontent.com while the secret key is
+    // for api.stripe.com — the probe must carry NO Authorization header and the key
+    // must never appear in the spec-fetch URL. The credential reaches Stripe only at
+    // query time, host-side.
+    expect(probedUrls[0]).toBe(STRIPE_DATA_CANDIDATE.openapiUrl);
+    expect(probedUrls[0]).toContain("raw.githubusercontent.com");
+    expect(probedHeaders[0]?.Authorization).toBeUndefined();
+    expect(probedUrls[0]).not.toContain("sk_live_super_secret");
   });
 });

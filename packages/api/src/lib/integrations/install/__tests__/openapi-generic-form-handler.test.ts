@@ -279,7 +279,26 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     expect(snapshot.doc).toBeDefined();
   });
 
-  it("sends the bearer credential when probing the spec", async () => {
+  it("sends the bearer credential when the spec host matches the API host (base_url_override)", async () => {
+    const probe = makeProbeFetch();
+    const handler = new OpenApiGenericFormInstallHandler({
+      idGenerator: () => "x",
+      now: () => "2026-05-29T00:00:00.000Z",
+      fetchImpl: probe.fetchImpl,
+    });
+    // The credential is attached only when the spec is on the API host (#3034) — a
+    // same-host base_url_override (Twenty's posture) makes the gate send it.
+    await handler.validateConfig(
+      WSID,
+      validForm({ auth_value: "probe-token", base_url_override: "https://widgets.example.com/v1" }),
+    );
+    expect(probe.calls).toHaveLength(1);
+    expect(probe.calls[0].headers.Authorization).toBe("Bearer probe-token");
+  });
+
+  it("withholds the credential from the spec fetch when no base_url_override is given (#3034)", async () => {
+    // Without a base_url_override the API host is unknown at probe time, so the
+    // gate fails safe and never sends the workspace credential to the spec host.
     const probe = makeProbeFetch();
     const handler = new OpenApiGenericFormInstallHandler({
       idGenerator: () => "x",
@@ -288,7 +307,7 @@ describe("OpenApiGenericFormInstallHandler — persistence + encryption", () => 
     });
     await handler.validateConfig(WSID, validForm({ auth_value: "probe-token" }));
     expect(probe.calls).toHaveLength(1);
-    expect(probe.calls[0].headers.Authorization).toBe("Bearer probe-token");
+    expect(probe.calls[0].headers.Authorization).toBeUndefined();
   });
 
   it("refuses to persist in SaaS mode without an encryption keyset", async () => {

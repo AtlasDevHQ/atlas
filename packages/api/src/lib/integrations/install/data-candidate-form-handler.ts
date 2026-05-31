@@ -107,6 +107,9 @@ export class DataCandidateFormInstallHandler implements FormBasedInstallHandler 
       openapiUrl: this.candidate.openapiUrl,
       authKind: this.candidate.authKind,
       authValue: data.auth_value,
+      // The candidate's real API host — gates the probe credential (#3034) so the
+      // customer key never reaches the public spec host (raw.githubusercontent.com).
+      apiBaseUrl: this.candidate.apiBaseUrl,
       ...(data.base_url_override ? { baseUrlOverride: data.base_url_override } : {}),
       ...(data.display_name ? { displayName: data.display_name } : {}),
       newId: this.newId,

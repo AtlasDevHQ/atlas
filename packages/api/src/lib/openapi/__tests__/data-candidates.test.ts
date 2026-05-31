@@ -51,6 +51,19 @@ describe("DATA_CANDIDATES registry invariants", () => {
     expect(findDataCandidateBySlug("nope")).toBeUndefined();
   });
 
+  it("every candidate declares an apiBaseUrl whose host differs from its spec host (#3034 contract)", () => {
+    // Every built-in candidate pins its spec to a public host (raw.githubusercontent.com)
+    // while its API lives elsewhere. That host gap is exactly what makes the probe
+    // host-match gate WITHHOLD the customer credential from the spec fetch — so this
+    // invariant guards the leak fix at the registry level.
+    for (const c of DATA_CANDIDATES) {
+      const specHost = new URL(c.openapiUrl).host;
+      const apiHost = new URL(c.apiBaseUrl).host;
+      expect(apiHost, `${c.slug} apiBaseUrl must be well-formed`).not.toBe("");
+      expect(specHost, `${c.slug}: spec host must differ from API host`).not.toBe(apiHost);
+    }
+  });
+
   it("every candidate's pagination config resolves over the GENERIC registry (no forked strategy)", () => {
     for (const c of DATA_CANDIDATES) {
       if (c.pagination === undefined) continue;

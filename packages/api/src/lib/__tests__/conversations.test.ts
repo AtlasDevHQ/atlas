@@ -133,7 +133,7 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, org_id]
+      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id]
       expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, [], null]);
     });
 

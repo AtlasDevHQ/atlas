@@ -181,6 +181,8 @@ function ChatPage() {
     groups: envGroupsQuery.groups,
     reason: envGroupsQuery.reason,
     error: envGroupsQuery.error,
+    // #3066 — also show when there are REST datasources to exclude.
+    restDatasources: envGroupsQuery.restDatasources,
   });
 
   const refreshConvosRef = useRef(convos.refresh);

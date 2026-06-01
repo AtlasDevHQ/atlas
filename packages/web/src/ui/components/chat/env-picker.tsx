@@ -153,9 +153,13 @@ export function sameExcludeSet(
   a: ReadonlyArray<string>,
   b: ReadonlyArray<string>,
 ): boolean {
-  if (a.length !== b.length) return false;
+  // Compare as SETS, not lists — dedupe each side first. Comparing raw lengths
+  // would false-positive `["a","a"]` (1 distinct) against `["a","b"]` (2
+  // distinct). Mirrors the API route's `sameStringSet` exactly.
+  const setA = new Set(a);
   const setB = new Set(b);
-  for (const v of a) if (!setB.has(v)) return false;
+  if (setA.size !== setB.size) return false;
+  for (const v of setA) if (!setB.has(v)) return false;
   return true;
 }
 
@@ -169,12 +173,25 @@ export interface ShouldRenderEnvPickerArgs {
   readonly groups: ReadonlyArray<{ readonly members: ReadonlyArray<unknown> }>;
   readonly reason: MeConnectionGroupsEmptyReason | null;
   readonly error?: string | null;
+  /**
+   * #3066 — REST datasources the conversation can exclude. Their presence makes
+   * the picker worth showing even when SQL routing is trivial (one group / one
+   * member), so the exclude toggles stay reachable — otherwise the exclude-set
+   * feature is dead for the common one-Postgres + one-REST-datasource
+   * workspace. (A zero-group, REST-only workspace still hides the picker; that
+   * shape needs the SQL-less render path + an independent exclude-set lifecycle,
+   * tracked as a follow-up.)
+   */
+  readonly restDatasources?: ReadonlyArray<unknown>;
 }
 
 export function shouldRenderEnvPicker(args: ShouldRenderEnvPickerArgs): boolean {
   if (args.groups.length === 0) return args.reason !== null || args.error != null;
   if (args.groups.length > 1) return true;
-  return (args.groups[0]?.members.length ?? 0) > 1;
+  if ((args.groups[0]?.members.length ?? 0) > 1) return true;
+  // #3066 — single group + single member, but there are REST datasources to
+  // toggle: show the picker so the exclude-set is reachable.
+  return (args.restDatasources?.length ?? 0) > 0;
 }
 
 const EMPTY_REASON_COPY: Record<MeConnectionGroupsEmptyReason, string> = {
@@ -563,7 +580,7 @@ export function ChatEnvPicker({
     );
   }
 
-  if (!shouldRenderEnvPicker({ groups, reason: emptyReason, error: transportError })) {
+  if (!shouldRenderEnvPicker({ groups, reason: emptyReason, error: transportError, restDatasources })) {
     return null;
   }
 

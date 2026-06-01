@@ -408,8 +408,15 @@ export const ChatRequestSchema = z.object({
    * body fields, so the client must send the array (even `[]`) whenever
    * the picker was touched — otherwise a re-include silently keeps the
    * stale exclusion (the #3073 transport-omits-null bug class).
+   *
+   * Normalized to a canonical set at validation (`[...new Set(ids)]`) so the
+   * persisted value can't carry duplicates for a set-shaped contract; `undefined`
+   * (omitted) is preserved so the inherit-vs-clear branch still works.
    */
-  restExcludedDatasourceIds: z.array(z.string()).optional(),
+  restExcludedDatasourceIds: z
+    .array(z.string())
+    .transform((ids) => [...new Set(ids)])
+    .optional(),
   /**
    * #2363 — bound dashboard editor. When the chat drawer opens on
    * `/dashboards/[id]` the client supplies the dashboard id once (on

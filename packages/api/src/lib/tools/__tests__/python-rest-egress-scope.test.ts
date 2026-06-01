@@ -13,7 +13,12 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // Controllable request context (default: none).
 let mockReqCtx:
-  | { user?: { activeOrganizationId?: string }; connectionGroupId?: string; connectionId?: string }
+  | {
+      user?: { activeOrganizationId?: string };
+      connectionGroupId?: string;
+      connectionId?: string;
+      restExcludedDatasourceIds?: readonly string[];
+    }
   | undefined;
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -91,5 +96,25 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     const result = await defaultResolveRestDatasource();
     expect(result).toBeNull();
     expect(primaryCalls).toHaveLength(0);
+  });
+
+  // #3066 — the sandbox egress allowlist must honour the conversation's REST
+  // exclude-set too, or Python could probe a datasource the conversation
+  // excluded (if it's the workspace primary).
+  it("threads the conversation's REST exclude-set into the egress resolver (#3066)", async () => {
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: ["ds-excluded"],
+    };
+    await defaultResolveRestDatasource();
+    expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu", excluded: ["ds-excluded"] });
+  });
+
+  it("omits `excluded` when the conversation has no exclude-set (#3066)", async () => {
+    mockReqCtx = { user: { activeOrganizationId: "org-1" }, connectionGroupId: "eu" };
+    await defaultResolveRestDatasource();
+    // No `excluded` key — the resolver excludes nothing for egress.
+    expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
   });
 });

@@ -1044,6 +1044,40 @@ describe("shouldRenderEnvPicker truth table (#2504)", () => {
       }),
     ).toBe(true);
   });
+
+  // #3066 — the exclude-set must be reachable on the common one-Postgres +
+  // one-REST workspace, where SQL routing alone is trivial (1 group / 1 member).
+  test("renders the trivial 1×1 case when there are REST datasources to exclude (#3066)", () => {
+    expect(
+      shouldRenderEnvPicker({
+        groups: [{ members: oneMember }],
+        reason: null,
+        restDatasources: [{ id: "stripe" }],
+      }),
+    ).toBe(true);
+  });
+
+  test("still hides 1×1 when there are no REST datasources (#3066)", () => {
+    expect(
+      shouldRenderEnvPicker({
+        groups: [{ members: oneMember }],
+        reason: null,
+        restDatasources: [],
+      }),
+    ).toBe(false);
+  });
+
+  // The zero-group REST-only workspace still hides (deferred follow-up): a
+  // SQL-less render path + independent exclude-set lifecycle are out of scope.
+  test("still hides a zero-group workspace even with REST datasources (#3066 deferred)", () => {
+    expect(
+      shouldRenderEnvPicker({
+        groups: [],
+        reason: null,
+        restDatasources: [{ id: "stripe" }],
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("ChatEnvPicker transportError (#2504)", () => {

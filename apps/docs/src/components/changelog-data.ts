@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.3",
+    title: "Spec Lifecycle",
+    date: "2026-05-31",
+    summary:
+      "OpenAPI datasources now keep themselves current. Once you connect a REST service, Atlas tracks its spec over time: a configurable per-install refresh interval re-discovers operations on a schedule, a structured drift diff shows exactly what changed since the last sync, and a breaking-change signal flags when an operation your queries depend on is removed or altered. Specs are fetched once and cached across workspaces — the shared cache reuses the parsed spec and operation graph but never the credential — so re-discovery stays cheap even as installs multiply. This release also repositions the marketing site and docs around Atlas as a semantic layer for any query layer: SQL warehouses or REST/OpenAPI services, answered through one model.",
+    highlights: [
+      "Scheduled spec re-discovery — set a per-install refresh interval and Atlas re-reads the OpenAPI spec on its own; a 'Rediscover schema' control triggers it on demand",
+      "Structured drift diff — every re-discovery produces a readable changeset (operations added, removed, changed) instead of a silent overwrite",
+      "Breaking-change drift signal — when re-discovery removes or alters an operation, Atlas raises a breaking-change alert and records a `connection.spec_drift_breaking` audit entry",
+      "Shared cross-workspace spec cache — a spec is downloaded once and reused across workspaces; the cache shares the parsed spec and graph, never the credential",
+      "Query-layer repositioning — the homepage and docs now present Atlas as a semantic layer for any query layer (SQL or REST/OpenAPI), led by an answer-first hero",
+    ],
+  },
+  {
     version: "v0.0.2",
     title: "REST Datasources",
     date: "2026-05-31",

@@ -129,6 +129,11 @@ const mockGenerateTitle = mock((q: string) => q.slice(0, 80));
 const mockUpdateConversationRestExcluded = mock(() =>
   Promise.resolve({ ok: true as const }),
 );
+// #3067 — captured so tests can assert the REST-only focus persist path,
+// incl. the clear-via-null case (the #3073 transport-omits-null bug class).
+const mockUpdateConversationRestFocus = mock(() =>
+  Promise.resolve({ ok: true as const }),
+);
 type ReservationResult =
   | { status: "ok"; totalStepsBefore: number }
   | { status: "exceeded"; totalSteps: number }
@@ -170,6 +175,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
   updateConversationRestExcluded: mockUpdateConversationRestExcluded,
+  updateConversationRestFocus: mockUpdateConversationRestFocus,
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
@@ -258,6 +264,8 @@ describe("POST /api/v1/chat", () => {
     mockGetConversationChat.mockResolvedValue({ ok: false, reason: "not_found" });
     mockUpdateConversationRestExcluded.mockReset();
     mockUpdateConversationRestExcluded.mockResolvedValue({ ok: true as const });
+    mockUpdateConversationRestFocus.mockReset();
+    mockUpdateConversationRestFocus.mockResolvedValue({ ok: true as const });
     mockReserveConversationBudget.mockReset();
     mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
     mockSettleConversationSteps.mockReset();
@@ -567,6 +575,130 @@ describe("POST /api/v1/chat", () => {
     );
     expect(response.status).toBe(200);
     expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
+  });
+
+  // #3067 — the conversation's REST-only focus must reach the agent via the ALS
+  // frame so the agent loop resolves only that datasource and suspends executeSQL.
+  it("propagates restFocusDatasourceId into the ALS frame the agent sees (#3067)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "ask stripe only" }] }],
+        restFocusDatasourceId: "ds-stripe",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.restFocusDatasourceId).toBe("ds-stripe");
+  });
+
+  // #3067 — a null/cleared focus must NOT be stamped on the ALS frame (the
+  // agent's "not focused" / default-scope path). Keeps the legacy shape for the
+  // common case where the conversation isn't focused.
+  it("does not stamp a null restFocusDatasourceId on the ALS frame (not focused) (#3067)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        restFocusDatasourceId: null,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.restFocusDatasourceId).toBeUndefined();
+  });
+
+  // #3067 / #3073 — the clear-focus path. An existing conversation is focused on
+  // ds-stripe; the user clears focus, so the body carries `null` (the transport
+  // sends null explicitly). The route distinguishes "field present as null"
+  // (persist the clear) from "field absent" (inherit the row) — without it a
+  // clear silently keeps the stale focus.
+  it("persists a clear (null nulls a prior focus) (#3067/#3073)", async () => {
+    const convId = "c3d4e5f6-a7b8-49c0-9def-0123456789ab";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: "ds-stripe",
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "clear focus" }] }],
+        conversationId: convId,
+        restFocusDatasourceId: null,
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationRestFocus).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationRestFocus.mock.calls as unknown as unknown[][];
+    // Second arg is the new (null) focus persisted to the row.
+    expect(calls[0]![1]).toBeNull();
+  });
+
+  // #3067 — when the body OMITS focus (the common follow-up turn), the stored
+  // focus is inherited into the ALS frame and NO redundant UPDATE fires.
+  it("inherits the stored focus and skips the UPDATE when the body omits it (#3067)", async () => {
+    const convId = "e5f6a7b8-c9d0-41e2-93f4-56789abcdef0";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: "ds-stripe",
+        messages: [],
+      },
+    });
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "follow up" }] }],
+        conversationId: convId,
+        // restFocusDatasourceId intentionally omitted
+      }),
+    );
+    expect(response.status).toBe(200);
+    // Inherited the stored focus into the ALS frame…
+    expect(capturedContext?.restFocusDatasourceId).toBe("ds-stripe");
+    // …and did NOT burn an UPDATE (body absent → inherit, no change).
+    expect(mockUpdateConversationRestFocus).not.toHaveBeenCalled();
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

@@ -44,6 +44,13 @@ export interface ChatRoutingPreference {
    * authoritative once a conversation exists. Empty = nothing excluded.
    */
   readonly restExcludedDatasourceIds: readonly string[];
+  /**
+   * #3067 — REST-only focus the user last chose (a single `install_id`, or
+   * null = not focused). Seeds NEW chats only; the per-conversation row is
+   * authoritative once a conversation exists. When set, the conversation
+   * targets only that datasource and SQL is suspended.
+   */
+  readonly restFocusDatasourceId: string | null;
 }
 
 interface ChatRoutingPreferenceStore extends ChatRoutingPreference {
@@ -70,6 +77,7 @@ const EMPTY: ChatRoutingPreference = {
   connectionId: null,
   routingMode: null,
   restExcludedDatasourceIds: [],
+  restFocusDatasourceId: null,
 };
 
 export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>()(
@@ -85,6 +93,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
           connectionId: next.connectionId,
           routingMode: next.routingMode,
           restExcludedDatasourceIds: next.restExcludedDatasourceIds,
+          restFocusDatasourceId: next.restFocusDatasourceId,
         }),
       // Partial set — zustand shallow-merges, so `_hasHydrated` (absent from
       // EMPTY) is preserved. A clear must not re-close the hydration gate.
@@ -103,6 +112,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
         connectionId: s.connectionId,
         routingMode: s.routingMode,
         restExcludedDatasourceIds: s.restExcludedDatasourceIds,
+        restFocusDatasourceId: s.restFocusDatasourceId,
       }),
       // Fires after rehydration (synchronously for localStorage, even when
       // storage was empty), so the consumer's gate opens exactly once the

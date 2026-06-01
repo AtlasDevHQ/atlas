@@ -130,6 +130,13 @@ export const conversations = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    // 0113 — per-conversation REST-only focus (#3067, S2b). When set,
+    // holds the single `workspace_plugins.install_id` the conversation
+    // targets exclusively, suspending `executeSQL`. NULL (the default) =
+    // not focused: `routing_mode` + `rest_excluded_datasource_ids` apply
+    // as normal, and they stay RETAINED-but-inert while focused so
+    // clearing focus returns to the prior scope. See ADR-0011.
+    restFocusDatasourceId: text("rest_focus_datasource_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred

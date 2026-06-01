@@ -13,6 +13,7 @@ import {
   resolveWorkspacePrimaryRestDatasource,
   defaultQuery,
   RestDatasourceReconnectError,
+  RestDatasourceFocusUnusableError,
   type OpenApiInstallRow,
 } from "../workspace-datasource";
 import { buildOperationGraph } from "../spec";
@@ -525,6 +526,104 @@ describe("resolveWorkspaceRestDatasources — per-conversation exclude-set (#306
       excluded: ["ds-global", "ds-prod", "ds-eu"],
     });
     expect(result).toEqual([]);
+  });
+});
+
+describe("resolveWorkspaceRestDatasources — REST-only focus (#3067, S2b)", () => {
+  const rows: OpenApiInstallRow[] = [
+    { install_id: "ds-global", config: config({ display_name: "Global" }) }, // no group_id
+    { install_id: "ds-prod", config: config({ display_name: "Prod", group_id: "prod" }) },
+    { install_id: "ds-eu", config: config({ display_name: "EU", group_id: "eu" }) },
+  ];
+
+  it("resolves ONLY the focus target", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-prod",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-prod"]);
+  });
+
+  it("short-circuits the activeGroupId scope filter (focus a group-scoped ds with a mismatched active group)", async () => {
+    // ds-eu is scoped to "eu"; focusing it while the active group is "prod"
+    // still resolves it — focus is an explicit single pick, group-scope is inert.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: "prod",
+      focus: "ds-eu",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-eu"]);
+  });
+
+  it("short-circuits the exclude-set (focus a datasource that is also excluded)", async () => {
+    // The exclude-set is inert while focused — focusing ds-prod resolves it
+    // even though it's in the exclude-set.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-prod"],
+      focus: "ds-prod",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-prod"]);
+  });
+
+  it("returns [] when the focus target matches no install (fall-back-to-default signal)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-uninstalled",
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("STRICT resolver throws RestDatasourceFocusUnusableError when the focus matches a present-but-unbuildable install (Codex P1)", async () => {
+    // The focused row exists but builds to nothing for a non-reconnectable reason
+    // (here a blocked/internal base URL the SSRF guard rejects). This must be
+    // distinguishable from "uninstalled" so the focus path fails CLOSED instead
+    // of the agent silently re-enabling SQL for a still-present datasource.
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    await expect(
+      resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+        query: queryReturning([
+          { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+        ]),
+        focus: "ds-blocked",
+      }),
+    ).rejects.toBeInstanceOf(RestDatasourceFocusUnusableError);
+  });
+
+  it("never-rejects resolver degrades a present-but-unbuildable focus to [] (python egress denies, never widens)", async () => {
+    // The non-claiming path can't fail closed (no SQL tool to suspend), so it
+    // returns [] — python egress then resolves a null primary and denies.
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+      ]),
+      focus: "ds-blocked",
+    });
+    expect(result).toEqual([]);
+    const primary = await resolveWorkspacePrimaryRestDatasource("org-1", {
+      query: queryReturning([
+        { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+      ]),
+      focus: "ds-blocked",
+    });
+    expect(primary).toBeNull();
+  });
+
+  it("an empty-string focus is ignored (resolves the default scope, not 'focus on nothing')", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "",
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("the primary resolver honours focus (python egress lockstep)", async () => {
+    const primary = await resolveWorkspacePrimaryRestDatasource("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-eu",
+    });
+    expect(primary?.id).toBe("ds-eu");
   });
 });
 

@@ -140,6 +140,11 @@ export function AtlasChat() {
   // `install_id`s). Empty = all in scope. Seeded from the sticky preference on
   // a fresh chat, restored from the row when a conversation is opened.
   const [selectedRestExcluded, setSelectedRestExcluded] = useState<string[]>([]);
+  // #3067 — per-conversation REST-only focus (a single `install_id`, or null =
+  // not focused). When set, the conversation targets only that datasource and
+  // SQL is suspended. Seeded from the sticky preference on a fresh chat,
+  // restored from the row when a conversation is opened.
+  const [selectedRestFocus, setSelectedRestFocus] = useState<string | null>(null);
   // #3044 — persisted env-picker preference so a reload restores the user's
   // last selection instead of re-seeding from the first group. Select fields
   // individually so the store object identity doesn't churn effect deps.
@@ -148,6 +153,7 @@ export function AtlasChat() {
   const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
   const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
   const prefRestExcluded = useChatRoutingPreferenceStore((s) => s.restExcludedDatasourceIds);
+  const prefRestFocus = useChatRoutingPreferenceStore((s) => s.restFocusDatasourceId);
   const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
   const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
   // #3064 — how the current picker selection was set, so the seed/restore
@@ -190,6 +196,9 @@ export function AtlasChat() {
     getRoutingMode: () => selectedRoutingMode,
     // #3066 — forward the REST exclude-set on every turn (always, even []).
     getRestExcludedDatasourceIds: () => selectedRestExcluded,
+    // #3067 — forward the REST-only focus on every turn (always, even null) so
+    // a clear actually nulls the row instead of inheriting the stale focus.
+    getRestFocusDatasourceId: () => selectedRestFocus,
   });
 
   const managedSession = authClient.useSession();
@@ -234,6 +243,7 @@ export function AtlasChat() {
         connectionId: selectedConnectionId,
         routingMode: selectedRoutingMode,
         restExcludedDatasourceIds: selectedRestExcluded,
+        restFocusDatasourceId: selectedRestFocus,
       },
       provenance: selectionProvenanceRef.current,
       preference: {
@@ -242,6 +252,7 @@ export function AtlasChat() {
         connectionId: prefConnectionId,
         routingMode: prefRoutingMode,
         restExcludedDatasourceIds: prefRestExcluded,
+        restFocusDatasourceId: prefRestFocus,
       },
       activeWorkspaceId,
       preferenceHydrated: prefHasHydrated,
@@ -257,6 +268,8 @@ export function AtlasChat() {
         setSelectedRoutingMode(decision.routingMode);
         // #3066 — seed the sticky preference's exclude-set onto this fresh chat.
         setSelectedRestExcluded(decision.restExcludedDatasourceIds);
+        // #3067 — seed the sticky preference's REST-only focus too.
+        setSelectedRestFocus(decision.restFocusDatasourceId);
         // A restored sticky preference is the user's deliberate prior choice —
         // mark it explicit so a later effect run can't seed over it.
         selectionProvenanceRef.current = "explicit";
@@ -266,6 +279,8 @@ export function AtlasChat() {
         setSelectedConnectionId(decision.connectionId);
         // #3066 — a default seed excludes nothing.
         setSelectedRestExcluded(decision.restExcludedDatasourceIds);
+        // #3067 — a default seed is not focused (SQL active).
+        setSelectedRestFocus(decision.restFocusDatasourceId);
         // Record that this was auto-seeded: a workspace-matching preference
         // arriving later is still restored over it (the resolver re-runs), but
         // a second default seed is suppressed.
@@ -293,11 +308,14 @@ export function AtlasChat() {
     // #3066 — exclude-set is part of `current`; keep it in deps so a pref-only
     // exclude change re-evaluates restore-vs-noop rather than going stale.
     selectedRestExcluded,
+    // #3067 — focus is part of `current` too; keep it in deps for the same reason.
+    selectedRestFocus,
     prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
     prefRoutingMode,
     prefRestExcluded,
+    prefRestFocus,
     prefHasHydrated,
     activeWorkspaceId,
     sessionResolved,
@@ -623,6 +641,8 @@ export function AtlasChat() {
         // #3066 — restore the conversation's REST exclude-set so the picker +
         // the next turn reflect what the row actually excludes.
         setSelectedRestExcluded(decision.restExcludedDatasourceIds);
+        // #3067 — restore the conversation's REST-only focus too.
+        setSelectedRestFocus(decision.restFocusDatasourceId);
       } else {
         selectionProvenanceRef.current = "unset";
         setSelectedGroupId(null);
@@ -631,6 +651,14 @@ export function AtlasChat() {
         // #3066 — no usable scope on the row: clear the exclude-set too and let
         // the seed/restore effect re-seed from the sticky preference / default.
         setSelectedRestExcluded([]);
+        // #3067 — clear focus too on a seed decision. A `seed` fires when the
+        // row's SQL scope isn't restorable: all-null (legacy / zero-group), or
+        // its group was archived/removed / has no live members. On the common
+        // ≥1-group workspace a focused conversation normally carries a live
+        // group and `restore`s above; the all-null REST-only case (where focus
+        // would be lost) is only reachable on a zero-group workspace, which
+        // doesn't render the picker yet — see #3078.
+        setSelectedRestFocus(null);
       }
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
@@ -667,6 +695,9 @@ export function AtlasChat() {
     // #3066 — clear the exclude-set so the new chat re-seeds from the sticky
     // preference (or the empty default), matching the env reset above.
     setSelectedRestExcluded([]);
+    // #3067 — clear focus too; the new chat re-seeds focus from the sticky
+    // preference (or the not-focused default).
+    setSelectedRestFocus(null);
   }
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
@@ -744,6 +775,23 @@ export function AtlasChat() {
                         connectionId: selectedConnectionId,
                         routingMode: selectedRoutingMode,
                         restExcludedDatasourceIds: next,
+                        restFocusDatasourceId: selectedRestFocus,
+                      });
+                    }}
+                    restFocusDatasourceId={selectedRestFocus}
+                    onRestFocusChange={(next) => {
+                      // #3067 — focusing / clearing is a deliberate pick: mark
+                      // explicit and remember it in the sticky preference so new
+                      // chats inherit it. `null` clears focus (re-enables SQL).
+                      selectionProvenanceRef.current = "explicit";
+                      setSelectedRestFocus(next);
+                      setRoutingPreference({
+                        workspaceId: activeWorkspaceId,
+                        groupId: selectedGroupId,
+                        connectionId: selectedConnectionId,
+                        routingMode: selectedRoutingMode,
+                        restExcludedDatasourceIds: selectedRestExcluded,
+                        restFocusDatasourceId: next,
                       });
                     }}
                     onSelect={({ groupId, connectionId, routingMode }) => {
@@ -762,6 +810,9 @@ export function AtlasChat() {
                         connectionId,
                         routingMode,
                         restExcludedDatasourceIds: selectedRestExcluded,
+                        // #3067 — carry the current focus so an env change
+                        // doesn't drop it from the sticky preference.
+                        restFocusDatasourceId: selectedRestFocus,
                       });
                     }}
                   />

@@ -25,12 +25,17 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       groupId: "prod",
       connectionId: "eu-prod",
       routingMode: "pin",
+      restExcludedDatasourceIds: ["billing-api"],
+      restFocusDatasourceId: "stripe",
     });
     const s = useChatRoutingPreferenceStore.getState();
     expect(s.workspaceId).toBe("org-1");
     expect(s.groupId).toBe("prod");
     expect(s.connectionId).toBe("eu-prod");
     expect(s.routingMode).toBe("pin");
+    // #3066 / #3067 — the REST scope fields persist too.
+    expect(s.restExcludedDatasourceIds).toEqual(["billing-api"]);
+    expect(s.restFocusDatasourceId).toBe("stripe");
   });
 
   it("persists ONLY the preference fields to localStorage (partialize drops setters)", () => {
@@ -39,6 +44,8 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       groupId: "prod",
       connectionId: "eu-prod",
       routingMode: "all",
+      restExcludedDatasourceIds: ["billing-api"],
+      restFocusDatasourceId: "stripe",
     });
     const raw = localStorage.getItem(STORAGE_KEY);
     expect(raw).not.toBeNull();
@@ -48,6 +55,8 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
       groupId: "prod",
       connectionId: "eu-prod",
       routingMode: "all",
+      restExcludedDatasourceIds: ["billing-api"],
+      restFocusDatasourceId: "stripe",
     });
     // Setters must never be serialized.
     expect(persisted.state.setPreference).toBeUndefined();

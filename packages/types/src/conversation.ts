@@ -69,6 +69,21 @@ export interface Conversation {
    * genuinely-nullable `routingMode` this field has no null state.
    */
   restExcludedDatasourceIds?: string[];
+  /**
+   * Per-conversation REST-only focus (#3067). When set, the single
+   * `install_id` — the id the scope picker surfaces — the conversation
+   * targets exclusively; the agent runs REST-only with `executeSQL`
+   * SUSPENDED. `null` / absent = not focused: SQL routing (`routingMode`)
+   * and the exclude-set (`restExcludedDatasourceIds`) apply as normal.
+   * Those two fields stay populated-but-inert while focused, so clearing
+   * focus (back to `null`) returns to the prior default-state scope.
+   *
+   * Genuinely nullable (unlike the exclude-set): the column is plain
+   * nullable `text` with no default, and `null` is the meaningful
+   * "not focused" state. Optional so pre-#3067 fixtures / SDK consumers
+   * can omit it; the runtime treats missing the same as `null`.
+   */
+  restFocusDatasourceId?: string | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

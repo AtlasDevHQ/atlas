@@ -43,6 +43,7 @@ import {
   settleConversationSteps,
   updateConversationRoutingMode,
   updateConversationRestExcluded,
+  updateConversationRestFocus,
   resolveRoutingMode,
 } from "@atlas/api/lib/conversations";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
@@ -416,6 +417,28 @@ export const ChatRequestSchema = z.object({
   restExcludedDatasourceIds: z
     .array(z.string())
     .transform((ids) => [...new Set(ids)])
+    .optional(),
+  /**
+   * #3067 — per-conversation REST-only focus. The scope picker sends the
+   * focused `install_id` (or `null` to clear focus); the route persists it
+   * onto the conversation row AND stamps it into the request context so the
+   * agent loop resolves only that datasource and suspends `executeSQL`.
+   *
+   * Presence is meaningful, like the exclude-set: an explicit `null` CLEARS
+   * focus (back to default scope), whereas an OMITTED field inherits the
+   * conversation's stored focus. The web transport must therefore send the
+   * field (including `null`) whenever the picker was touched, or a clear
+   * silently keeps the stale focus (the #3073 transport-omits-null bug class).
+   *
+   * An empty string is rejected (`.min(1)`): the only valid focus values are a
+   * non-empty `install_id` (set) or `null` (clear). Allowing `""` through would
+   * persist it as focus yet read back as "not focused" at the runtime truthy
+   * gate — invalid stored state with the UI and agent disagreeing (CodeRabbit).
+   */
+  restFocusDatasourceId: z
+    .string()
+    .min(1, "restFocusDatasourceId must be a non-empty install_id or null.")
+    .nullable()
     .optional(),
   /**
    * #2363 — bound dashboard editor. When the chat drawer opens on
@@ -819,6 +842,14 @@ chat.openapi(chatRoute, async (c) => {
         // the row (the transport-omits-null bug class, #3073).
         let effectiveRestExcluded: string[] | undefined =
           parsed.data.restExcludedDatasourceIds;
+        // #3067 — per-conversation REST-only focus. Body value (this turn,
+        // from the scope picker) > stored value on the row. PRESENCE is
+        // meaningful: an explicit `null` clears focus, an OMITTED field
+        // inherits the row's value. We keep `undefined` (omitted) vs `null`
+        // (clear) distinct all the way through so a clear actually nulls the
+        // row (the transport-omits-null bug class, #3073).
+        let effectiveRestFocus: string | null | undefined =
+          parsed.data.restFocusDatasourceId;
 
         // #2424 — when the body supplies `connectionGroupId`, verify it
         // belongs to the caller's active org BEFORE persisting it onto the
@@ -901,6 +932,13 @@ chat.openapi(chatRoute, async (c) => {
             ) {
               effectiveRestExcluded = existing.data.restExcludedDatasourceIds;
             }
+            // #3067 — inherit REST-only focus from the row when the body omits
+            // it. An explicit `null` from the body is NOT omitted (it clears
+            // focus), so the `=== undefined` guard keeps "clear" distinct from
+            // "field absent → use the row".
+            if (effectiveRestFocus === undefined) {
+              effectiveRestFocus = existing.data.restFocusDatasourceId ?? null;
+            }
             // Persist the picker mode if the body explicitly set one for
             // this turn. We compare against the stored value to avoid
             // burning an UPDATE on every chat turn when nothing changed.
@@ -954,6 +992,34 @@ chat.openapi(chatRoute, async (c) => {
                     conversationId,
                   },
                   "updateConversationRestExcluded rejected",
+                );
+              });
+            }
+            // #3067 — persist REST-only focus when the body explicitly set one
+            // this turn AND it differs from the stored value. An explicit
+            // `null` that clears a prior focus DOES persist (the clear path the
+            // transport must support); normalize the row's value with `?? null`
+            // so a string→null or null→string change is detected.
+            if (
+              parsed.data.restFocusDatasourceId !== undefined &&
+              parsed.data.restFocusDatasourceId !==
+                (existing.data.restFocusDatasourceId ?? null)
+            ) {
+              // Fire-and-forget, same contract as routing-mode / exclude-set
+              // above: the runtime honours the body's focus for this turn even
+              // if the persist fails; the helper logs its own failures.
+              updateConversationRestFocus(
+                conversationId,
+                parsed.data.restFocusDatasourceId,
+                authResult.user?.id,
+                authResult.user?.activeOrganizationId,
+              ).catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    conversationId,
+                  },
+                  "updateConversationRestFocus rejected",
                 );
               });
             }
@@ -1068,6 +1134,11 @@ chat.openapi(chatRoute, async (c) => {
                 // #3066 — persist the exclude-set the user picked at
                 // creation. Undefined ⇒ column default '{}' (all in scope).
                 restExcludedDatasourceIds: effectiveRestExcluded,
+                // #3067 — persist REST-only focus the user picked at creation.
+                // Undefined / null ⇒ NULL (not focused). The transport sends
+                // null when the picker is in default mode, so `?? null` keeps a
+                // newly-created default-mode conversation un-focused.
+                restFocusDatasourceId: effectiveRestFocus ?? null,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -1312,6 +1383,13 @@ chat.openapi(chatRoute, async (c) => {
                 effectiveRestExcluded.length > 0 && {
                   restExcludedDatasourceIds: effectiveRestExcluded,
                 }),
+              // #3067 — the resolved focus reaches the agent loop via the
+              // request context. Stamped only when truthy (a non-null
+              // install_id); a null/cleared focus keeps the legacy
+              // not-focused shape so default-scope turns are unchanged.
+              ...(effectiveRestFocus
+                ? { restFocusDatasourceId: effectiveRestFocus }
+                : {}),
             },
             () =>
               runAgent({

@@ -193,6 +193,12 @@ export const CHAT_CONTEXT_WARNING_CODES = [
   // the chat silently degrades to the default agent and the user gets
   // a "agent ignores my edits" experience.
   "bound_dashboard_unavailable",
+  // #3067 — REST-only focus fail-closed. The conversation is focused on a
+  // single REST datasource but it was temporarily unresolvable (load failure
+  // / credential reconnect), so the turn keeps SQL suspended rather than
+  // widening scope back to SQL. The UI surfaces a "focused datasource
+  // unavailable" banner so the user knows to retry or clear the focus.
+  "rest_focus_unavailable",
 ] as const;
 
 export type ChatContextWarningCode = (typeof CHAT_CONTEXT_WARNING_CODES)[number];

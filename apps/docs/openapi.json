@@ -105,6 +105,13 @@
                       "type": "string"
                     }
                   },
+                  "restFocusDatasourceId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "minLength": 1
+                  },
                   "boundDashboardId": {
                     "type": "string",
                     "format": "uuid"
@@ -1862,6 +1869,12 @@
                               "type": "string"
                             }
                           },
+                          "restFocusDatasourceId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "starred": {
                             "type": "boolean"
                           },
@@ -2147,6 +2160,12 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "restFocusDatasourceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "starred": {
                       "type": "boolean"

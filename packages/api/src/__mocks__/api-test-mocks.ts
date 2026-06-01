@@ -618,6 +618,7 @@ export function createApiTestMocks(
     // persist the row unless they exercise the scope-picker toggle, and
     // they override locally when they do.
     updateConversationRestExcluded: mock(() => Promise.resolve({ ok: true as const })),
+    updateConversationRestFocus: mock(() => Promise.resolve({ ok: true as const })),
     // NULL → "pin" back-compat default helper used by the chat route to
     // resolve a conversation's persisted `routing_mode`. Mocked as a pure
     // pass-through so tests can simulate either an explicit mode or the

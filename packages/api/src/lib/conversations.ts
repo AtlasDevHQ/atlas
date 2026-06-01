@@ -144,6 +144,12 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
     restExcludedDatasourceIds: Array.isArray(r.rest_excluded_datasource_ids)
       ? (r.rest_excluded_datasource_ids as string[])
       : [],
+    // #3067 — per-conversation REST-only focus. Plain nullable text column,
+    // so NULL → null ("not focused"). Every SELECT in this file that feeds
+    // rowToConversation includes the column; a caller that omits it (e.g.
+    // getSharedConversation, which doesn't surface scope to anon viewers)
+    // reads as null, matching the column's "not focused" default.
+    restFocusDatasourceId: (r.rest_focus_datasource_id as string) ?? null,
     starred: r.starred === true,
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -200,6 +206,13 @@ export async function createConversation(opts: {
    * (nothing excluded = all in scope), so legacy callers are unaffected.
    */
   restExcludedDatasourceIds?: string[] | null;
+  /**
+   * #3067 — per-conversation REST-only focus (an `install_id`, or null /
+   * undefined for "not focused"). Persists NULL when omitted, so legacy
+   * callers are unaffected; an explicit string focuses that datasource and
+   * suspends `executeSQL` for the conversation.
+   */
+  restFocusDatasourceId?: string | null;
   orgId?: string | null;
 }): Promise<{ id: string } | null> {
   if (!hasInternalDB()) return null;
@@ -207,11 +220,13 @@ export async function createConversation(opts: {
   // explicit [] is equivalent (nothing excluded). pg binds a JS string[]
   // directly to the text[] column.
   const restExcluded = opts.restExcludedDatasourceIds ?? [];
+  // #3067 — null/undefined ⇒ persist NULL ("not focused").
+  const restFocus = opts.restFocusDatasourceId ?? null;
   try {
     const rows = opts.id
       ? await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `INSERT INTO conversations (id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING id`,
           [
             opts.id,
@@ -222,12 +237,13 @@ export async function createConversation(opts: {
             opts.connectionGroupId ?? null,
             opts.routingMode ?? null,
             restExcluded,
+            restFocus,
             opts.orgId ?? null,
           ],
         )
       : await internalQuery<{ id: string }>(
-          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING id`,
           [
             opts.userId ?? null,
@@ -237,6 +253,7 @@ export async function createConversation(opts: {
             opts.connectionGroupId ?? null,
             opts.routingMode ?? null,
             restExcluded,
+            restFocus,
             opts.orgId ?? null,
           ],
         );
@@ -301,6 +318,34 @@ export async function updateConversationRestExcluded(
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: errorMessage(err) }, "updateConversationRestExcluded failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * #3067 — update the conversation's `rest_focus_datasource_id`. Same
+ * fail-open / org-scoped contract as {@link updateConversationRestExcluded}.
+ * Pass an `install_id` to focus that datasource (suspends `executeSQL`), or
+ * `null` to clear focus (return to default scope — SQL routing + exclude-set
+ * apply again). pg binds the string|null directly to the nullable text column.
+ */
+export async function updateConversationRestFocus(
+  id: string,
+  restFocusDatasourceId: string | null,
+  userId?: string | null,
+  orgId?: string | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const scope = scopeClause(3, userId, orgId);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE conversations SET rest_focus_datasource_id = $1, updated_at = now()
+       WHERE id = $2${scope.sql} RETURNING id`,
+      [restFocusDatasourceId, id, ...scope.params],
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: errorMessage(err) }, "updateConversationRestFocus failed");
     return { ok: false, reason: "error" };
   }
 }
@@ -672,7 +717,7 @@ export async function getConversation(
   try {
     const scope = scopeClause(2, userId, orgId);
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, starred, notebook_state, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, starred, notebook_state, created_at, updated_at
        FROM conversations WHERE id = $1${scope.sql}`,
       [id, ...scope.params],
     );
@@ -744,7 +789,7 @@ export async function listConversations(opts?: {
       params,
     );
     const dataRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, starred, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, starred, created_at, updated_at
        FROM conversations ${where}
        ORDER BY updated_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
       [...params, limit, offset],
@@ -821,7 +866,7 @@ export async function forkConversation(opts: {
     // source row's org_id; scopeClause rejects mismatches (NULL-safe for legacy rows).
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -857,8 +902,8 @@ export async function forkConversation(opts: {
     // the user keeps the same env context after branching.
     const orgId = opts.orgId ?? (source.org_id as string) ?? null;
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (fork)`,
@@ -869,6 +914,8 @@ export async function forkConversation(opts: {
         // #3066 — a fork/notebook inherits the source's REST exclude-set
         // so the new conversation keeps the same scope after branching.
         (source.rest_excluded_datasource_ids as string[]) ?? [],
+        // #3067 — inherit the source's REST-only focus too.
+        (source.rest_focus_datasource_id as string) ?? null,
         orgId,
       ],
     );
@@ -1012,7 +1059,7 @@ export async function convertToNotebook(opts: {
     // Verify source exists and caller has access in both the user + org dimensions.
     const sourceScope = scopeClause(2, opts.userId, opts.orgId);
     const sourceRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
+      `SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id FROM conversations WHERE id = $1${sourceScope.sql}`,
       [opts.sourceId, ...sourceScope.params],
     );
     if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
@@ -1025,8 +1072,8 @@ export async function convertToNotebook(opts: {
     // both routing columns + the picker mode so the notebook preserves
     // the source's env context end-to-end.
     const newConv = await internalQuery<{ id: string }>(
-      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      `INSERT INTO conversations (user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         opts.userId ?? null,
         `${sourceTitle} (notebook)`,
@@ -1037,6 +1084,8 @@ export async function convertToNotebook(opts: {
         // #3066 — a fork/notebook inherits the source's REST exclude-set
         // so the new conversation keeps the same scope after branching.
         (source.rest_excluded_datasource_ids as string[]) ?? [],
+        // #3067 — inherit the source's REST-only focus too.
+        (source.rest_focus_datasource_id as string) ?? null,
         orgId,
       ],
     );

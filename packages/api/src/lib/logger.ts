@@ -95,6 +95,16 @@ interface RequestContext {
    * the preference store) — consumers only read it.
    */
   restExcludedDatasourceIds?: readonly string[];
+  /**
+   * #3067 — per-conversation REST-only focus. The chat route stamps this
+   * from the resolved conversation row (or the per-turn body override) when
+   * the conversation is focused on a single REST datasource. When set, the
+   * agent loop resolves only that datasource and SUSPENDS `executeSQL`;
+   * `restExcludedDatasourceIds` and SQL routing are ignored for the turn.
+   * Undefined / null here = not focused (default scope). Stamped only when
+   * truthy, so the legacy shape is unchanged for non-focused conversations.
+   */
+  restFocusDatasourceId?: string | null;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

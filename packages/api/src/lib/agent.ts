@@ -28,7 +28,8 @@ import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
-import { resolveWorkspaceRestDatasources } from "./openapi/workspace-datasource";
+import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
+import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -274,6 +275,50 @@ export function buildRestDatasourceScopeNote(
     `**Environment scope:** workspace-global — available in every environment.` +
     pinClause
   );
+}
+
+/**
+ * #3067 — REST-only focus banner. Prepended to the REST representation when a
+ * conversation is focused on a single datasource and `executeSQL` is suspended,
+ * so the model knows SQL is off and answers from the API only. Exported so a
+ * unit test can pin that the focused branch frames the turn as REST-only.
+ */
+export const REST_ONLY_FOCUS_GUIDANCE = `## REST-only focus — SQL is suspended
+
+This conversation is **focused on a single REST datasource**. SQL execution (\`executeSQL\`) is **suspended** for this turn: there is no SQL tool available. Answer the user using \`executeRestOperation\` against the datasource described below, and only that datasource. Do not reference SQL tables or attempt to write SQL. If the question genuinely needs the SQL warehouse instead of this API, tell the user the conversation is focused on a single datasource and they can clear the focus in the scope picker to re-enable SQL.`;
+
+/**
+ * #3067 — tools that author or execute SQL, suspended together under REST-only
+ * focus. `executeSQL` runs SQL directly; `createDashboard` (default registry)
+ * and the bound dashboard editor tools `addCard` / `updateCard` / `updateCardSql`
+ * each accept SQL card definitions and stage SQL-backed cards. Removing only
+ * `executeSQL` would still let a focused turn mint SQL results via a dashboard
+ * (Codex review on #3067) — a scope leak — so all of them are stripped together.
+ * Stripping a name the base registry doesn't contain (e.g. the editor tools on a
+ * non-bound chat) is a harmless no-op.
+ */
+const SQL_DEPENDENT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "executeSQL",
+  "createDashboard",
+  "addCard",
+  "updateCard",
+  "updateCardSql",
+]);
+
+/**
+ * #3067 — build a copy of a tool registry with every SQL-dependent tool removed,
+ * for a REST-only focused turn. Every other tool already in the base (explore,
+ * executePython, any plugin / action tools) is preserved; the REST tool is
+ * merged on top by the caller AFTER this returns. Returns an UNFROZEN registry
+ * — the caller merges the REST tool on top and freezes.
+ */
+function registryWithoutSqlTools(base: ToolRegistry): ToolRegistry {
+  const stripped = new ToolRegistry();
+  for (const [name, entry] of base.entries()) {
+    if (SQL_DEPENDENT_TOOL_NAMES.has(name)) continue;
+    stripped.register(entry);
+  }
+  return stripped;
 }
 
 function buildMultiSourceSection(
@@ -759,6 +804,10 @@ export async function runAgent({
   // REST resolver below so an excluded datasource never reaches the prompt
   // or the bound `executeRestOperation` tool. Undefined ⇒ exclude nothing.
   const restExcludedDatasourceIds = reqCtx?.restExcludedDatasourceIds;
+  // #3067 — per-conversation REST-only focus. When set, the REST block below
+  // resolves ONLY this datasource and suspends `executeSQL` (REST-only turn).
+  // Undefined / null ⇒ not focused (default scope: SQL routing + exclude-set).
+  const restFocusDatasourceId = reqCtx?.restFocusDatasourceId;
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -965,9 +1014,82 @@ export async function runAgent({
   // that environment's scoped REST datasources; a scoped one never leaks past it.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
+  // #3067 — set true once a REST-only focus actually resolves to a datasource;
+  // gates executeSQL suspension + the focus prompt banner below.
+  let sqlSuspended = false;
   try {
-    const restDatasources = orgId
-      ? await resolveWorkspaceRestDatasources(orgId, {
+    // Resolve the REST datasource set this turn runs against. Default scope
+    // (group-scope + exclude-set), unless the conversation is FOCUSED on one
+    // datasource (#3067), in which case only that one resolves and SQL is off.
+    let restDatasources: ReadonlyArray<RestDatasource> = [];
+    if (orgId) {
+      if (restFocusDatasourceId) {
+        // #3067 — REST-only focus: resolve ONLY the focus target. The resolver
+        // short-circuits group-scope + the exclude-set (they're inert while
+        // focused). Use the THROWING resolver so a genuine empty (the focus
+        // matched no install → uninstalled) is distinguishable from a load
+        // failure / credential-reconnect: the never-rejects resolver would
+        // collapse all three to `[]`, letting a transient internal-DB blip
+        // masquerade as "focus gone" and silently re-enable executeSQL on a
+        // conversation the user deliberately narrowed (a scope leak).
+        let focused: ReadonlyArray<RestDatasource> | null = null;
+        try {
+          focused = await resolveWorkspaceRestDatasourcesOrThrow(orgId, {
+            focus: restFocusDatasourceId,
+          });
+        } catch (err) {
+          // Load failed OR the focus install needs a reconnect — the focus is
+          // NOT gone. Fail CLOSED: keep executeSQL suspended and tell the model
+          // the focused datasource is temporarily unavailable, rather than
+          // widening scope back to SQL + the default REST set.
+          log.error(
+            { focus: restFocusDatasourceId, err: err instanceof Error ? err.message : String(err) },
+            "REST-only focus datasource temporarily unresolvable — keeping SQL suspended (not falling back)",
+          );
+          sqlSuspended = true;
+          restDatasources = [];
+          if (!warnings) warnings = [];
+          warnings.push(
+            "The datasource this conversation is focused on is temporarily unavailable. " +
+              "Tell the user it could not be reached right now and to retry shortly, or clear the focus in the scope picker to re-enable SQL. Do not attempt SQL.",
+          );
+          // Mirror the model-facing warning as a structured frame so the UI can
+          // render a deterministic "focused datasource unavailable, SQL still
+          // suspended" banner instead of relying on the model to repeat the
+          // system-prompt text — same pattern as the semantic-layer / learned-
+          // patterns degradations above (#1988 B5 / #3067 review).
+          contextWarnings?.push({
+            severity: "warning",
+            code: "rest_focus_unavailable",
+            title: "Focused datasource unavailable",
+            detail:
+              "The datasource this conversation is focused on is temporarily unavailable, so SQL stays suspended. " +
+              "Retry shortly, or clear the focus in the scope picker to re-enable SQL.",
+          });
+        }
+        if (focused !== null) {
+          if (focused.length > 0) {
+            restDatasources = focused;
+            sqlSuspended = true;
+          } else {
+            // Genuinely uninstalled (rows loaded fine, focus matched no install)
+            // — fall back SAFELY to default scope: SQL stays active and the
+            // exclude-set applies, exactly as an un-focused conversation resolves
+            // (the "focused datasource was uninstalled" acceptance criterion).
+            log.warn(
+              { focus: restFocusDatasourceId },
+              "REST-only focus datasource is no longer installed — falling back to default scope (SQL active)",
+            );
+            restDatasources = await resolveWorkspaceRestDatasources(orgId, {
+              activeGroupId: activeRestGroupId,
+              ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
+                ? { excluded: restExcludedDatasourceIds }
+                : {}),
+            });
+          }
+        }
+      } else {
+        restDatasources = await resolveWorkspaceRestDatasources(orgId, {
           activeGroupId: activeRestGroupId,
           // #3066 — drop the conversation's excluded datasources. The tool is
           // bound to exactly this set below, so exclusion is enforced at both
@@ -977,8 +1099,17 @@ export async function runAgent({
           ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
             ? { excluded: restExcludedDatasourceIds }
             : {}),
-        })
-      : [];
+        });
+      }
+    }
+    // #3067 — suspend SQL for a focused REST-only turn by stripping every
+    // SQL-dependent tool (executeSQL + the SQL-card dashboard tools) from the
+    // base registry, so neither the prompt's tool list nor the runtime exposes a
+    // way to run or stage SQL. Default turns keep the registry untouched.
+    const baseRegistry = sqlSuspended
+      ? registryWithoutSqlTools(toolRegistry)
+      : toolRegistry;
+    activeRegistry = baseRegistry;
     if (restDatasources.length > 0) {
       const restRegistry = new ToolRegistry();
       restRegistry.register({
@@ -991,7 +1122,7 @@ export async function runAgent({
           resolveDatasources: async () => restDatasources,
         }),
       });
-      activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
+      activeRegistry = ToolRegistry.merge(baseRegistry, restRegistry).freeze();
       // Representation mode is the #2931 bake-off knob, resolved per install from
       // its `workspace_plugins.config`. Path A vs Path B differ only in how the
       // surface is described; both drive the same executeRestOperation. With more
@@ -1019,6 +1150,11 @@ export async function runAgent({
         }
       }
       restRepresentation = sections.join("\n\n");
+      // #3067 — prepend the REST-only focus banner so the model treats the turn
+      // as API-only (the SQL tool is already gone from the registry above).
+      if (sqlSuspended) {
+        restRepresentation = `${REST_ONLY_FOCUS_GUIDANCE}\n\n${restRepresentation}`;
+      }
     }
   } catch (err) {
     log.warn(

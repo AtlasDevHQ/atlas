@@ -10,6 +10,7 @@
  * #3044 closes. This pins that the egress path always passes a defined value.
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 
 // Controllable request context (default: none).
 let mockReqCtx:
@@ -18,8 +19,14 @@ let mockReqCtx:
       connectionGroupId?: string;
       connectionId?: string;
       restExcludedDatasourceIds?: readonly string[];
+      restFocusDatasourceId?: string | null;
     }
   | undefined;
+
+// #3067 — what the primary resolver returns for a FOCUS call. Default null
+// (the focus target is gone → egress falls back to default scope). Only the
+// `id` matters to these tests; cast to the full shape at the mock boundary.
+let focusResolvesTo: Pick<RestDatasource, "id"> | null = null;
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
@@ -46,6 +53,11 @@ let primaryCalls: Array<{ orgId: string; deps: unknown }> = [];
 mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspacePrimaryRestDatasource: async (orgId: string, deps: unknown) => {
     primaryCalls.push({ orgId, deps });
+    // A focus call resolves to the configured datasource (or null = gone); any
+    // other (default-scope) call resolves to null in these tests.
+    if (deps && typeof deps === "object" && "focus" in deps) {
+      return focusResolvesTo as RestDatasource | null;
+    }
     return null;
   },
   resolveWorkspaceRestDatasources: async () => [],
@@ -60,6 +72,7 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
   beforeEach(() => {
     mockReqCtx = undefined;
     primaryCalls = [];
+    focusResolvesTo = null;
   });
 
   it("threads the conversation's connectionGroupId as activeGroupId", async () => {
@@ -129,5 +142,39 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     };
     await defaultResolveRestDatasource();
     expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
+  });
+
+  // #3067 — a REST-only focused conversation limits the sandbox egress to the
+  // single focus target, so Python can't probe any other host either.
+  it("resolves ONLY the focus target when focused — no fall-through (#3067)", async () => {
+    focusResolvesTo = { id: "ds-stripe" };
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: ["ds-x"],
+      restFocusDatasourceId: "ds-stripe",
+    };
+    const result = await defaultResolveRestDatasource();
+    // Exactly one call, scoped to focus only — group + exclude are inert.
+    expect(primaryCalls).toHaveLength(1);
+    expect(primaryCalls[0]!.deps).toEqual({ focus: "ds-stripe" });
+    expect(result?.id).toBe("ds-stripe");
+  });
+
+  it("DENIES egress (fails closed) when the focus target is gone — never widens to default scope (#3067)", async () => {
+    // Focus resolves to null (uninstalled or transiently unavailable). An egress
+    // allowlist must fail CLOSED: exactly ONE focus-scoped call, returns null
+    // (no egress) — it must NOT fall through to a wider default-scope resolve.
+    focusResolvesTo = null;
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: ["ds-x"],
+      restFocusDatasourceId: "ds-gone",
+    };
+    const result = await defaultResolveRestDatasource();
+    expect(result).toBeNull();
+    expect(primaryCalls).toHaveLength(1);
+    expect(primaryCalls[0]!.deps).toEqual({ focus: "ds-gone" });
   });
 });

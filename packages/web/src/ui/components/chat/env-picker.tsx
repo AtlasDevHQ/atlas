@@ -34,7 +34,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check, Network } from "lucide-react";
+import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check, Network, Crosshair, X } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -135,6 +135,20 @@ export interface ChatEnvPickerProps {
    * surface REST scope.
    */
   readonly onRestExcludedChange?: (next: string[]) => void;
+  /**
+   * #3067 — the conversation's REST-only focus (`install_id`, or null = not
+   * focused). When set, the chip reads "<name> only", SQL is suspended for the
+   * turn, and the exclude toggles are inert (focus overrides them). Defaults to
+   * null for callers that don't surface REST-only focus.
+   */
+  readonly restFocusDatasourceId?: string | null;
+  /**
+   * #3067 — called when the user focuses a datasource (`install_id`) or clears
+   * focus (`null`). Like {@link onRestExcludedChange}, the parent forwards it
+   * verbatim — `null` is meaningful (it clears focus on the row). Optional for
+   * callers that don't surface REST-only focus.
+   */
+  readonly onRestFocusChange?: (next: string | null) => void;
   /**
    * Called when the user picks a new group / member / mode triple from
    * the dropdown. The parent decides whether this is a per-turn
@@ -269,6 +283,8 @@ export interface ResolveEnvSelectionInput {
     readonly routingMode: ConversationRoutingMode | null;
     /** #3066 — current REST exclude-set, so a pref-only exclude change still restores. */
     readonly restExcludedDatasourceIds: ReadonlyArray<string>;
+    /** #3067 — current REST-only focus, so a pref-only focus change still restores. */
+    readonly restFocusDatasourceId: string | null;
   };
   /** How {@link current} was set. */
   readonly provenance: EnvSelectionProvenance;
@@ -297,6 +313,8 @@ export type EnvSelectionDecision =
       readonly routingMode: ConversationRoutingMode | null;
       /** #3066 — the sticky preference's exclude-set to seed onto this fresh chat. */
       readonly restExcludedDatasourceIds: string[];
+      /** #3067 — the sticky preference's REST-only focus to seed onto this fresh chat. */
+      readonly restFocusDatasourceId: string | null;
     }
   | {
       readonly kind: "seed";
@@ -304,6 +322,8 @@ export type EnvSelectionDecision =
       readonly connectionId: string;
       /** #3066 — a default seed excludes nothing (every in-scope datasource queryable). */
       readonly restExcludedDatasourceIds: string[];
+      /** #3067 — a default seed is not focused (SQL active). */
+      readonly restFocusDatasourceId: string | null;
     };
 
 /**
@@ -367,7 +387,12 @@ export function resolveEnvSelection(
       sameExcludeSet(
         current.restExcludedDatasourceIds ?? [],
         preference.restExcludedDatasourceIds ?? [],
-      )
+      ) &&
+      // #3067 — focus is part of the selection too, so a focus-only difference
+      // (e.g. the default seed landed on the preferred member but with no focus)
+      // must still restore.
+      (current.restFocusDatasourceId ?? null) ===
+        (preference.restFocusDatasourceId ?? null)
     ) {
       return { kind: "noop" };
     }
@@ -377,6 +402,7 @@ export function resolveEnvSelection(
       connectionId: prefMember.connectionId,
       routingMode: preference.routingMode,
       restExcludedDatasourceIds: [...(preference.restExcludedDatasourceIds ?? [])],
+      restFocusDatasourceId: preference.restFocusDatasourceId ?? null,
     };
   }
 
@@ -389,12 +415,13 @@ export function resolveEnvSelection(
   const seed = pickDefaultEnvSeed(groups, current.connectionId);
   if (!seed) return { kind: "noop" };
   // A default seed carries no exclusions — every in-scope REST datasource stays
-  // queryable until the user opts one out.
+  // queryable until the user opts one out — and is not focused (SQL active).
   return {
     kind: "seed",
     groupId: seed.groupId,
     connectionId: seed.connectionId,
     restExcludedDatasourceIds: [],
+    restFocusDatasourceId: null,
   };
 }
 
@@ -411,6 +438,8 @@ export interface ConversationScopeSource {
   readonly routingMode?: ConversationRoutingMode | null;
   /** #3066 — the row's REST exclude-set (excluded `install_id`s). Absent ⇒ none. */
   readonly restExcludedDatasourceIds?: ReadonlyArray<string> | null;
+  /** #3067 — the row's REST-only focus (`install_id`, or null = not focused). */
+  readonly restFocusDatasourceId?: string | null;
 }
 
 /** The picker selection restored from a conversation row. */
@@ -424,6 +453,12 @@ export interface RestoredConversationScope {
    * faithfully on a `restore`; an absent / null column coalesces to `[]`.
    */
   readonly restExcludedDatasourceIds: string[];
+  /**
+   * #3067 — the conversation's REST-only focus (`install_id`, or null). Carried
+   * faithfully on a `restore`, the same way as the exclude-set; null = not
+   * focused (SQL active).
+   */
+  readonly restFocusDatasourceId: string | null;
 }
 
 /**
@@ -475,6 +510,10 @@ export function resolveConversationScope(
   const restExcludedDatasourceIds = source.restExcludedDatasourceIds
     ? [...source.restExcludedDatasourceIds]
     : [];
+  // #3067 — the row's REST-only focus, restored alongside the SQL scope (null =
+  // not focused). Carried on every `restore` decision below, independent of the
+  // SQL group/member validation.
+  const restFocusDatasourceId = source.restFocusDatasourceId ?? null;
 
   // A row that persisted no scope at all is never authoritative — defer to the
   // seed/restore effect (decided before the load gate so it holds either way).
@@ -484,7 +523,7 @@ export function resolveConversationScope(
   // row optimistically. Losing the restore here would be a worse, more common
   // regression than the rare archived-env + cold-start intersection.
   if (groups.length === 0) {
-    return { kind: "restore", groupId, connectionId, routingMode, restExcludedDatasourceIds };
+    return { kind: "restore", groupId, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
   }
 
   // Groups loaded — validate the row against the visible environments.
@@ -499,13 +538,13 @@ export function resolveConversationScope(
     // preserving the still-valid group rather than discarding it.
     const member = group.members.find((m) => m.connectionId === connectionId);
     if (member) {
-      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode, restExcludedDatasourceIds };
+      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
     }
     const repaired =
       group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
       group.members[0];
     if (!repaired) return { kind: "seed" }; // group exists but has no live members
-    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode, restExcludedDatasourceIds };
+    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
   }
 
   // Legacy group-less row (connectionGroupId null, connectionId set, e.g. a
@@ -519,7 +558,7 @@ export function resolveConversationScope(
     g.members.some((m) => m.connectionId === connectionId),
   );
   if (!owningGroup) return { kind: "seed" };
-  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode, restExcludedDatasourceIds };
+  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode, restExcludedDatasourceIds, restFocusDatasourceId };
 }
 
 /**
@@ -545,6 +584,8 @@ export function ChatEnvPicker({
   restDatasources = [],
   restExcludedDatasourceIds = [],
   onRestExcludedChange,
+  restFocusDatasourceId = null,
+  onRestFocusChange,
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
   // Empty list + a reason ⇒ render a diagnostic chip instead of
@@ -631,6 +672,20 @@ export function ChatEnvPicker({
     chipLabel = `${chipLabel} · ${restInScopeCount}/${reachableRest.length} REST`;
   }
 
+  // #3067 — REST-only focus overrides the chip entirely. SQL routing is
+  // suspended for a focused conversation, so the mode/env summary above is
+  // irrelevant: the chip reads "<name> only" for the datasource the agent
+  // targets. Falls back to "REST only" if the focused id isn't in the list
+  // (e.g. a datasource scoped to another env, still focusable via the resolver).
+  const focusedDatasource = restFocusDatasourceId
+    ? restDatasources.find((d) => d.id === restFocusDatasourceId)
+    : undefined;
+  const isFocused = restFocusDatasourceId !== null;
+  if (isFocused) {
+    chipLabel = `${focusedDatasource?.displayName ?? "REST"} only`;
+    ChipIcon = Crosshair;
+  }
+
   // When every group has at most one member (the 0062 backfill shape,
   // or a defensive-empty group), the dropdown has no actual
   // multi-member choice to offer. Surface a hint so admins discover
@@ -672,7 +727,12 @@ export function ChatEnvPicker({
           className="h-8 gap-1.5 rounded-full border border-zinc-200 px-2.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-900"
           data-testid="chat-env-picker-trigger"
           data-mode={mode}
-          aria-label={`Cross-environment routing: ${chipLabel}. Change.`}
+          data-focused={isFocused}
+          aria-label={
+            isFocused
+              ? `Conversation scope: focused on ${chipLabel} — SQL suspended. Change.`
+              : `Cross-environment routing: ${chipLabel}. Change.`
+          }
         >
           <ChipIcon className="size-3.5 text-zinc-500" aria-hidden />
           <span data-testid="chat-env-picker-label">{chipLabel}</span>
@@ -789,6 +849,9 @@ export function ChatEnvPicker({
           activeGroupId={activeGroup?.id ?? null}
           excludedIds={restExcludedDatasourceIds}
           onRestExcludedChange={onRestExcludedChange}
+          focusedId={restFocusDatasourceId}
+          focusedDatasource={focusedDatasource}
+          onRestFocusChange={onRestFocusChange}
         />
       </DropdownMenuContent>
     </DropdownMenu>
@@ -811,13 +874,64 @@ function ChatEnvRestScopeSection({
   activeGroupId,
   excludedIds,
   onRestExcludedChange,
+  focusedId,
+  focusedDatasource,
+  onRestFocusChange,
 }: {
   restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
   activeGroupId: string | null;
   excludedIds: ReadonlyArray<string>;
   onRestExcludedChange?: (next: string[]) => void;
+  /** #3067 — the focused datasource id, or null = not focused. */
+  focusedId: string | null;
+  /** #3067 — the focused datasource (for its display name), if it's in the list. */
+  focusedDatasource?: ChatRestDatasourceScope;
+  /** #3067 — focus a datasource (`install_id`) or clear focus (`null`). */
+  onRestFocusChange?: (next: string | null) => void;
 }): React.ReactElement | null {
   if (restDatasources.length === 0) return null;
+
+  // #3067 — focused state: SQL is suspended and the exclude-set is inert, so
+  // render the focus summary + a clear action INSTEAD of the exclude checkboxes
+  // (toggling exclusions while focused would be confusing — they don't apply).
+  if (focusedId !== null) {
+    return (
+      <>
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
+          REST-only focus
+        </DropdownMenuLabel>
+        <div
+          className="px-2 pb-1 pt-0.5 text-[11px] leading-snug text-zinc-500 dark:text-zinc-400"
+          data-testid="chat-env-picker-rest-focused"
+          data-focus-id={focusedId}
+        >
+          <span className="flex items-center gap-1.5">
+            <Crosshair className="size-3 shrink-0 text-primary" aria-hidden />
+            <span className="truncate">
+              Focused on{" "}
+              <span className="font-medium text-zinc-700 dark:text-zinc-200">
+                {focusedDatasource?.displayName ?? focusedId}
+              </span>
+            </span>
+          </span>
+          <span className="mt-0.5 block text-zinc-400 dark:text-zinc-500">
+            SQL is suspended — the agent answers from this datasource only.
+          </span>
+        </div>
+        {onRestFocusChange && (
+          <DropdownMenuItem
+            onSelect={() => onRestFocusChange(null)}
+            className="flex items-center gap-2 text-xs"
+            data-testid="chat-env-picker-rest-focus-clear"
+          >
+            <X className="size-3.5 text-zinc-500" aria-hidden />
+            <span>Clear focus — re-enable SQL</span>
+          </DropdownMenuItem>
+        )}
+      </>
+    );
+  }
 
   const workspaceGlobal = restDatasources.filter((d) => d.groupId === null);
   const inActiveGroup = restDatasources.filter(
@@ -826,6 +940,10 @@ function ChatEnvRestScopeSection({
   const otherScoped = restDatasources.filter(
     (d) => d.groupId !== null && d.groupId !== activeGroupId,
   );
+  // #3067 — the datasources reachable in the active env are the ones a user can
+  // focus (workspace-global + scoped to the active group), mirroring the exclude
+  // checkboxes. A datasource scoped to another env stays informational.
+  const focusable = [...workspaceGlobal, ...inActiveGroup];
 
   const excludedSet = new Set(excludedIds);
   // Compute the next exclude-set when one datasource is (un)checked. `checked`
@@ -897,6 +1015,33 @@ function ChatEnvRestScopeSection({
             <Network className="size-3" aria-hidden />
             {otherScoped.length} scoped to other environments — not reachable here
           </span>
+        </div>
+      )}
+
+      {/* #3067 — REST-only focus selector. Picking one targets it exclusively
+          and suspends SQL for the conversation. Only when a focus handler is
+          wired and there's a reachable datasource to focus. */}
+      {onRestFocusChange && focusable.length > 0 && (
+        <div data-testid="chat-env-picker-rest-focus-options">
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel className="px-2 pb-0.5 pt-1 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
+            Focus one datasource — suspends SQL
+          </DropdownMenuLabel>
+          {focusable.map((d) => (
+            <DropdownMenuItem
+              key={d.id}
+              // Focusing is a one-shot scope change — let the menu close on
+              // select (default DropdownMenuItem behavior); the chip updates to
+              // "<name> only". (Contrast the exclude checkboxes, which
+              // preventDefault to stay open for multi-toggle.)
+              onSelect={() => onRestFocusChange(d.id)}
+              className="flex items-center gap-1.5 text-xs"
+              data-testid={`chat-env-picker-rest-focus-${d.id}`}
+            >
+              <Crosshair className="size-3 shrink-0 text-zinc-400" aria-hidden />
+              <span className="truncate">{d.displayName} only</span>
+            </DropdownMenuItem>
+          ))}
         </div>
       )}
     </>

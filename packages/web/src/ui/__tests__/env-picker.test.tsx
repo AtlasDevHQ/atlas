@@ -38,6 +38,36 @@ mock.module("@/components/ui/dropdown-menu", () => {
       },
       children as React.ReactNode,
     );
+  // #3066 — checkbox items wire BOTH `onSelect` (with a preventDefault-able
+  // event, since the component calls `e.preventDefault()` to keep the menu
+  // open) and `onCheckedChange` (toggled value), mirroring Radix's
+  // CheckboxItem. `checked` is consumed (not spread onto the div) so it
+  // doesn't leak as a DOM attribute.
+  const checkboxItem = ({
+    children,
+    checked,
+    onSelect,
+    onCheckedChange,
+    asChild: _asChild,
+    ...rest
+  }: {
+    children?: ReactNode;
+    asChild?: boolean;
+    checked?: boolean;
+    onSelect?: (e: { preventDefault: () => void }) => void;
+    onCheckedChange?: (checked: boolean) => void;
+  } & Record<string, unknown>) =>
+    React.createElement(
+      "div",
+      {
+        ...rest,
+        onClick: () => {
+          if (typeof onSelect === "function") onSelect({ preventDefault: () => {} });
+          if (typeof onCheckedChange === "function") onCheckedChange(checked !== true);
+        },
+      },
+      children as React.ReactNode,
+    );
   return {
     DropdownMenu: div,
     DropdownMenuPortal: div,
@@ -45,7 +75,7 @@ mock.module("@/components/ui/dropdown-menu", () => {
     DropdownMenuContent: div,
     DropdownMenuGroup: div,
     DropdownMenuItem: itemWithSelect,
-    DropdownMenuCheckboxItem: itemWithSelect,
+    DropdownMenuCheckboxItem: checkboxItem,
     DropdownMenuRadioGroup: div,
     DropdownMenuRadioItem: itemWithSelect,
     DropdownMenuLabel: div,
@@ -57,7 +87,7 @@ mock.module("@/components/ui/dropdown-menu", () => {
   };
 });
 
-import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
+import { render, renderHook, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import {
   ChatEnvPicker,
   pickDefaultEnvSeed,
@@ -665,7 +695,7 @@ describe("ChatEnvPicker — REST datasource scope footer (#3044)", () => {
     },
   ];
 
-  test("frames workspace-global REST datasources as not limited by the pin", () => {
+  test("surfaces workspace-global REST datasources as an in-scope checkbox", () => {
     const { container } = render(
       <ChatEnvPicker
         groups={multiGroup}
@@ -680,7 +710,10 @@ describe("ChatEnvPicker — REST datasource scope footer (#3044)", () => {
     expect(global).not.toBeNull();
     expect(global?.textContent).toContain("Stripe");
     expect(global?.textContent?.toLowerCase()).toContain("every environment");
-    expect(global?.textContent?.toLowerCase()).toContain("not limited by");
+    // #3066 — the datasource renders as a checkbox, in scope (not excluded) by default.
+    const toggle = container.querySelector('[data-testid="chat-env-picker-rest-toggle-stripe"]');
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute("data-in-scope")).toBe("true");
   });
 
   test("separates in-scope (active group) from out-of-scope scoped datasources", () => {
@@ -723,6 +756,123 @@ describe("ChatEnvPicker — REST datasource scope footer (#3044)", () => {
     expect(
       container.querySelector('[data-testid="chat-env-picker-rest-global"]'),
     ).toBeNull();
+  });
+});
+
+describe("ChatEnvPicker — REST datasource exclude-set (#3066)", () => {
+  const multiGroup: ChatEnvGroup[] = [
+    {
+      id: "prod",
+      name: "prod",
+      primaryConnectionId: null,
+      members: [
+        { connectionId: "us-prod", dbType: "postgres", description: null },
+        { connectionId: "eu-prod", dbType: "postgres", description: null },
+      ],
+    },
+  ];
+  const datasources = [
+    { id: "stripe", displayName: "Stripe", groupId: null },
+    { id: "prod-api", displayName: "Prod API", groupId: "prod" },
+  ];
+
+  test("the chip reflects the in-scope REST count (e.g. 2/2, then 1/2 when one is excluded)", () => {
+    const { container, rerender } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={datasources}
+        restExcludedDatasourceIds={[]}
+        onSelect={noop}
+      />,
+    );
+    const label = () =>
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent ?? "";
+    expect(label()).toContain("2/2 REST");
+
+    rerender(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={datasources}
+        restExcludedDatasourceIds={["stripe"]}
+        onSelect={noop}
+      />,
+    );
+    expect(label()).toContain("1/2 REST");
+  });
+
+  test("an excluded datasource renders unchecked (data-in-scope=false)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={datasources}
+        restExcludedDatasourceIds={["stripe"]}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container
+        .querySelector('[data-testid="chat-env-picker-rest-toggle-stripe"]')
+        ?.getAttribute("data-in-scope"),
+    ).toBe("false");
+    expect(
+      container
+        .querySelector('[data-testid="chat-env-picker-rest-toggle-prod-api"]')
+        ?.getAttribute("data-in-scope"),
+    ).toBe("true");
+  });
+
+  test("unchecking an in-scope datasource adds it to the exclude-set (full next set)", () => {
+    const onRestExcludedChange = mock((_next: string[]) => {});
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={datasources}
+        restExcludedDatasourceIds={[]}
+        onRestExcludedChange={onRestExcludedChange}
+        onSelect={noop}
+      />,
+    );
+    const toggle = container.querySelector(
+      '[data-testid="chat-env-picker-rest-toggle-stripe"]',
+    ) as HTMLElement;
+    fireEvent.click(toggle);
+    expect(onRestExcludedChange).toHaveBeenCalledTimes(1);
+    expect(onRestExcludedChange.mock.calls[0]![0]).toEqual(["stripe"]);
+  });
+
+  test("re-checking an excluded datasource clears it from the set (sends the remaining set)", () => {
+    const onRestExcludedChange = mock((_next: string[]) => {});
+    const { container } = render(
+      <ChatEnvPicker
+        groups={multiGroup}
+        activeGroupId="prod"
+        activeConnectionId="us-prod"
+        activeRoutingMode="pin"
+        restDatasources={datasources}
+        restExcludedDatasourceIds={["stripe", "prod-api"]}
+        onRestExcludedChange={onRestExcludedChange}
+        onSelect={noop}
+      />,
+    );
+    const toggle = container.querySelector(
+      '[data-testid="chat-env-picker-rest-toggle-stripe"]',
+    ) as HTMLElement;
+    // It's currently excluded (unchecked); clicking re-includes it.
+    fireEvent.click(toggle);
+    expect(onRestExcludedChange).toHaveBeenCalledTimes(1);
+    expect(onRestExcludedChange.mock.calls[0]![0]).toEqual(["prod-api"]);
   });
 });
 
@@ -1215,13 +1365,14 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
   ): ResolveEnvSelectionInput {
     return {
       groups: [prodGroup],
-      current: { groupId: null, connectionId: null, routingMode: null },
+      current: { groupId: null, connectionId: null, routingMode: null, restExcludedDatasourceIds: [] },
       provenance: "unset",
       preference: {
         workspaceId: null,
         groupId: null,
         connectionId: null,
         routingMode: null,
+        restExcludedDatasourceIds: [],
       },
       activeWorkspaceId: null,
       preferenceHydrated: true,
@@ -1287,6 +1438,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       groupId: "g_prod",
       connectionId: "eu-prod",
       routingMode: "pin",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1313,6 +1465,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       groupId: "g_prod",
       connectionId: "eu-prod",
       routingMode: "pin",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1338,6 +1491,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       groupId: "g_prod",
       connectionId: "eu-prod",
       routingMode: "auto",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1395,6 +1549,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       kind: "seed",
       groupId: "g_prod",
       connectionId: "us-prod",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1414,6 +1569,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       kind: "seed",
       groupId: "g_prod",
       connectionId: "us-prod",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1433,6 +1589,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       kind: "seed",
       groupId: "g_prod",
       connectionId: "us-prod",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1453,6 +1610,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       groupId: "g_prod",
       connectionId: "eu-prod",
       routingMode: "auto",
+      restExcludedDatasourceIds: [],
     });
   });
 
@@ -1467,6 +1625,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       kind: "seed",
       groupId: "g_only",
       connectionId: "only",
+      restExcludedDatasourceIds: [],
     });
   });
 });
@@ -1511,7 +1670,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [] });
   });
 
   test("preserves an 'auto' routing mode (mode is a first-class scope dimension)", () => {
@@ -1522,7 +1681,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "auto" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [] });
   });
 
   test("preserves an 'all' routing mode", () => {
@@ -1531,7 +1690,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "all" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "all" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "all", restExcludedDatasourceIds: [] });
   });
 
   test("two different conversations resolve to two different scopes (switching updates the picker each time)", () => {
@@ -1557,7 +1716,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: null },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [] });
   });
 
   test("legacy conversation with an omitted routing mode defaults to null", () => {
@@ -1568,7 +1727,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null, restExcludedDatasourceIds: [] });
   });
 
   test("seeds (defers) for a fully-null row — never makes nulls authoritative", () => {
@@ -1601,7 +1760,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "ap-prod-archived", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "pin", restExcludedDatasourceIds: [] });
   });
 
   test("repairs a group-only row (null member, e.g. Auto) to the group primary", () => {
@@ -1612,7 +1771,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: null, routingMode: "auto" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto", restExcludedDatasourceIds: [] });
   });
 
   test("falls back to members[0] when repairing under a group with no primary", () => {
@@ -1621,7 +1780,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_staging", connectionId: "gone", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_staging", connectionId: "us-staging", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: "g_staging", connectionId: "us-staging", routingMode: "pin", restExcludedDatasourceIds: [] });
   });
 
   test("trusts the row optimistically when groups have not loaded yet (cold-start open)", () => {
@@ -1633,7 +1792,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "all" },
         [],
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "all" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "all", restExcludedDatasourceIds: [] });
   });
 
   test("still seeds a fully-null row even when groups have not loaded", () => {
@@ -1659,7 +1818,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [] });
   });
 
   test("seeds a legacy group-less row only when its connection no longer exists in any group", () => {
@@ -1682,7 +1841,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
         [],
       ),
-    ).toEqual({ kind: "restore", groupId: null, connectionId: "eu-prod", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: null, connectionId: "eu-prod", routingMode: "pin", restExcludedDatasourceIds: [] });
   });
 
   test("seeds when a resolved group has no live members (fully archived group)", () => {

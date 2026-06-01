@@ -131,6 +131,19 @@ export interface ResolveWorkspaceDeps {
    * carries over the legacy "always available" behaviour.
    */
   readonly activeGroupId?: string | null;
+  /**
+   * Per-conversation REST datasource exclude-set (#3066, S2a). Holds the
+   * `install_id`s the conversation has excluded — the id the scope picker
+   * surfaces (`GET /api/v1/me/connection-groups`). Dropped AFTER the
+   * {@link activeGroupId} scope filter and BEFORE credential build, so an
+   * excluded datasource never reaches decryption and the reconnect tally is
+   * computed only over the surviving set. Omitted / empty = exclude nothing
+   * (every in-scope datasource stays queryable, so a newly-installed one is
+   * reachable with no action). The authorized confirm-replay path
+   * (`tools/rest-operation.ts`'s `resolveFromContext`) intentionally omits
+   * this — a staged write replays regardless of the conversation's scope.
+   */
+  readonly excluded?: ReadonlyArray<string>;
 }
 
 /**
@@ -154,6 +167,22 @@ function rowsInActiveGroup(
     // (no active group) admits no scoped datasource.
     return activeGroupId !== null && rowGroupId === activeGroupId;
   });
+}
+
+/**
+ * Per-conversation exclude-set filter (#3066, S2a). Drops every install whose
+ * `install_id` the conversation has excluded. Pure over the raw `install_id`
+ * (no config / credential access), mirroring {@link rowsInActiveGroup}, so it
+ * runs BEFORE credential build and an excluded datasource never reaches
+ * decryption. An omitted / empty set excludes nothing.
+ */
+function rowsNotExcluded(
+  rows: ReadonlyArray<OpenApiInstallRow>,
+  excluded: ReadonlyArray<string> | undefined,
+): ReadonlyArray<OpenApiInstallRow> {
+  if (!excluded || excluded.length === 0) return rows;
+  const excludeSet = new Set(excluded);
+  return rows.filter((row) => !excludeSet.has(row.install_id));
 }
 
 /**
@@ -523,7 +552,12 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
   // #3044 — drop out-of-scope datasources BEFORE build, so the reconnect tally
   // (and the never-rejects `[]` contract) is computed only over the in-scope set.
   const scopedRows = rowsInActiveGroup(rows, deps.activeGroupId);
-  return buildDatasourcesFromRows(workspaceId, scopedRows, mint);
+  // #3066 — then drop the conversation's per-conversation exclude-set. Order
+  // matters: exclusion is over the already-group-scoped set, and both filters
+  // run before build so an excluded/off-scope datasource never reaches
+  // credential decryption.
+  const inScopeRows = rowsNotExcluded(scopedRows, deps.excluded);
+  return buildDatasourcesFromRows(workspaceId, inScopeRows, mint);
 }
 
 /**

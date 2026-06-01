@@ -136,6 +136,10 @@ export function AtlasChat() {
   // #2518 — three-state Auto/Pin/All cross-environment routing picker.
   const [selectedRoutingMode, setSelectedRoutingMode] =
     useState<ConversationRoutingMode | null>(null);
+  // #3066 — per-conversation REST datasource exclude-set (excluded
+  // `install_id`s). Empty = all in scope. Seeded from the sticky preference on
+  // a fresh chat, restored from the row when a conversation is opened.
+  const [selectedRestExcluded, setSelectedRestExcluded] = useState<string[]>([]);
   // #3044 — persisted env-picker preference so a reload restores the user's
   // last selection instead of re-seeding from the first group. Select fields
   // individually so the store object identity doesn't churn effect deps.
@@ -143,6 +147,7 @@ export function AtlasChat() {
   const prefGroupId = useChatRoutingPreferenceStore((s) => s.groupId);
   const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
   const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
+  const prefRestExcluded = useChatRoutingPreferenceStore((s) => s.restExcludedDatasourceIds);
   const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
   const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
   // #3064 — how the current picker selection was set, so the seed/restore
@@ -183,6 +188,8 @@ export function AtlasChat() {
     getConnectionId: () => selectedConnectionId,
     getConnectionGroupId: () => selectedGroupId,
     getRoutingMode: () => selectedRoutingMode,
+    // #3066 — forward the REST exclude-set on every turn (always, even []).
+    getRestExcludedDatasourceIds: () => selectedRestExcluded,
   });
 
   const managedSession = authClient.useSession();
@@ -226,6 +233,7 @@ export function AtlasChat() {
         groupId: selectedGroupId,
         connectionId: selectedConnectionId,
         routingMode: selectedRoutingMode,
+        restExcludedDatasourceIds: selectedRestExcluded,
       },
       provenance: selectionProvenanceRef.current,
       preference: {
@@ -233,6 +241,7 @@ export function AtlasChat() {
         groupId: prefGroupId,
         connectionId: prefConnectionId,
         routingMode: prefRoutingMode,
+        restExcludedDatasourceIds: prefRestExcluded,
       },
       activeWorkspaceId,
       preferenceHydrated: prefHasHydrated,
@@ -246,6 +255,8 @@ export function AtlasChat() {
         // Apply the stored mode faithfully, including an explicit null
         // (pre-#2518 back-compat → "pin"); a truthy guard here would drop it.
         setSelectedRoutingMode(decision.routingMode);
+        // #3066 — seed the sticky preference's exclude-set onto this fresh chat.
+        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
         // A restored sticky preference is the user's deliberate prior choice —
         // mark it explicit so a later effect run can't seed over it.
         selectionProvenanceRef.current = "explicit";
@@ -253,6 +264,8 @@ export function AtlasChat() {
       case "seed":
         setSelectedGroupId(decision.groupId);
         setSelectedConnectionId(decision.connectionId);
+        // #3066 — a default seed excludes nothing.
+        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
         // Record that this was auto-seeded: a workspace-matching preference
         // arriving later is still restored over it (the resolver re-runs), but
         // a second default seed is suppressed.
@@ -277,10 +290,14 @@ export function AtlasChat() {
     // routingMode is part of `current` the resolver reads — keep it in deps so a
     // mode-only change re-evaluates restore-vs-noop rather than going stale.
     selectedRoutingMode,
+    // #3066 — exclude-set is part of `current`; keep it in deps so a pref-only
+    // exclude change re-evaluates restore-vs-noop rather than going stale.
+    selectedRestExcluded,
     prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
     prefRoutingMode,
+    prefRestExcluded,
     prefHasHydrated,
     activeWorkspaceId,
     sessionResolved,
@@ -603,11 +620,17 @@ export function AtlasChat() {
         setSelectedGroupId(decision.groupId);
         setSelectedConnectionId(decision.connectionId);
         setSelectedRoutingMode(decision.routingMode);
+        // #3066 — restore the conversation's REST exclude-set so the picker +
+        // the next turn reflect what the row actually excludes.
+        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
       } else {
         selectionProvenanceRef.current = "unset";
         setSelectedGroupId(null);
         setSelectedConnectionId(null);
         setSelectedRoutingMode(null);
+        // #3066 — no usable scope on the row: clear the exclude-set too and let
+        // the seed/restore effect re-seed from the sticky preference / default.
+        setSelectedRestExcluded([]);
       }
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
@@ -641,6 +664,9 @@ export function AtlasChat() {
     setSelectedGroupId(null);
     setSelectedConnectionId(null);
     setSelectedRoutingMode(null);
+    // #3066 — clear the exclude-set so the new chat re-seeds from the sticky
+    // preference (or the empty default), matching the env reset above.
+    setSelectedRestExcluded([]);
   }
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
@@ -703,6 +729,23 @@ export function AtlasChat() {
                     activeConnectionId={selectedConnectionId}
                     activeRoutingMode={selectedRoutingMode}
                     restDatasources={envGroupsQuery.restDatasources}
+                    restExcludedDatasourceIds={selectedRestExcluded}
+                    onRestExcludedChange={(next) => {
+                      // #3066 — a scope toggle is a deliberate pick: mark the
+                      // selection explicit (so the seed/restore effect can't
+                      // re-seed over it) and remember it in the sticky
+                      // preference so new chats inherit it. The full next set
+                      // (incl. []) is forwarded verbatim.
+                      selectionProvenanceRef.current = "explicit";
+                      setSelectedRestExcluded(next);
+                      setRoutingPreference({
+                        workspaceId: activeWorkspaceId,
+                        groupId: selectedGroupId,
+                        connectionId: selectedConnectionId,
+                        routingMode: selectedRoutingMode,
+                        restExcludedDatasourceIds: next,
+                      });
+                    }}
                     onSelect={({ groupId, connectionId, routingMode }) => {
                       // #3064 — a user pick is authoritative; mark it explicit
                       // so the seed/restore effect never replaces it.
@@ -711,12 +754,14 @@ export function AtlasChat() {
                       setSelectedConnectionId(connectionId);
                       setSelectedRoutingMode(routingMode);
                       // #3044 — remember this pick (scoped to the active
-                      // workspace) so a reload restores it.
+                      // workspace) so a reload restores it. #3066 — carry the
+                      // current exclude-set so an env change doesn't drop it.
                       setRoutingPreference({
                         workspaceId: activeWorkspaceId,
                         groupId,
                         connectionId,
                         routingMode,
+                        restExcludedDatasourceIds: selectedRestExcluded,
                       });
                     }}
                   />

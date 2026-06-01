@@ -84,6 +84,15 @@ interface RequestContext {
    * single member keep single-execution semantics.
    */
   routingMode?: import("@atlas/api/lib/env-routing").RoutingMode;
+  /**
+   * #3066 — per-conversation REST datasource exclude-set. The chat route
+   * stamps this from the resolved conversation row (or the per-turn body
+   * override) so the REST datasource resolver drops these `install_id`s
+   * BEFORE the prompt + the bound `executeRestOperation` tool see them.
+   * Undefined here = exclude nothing (every in-scope REST datasource stays
+   * queryable). SQL routing (`routingMode`) is unaffected.
+   */
+  restExcludedDatasourceIds?: string[];
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

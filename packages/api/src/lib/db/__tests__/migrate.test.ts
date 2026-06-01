@@ -130,7 +130,8 @@ describe("runMigrations", () => {
     //   Plus 0110 (notion-data catalog row, slice 6b, #3029) = 111.
     //   Plus 0111 (github-data oauth-datasource catalog row + install_model
     //   CHECK widen, slice 6c, #3030) = 112.
-    expect(count).toBe(112);
+    //   Plus 0112 (conversations.rest_excluded_datasource_ids, S2a, #3066) = 113.
+    expect(count).toBe(113);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -271,6 +272,7 @@ describe("runMigrations", () => {
         "0109_data_candidate_catalog.sql",
         "0110_notion_data_catalog.sql",
         "0111_github_data_catalog.sql",
+        "0112_conversation_rest_excluded_datasources.sql",
       ],
     });
 

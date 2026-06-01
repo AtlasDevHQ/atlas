@@ -92,6 +92,15 @@ const ConversationSchema = z.object({
    * `rowToConversation`; the spec was missing it (drift, #3071).
    */
   routingMode: z.enum(["auto", "pin", "all"]).nullable().optional(),
+  /**
+   * Per-conversation REST datasource exclude-set (#3066). Excluded
+   * `install_id`s the agent must NOT query for this conversation. Empty
+   * (`[]`, the column default) = every in-scope REST datasource is
+   * queryable. Optional + nullable so pre-#3066 rows and external SDK
+   * consumers need not supply it. Mirrors the `Conversation` wire type;
+   * the runtime serializes it via `rowToConversation`.
+   */
+  restExcludedDatasourceIds: z.array(z.string()).nullable().optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

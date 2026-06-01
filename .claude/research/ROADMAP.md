@@ -26,10 +26,10 @@ Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 + the #30
 
 - [x] S1a — Restore the sticky scope preference on a fresh chat — fixes reset-on-reload ([#3064](https://github.com/AtlasDevHQ/atlas/issues/3064), bug, no deps) — PR #3070
 - [x] S1b — Restore a conversation's scope when it is opened ([#3065](https://github.com/AtlasDevHQ/atlas/issues/3065), bug) — PR #3072 + scope-validation follow-up
-- [ ] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature, blocked by #3065) ⟵ next
+- [ ] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature, blocked by #3065) ⟵ in flight (branch `feat/3066-rest-scope-exclude-set`)
 - [ ] S2b — REST-only focus: suspend SQL for a conversation ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067), feature, blocked by #3066)
 - [ ] S3 — Persist the active conversation in the URL ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068), refactor, independent — synergizes with #3065)
-- [ ] OpenAPI drift — `ConversationSchema` omits `routingMode` ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071), bug, independent doc-fix surfaced by S1b)
+- [x] OpenAPI drift — `ConversationSchema` omits `routingMode` ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071), bug, independent doc-fix surfaced by S1b) — PR #3075
 
 Parent [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) stays in the Architecture Backlog (left unmodified per `/to-issues`). The **Staging environment** track (below) continues in parallel, independent of the tag train.
 

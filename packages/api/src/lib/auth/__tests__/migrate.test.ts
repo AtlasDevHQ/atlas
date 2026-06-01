@@ -357,6 +357,7 @@ describe("migrateAuthTables", () => {
             { name: "0109_data_candidate_catalog.sql" },
             { name: "0110_notion_data_catalog.sql" },
             { name: "0111_github_data_catalog.sql" },
+            { name: "0112_conversation_rest_excluded_datasources.sql" },
           ],
         };
       }

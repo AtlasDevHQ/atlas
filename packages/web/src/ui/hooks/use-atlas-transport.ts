@@ -40,6 +40,14 @@ export interface UseAtlasTransportOptions {
    * default for legacy conversations).
    */
   getRoutingMode?: () => "auto" | "pin" | "all" | null;
+  /**
+   * #3066 — the conversation's REST datasource exclude-set (excluded
+   * `install_id`s). When provided, the transport ALWAYS sends it (even `[]`),
+   * because the chat route distinguishes "field present as []" (re-include —
+   * clear the row) from "field absent" (inherit the row). Omitting the field on
+   * a re-include would silently keep a stale exclusion — the #3073 bug class.
+   */
+  getRestExcludedDatasourceIds?: () => readonly string[];
 }
 
 export interface UseAtlasTransportReturn {
@@ -84,6 +92,12 @@ export function useAtlasTransport(
   // (which would cancel the in-flight stream).
   const getRoutingModeRef = useRef(opts.getRoutingMode);
   getRoutingModeRef.current = opts.getRoutingMode;
+
+  // #3066 — REST exclude-set getter. Ref for the same reason as the routing
+  // getters: a scope toggle between turns reaches the next request without
+  // rebuilding `useChat`'s transport.
+  const getRestExcludedDatasourceIdsRef = useRef(opts.getRestExcludedDatasourceIds);
+  getRestExcludedDatasourceIdsRef.current = opts.getRestExcludedDatasourceIds;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -241,7 +255,7 @@ export function useAtlasTransport(
       headers,
       credentials: isCrossOrigin ? "include" : undefined,
       body: () => {
-        const body: Record<string, string> = {};
+        const body: Record<string, unknown> = {};
         if (conversationIdRef.current) {
           body.conversationId = conversationIdRef.current;
         }
@@ -263,6 +277,14 @@ export function useAtlasTransport(
         const routingMode = getRoutingModeRef.current?.();
         if (routingMode) {
           body.routingMode = routingMode;
+        }
+        // #3066 — REST exclude-set. ALWAYS sent when the getter is present
+        // (even `[]`), so a re-include actually clears the row instead of
+        // inheriting the stale set. API/SDK callers that don't supply the
+        // getter omit the field and the server falls back to the row value.
+        const restExcluded = getRestExcludedDatasourceIdsRef.current?.();
+        if (restExcluded !== undefined) {
+          body.restExcludedDatasourceIds = [...restExcluded];
         }
         return body;
       },

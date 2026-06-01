@@ -52,6 +52,21 @@ export interface Conversation {
    * the field; the runtime treats missing the same as `null`.
    */
   routingMode?: ConversationRoutingMode | null;
+  /**
+   * Per-conversation REST datasource exclude-set (#3066). The excluded
+   * `install_id`s — the id the scope picker surfaces — that the agent must
+   * NOT query for this conversation. Empty / absent = every in-scope REST
+   * datasource stays queryable (the column default `'{}'`), so a
+   * newly-installed datasource is reachable with no action.
+   *
+   * Authoritative per-conversation; the web sticky preference only seeds
+   * NEW chats. SQL routing (`routingMode`) is independent and unaffected.
+   *
+   * Optional + nullable so pre-#3066 test fixtures and external SDK
+   * consumers can construct a `Conversation` without it; the runtime treats
+   * missing the same as `[]`.
+   */
+  restExcludedDatasourceIds?: string[] | null;
   starred: boolean;
   createdAt: string;
   updatedAt: string;

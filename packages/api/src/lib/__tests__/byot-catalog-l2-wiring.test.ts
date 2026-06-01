@@ -133,7 +133,7 @@ const OPENAI_PERSISTED: GatewayCatalogModel = {
 
 const BEDROCK_PERSISTED: GatewayCatalogModel = {
   ...ANTHROPIC_PERSISTED,
-  id: "anthropic.claude-opus-4-7",
+  id: "anthropic.claude-opus-4-8",
   provider: "bedrock",
 };
 
@@ -374,8 +374,8 @@ describe("byot-catalog L1↔L2 wiring — bedrock parallel smoke", () => {
     bedrockSendPayload = {
       modelSummaries: [
         {
-          modelId: "anthropic.claude-opus-4-7",
-          modelName: "Claude Opus 4.7",
+          modelId: "anthropic.claude-opus-4-8",
+          modelName: "Claude Opus 4.8",
           providerName: "Anthropic",
           outputModalities: ["TEXT"],
         },

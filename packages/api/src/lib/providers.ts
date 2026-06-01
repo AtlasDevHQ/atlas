@@ -41,8 +41,7 @@ const VALID_PROVIDERS: ReadonlySet<ConfigProvider> = new Set([
 const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
-  // Bedrock stays on 4-7 until AWS GAs Opus 4.8 on Bedrock — see #3076.
-  bedrock: "anthropic.claude-opus-4-7",
+  bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
   "openai-compatible": undefined,
   gateway: "anthropic/claude-opus-4.8",

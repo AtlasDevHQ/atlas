@@ -1647,29 +1647,42 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
     ).toEqual({ kind: "seed" });
   });
 
-  test("seeds a legacy group-less row (connectionId but null group) once groups are loaded", () => {
+  test("restores a legacy group-less row by locating the group that owns its connection", () => {
     // Reachable production state (migration 0067 only backfilled the group for
     // rows whose connection still joined): connectionId set, connectionGroupId
-    // null. With groups loaded there is no group to validate, so seed — the
-    // chat route still pins execution by reading connection_id back off the row.
+    // null. The PIN must be preserved — locate the owning group rather than
+    // seeding, which would let the effect send a different member and silently
+    // switch environments (Codex #3074). NON-primary `eu-prod` so a regression
+    // to the default can't be masked by the primary.
     expect(
       resolveConversationScope(
-        { connectionGroupId: null, connectionId: "us-prod", routingMode: "pin" },
+        { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
+  });
+
+  test("seeds a legacy group-less row only when its connection no longer exists in any group", () => {
+    // The connection was genuinely removed — nothing to pin, so defer to seed.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: null, connectionId: "deleted-conn", routingMode: "pin" },
         groups,
       ),
     ).toEqual({ kind: "seed" });
   });
 
   test("optimistically restores a legacy group-less row (null group) on cold-start", () => {
-    // Same row before groups load: can't validate, so trust it verbatim — the
-    // null group is carried through (asymmetric with the groups-loaded seed
-    // above; locks that the emptiness check requires BOTH ids null, not either).
+    // Same row before groups load: can't locate the owner yet, so trust it
+    // verbatim — the null group is carried through, and the transport sends the
+    // real connectionId so the route still pins correctly. Locks that the
+    // emptiness short-circuit requires BOTH ids null, not either.
     expect(
       resolveConversationScope(
-        { connectionGroupId: null, connectionId: "us-prod", routingMode: "pin" },
+        { connectionGroupId: null, connectionId: "eu-prod", routingMode: "pin" },
         [],
       ),
-    ).toEqual({ kind: "restore", groupId: null, connectionId: "us-prod", routingMode: "pin" });
+    ).toEqual({ kind: "restore", groupId: null, connectionId: "eu-prod", routingMode: "pin" });
   });
 
   test("seeds when a resolved group has no live members (fully archived group)", () => {

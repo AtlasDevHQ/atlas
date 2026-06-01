@@ -813,7 +813,7 @@ export function ModelProviderSection({ showByotGate = true }: ModelProviderSecti
                         <Input
                           placeholder={
                             currentProvider === "anthropic"
-                              ? "claude-opus-4-7"
+                              ? "claude-opus-4-8"
                               : currentProvider === "openai"
                                 ? "gpt-4o"
                                 : "model-name"

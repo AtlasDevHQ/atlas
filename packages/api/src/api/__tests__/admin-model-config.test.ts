@@ -636,7 +636,7 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
     const res = await app.fetch(
       adminRequest("PUT", "/api/v1/admin/model-config", {
         provider: "anthropic",
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-8",
       }),
     );
     expect(res.status).toBe(200);
@@ -644,7 +644,7 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
     const entry = lastAuditCall();
     expect(entry.metadata).toMatchObject({
       provider: "anthropic",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       hasSecret: false,
     });
   });

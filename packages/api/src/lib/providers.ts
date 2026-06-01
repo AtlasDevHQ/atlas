@@ -39,12 +39,12 @@ const VALID_PROVIDERS: ReadonlySet<ConfigProvider> = new Set([
 ]);
 
 const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
-  anthropic: "claude-opus-4-7",
+  anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
-  bedrock: "anthropic.claude-opus-4-7",
+  bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
   "openai-compatible": undefined,
-  gateway: "anthropic/claude-opus-4.7",
+  gateway: "anthropic/claude-opus-4.8",
 };
 
 /** Returns the default provider string based on runtime environment. */

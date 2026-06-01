@@ -268,7 +268,7 @@ describe("billing routes", () => {
     });
 
     it("uses setting override for currentModel when available", async () => {
-      mockSettingLiveValue = "anthropic/claude-opus-4.7";
+      mockSettingLiveValue = "anthropic/claude-opus-4.8";
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -281,7 +281,7 @@ describe("billing routes", () => {
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
-      expect(body.currentModel).toBe("anthropic/claude-opus-4.7");
+      expect(body.currentModel).toBe("anthropic/claude-opus-4.8");
     });
 
     it("returns 401 when unauthenticated", async () => {

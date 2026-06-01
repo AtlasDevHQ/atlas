@@ -52,7 +52,7 @@ const FETCH_TIMEOUT_MS = 15_000;
 // Claude families carried. Source: AWS Bedrock model cards index
 // (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.md).
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
-  "anthropic.claude-opus-4-7",
+  "anthropic.claude-opus-4-8",
   "anthropic.claude-sonnet-4-6",
   "anthropic.claude-haiku-4-5",
 ]);

@@ -41,7 +41,7 @@ const FETCH_TIMEOUT_MS = 10_000;
  * so the recommended group fits without scrolling.
  */
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
-  "anthropic/claude-opus-4.7",
+  "anthropic/claude-opus-4.8",
   "anthropic/claude-sonnet-4.6",
   "openai/gpt-4o",
   "openai/gpt-4o-mini",
@@ -55,8 +55,8 @@ const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
  */
 const FALLBACK_MODELS: GatewayCatalogModel[] = [
   {
-    id: "anthropic/claude-opus-4.7",
-    name: "Claude Opus 4.7",
+    id: "anthropic/claude-opus-4.8",
+    name: "Claude Opus 4.8",
     provider: "anthropic",
     type: "language",
     contextWindow: 200_000,

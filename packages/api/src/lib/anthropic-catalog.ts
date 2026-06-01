@@ -40,7 +40,7 @@ const FETCH_TIMEOUT_MS = 10_000;
  * Anthropic /v1/models response. Anchor on flagship + cheap-fast pair.
  */
 const RECOMMENDED_MODEL_IDS: ReadonlySet<string> = new Set([
-  "claude-opus-4-7",
+  "claude-opus-4-8",
   "claude-sonnet-4-6",
   "claude-haiku-4-5",
 ]);

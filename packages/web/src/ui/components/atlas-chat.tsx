@@ -274,6 +274,9 @@ export function AtlasChat() {
     envGroupsQuery.groups,
     selectedGroupId,
     selectedConnectionId,
+    // routingMode is part of `current` the resolver reads — keep it in deps so a
+    // mode-only change re-evaluates restore-vs-noop rather than going stale.
+    selectedRoutingMode,
     prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
@@ -585,16 +588,27 @@ export function AtlasChat() {
       setMessages(transformMessages(data.messages));
       setConversationId(id);
       convos.setSelectedId(id);
-      // Restore the conversation's persisted scope. The conversation row is
-      // authoritative — precedence row > sticky preference > default seed — so
-      // mark the selection `explicit` (before the setState calls, so the
-      // re-running seed/restore effect already sees it) to keep that effect
-      // from clobbering the restored scope.
-      const scope = resolveConversationScope(data);
-      selectionProvenanceRef.current = "explicit";
-      setSelectedGroupId(scope.groupId);
-      setSelectedConnectionId(scope.connectionId);
-      setSelectedRoutingMode(scope.routingMode);
+      // Restore the conversation's persisted scope, validated against the
+      // currently-visible env groups. A `restore` decision is authoritative
+      // (precedence row > sticky preference > default seed) — mark it `explicit`
+      // (before the setState calls, so the re-running seed/restore effect
+      // already sees it) so that effect can't clobber it. A `seed` decision
+      // means the row carried no usable scope (all-null legacy row, or a group
+      // since archived): reset to `unset` and clear so the effect seeds the
+      // default / restores the sticky preference, never sending stale-or-null
+      // scope the chip would misrepresent.
+      const decision = resolveConversationScope(data, envGroupsQuery.groups);
+      if (decision.kind === "restore") {
+        selectionProvenanceRef.current = "explicit";
+        setSelectedGroupId(decision.groupId);
+        setSelectedConnectionId(decision.connectionId);
+        setSelectedRoutingMode(decision.routingMode);
+      } else {
+        selectionProvenanceRef.current = "unset";
+        setSelectedGroupId(null);
+        setSelectedConnectionId(null);
+        setSelectedRoutingMode(null);
+      }
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the

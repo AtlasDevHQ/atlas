@@ -1475,61 +1475,77 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
 //
 // Opening a saved conversation must restore THAT conversation's persisted
 // scope into the picker — precedence: conversation row > sticky preference >
-// default seed. `resolveConversationScope` is the pure mapping that
-// atlas-chat's `handleSelectConversation` applies; the handler then marks the
-// selection provenance `explicit` so the seed/restore effect can't clobber it
-// (that "explicit → noop" guard is locked by the resolveEnvSelection suite
-// above). These tests lock the faithful row→picker mapping, including the
-// legacy null-routing fallback and the routing-mode dimension.
+// default seed. `resolveConversationScope` is the pure decision that
+// atlas-chat's `handleSelectConversation` applies: `restore` (apply + mark
+// provenance `explicit`, so the seed/restore effect's "explicit → noop" guard
+// keeps it) or `seed` (defer to that effect — the row carried no usable scope).
+//
+// It validates the row against the loaded env groups so a stale/empty scope is
+// NEVER made authoritative (the bug Codex flagged on the first cut): an all-null
+// legacy row, or a row pointing at an archived/removed group, falls back to
+// `seed` instead of forcing the transport to send nulls / a rejected group id.
+// An archived *member* under a still-valid group is repaired to the group
+// primary rather than discarding the whole (still-valid) group.
 
 describe("resolveConversationScope — restore a conversation's scope on open (#3065)", () => {
-  test("restores the conversation's group, member, and routing mode verbatim", () => {
+  const prodGroup: ChatEnvGroup = {
+    id: "g_prod",
+    name: "prod",
+    primaryConnectionId: "us-prod",
+    members: [
+      { connectionId: "us-prod", dbType: "postgres", description: null },
+      { connectionId: "eu-prod", dbType: "postgres", description: null },
+    ],
+  };
+  const stagingGroup: ChatEnvGroup = {
+    id: "g_staging",
+    name: "staging",
+    primaryConnectionId: null,
+    members: [{ connectionId: "us-staging", dbType: "postgres", description: null }],
+  };
+  const groups: ChatEnvGroup[] = [prodGroup, stagingGroup];
+
+  test("restores a row that resolves to a visible group + member, verbatim", () => {
     expect(
-      resolveConversationScope({
-        connectionGroupId: "g_prod",
-        connectionId: "eu-prod",
-        routingMode: "pin",
-      }),
-    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
   });
 
   test("preserves an 'auto' routing mode (mode is a first-class scope dimension)", () => {
     // routingMode is a first-class scope dimension — assert it explicitly so a
     // restore can never silently lose the mode (a prior slice regressed this).
     expect(
-      resolveConversationScope({
-        connectionGroupId: "g_prod",
-        connectionId: "us-prod",
-        routingMode: "auto",
-      }),
-    ).toEqual({ groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "auto" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
   });
 
   test("preserves an 'all' routing mode", () => {
     expect(
-      resolveConversationScope({
-        connectionGroupId: "g_prod",
-        connectionId: "us-prod",
-        routingMode: "all",
-      }),
-    ).toEqual({ groupId: "g_prod", connectionId: "us-prod", routingMode: "all" });
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "us-prod", routingMode: "all" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "all" });
   });
 
   test("two different conversations resolve to two different scopes (switching updates the picker each time)", () => {
-    const a = resolveConversationScope({
-      connectionGroupId: "g_prod",
-      connectionId: "eu-prod",
-      routingMode: "pin",
-    });
-    const b = resolveConversationScope({
-      connectionGroupId: "g_staging",
-      connectionId: "us-staging",
-      routingMode: "auto",
-    });
+    const a = resolveConversationScope(
+      { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
+      groups,
+    );
+    const b = resolveConversationScope(
+      { connectionGroupId: "g_staging", connectionId: "us-staging", routingMode: "auto" },
+      groups,
+    );
     expect(a).not.toEqual(b);
-    expect(a.connectionId).toBe("eu-prod");
-    expect(b.connectionId).toBe("us-staging");
-    expect(b.routingMode).toBe("auto");
+    expect(a).toMatchObject({ kind: "restore", connectionId: "eu-prod" });
+    expect(b).toMatchObject({ kind: "restore", connectionId: "us-staging", routingMode: "auto" });
   });
 
   test("legacy conversation with a null routing mode preserves null (read as pin downstream)", () => {
@@ -1537,45 +1553,113 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
     // faithfully — the picker and the agent runtime both read null as "pin",
     // so the conversation stays pinned to its connectionId.
     expect(
-      resolveConversationScope({
-        connectionGroupId: "g_prod",
-        connectionId: "eu-prod",
-        routingMode: null,
-      }),
-    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: null },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
   });
 
   test("legacy conversation with an omitted routing mode defaults to null", () => {
     // routingMode is optional on the wire type — an older SDK/peer may omit
     // it entirely. Coalesce the missing field to null rather than undefined.
     expect(
-      resolveConversationScope({
-        connectionGroupId: "g_prod",
-        connectionId: "eu-prod",
-      }),
-    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "eu-prod" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
   });
 
-  test("legacy conversation with no group still pins to its connectionId", () => {
-    // Pre-1.4.4 single-connection row: no content group, just an execution
-    // target. The acceptance criterion — "treated as pin to its connectionId".
+  test("seeds (defers) for a fully-null row — never makes nulls authoritative", () => {
+    // Codex finding 1: an all-null legacy/API-created row marked `explicit`
+    // would show a fallback chip while the transport sent nulls. Defer instead.
     expect(
-      resolveConversationScope({
-        connectionGroupId: null,
-        connectionId: "warehouse",
-        routingMode: null,
-      }),
-    ).toEqual({ groupId: null, connectionId: "warehouse", routingMode: null });
+      resolveConversationScope(
+        { connectionGroupId: null, connectionId: null, routingMode: null },
+        groups,
+      ),
+    ).toEqual({ kind: "seed" });
   });
 
-  test("a fully-null row resolves to an all-null scope (nothing to pin)", () => {
+  test("seeds when the row's group has been archived / is no longer visible", () => {
+    // Codex finding 2: a since-removed group restored verbatim would be sent to
+    // the chat route and rejected (invalid_connection_group). Defer to seeding.
     expect(
-      resolveConversationScope({
-        connectionGroupId: null,
-        connectionId: null,
-        routingMode: null,
-      }),
-    ).toEqual({ groupId: null, connectionId: null, routingMode: null });
+      resolveConversationScope(
+        { connectionGroupId: "g_archived", connectionId: "old-prod", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "seed" });
+  });
+
+  test("repairs an archived member to the group primary when the group still resolves", () => {
+    // The group is still valid but the pinned member is gone — keep the group,
+    // repair the execution target to the primary rather than sending a stale id.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "ap-prod-archived", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "pin" });
+  });
+
+  test("repairs a group-only row (null member, e.g. Auto) to the group primary", () => {
+    // An Auto/All conversation may carry a group but no pinned member. Restore
+    // the group + its primary as the displayed target, preserving the mode.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: null, routingMode: "auto" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
+  });
+
+  test("falls back to members[0] when repairing under a group with no primary", () => {
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: "g_staging", connectionId: "gone", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_staging", connectionId: "us-staging", routingMode: "pin" });
+  });
+
+  test("trusts the row optimistically when groups have not loaded yet (cold-start open)", () => {
+    // We can't validate against an empty group list; losing the restore on a
+    // cold-start open is a worse, more common regression than the rare
+    // archived-env + cold-start intersection. Restore the row verbatim.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: "g_prod", connectionId: "eu-prod", routingMode: "all" },
+        [],
+      ),
+    ).toEqual({ kind: "restore", groupId: "g_prod", connectionId: "eu-prod", routingMode: "all" });
+  });
+
+  test("still seeds a fully-null row even when groups have not loaded", () => {
+    // Emptiness is decided before the groups-loaded gate — an all-null row is
+    // never authoritative regardless of load state.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: null, connectionId: null, routingMode: null },
+        [],
+      ),
+    ).toEqual({ kind: "seed" });
+  });
+
+  test("seeds when a resolved group has no live members (fully archived group)", () => {
+    const emptyGroup: ChatEnvGroup = {
+      id: "g_empty",
+      name: "empty",
+      primaryConnectionId: null,
+      members: [],
+    };
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: "g_empty", connectionId: "anything", routingMode: "pin" },
+        [emptyGroup],
+      ),
+    ).toEqual({ kind: "seed" });
   });
 });
 

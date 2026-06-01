@@ -704,8 +704,14 @@ export function AtlasChat() {
       // #3068 — the user navigated away while this was fetching: discard the
       // stale result instead of committing the wrong conversation over the newer
       // navigation (which would also flip the URL back to this id). The URL
-      // effect loads whatever the latest `?id=` now points at.
-      if (latestRequestedConversationIdRef.current !== id) return;
+      // effect loads whatever the latest `?id=` now points at. Reset the dedup
+      // ref to the still-mounted conversation first: this load never committed,
+      // so leaving `openedConversationIdRef` on `id` would let a later back-nav
+      // to `id` be skipped (urlId === loadedId → noop) and show stale content.
+      if (latestRequestedConversationIdRef.current !== id) {
+        openedConversationIdRef.current = boundConversationIdRef.current;
+        return;
+      }
       // A 200 with a malformed body (no `messages` array) would otherwise
       // throw a bare TypeError inside `transformMessages` and surface as a
       // generic "try again" — distinguish the structural defect in the log.
@@ -763,6 +769,18 @@ export function AtlasChat() {
       console.warn("Failed to load conversation:", err instanceof Error ? err.message : String(err));
       setTransientWarning("Failed to load conversation. Please try again.");
       setTimeout(() => setTransientWarning(""), 5000);
+      // #3068 — the open failed and never committed. Reset the dedup ref to the
+      // still-mounted conversation so the failed id isn't treated as loaded. If
+      // no newer navigation superseded this attempt, roll the URL + requested id
+      // back to the mounted conversation too, so the URL, the displayed thread,
+      // and the transport id stay consistent (and the URL effect doesn't loop
+      // retrying the failed id). A newer navigation is left for the effect to
+      // open once `loadingConversation` clears.
+      openedConversationIdRef.current = boundConversationIdRef.current;
+      if (latestRequestedConversationIdRef.current === id) {
+        latestRequestedConversationIdRef.current = boundConversationIdRef.current;
+        setConversationId(boundConversationIdRef.current);
+      }
     } finally {
       setLoadingConversation(false);
     }
@@ -826,8 +844,12 @@ export function AtlasChat() {
       loadedId: openedConversationIdRef.current,
       // sessionResolved (not authResolved) — for managed auth, isSignedIn isn't
       // final until the session resolves; opening before then would misread a
-      // signed-in user as self-hosted and skip the wait-for-groups gate (#3068).
-      authSettled: sessionResolved,
+      // signed-in user as self-hosted and skip the wait-for-groups gate. Also
+      // require the simple-key credential to be present, else the deep-link
+      // fetch goes out without an Authorization header and 401s; entering the
+      // key later re-drives this effect via the `apiKey` dep (#3068).
+      authSettled:
+        sessionResolved && (authMode !== "simple-key" || !!apiKey),
       isSignedIn,
       envGroupsHasLoaded: envGroupsQuery.hasLoaded,
     });
@@ -853,7 +875,9 @@ export function AtlasChat() {
     // by handleSelectConversation's in-flight guard: when the A-load settles and
     // the flag clears, this re-evaluates and opens B — otherwise the URL would
     // say `?id=B` while A stays on screen, desynced until the next navigation.
-  }, [chatUrlParams.id, sessionResolved, isSignedIn, envGroupsQuery.hasLoaded, loadingConversation]);
+    // authMode + apiKey: a simple-key deep link must wait for the key to hydrate
+    // (above), and entering it later must re-drive the open.
+  }, [chatUrlParams.id, sessionResolved, isSignedIn, envGroupsQuery.hasLoaded, loadingConversation, authMode, apiKey]);
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
   // when managed auth is active but session hasn't been checked yet.
@@ -1165,7 +1189,15 @@ export function AtlasChat() {
                                 label="Related queries"
                               />
                             )}
-                            {conversationId && convos.available && (
+                            {/* #3068 — hide Save/Share while a conversation
+                                load is pending: `conversationId` is the URL id,
+                                which already points at the conversation being
+                                opened while the previous thread is still
+                                displayed, so acting on it would star/share the
+                                wrong conversation. Once the load commits (or
+                                rolls back on failure) the URL id matches the
+                                mounted thread again. */}
+                            {conversationId && !loadingConversation && convos.available && (
                               <div className="flex items-center gap-1">
                                 <SaveButton
                                   conversationId={conversationId}

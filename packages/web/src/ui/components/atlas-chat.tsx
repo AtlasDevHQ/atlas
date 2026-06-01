@@ -156,11 +156,19 @@ export function AtlasChat() {
   const prefRestFocus = useChatRoutingPreferenceStore((s) => s.restFocusDatasourceId);
   const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
   const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
-  // #3064 — how the current picker selection was set, so the seed/restore
-  // effect knows whether it may replace it. A ref (not state) because it
-  // must update synchronously alongside a setSelected* call without
+  // #3064 — how the current picker SQL scope (group / member / mode) was set, so
+  // the seed/restore effect knows whether it may replace it. A ref (not state)
+  // because it must update synchronously alongside a setSelected* call without
   // re-triggering the effect itself.
   const selectionProvenanceRef = useRef<EnvSelectionProvenance>("unset");
+  // #3078 — the REST scope (exclude-set + focus) has its OWN provenance,
+  // decoupled from the SQL `selectionProvenanceRef`. Opening a conversation
+  // makes the row's REST scope authoritative ("explicit") even when its SQL
+  // scope must be seeded (an all-null row), and a REST toggle marks it explicit
+  // too. While it's explicit, `resolveEnvSelection` passes the current REST scope
+  // through any SQL seed/restore instead of clobbering it — the seam that fixes
+  // the all-null-SQL exclude-set data loss. `handleNewChat` resets it to "unset".
+  const restScopeProvenanceRef = useRef<EnvSelectionProvenance>("unset");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -246,6 +254,11 @@ export function AtlasChat() {
         restFocusDatasourceId: selectedRestFocus,
       },
       provenance: selectionProvenanceRef.current,
+      // #3078 — REST scope provenance is independent of the SQL provenance. When
+      // it's "explicit" (a conversation-open restore or a user toggle), the
+      // resolver passes the current REST scope through instead of clobbering it
+      // with the default seed / sticky preference while SQL seeds or restores.
+      restProvenance: restScopeProvenanceRef.current,
       preference: {
         workspaceId: prefWorkspaceId,
         groupId: prefGroupId,
@@ -624,41 +637,39 @@ export function AtlasChat() {
       setConversationId(id);
       convos.setSelectedId(id);
       // Restore the conversation's persisted scope, validated against the
-      // currently-visible env groups. A `restore` decision is authoritative
-      // (precedence row > sticky preference > default seed) — mark it `explicit`
-      // (before the setState calls, so the re-running seed/restore effect
-      // already sees it) so that effect can't clobber it. A `seed` decision
-      // means the row carried no usable scope (all-null legacy row, or a group
-      // since archived): reset to `unset` and clear so the effect seeds the
-      // default / restores the sticky preference, never sending stale-or-null
-      // scope the chip would misrepresent.
+      // currently-visible env groups. The SQL scope and the REST scope are
+      // restored INDEPENDENTLY (#3078):
+      //
+      //   - REST scope (exclude-set + focus) is always restored from the row and
+      //     marked `restProvenance: "explicit"` regardless of the SQL decision —
+      //     it is not tied to SQL routing. Marking it explicit (before the
+      //     setState calls, so the re-running seed/restore effect already sees
+      //     it) is what stops that effect from clobbering a restored exclude-set
+      //     when the SQL scope must be seeded. Before #3078 a `seed` cleared the
+      //     exclude-set and the always-sent transport array then wiped it on the
+      //     next turn (the data-loss bug).
+      //   - SQL scope: a `restore` is authoritative (precedence row > sticky
+      //     preference > default seed) — mark it `explicit` so the effect can't
+      //     replace it. A `seed` means the row carried no usable SQL scope
+      //     (all-null legacy row, or a group since archived): reset to `unset` so
+      //     the effect seeds the default / restores the sticky preference,
+      //     never sending stale-or-null routing the chip would misrepresent.
       const decision = resolveConversationScope(data, envGroupsQuery.groups);
+      // REST scope — restored on BOTH decision kinds, made authoritative.
+      restScopeProvenanceRef.current = "explicit";
+      setSelectedRestExcluded(decision.restExcludedDatasourceIds);
+      setSelectedRestFocus(decision.restFocusDatasourceId);
+      // SQL scope — restore vs defer-to-seed.
       if (decision.kind === "restore") {
         selectionProvenanceRef.current = "explicit";
         setSelectedGroupId(decision.groupId);
         setSelectedConnectionId(decision.connectionId);
         setSelectedRoutingMode(decision.routingMode);
-        // #3066 — restore the conversation's REST exclude-set so the picker +
-        // the next turn reflect what the row actually excludes.
-        setSelectedRestExcluded(decision.restExcludedDatasourceIds);
-        // #3067 — restore the conversation's REST-only focus too.
-        setSelectedRestFocus(decision.restFocusDatasourceId);
       } else {
         selectionProvenanceRef.current = "unset";
         setSelectedGroupId(null);
         setSelectedConnectionId(null);
         setSelectedRoutingMode(null);
-        // #3066 — no usable scope on the row: clear the exclude-set too and let
-        // the seed/restore effect re-seed from the sticky preference / default.
-        setSelectedRestExcluded([]);
-        // #3067 — clear focus too on a seed decision. A `seed` fires when the
-        // row's SQL scope isn't restorable: all-null (legacy / zero-group), or
-        // its group was archived/removed / has no live members. On the common
-        // ≥1-group workspace a focused conversation normally carries a live
-        // group and `restore`s above; the all-null REST-only case (where focus
-        // would be lost) is only reachable on a zero-group workspace, which
-        // doesn't render the picker yet — see #3078.
-        setSelectedRestFocus(null);
       }
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
@@ -689,6 +700,10 @@ export function AtlasChat() {
     // just-opened conversation's `explicit` scope would carry into the new
     // chat and the effect would no-op on it.
     selectionProvenanceRef.current = "unset";
+    // #3078 — reset the REST scope provenance too, so a just-opened
+    // conversation's `explicit` REST scope doesn't carry into the new chat and
+    // block the seed/restore effect from seeding the sticky preference / default.
+    restScopeProvenanceRef.current = "unset";
     setSelectedGroupId(null);
     setSelectedConnectionId(null);
     setSelectedRoutingMode(null);
@@ -766,8 +781,12 @@ export function AtlasChat() {
                       // selection explicit (so the seed/restore effect can't
                       // re-seed over it) and remember it in the sticky
                       // preference so new chats inherit it. The full next set
-                      // (incl. []) is forwarded verbatim.
+                      // (incl. []) is forwarded verbatim. #3078 — mark the REST
+                      // scope's own provenance explicit too (keeping the SQL
+                      // provenance explicit avoids a stray pref-restore of SQL as
+                      // a side effect of a REST toggle).
                       selectionProvenanceRef.current = "explicit";
+                      restScopeProvenanceRef.current = "explicit";
                       setSelectedRestExcluded(next);
                       setRoutingPreference({
                         workspaceId: activeWorkspaceId,
@@ -783,7 +802,9 @@ export function AtlasChat() {
                       // #3067 — focusing / clearing is a deliberate pick: mark
                       // explicit and remember it in the sticky preference so new
                       // chats inherit it. `null` clears focus (re-enables SQL).
+                      // #3078 — mark the REST scope's own provenance explicit too.
                       selectionProvenanceRef.current = "explicit";
+                      restScopeProvenanceRef.current = "explicit";
                       setSelectedRestFocus(next);
                       setRoutingPreference({
                         workspaceId: activeWorkspaceId,

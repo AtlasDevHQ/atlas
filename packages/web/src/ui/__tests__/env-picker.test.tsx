@@ -995,6 +995,112 @@ describe("ChatEnvPicker — REST-only focus (#3067)", () => {
   });
 });
 
+// ── #3078 — zero-group (REST-only) workspace render path ──────────────
+//
+// A workspace with REST datasources but NO SQL connection groups must still
+// surface the picker so its REST scope (exclude / focus) is reachable. The
+// SQL-less render path drops the routing modes / member list / singleton hint
+// (all SQL affordances) and shows only the REST scope section; the chip reads
+// the REST count with no SQL group/member prefix.
+
+describe("ChatEnvPicker — zero-group REST-only workspace (#3078)", () => {
+  const restOnly = [
+    { id: "stripe", displayName: "Stripe", groupId: null },
+    { id: "github", displayName: "GitHub", groupId: null },
+  ];
+
+  test("renders the picker for a zero-group workspace that has REST datasources", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        restDatasources={restOnly}
+        restExcludedDatasourceIds={[]}
+        onRestExcludedChange={noop}
+        onSelect={noop}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-trigger"]'),
+    ).not.toBeNull();
+  });
+
+  test("the chip shows the REST count with no SQL routing / member prefix", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        restDatasources={restOnly}
+        restExcludedDatasourceIds={["stripe"]}
+        onRestExcludedChange={noop}
+        onSelect={noop}
+      />,
+    );
+    const label =
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent ?? "";
+    expect(label).toContain("1/2 REST");
+    // No SQL group/member chip → no placeholder dashes or pin label leak.
+    expect(label).not.toContain("—");
+  });
+
+  test("the REST datasources are excludable; no SQL routing section is rendered", () => {
+    const onRestExcludedChange = mock((_next: string[]) => {});
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        restDatasources={restOnly}
+        restExcludedDatasourceIds={[]}
+        onRestExcludedChange={onRestExcludedChange}
+        onSelect={noop}
+      />,
+    );
+    const toggle = container.querySelector(
+      '[data-testid="chat-env-picker-rest-toggle-stripe"]',
+    ) as HTMLElement;
+    expect(toggle).not.toBeNull();
+    fireEvent.click(toggle);
+    expect(onRestExcludedChange).toHaveBeenCalledTimes(1);
+    expect(onRestExcludedChange.mock.calls[0]![0]).toEqual(["stripe"]);
+    // SQL affordances are absent — there are no groups to route over.
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-pin"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-all"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-singleton-hint"]'),
+    ).toBeNull();
+  });
+
+  test("supports REST-only focus on a zero-group workspace (pairs with #3067)", () => {
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        restDatasources={restOnly}
+        restExcludedDatasourceIds={[]}
+        onRestExcludedChange={noop}
+        restFocusDatasourceId="stripe"
+        onRestFocusChange={noop}
+        onSelect={noop}
+      />,
+    );
+    const label =
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent ?? "";
+    expect(label).toContain("Stripe only");
+    expect(
+      container
+        .querySelector('[data-testid="chat-env-picker-trigger"]')
+        ?.getAttribute("data-focused"),
+    ).toBe("true");
+    // No SQL routing section while focused on a zero-group workspace.
+    expect(container.querySelector('[data-testid="chat-env-picker-mode-auto"]')).toBeNull();
+  });
+});
+
 const originalFetch = globalThis.fetch;
 
 function mockFetch(
@@ -1186,16 +1292,27 @@ describe("shouldRenderEnvPicker truth table (#2504)", () => {
     ).toBe(false);
   });
 
-  // The zero-group REST-only workspace still hides (deferred follow-up): a
-  // SQL-less render path + independent exclude-set lifecycle are out of scope.
-  test("still hides a zero-group workspace even with REST datasources (#3066 deferred)", () => {
+  // #3078 — a zero-group (REST-only) workspace now renders the picker so its
+  // REST datasources are reachable (exclude / focus) via the SQL-less render
+  // path. Supersedes the prior "#3066 deferred" hide.
+  test("renders a zero-group workspace when there are REST datasources (#3078)", () => {
     expect(
       shouldRenderEnvPicker({
         groups: [],
         reason: null,
         restDatasources: [{ id: "stripe" }],
       }),
+    ).toBe(true);
+  });
+
+  test("still hides a zero-group workspace with no REST datasources, reason, or error (#3078)", () => {
+    expect(
+      shouldRenderEnvPicker({ groups: [], reason: null, restDatasources: [] }),
     ).toBe(false);
+    // The reason / error chip paths are unaffected by the REST-only render path.
+    expect(
+      shouldRenderEnvPicker({ groups: [], reason: "no_internal_db", restDatasources: [] }),
+    ).toBe(true);
   });
 });
 
@@ -1518,14 +1635,24 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
   ): ResolveEnvSelectionInput {
     return {
       groups: [prodGroup],
-      current: { groupId: null, connectionId: null, routingMode: null, restExcludedDatasourceIds: [] },
+      current: {
+        groupId: null,
+        connectionId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
+      },
       provenance: "unset",
+      // #3078 — REST scope provenance defaults to "unset" (follows the SQL
+      // seed/restore). Tests that exercise the decoupled lifecycle override it.
+      restProvenance: "unset",
       preference: {
         workspaceId: null,
         groupId: null,
         connectionId: null,
         routingMode: null,
         restExcludedDatasourceIds: [],
+        restFocusDatasourceId: null,
       },
       activeWorkspaceId: null,
       preferenceHydrated: true,
@@ -1849,6 +1976,198 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       restFocusDatasourceId: "stripe",
     });
   });
+
+  // ── #3078 — REST scope has its OWN provenance, decoupled from SQL ──────
+  //
+  // Opening an all-null-SQL conversation that carried a non-empty exclude-set
+  // restores the exclude-set (marked `restProvenance: "explicit"`) but defers
+  // the SQL scope to a seed. The seed/restore effect re-runs with SQL
+  // provenance "unset" — and MUST NOT clobber the explicit REST scope with the
+  // default-seed empty set (the data-loss bug) nor with the sticky preference.
+
+  test("preserves the current exclude-set on a SQL seed when restProvenance is explicit (#3078)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: ["stripe"],
+          restFocusDatasourceId: null,
+        },
+        provenance: "unset",
+        restProvenance: "explicit",
+      }),
+    );
+    // SQL seeds the group primary; the explicit REST scope is preserved, NOT
+    // reset to [] — this is the #3078 data-loss fix.
+    expect(decision).toEqual({
+      kind: "seed",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+      restExcludedDatasourceIds: ["stripe"],
+      restFocusDatasourceId: null,
+    });
+  });
+
+  test("preserves the current REST-only focus on a SQL seed when restProvenance is explicit (#3078)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: "stripe",
+        },
+        provenance: "unset",
+        restProvenance: "explicit",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "seed",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: "stripe",
+    });
+  });
+
+  test("an explicit REST scope wins over the sticky preference's REST on a SQL restore (#3078)", () => {
+    // SQL restores from the workspace-matching preference, but the explicit REST
+    // scope (e.g. just restored from the opened conversation) is authoritative —
+    // the preference's REST must NOT overwrite it.
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: ["stripe"],
+          restFocusDatasourceId: null,
+        },
+        provenance: "unset",
+        restProvenance: "explicit",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+      restExcludedDatasourceIds: ["stripe"],
+      restFocusDatasourceId: null,
+    });
+  });
+
+  test("no-ops (no churn) when SQL already matches and the explicit REST scope is unchanged (#3078)", () => {
+    // After the seed/restore effect has applied the SQL scope, a re-run with the
+    // same explicit REST scope must settle to noop rather than loop forever
+    // (the passthrough must agree with the no-churn guard).
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: ["stripe"],
+          restFocusDatasourceId: null,
+        },
+        provenance: "explicit",
+        restProvenance: "explicit",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
+  });
+
+  test("no-ops on the RESTORE branch when SQL already matches and explicit REST is unchanged (#3078 loop guard)", () => {
+    // Distinct from the test above, which short-circuits at the
+    // `provenance === "explicit"` early-return. Here `provenance` is "default"
+    // (NOT "explicit"), so the resolver actually REACHES the restore-branch
+    // no-churn guard — the one most prone to a loop, because `restExplicit`
+    // derives `nextRestExcluded` from `current` and compares it back against
+    // `current`. If that derivation ever diverged from the returned decision's
+    // REST fields, the effect would re-write state every run and churn forever.
+    // The exclude-set differs from the preference's, so the passthrough is what
+    // makes the guard agree → noop.
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: ["stripe"],
+          restFocusDatasourceId: null,
+        },
+        provenance: "default",
+        restProvenance: "explicit",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: null,
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
+  });
+
+  test("an explicit REST-only focus wins over the preference's focus on a SQL restore (#3078)", () => {
+    // Symmetric to the exclude-set passthrough on restore: the explicit focus
+    // (e.g. restored from the opened conversation) survives the SQL restore-from-
+    // preference rather than being overwritten by the preference's focus.
+    const decision = resolveEnvSelection(
+      input({
+        current: {
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: "stripe",
+        },
+        provenance: "unset",
+        restProvenance: "explicit",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: "github",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: "stripe",
+    });
+  });
 });
 
 // ── #3065 — restore a conversation's scope on open ───────────────────
@@ -1959,7 +2278,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: null, routingMode: null },
         groups,
       ),
-    ).toEqual({ kind: "seed" });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
   });
 
   test("seeds when the row's group has been archived / is no longer visible", () => {
@@ -1970,7 +2289,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_archived", connectionId: "old-prod", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "seed" });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
   });
 
   test("repairs an archived member to the group primary when the group still resolves", () => {
@@ -2024,7 +2343,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: null, routingMode: null },
         [],
       ),
-    ).toEqual({ kind: "seed" });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
   });
 
   test("restores a legacy group-less row by locating the group that owns its connection", () => {
@@ -2049,7 +2368,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: null, connectionId: "deleted-conn", routingMode: "pin" },
         groups,
       ),
-    ).toEqual({ kind: "seed" });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
   });
 
   test("optimistically restores a legacy group-less row (null group) on cold-start", () => {
@@ -2077,7 +2396,7 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
         { connectionGroupId: "g_empty", connectionId: "anything", routingMode: "pin" },
         [emptyGroup],
       ),
-    ).toEqual({ kind: "seed" });
+    ).toEqual({ kind: "seed", restExcludedDatasourceIds: [], restFocusDatasourceId: null });
   });
 
   // #3067 — the row's REST-only focus is restored alongside the SQL scope, the
@@ -2116,6 +2435,70 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       connectionId: "eu-prod",
       routingMode: "pin",
       restExcludedDatasourceIds: [],
+      restFocusDatasourceId: null,
+    });
+  });
+
+  // ── #3078 — REST scope survives an all-null SQL seed (data-loss fix) ───
+  //
+  // The REST scope is independent of SQL routing, so it must be carried on the
+  // `seed` decision too — not just `restore`. Before #3078, a `seed` dropped the
+  // exclude-set, and `handleSelectConversation` then cleared it; because the
+  // transport always sends the array, the next turn sent `[]` and wiped the
+  // persisted exclusions. The row's REST scope must come back regardless of the
+  // SQL-scope decision.
+
+  test("carries a non-empty exclude-set on a seed when the SQL scope is all-null (#3078)", () => {
+    expect(
+      resolveConversationScope(
+        {
+          connectionGroupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: ["stripe"],
+        },
+        groups,
+      ),
+    ).toEqual({
+      kind: "seed",
+      restExcludedDatasourceIds: ["stripe"],
+      restFocusDatasourceId: null,
+    });
+  });
+
+  test("carries REST-only focus on a seed when the SQL scope is all-null (#3078)", () => {
+    expect(
+      resolveConversationScope(
+        {
+          connectionGroupId: null,
+          connectionId: null,
+          restFocusDatasourceId: "stripe",
+        },
+        groups,
+      ),
+    ).toEqual({
+      kind: "seed",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: "stripe",
+    });
+  });
+
+  test("carries the exclude-set on a seed when the row's group is archived (#3078)", () => {
+    // The SQL group is gone (→ seed), but the REST exclude-set is still valid and
+    // independent of the SQL group, so it must survive.
+    expect(
+      resolveConversationScope(
+        {
+          connectionGroupId: "g_archived",
+          connectionId: "old-prod",
+          routingMode: "pin",
+          restExcludedDatasourceIds: ["stripe", "github"],
+        },
+        groups,
+      ),
+    ).toEqual({
+      kind: "seed",
+      restExcludedDatasourceIds: ["stripe", "github"],
       restFocusDatasourceId: null,
     });
   });

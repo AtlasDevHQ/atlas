@@ -177,12 +177,19 @@ function ChatPage() {
 
   // Collapse the wrapper row's hairline border when the picker hides
   // itself on a legacy 1×1 workspace.
+  //
+  // #3078 — this surface's <ChatEnvPicker> is SQL-routing-only: it does NOT pass
+  // `restDatasources` / exclude / focus props (the REST-scope feature, #3066 /
+  // #3067 / #3078, is wired into the embeddable <AtlasChat> in
+  // `ui/components/atlas-chat.tsx`, not this workspace page). So the
+  // visibility flag must mirror that SQL-only picker — DON'T feed
+  // `restDatasources` here, or the row renders (predicate true) while the inner
+  // picker hides (no REST props) and leaves an empty bordered row. Surfacing
+  // REST scope on this page (or migrating it to <AtlasChat>) is tracked in #3081.
   const showEnvPicker = shouldRenderEnvPicker({
     groups: envGroupsQuery.groups,
     reason: envGroupsQuery.reason,
     error: envGroupsQuery.error,
-    // #3066 — also show when there are REST datasources to exclude.
-    restDatasources: envGroupsQuery.restDatasources,
   });
 
   const refreshConvosRef = useRef(convos.refresh);

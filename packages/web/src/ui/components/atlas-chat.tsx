@@ -270,6 +270,10 @@ export function AtlasChat() {
       activeWorkspaceId,
       preferenceHydrated: prefHasHydrated,
       sessionResolved,
+      // #3078 — a settled fetch means an empty `groups` is a real zero-group
+      // (REST-only) workspace, not a cold start; lets the resolver seed the
+      // sticky REST preference there instead of waiting forever.
+      groupsLoaded: envGroupsQuery.hasLoaded,
     });
 
     switch (decision.kind) {
@@ -313,6 +317,9 @@ export function AtlasChat() {
     }
   }, [
     envGroupsQuery.groups,
+    // #3078 — re-evaluate once the fetch settles, so the zero-group REST-only
+    // path can seed the sticky preference instead of staying in `wait`.
+    envGroupsQuery.hasLoaded,
     selectedGroupId,
     selectedConnectionId,
     // routingMode is part of `current` the resolver reads — keep it in deps so a

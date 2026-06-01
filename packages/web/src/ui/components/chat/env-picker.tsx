@@ -314,6 +314,15 @@ export interface ResolveEnvSelectionInput {
   readonly preferenceHydrated: boolean;
   /** The auth session has resolved, so {@link activeWorkspaceId} is final. */
   readonly sessionResolved: boolean;
+  /**
+   * #3078 — a `/me/connection-groups` fetch has settled at least once, so an
+   * empty `groups` is a genuine zero-group (REST-only) workspace rather than a
+   * not-yet-loaded cold start. Gates the REST-only seed/restore path: with no
+   * SQL groups there's nothing to seed for SQL, but the sticky REST preference
+   * should still seed a fresh chat (per ADR-0011). Until the fetch settles, the
+   * resolver waits rather than seeding against a transiently-empty list.
+   */
+  readonly groupsLoaded: boolean;
 }
 
 /**
@@ -326,8 +335,13 @@ export type EnvSelectionDecision =
   | { readonly kind: "noop" }
   | {
       readonly kind: "restore";
-      readonly groupId: string;
-      readonly connectionId: string;
+      /**
+       * The restored SQL scope. Non-null for a normal (with-groups) restore.
+       * #3078 — `null` for a zero-group (REST-only) workspace restore, where
+       * there is no SQL group/member and only the REST scope is seeded.
+       */
+      readonly groupId: string | null;
+      readonly connectionId: string | null;
       readonly routingMode: ConversationRoutingMode | null;
       /** #3066 — the sticky preference's exclude-set to seed onto this fresh chat. */
       readonly restExcludedDatasourceIds: string[];
@@ -362,6 +376,13 @@ export type EnvSelectionDecision =
  *      previously default-seeded selection is restored over as soon as a
  *      matching preference arrives; an unmatched preference falls back to
  *      the group-primary default seed.
+ *
+ * #3078 — **zero-group (REST-only) workspace.** When `groups` is *loaded-empty*
+ * (`groupsLoaded` true) there is no SQL to seed, but the sticky REST preference
+ * still seeds a fresh chat: the resolver restores the workspace-matching
+ * preference's exclude-set / focus with a null SQL scope. Until the fetch
+ * settles it waits (so it never seeds against a transiently-empty list), and an
+ * explicit SQL/REST scope is left untouched.
  */
 export function resolveEnvSelection(
   input: ResolveEnvSelectionInput,
@@ -375,6 +396,7 @@ export function resolveEnvSelection(
     activeWorkspaceId,
     preferenceHydrated,
     sessionResolved,
+    groupsLoaded,
   } = input;
 
   // #3078 — when the REST scope is authoritative (conversation-open restore, or
@@ -384,10 +406,46 @@ export function resolveEnvSelection(
   // fixes the all-null-SQL exclude-set data loss.
   const restExplicit = restProvenance === "explicit";
 
-  // 1. Gate — wait until every input we need to choose correctly is ready.
-  if (groups.length === 0) return { kind: "wait" };
+  // 1. Gate — wait until the inputs we need to choose correctly are ready.
+  // (Group readiness is handled per-branch below: a *loaded-empty* group list is
+  // a real zero-group workspace, not a cold start, so it must not block forever.)
   if (!preferenceHydrated) return { kind: "wait" };
   if (!sessionResolved) return { kind: "wait" };
+
+  // #3078 — zero-group (REST-only) workspace. There's no SQL to seed/restore, but
+  // the sticky REST preference should still seed a fresh chat (ADR-0011). Wait
+  // until a fetch has settled so we don't seed against a transiently-empty list;
+  // then run a REST-only restore (SQL stays null).
+  if (groups.length === 0) {
+    if (!groupsLoaded) return { kind: "wait" };
+    // An explicit selection (user pick / conversation restore) is authoritative,
+    // and an explicit REST scope must not be clobbered — leave both alone.
+    if (provenance === "explicit" || restExplicit) return { kind: "noop" };
+    // Restore the workspace-matching preference's REST scope; another workspace's
+    // preference is ignored (ids can collide). SQL scope stays null (no groups).
+    const prefMatchesWorkspace = preference.workspaceId === activeWorkspaceId;
+    const nextRestExcluded = prefMatchesWorkspace
+      ? [...(preference.restExcludedDatasourceIds ?? [])]
+      : [];
+    const nextRestFocus = prefMatchesWorkspace
+      ? preference.restFocusDatasourceId ?? null
+      : null;
+    // Already on the target REST scope — don't churn (and don't loop).
+    if (
+      sameExcludeSet(current.restExcludedDatasourceIds ?? [], nextRestExcluded) &&
+      (current.restFocusDatasourceId ?? null) === nextRestFocus
+    ) {
+      return { kind: "noop" };
+    }
+    return {
+      kind: "restore",
+      groupId: null,
+      connectionId: null,
+      routingMode: null,
+      restExcludedDatasourceIds: nextRestExcluded,
+      restFocusDatasourceId: nextRestFocus,
+    };
+  }
 
   // 2. An explicit pick (or conversation-restored value) is authoritative.
   // (When SQL is explicit the REST scope is already settled too, so there is no
@@ -710,14 +768,15 @@ export function ChatEnvPicker({
   const memberLabel = activeMember?.connectionId ?? "—";
 
   // #3066 — REST scope summary (e.g. `2/3` in-scope of reachable). "Reachable" =
-  // the datasources actually reachable in the active env (workspace-global +
-  // scoped to the active group); excluded ones reduce the in-scope count. For a
-  // zero-group workspace `activeGroup` is null, so only workspace-global
-  // datasources are reachable — exactly the REST-only shape.
+  // the datasources actually reachable in scope; excluded ones reduce the
+  // in-scope count. With an active group it's workspace-global + datasources
+  // scoped to that group. #3078 — on a zero-group (REST-only) workspace there's
+  // no SQL env to scope against, so EVERY REST datasource is reachable (else a
+  // group-scoped install would show "0/0 REST" with no toggle).
   const excludedRestSet = new Set(restExcludedDatasourceIds);
-  const reachableRest = restDatasources.filter(
-    (d) => d.groupId === null || d.groupId === (activeGroup?.id ?? null),
-  );
+  const reachableRest = hasSqlScope
+    ? restDatasources.filter((d) => d.groupId === null || d.groupId === activeGroup?.id)
+    : restDatasources;
   const restInScopeCount = reachableRest.filter((d) => !excludedRestSet.has(d.id)).length;
 
   // #3067 — REST-only focus, looked up for the chip / dropdown summary. Falls
@@ -939,15 +998,12 @@ export function ChatEnvPicker({
         <ChatEnvRestScopeSection
           restDatasources={restDatasources}
           activeGroupId={activeGroup?.id ?? null}
+          hasSqlScope={hasSqlScope}
           excludedIds={restExcludedDatasourceIds}
           onRestExcludedChange={onRestExcludedChange}
           focusedId={restFocusDatasourceId}
           focusedDatasource={focusedDatasource}
           onRestFocusChange={onRestFocusChange}
-          // #3078 — when there's an SQL routing section above, lead with a
-          // separator; on a zero-group workspace the REST section is first, so
-          // suppress the leading separator (no dangling rule at the top).
-          precededBySection={hasSqlScope}
         />
       </DropdownMenuContent>
     </DropdownMenu>
@@ -968,15 +1024,25 @@ export function ChatEnvPicker({
 function ChatEnvRestScopeSection({
   restDatasources,
   activeGroupId,
+  hasSqlScope = true,
   excludedIds,
   onRestExcludedChange,
   focusedId,
   focusedDatasource,
   onRestFocusChange,
-  precededBySection = true,
 }: {
   restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
   activeGroupId: string | null;
+  /**
+   * #3078 — whether the workspace has an active SQL scope (a connection group).
+   * `false` for a zero-group REST-only workspace. Drives two things: (1) the
+   * leading separator is suppressed when false (the REST section is the first
+   * dropdown content, so no dangling rule); (2) when false there is no SQL env
+   * to scope against, so EVERY REST datasource is reachable (toggleable /
+   * focusable) rather than partitioned by `activeGroupId`. Defaults to true for
+   * back-compat with callers that always render the SQL section.
+   */
+  hasSqlScope?: boolean;
   excludedIds: ReadonlyArray<string>;
   onRestExcludedChange?: (next: string[]) => void;
   /** #3067 — the focused datasource id, or null = not focused. */
@@ -985,14 +1051,6 @@ function ChatEnvRestScopeSection({
   focusedDatasource?: ChatRestDatasourceScope;
   /** #3067 — focus a datasource (`install_id`) or clear focus (`null`). */
   onRestFocusChange?: (next: string | null) => void;
-  /**
-   * #3078 — whether an SQL routing section renders above this one. When true the
-   * REST section leads with a separator (divides it from the SQL section); when
-   * false (a zero-group REST-only workspace) the REST section is the first
-   * dropdown content, so the leading separator is suppressed. Defaults to true
-   * for back-compat with callers that always render the SQL section.
-   */
-  precededBySection?: boolean;
 }): React.ReactElement | null {
   if (restDatasources.length === 0) return null;
 
@@ -1002,7 +1060,7 @@ function ChatEnvRestScopeSection({
   if (focusedId !== null) {
     return (
       <>
-        {precededBySection && <DropdownMenuSeparator />}
+        {hasSqlScope && <DropdownMenuSeparator />}
         <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
           REST-only focus
         </DropdownMenuLabel>
@@ -1039,15 +1097,21 @@ function ChatEnvRestScopeSection({
   }
 
   const workspaceGlobal = restDatasources.filter((d) => d.groupId === null);
+  // #3078 — group-scoped datasources reachable in the current scope. With an
+  // active SQL group, that's the ones scoped to it; on a zero-group REST-only
+  // workspace there's no env to scope against, so ALL group-scoped installs are
+  // reachable (otherwise they'd be unreachable with no SQL group to match).
   const inActiveGroup = restDatasources.filter(
-    (d) => d.groupId !== null && d.groupId === activeGroupId,
+    (d) => d.groupId !== null && (!hasSqlScope || d.groupId === activeGroupId),
   );
-  const otherScoped = restDatasources.filter(
-    (d) => d.groupId !== null && d.groupId !== activeGroupId,
-  );
-  // #3067 — the datasources reachable in the active env are the ones a user can
-  // focus (workspace-global + scoped to the active group), mirroring the exclude
-  // checkboxes. A datasource scoped to another env stays informational.
+  // Out of scope only exists when there IS an SQL env to be "other" than; a
+  // zero-group workspace has no other environments.
+  const otherScoped = hasSqlScope
+    ? restDatasources.filter((d) => d.groupId !== null && d.groupId !== activeGroupId)
+    : [];
+  // #3067 — the datasources reachable in the current scope are the ones a user
+  // can focus (workspace-global + the reachable scoped ones), mirroring the
+  // exclude checkboxes. A datasource scoped to another env stays informational.
   const focusable = [...workspaceGlobal, ...inActiveGroup];
 
   const excludedSet = new Set(excludedIds);
@@ -1088,7 +1152,7 @@ function ChatEnvRestScopeSection({
 
   return (
     <>
-      {precededBySection && <DropdownMenuSeparator />}
+      {hasSqlScope && <DropdownMenuSeparator />}
       <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-500">
         REST datasources
       </DropdownMenuLabel>
@@ -1105,7 +1169,9 @@ function ChatEnvRestScopeSection({
       {inActiveGroup.length > 0 && (
         <div data-testid="chat-env-picker-rest-in-scope">
           <DropdownMenuLabel className="px-2 pb-0.5 pt-1 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
-            In this environment
+            {/* #3078 — "this environment" only reads right when there IS an SQL
+                env; a zero-group workspace just has in-scope datasources. */}
+            {hasSqlScope ? "In this environment" : "In scope"}
           </DropdownMenuLabel>
           {inActiveGroup.map((d) => renderRow(d, { global: false }))}
         </div>
@@ -1251,6 +1317,14 @@ export interface UseChatEnvGroupsResult {
   readonly restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
   readonly reason: MeConnectionGroupsEmptyReason | null;
   readonly loading: boolean;
+  /**
+   * #3078 — `true` once a fetch has settled (success or error) at least once,
+   * so a consumer can tell "groups loaded and are genuinely empty" (a zero-group
+   * REST-only workspace) from "groups not fetched yet" (cold start). The seed/
+   * restore effect needs this to seed the sticky REST preference on a fresh chat
+   * in a zero-group workspace without racing the in-flight fetch.
+   */
+  readonly hasLoaded: boolean;
   readonly error: string | null;
 }
 
@@ -1270,6 +1344,8 @@ export function useChatEnvGroups(
   >([]);
   const [reason, setReason] = useState<MeConnectionGroupsEmptyReason | null>(null);
   const [loading, setLoading] = useState(false);
+  // #3078 — flips true once the first fetch settles (see UseChatEnvGroupsResult).
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -1322,12 +1398,17 @@ export function useChatEnvGroups(
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          // #3078 — a fetch has now settled; the empty state (if any) is real,
+          // not a not-yet-loaded one.
+          setHasLoaded(true);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials]);
 
-  return { groups, restDatasources, reason, loading, error };
+  return { groups, restDatasources, reason, loading, hasLoaded, error };
 }

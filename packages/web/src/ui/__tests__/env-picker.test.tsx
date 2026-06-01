@@ -1074,6 +1074,42 @@ describe("ChatEnvPicker — zero-group REST-only workspace (#3078)", () => {
     ).toBeNull();
   });
 
+  test("makes a group-scoped REST datasource reachable too when there's no SQL env (#3078 Codex)", () => {
+    // A REST datasource with a non-null groupId in a zero-group workspace has no
+    // SQL env to scope against, so it must still be toggleable — not classified
+    // as "scoped to another environment" / counted as 0/0.
+    const onRestExcludedChange = mock((_next: string[]) => {});
+    const mixed = [
+      { id: "stripe", displayName: "Stripe", groupId: null },
+      { id: "scoped-api", displayName: "Scoped API", groupId: "g_gone" },
+    ];
+    const { container } = render(
+      <ChatEnvPicker
+        groups={[]}
+        activeGroupId={null}
+        activeConnectionId={null}
+        restDatasources={mixed}
+        restExcludedDatasourceIds={[]}
+        onRestExcludedChange={onRestExcludedChange}
+        onSelect={noop}
+      />,
+    );
+    // Both datasources counted as reachable on the chip.
+    const label =
+      container.querySelector('[data-testid="chat-env-picker-label"]')?.textContent ?? "";
+    expect(label).toContain("2/2 REST");
+    // The group-scoped one is toggleable, NOT shoved into "other environments".
+    const scopedToggle = container.querySelector(
+      '[data-testid="chat-env-picker-rest-toggle-scoped-api"]',
+    ) as HTMLElement;
+    expect(scopedToggle).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="chat-env-picker-rest-out-of-scope"]'),
+    ).toBeNull();
+    fireEvent.click(scopedToggle);
+    expect(onRestExcludedChange.mock.calls[0]![0]).toEqual(["scoped-api"]);
+  });
+
   test("supports REST-only focus on a zero-group workspace (pairs with #3067)", () => {
     const { container } = render(
       <ChatEnvPicker
@@ -1657,6 +1693,9 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       activeWorkspaceId: null,
       preferenceHydrated: true,
       sessionResolved: true,
+      // #3078 — default to "groups fetch settled" so the with-groups tests run
+      // the normal path; the zero-group tests override groups + this flag.
+      groupsLoaded: true,
       ...overrides,
     };
   }
@@ -1696,8 +1735,13 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     expect(decision.kind).toBe("wait");
   });
 
-  test("waits until connection groups have loaded", () => {
-    expect(resolveEnvSelection(input({ groups: [] })).kind).toBe("wait");
+  test("waits until connection groups have loaded (groups empty AND fetch not settled)", () => {
+    // #3078 — emptiness alone is no longer "wait": a *loaded-empty* group list is
+    // a real zero-group workspace (REST-only path). It only waits while the
+    // fetch hasn't settled yet.
+    expect(
+      resolveEnvSelection(input({ groups: [], groupsLoaded: false })).kind,
+    ).toBe("wait");
   });
 
   test("restores the hydrated workspace preference instead of the default seed", () => {
@@ -2168,6 +2212,162 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       restFocusDatasourceId: "stripe",
     });
   });
+
+  // ── #3078 — zero-group (REST-only) workspace: REST-only seed/restore ───
+  //
+  // With no SQL groups there's nothing to seed for SQL, but the sticky REST
+  // preference must still seed a fresh chat (ADR-0011). Codex flagged that the
+  // old `groups.length === 0 → wait` gate blocked this, so a zero-group user's
+  // exclusions never carried to a new chat.
+
+  test("waits on an empty group list until the fetch has settled (no premature REST seed)", () => {
+    expect(
+      resolveEnvSelection(
+        input({
+          groups: [],
+          groupsLoaded: false,
+          preference: {
+            workspaceId: null,
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["stripe"],
+            restFocusDatasourceId: null,
+          },
+        }),
+      ).kind,
+    ).toBe("wait");
+  });
+
+  test("restores the sticky REST preference on a fresh chat in a zero-group workspace (#3078)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        groups: [],
+        groupsLoaded: true,
+        preference: {
+          workspaceId: "org-1",
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: ["stripe"],
+          restFocusDatasourceId: null,
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    // SQL stays null (no groups); the REST exclude-set is seeded from the pref.
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: null,
+      connectionId: null,
+      routingMode: null,
+      restExcludedDatasourceIds: ["stripe"],
+      restFocusDatasourceId: null,
+    });
+  });
+
+  test("restores the sticky REST-only focus on a fresh chat in a zero-group workspace (#3078)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        groups: [],
+        groupsLoaded: true,
+        preference: {
+          workspaceId: "org-1",
+          groupId: null,
+          connectionId: null,
+          routingMode: null,
+          restExcludedDatasourceIds: [],
+          restFocusDatasourceId: "stripe",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: null,
+      connectionId: null,
+      routingMode: null,
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: "stripe",
+    });
+  });
+
+  test("ignores a different workspace's REST preference in a zero-group workspace (#3078)", () => {
+    expect(
+      resolveEnvSelection(
+        input({
+          groups: [],
+          groupsLoaded: true,
+          preference: {
+            workspaceId: "org-B",
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["stripe"],
+            restFocusDatasourceId: null,
+          },
+          activeWorkspaceId: "org-A",
+        }),
+      ),
+    ).toEqual({ kind: "noop" });
+  });
+
+  test("no-ops a zero-group workspace when the current REST scope already matches the preference (#3078)", () => {
+    expect(
+      resolveEnvSelection(
+        input({
+          groups: [],
+          groupsLoaded: true,
+          current: {
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["stripe"],
+            restFocusDatasourceId: null,
+          },
+          preference: {
+            workspaceId: "org-1",
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["stripe"],
+            restFocusDatasourceId: null,
+          },
+          activeWorkspaceId: "org-1",
+        }),
+      ),
+    ).toEqual({ kind: "noop" });
+  });
+
+  test("does not clobber an explicit REST scope in a zero-group workspace (#3078)", () => {
+    // A conversation-open restore / user toggle marked REST explicit; the
+    // sticky preference must not overwrite it even on a zero-group workspace.
+    expect(
+      resolveEnvSelection(
+        input({
+          groups: [],
+          groupsLoaded: true,
+          current: {
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["github"],
+            restFocusDatasourceId: null,
+          },
+          restProvenance: "explicit",
+          preference: {
+            workspaceId: "org-1",
+            groupId: null,
+            connectionId: null,
+            routingMode: null,
+            restExcludedDatasourceIds: ["stripe"],
+            restFocusDatasourceId: null,
+          },
+          activeWorkspaceId: "org-1",
+        }),
+      ),
+    ).toEqual({ kind: "noop" });
+  });
 });
 
 // ── #3065 — restore a conversation's scope on open ───────────────────
@@ -2500,6 +2700,26 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
       kind: "seed",
       restExcludedDatasourceIds: ["stripe", "github"],
       restFocusDatasourceId: null,
+    });
+  });
+
+  test("carries REST-only focus on a seed when the row's group is archived (#3078)", () => {
+    // Symmetric to the exclude-set case — a regression that dropped focus
+    // specifically on the archived-group seed path would otherwise slip through.
+    expect(
+      resolveConversationScope(
+        {
+          connectionGroupId: "g_archived",
+          connectionId: "old-prod",
+          routingMode: "pin",
+          restFocusDatasourceId: "stripe",
+        },
+        groups,
+      ),
+    ).toEqual({
+      kind: "seed",
+      restExcludedDatasourceIds: [],
+      restFocusDatasourceId: "stripe",
     });
   });
 });

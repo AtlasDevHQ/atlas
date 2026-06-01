@@ -219,6 +219,7 @@ export interface ResolveEnvSelectionInput {
   readonly current: {
     readonly groupId: string | null;
     readonly connectionId: string | null;
+    readonly routingMode: ConversationRoutingMode | null;
   };
   /** How {@link current} was set. */
   readonly provenance: EnvSelectionProvenance;
@@ -298,10 +299,14 @@ export function resolveEnvSelection(
     (m) => m.connectionId === preference.connectionId,
   );
   if (prefGroup && prefMember) {
-    // Already on the preferred selection — don't churn React state.
+    // Already on the preferred selection — don't churn React state. The
+    // routing mode is part of the selection, so a mode-only difference (e.g.
+    // a default seed landed on the preferred member but with no mode) must
+    // still restore.
     if (
       current.groupId === prefGroup.id &&
-      current.connectionId === prefMember.connectionId
+      current.connectionId === prefMember.connectionId &&
+      current.routingMode === preference.routingMode
     ) {
       return { kind: "noop" };
     }

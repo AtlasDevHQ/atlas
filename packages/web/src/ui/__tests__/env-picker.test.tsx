@@ -1214,7 +1214,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
   ): ResolveEnvSelectionInput {
     return {
       groups: [prodGroup],
-      current: { groupId: null, connectionId: null },
+      current: { groupId: null, connectionId: null, routingMode: null },
       provenance: "unset",
       preference: {
         workspaceId: null,
@@ -1296,7 +1296,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // `selectedConnectionId !== null` guard no longer locks the default in.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod" },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
         provenance: "default",
         preference: {
           workspaceId: "org-1",
@@ -1315,12 +1315,37 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     });
   });
 
+  test("restores when group + connection match but the routing mode differs", () => {
+    // A default seed lands on the preferred member (no mode), but the stored
+    // preference asked for "auto" — the mode-only difference must still
+    // restore rather than no-op (routingMode is part of the selection).
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: null },
+        provenance: "default",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "auto",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "auto",
+    });
+  });
+
   test("does not re-seed a default-seeded selection when there is no matching preference", () => {
     // The load-bearing role of the `default` provenance: once a default has
     // been seeded and no preference matches, leave it — don't seed again.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod" },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
         provenance: "default",
       }),
     );
@@ -1332,7 +1357,7 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     // authoritative — the resolver must never auto-replace it.
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "us-prod" },
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
         provenance: "explicit",
         preference: {
           workspaceId: "org-1",
@@ -1349,7 +1374,8 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
   test("no-ops when the current selection already equals the preference (no churn)", () => {
     const decision = resolveEnvSelection(
       input({
-        current: { groupId: "g_prod", connectionId: "eu-prod" },
+        // Full match including routing mode — nothing to restore.
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
         provenance: "default",
         preference: {
           workspaceId: "org-1",

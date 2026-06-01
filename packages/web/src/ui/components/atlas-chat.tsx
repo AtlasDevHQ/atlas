@@ -221,7 +221,11 @@ export function AtlasChat() {
   useEffect(() => {
     const decision = resolveEnvSelection({
       groups: envGroupsQuery.groups,
-      current: { groupId: selectedGroupId, connectionId: selectedConnectionId },
+      current: {
+        groupId: selectedGroupId,
+        connectionId: selectedConnectionId,
+        routingMode: selectedRoutingMode,
+      },
       provenance: selectionProvenanceRef.current,
       preference: {
         workspaceId: prefWorkspaceId,
@@ -238,7 +242,9 @@ export function AtlasChat() {
       case "restore":
         setSelectedGroupId(decision.groupId);
         setSelectedConnectionId(decision.connectionId);
-        if (decision.routingMode) setSelectedRoutingMode(decision.routingMode);
+        // Apply the stored mode faithfully, including an explicit null
+        // (pre-#2518 back-compat → "pin"); a truthy guard here would drop it.
+        setSelectedRoutingMode(decision.routingMode);
         // A restored sticky preference is the user's deliberate prior choice —
         // mark it explicit so a later effect run can't seed over it.
         selectionProvenanceRef.current = "explicit";

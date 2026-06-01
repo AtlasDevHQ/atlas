@@ -37,6 +37,7 @@ import { useEffect, useState } from "react";
 import { Layers, AlertCircle, Sparkles, Pin, Globe2, Check, Network } from "lucide-react";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -114,12 +115,26 @@ export interface ChatEnvPickerProps {
    */
   readonly activeRoutingMode?: ConversationRoutingMode | null;
   /**
-   * #3044 — the workspace's REST datasources + their env scope. Rendered as a
-   * read-only footer so the user can see what a pinned conversation still
-   * reaches (workspace-global datasources answer regardless of the pin).
+   * #3044 — the workspace's REST datasources + their env scope. Rendered in the
+   * dropdown so the user can see (and, #3066, toggle) what the conversation
+   * reaches. Workspace-global datasources answer regardless of the SQL pin.
    * Optional / defaults to empty for back-compat with callers that don't pass it.
    */
   readonly restDatasources?: ReadonlyArray<ChatRestDatasourceScope>;
+  /**
+   * #3066 — the conversation's REST datasource exclude-set (excluded
+   * `install_id`s). A datasource in this set is unchecked in the picker and
+   * the agent will not query it. Defaults to empty (all in scope).
+   */
+  readonly restExcludedDatasourceIds?: ReadonlyArray<string>;
+  /**
+   * #3066 — called when the user checks / unchecks a REST datasource. Receives
+   * the FULL next exclude-set (not a delta) so the parent persists it verbatim
+   * — sending `[]` when everything is re-included is meaningful (it clears the
+   * row), so the parent must forward it as-is. Optional for callers that don't
+   * surface REST scope.
+   */
+  readonly onRestExcludedChange?: (next: string[]) => void;
   /**
    * Called when the user picks a new group / member / mode triple from
    * the dropdown. The parent decides whether this is a per-turn
@@ -127,6 +142,25 @@ export interface ChatEnvPickerProps {
    * server stamps the new value onto the conversation row).
    */
   readonly onSelect: (next: ChatEnvSelection) => void;
+}
+
+/**
+ * #3066 — order-independent equality for two string sets (excluded
+ * `install_id`s). Mirrors the API route's `sameStringSet` so the picker's
+ * "did the exclude-set actually change" checks agree with the server's.
+ */
+export function sameExcludeSet(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string>,
+): boolean {
+  // Compare as SETS, not lists — dedupe each side first. Comparing raw lengths
+  // would false-positive `["a","a"]` (1 distinct) against `["a","b"]` (2
+  // distinct). Mirrors the API route's `sameStringSet` exactly.
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const v of setA) if (!setB.has(v)) return false;
+  return true;
 }
 
 /**
@@ -139,12 +173,25 @@ export interface ShouldRenderEnvPickerArgs {
   readonly groups: ReadonlyArray<{ readonly members: ReadonlyArray<unknown> }>;
   readonly reason: MeConnectionGroupsEmptyReason | null;
   readonly error?: string | null;
+  /**
+   * #3066 — REST datasources the conversation can exclude. Their presence makes
+   * the picker worth showing even when SQL routing is trivial (one group / one
+   * member), so the exclude toggles stay reachable — otherwise the exclude-set
+   * feature is dead for the common one-Postgres + one-REST-datasource
+   * workspace. (A zero-group, REST-only workspace still hides the picker; that
+   * shape needs the SQL-less render path + an independent exclude-set lifecycle,
+   * tracked as a follow-up.)
+   */
+  readonly restDatasources?: ReadonlyArray<unknown>;
 }
 
 export function shouldRenderEnvPicker(args: ShouldRenderEnvPickerArgs): boolean {
   if (args.groups.length === 0) return args.reason !== null || args.error != null;
   if (args.groups.length > 1) return true;
-  return (args.groups[0]?.members.length ?? 0) > 1;
+  if ((args.groups[0]?.members.length ?? 0) > 1) return true;
+  // #3066 — single group + single member, but there are REST datasources to
+  // toggle: show the picker so the exclude-set is reachable.
+  return (args.restDatasources?.length ?? 0) > 0;
 }
 
 const EMPTY_REASON_COPY: Record<MeConnectionGroupsEmptyReason, string> = {
@@ -220,6 +267,8 @@ export interface ResolveEnvSelectionInput {
     readonly groupId: string | null;
     readonly connectionId: string | null;
     readonly routingMode: ConversationRoutingMode | null;
+    /** #3066 — current REST exclude-set, so a pref-only exclude change still restores. */
+    readonly restExcludedDatasourceIds: ReadonlyArray<string>;
   };
   /** How {@link current} was set. */
   readonly provenance: EnvSelectionProvenance;
@@ -246,8 +295,16 @@ export type EnvSelectionDecision =
       readonly groupId: string;
       readonly connectionId: string;
       readonly routingMode: ConversationRoutingMode | null;
+      /** #3066 — the sticky preference's exclude-set to seed onto this fresh chat. */
+      readonly restExcludedDatasourceIds: string[];
     }
-  | { readonly kind: "seed"; readonly groupId: string; readonly connectionId: string };
+  | {
+      readonly kind: "seed";
+      readonly groupId: string;
+      readonly connectionId: string;
+      /** #3066 — a default seed excludes nothing (every in-scope datasource queryable). */
+      readonly restExcludedDatasourceIds: string[];
+    };
 
 /**
  * Pure decision behind atlas-chat's fresh-chat seed/restore effect
@@ -300,13 +357,17 @@ export function resolveEnvSelection(
   );
   if (prefGroup && prefMember) {
     // Already on the preferred selection — don't churn React state. The
-    // routing mode is part of the selection, so a mode-only difference (e.g.
-    // a default seed landed on the preferred member but with no mode) must
-    // still restore.
+    // routing mode AND the exclude-set (#3066) are part of the selection, so a
+    // mode-only or exclude-only difference (e.g. a default seed landed on the
+    // preferred member but with no mode / empty exclude-set) must still restore.
     if (
       current.groupId === prefGroup.id &&
       current.connectionId === prefMember.connectionId &&
-      current.routingMode === preference.routingMode
+      current.routingMode === preference.routingMode &&
+      sameExcludeSet(
+        current.restExcludedDatasourceIds ?? [],
+        preference.restExcludedDatasourceIds ?? [],
+      )
     ) {
       return { kind: "noop" };
     }
@@ -315,6 +376,7 @@ export function resolveEnvSelection(
       groupId: prefGroup.id,
       connectionId: prefMember.connectionId,
       routingMode: preference.routingMode,
+      restExcludedDatasourceIds: [...(preference.restExcludedDatasourceIds ?? [])],
     };
   }
 
@@ -326,7 +388,14 @@ export function resolveEnvSelection(
   }
   const seed = pickDefaultEnvSeed(groups, current.connectionId);
   if (!seed) return { kind: "noop" };
-  return { kind: "seed", groupId: seed.groupId, connectionId: seed.connectionId };
+  // A default seed carries no exclusions — every in-scope REST datasource stays
+  // queryable until the user opts one out.
+  return {
+    kind: "seed",
+    groupId: seed.groupId,
+    connectionId: seed.connectionId,
+    restExcludedDatasourceIds: [],
+  };
 }
 
 /**
@@ -340,6 +409,8 @@ export interface ConversationScopeSource {
   readonly connectionGroupId: string | null;
   readonly connectionId: string | null;
   readonly routingMode?: ConversationRoutingMode | null;
+  /** #3066 — the row's REST exclude-set (excluded `install_id`s). Absent ⇒ none. */
+  readonly restExcludedDatasourceIds?: ReadonlyArray<string> | null;
 }
 
 /** The picker selection restored from a conversation row. */
@@ -347,6 +418,12 @@ export interface RestoredConversationScope {
   readonly groupId: string | null;
   readonly connectionId: string | null;
   readonly routingMode: ConversationRoutingMode | null;
+  /**
+   * #3066 — the conversation's REST exclude-set. The SQL scope (group/member)
+   * can fall back to a `seed` decision while the exclude-set is still carried
+   * faithfully on a `restore`; an absent / null column coalesces to `[]`.
+   */
+  readonly restExcludedDatasourceIds: string[];
 }
 
 /**
@@ -392,6 +469,12 @@ export function resolveConversationScope(
   const groupId = source.connectionGroupId;
   const connectionId = source.connectionId;
   const routingMode = source.routingMode ?? null;
+  // #3066 — the row's REST exclude-set, restored alongside the SQL scope.
+  // Coalesce an absent / null column to `[]` (no exclusions). Cloned so the
+  // caller owns a mutable array.
+  const restExcludedDatasourceIds = source.restExcludedDatasourceIds
+    ? [...source.restExcludedDatasourceIds]
+    : [];
 
   // A row that persisted no scope at all is never authoritative — defer to the
   // seed/restore effect (decided before the load gate so it holds either way).
@@ -401,7 +484,7 @@ export function resolveConversationScope(
   // row optimistically. Losing the restore here would be a worse, more common
   // regression than the rare archived-env + cold-start intersection.
   if (groups.length === 0) {
-    return { kind: "restore", groupId, connectionId, routingMode };
+    return { kind: "restore", groupId, connectionId, routingMode, restExcludedDatasourceIds };
   }
 
   // Groups loaded — validate the row against the visible environments.
@@ -416,13 +499,13 @@ export function resolveConversationScope(
     // preserving the still-valid group rather than discarding it.
     const member = group.members.find((m) => m.connectionId === connectionId);
     if (member) {
-      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode };
+      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode, restExcludedDatasourceIds };
     }
     const repaired =
       group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
       group.members[0];
     if (!repaired) return { kind: "seed" }; // group exists but has no live members
-    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode };
+    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode, restExcludedDatasourceIds };
   }
 
   // Legacy group-less row (connectionGroupId null, connectionId set, e.g. a
@@ -436,7 +519,7 @@ export function resolveConversationScope(
     g.members.some((m) => m.connectionId === connectionId),
   );
   if (!owningGroup) return { kind: "seed" };
-  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode };
+  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode, restExcludedDatasourceIds };
 }
 
 /**
@@ -460,6 +543,8 @@ export function ChatEnvPicker({
   activeConnectionId,
   activeRoutingMode = null,
   restDatasources = [],
+  restExcludedDatasourceIds = [],
+  onRestExcludedChange,
   onSelect,
 }: ChatEnvPickerProps): React.ReactElement | null {
   // Empty list + a reason ⇒ render a diagnostic chip instead of
@@ -495,7 +580,7 @@ export function ChatEnvPicker({
     );
   }
 
-  if (!shouldRenderEnvPicker({ groups, reason: emptyReason, error: transportError })) {
+  if (!shouldRenderEnvPicker({ groups, reason: emptyReason, error: transportError, restDatasources })) {
     return null;
   }
 
@@ -530,6 +615,20 @@ export function ChatEnvPicker({
     // <connId>).
     chipLabel = groupLabel === memberLabel ? memberLabel : `${groupLabel} / ${memberLabel}`;
     ChipIcon = Pin;
+  }
+
+  // #3066 — REST scope summary on the chip (e.g. `Pin · apac-prod · 2/3 REST`).
+  // "Relevant" = the datasources actually reachable in the active env
+  // (workspace-global + scoped to the active group); excluded ones reduce the
+  // in-scope count. Appended only when the workspace has at least one reachable
+  // REST datasource, so SQL-only workspaces keep their byte-identical chip.
+  const excludedRestSet = new Set(restExcludedDatasourceIds);
+  const reachableRest = restDatasources.filter(
+    (d) => d.groupId === null || d.groupId === (activeGroup?.id ?? null),
+  );
+  const restInScopeCount = reachableRest.filter((d) => !excludedRestSet.has(d.id)).length;
+  if (reachableRest.length > 0) {
+    chipLabel = `${chipLabel} · ${restInScopeCount}/${reachableRest.length} REST`;
   }
 
   // When every group has at most one member (the 0062 backfill shape,
@@ -688,6 +787,8 @@ export function ChatEnvPicker({
         <ChatEnvRestScopeSection
           restDatasources={restDatasources}
           activeGroupId={activeGroup?.id ?? null}
+          excludedIds={restExcludedDatasourceIds}
+          onRestExcludedChange={onRestExcludedChange}
         />
       </DropdownMenuContent>
     </DropdownMenu>
@@ -695,18 +796,26 @@ export function ChatEnvPicker({
 }
 
 /**
- * #3044 — read-only footer summarizing the workspace's REST datasources and
- * their environment scope, so the routing chip never overstates what the
- * conversation is constrained to. Workspace-global datasources answer
- * regardless of the pin (the bug this surfaces); datasources scoped to the
- * active group are in scope; ones scoped elsewhere are flagged out of scope.
+ * #3044 / #3066 — REST datasource scope section. Each datasource reachable in
+ * the active env (workspace-global, or scoped to the active group) renders as a
+ * checkbox: checked = in scope, unchecking EXCLUDES it from the conversation so
+ * the agent stops querying it (#3066). Datasources scoped to *other*
+ * environments aren't reachable here, so they stay informational (excluding
+ * them would be a no-op). Toggling sends the FULL next exclude-set to the
+ * parent — `[]` when everything is re-included is meaningful (it clears the
+ * row). When no `onRestExcludedChange` is supplied the rows fall back to a
+ * read-only summary (back-compat with #3044 callers).
  */
 function ChatEnvRestScopeSection({
   restDatasources,
   activeGroupId,
+  excludedIds,
+  onRestExcludedChange,
 }: {
   restDatasources: ReadonlyArray<ChatRestDatasourceScope>;
   activeGroupId: string | null;
+  excludedIds: ReadonlyArray<string>;
+  onRestExcludedChange?: (next: string[]) => void;
 }): React.ReactElement | null {
   if (restDatasources.length === 0) return null;
 
@@ -718,6 +827,42 @@ function ChatEnvRestScopeSection({
     (d) => d.groupId !== null && d.groupId !== activeGroupId,
   );
 
+  const excludedSet = new Set(excludedIds);
+  // Compute the next exclude-set when one datasource is (un)checked. `checked`
+  // = in scope, so checking removes it from the set and unchecking adds it.
+  const toggle = (id: string, checked: boolean) => {
+    if (!onRestExcludedChange) return;
+    const next = new Set(excludedSet);
+    if (checked) next.delete(id);
+    else next.add(id);
+    onRestExcludedChange([...next]);
+  };
+
+  const renderRow = (
+    d: ChatRestDatasourceScope,
+    opts: { readonly global: boolean },
+  ): React.ReactElement => {
+    const inScope = !excludedSet.has(d.id);
+    const Icon = opts.global ? Globe2 : Network;
+    return (
+      <DropdownMenuCheckboxItem
+        key={d.id}
+        checked={inScope}
+        // Keep the menu open so several datasources can be toggled in one pass.
+        onSelect={(e) => e.preventDefault()}
+        onCheckedChange={(checked) => toggle(d.id, checked === true)}
+        className="text-xs"
+        data-testid={`chat-env-picker-rest-toggle-${d.id}`}
+        data-in-scope={inScope}
+      >
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
+          <Icon className="size-3 shrink-0 text-zinc-400" aria-hidden />
+          <span className="truncate">{d.displayName}</span>
+        </span>
+      </DropdownMenuCheckboxItem>
+    );
+  };
+
   return (
     <>
       <DropdownMenuSeparator />
@@ -726,33 +871,20 @@ function ChatEnvRestScopeSection({
       </DropdownMenuLabel>
 
       {workspaceGlobal.length > 0 && (
-        <div
-          className="px-2 py-1 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300"
-          data-testid="chat-env-picker-rest-global"
-        >
-          <span className="flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-200">
-            <Globe2 className="size-3 text-zinc-400" aria-hidden />
+        <div data-testid="chat-env-picker-rest-global">
+          <DropdownMenuLabel className="px-2 pb-0.5 pt-1 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
             Workspace-global — answers in every environment
-          </span>
-          <span className="mt-0.5 block text-zinc-500 dark:text-zinc-400">
-            {workspaceGlobal.map((d) => d.displayName).join(", ")} — not limited by
-            the routing above.
-          </span>
+          </DropdownMenuLabel>
+          {workspaceGlobal.map((d) => renderRow(d, { global: true }))}
         </div>
       )}
 
       {inActiveGroup.length > 0 && (
-        <div
-          className="px-2 py-1 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300"
-          data-testid="chat-env-picker-rest-in-scope"
-        >
-          <span className="flex items-center gap-1.5 font-medium text-zinc-700 dark:text-zinc-200">
-            <Network className="size-3 text-zinc-400" aria-hidden />
+        <div data-testid="chat-env-picker-rest-in-scope">
+          <DropdownMenuLabel className="px-2 pb-0.5 pt-1 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">
             In this environment
-          </span>
-          <span className="mt-0.5 block text-zinc-500 dark:text-zinc-400">
-            {inActiveGroup.map((d) => d.displayName).join(", ")}
-          </span>
+          </DropdownMenuLabel>
+          {inActiveGroup.map((d) => renderRow(d, { global: false }))}
         </div>
       )}
 

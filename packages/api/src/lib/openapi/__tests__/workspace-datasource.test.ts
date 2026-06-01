@@ -460,6 +460,74 @@ describe("resolveWorkspaceRestDatasources — env scope (activeGroupId)", () => 
   });
 });
 
+describe("resolveWorkspaceRestDatasources — per-conversation exclude-set (#3066, S2a)", () => {
+  const rows: OpenApiInstallRow[] = [
+    { install_id: "ds-global", config: config({ display_name: "Global" }) }, // no group_id
+    { install_id: "ds-prod", config: config({ display_name: "Prod", group_id: "prod" }) },
+    { install_id: "ds-eu", config: config({ display_name: "EU", group_id: "eu" }) },
+  ];
+
+  it("omitted excluded resolves every install (default = all in scope / confirm-replay path)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("an empty excluded set excludes nothing", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: [],
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("drops every install whose id is in the exclude-set", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-prod"],
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global"]);
+    expect(result.some((d) => d.id === "ds-prod")).toBe(false);
+  });
+
+  it("applies the exclude-set AFTER the activeGroupId scope filter", async () => {
+    // ds-global + ds-prod are in scope for "prod"; excluding ds-prod leaves only ds-global.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: "prod",
+      excluded: ["ds-prod"],
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-global"]);
+  });
+
+  it("an excluded id that matches no install is a harmless no-op", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-does-not-exist"],
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("preserves the [] fail-soft contract when every datasource is excluded", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-global", "ds-prod", "ds-eu"],
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("the strict resolver returns [] (never throws) when every install is excluded", async () => {
+    // Exclusion runs BEFORE build, like the group-scope filter, so a fully-excluded
+    // workspace resolves to an empty in-scope set without engaging the reconnect tally.
+    const result = await resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-global", "ds-prod", "ds-eu"],
+    });
+    expect(result).toEqual([]);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 //  Resolve-time SSRF guard (#3006)
 // ─────────────────────────────────────────────────────────────────────

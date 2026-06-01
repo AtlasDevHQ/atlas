@@ -210,6 +210,33 @@ describe("POST /rest-operations/confirm", () => {
     expect(req?.headers["authorization"]).toBe("Bearer confirm-token");
   });
 
+  it("#3066 — replay resolves the FULL set: the resolver is called with only orgId (no exclude-set)", async () => {
+    // The confirm-replay path must IGNORE the conversation's REST exclude-set —
+    // a user-confirmed staged write replays regardless of read-side scope.
+    // Structurally that holds because the route calls resolveDatasources(orgId)
+    // with NO second (deps/excluded) argument. A future refactor that threads
+    // the request-context exclude-set into this call would pass a 2nd arg and
+    // trip this guard — the exact silent-regression the contract risks.
+    let callArgCount = -1;
+    const spyResolver = (async (...args: unknown[]) => {
+      callArgCount = args.length;
+      return args[0] === "ws-1"
+        ? [datasource({ writeAllowlist: new Set(["createOnePerson"]) })]
+        : [];
+    }) as (workspaceId: string) => Promise<RestDatasource[]>;
+    const app = appWithResolver(spyResolver);
+    const res = await post(
+      app,
+      confirmBody({
+        datasourceId: "twenty",
+        operationId: "createOnePerson",
+        body: { name: { firstName: "Ada" } },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(callArgCount).toBe(1);
+  });
+
   it("forwards the datasource quirk so required headers ride the confirmed write (#3029)", async () => {
     // A data-candidate (e.g. Notion) carries a declarative quirk — required static
     // headers / query shaping — applied via the client's header/query seams. The

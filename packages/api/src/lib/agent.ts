@@ -755,6 +755,10 @@ export async function runAgent({
   // connection behavior, matching the prompt's acceptance criterion.
   const connectionId = reqCtx?.connectionId;
   const connectionGroupId = reqCtx?.connectionGroupId;
+  // #3066 — per-conversation REST datasource exclude-set. Threads into the
+  // REST resolver below so an excluded datasource never reaches the prompt
+  // or the bound `executeRestOperation` tool. Undefined ⇒ exclude nothing.
+  const restExcludedDatasourceIds = reqCtx?.restExcludedDatasourceIds;
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -965,6 +969,14 @@ export async function runAgent({
     const restDatasources = orgId
       ? await resolveWorkspaceRestDatasources(orgId, {
           activeGroupId: activeRestGroupId,
+          // #3066 — drop the conversation's excluded datasources. The tool is
+          // bound to exactly this set below, so exclusion is enforced at both
+          // prompt-build and tool-execution (the agent can't route to an id
+          // that isn't in the bound set). Empty / omitted ⇒ exclude nothing
+          // (guard on length, not truthiness — `[]` is truthy).
+          ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
+            ? { excluded: restExcludedDatasourceIds }
+            : {}),
         })
       : [];
     if (restDatasources.length > 0) {

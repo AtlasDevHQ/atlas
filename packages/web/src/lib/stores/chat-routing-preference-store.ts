@@ -38,6 +38,12 @@ export interface ChatRoutingPreference {
   readonly connectionId: string | null;
   /** Three-state Auto/Pin/All routing mode, or null (pre-#2518 back-compat). */
   readonly routingMode: ConversationRoutingMode | null;
+  /**
+   * #3066 — REST datasource exclude-set the user last chose (excluded
+   * `install_id`s). Seeds NEW chats only; the per-conversation row is
+   * authoritative once a conversation exists. Empty = nothing excluded.
+   */
+  readonly restExcludedDatasourceIds: readonly string[];
 }
 
 interface ChatRoutingPreferenceStore extends ChatRoutingPreference {
@@ -63,6 +69,7 @@ const EMPTY: ChatRoutingPreference = {
   groupId: null,
   connectionId: null,
   routingMode: null,
+  restExcludedDatasourceIds: [],
 };
 
 export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>()(
@@ -77,6 +84,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
           groupId: next.groupId,
           connectionId: next.connectionId,
           routingMode: next.routingMode,
+          restExcludedDatasourceIds: next.restExcludedDatasourceIds,
         }),
       // Partial set — zustand shallow-merges, so `_hasHydrated` (absent from
       // EMPTY) is preserved. A clear must not re-close the hydration gate.
@@ -94,6 +102,7 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
         groupId: s.groupId,
         connectionId: s.connectionId,
         routingMode: s.routingMode,
+        restExcludedDatasourceIds: s.restExcludedDatasourceIds,
       }),
       // Fires after rehydration (synchronously for localStorage, even when
       // storage was empty), so the consumer's gate opens exactly once the

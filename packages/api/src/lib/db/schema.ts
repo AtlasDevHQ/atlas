@@ -119,6 +119,17 @@ export const conversations = pgTable(
     // single-execution behavior. Validation lives in the chat route's
     // Zod schema (single source of truth) rather than a CHECK here.
     routingMode: text("routing_mode"),
+    // 0112 — per-conversation REST datasource exclude-set (#3066, S2a).
+    // Holds `workspace_plugins.install_id` values the agent must NOT query
+    // for this conversation. Empty (`'{}'`, the default) = every in-scope
+    // REST datasource is queryable, so a newly-installed one is reachable
+    // with no action. SQL routing (`routing_mode`) is unaffected. See
+    // ADR-0011. NOT NULL DEFAULT '{}' so existing rows read as "all in
+    // scope" without a backfill.
+    restExcludedDatasourceIds: text("rest_excluded_datasource_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Saved/starred

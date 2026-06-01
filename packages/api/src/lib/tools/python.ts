@@ -459,7 +459,18 @@ export async function defaultResolveRestDatasource(): Promise<RestDatasource | n
   const { resolveWorkspacePrimaryRestDatasource } = await import(
     "@atlas/api/lib/openapi/workspace-datasource"
   );
-  return resolveWorkspacePrimaryRestDatasource(orgId, { activeGroupId });
+  // #3066 — keep the sandbox egress allowlist in lockstep with the conversation's
+  // REST exclude-set too: a datasource the conversation excluded must not be
+  // reachable from Python either, or the agent could probe an excluded host's
+  // network egress via `executePython`. Omitted ⇒ exclude nothing.
+  // Treat an empty set as "exclude nothing" (omit the key), matching the chat
+  // route's ALS stamping and `agent.ts` — `[]` is truthy in JS, so guard on
+  // length, not truthiness, to keep all three threading sites consistent.
+  const excluded = reqCtx?.restExcludedDatasourceIds;
+  return resolveWorkspacePrimaryRestDatasource(orgId, {
+    activeGroupId,
+    ...(excluded && excluded.length > 0 ? { excluded } : {}),
+  });
 }
 
 /**

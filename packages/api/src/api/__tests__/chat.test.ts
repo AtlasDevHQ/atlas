@@ -124,6 +124,11 @@ const mockCreateConversation = mock((): Promise<{ id: string } | null> =>
 const mockAddMessage = mock(() => {});
 const mockGetConversationChat = mock((): Promise<{ ok: boolean; reason?: string; data?: unknown }> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGenerateTitle = mock((q: string) => q.slice(0, 80));
+// #3066 — captured so tests can assert the REST exclude-set persist path
+// (incl. the re-include `[]` case, the #3073 transport-omits-null bug class).
+const mockUpdateConversationRestExcluded = mock(() =>
+  Promise.resolve({ ok: true as const }),
+);
 type ReservationResult =
   | { status: "ok"; totalStepsBefore: number }
   | { status: "exceeded"; totalSteps: number }
@@ -164,6 +169,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveGroupForConnection: mock(() => Promise.resolve(null)),
   verifyGroupBelongsToOrg: mockVerifyGroupBelongsToOrg,
   updateConversationRoutingMode: mock(() => Promise.resolve({ ok: true as const })),
+  updateConversationRestExcluded: mockUpdateConversationRestExcluded,
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
@@ -250,6 +256,8 @@ describe("POST /api/v1/chat", () => {
     mockAddMessage.mockReset();
     mockGetConversationChat.mockReset();
     mockGetConversationChat.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockUpdateConversationRestExcluded.mockReset();
+    mockUpdateConversationRestExcluded.mockResolvedValue({ ok: true as const });
     mockReserveConversationBudget.mockReset();
     mockReserveConversationBudget.mockResolvedValue({ status: "ok", totalStepsBefore: 0 });
     mockSettleConversationSteps.mockReset();
@@ -402,6 +410,163 @@ describe("POST /api/v1/chat", () => {
     const response = await app.fetch(makeRequest()); // No routingMode in body
     expect(response.status).toBe(200);
     expect(capturedContext?.routingMode).toBe("pin");
+  });
+
+  // #3066 — the conversation's REST exclude-set must reach the agent via the
+  // ALS frame so the REST datasource resolver (agent.ts) drops the excluded
+  // installs before the prompt + the bound executeRestOperation tool see them.
+  it("propagates restExcludedDatasourceIds into the ALS frame the agent sees (#3066)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        restExcludedDatasourceIds: ["ds-excluded-1"],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.restExcludedDatasourceIds).toEqual(["ds-excluded-1"]);
+  });
+
+  // #3066 — an empty exclude-set excludes nothing, so it must NOT be stamped
+  // on the ALS frame (the resolver's `undefined` = "no exclusions" path). This
+  // keeps the legacy "every in-scope datasource queryable" shape for the
+  // common case where the user never touched the scope picker.
+  it("strips an empty restExcludedDatasourceIds from the ALS frame (empty = exclude nothing) (#3066)", async () => {
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+        restExcludedDatasourceIds: [],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(capturedContext?.restExcludedDatasourceIds).toBeUndefined();
+  });
+
+  // #3066 / #3073 — the re-include path. An existing conversation already
+  // excludes ds-1; the user re-includes it, so the body carries `[]`. Because
+  // the web transport drops null/undefined fields, the route distinguishes
+  // "field present as []" (persist the cleared set) from "field absent"
+  // (inherit the row). This pins the present-`[]` branch — without it a
+  // re-include silently keeps the stale exclusion.
+  it("persists a re-include ([] clears a prior non-empty exclusion) (#3066/#3073)", async () => {
+    const convId = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: ["ds-1"],
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "re-include" }] }],
+        conversationId: convId,
+        restExcludedDatasourceIds: [],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationRestExcluded).toHaveBeenCalledTimes(1);
+    const calls = mockUpdateConversationRestExcluded.mock.calls as unknown as unknown[][];
+    // Second arg is the new (now-empty) set persisted to the row.
+    expect(calls[0]![1]).toEqual([]);
+  });
+
+  // #3066 — when the body OMITS the exclude-set (the common follow-up turn),
+  // the stored set is inherited and NO redundant UPDATE fires (sameStringSet
+  // gate). This is the counterpart to the re-include test above.
+  it("inherits the stored exclude-set and skips the UPDATE when the body omits it (#3066)", async () => {
+    const convId = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: ["ds-1"],
+        messages: [],
+      },
+    });
+    const { getRequestContext } = await import("@atlas/api/lib/logger");
+    let capturedContext: ReturnType<typeof getRequestContext> | undefined;
+    mockRunAgent.mockImplementationOnce(() => {
+      capturedContext = getRequestContext();
+      return Promise.resolve({
+        toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+        toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+        text: Promise.resolve("answer"),
+      } as unknown as Awaited<ReturnType<typeof mockRunAgent>>);
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "follow up" }] }],
+        conversationId: convId,
+        // restExcludedDatasourceIds intentionally omitted
+      }),
+    );
+    expect(response.status).toBe(200);
+    // Inherited the stored set into the ALS frame…
+    expect(capturedContext?.restExcludedDatasourceIds).toEqual(["ds-1"]);
+    // …and did NOT burn an UPDATE (body matched the stored set / was absent).
+    expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
+  });
+
+  // #3066 — the `sameStringSet` gate: a body that sends a non-empty set EQUAL
+  // to the stored set (here reordered) must NOT burn an UPDATE. A regression to
+  // order-sensitive (e.g. JSON.stringify) comparison would bump `updated_at`
+  // and reshuffle the conversation list on every turn.
+  it("skips the UPDATE when the body's exclude-set equals the stored set (reordered) (#3066)", async () => {
+    const convId = "d4e5f6a7-b8c9-4def-89ab-cdef01234567";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: ["ds-1", "ds-2"],
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "same set" }] }],
+        conversationId: convId,
+        // Same set, different order — set-equality must treat it as unchanged.
+        restExcludedDatasourceIds: ["ds-2", "ds-1"],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
   });
 
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the

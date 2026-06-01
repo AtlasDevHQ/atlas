@@ -42,6 +42,7 @@ import {
   resolveGroupForConnection,
   settleConversationSteps,
   updateConversationRoutingMode,
+  updateConversationRestExcluded,
   resolveRoutingMode,
 } from "@atlas/api/lib/conversations";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
@@ -75,6 +76,21 @@ function getConversationStepCap(): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_CONVERSATION_STEP_CAP;
   return Math.floor(n);
+}
+
+/**
+ * #3066 — order-independent equality for two string sets. Used to decide
+ * whether the body's REST exclude-set differs from the conversation's
+ * stored set before burning an UPDATE. Duplicates collapse (a set, not a
+ * list), so `["a","a"]` and `["a"]` compare equal — which is correct for
+ * an exclude-set keyed on `install_id`.
+ */
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size !== setB.size) return false;
+  for (const v of setA) if (!setB.has(v)) return false;
+  return true;
 }
 
 /**
@@ -379,6 +395,28 @@ export const ChatRequestSchema = z.object({
    * migration 0077).
    */
   routingMode: z.enum(["auto", "pin", "all"]).optional(),
+  /**
+   * #3066 — per-conversation REST datasource exclude-set. The scope
+   * picker sends the excluded `install_id`s; the route persists them
+   * onto the conversation row AND stamps them into the request context
+   * so the REST resolver drops them for this turn. SQL routing is
+   * unaffected.
+   *
+   * Presence is meaningful: an explicitly-sent `[]` clears any prior
+   * exclusion (re-includes everything), whereas an OMITTED field inherits
+   * the conversation's stored set. The web transport drops null/undefined
+   * body fields, so the client must send the array (even `[]`) whenever
+   * the picker was touched — otherwise a re-include silently keeps the
+   * stale exclusion (the #3073 transport-omits-null bug class).
+   *
+   * Normalized to a canonical set at validation (`[...new Set(ids)]`) so the
+   * persisted value can't carry duplicates for a set-shaped contract; `undefined`
+   * (omitted) is preserved so the inherit-vs-clear branch still works.
+   */
+  restExcludedDatasourceIds: z
+    .array(z.string())
+    .transform((ids) => [...new Set(ids)])
+    .optional(),
   /**
    * #2363 — bound dashboard editor. When the chat drawer opens on
    * `/dashboards/[id]` the client supplies the dashboard id once (on
@@ -773,6 +811,14 @@ chat.openapi(chatRoute, async (c) => {
         // The runtime treats undefined here as 'pin' to preserve
         // pre-#2518 single-execution semantics for legacy conversations.
         let effectiveRoutingMode: ConversationRoutingMode | undefined = parsed.data.routingMode;
+        // #3066 — per-conversation REST exclude-set. Body value (this
+        // turn, from the scope picker) > stored value on the row.
+        // PRESENCE is meaningful: an explicit `[]` re-includes everything,
+        // an OMITTED field inherits the row's set. We keep `undefined` vs
+        // `[]` distinct all the way through so a re-include actually clears
+        // the row (the transport-omits-null bug class, #3073).
+        let effectiveRestExcluded: string[] | undefined =
+          parsed.data.restExcludedDatasourceIds;
 
         // #2424 — when the body supplies `connectionGroupId`, verify it
         // belongs to the caller's active org BEFORE persisting it onto the
@@ -845,6 +891,16 @@ chat.openapi(chatRoute, async (c) => {
             if (effectiveRoutingMode === undefined && existing.data.routingMode) {
               effectiveRoutingMode = existing.data.routingMode;
             }
+            // #3066 — inherit the exclude-set from the row when the body
+            // omits it. An explicit `[]` from the body is NOT omitted (it
+            // re-includes everything), so the `=== undefined` guard keeps
+            // that distinct from "field absent → use the row".
+            if (
+              effectiveRestExcluded === undefined &&
+              Array.isArray(existing.data.restExcludedDatasourceIds)
+            ) {
+              effectiveRestExcluded = existing.data.restExcludedDatasourceIds;
+            }
             // Persist the picker mode if the body explicitly set one for
             // this turn. We compare against the stored value to avoid
             // burning an UPDATE on every chat turn when nothing changed.
@@ -868,6 +924,36 @@ chat.openapi(chatRoute, async (c) => {
                     conversationId,
                   },
                   "updateConversationRoutingMode rejected",
+                );
+              });
+            }
+            // #3066 — persist the exclude-set when the body explicitly set
+            // one this turn AND it differs from the stored set. Set-equality
+            // is order-independent so a reorder doesn't burn an UPDATE; an
+            // explicit `[]` that clears a prior non-empty set DOES persist
+            // (that's the re-include path the transport must support).
+            if (
+              parsed.data.restExcludedDatasourceIds !== undefined &&
+              !sameStringSet(
+                parsed.data.restExcludedDatasourceIds,
+                existing.data.restExcludedDatasourceIds ?? [],
+              )
+            ) {
+              // Fire-and-forget, same contract as routing-mode above: the
+              // runtime honours the body's set for this turn even if the
+              // persist fails; the helper logs its own failures.
+              updateConversationRestExcluded(
+                conversationId,
+                parsed.data.restExcludedDatasourceIds,
+                authResult.user?.id,
+                authResult.user?.activeOrganizationId,
+              ).catch((err: unknown) => {
+                log.warn(
+                  {
+                    err: err instanceof Error ? err.message : String(err),
+                    conversationId,
+                  },
+                  "updateConversationRestExcluded rejected",
                 );
               });
             }
@@ -979,6 +1065,9 @@ chat.openapi(chatRoute, async (c) => {
                 // for back-compat, so omitting this on legacy callers
                 // is structurally safe.
                 routingMode: effectiveRoutingMode ?? null,
+                // #3066 — persist the exclude-set the user picked at
+                // creation. Undefined ⇒ column default '{}' (all in scope).
+                restExcludedDatasourceIds: effectiveRestExcluded,
                 orgId: authResult.user?.activeOrganizationId,
               });
               if (created) {
@@ -1215,6 +1304,14 @@ chat.openapi(chatRoute, async (c) => {
               // kicks in for non-chat callers (MCP / scheduler / direct
               // tool tests).
               routingMode: resolveRoutingMode(effectiveRoutingMode),
+              // #3066 — the resolved exclude-set reaches the REST datasource
+              // resolver (agent.ts) via the request context. Stripped when
+              // undefined (and when empty — an empty set excludes nothing,
+              // so omitting it keeps the legacy "no exclusions" shape).
+              ...(effectiveRestExcluded !== undefined &&
+                effectiveRestExcluded.length > 0 && {
+                  restExcludedDatasourceIds: effectiveRestExcluded,
+                }),
             },
             () =>
               runAgent({

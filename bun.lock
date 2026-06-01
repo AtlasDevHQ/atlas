@@ -351,7 +351,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.1.9",
+      "version": "0.1.10",
     },
     "packages/web": {
       "name": "@atlas/web",

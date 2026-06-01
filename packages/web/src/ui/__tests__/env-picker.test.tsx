@@ -1647,6 +1647,31 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
     ).toEqual({ kind: "seed" });
   });
 
+  test("seeds a legacy group-less row (connectionId but null group) once groups are loaded", () => {
+    // Reachable production state (migration 0067 only backfilled the group for
+    // rows whose connection still joined): connectionId set, connectionGroupId
+    // null. With groups loaded there is no group to validate, so seed — the
+    // chat route still pins execution by reading connection_id back off the row.
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: null, connectionId: "us-prod", routingMode: "pin" },
+        groups,
+      ),
+    ).toEqual({ kind: "seed" });
+  });
+
+  test("optimistically restores a legacy group-less row (null group) on cold-start", () => {
+    // Same row before groups load: can't validate, so trust it verbatim — the
+    // null group is carried through (asymmetric with the groups-loaded seed
+    // above; locks that the emptiness check requires BOTH ids null, not either).
+    expect(
+      resolveConversationScope(
+        { connectionGroupId: null, connectionId: "us-prod", routingMode: "pin" },
+        [],
+      ),
+    ).toEqual({ kind: "restore", groupId: null, connectionId: "us-prod", routingMode: "pin" });
+  });
+
   test("seeds when a resolved group has no live members (fully archived group)", () => {
     const emptyGroup: ChatEnvGroup = {
       id: "g_empty",

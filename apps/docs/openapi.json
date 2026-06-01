@@ -99,6 +99,12 @@
                       "all"
                     ]
                   },
+                  "restExcludedDatasourceIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "boundDashboardId": {
                     "type": "string",
                     "format": "uuid"
@@ -1850,6 +1856,15 @@
                               null
                             ]
                           },
+                          "restExcludedDatasourceIds": {
+                            "type": [
+                              "array",
+                              "null"
+                            ],
+                            "items": {
+                              "type": "string"
+                            }
+                          },
                           "starred": {
                             "type": "boolean"
                           },
@@ -2129,6 +2144,15 @@
                         "all",
                         null
                       ]
+                    },
+                    "restExcludedDatasourceIds": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "string"
+                      }
                     },
                     "starred": {
                       "type": "boolean"

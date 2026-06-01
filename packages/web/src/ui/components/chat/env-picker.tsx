@@ -1030,7 +1030,10 @@ function ChatEnvRestScopeSection({
           {focusable.map((d) => (
             <DropdownMenuItem
               key={d.id}
-              // Keep the menu open so the user can read the chip update.
+              // Focusing is a one-shot scope change — let the menu close on
+              // select (default DropdownMenuItem behavior); the chip updates to
+              // "<name> only". (Contrast the exclude checkboxes, which
+              // preventDefault to stay open for multi-toggle.)
               onSelect={() => onRestFocusChange(d.id)}
               className="flex items-center gap-1.5 text-xs"
               data-testid={`chat-env-picker-rest-focus-${d.id}`}

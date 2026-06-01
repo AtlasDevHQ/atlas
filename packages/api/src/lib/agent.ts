@@ -28,7 +28,7 @@ import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
-import { resolveWorkspaceRestDatasources } from "./openapi/workspace-datasource";
+import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
@@ -289,9 +289,10 @@ This conversation is **focused on a single REST datasource**. SQL execution (\`e
 
 /**
  * #3067 — build a copy of a tool registry with `executeSQL` removed, for a
- * REST-only focused turn. Every other tool (explore, executePython, plugin /
- * action / REST tools merged on top) is preserved. Returns an UNFROZEN
- * registry — the caller merges the REST tool on top and freezes.
+ * REST-only focused turn. Every other tool already in the base (explore,
+ * executePython, any plugin / action tools) is preserved; the REST tool is
+ * merged on top by the caller AFTER this returns. Returns an UNFROZEN registry
+ * — the caller merges the REST tool on top and freezes.
  */
 function registryWithoutExecuteSQL(base: ToolRegistry): ToolRegistry {
   const stripped = new ToolRegistry();
@@ -1007,28 +1008,54 @@ export async function runAgent({
       if (restFocusDatasourceId) {
         // #3067 — REST-only focus: resolve ONLY the focus target. The resolver
         // short-circuits group-scope + the exclude-set (they're inert while
-        // focused). Suspend executeSQL only if the focus actually resolves.
-        const focused = await resolveWorkspaceRestDatasources(orgId, {
-          focus: restFocusDatasourceId,
-        });
-        if (focused.length > 0) {
-          restDatasources = focused;
-          sqlSuspended = true;
-        } else {
-          // Focus target gone (uninstalled / credential unresolvable) — fall
-          // back SAFELY to default scope: SQL stays active and the exclude-set
-          // applies, exactly as an un-focused conversation resolves (the
-          // "focused datasource was uninstalled" acceptance criterion).
-          log.warn(
-            { focus: restFocusDatasourceId },
-            "REST-only focus datasource did not resolve — falling back to default scope (SQL active)",
-          );
-          restDatasources = await resolveWorkspaceRestDatasources(orgId, {
-            activeGroupId: activeRestGroupId,
-            ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
-              ? { excluded: restExcludedDatasourceIds }
-              : {}),
+        // focused). Use the THROWING resolver so a genuine empty (the focus
+        // matched no install → uninstalled) is distinguishable from a load
+        // failure / credential-reconnect: the never-rejects resolver would
+        // collapse all three to `[]`, letting a transient internal-DB blip
+        // masquerade as "focus gone" and silently re-enable executeSQL on a
+        // conversation the user deliberately narrowed (a scope leak).
+        let focused: ReadonlyArray<RestDatasource> | null = null;
+        try {
+          focused = await resolveWorkspaceRestDatasourcesOrThrow(orgId, {
+            focus: restFocusDatasourceId,
           });
+        } catch (err) {
+          // Load failed OR the focus install needs a reconnect — the focus is
+          // NOT gone. Fail CLOSED: keep executeSQL suspended and tell the model
+          // the focused datasource is temporarily unavailable, rather than
+          // widening scope back to SQL + the default REST set.
+          log.error(
+            { focus: restFocusDatasourceId, err: err instanceof Error ? err.message : String(err) },
+            "REST-only focus datasource temporarily unresolvable — keeping SQL suspended (not falling back)",
+          );
+          sqlSuspended = true;
+          restDatasources = [];
+          if (!warnings) warnings = [];
+          warnings.push(
+            "The datasource this conversation is focused on is temporarily unavailable. " +
+              "Tell the user it could not be reached right now and to retry shortly, or clear the focus in the scope picker to re-enable SQL. Do not attempt SQL.",
+          );
+        }
+        if (focused !== null) {
+          if (focused.length > 0) {
+            restDatasources = focused;
+            sqlSuspended = true;
+          } else {
+            // Genuinely uninstalled (rows loaded fine, focus matched no install)
+            // — fall back SAFELY to default scope: SQL stays active and the
+            // exclude-set applies, exactly as an un-focused conversation resolves
+            // (the "focused datasource was uninstalled" acceptance criterion).
+            log.warn(
+              { focus: restFocusDatasourceId },
+              "REST-only focus datasource is no longer installed — falling back to default scope (SQL active)",
+            );
+            restDatasources = await resolveWorkspaceRestDatasources(orgId, {
+              activeGroupId: activeRestGroupId,
+              ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
+                ? { excluded: restExcludedDatasourceIds }
+                : {}),
+            });
+          }
         }
       } else {
         restDatasources = await resolveWorkspaceRestDatasources(orgId, {

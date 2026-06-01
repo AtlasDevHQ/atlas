@@ -161,9 +161,10 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     expect(result?.id).toBe("ds-stripe");
   });
 
-  it("falls back to default scope when the focus target is gone (#3067)", async () => {
-    // Focus resolves to null (uninstalled) → egress mirrors agent.ts's safe
-    // fallback: a SECOND call resolves the default scope (activeGroupId + excluded).
+  it("DENIES egress (fails closed) when the focus target is gone — never widens to default scope (#3067)", async () => {
+    // Focus resolves to null (uninstalled or transiently unavailable). An egress
+    // allowlist must fail CLOSED: exactly ONE focus-scoped call, returns null
+    // (no egress) — it must NOT fall through to a wider default-scope resolve.
     focusResolvesTo = null;
     mockReqCtx = {
       user: { activeOrganizationId: "org-1" },
@@ -171,9 +172,9 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
       restExcludedDatasourceIds: ["ds-x"],
       restFocusDatasourceId: "ds-gone",
     };
-    await defaultResolveRestDatasource();
-    expect(primaryCalls).toHaveLength(2);
+    const result = await defaultResolveRestDatasource();
+    expect(result).toBeNull();
+    expect(primaryCalls).toHaveLength(1);
     expect(primaryCalls[0]!.deps).toEqual({ focus: "ds-gone" });
-    expect(primaryCalls[1]!.deps).toEqual({ activeGroupId: "eu", excluded: ["ds-x"] });
   });
 });

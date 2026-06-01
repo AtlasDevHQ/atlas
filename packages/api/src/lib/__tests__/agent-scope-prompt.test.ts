@@ -24,6 +24,7 @@ import {
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessage } from "ai";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 
 // Module-top env setup — must be set before the dynamic imports below
 // (the imported modules read env at module-load time). `??=` keeps the
@@ -39,9 +40,45 @@ process.env.ATLAS_DATASOURCE_URL ??= "postgresql://test:test@localhost:5432/test
 
 let mockModel: InstanceType<typeof MockLanguageModelV3>;
 let lastSystemPrompt: string | undefined;
+// Capture the tool NAMES handed to the LLM so #3067 tests can assert executeSQL
+// is stripped on a focused (REST-only) turn. The AI SDK passes `opts.tools` as
+// an array of tool definitions (each with a `.name`), not a name-keyed object.
+let lastToolNames: string[] | undefined;
+function captureToolNames(tools: unknown): void {
+  if (Array.isArray(tools)) {
+    lastToolNames = tools
+      .map((t) => (t as { name?: string })?.name)
+      .filter((n): n is string => typeof n === "string");
+  } else if (tools && typeof tools === "object") {
+    lastToolNames = Object.keys(tools);
+  }
+}
 // #3044 — capture how the agent loop calls the REST resolver so we can pin that
 // the conversation's `connectionGroupId` is threaded as `activeGroupId`.
 let capturedRestResolveArgs: { orgId: string; deps: unknown } | undefined;
+// #3067 — capture the THROWING resolver call (the focused-turn resolve) + drive
+// what it returns / throws. Defaults to `[]` so the existing #3044 tests (which
+// never set a focus) are unaffected.
+let capturedOrThrowArgs: { orgId: string; deps: unknown } | undefined;
+let restOrThrowResult: RestDatasource[] | Error = [];
+// What the never-rejects resolver returns (the default-scope path). Default [].
+let restResolveResult: RestDatasource[] = [];
+
+// A minimal RestDatasource stub — the representation builder is mocked below, so
+// the graph is never inspected; only id / displayName / groupId / mode are read.
+// Cast at the boundary: the test only needs the shape the focus path touches.
+function restDatasourceStub(id: string, groupId: string | null = null): RestDatasource {
+  return {
+    id,
+    displayName: id,
+    ...(groupId !== null ? { groupId } : {}),
+    graph: { servers: [], operations: [], components: {} },
+    baseUrl: `https://${id}.example.com`,
+    representationMode: "operation-list",
+    writeAllowlist: new Set<string>(),
+    sideEffectingOperations: new Set<string>(),
+  } as unknown as RestDatasource;
+}
 
 mock.module("@atlas/api/lib/providers", () => ({
   getModel: () => mockModel,
@@ -120,12 +157,26 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspaceRestDatasources: async (orgId: string, deps: unknown) => {
     capturedRestResolveArgs = { orgId, deps };
-    return [];
+    return restResolveResult;
   },
-  resolveWorkspaceRestDatasourcesOrThrow: async () => [],
+  resolveWorkspaceRestDatasourcesOrThrow: async (orgId: string, deps: unknown) => {
+    capturedOrThrowArgs = { orgId, deps };
+    if (restOrThrowResult instanceof Error) throw restOrThrowResult;
+    return restOrThrowResult;
+  },
   resolveWorkspacePrimaryRestDatasource: async () => null,
   defaultQuery: async () => [],
   RestDatasourceReconnectError: class extends Error {},
+}));
+
+// #3067 — stub the REST representation builder so a focused-turn datasource stub
+// builds a prompt section without a real OperationGraph. Existing tests return
+// no datasources, so this is never exercised by them.
+mock.module("@atlas/api/lib/openapi/representation", () => ({
+  buildAgentRepresentation: () => ({
+    promptContext: "### REST Datasource (stub)\nuse executeRestOperation",
+    unresolvedResources: [],
+  }),
 }));
 
 // Spy on the LLM `doStream` call so we can capture the rendered system prompt
@@ -169,6 +220,9 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
             : "";
         if (content) lastSystemPrompt = content;
       }
+      // #3067 — capture the tool set so focus tests can assert executeSQL is
+      // present (default) or stripped (focused REST-only turn).
+      captureToolNames(opts?.tools);
       if (streamIdx >= allSteps.length) {
         return { stream: convertArrayToReadableStream(allSteps[allSteps.length - 1]) };
       }
@@ -504,5 +558,132 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
     // `undefined` would disable scoping in the resolver (the confirm-replay path)
     // and re-leak a scoped datasource into the chat — the regression #3044 closes.
     expect((capturedRestResolveArgs!.deps as { activeGroupId: unknown }).activeGroupId).not.toBeUndefined();
+  });
+});
+
+describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
+  // Text-only model: emits no tool call, so the agent just builds the prompt +
+  // tool set (captured via doStream opts) and finishes.
+  function makeCapturingTextModel(): InstanceType<typeof MockLanguageModelV3> {
+    return new MockLanguageModelV3({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      doStream: async (opts: any) => {
+        const systemMsg = opts?.prompt?.find((p: { role: string }) => p.role === "system");
+        if (systemMsg) {
+          lastSystemPrompt =
+            typeof systemMsg.content === "string"
+              ? systemMsg.content
+              : Array.isArray(systemMsg.content)
+                ? systemMsg.content.map((c: { text?: string }) => c.text ?? "").join("")
+                : "";
+        }
+        captureToolNames(opts?.tools);
+        return {
+          stream: convertArrayToReadableStream([
+            { type: "text-delta", id: "t0", delta: "Hi." },
+            {
+              type: "finish",
+              usage: {
+                inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
+                outputTokens: { total: 5, text: 5, reasoning: undefined },
+              },
+              finishReason: { unified: "stop", raw: "end_turn" },
+            },
+          ]),
+        };
+      },
+    });
+  }
+
+  const focusUser = {
+    id: "u1",
+    mode: "managed" as const,
+    label: "u@test",
+    role: "member" as const,
+    activeOrganizationId: "org-1",
+  };
+
+  beforeEach(() => {
+    capturedRestResolveArgs = undefined;
+    capturedOrThrowArgs = undefined;
+    restOrThrowResult = [];
+    restResolveResult = [];
+    lastToolNames = undefined;
+    lastSystemPrompt = undefined;
+    mockModel = makeCapturingTextModel();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+  });
+
+  it("strips executeSQL and adds the focus banner when the focus resolves", async () => {
+    restOrThrowResult = [restDatasourceStub("stripe")];
+    const result = await withRequestContext(
+      { requestId: "focus-1", user: focusUser, restFocusDatasourceId: "stripe" },
+      () => runAgent({ messages: userMessages("ask stripe only") }),
+    );
+    await result.steps; // consume the stream so doStream captures tools + prompt
+    // Resolved via the THROWING resolver, focus only (group + exclude inert).
+    expect(capturedOrThrowArgs).toBeDefined();
+    expect(capturedOrThrowArgs!.deps).toEqual({ focus: "stripe" });
+    // executeSQL is gone; explore + executeRestOperation remain.
+    expect(lastToolNames).toBeDefined();
+    expect(lastToolNames).not.toContain("executeSQL");
+    expect(lastToolNames).toContain("executeRestOperation");
+    expect(lastToolNames).toContain("explore");
+    // The REST-only focus banner is in the system prompt.
+    expect(lastSystemPrompt).toContain("REST-only focus");
+  });
+
+  it("ignores the exclude-set while focused — resolves with focus only (#3067)", async () => {
+    restOrThrowResult = [restDatasourceStub("stripe")];
+    await withRequestContext(
+      {
+        requestId: "focus-2",
+        user: focusUser,
+        restFocusDatasourceId: "stripe",
+        restExcludedDatasourceIds: ["other"],
+        connectionGroupId: "prod",
+      },
+      () => runAgent({ messages: userMessages("ask stripe only") }),
+    );
+    // No `excluded` / `activeGroupId` key — focus short-circuits both.
+    expect(capturedOrThrowArgs!.deps).toEqual({ focus: "stripe" });
+  });
+
+  it("falls back to default scope (executeSQL active) when the focus is genuinely uninstalled", async () => {
+    restOrThrowResult = []; // focus matched no install — rows loaded fine
+    restResolveResult = []; // default-scope resolve (no REST datasources here)
+    const result = await withRequestContext(
+      {
+        requestId: "focus-3",
+        user: focusUser,
+        restFocusDatasourceId: "gone",
+        connectionGroupId: "prod",
+        restExcludedDatasourceIds: ["x"],
+      },
+      () => runAgent({ messages: userMessages("hello") }),
+    );
+    await result.steps; // consume the stream so doStream captures tools + prompt
+    // The focus resolve (empty), THEN the default-scope never-rejects fallback.
+    expect(capturedOrThrowArgs!.deps).toEqual({ focus: "gone" });
+    expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod", excluded: ["x"] });
+    // executeSQL is back; no focus banner.
+    expect(lastToolNames).toContain("executeSQL");
+    expect(lastSystemPrompt).not.toContain("REST-only focus");
+  });
+
+  it("fails CLOSED (keeps executeSQL suspended) when the focus resolve throws", async () => {
+    // A load failure / reconnect-needed throws from the throwing resolver — the
+    // focus is NOT gone, so SQL must stay suspended (no silent re-enable).
+    restOrThrowResult = new Error("internal DB unavailable");
+    const result = await withRequestContext(
+      { requestId: "focus-4", user: focusUser, restFocusDatasourceId: "stripe" },
+      () => runAgent({ messages: userMessages("ask stripe only") }),
+    );
+    await result.steps; // consume the stream so doStream captures tools + prompt
+    expect(lastToolNames).not.toContain("executeSQL");
+    // No silent fallback to the default-scope resolver either.
+    expect(capturedRestResolveArgs).toBeUndefined();
+    // The model is told the focused datasource is temporarily unavailable.
+    expect(lastSystemPrompt).toContain("temporarily unavailable");
   });
 });

@@ -651,10 +651,13 @@ export function AtlasChat() {
         // #3066 — no usable scope on the row: clear the exclude-set too and let
         // the seed/restore effect re-seed from the sticky preference / default.
         setSelectedRestExcluded([]);
-        // #3067 — clear focus too on a seed decision. (A focused conversation
-        // with all-null SQL scope only arises on a zero-group workspace, which
-        // doesn't render the picker yet — see #3078; on the common ≥1-group
-        // workspace a focused conversation carries a group and restores above.)
+        // #3067 — clear focus too on a seed decision. A `seed` fires when the
+        // row's SQL scope isn't restorable: all-null (legacy / zero-group), or
+        // its group was archived/removed / has no live members. On the common
+        // ≥1-group workspace a focused conversation normally carries a live
+        // group and `restore`s above; the all-null REST-only case (where focus
+        // would be lost) is only reachable on a zero-group workspace, which
+        // doesn't render the picker yet — see #3078.
         setSelectedRestFocus(null);
       }
       setMobileSidebarOpen(false);

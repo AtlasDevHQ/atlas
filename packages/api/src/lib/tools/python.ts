@@ -447,15 +447,16 @@ export async function defaultResolveRestDatasource(): Promise<RestDatasource | n
     "@atlas/api/lib/openapi/workspace-datasource"
   );
   // #3067 — keep the sandbox egress allowlist in lockstep with a REST-only
-  // focused conversation: when focused, the only reachable host is the focus
-  // target. Resolve ONLY it; if it resolves, that's the sole egress target. If
-  // the focus datasource is gone, fall through to default scope (mirrors
-  // agent.ts's safe fallback) rather than leaving Python with no egress while
-  // the agent loop runs in default mode.
+  // focused conversation: the only reachable host is the focus target. Resolve
+  // ONLY it and RETURN — including a `null` (focus uninstalled or transiently
+  // unavailable), which DENIES egress for the turn. An egress allowlist must
+  // fail CLOSED: falling through to the default scope here would silently widen
+  // the sandbox's reachable hosts on a conversation the user narrowed to one
+  // datasource (the wrong failure direction for a security guard). The agent
+  // loop makes its own SQL/REST decision; Python egress stays focus-only.
   const focus = reqCtx?.restFocusDatasourceId;
   if (focus) {
-    const focused = await resolveWorkspacePrimaryRestDatasource(orgId, { focus });
-    if (focused) return focused;
+    return resolveWorkspacePrimaryRestDatasource(orgId, { focus });
   }
   // #3044 — keep the sandbox egress allowlist in lockstep with the agent's
   // in-scope datasources: a datasource scoped to a different environment group

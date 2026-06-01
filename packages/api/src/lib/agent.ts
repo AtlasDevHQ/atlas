@@ -288,16 +288,34 @@ export const REST_ONLY_FOCUS_GUIDANCE = `## REST-only focus — SQL is suspended
 This conversation is **focused on a single REST datasource**. SQL execution (\`executeSQL\`) is **suspended** for this turn: there is no SQL tool available. Answer the user using \`executeRestOperation\` against the datasource described below, and only that datasource. Do not reference SQL tables or attempt to write SQL. If the question genuinely needs the SQL warehouse instead of this API, tell the user the conversation is focused on a single datasource and they can clear the focus in the scope picker to re-enable SQL.`;
 
 /**
- * #3067 — build a copy of a tool registry with `executeSQL` removed, for a
- * REST-only focused turn. Every other tool already in the base (explore,
+ * #3067 — tools that author or execute SQL, suspended together under REST-only
+ * focus. `executeSQL` runs SQL directly; `createDashboard` (default registry)
+ * and the bound dashboard editor tools `addCard` / `updateCard` / `updateCardSql`
+ * each accept SQL card definitions and stage SQL-backed cards. Removing only
+ * `executeSQL` would still let a focused turn mint SQL results via a dashboard
+ * (Codex review on #3067) — a scope leak — so all of them are stripped together.
+ * Stripping a name the base registry doesn't contain (e.g. the editor tools on a
+ * non-bound chat) is a harmless no-op.
+ */
+const SQL_DEPENDENT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "executeSQL",
+  "createDashboard",
+  "addCard",
+  "updateCard",
+  "updateCardSql",
+]);
+
+/**
+ * #3067 — build a copy of a tool registry with every SQL-dependent tool removed,
+ * for a REST-only focused turn. Every other tool already in the base (explore,
  * executePython, any plugin / action tools) is preserved; the REST tool is
  * merged on top by the caller AFTER this returns. Returns an UNFROZEN registry
  * — the caller merges the REST tool on top and freezes.
  */
-function registryWithoutExecuteSQL(base: ToolRegistry): ToolRegistry {
+function registryWithoutSqlTools(base: ToolRegistry): ToolRegistry {
   const stripped = new ToolRegistry();
   for (const [name, entry] of base.entries()) {
-    if (name === "executeSQL") continue;
+    if (SQL_DEPENDENT_TOOL_NAMES.has(name)) continue;
     stripped.register(entry);
   }
   return stripped;
@@ -1035,6 +1053,19 @@ export async function runAgent({
             "The datasource this conversation is focused on is temporarily unavailable. " +
               "Tell the user it could not be reached right now and to retry shortly, or clear the focus in the scope picker to re-enable SQL. Do not attempt SQL.",
           );
+          // Mirror the model-facing warning as a structured frame so the UI can
+          // render a deterministic "focused datasource unavailable, SQL still
+          // suspended" banner instead of relying on the model to repeat the
+          // system-prompt text — same pattern as the semantic-layer / learned-
+          // patterns degradations above (#1988 B5 / #3067 review).
+          contextWarnings?.push({
+            severity: "warning",
+            code: "rest_focus_unavailable",
+            title: "Focused datasource unavailable",
+            detail:
+              "The datasource this conversation is focused on is temporarily unavailable, so SQL stays suspended. " +
+              "Retry shortly, or clear the focus in the scope picker to re-enable SQL.",
+          });
         }
         if (focused !== null) {
           if (focused.length > 0) {
@@ -1071,11 +1102,12 @@ export async function runAgent({
         });
       }
     }
-    // #3067 — suspend executeSQL for a focused REST-only turn by stripping it
-    // from the base registry, so neither the prompt's tool list nor the runtime
-    // exposes a SQL tool. Default turns keep the registry untouched.
+    // #3067 — suspend SQL for a focused REST-only turn by stripping every
+    // SQL-dependent tool (executeSQL + the SQL-card dashboard tools) from the
+    // base registry, so neither the prompt's tool list nor the runtime exposes a
+    // way to run or stage SQL. Default turns keep the registry untouched.
     const baseRegistry = sqlSuspended
-      ? registryWithoutExecuteSQL(toolRegistry)
+      ? registryWithoutSqlTools(toolRegistry)
       : toolRegistry;
     activeRegistry = baseRegistry;
     if (restDatasources.length > 0) {

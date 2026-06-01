@@ -429,8 +429,17 @@ export const ChatRequestSchema = z.object({
    * conversation's stored focus. The web transport must therefore send the
    * field (including `null`) whenever the picker was touched, or a clear
    * silently keeps the stale focus (the #3073 transport-omits-null bug class).
+   *
+   * An empty string is rejected (`.min(1)`): the only valid focus values are a
+   * non-empty `install_id` (set) or `null` (clear). Allowing `""` through would
+   * persist it as focus yet read back as "not focused" at the runtime truthy
+   * gate — invalid stored state with the UI and agent disagreeing (CodeRabbit).
    */
-  restFocusDatasourceId: z.string().nullable().optional(),
+  restFocusDatasourceId: z
+    .string()
+    .min(1, "restFocusDatasourceId must be a non-empty install_id or null.")
+    .nullable()
+    .optional(),
   /**
    * #2363 — bound dashboard editor. When the chat drawer opens on
    * `/dashboards/[id]` the client supplies the dashboard id once (on

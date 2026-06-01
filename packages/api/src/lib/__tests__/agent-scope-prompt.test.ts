@@ -23,6 +23,7 @@ import {
 } from "ai/test";
 import type { LanguageModelV3StreamPart } from "@ai-sdk/provider";
 import type { UIMessage } from "ai";
+import type { ChatContextWarning } from "@useatlas/types";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 
@@ -52,6 +53,23 @@ function captureToolNames(tools: unknown): void {
   } else if (tools && typeof tools === "object") {
     lastToolNames = Object.keys(tools);
   }
+}
+// The slices of the AI SDK's `doStream` options the spies read, narrowed from
+// `unknown` (never `any`, per CLAUDE.md) — the real LanguageModelV3CallOptions is
+// far broader than these tests touch, so a local structural narrow is enough.
+function extractSystemPrompt(opts: unknown): string | undefined {
+  const prompt = (opts as { prompt?: ReadonlyArray<{ role: string; content: unknown }> })?.prompt;
+  const systemMsg = Array.isArray(prompt) ? prompt.find((p) => p.role === "system") : undefined;
+  if (!systemMsg) return undefined;
+  const content = systemMsg.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((c) => (c as { text?: string })?.text ?? "").join("");
+  }
+  return "";
+}
+function extractTools(opts: unknown): unknown {
+  return (opts as { tools?: unknown })?.tools;
 }
 // #3044 — capture how the agent loop calls the REST resolver so we can pin that
 // the conversation's `connectionGroupId` is threaded as `activeGroupId`.
@@ -171,8 +189,14 @@ mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
 
 // #3067 — stub the REST representation builder so a focused-turn datasource stub
 // builds a prompt section without a real OperationGraph. Existing tests return
-// no datasources, so this is never exercised by them.
+// no datasources, so this is never exercised by them. Every *value* export of the
+// real module is mocked (CLAUDE.md: mock all exports, or Bun loads the real
+// module for an un-mocked name). The module's three remaining exports —
+// `RepresentationMode`, `AgentRepresentation`, `BuildRepresentationOptions` — are
+// type-only and erased at runtime, so there is nothing to stub for them.
 mock.module("@atlas/api/lib/openapi/representation", () => ({
+  REPRESENTATION_MODES: ["operation-graph", "semantic-yaml"] as const,
+  RepresentationNotImplementedError: class extends Error {},
   buildAgentRepresentation: () => ({
     promptContext: "### REST Datasource (stub)\nuse executeRestOperation",
     unresolvedResources: [],
@@ -207,22 +231,14 @@ function makeSpyingModel(toolCallArgs: Record<string, unknown>): InstanceType<ty
     ],
   ];
   return new MockLanguageModelV3({
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    doStream: async (opts: any) => {
+    doStream: async (opts: unknown) => {
       // Capture the first system message rendered into the LLM call so the
       // prompt-content assertions can inspect it.
-      const systemMsg = opts?.prompt?.find((p: { role: string }) => p.role === "system");
-      if (systemMsg) {
-        const content = typeof systemMsg.content === "string"
-          ? systemMsg.content
-          : Array.isArray(systemMsg.content)
-            ? systemMsg.content.map((c: { text?: string }) => c.text ?? "").join("")
-            : "";
-        if (content) lastSystemPrompt = content;
-      }
+      const content = extractSystemPrompt(opts);
+      if (content) lastSystemPrompt = content;
       // #3067 — capture the tool set so focus tests can assert executeSQL is
       // present (default) or stripped (focused REST-only turn).
-      captureToolNames(opts?.tools);
+      captureToolNames(extractTools(opts));
       if (streamIdx >= allSteps.length) {
         return { stream: convertArrayToReadableStream(allSteps[allSteps.length - 1]) };
       }
@@ -245,13 +261,23 @@ function userMessages(content: string): UIMessage[] {
   ];
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function findToolResults(steps: any[], toolName: string): any[] {
-  const results: unknown[] = [];
+// The captured agent steps the integration tests inspect: each step may carry
+// tool results with a `toolName` + `output`. Typed structurally and narrowed
+// from `unknown` so the helper needs no `any` and no coupling to the SDK's
+// `StepResult` generic.
+interface CapturedStep {
+  readonly toolResults?: ReadonlyArray<{ toolName: string; output: unknown }>;
+}
+function findToolResults(
+  steps: ReadonlyArray<unknown>,
+  toolName: string,
+): Array<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
   for (const step of steps) {
-    if (!step.toolResults) continue;
-    for (const tr of step.toolResults) {
-      if (tr.toolName === toolName) results.push(tr.output);
+    const toolResults = (step as CapturedStep).toolResults;
+    if (!toolResults) continue;
+    for (const tr of toolResults) {
+      if (tr.toolName === toolName) results.push(tr.output as Record<string, unknown>);
     }
   }
   return results;
@@ -481,17 +507,9 @@ describe("agent loop — REST datasource scope threading (#3044)", () => {
   // running the executeSQL path (which would need an org-aware connection mock).
   function makeTextOnlyModel(): InstanceType<typeof MockLanguageModelV3> {
     return new MockLanguageModelV3({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doStream: async (opts: any) => {
-        const systemMsg = opts?.prompt?.find((p: { role: string }) => p.role === "system");
-        if (systemMsg) {
-          lastSystemPrompt =
-            typeof systemMsg.content === "string"
-              ? systemMsg.content
-              : Array.isArray(systemMsg.content)
-                ? systemMsg.content.map((c: { text?: string }) => c.text ?? "").join("")
-                : "";
-        }
+      doStream: async (opts: unknown) => {
+        const content = extractSystemPrompt(opts);
+        if (content !== undefined) lastSystemPrompt = content;
         return {
           stream: convertArrayToReadableStream([
             { type: "text-delta", id: "t0", delta: "Hi." },
@@ -566,18 +584,10 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
   // tool set (captured via doStream opts) and finishes.
   function makeCapturingTextModel(): InstanceType<typeof MockLanguageModelV3> {
     return new MockLanguageModelV3({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      doStream: async (opts: any) => {
-        const systemMsg = opts?.prompt?.find((p: { role: string }) => p.role === "system");
-        if (systemMsg) {
-          lastSystemPrompt =
-            typeof systemMsg.content === "string"
-              ? systemMsg.content
-              : Array.isArray(systemMsg.content)
-                ? systemMsg.content.map((c: { text?: string }) => c.text ?? "").join("")
-                : "";
-        }
-        captureToolNames(opts?.tools);
+      doStream: async (opts: unknown) => {
+        const content = extractSystemPrompt(opts);
+        if (content !== undefined) lastSystemPrompt = content;
+        captureToolNames(extractTools(opts));
         return {
           stream: convertArrayToReadableStream([
             { type: "text-delta", id: "t0", delta: "Hi." },
@@ -627,6 +637,9 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     // executeSQL is gone; explore + executeRestOperation remain.
     expect(lastToolNames).toBeDefined();
     expect(lastToolNames).not.toContain("executeSQL");
+    // #3067 (Codex review) — the SQL-card dashboard tool is suspended too, so a
+    // focused turn can't mint SQL-backed dashboard cards while SQL is off.
+    expect(lastToolNames).not.toContain("createDashboard");
     expect(lastToolNames).toContain("executeRestOperation");
     expect(lastToolNames).toContain("explore");
     // The REST-only focus banner is in the system prompt.
@@ -666,8 +679,11 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     // The focus resolve (empty), THEN the default-scope never-rejects fallback.
     expect(capturedOrThrowArgs!.deps).toEqual({ focus: "gone" });
     expect(capturedRestResolveArgs!.deps).toEqual({ activeGroupId: "prod", excluded: ["x"] });
-    // executeSQL is back; no focus banner.
+    // executeSQL is back; no focus banner. The SQL-card dashboard tool returns
+    // with it — proving the focused-turn absence above is the strip, not a
+    // registry that never had it (#3067 Codex review).
     expect(lastToolNames).toContain("executeSQL");
+    expect(lastToolNames).toContain("createDashboard");
     expect(lastSystemPrompt).not.toContain("REST-only focus");
   });
 
@@ -675,9 +691,10 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     // A load failure / reconnect-needed throws from the throwing resolver — the
     // focus is NOT gone, so SQL must stay suspended (no silent re-enable).
     restOrThrowResult = new Error("internal DB unavailable");
+    const contextWarnings: ChatContextWarning[] = [];
     const result = await withRequestContext(
       { requestId: "focus-4", user: focusUser, restFocusDatasourceId: "stripe" },
-      () => runAgent({ messages: userMessages("ask stripe only") }),
+      () => runAgent({ messages: userMessages("ask stripe only"), contextWarnings }),
     );
     await result.steps; // consume the stream so doStream captures tools + prompt
     expect(lastToolNames).not.toContain("executeSQL");
@@ -685,5 +702,12 @@ describe("agent loop — REST-only focus suspends executeSQL (#3067)", () => {
     expect(capturedRestResolveArgs).toBeUndefined();
     // The model is told the focused datasource is temporarily unavailable.
     expect(lastSystemPrompt).toContain("temporarily unavailable");
+    // #3067 (CodeRabbit review) — the fail-closed path also emits a structured
+    // context-warning frame so the UI can render a deterministic degraded banner.
+    const focusWarning = contextWarnings.find((w) => w.code === "rest_focus_unavailable");
+    expect(focusWarning).toBeDefined();
+    expect(focusWarning!.severity).toBe("warning");
+    expect(focusWarning!.title.length).toBeGreaterThan(0);
+    expect((focusWarning!.detail ?? "").length).toBeGreaterThan(0);
   });
 });

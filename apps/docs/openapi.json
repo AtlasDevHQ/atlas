@@ -109,7 +109,8 @@
                     "type": [
                       "string",
                       "null"
-                    ]
+                    ],
+                    "minLength": 1
                   },
                   "boundDashboardId": {
                     "type": "string",

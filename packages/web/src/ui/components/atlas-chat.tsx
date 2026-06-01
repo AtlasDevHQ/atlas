@@ -134,6 +134,21 @@ export function AtlasChat() {
   // this so it never re-loads the active conversation (which would clobber a
   // live stream) nor retries a failed deep-link load on every render.
   const openedConversationIdRef = useRef<string | null>(null);
+  // #3068 — the conversation the user most recently asked for (updated up-front
+  // by handleSelectConversation, even when its in-flight guard defers the load).
+  // An in-flight load checks this after its await and bails if it no longer
+  // matches, so a quick back/forward mid-load can't commit the wrong
+  // conversation over the newer one. Distinct from `openedConversationIdRef`,
+  // which tracks what's actually loading (they diverge during a deferred nav).
+  const latestRequestedConversationIdRef = useRef<string | null>(null);
+  // #3068 — the conversation whose messages are actually mounted (committed on a
+  // successful load, on the agent minting an id for the in-flight chat, and
+  // cleared on a new chat). This — NOT the URL id — is what the transport sends:
+  // a deep link sets the URL id immediately, but until that conversation's
+  // history has loaded a send must not append to it with only the current
+  // (empty) client messages. While the load is pending this stays null so a
+  // quick send starts a fresh conversation instead of corrupting the target.
+  const boundConversationIdRef = useRef<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
@@ -205,13 +220,21 @@ export function AtlasChat() {
   } = useAtlasTransport({
     apiUrl,
     isCrossOrigin,
-    getConversationId: () => conversationId,
+    // #3068 — send the conversation whose messages are mounted, NOT the URL id.
+    // A deep link makes the URL id non-null before its history loads; sending
+    // that id would append a turn to the conversation with only the current
+    // client messages. `boundConversationIdRef` is null until the load commits.
+    getConversationId: () => boundConversationIdRef.current,
     onNewConversationId: (id) => {
       // #3068 — the agent minted a conversation id for the in-flight chat. Mark
-      // it bound BEFORE writing the URL so the URL-driven open effect treats it
-      // as already-loaded and never re-fetches over the live stream. `replace`
-      // (not push) — this is a continuation of the current empty chat.
+      // it bound (and most-recently-requested) BEFORE writing the URL so the
+      // URL-driven open effect treats it as already-loaded and never re-fetches
+      // over the live stream. `replace` (not push) — this is a continuation of
+      // the current empty chat. The mounted messages now belong to this id, so
+      // it's the bound (transport) conversation too.
       openedConversationIdRef.current = id;
+      latestRequestedConversationIdRef.current = id;
+      boundConversationIdRef.current = id;
       setConversationId(id, "replace");
       setTimeout(() => {
         refreshConvosRef.current().catch((err: unknown) => {
@@ -626,6 +649,11 @@ export function AtlasChat() {
 
   function handleSend(text: string) {
     if (!text.trim()) return;
+    // #3068 — don't send while a conversation's history is still loading (a deep
+    // link / sidebar open). Sending now would either append to the half-loaded
+    // conversation or be clobbered when the in-flight load commits. The composer
+    // is disabled too; this also guards the chip / starter-prompt send paths.
+    if (loadingConversation) return;
     const saved = text;
     setInput("");
     // Drop any unattached warnings from a stalled earlier turn so they
@@ -651,10 +679,20 @@ export function AtlasChat() {
   }
 
   async function handleSelectConversation(id: string) {
+    // #3068 — record the requested conversation and reflect it in the URL up
+    // front, BEFORE the in-flight guard, so a navigation that arrives mid-load
+    // (a sidebar click or browser back/forward while another conversation is
+    // still loading) is never lost and the URL always shows what the user last
+    // asked for. The post-await stale check below reads this ref.
+    latestRequestedConversationIdRef.current = id;
+    setConversationId(id);
+    // A load is already in flight; bail. The URL effect re-drives this once the
+    // in-flight load settles (`loadingConversation` is one of its deps), and the
+    // stale check below stops that in-flight load from committing over this one.
     if (loadingConversation) return;
-    // #3068 — mark this conversation bound up-front (before the await) so the
-    // URL-driven open effect dedupes against it: a redundant dispatch is a
-    // no-op, and a load that fails below isn't retried on every render.
+    // Mark bound for the open effect's dedup once we actually begin loading: a
+    // redundant dispatch is then a no-op, and a load that fails below isn't
+    // retried on every render.
     openedConversationIdRef.current = id;
     setLoadingConversation(true);
     try {
@@ -663,6 +701,11 @@ export function AtlasChat() {
       // covers both: `getConversationData` returns the same payload
       // `loadConversation` transforms, plus the persisted scope columns.
       const data = await convos.getConversationData(id);
+      // #3068 — the user navigated away while this was fetching: discard the
+      // stale result instead of committing the wrong conversation over the newer
+      // navigation (which would also flip the URL back to this id). The URL
+      // effect loads whatever the latest `?id=` now points at.
+      if (latestRequestedConversationIdRef.current !== id) return;
       // A 200 with a malformed body (no `messages` array) would otherwise
       // throw a bare TypeError inside `transformMessages` and surface as a
       // generic "try again" — distinguish the structural defect in the log.
@@ -672,7 +715,9 @@ export function AtlasChat() {
         );
       }
       setMessages(transformMessages(data.messages));
-      setConversationId(id);
+      // The conversation's history is now mounted — bind the transport to it so
+      // the next turn appends here (with full context), not to a fresh chat.
+      boundConversationIdRef.current = id;
       convos.setSelectedId(id);
       // Restore the conversation's persisted scope, validated against the
       // currently-visible env groups. The SQL scope and the REST scope are
@@ -725,10 +770,15 @@ export function AtlasChat() {
 
   function handleNewChat() {
     setMessages([]);
-    // #3068 — clear the bound-conversation ref and the URL (`?id=`) so the
-    // open effect re-seeds a fresh chat instead of treating the just-left
-    // conversation as still loaded.
+    // #3068 — clear the bound + most-recently-requested refs and the URL
+    // (`?id=`) so the open effect re-seeds a fresh chat instead of treating the
+    // just-left conversation as still loaded. Clearing the requested ref also
+    // makes any conversation load still in flight bail instead of committing
+    // over this new chat. The transport is unbound so the next turn starts a
+    // fresh conversation.
     openedConversationIdRef.current = null;
+    latestRequestedConversationIdRef.current = null;
+    boundConversationIdRef.current = null;
     setConversationId(null);
     convos.setSelectedId(null);
     setInput("");
@@ -774,16 +824,36 @@ export function AtlasChat() {
     const action = resolveConversationUrlAction({
       urlId: chatUrlParams.id,
       loadedId: openedConversationIdRef.current,
-      authResolved,
+      // sessionResolved (not authResolved) — for managed auth, isSignedIn isn't
+      // final until the session resolves; opening before then would misread a
+      // signed-in user as self-hosted and skip the wait-for-groups gate (#3068).
+      authSettled: sessionResolved,
       isSignedIn,
       envGroupsHasLoaded: envGroupsQuery.hasLoaded,
     });
-    if (action.kind === "open") {
-      void handleSelectConversationRef.current(action.id);
-    } else if (action.kind === "clear") {
-      handleNewChatRef.current();
+    switch (action.kind) {
+      case "open":
+        void handleSelectConversationRef.current(action.id);
+        break;
+      case "clear":
+        handleNewChatRef.current();
+        break;
+      case "noop":
+        // Inputs not ready, already bound, or waiting on the groups fetch.
+        break;
+      default: {
+        // Exhaustiveness guard — a new ConversationUrlAction variant must add a
+        // branch (mirrors the EnvSelectionDecision consumer above).
+        const _exhaustive: never = action;
+        void _exhaustive;
+      }
     }
-  }, [chatUrlParams.id, authResolved, isSignedIn, envGroupsQuery.hasLoaded]);
+    // `loadingConversation` is a dep so a navigation that arrives mid-load (e.g.
+    // browser back/forward to B while A is still loading) isn't silently dropped
+    // by handleSelectConversation's in-flight guard: when the A-load settles and
+    // the flag clears, this re-evaluates and opens B — otherwise the URL would
+    // say `?id=B` while A stays on screen, desynced until the next navigation.
+  }, [chatUrlParams.id, sessionResolved, isSignedIn, envGroupsQuery.hasLoaded, loadingConversation]);
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
   // when managed auth is active but session hasn't been checked yet.
@@ -1153,13 +1223,15 @@ export function AtlasChat() {
                     onChange={(e) => setInput(e.target.value)}
                     placeholder="Ask a question about your data..."
                     className="min-w-0 flex-1 py-3 text-base sm:text-sm"
-                    disabled={isLoading}
+                    // #3068 — also disabled while a conversation's history loads
+                    // (deep link / sidebar open) so a send can't race the load.
+                    disabled={isLoading || loadingConversation}
                     aria-label="Chat message"
                   />
                   <Button
                     type="submit"
                     size="icon"
-                    disabled={isLoading}
+                    disabled={isLoading || loadingConversation}
                     aria-disabled={!isLoading && !input.trim() ? true : undefined}
                     aria-label="Send"
                     className="size-10 shrink-0"

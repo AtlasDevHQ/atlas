@@ -19,7 +19,7 @@ function input(overrides: Partial<ConversationUrlInput> = {}): ConversationUrlIn
   return {
     urlId: "",
     loadedId: null,
-    authResolved: true,
+    authSettled: true,
     isSignedIn: true,
     envGroupsHasLoaded: true,
     ...overrides,
@@ -27,9 +27,9 @@ function input(overrides: Partial<ConversationUrlInput> = {}): ConversationUrlIn
 }
 
 describe("resolveConversationUrlAction", () => {
-  it("waits until auth has resolved", () => {
+  it("waits until auth is settled", () => {
     expect(
-      resolveConversationUrlAction(input({ urlId: "conv-1", authResolved: false })),
+      resolveConversationUrlAction(input({ urlId: "conv-1", authSettled: false })),
     ).toEqual({ kind: "noop" });
   });
 

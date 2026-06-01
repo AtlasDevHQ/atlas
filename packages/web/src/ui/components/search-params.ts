@@ -14,6 +14,7 @@ export const chatSearchParams = {
  * What the URL-driven open effect should do for the current `?id=` value.
  *
  *  - `open`  — load the named conversation (messages + scope restore, #3065).
+ *              `id` is always a non-empty id (emitted only past the `!urlId` guard).
  *  - `clear` — the URL has no id but one is loaded (e.g. back-nav to the empty
  *              chat) → reset to a fresh chat.
  *  - `noop`  — nothing to do: inputs not ready, already bound, or still waiting
@@ -29,8 +30,13 @@ export interface ConversationUrlInput {
   readonly urlId: string;
   /** The conversation the UI is currently bound to / loading, or null for a fresh chat. */
   readonly loadedId: string | null;
-  /** Auth mode has been detected; before this `isSignedIn` / groups are not final. */
-  readonly authResolved: boolean;
+  /**
+   * Auth is fully settled: the mode is detected AND, for managed auth, the
+   * session has resolved. `isSignedIn` is only final once this is true — gating
+   * on a mere "mode detected" would, during the managed-session-pending window,
+   * read `isSignedIn` as false and wrongly take the self-hosted carve-out below.
+   */
+  readonly authSettled: boolean;
   /** Mirrors the connection-groups query `enabled` predicate (managed auth + a signed-in user). */
   readonly isSignedIn: boolean;
   /** The connection-groups fetch has settled. Only meaningful when `isSignedIn`. */
@@ -45,10 +51,12 @@ export interface ConversationUrlInput {
 export function resolveConversationUrlAction(
   input: ConversationUrlInput,
 ): ConversationUrlAction {
-  const { urlId, loadedId, authResolved, isSignedIn, envGroupsHasLoaded } = input;
+  const { urlId, loadedId, authSettled, isSignedIn, envGroupsHasLoaded } = input;
 
-  // Before auth resolves, `isSignedIn` / groups aren't final — wait.
-  if (!authResolved) return { kind: "noop" };
+  // Until auth is fully settled, `isSignedIn` isn't final — wait, so a managed
+  // user mid-session-load isn't misread as self-hosted (which would skip the
+  // wait-for-groups gate and restore scope against an empty group set).
+  if (!authSettled) return { kind: "noop" };
 
   // No conversation in the URL: reset to a fresh chat if one was loaded
   // (e.g. back-nav to the empty state); otherwise there's nothing to do.

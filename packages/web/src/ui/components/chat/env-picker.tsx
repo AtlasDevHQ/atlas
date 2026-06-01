@@ -350,29 +350,74 @@ export interface RestoredConversationScope {
 }
 
 /**
- * S1b (#3065) — map a saved conversation's persisted scope onto the picker
- * selection when the conversation is opened. The conversation row is
- * authoritative (precedence: row > sticky preference > default seed), so its
- * group / member / mode are applied verbatim and the caller marks the
- * resulting selection `explicit` so the seed/restore effect can't overwrite
- * it.
+ * What {@link resolveConversationScope} decides for an opened conversation:
+ * `restore` (apply the scope and make it authoritative) or `seed` (the row
+ * carried no usable scope — defer to the fresh-chat seed/restore effect).
+ */
+export type ConversationScopeDecision =
+  | ({ readonly kind: "restore" } & RestoredConversationScope)
+  | { readonly kind: "seed" };
+
+/**
+ * S1b (#3065) — decide how to populate the picker when a saved conversation is
+ * opened. The conversation row is authoritative (precedence: row > sticky
+ * preference > default seed), but ONLY when it carries a scope that still
+ * resolves against the visible environments. A `restore` decision is applied
+ * and marked `explicit` by the caller so the seed/restore effect can't
+ * overwrite it; a `seed` decision means the caller resets to `unset` and lets
+ * that effect seed the default (or restore the sticky preference) instead.
  *
- * The routing mode is preserved faithfully, not coerced: a null `routingMode`
+ * Validation against `groups` prevents two ways a verbatim restore would lie to
+ * the agent (both Codex-flagged):
+ *   - an all-null legacy/API-created row → `explicit` nulls show a fallback chip
+ *     while the transport sends nothing → query runs against server-default
+ *     routing, unrepairable because `explicit` forces the effect to no-op;
+ *   - a row pointing at an archived/removed group → sent verbatim and rejected
+ *     by the chat route (`invalid_connection_group`).
+ * Both fall back to `seed`. An archived *member* under a still-valid group is
+ * repaired to the group primary rather than discarding the still-valid group.
+ *
+ * The routing mode is preserved faithfully on a restore: a null `routingMode`
  * stays null because the picker and the agent runtime both read null as "pin"
- * (pre-#2518 back-compat — see {@link effectiveMode}). A legacy row with a
- * single `connectionId` and no mode therefore stays pinned to that member, and
- * a row with no group (`connectionGroupId` null) still pins to its
- * `connectionId`. An omitted `routingMode` (optional on the wire type) is
- * coalesced to null rather than left undefined.
+ * (pre-#2518 back-compat — see {@link effectiveMode}). An omitted `routingMode`
+ * (optional on the wire type) is coalesced to null rather than left undefined.
  */
 export function resolveConversationScope(
   source: ConversationScopeSource,
-): RestoredConversationScope {
-  return {
-    groupId: source.connectionGroupId,
-    connectionId: source.connectionId,
-    routingMode: source.routingMode ?? null,
-  };
+  groups: ReadonlyArray<ChatEnvGroup>,
+): ConversationScopeDecision {
+  const groupId = source.connectionGroupId;
+  const connectionId = source.connectionId;
+  const routingMode = source.routingMode ?? null;
+
+  // A row that persisted no scope at all is never authoritative — defer to the
+  // seed/restore effect (decided before the load gate so it holds either way).
+  if (groupId === null && connectionId === null) return { kind: "seed" };
+
+  // Groups not loaded yet (cold-start open): we can't validate, so trust the
+  // row optimistically. Losing the restore here would be a worse, more common
+  // regression than the rare archived-env + cold-start intersection.
+  if (groups.length === 0) {
+    return { kind: "restore", groupId, connectionId, routingMode };
+  }
+
+  // Groups loaded: the row's group must still resolve to a visible environment,
+  // else a stale group id reaches the chat route and is rejected.
+  const group = groupId !== null ? groups.find((g) => g.id === groupId) : undefined;
+  if (!group) return { kind: "seed" };
+
+  // Group resolves. Keep the pinned member if it's still present; otherwise
+  // repair the execution target to the group primary (never send a stale id),
+  // preserving the still-valid group rather than discarding it.
+  const member = group.members.find((m) => m.connectionId === connectionId);
+  if (member) {
+    return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode };
+  }
+  const repaired =
+    group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
+    group.members[0];
+  if (!repaired) return { kind: "seed" }; // group exists but has no live members
+  return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode };
 }
 
 /**

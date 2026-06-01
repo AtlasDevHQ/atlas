@@ -20,15 +20,16 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 6 issues — 2 shipped) — in flight. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
+**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 7 issues — 4 shipped) — in flight. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
 
 Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 + the #3071 doc-fix independent:
 
 - [x] S1a — Restore the sticky scope preference on a fresh chat — fixes reset-on-reload ([#3064](https://github.com/AtlasDevHQ/atlas/issues/3064), bug, no deps) — PR #3070
 - [x] S1b — Restore a conversation's scope when it is opened ([#3065](https://github.com/AtlasDevHQ/atlas/issues/3065), bug) — PR #3072 + scope-validation follow-up
-- [ ] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature, blocked by #3065) ⟵ in flight (branch `feat/3066-rest-scope-exclude-set`)
-- [ ] S2b — REST-only focus: suspend SQL for a conversation ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067), feature, blocked by #3066)
+- [x] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature) — PR #3077 (migration 0112 `rest_excluded_datasource_ids`; resolver + bound-tool enforcement; checkbox picker)
+- [ ] S2b — REST-only focus: suspend SQL for a conversation ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067), feature, blocked by #3066) ⟵ next
 - [ ] S3 — Persist the active conversation in the URL ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068), refactor, independent — synergizes with #3065)
+- [ ] REST-only-workspace picker visibility + independent exclude-set lifecycle ([#3078](https://github.com/AtlasDevHQ/atlas/issues/3078), feature — deferred Codex edges from S2a; pairs with S2b)
 - [x] OpenAPI drift — `ConversationSchema` omits `routingMode` ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071), bug, independent doc-fix surfaced by S1b) — PR #3075
 
 Parent [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) stays in the Architecture Backlog (left unmodified per `/to-issues`). The **Staging environment** track (below) continues in parallel, independent of the tag train.

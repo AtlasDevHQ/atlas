@@ -185,6 +185,7 @@ mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspacePrimaryRestDatasource: async () => null,
   defaultQuery: async () => [],
   RestDatasourceReconnectError: class extends Error {},
+  RestDatasourceFocusUnusableError: class extends Error {},
 }));
 
 // #3067 — stub the REST representation builder so a focused-turn datasource stub

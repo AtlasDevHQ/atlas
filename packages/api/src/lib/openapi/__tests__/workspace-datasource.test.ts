@@ -13,6 +13,7 @@ import {
   resolveWorkspacePrimaryRestDatasource,
   defaultQuery,
   RestDatasourceReconnectError,
+  RestDatasourceFocusUnusableError,
   type OpenApiInstallRow,
 } from "../workspace-datasource";
 import { buildOperationGraph } from "../spec";
@@ -571,6 +572,42 @@ describe("resolveWorkspaceRestDatasources — REST-only focus (#3067, S2b)", () 
       focus: "ds-uninstalled",
     });
     expect(result).toEqual([]);
+  });
+
+  it("STRICT resolver throws RestDatasourceFocusUnusableError when the focus matches a present-but-unbuildable install (Codex P1)", async () => {
+    // The focused row exists but builds to nothing for a non-reconnectable reason
+    // (here a blocked/internal base URL the SSRF guard rejects). This must be
+    // distinguishable from "uninstalled" so the focus path fails CLOSED instead
+    // of the agent silently re-enabling SQL for a still-present datasource.
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    await expect(
+      resolveWorkspaceRestDatasourcesOrThrow("org-1", {
+        query: queryReturning([
+          { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+        ]),
+        focus: "ds-blocked",
+      }),
+    ).rejects.toBeInstanceOf(RestDatasourceFocusUnusableError);
+  });
+
+  it("never-rejects resolver degrades a present-but-unbuildable focus to [] (python egress denies, never widens)", async () => {
+    // The non-claiming path can't fail closed (no SQL tool to suspend), so it
+    // returns [] — python egress then resolves a null primary and denies.
+    delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning([
+        { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+      ]),
+      focus: "ds-blocked",
+    });
+    expect(result).toEqual([]);
+    const primary = await resolveWorkspacePrimaryRestDatasource("org-1", {
+      query: queryReturning([
+        { install_id: "ds-blocked", config: config({ base_url_override: "https://10.0.0.5/v1" }) },
+      ]),
+      focus: "ds-blocked",
+    });
+    expect(primary).toBeNull();
   });
 
   it("an empty-string focus is ignored (resolves the default scope, not 'focus on nothing')", async () => {

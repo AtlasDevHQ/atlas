@@ -108,6 +108,31 @@ export class RestDatasourceReconnectError extends Error {
   }
 }
 
+/**
+ * #3067 (Codex P1) — a REST-only focus matched an install row that is PRESENT
+ * but could not be built (decrypt failure, unsupported/unhandled auth, blocked
+ * base URL — the non-reconnectable skips inside `buildDatasourcesFromRows`;
+ * reconnectable ones already surface as {@link RestDatasourceReconnectError}).
+ *
+ * This is distinct from "the focus matched no install at all" (which resolves to
+ * `[]` — the agent's safe fall-back-to-default-scope signal). A present-but-
+ * unusable focus must NOT look empty, or the agent re-enables SQL for a
+ * datasource the user deliberately narrowed to — a REST-only focus contract
+ * violation. The strict resolver throws this so the focus path fails CLOSED; the
+ * never-rejects {@link resolveWorkspaceRestDatasources} degrades it to `[]` (its
+ * callers — python egress — then deny rather than widen).
+ */
+export class RestDatasourceFocusUnusableError extends Error {
+  readonly focusId: string;
+  constructor(focusId: string) {
+    super(
+      `Focused REST datasource "${focusId}" is installed but could not be built (bad credential, unsupported auth, or blocked URL).`,
+    );
+    this.name = "RestDatasourceFocusUnusableError";
+    this.focusId = focusId;
+  }
+}
+
 export interface ResolveWorkspaceDeps {
   readonly query?: OpenApiInstallQuery;
   /**
@@ -583,7 +608,20 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
   // here, so the agent loop falls back to default scope. Guard on length so a
   // stray empty string can't be a "focus on nothing".
   if (deps.focus && deps.focus.length > 0) {
-    return buildDatasourcesFromRows(workspaceId, rowsFocused(rows, deps.focus), mint);
+    const focusedRows = rowsFocused(rows, deps.focus);
+    const built = await buildDatasourcesFromRows(workspaceId, focusedRows, mint);
+    // #3067 (Codex P1) — distinguish "focus matched no install" (genuinely
+    // uninstalled → `[]`, the agent's safe fall-back-to-default-scope case) from
+    // "focus matched an install row that built to nothing" (present but unusable:
+    // decrypt failure, unsupported auth, blocked URL). Returning `[]` for the
+    // latter would let the agent read it as uninstalled and re-enable SQL,
+    // violating the REST-only focus contract — fail CLOSED instead. Reconnectable
+    // skips already threw inside buildDatasourcesFromRows, so this covers the
+    // non-reconnectable remainder.
+    if (built.length === 0 && focusedRows.length > 0) {
+      throw new RestDatasourceFocusUnusableError(deps.focus);
+    }
+    return built;
   }
   // #3044 — drop out-of-scope datasources BEFORE build, so the reconnect tally
   // (and the never-rejects `[]` contract) is computed only over the in-scope set.
@@ -618,6 +656,17 @@ export async function resolveWorkspaceRestDatasources(
       log.warn(
         { workspaceId, reconnectableCount: err.reconnectableCount },
         "OpenAPI datasource install(s) need reconnecting — continuing with none for this non-claiming path",
+      );
+      return [];
+    }
+    // #3067 (Codex P1) — a present-but-unusable focus isn't a load failure
+    // either. This non-claiming path can't fail closed (it has no SQL tool to
+    // suspend), so it degrades to `[]`; its callers (python egress) then deny
+    // egress rather than widen. The strict resolver is where focus fails closed.
+    if (err instanceof RestDatasourceFocusUnusableError) {
+      log.warn(
+        { workspaceId, focus: err.focusId },
+        "Focused REST datasource is installed but unusable — continuing with none for this non-claiming path",
       );
       return [];
     }

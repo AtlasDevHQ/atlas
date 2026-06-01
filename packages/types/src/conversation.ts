@@ -62,11 +62,13 @@ export interface Conversation {
    * Authoritative per-conversation; the web sticky preference only seeds
    * NEW chats. SQL routing (`routingMode`) is independent and unaffected.
    *
-   * Optional + nullable so pre-#3066 test fixtures and external SDK
-   * consumers can construct a `Conversation` without it; the runtime treats
-   * missing the same as `[]`.
+   * Optional (not nullable) so pre-#3066 test fixtures and external SDK
+   * consumers can omit it; the runtime treats missing the same as `[]`. The
+   * server NEVER serializes null — the column is `NOT NULL DEFAULT '{}'` and
+   * `rowToConversation` always yields a `string[]` (or `[]`), so unlike the
+   * genuinely-nullable `routingMode` this field has no null state.
    */
-  restExcludedDatasourceIds?: string[] | null;
+  restExcludedDatasourceIds?: string[];
   starred: boolean;
   createdAt: string;
   updatedAt: string;

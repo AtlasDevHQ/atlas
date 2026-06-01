@@ -96,11 +96,12 @@ const ConversationSchema = z.object({
    * Per-conversation REST datasource exclude-set (#3066). Excluded
    * `install_id`s the agent must NOT query for this conversation. Empty
    * (`[]`, the column default) = every in-scope REST datasource is
-   * queryable. Optional + nullable so pre-#3066 rows and external SDK
-   * consumers need not supply it. Mirrors the `Conversation` wire type;
-   * the runtime serializes it via `rowToConversation`.
+   * queryable. Optional (NOT nullable) — the column is `NOT NULL DEFAULT
+   * '{}'` and `rowToConversation` always serializes a `string[]` (or `[]`),
+   * so the response is never null (unlike the genuinely-nullable
+   * `routingMode`). Mirrors the `Conversation` wire type.
    */
-  restExcludedDatasourceIds: z.array(z.string()).nullable().optional(),
+  restExcludedDatasourceIds: z.array(z.string()).optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

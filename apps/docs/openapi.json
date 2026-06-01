@@ -1857,10 +1857,7 @@
                             ]
                           },
                           "restExcludedDatasourceIds": {
-                            "type": [
-                              "array",
-                              "null"
-                            ],
+                            "type": "array",
                             "items": {
                               "type": "string"
                             }
@@ -2146,10 +2143,7 @@
                       ]
                     },
                     "restExcludedDatasourceIds": {
-                      "type": [
-                        "array",
-                        "null"
-                      ],
+                      "type": "array",
                       "items": {
                         "type": "string"
                       }

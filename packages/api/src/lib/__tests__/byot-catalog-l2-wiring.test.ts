@@ -113,8 +113,8 @@ const BEDROCK_REGION: BedrockRegion = "us-east-1";
 const PERSISTED_FETCHED_AT = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
 const ANTHROPIC_PERSISTED: GatewayCatalogModel = {
-  id: "claude-opus-4-7",
-  name: "Claude Opus 4.7",
+  id: "claude-opus-4-8",
+  name: "Claude Opus 4.8",
   provider: "anthropic",
   type: "language",
   contextWindow: null,
@@ -189,7 +189,7 @@ describe("byot-catalog L1↔L2 wiring (anthropic representative)", () => {
     expect(res.source).toBe("cache");
     expect(res.fetchedAt).toBe(PERSISTED_FETCHED_AT);
     expect(res.models).toHaveLength(1);
-    expect(res.models[0].id).toBe("claude-opus-4-7");
+    expect(res.models[0].id).toBe("claude-opus-4-8");
     expect(loadFromDBSpy).toHaveBeenCalledTimes(1);
     expect(loadFromDBSpy.mock.calls[0][0]).toBe(ORG);
     expect(loadFromDBSpy.mock.calls[0][1]).toBe("anthropic");

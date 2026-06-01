@@ -84,7 +84,7 @@ function overageColor(status: string): string {
 const MODEL_OPTIONS = [
   { value: "anthropic/claude-haiku-4.5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
   { value: "anthropic/claude-sonnet-4.6", label: "Sonnet 4.6", hint: "balanced" },
-  { value: "anthropic/claude-opus-4.7", label: "Opus 4.7", hint: "most capable" },
+  { value: "anthropic/claude-opus-4.8", label: "Opus 4.8", hint: "most capable" },
 ] as const;
 
 // Atlas previously stored model settings in the Anthropic-direct hyphen
@@ -95,7 +95,7 @@ const MODEL_OPTIONS = [
 const LEGACY_MODEL_ALIASES: Record<string, string> = {
   "claude-haiku-4-5": "anthropic/claude-haiku-4.5",
   "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
-  "claude-opus-4-6": "anthropic/claude-opus-4.7",
+  "claude-opus-4-6": "anthropic/claude-opus-4.8",
 };
 
 function canonicalizeModel(value: string): string {

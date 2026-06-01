@@ -171,7 +171,7 @@ describe("WorkspaceModelConfigSchema", () => {
     const deprecated = {
       ...validModelConfig,
       modelStatus: "deprecated" as const,
-      modelSuggestedReplacement: "claude-opus-4-7",
+      modelSuggestedReplacement: "claude-opus-4-8",
     };
     expect(WorkspaceModelConfigSchema.parse(deprecated)).toEqual(deprecated);
   });
@@ -189,7 +189,7 @@ describe("WorkspaceModelConfigSchema", () => {
     const stray = {
       ...validModelConfig,
       modelStatus: "healthy" as const,
-      modelSuggestedReplacement: "claude-opus-4-7",
+      modelSuggestedReplacement: "claude-opus-4-8",
     };
     expect(() => WorkspaceModelConfigSchema.parse(stray)).toThrow();
   });

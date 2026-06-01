@@ -22,10 +22,12 @@ const PLATFORM_MODEL_LABELS: Record<string, string> = {
   "claude-sonnet-4-6": "Sonnet 4.6",
   "claude-opus-4-6": "Opus 4.6",
   "claude-opus-4-7": "Opus 4.7",
+  "claude-opus-4-8": "Opus 4.8",
   "anthropic/claude-haiku-4.5": "Haiku 4.5",
   "anthropic/claude-sonnet-4.6": "Sonnet 4.6",
   "anthropic/claude-opus-4.6": "Opus 4.6",
   "anthropic/claude-opus-4.7": "Opus 4.7",
+  "anthropic/claude-opus-4.8": "Opus 4.8",
 };
 
 function platformModelLabel(value: string): string {

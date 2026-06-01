@@ -299,7 +299,7 @@ describe("setWorkspaceModelConfig", () => {
     ee.queueMockRows([makeRow()], [makeRow()]);
     await run(setWorkspaceModelConfig("org-1", {
       provider: "anthropic",
-      model: "claude-opus-4-7",
+      model: "claude-opus-4-8",
       // apiKey intentionally omitted
     }));
     // capturedQueries[0] = transition-guard SELECT; [1] = the UPSERT.

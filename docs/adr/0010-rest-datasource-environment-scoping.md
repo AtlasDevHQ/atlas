@@ -1,6 +1,6 @@
 # ADR-0010: REST datasource environment scoping
 
-**Status:** Accepted
+**Status:** Accepted — picker-surface consequence superseded by [ADR-0011](./0011-unified-conversation-scope.md) (REST becomes pickable/excludable + a REST-only focus, not a read-only footer). The scoping model, resolver tri-state, and `catalog_id` discriminator below all stand.
 **Date:** 2026-05-31
 **Context milestone:** v0.0.3 — Spec Lifecycle (closeout of a composability gap from v0.0.2)
 **Depends on:** [ADR-0006](./0006-three-pillar-integration-taxonomy.md), [ADR-0007](./0007-unified-install-pipeline.md)

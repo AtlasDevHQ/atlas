@@ -116,3 +116,53 @@ Atlas runs in two deploy modes: **SaaS** (one operator, many customers) and **se
 - **Operator** — the party who runs the Atlas instance. Owns the deploy, the App Registrations, the catalog seed (`atlas.config.ts`), the infrastructure choices (sandbox priority, scheduler backend, residency regions). Controls what's *possible*.
 - **Customer admin** — the party who configures a specific Workspace. Owns Workspace Connections, integration installs, per-Workspace config (channel allowlists, model selection, BYOT credentials, etc.). Controls what's *active* for their Workspace.
 - **The seam** — where Operator capability meets Customer activation. Lives at `plugin_catalog` (operator declares) → `workspace_plugins` (customer activates). Any surface that puts Customer concerns into operator-only space (e.g. requiring an `atlas.config.ts` edit to add a Platform per customer) is a **leak** of self-host shape into SaaS shape. See ADRs 0001–0003 for closing the chat-Platform leak.
+
+## Conversation scope
+
+A conversation can read from two kinds of **Datasource** (see Pillars): SQL connections and REST datasources. **Conversation scope** is the umbrella for *which* of those a given conversation can query. It has two axes — **SQL routing** and **REST scope** — surfaced together in the chat header's **scope picker** (`ChatScopePicker`, historically `ChatEnvPicker` / "env picker"). Scope is **per-conversation and authoritative**: it persists on the `conversations` row, an opened conversation restores its own scope, and a workspace-scoped browser preference (the *sticky* last selection) seeds brand-new chats. See [ADR-0011](./docs/adr/0011-unified-conversation-scope.md).
+
+- **Conversation scope**:
+  The full set of datasources a conversation can query — its SQL routing plus its REST scope. The scope picker's single source of truth.
+  _Avoid_: "env" / "environment picker" (the picker predates REST and covered SQL only); "reach" (considered, dropped in favour of "scope").
+
+- **SQL routing**:
+  The SQL axis of scope — the active **Connection group**, which of its **Members** execute, and the **routing mode** (Auto/Pin/All) that decides that. `executeSQL` only.
+  _Avoid_: "SQL scope" (the axis is named *routing*); "environment" used loosely for the group.
+
+- **Connection group**:
+  A named set of interchangeable SQL connections (e.g. a multi-region `prod` group with `apac-prod` / `eu-prod` / `us-prod`), carrying an operator-designated primary. The unit SQL routing binds to.
+  _Avoid_: "environment" (informal only), "cluster".
+
+- **Member**:
+  One SQL connection within a connection group; an `executeSQL` execution target. REST datasources are **not** members — they have no such group membership and are not run by `executeSQL`.
+
+- **Routing mode**:
+  The Auto / Pin / All value of SQL routing — **Auto** (agent decides per turn), **Pin** (one member), **All** (fan out across every member). Persisted as `routingMode`. SQL-only; it never affects REST scope.
+  _Avoid_: conflating with `executeSQL`'s per-turn **`scope`** argument (the agent's per-call member choice under Auto), or with the umbrella **Conversation scope**.
+
+- **REST scope**:
+  The REST axis of scope — which of the workspace's **REST datasources** the conversation can reach. Two states:
+  - *Default* — all in scope (workspace-global REST is reachable in every conversation, per [ADR-0010](./docs/adr/0010-rest-datasource-environment-scoping.md)), narrowed by an **exclude-set** (`rest_excluded_datasource_ids`); a newly-added REST datasource is reachable by default, and SQL routing stays active.
+  - *Focused (REST-only)* — the conversation targets exactly one REST datasource (`rest_focus_datasource_id`) and **SQL is suspended** (no `executeSQL`). The "ask Stripe only" case.
+  _Avoid_: "REST routing" (REST is scoped/focused, not routed).
+
+- **REST datasource**:
+  A **Datasource** reached over an `openapi-generic` install via `executeRestOperation` rather than SQL. Workspace-global by default, optionally group-scoped (ADR-0010). In default REST scope iff (workspace-global OR scoped to the active group) AND not in the exclude-set; in focused scope iff it is the focus target.
+
+### Relationships
+
+- A **Conversation scope** has one **SQL routing** axis and one **REST scope** axis.
+- **SQL routing** binds one **Connection group** + a **routing mode**; the group has one or more **Members**.
+- **REST scope** is either *default* (workspace in-scope **REST datasources** minus the exclude-set, SQL active) or *focused* (one REST datasource, SQL suspended).
+- A **routing mode** governs **Members** only; it never changes **REST scope** (REST scope follows the active group + exclude-set, mode-independent — ADR-0010).
+
+### Flagged ambiguities
+
+- "env picker" / "environment" — the chat-header control was built SQL-only (#2345) and named for environments; it now governs full **Conversation scope**. Canonical name: **scope picker**; "environment" survives only as an informal synonym for **Connection group**.
+- "scope" is overloaded — **Conversation scope** (this umbrella) vs `executeSQL`'s per-turn **`scope`** argument (the agent's per-call member choice under Auto routing) vs ADR-0010 "in-scope". Disambiguate in prose.
+- "reach" / "routing" as the umbrella — both considered and rejected. The umbrella is **Conversation scope**; the SQL axis is **SQL routing**; the REST axis is **REST scope**.
+
+### Example dialogue
+
+> **Dev:** "If I **Pin** a conversation to `apac-prod`, does that stop it hitting Stripe?"
+> **Maintainer:** "No — the **routing mode** only picks which **Member** runs `executeSQL`. Stripe is a workspace-global **REST datasource**, so it's in **REST scope** regardless of the pin. To take it out, **exclude** it. If you want *only* Stripe and no SQL at all, **focus** it — that suspends SQL routing for the conversation."

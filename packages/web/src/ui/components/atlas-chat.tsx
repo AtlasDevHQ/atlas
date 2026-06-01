@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useQueryStates } from "nuqs";
 import { useQueryClient } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig } from "../context";
@@ -47,6 +48,7 @@ import { parseSuggestions } from "../lib/helpers";
 import { ErrorBoundary } from "./error-boundary";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { useChatRoutingPreferenceStore } from "@/lib/stores/chat-routing-preference-store";
+import { chatSearchParams, resolveConversationUrlAction } from "./search-params";
 
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
@@ -111,7 +113,27 @@ export function AtlasChat() {
   // letting the agent fail with a confusing "no datasource" error.
   const showDevChatEmpty = useDevModeNoDrafts(["connections"]);
   const [input, setInput] = useState("");
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  // #3068 — the active conversation lives in the URL (`?id=`) so a reload or a
+  // deep link reopens it (combined with #3065 the conversation's scope comes
+  // back too). nuqs-backed; `conversationId` keeps the same string|null shape
+  // every existing call site already expects.
+  const [chatUrlParams, setChatUrlParams] = useQueryStates(chatSearchParams);
+  const conversationId = chatUrlParams.id || null;
+  const setConversationId = useCallback(
+    (id: string | null, history: "push" | "replace" = "push") => {
+      // `push` for deliberate navigations (sidebar select, new chat) so
+      // back/forward step through conversations; `replace` when the agent mints
+      // a conversation id mid-chat — that's a continuation of the current empty
+      // chat, not a new navigation entry the back button should land on.
+      void setChatUrlParams({ id: id ?? "" }, { history });
+    },
+    [setChatUrlParams],
+  );
+  // #3068 — the conversation the message thread is currently bound to (loaded,
+  // streaming, or load-in-flight). The URL-driven open effect dedupes against
+  // this so it never re-loads the active conversation (which would clobber a
+  // live stream) nor retries a failed deep-link load on every render.
+  const openedConversationIdRef = useRef<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
@@ -185,7 +207,12 @@ export function AtlasChat() {
     isCrossOrigin,
     getConversationId: () => conversationId,
     onNewConversationId: (id) => {
-      setConversationId(id);
+      // #3068 — the agent minted a conversation id for the in-flight chat. Mark
+      // it bound BEFORE writing the URL so the URL-driven open effect treats it
+      // as already-loaded and never re-fetches over the live stream. `replace`
+      // (not push) — this is a continuation of the current empty chat.
+      openedConversationIdRef.current = id;
+      setConversationId(id, "replace");
       setTimeout(() => {
         refreshConvosRef.current().catch((err: unknown) => {
           console.warn(
@@ -625,6 +652,10 @@ export function AtlasChat() {
 
   async function handleSelectConversation(id: string) {
     if (loadingConversation) return;
+    // #3068 — mark this conversation bound up-front (before the await) so the
+    // URL-driven open effect dedupes against it: a redundant dispatch is a
+    // no-op, and a load that fails below isn't retried on every render.
+    openedConversationIdRef.current = id;
     setLoadingConversation(true);
     try {
       // #3065 — fetch the full row (not just the messages) so the
@@ -694,6 +725,10 @@ export function AtlasChat() {
 
   function handleNewChat() {
     setMessages([]);
+    // #3068 — clear the bound-conversation ref and the URL (`?id=`) so the
+    // open effect re-seeds a fresh chat instead of treating the just-left
+    // conversation as still loaded.
+    openedConversationIdRef.current = null;
     setConversationId(null);
     convos.setSelectedId(null);
     setInput("");
@@ -721,6 +756,34 @@ export function AtlasChat() {
     // preference (or the not-focused default).
     setSelectedRestFocus(null);
   }
+
+  // #3068 — the single bridge from URL → conversation state. A deep link / page
+  // reload, a sidebar select (which writes the URL), and browser back/forward
+  // all flow through here: open the conversation named in `?id=` (restoring its
+  // scope via handleSelectConversation → #3065) or, when the id clears while one
+  // is loaded, reset to a fresh chat. The decision (including the self-hosted
+  // carve-out that must NOT wait on a groups fetch that never runs) lives in the
+  // unit-tested `resolveConversationUrlAction`. handleSelectConversation /
+  // handleNewChat are recreated each render, so reach them through refs (as
+  // refreshConvosRef does) to keep the effect deps minimal.
+  const handleSelectConversationRef = useRef(handleSelectConversation);
+  handleSelectConversationRef.current = handleSelectConversation;
+  const handleNewChatRef = useRef(handleNewChat);
+  handleNewChatRef.current = handleNewChat;
+  useEffect(() => {
+    const action = resolveConversationUrlAction({
+      urlId: chatUrlParams.id,
+      loadedId: openedConversationIdRef.current,
+      authResolved,
+      isSignedIn,
+      envGroupsHasLoaded: envGroupsQuery.hasLoaded,
+    });
+    if (action.kind === "open") {
+      void handleSelectConversationRef.current(action.id);
+    } else if (action.kind === "clear") {
+      handleNewChatRef.current();
+    }
+  }, [chatUrlParams.id, authResolved, isSignedIn, envGroupsQuery.hasLoaded]);
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI
   // when managed auth is active but session hasn't been checked yet.

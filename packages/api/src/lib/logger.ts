@@ -90,9 +90,11 @@ interface RequestContext {
    * override) so the REST datasource resolver drops these `install_id`s
    * BEFORE the prompt + the bound `executeRestOperation` tool see them.
    * Undefined here = exclude nothing (every in-scope REST datasource stays
-   * queryable). SQL routing (`routingMode`) is unaffected.
+   * queryable). SQL routing (`routingMode`) is unaffected. `readonly` to match
+   * the rest of the internal exclude-set vocabulary (`ResolveWorkspaceDeps`,
+   * the preference store) — consumers only read it.
    */
-  restExcludedDatasourceIds?: string[];
+  restExcludedDatasourceIds?: readonly string[];
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

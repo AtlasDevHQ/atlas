@@ -24,6 +24,7 @@ import {
   renameBranch,
   forkConversation,
   convertToNotebook,
+  updateConversationRestExcluded,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -1366,6 +1367,36 @@ describe("conversations module", () => {
       expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
       expect(queryCalls[0].params?.[2]).toBe("u1");
       expect(queryCalls[0].params?.[3]).toBe("org-B");
+    });
+
+    // #3066 — the REST exclude-set write helper. Binds the JS array directly to
+    // the text[] column ($1), org/user-scopes the UPDATE, and returns the same
+    // fail-soft result contract as updateConversationRoutingMode.
+    it("updateConversationRestExcluded writes the array, scoped + parameterized", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationRestExcluded("c1", ["ds-1", "ds-2"], "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("UPDATE conversations SET rest_excluded_datasource_ids = $1");
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      // $1 is the array bound directly; $2 the id; $3 user; $4 org.
+      expect(queryCalls[0].params).toEqual([["ds-1", "ds-2"], "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationRestExcluded returns not_found when no row matches (cross-org)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await updateConversationRestExcluded("c1", [], "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("updateConversationRestExcluded short-circuits to no_db when the internal DB is off", async () => {
+      // No enableInternalDB() — hasInternalDB() is false.
+      const result = await updateConversationRestExcluded("c1", ["ds-1"]);
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+      expect(queryCalls).toHaveLength(0);
     });
 
     it("shareConversation scopes the preflight SELECT by orgId (shareMode='org')", async () => {

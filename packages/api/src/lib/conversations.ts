@@ -137,9 +137,10 @@ function rowToConversation(r: Record<string, unknown>): Conversation {
       ? r.routing_mode
       : null,
     // #3066 — per-conversation REST datasource exclude-set. The `pg`
-    // driver returns a `text[]` column as a JS string[]; a SELECT that
-    // omits the column (e.g. the list view) leaves it undefined → []
-    // (empty = all in scope), which the wire type permits.
+    // driver returns a `text[]` column as a JS string[]. Every SELECT in
+    // this file includes the column; the defensive `Array.isArray` guard
+    // covers a hypothetical caller that omits it (undefined → [], empty =
+    // all in scope), which the wire type permits.
     restExcludedDatasourceIds: Array.isArray(r.rest_excluded_datasource_ids)
       ? (r.rest_excluded_datasource_ids as string[])
       : [],

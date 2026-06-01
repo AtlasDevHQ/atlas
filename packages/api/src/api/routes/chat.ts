@@ -69,6 +69,15 @@ const DEFAULT_AGENT_MAX_STEPS = 25;
  * 0 ("disabled") when the setting is `0`, an empty string, or invalid —
  * any non-positive integer disables the cap. F-77.
  */
+function getConversationStepCap(): number {
+  const raw = getSetting("ATLAS_CONVERSATION_STEP_CAP");
+  if (raw === undefined) return DEFAULT_CONVERSATION_STEP_CAP;
+  if (raw === "") return 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_CONVERSATION_STEP_CAP;
+  return Math.floor(n);
+}
+
 /**
  * #3066 — order-independent equality for two string sets. Used to decide
  * whether the body's REST exclude-set differs from the conversation's
@@ -82,15 +91,6 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
   if (setA.size !== setB.size) return false;
   for (const v of setA) if (!setB.has(v)) return false;
   return true;
-}
-
-function getConversationStepCap(): number {
-  const raw = getSetting("ATLAS_CONVERSATION_STEP_CAP");
-  if (raw === undefined) return DEFAULT_CONVERSATION_STEP_CAP;
-  if (raw === "") return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_CONVERSATION_STEP_CAP;
-  return Math.floor(n);
 }
 
 /**

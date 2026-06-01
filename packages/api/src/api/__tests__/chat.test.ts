@@ -538,6 +538,37 @@ describe("POST /api/v1/chat", () => {
     expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
   });
 
+  // #3066 — the `sameStringSet` gate: a body that sends a non-empty set EQUAL
+  // to the stored set (here reordered) must NOT burn an UPDATE. A regression to
+  // order-sensitive (e.g. JSON.stringify) comparison would bump `updated_at`
+  // and reshuffle the conversation list on every turn.
+  it("skips the UPDATE when the body's exclude-set equals the stored set (reordered) (#3066)", async () => {
+    const convId = "d4e5f6a7-b8c9-4def-89ab-cdef01234567";
+    mockGetConversationChat.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: convId,
+        userId: null,
+        title: "Test",
+        connectionId: null,
+        connectionGroupId: null,
+        routingMode: null,
+        restExcludedDatasourceIds: ["ds-1", "ds-2"],
+        messages: [],
+      },
+    });
+    const response = await app.fetch(
+      makeRequest({
+        messages: [{ id: "1", role: "user", parts: [{ type: "text", text: "same set" }] }],
+        conversationId: convId,
+        // Same set, different order — set-equality must treat it as unchanged.
+        restExcludedDatasourceIds: ["ds-2", "ds-1"],
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(mockUpdateConversationRestExcluded).not.toHaveBeenCalled();
+  });
+
   // F-74 regression pin: the chat handler MUST pass `bucket: "chat"` so the
   // request lands in the chat-scoped sliding window. Without this option a
   // 25-step agent run drains the same allowance that serves cheap admin

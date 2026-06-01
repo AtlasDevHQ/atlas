@@ -50,6 +50,7 @@ import type {
   MeConnectionGroupsEmptyReason,
 } from "@/ui/lib/types";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
+import type { ChatRoutingPreference } from "@/lib/stores/chat-routing-preference-store";
 
 export type { ChatRestDatasourceScope };
 
@@ -186,6 +187,146 @@ export function pickDefaultEnvSeed(
     group.members[0];
   if (!member) return null;
   return { groupId: group.id, connectionId: member.connectionId };
+}
+
+/**
+ * How the picker's current selection came to be (#3064). Only `explicit`
+ * short-circuits the resolver; `unset` and `default` both re-evaluate the
+ * stored preference on every run (so a matching preference can still restore
+ * over them). The one thing `default` adds over `unset` is suppressing a
+ * second default seed once one has been applied.
+ *
+ *   - `unset` — nothing selected yet (fresh chat before any seed).
+ *   - `default` — the effect applied the group-primary fallback. With no
+ *     matching preference it stays; a workspace-matching preference still
+ *     restores over it (it never short-circuits the way `explicit` does).
+ *   - `explicit` — the user picked it (or a conversation restored it).
+ *     Authoritative; never auto-replaced.
+ */
+export type EnvSelectionProvenance = "unset" | "default" | "explicit";
+
+/**
+ * A workspace-scoped sticky env-picker preference. Aliased to the store's
+ * own type so the two can't drift (the store has no back-reference to this
+ * module, so the import is cycle-free).
+ */
+export type EnvSelectionPreference = ChatRoutingPreference;
+
+export interface ResolveEnvSelectionInput {
+  /** Resolved groups from `/api/v1/me/connection-groups`. */
+  readonly groups: ReadonlyArray<ChatEnvGroup>;
+  /** The picker's current selection. */
+  readonly current: {
+    readonly groupId: string | null;
+    readonly connectionId: string | null;
+    readonly routingMode: ConversationRoutingMode | null;
+  };
+  /** How {@link current} was set. */
+  readonly provenance: EnvSelectionProvenance;
+  /** The persisted sticky preference for this browser. */
+  readonly preference: EnvSelectionPreference;
+  /** Active workspace id (`null` = self-hosted / no active org). */
+  readonly activeWorkspaceId: string | null;
+  /** The persist store has finished rehydrating `localStorage`. */
+  readonly preferenceHydrated: boolean;
+  /** The auth session has resolved, so {@link activeWorkspaceId} is final. */
+  readonly sessionResolved: boolean;
+}
+
+/**
+ * What the seed/restore effect should do — `wait` (data not ready),
+ * `noop` (leave the selection alone), `restore` (apply the sticky
+ * preference), or `seed` (apply the group-primary default).
+ */
+export type EnvSelectionDecision =
+  | { readonly kind: "wait" }
+  | { readonly kind: "noop" }
+  | {
+      readonly kind: "restore";
+      readonly groupId: string;
+      readonly connectionId: string;
+      readonly routingMode: ConversationRoutingMode | null;
+    }
+  | { readonly kind: "seed"; readonly groupId: string; readonly connectionId: string };
+
+/**
+ * Pure decision behind atlas-chat's fresh-chat seed/restore effect
+ * (#3064). Centralizes the precedence that the inline effect used to get
+ * wrong on reload:
+ *
+ *   1. **Gate.** Do nothing until groups have loaded, the preference store
+ *      has rehydrated, and the session has resolved. Committing a default
+ *      seed inside that window — then locking it in against the
+ *      later-arriving preference — was the reset-on-reload bug.
+ *   2. **Explicit wins.** A user pick / conversation-restored value is
+ *      never auto-replaced.
+ *   3. **Preference > default.** Restore a sticky preference that belongs
+ *      to the active workspace and still resolves to a live group+member;
+ *      a preference from another workspace is ignored (ids can collide).
+ *      Because this step runs before the seed step on every invocation, a
+ *      previously default-seeded selection is restored over as soon as a
+ *      matching preference arrives; an unmatched preference falls back to
+ *      the group-primary default seed.
+ */
+export function resolveEnvSelection(
+  input: ResolveEnvSelectionInput,
+): EnvSelectionDecision {
+  const {
+    groups,
+    current,
+    provenance,
+    preference,
+    activeWorkspaceId,
+    preferenceHydrated,
+    sessionResolved,
+  } = input;
+
+  // 1. Gate — wait until every input we need to choose correctly is ready.
+  if (groups.length === 0) return { kind: "wait" };
+  if (!preferenceHydrated) return { kind: "wait" };
+  if (!sessionResolved) return { kind: "wait" };
+
+  // 2. An explicit pick (or conversation-restored value) is authoritative.
+  if (provenance === "explicit") return { kind: "noop" };
+
+  // 3. Restore a workspace-matching, still-resolvable preference.
+  const prefMatchesWorkspace = preference.workspaceId === activeWorkspaceId;
+  const prefGroup =
+    prefMatchesWorkspace && preference.groupId
+      ? groups.find((g) => g.id === preference.groupId)
+      : undefined;
+  const prefMember = prefGroup?.members.find(
+    (m) => m.connectionId === preference.connectionId,
+  );
+  if (prefGroup && prefMember) {
+    // Already on the preferred selection — don't churn React state. The
+    // routing mode is part of the selection, so a mode-only difference (e.g.
+    // a default seed landed on the preferred member but with no mode) must
+    // still restore.
+    if (
+      current.groupId === prefGroup.id &&
+      current.connectionId === prefMember.connectionId &&
+      current.routingMode === preference.routingMode
+    ) {
+      return { kind: "noop" };
+    }
+    return {
+      kind: "restore",
+      groupId: prefGroup.id,
+      connectionId: prefMember.connectionId,
+      routingMode: preference.routingMode,
+    };
+  }
+
+  // No restorable preference. Seed the group-primary default only on a fresh
+  // chat (provenance "unset"); once a default has been seeded — or anything
+  // is already selected — leave it in place rather than re-seeding.
+  if (provenance === "default" || current.connectionId !== null) {
+    return { kind: "noop" };
+  }
+  const seed = pickDefaultEnvSeed(groups, current.connectionId);
+  if (!seed) return { kind: "noop" };
+  return { kind: "seed", groupId: seed.groupId, connectionId: seed.connectionId };
 }
 
 /**

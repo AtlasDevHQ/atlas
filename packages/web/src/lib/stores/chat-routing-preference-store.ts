@@ -41,6 +41,17 @@ export interface ChatRoutingPreference {
 }
 
 interface ChatRoutingPreferenceStore extends ChatRoutingPreference {
+  /**
+   * Transient (non-persisted) flag: `persist` has finished rehydrating
+   * `localStorage`. Consumers (atlas-chat's seed/restore effect) gate on
+   * this so a default env seed is never committed before the stored
+   * preference is available — that ordering is the reset-on-reload bug
+   * (#3064). Starts `false`; `onRehydrateStorage` flips it `true` once
+   * rehydration completes (synchronous storage → flips during create).
+   */
+  _hasHydrated: boolean;
+  /** Flip {@link _hasHydrated} — called by `onRehydrateStorage`. */
+  setHasHydrated: (value: boolean) => void;
   /** Persist the user's latest env-picker selection. */
   setPreference: (next: ChatRoutingPreference) => void;
   /** Forget the stored preference (e.g. on sign-out / workspace switch). */
@@ -58,6 +69,8 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
   persist(
     (set) => ({
       ...EMPTY,
+      _hasHydrated: false,
+      setHasHydrated: (value) => set({ _hasHydrated: value }),
       setPreference: (next) =>
         set({
           workspaceId: next.workspaceId,
@@ -65,17 +78,29 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
           connectionId: next.connectionId,
           routingMode: next.routingMode,
         }),
+      // Partial set — zustand shallow-merges, so `_hasHydrated` (absent from
+      // EMPTY) is preserved. A clear must not re-close the hydration gate.
       clear: () => set({ ...EMPTY }),
     }),
     {
       name: "atlas:chat:routing-preference",
       storage: createJSONStorage(() => localStorage),
+      // Persist ONLY the preference fields. `_hasHydrated` + setters are
+      // transient: persisting them is meaningless, and a stored
+      // `_hasHydrated: true` would — under any async-storage swap — report
+      // hydration complete before the read, reopening the reset-on-reload gate.
       partialize: (s) => ({
         workspaceId: s.workspaceId,
         groupId: s.groupId,
         connectionId: s.connectionId,
         routingMode: s.routingMode,
       }),
+      // Fires after rehydration (synchronously for localStorage, even when
+      // storage was empty), so the consumer's gate opens exactly once the
+      // stored preference — if any — has been read back in.
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     },
   ),
 );

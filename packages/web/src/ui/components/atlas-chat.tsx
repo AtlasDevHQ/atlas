@@ -22,9 +22,10 @@ import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
-  pickDefaultEnvSeed,
+  resolveEnvSelection,
   useChatEnvGroups,
   type ConversationRoutingMode,
+  type EnvSelectionProvenance,
 } from "./chat/env-picker";
 import { useDevModeNoDrafts } from "../hooks/use-dev-mode-no-drafts";
 import type { QuerySuggestion } from "@/ui/lib/types";
@@ -141,7 +142,13 @@ export function AtlasChat() {
   const prefGroupId = useChatRoutingPreferenceStore((s) => s.groupId);
   const prefConnectionId = useChatRoutingPreferenceStore((s) => s.connectionId);
   const prefRoutingMode = useChatRoutingPreferenceStore((s) => s.routingMode);
+  const prefHasHydrated = useChatRoutingPreferenceStore((s) => s._hasHydrated);
   const setRoutingPreference = useChatRoutingPreferenceStore((s) => s.setPreference);
+  // #3064 — how the current picker selection was set, so the seed/restore
+  // effect knows whether it may replace it. A ref (not state) because it
+  // must update synchronously alongside a setSelected* call without
+  // re-triggering the effect itself.
+  const selectionProvenanceRef = useRef<EnvSelectionProvenance>("unset");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -184,6 +191,13 @@ export function AtlasChat() {
   // so a different workspace (SaaS org switch / shared browser) can't seed a new
   // chat with this one's environment. `null` for self-hosted / no active org.
   const activeWorkspaceId = managedSession.data?.session?.activeOrganizationId ?? null;
+  // #3064 — `activeWorkspaceId` is only final once the session has resolved.
+  // For managed auth that means the session is no longer pending; self-hosted
+  // has no session so it is always resolved (workspace id stays null). Gating
+  // the seed on this stops a default seed from being committed while the
+  // workspace id is still null-because-loading and then locked in.
+  const sessionResolved =
+    authResolved && (!isManaged || !managedSession.isPending);
 
   // #2345 — populate the env/member picker from the user-facing
   // `/api/v1/me/connection-groups` route. Fetched only once auth has
@@ -197,44 +211,75 @@ export function AtlasChat() {
     getCredentials,
   });
 
-  // Seed selection only when empty — never override a user pick or a
-  // conversation-restored value. #3044 — prefer the persisted preference (a
-  // reload restores the user's last environment); fall back to the default
-  // seed when there is no stored preference or it no longer matches an
-  // available group/member (e.g. the connection was removed).
+  // Seed / restore the env-picker selection on a fresh chat. #3064 — the
+  // decision is centralized in `resolveEnvSelection`: it waits until groups,
+  // the persisted preference, and the workspace id are all ready (so a
+  // default seed never pre-empts a restorable preference — the reset-on-reload
+  // bug), restores a workspace-matching sticky preference over the default
+  // seed, and never clobbers an explicit pick. Provenance is tracked in a ref
+  // so a default-seeded value can still yield to a later-arriving match.
   useEffect(() => {
-    if (selectedConnectionId !== null) return;
-    if (envGroupsQuery.groups.length === 0) return;
+    const decision = resolveEnvSelection({
+      groups: envGroupsQuery.groups,
+      current: {
+        groupId: selectedGroupId,
+        connectionId: selectedConnectionId,
+        routingMode: selectedRoutingMode,
+      },
+      provenance: selectionProvenanceRef.current,
+      preference: {
+        workspaceId: prefWorkspaceId,
+        groupId: prefGroupId,
+        connectionId: prefConnectionId,
+        routingMode: prefRoutingMode,
+      },
+      activeWorkspaceId,
+      preferenceHydrated: prefHasHydrated,
+      sessionResolved,
+    });
 
-    // Only restore a preference that belongs to the active workspace — a stored
-    // selection from another workspace must not seed this one (#3044), even when
-    // group/connection ids collide across workspaces.
-    const prefMatchesWorkspace = prefWorkspaceId === activeWorkspaceId;
-    const prefGroup = prefMatchesWorkspace && prefGroupId
-      ? envGroupsQuery.groups.find((g) => g.id === prefGroupId)
-      : undefined;
-    const prefMember = prefGroup?.members.find(
-      (m) => m.connectionId === prefConnectionId,
-    );
-    if (prefGroup && prefMember) {
-      setSelectedGroupId(prefGroup.id);
-      setSelectedConnectionId(prefMember.connectionId);
-      if (prefRoutingMode) setSelectedRoutingMode(prefRoutingMode);
-      return;
+    switch (decision.kind) {
+      case "restore":
+        setSelectedGroupId(decision.groupId);
+        setSelectedConnectionId(decision.connectionId);
+        // Apply the stored mode faithfully, including an explicit null
+        // (pre-#2518 back-compat → "pin"); a truthy guard here would drop it.
+        setSelectedRoutingMode(decision.routingMode);
+        // A restored sticky preference is the user's deliberate prior choice —
+        // mark it explicit so a later effect run can't seed over it.
+        selectionProvenanceRef.current = "explicit";
+        break;
+      case "seed":
+        setSelectedGroupId(decision.groupId);
+        setSelectedConnectionId(decision.connectionId);
+        // Record that this was auto-seeded: a workspace-matching preference
+        // arriving later is still restored over it (the resolver re-runs), but
+        // a second default seed is suppressed.
+        selectionProvenanceRef.current = "default";
+        break;
+      case "wait":
+      case "noop":
+        // Inputs not ready yet, or the selection is already settled — do
+        // nothing and let the effect re-run when a dependency changes.
+        break;
+      default: {
+        // Exhaustiveness guard — a new EnvSelectionDecision variant (e.g. the
+        // v0.0.4 REST-scope work on this branch's milestone) must add a branch.
+        const _exhaustive: never = decision;
+        void _exhaustive;
+      }
     }
-
-    const seed = pickDefaultEnvSeed(envGroupsQuery.groups, selectedConnectionId);
-    if (!seed) return;
-    setSelectedGroupId(seed.groupId);
-    setSelectedConnectionId(seed.connectionId);
   }, [
     envGroupsQuery.groups,
+    selectedGroupId,
     selectedConnectionId,
     prefWorkspaceId,
     prefGroupId,
     prefConnectionId,
     prefRoutingMode,
+    prefHasHydrated,
     activeWorkspaceId,
+    sessionResolved,
   ]);
 
   const convos = useConversations({
@@ -612,6 +657,9 @@ export function AtlasChat() {
                     activeRoutingMode={selectedRoutingMode}
                     restDatasources={envGroupsQuery.restDatasources}
                     onSelect={({ groupId, connectionId, routingMode }) => {
+                      // #3064 — a user pick is authoritative; mark it explicit
+                      // so the seed/restore effect never replaces it.
+                      selectionProvenanceRef.current = "explicit";
                       setSelectedGroupId(groupId);
                       setSelectedConnectionId(connectionId);
                       setSelectedRoutingMode(routingMode);

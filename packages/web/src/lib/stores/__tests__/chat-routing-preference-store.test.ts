@@ -82,3 +82,46 @@ describe("useChatRoutingPreferenceStore (#3044)", () => {
     expect(s.routingMode).toBeNull();
   });
 });
+
+describe("useChatRoutingPreferenceStore hydration gate (#3064)", () => {
+  // The reset-on-reload fix gates atlas-chat's seed/restore effect on the
+  // persist store having finished rehydrating localStorage. Without that
+  // gate the default env seed is committed before the stored preference is
+  // available and then locks it in. The store exposes a `_hasHydrated`
+  // flag (flipped true by `onRehydrateStorage`) that the consumer reads.
+
+  it("exposes setHasHydrated, which flips the _hasHydrated flag both ways", () => {
+    useChatRoutingPreferenceStore.getState().setHasHydrated(false);
+    expect(useChatRoutingPreferenceStore.getState()._hasHydrated).toBe(false);
+    useChatRoutingPreferenceStore.getState().setHasHydrated(true);
+    expect(useChatRoutingPreferenceStore.getState()._hasHydrated).toBe(true);
+  });
+
+  it("never persists the hydration flag to localStorage (partialize drops it)", () => {
+    useChatRoutingPreferenceStore.getState().setHasHydrated(true);
+    useChatRoutingPreferenceStore.getState().setPreference({
+      workspaceId: "org-1",
+      groupId: "prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+    });
+    const raw = localStorage.getItem(STORAGE_KEY);
+    expect(raw).not.toBeNull();
+    const persisted = JSON.parse(raw!) as { state: Record<string, unknown> };
+    // The flag is transient UI state, not a preference — it must never be
+    // serialized (a persisted `true` would skip the gate on next load).
+    expect("_hasHydrated" in persisted.state).toBe(false);
+    expect("setHasHydrated" in persisted.state).toBe(false);
+  });
+
+  it("flips _hasHydrated true when persist rehydration runs (onRehydrateStorage wiring)", async () => {
+    // The load-bearing link between the two halves of the fix: rehydration
+    // must call setHasHydrated(true). A renamed/dropped onRehydrateStorage
+    // callback would leave the gate stuck closed (picker never seeds) while
+    // the setter-only test above still passes — so exercise the wiring.
+    useChatRoutingPreferenceStore.setState({ _hasHydrated: false });
+    await useChatRoutingPreferenceStore.persist.rehydrate();
+    expect(useChatRoutingPreferenceStore.getState()._hasHydrated).toBe(true);
+    expect(useChatRoutingPreferenceStore.persist.hasHydrated()).toBe(true);
+  });
+});

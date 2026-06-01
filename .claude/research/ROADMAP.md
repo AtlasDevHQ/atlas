@@ -20,7 +20,17 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-No `v0.0.x` dev tag is currently in flight. **v0.0.3 — Spec Lifecycle** shipped 2026-05-31 (archived below); cut the prod tag with `/release v0.0.3`. The next dev tag is undecided — run `/next` to promote a [Planned tag](#planned-tags) or a cluster out of the [Architecture Backlog](https://github.com/AtlasDevHQ/atlas/milestone/49). The active build right now is the **Staging environment** track (below), which ships independently of the tag train.
+**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 5 issues) — in flight. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
+
+Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 independent:
+
+- [ ] S1a — Restore the sticky scope preference on a fresh chat — fixes reset-on-reload ([#3064](https://github.com/AtlasDevHQ/atlas/issues/3064), bug, no deps) ⟵ start here
+- [ ] S1b — Restore a conversation's scope when it is opened ([#3065](https://github.com/AtlasDevHQ/atlas/issues/3065), bug, blocked by #3064)
+- [ ] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature, blocked by #3065)
+- [ ] S2b — REST-only focus: suspend SQL for a conversation ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067), feature, blocked by #3066)
+- [ ] S3 — Persist the active conversation in the URL ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068), refactor, independent — synergizes with #3065)
+
+Parent [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) stays in the Architecture Backlog (left unmodified per `/to-issues`). The **Staging environment** track (below) continues in parallel, independent of the tag train.
 
 ---
 
@@ -48,6 +58,7 @@ Persistent candidate clusters (not milestoned):
 
 Shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md):
 
+- `v0.0.3` — **Spec Lifecycle** ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58), 6 issues) — keeps an installed OpenAPI datasource's upstream view current: per-install refresh interval, structured drift diff, shared cross-workspace spec/graph cache (credential never shared), scheduler auto re-discovery fiber, breaking-change drift signal. Split from v0.0.2 per #3013. Closed + tagged `v0.0.3` 2026-05-31.
 - `v0.0.2` — **REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54), 24 issues) — generic OpenAPI primitive makes REST services (Twenty, Stripe, GitHub, Notion) first-class read-side datasources; per-endpoint write allowlist + confirm-before-write; SSRF egress guard. Maps 1:1 to PRD #2868. Closed 2026-05-31.
 - `v0.0.1` — **Release Process Bootstrap** ([milestone #56](https://github.com/AtlasDevHQ/atlas/milestone/56), 7 issues) — first git tag; tag-gated prod deploys (dedicated `prod`-branch trigger), customer-facing Stability Contract, ADR-0008/0009, `/release` flow. Docs + tooling only — no runtime feature.
 - `v0.1` → `v1.3` — pre-public-tag internal milestones (foundation, deploy-anywhere, semantic layer, Better Auth, Hono API, MCP, Python sandbox, integration builder, plugin refactor)

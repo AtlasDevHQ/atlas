@@ -61,9 +61,11 @@ import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
 import {
   ChatEnvPicker,
   pickDefaultEnvSeed,
+  resolveEnvSelection,
   shouldRenderEnvPicker,
   useChatEnvGroups,
   type ChatEnvGroup,
+  type ResolveEnvSelectionInput,
 } from "../components/chat/env-picker";
 
 beforeEach(() => {
@@ -1179,6 +1181,292 @@ describe("ChatEnvPicker three-state routing mode (#2518)", () => {
       '[data-testid="chat-env-picker-member-eu"]',
     );
     expect(euInPin?.getAttribute("data-active")).toBe("true");
+  });
+});
+
+// ── #3064 — sticky-preference restore vs default seed ────────────────
+//
+// The atlas-chat seed/restore effect must restore the user's last sticky
+// selection on a fresh chat instead of reverting to the group primary
+// (the reset-on-reload bug). `resolveEnvSelection` is the pure decision
+// the effect applies: it gates on the preference store having rehydrated
+// and the active workspace id being resolved (so a default seed never
+// pre-empts a restorable preference), honours `preference > default`
+// precedence, ignores another workspace's preference, and tracks seed
+// provenance so a default-seeded value yields to a later-arriving match.
+
+describe("resolveEnvSelection — sticky-preference restore vs default seed (#3064)", () => {
+  const prodGroup: ChatEnvGroup = {
+    id: "g_prod",
+    name: "prod",
+    primaryConnectionId: "us-prod",
+    members: [
+      { connectionId: "us-prod", dbType: "postgres", description: null },
+      { connectionId: "eu-prod", dbType: "postgres", description: null },
+    ],
+  };
+
+  // Default input = fresh empty chat, hydrated + resolved, no stored
+  // preference, self-hosted (null workspace). Each test overrides the
+  // dimension it exercises.
+  function input(
+    overrides: Partial<ResolveEnvSelectionInput> = {},
+  ): ResolveEnvSelectionInput {
+    return {
+      groups: [prodGroup],
+      current: { groupId: null, connectionId: null, routingMode: null },
+      provenance: "unset",
+      preference: {
+        workspaceId: null,
+        groupId: null,
+        connectionId: null,
+        routingMode: null,
+      },
+      activeWorkspaceId: null,
+      preferenceHydrated: true,
+      sessionResolved: true,
+      ...overrides,
+    };
+  }
+
+  test("waits — never seeds a default before the preference has rehydrated (reset-on-reload guard)", () => {
+    // The core repro: a matching preference exists but the persist store
+    // hasn't rehydrated yet. The OLD effect committed the default seed in
+    // this window and then locked it in; the resolver must hold off.
+    const decision = resolveEnvSelection(
+      input({
+        preferenceHydrated: false,
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision.kind).toBe("wait");
+  });
+
+  test("waits until the session resolves so the active workspace id is final", () => {
+    const decision = resolveEnvSelection(
+      input({
+        sessionResolved: false,
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision.kind).toBe("wait");
+  });
+
+  test("waits until connection groups have loaded", () => {
+    expect(resolveEnvSelection(input({ groups: [] })).kind).toBe("wait");
+  });
+
+  test("restores the hydrated workspace preference instead of the default seed", () => {
+    // Pin to the non-primary member, reload → the pin comes back.
+    const decision = resolveEnvSelection(
+      input({
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+    });
+  });
+
+  test("restores over a default-seeded selection when a matching preference arrives", () => {
+    // Belt-and-suspenders: even if a default slipped in before the preference
+    // rehydrated, the preference step runs before the seed step on every
+    // invocation, so a workspace-matching preference still wins — the old
+    // `selectedConnectionId !== null` guard no longer locks the default in.
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        provenance: "default",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+    });
+  });
+
+  test("restores when group + connection match but the routing mode differs", () => {
+    // A default seed lands on the preferred member (no mode), but the stored
+    // preference asked for "auto" — the mode-only difference must still
+    // restore rather than no-op (routingMode is part of the selection).
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: null },
+        provenance: "default",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "auto",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "auto",
+    });
+  });
+
+  test("does not re-seed a default-seeded selection when there is no matching preference", () => {
+    // The load-bearing role of the `default` provenance: once a default has
+    // been seeded and no preference matches, leave it — don't seed again.
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        provenance: "default",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
+  });
+
+  test("leaves an explicit user selection untouched even when a different preference exists", () => {
+    // A pick made this session (or a conversation-restored value) is
+    // authoritative — the resolver must never auto-replace it.
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "us-prod", routingMode: null },
+        provenance: "explicit",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
+  });
+
+  test("no-ops when the current selection already equals the preference (no churn)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        // Full match including routing mode — nothing to restore.
+        current: { groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" },
+        provenance: "default",
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
+  });
+
+  test("seeds the group primary when there is no stored preference", () => {
+    expect(resolveEnvSelection(input())).toEqual({
+      kind: "seed",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+    });
+  });
+
+  test("seeds the default when the stored preference points at a removed member", () => {
+    const decision = resolveEnvSelection(
+      input({
+        preference: {
+          workspaceId: "org-1",
+          groupId: "g_prod",
+          connectionId: "gone-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-1",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "seed",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+    });
+  });
+
+  test("ignores a preference stored under a different workspace id (#3044)", () => {
+    const decision = resolveEnvSelection(
+      input({
+        preference: {
+          workspaceId: "org-B",
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "pin",
+        },
+        activeWorkspaceId: "org-A",
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "seed",
+      groupId: "g_prod",
+      connectionId: "us-prod",
+    });
+  });
+
+  test("restores a preference saved with a null workspace id on self-hosted", () => {
+    const decision = resolveEnvSelection(
+      input({
+        preference: {
+          workspaceId: null,
+          groupId: "g_prod",
+          connectionId: "eu-prod",
+          routingMode: "auto",
+        },
+        activeWorkspaceId: null,
+      }),
+    );
+    expect(decision).toEqual({
+      kind: "restore",
+      groupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "auto",
+    });
+  });
+
+  test("still seeds the lone connection in a single-connection workspace (no regression to the hidden-picker path)", () => {
+    const solo: ChatEnvGroup = {
+      id: "g_only",
+      name: "only",
+      primaryConnectionId: null,
+      members: [{ connectionId: "only", dbType: "postgres", description: null }],
+    };
+    expect(resolveEnvSelection(input({ groups: [solo] }))).toEqual({
+      kind: "seed",
+      groupId: "g_only",
+      connectionId: "only",
+    });
   });
 });
 

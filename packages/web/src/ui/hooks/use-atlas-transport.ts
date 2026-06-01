@@ -48,6 +48,8 @@ export interface UseAtlasTransportOptions {
    * a re-include would silently keep a stale exclusion — the #3073 bug class.
    */
   getRestExcludedDatasourceIds?: () => readonly string[];
+  /** #3067 — REST-only focus (`install_id`, or null = not focused). */
+  getRestFocusDatasourceId?: () => string | null;
 }
 
 export interface UseAtlasTransportReturn {
@@ -98,6 +100,8 @@ export function useAtlasTransport(
   // rebuilding `useChat`'s transport.
   const getRestExcludedDatasourceIdsRef = useRef(opts.getRestExcludedDatasourceIds);
   getRestExcludedDatasourceIdsRef.current = opts.getRestExcludedDatasourceIds;
+  const getRestFocusDatasourceIdRef = useRef(opts.getRestFocusDatasourceId);
+  getRestFocusDatasourceIdRef.current = opts.getRestFocusDatasourceId;
 
   // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
   const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
@@ -285,6 +289,14 @@ export function useAtlasTransport(
         const restExcluded = getRestExcludedDatasourceIdsRef.current?.();
         if (restExcluded !== undefined) {
           body.restExcludedDatasourceIds = [...restExcluded];
+        }
+        // #3067 — REST-only focus. ALWAYS sent when the getter is present (even
+        // `null`), so a clear actually nulls the row instead of inheriting the
+        // stale focus (the #3073 transport-omits-null bug class). Absent getter
+        // → field omitted (the server falls back to the row's value).
+        const restFocus = getRestFocusDatasourceIdRef.current?.();
+        if (restFocus !== undefined) {
+          body.restFocusDatasourceId = restFocus;
         }
         return body;
       },

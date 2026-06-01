@@ -375,7 +375,10 @@ export type ConversationScopeDecision =
  *   - a row pointing at an archived/removed group → sent verbatim and rejected
  *     by the chat route (`invalid_connection_group`).
  * Both fall back to `seed`. An archived *member* under a still-valid group is
- * repaired to the group primary rather than discarding the still-valid group.
+ * repaired to the group primary rather than discarding the still-valid group. A
+ * legacy group-less row (null group, set connection) locates the group that now
+ * owns the connection so the pin is preserved — seeding it would let the effect
+ * send a different non-null member and silently switch environments (Codex).
  *
  * The routing mode is preserved faithfully on a restore: a null `routingMode`
  * stays null because the picker and the agent runtime both read null as "pin"
@@ -401,23 +404,39 @@ export function resolveConversationScope(
     return { kind: "restore", groupId, connectionId, routingMode };
   }
 
-  // Groups loaded: the row's group must still resolve to a visible environment,
-  // else a stale group id reaches the chat route and is rejected.
-  const group = groupId !== null ? groups.find((g) => g.id === groupId) : undefined;
-  if (!group) return { kind: "seed" };
+  // Groups loaded — validate the row against the visible environments.
+  if (groupId !== null) {
+    // The row named a content group: it must still resolve, else a stale group
+    // id reaches the chat route and is rejected (invalid_connection_group).
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return { kind: "seed" };
 
-  // Group resolves. Keep the pinned member if it's still present; otherwise
-  // repair the execution target to the group primary (never send a stale id),
-  // preserving the still-valid group rather than discarding it.
-  const member = group.members.find((m) => m.connectionId === connectionId);
-  if (member) {
-    return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode };
+    // Group resolves. Keep the pinned member if it's still present; otherwise
+    // repair the execution target to the group primary (never send a stale id),
+    // preserving the still-valid group rather than discarding it.
+    const member = group.members.find((m) => m.connectionId === connectionId);
+    if (member) {
+      return { kind: "restore", groupId: group.id, connectionId: member.connectionId, routingMode };
+    }
+    const repaired =
+      group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
+      group.members[0];
+    if (!repaired) return { kind: "seed" }; // group exists but has no live members
+    return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode };
   }
-  const repaired =
-    group.members.find((m) => m.connectionId === group.primaryConnectionId) ??
-    group.members[0];
-  if (!repaired) return { kind: "seed" }; // group exists but has no live members
-  return { kind: "restore", groupId: group.id, connectionId: repaired.connectionId, routingMode };
+
+  // Legacy group-less row (connectionGroupId null, connectionId set, e.g. a
+  // pre-0067 row whose group was never backfilled): locate the group that now
+  // owns the connection so the PIN is preserved. Returning `seed` here would
+  // clear the scope and let the seed/restore effect send the sticky preference /
+  // group primary as a non-null override — silently switching a conversation
+  // pinned to e.g. `eu-prod` onto the default environment (Codex, #3074). Only
+  // seed if the connection no longer exists in any visible group.
+  const owningGroup = groups.find((g) =>
+    g.members.some((m) => m.connectionId === connectionId),
+  );
+  if (!owningGroup) return { kind: "seed" };
+  return { kind: "restore", groupId: owningGroup.id, connectionId, routingMode };
 }
 
 /**

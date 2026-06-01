@@ -1838,6 +1838,18 @@
                               "null"
                             ]
                           },
+                          "routingMode": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "auto",
+                              "pin",
+                              "all",
+                              null
+                            ]
+                          },
                           "starred": {
                             "type": "boolean"
                           },
@@ -2104,6 +2116,18 @@
                       "type": [
                         "string",
                         "null"
+                      ]
+                    },
+                    "routingMode": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "auto",
+                        "pin",
+                        "all",
+                        null
                       ]
                     },
                     "starred": {

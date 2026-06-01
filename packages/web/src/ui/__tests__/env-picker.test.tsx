@@ -1494,8 +1494,8 @@ describe("resolveConversationScope — restore a conversation's scope on open (#
   });
 
   test("preserves an 'auto' routing mode (mode is a first-class scope dimension)", () => {
-    // Codex/CodeRabbit flagged routingMode being dropped on S1a — assert it
-    // explicitly here so a restore can never silently lose the mode.
+    // routingMode is a first-class scope dimension — assert it explicitly so a
+    // restore can never silently lose the mode (a prior slice regressed this).
     expect(
       resolveConversationScope({
         connectionGroupId: "g_prod",

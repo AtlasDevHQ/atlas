@@ -331,8 +331,10 @@ export function resolveEnvSelection(
 
 /**
  * The persisted scope columns on a conversation row — structurally a subset
- * of `ConversationWithMessages`. Declared locally so this module stays free of
- * a conversation-types import; the picker is otherwise scope-shape agnostic.
+ * of `ConversationWithMessages`. Declared locally so this module needn't import
+ * the `Conversation` / `ConversationWithMessages` row-shape types (it already
+ * depends only on the `ConversationRoutingMode` alias); the picker is otherwise
+ * scope-shape agnostic.
  */
 export interface ConversationScopeSource {
   readonly connectionGroupId: string | null;

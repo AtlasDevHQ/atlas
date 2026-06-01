@@ -574,6 +574,14 @@ export function AtlasChat() {
       // covers both: `getConversationData` returns the same payload
       // `loadConversation` transforms, plus the persisted scope columns.
       const data = await convos.getConversationData(id);
+      // A 200 with a malformed body (no `messages` array) would otherwise
+      // throw a bare TypeError inside `transformMessages` and surface as a
+      // generic "try again" — distinguish the structural defect in the log.
+      if (!Array.isArray(data.messages)) {
+        throw new Error(
+          `Conversation ${id} returned no messages array (got ${typeof data.messages})`,
+        );
+      }
       setMessages(transformMessages(data.messages));
       setConversationId(id);
       convos.setSelectedId(id);

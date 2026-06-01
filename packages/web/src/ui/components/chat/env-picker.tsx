@@ -50,6 +50,7 @@ import type {
   MeConnectionGroupsEmptyReason,
 } from "@/ui/lib/types";
 import type { ConversationRoutingMode } from "@useatlas/types/conversation";
+import type { ChatRoutingPreference } from "@/lib/stores/chat-routing-preference-store";
 
 export type { ChatRestDatasourceScope };
 
@@ -189,25 +190,27 @@ export function pickDefaultEnvSeed(
 }
 
 /**
- * How the picker's current selection came to be — drives whether the
- * seed/restore effect may replace it (#3064).
+ * How the picker's current selection came to be (#3064). Only `explicit`
+ * short-circuits the resolver; `unset` and `default` both re-evaluate the
+ * stored preference on every run (so a matching preference can still restore
+ * over them). The one thing `default` adds over `unset` is suppressing a
+ * second default seed once one has been applied.
  *
  *   - `unset` — nothing selected yet (fresh chat before any seed).
- *   - `default` — the effect applied the group-primary fallback. A
- *     later-arriving, workspace-matching preference may still replace it
- *     (the override that keeps a default from "winning" a reload race).
+ *   - `default` — the effect applied the group-primary fallback. With no
+ *     matching preference it stays; a workspace-matching preference still
+ *     restores over it (it never short-circuits the way `explicit` does).
  *   - `explicit` — the user picked it (or a conversation restored it).
  *     Authoritative; never auto-replaced.
  */
 export type EnvSelectionProvenance = "unset" | "default" | "explicit";
 
-/** A workspace-scoped sticky env-picker preference (mirrors the store shape). */
-export interface EnvSelectionPreference {
-  readonly workspaceId: string | null;
-  readonly groupId: string | null;
-  readonly connectionId: string | null;
-  readonly routingMode: ConversationRoutingMode | null;
-}
+/**
+ * A workspace-scoped sticky env-picker preference. Aliased to the store's
+ * own type so the two can't drift (the store has no back-reference to this
+ * module, so the import is cycle-free).
+ */
+export type EnvSelectionPreference = ChatRoutingPreference;
 
 export interface ResolveEnvSelectionInput {
   /** Resolved groups from `/api/v1/me/connection-groups`. */
@@ -259,8 +262,9 @@ export type EnvSelectionDecision =
  *   3. **Preference > default.** Restore a sticky preference that belongs
  *      to the active workspace and still resolves to a live group+member;
  *      a preference from another workspace is ignored (ids can collide).
- *      A `default`-seeded selection yields to a matching preference
- *      (provenance override), but an unmatched preference falls back to
+ *      Because this step runs before the seed step on every invocation, a
+ *      previously default-seeded selection is restored over as soon as a
+ *      matching preference arrives; an unmatched preference falls back to
  *      the group-primary default seed.
  */
 export function resolveEnvSelection(
@@ -309,9 +313,12 @@ export function resolveEnvSelection(
     };
   }
 
-  // No restorable preference. Seed the default only when nothing is
-  // selected yet; a default-seeded value with no matching preference stays.
-  if (current.connectionId !== null) return { kind: "noop" };
+  // No restorable preference. Seed the group-primary default only on a fresh
+  // chat (provenance "unset"); once a default has been seeded — or anything
+  // is already selected — leave it in place rather than re-seeding.
+  if (provenance === "default" || current.connectionId !== null) {
+    return { kind: "noop" };
+  }
   const seed = pickDefaultEnvSeed(groups, current.connectionId);
   if (!seed) return { kind: "noop" };
   return { kind: "seed", groupId: seed.groupId, connectionId: seed.connectionId };

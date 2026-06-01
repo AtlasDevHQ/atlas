@@ -113,4 +113,15 @@ describe("useChatRoutingPreferenceStore hydration gate (#3064)", () => {
     expect("_hasHydrated" in persisted.state).toBe(false);
     expect("setHasHydrated" in persisted.state).toBe(false);
   });
+
+  it("flips _hasHydrated true when persist rehydration runs (onRehydrateStorage wiring)", async () => {
+    // The load-bearing link between the two halves of the fix: rehydration
+    // must call setHasHydrated(true). A renamed/dropped onRehydrateStorage
+    // callback would leave the gate stuck closed (picker never seeds) while
+    // the setter-only test above still passes — so exercise the wiring.
+    useChatRoutingPreferenceStore.setState({ _hasHydrated: false });
+    await useChatRoutingPreferenceStore.persist.rehydrate();
+    expect(useChatRoutingPreferenceStore.getState()._hasHydrated).toBe(true);
+    expect(useChatRoutingPreferenceStore.persist.hasHydrated()).toBe(true);
+  });
 });

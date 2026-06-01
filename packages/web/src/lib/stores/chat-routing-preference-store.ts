@@ -78,14 +78,17 @@ export const useChatRoutingPreferenceStore = create<ChatRoutingPreferenceStore>(
           connectionId: next.connectionId,
           routingMode: next.routingMode,
         }),
+      // Partial set — zustand shallow-merges, so `_hasHydrated` (absent from
+      // EMPTY) is preserved. A clear must not re-close the hydration gate.
       clear: () => set({ ...EMPTY }),
     }),
     {
       name: "atlas:chat:routing-preference",
       storage: createJSONStorage(() => localStorage),
       // Persist ONLY the preference fields. `_hasHydrated` + setters are
-      // transient — a persisted `_hasHydrated: true` would skip the gate
-      // on the next load and reintroduce the reset-on-reload race.
+      // transient: persisting them is meaningless, and a stored
+      // `_hasHydrated: true` would — under any async-storage swap — report
+      // hydration complete before the read, reopening the reset-on-reload gate.
       partialize: (s) => ({
         workspaceId: s.workspaceId,
         groupId: s.groupId,

@@ -1289,11 +1289,11 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
     });
   });
 
-  test("replaces a default-seeded selection when a matching preference is present (provenance override)", () => {
-    // Belt-and-suspenders: even if a default slipped in before the
-    // preference arrived, a later-arriving workspace-matching preference
-    // still wins — the `selectedConnectionId !== null` guard no longer
-    // locks the default.
+  test("restores over a default-seeded selection when a matching preference arrives", () => {
+    // Belt-and-suspenders: even if a default slipped in before the preference
+    // rehydrated, the preference step runs before the seed step on every
+    // invocation, so a workspace-matching preference still wins — the old
+    // `selectedConnectionId !== null` guard no longer locks the default in.
     const decision = resolveEnvSelection(
       input({
         current: { groupId: "g_prod", connectionId: "us-prod" },
@@ -1313,6 +1313,18 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       connectionId: "eu-prod",
       routingMode: "pin",
     });
+  });
+
+  test("does not re-seed a default-seeded selection when there is no matching preference", () => {
+    // The load-bearing role of the `default` provenance: once a default has
+    // been seeded and no preference matches, leave it — don't seed again.
+    const decision = resolveEnvSelection(
+      input({
+        current: { groupId: "g_prod", connectionId: "us-prod" },
+        provenance: "default",
+      }),
+    );
+    expect(decision).toEqual({ kind: "noop" });
   });
 
   test("leaves an explicit user selection untouched even when a different preference exists", () => {

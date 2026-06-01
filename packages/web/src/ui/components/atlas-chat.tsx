@@ -234,19 +234,34 @@ export function AtlasChat() {
       sessionResolved,
     });
 
-    if (decision.kind === "restore") {
-      setSelectedGroupId(decision.groupId);
-      setSelectedConnectionId(decision.connectionId);
-      if (decision.routingMode) setSelectedRoutingMode(decision.routingMode);
-      // A restored sticky preference is the user's deliberate prior choice —
-      // treat it as explicit so a later effect run can't seed over it.
-      selectionProvenanceRef.current = "explicit";
-    } else if (decision.kind === "seed") {
-      setSelectedGroupId(decision.groupId);
-      setSelectedConnectionId(decision.connectionId);
-      // Default-seeded: a workspace-matching preference arriving later may
-      // still replace it (provenance override).
-      selectionProvenanceRef.current = "default";
+    switch (decision.kind) {
+      case "restore":
+        setSelectedGroupId(decision.groupId);
+        setSelectedConnectionId(decision.connectionId);
+        if (decision.routingMode) setSelectedRoutingMode(decision.routingMode);
+        // A restored sticky preference is the user's deliberate prior choice —
+        // mark it explicit so a later effect run can't seed over it.
+        selectionProvenanceRef.current = "explicit";
+        break;
+      case "seed":
+        setSelectedGroupId(decision.groupId);
+        setSelectedConnectionId(decision.connectionId);
+        // Record that this was auto-seeded: a workspace-matching preference
+        // arriving later is still restored over it (the resolver re-runs), but
+        // a second default seed is suppressed.
+        selectionProvenanceRef.current = "default";
+        break;
+      case "wait":
+      case "noop":
+        // Inputs not ready yet, or the selection is already settled — do
+        // nothing and let the effect re-run when a dependency changes.
+        break;
+      default: {
+        // Exhaustiveness guard — a new EnvSelectionDecision variant (e.g. the
+        // v0.0.4 REST-scope work on this branch's milestone) must add a branch.
+        const _exhaustive: never = decision;
+        void _exhaustive;
+      }
     }
   }, [
     envGroupsQuery.groups,

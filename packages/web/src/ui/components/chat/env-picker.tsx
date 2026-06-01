@@ -330,6 +330,52 @@ export function resolveEnvSelection(
 }
 
 /**
+ * The persisted scope columns on a conversation row — structurally a subset
+ * of `ConversationWithMessages`. Declared locally so this module needn't import
+ * the `Conversation` / `ConversationWithMessages` row-shape types (it already
+ * depends only on the `ConversationRoutingMode` alias); the picker is otherwise
+ * scope-shape agnostic.
+ */
+export interface ConversationScopeSource {
+  readonly connectionGroupId: string | null;
+  readonly connectionId: string | null;
+  readonly routingMode?: ConversationRoutingMode | null;
+}
+
+/** The picker selection restored from a conversation row. */
+export interface RestoredConversationScope {
+  readonly groupId: string | null;
+  readonly connectionId: string | null;
+  readonly routingMode: ConversationRoutingMode | null;
+}
+
+/**
+ * S1b (#3065) — map a saved conversation's persisted scope onto the picker
+ * selection when the conversation is opened. The conversation row is
+ * authoritative (precedence: row > sticky preference > default seed), so its
+ * group / member / mode are applied verbatim and the caller marks the
+ * resulting selection `explicit` so the seed/restore effect can't overwrite
+ * it.
+ *
+ * The routing mode is preserved faithfully, not coerced: a null `routingMode`
+ * stays null because the picker and the agent runtime both read null as "pin"
+ * (pre-#2518 back-compat — see {@link effectiveMode}). A legacy row with a
+ * single `connectionId` and no mode therefore stays pinned to that member, and
+ * a row with no group (`connectionGroupId` null) still pins to its
+ * `connectionId`. An omitted `routingMode` (optional on the wire type) is
+ * coalesced to null rather than left undefined.
+ */
+export function resolveConversationScope(
+  source: ConversationScopeSource,
+): RestoredConversationScope {
+  return {
+    groupId: source.connectionGroupId,
+    connectionId: source.connectionId,
+    routingMode: source.routingMode ?? null,
+  };
+}
+
+/**
  * Back-compat default — NULL on the conversation row means "pin", not
  * "auto". Pre-#2518 rows carry a non-null `connection_id` and the
  * safest interpretation is "stay pinned to that member". The default

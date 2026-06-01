@@ -61,6 +61,7 @@ import { render, renderHook, waitFor, cleanup } from "@testing-library/react";
 import {
   ChatEnvPicker,
   pickDefaultEnvSeed,
+  resolveConversationScope,
   resolveEnvSelection,
   shouldRenderEnvPicker,
   useChatEnvGroups,
@@ -1467,6 +1468,114 @@ describe("resolveEnvSelection — sticky-preference restore vs default seed (#30
       groupId: "g_only",
       connectionId: "only",
     });
+  });
+});
+
+// ── #3065 — restore a conversation's scope on open ───────────────────
+//
+// Opening a saved conversation must restore THAT conversation's persisted
+// scope into the picker — precedence: conversation row > sticky preference >
+// default seed. `resolveConversationScope` is the pure mapping that
+// atlas-chat's `handleSelectConversation` applies; the handler then marks the
+// selection provenance `explicit` so the seed/restore effect can't clobber it
+// (that "explicit → noop" guard is locked by the resolveEnvSelection suite
+// above). These tests lock the faithful row→picker mapping, including the
+// legacy null-routing fallback and the routing-mode dimension.
+
+describe("resolveConversationScope — restore a conversation's scope on open (#3065)", () => {
+  test("restores the conversation's group, member, and routing mode verbatim", () => {
+    expect(
+      resolveConversationScope({
+        connectionGroupId: "g_prod",
+        connectionId: "eu-prod",
+        routingMode: "pin",
+      }),
+    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: "pin" });
+  });
+
+  test("preserves an 'auto' routing mode (mode is a first-class scope dimension)", () => {
+    // routingMode is a first-class scope dimension — assert it explicitly so a
+    // restore can never silently lose the mode (a prior slice regressed this).
+    expect(
+      resolveConversationScope({
+        connectionGroupId: "g_prod",
+        connectionId: "us-prod",
+        routingMode: "auto",
+      }),
+    ).toEqual({ groupId: "g_prod", connectionId: "us-prod", routingMode: "auto" });
+  });
+
+  test("preserves an 'all' routing mode", () => {
+    expect(
+      resolveConversationScope({
+        connectionGroupId: "g_prod",
+        connectionId: "us-prod",
+        routingMode: "all",
+      }),
+    ).toEqual({ groupId: "g_prod", connectionId: "us-prod", routingMode: "all" });
+  });
+
+  test("two different conversations resolve to two different scopes (switching updates the picker each time)", () => {
+    const a = resolveConversationScope({
+      connectionGroupId: "g_prod",
+      connectionId: "eu-prod",
+      routingMode: "pin",
+    });
+    const b = resolveConversationScope({
+      connectionGroupId: "g_staging",
+      connectionId: "us-staging",
+      routingMode: "auto",
+    });
+    expect(a).not.toEqual(b);
+    expect(a.connectionId).toBe("eu-prod");
+    expect(b.connectionId).toBe("us-staging");
+    expect(b.routingMode).toBe("auto");
+  });
+
+  test("legacy conversation with a null routing mode preserves null (read as pin downstream)", () => {
+    // Pre-#2518 rows carry a single connectionId and no mode. null is kept
+    // faithfully — the picker and the agent runtime both read null as "pin",
+    // so the conversation stays pinned to its connectionId.
+    expect(
+      resolveConversationScope({
+        connectionGroupId: "g_prod",
+        connectionId: "eu-prod",
+        routingMode: null,
+      }),
+    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+  });
+
+  test("legacy conversation with an omitted routing mode defaults to null", () => {
+    // routingMode is optional on the wire type — an older SDK/peer may omit
+    // it entirely. Coalesce the missing field to null rather than undefined.
+    expect(
+      resolveConversationScope({
+        connectionGroupId: "g_prod",
+        connectionId: "eu-prod",
+      }),
+    ).toEqual({ groupId: "g_prod", connectionId: "eu-prod", routingMode: null });
+  });
+
+  test("legacy conversation with no group still pins to its connectionId", () => {
+    // Pre-1.4.4 single-connection row: no content group, just an execution
+    // target. The acceptance criterion — "treated as pin to its connectionId".
+    expect(
+      resolveConversationScope({
+        connectionGroupId: null,
+        connectionId: "warehouse",
+        routingMode: null,
+      }),
+    ).toEqual({ groupId: null, connectionId: "warehouse", routingMode: null });
+  });
+
+  test("a fully-null row resolves to an all-null scope (nothing to pin)", () => {
+    expect(
+      resolveConversationScope({
+        connectionGroupId: null,
+        connectionId: null,
+        routingMode: null,
+      }),
+    ).toEqual({ groupId: null, connectionId: null, routingMode: null });
   });
 });
 

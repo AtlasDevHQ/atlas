@@ -9,7 +9,7 @@ import { useAtlasConfig } from "../context";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu } from "./user-menu";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
-import { useConversations } from "../hooks/use-conversations";
+import { useConversations, transformMessages } from "../hooks/use-conversations";
 import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ErrorBanner } from "./chat/error-banner";
 import { ContextWarningBanner } from "./chat/context-warning-banner";
@@ -22,6 +22,7 @@ import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
+  resolveConversationScope,
   resolveEnvSelection,
   useChatEnvGroups,
   type ConversationRoutingMode,
@@ -568,10 +569,32 @@ export function AtlasChat() {
     if (loadingConversation) return;
     setLoadingConversation(true);
     try {
-      const uiMessages = await convos.loadConversation(id);
-      setMessages(uiMessages);
+      // #3065 — fetch the full row (not just the messages) so the
+      // conversation's own scope can be restored into the picker. One fetch
+      // covers both: `getConversationData` returns the same payload
+      // `loadConversation` transforms, plus the persisted scope columns.
+      const data = await convos.getConversationData(id);
+      // A 200 with a malformed body (no `messages` array) would otherwise
+      // throw a bare TypeError inside `transformMessages` and surface as a
+      // generic "try again" — distinguish the structural defect in the log.
+      if (!Array.isArray(data.messages)) {
+        throw new Error(
+          `Conversation ${id} returned no messages array (got ${typeof data.messages})`,
+        );
+      }
+      setMessages(transformMessages(data.messages));
       setConversationId(id);
       convos.setSelectedId(id);
+      // Restore the conversation's persisted scope. The conversation row is
+      // authoritative — precedence row > sticky preference > default seed — so
+      // mark the selection `explicit` (before the setState calls, so the
+      // re-running seed/restore effect already sees it) to keep that effect
+      // from clobbering the restored scope.
+      const scope = resolveConversationScope(data);
+      selectionProvenanceRef.current = "explicit";
+      setSelectedGroupId(scope.groupId);
+      setSelectedConnectionId(scope.connectionId);
+      setSelectedRoutingMode(scope.routingMode);
       setMobileSidebarOpen(false);
       // Loaded turns predate this session — no warning frames replay over
       // the wire, so any prior in-memory bucket is stale relative to the
@@ -594,6 +617,16 @@ export function AtlasChat() {
     setMobileSidebarOpen(false);
     setPythonProgress(new Map());
     warningCtl.reset();
+    // #3065 — a new chat is not bound to any conversation's scope. Reset the
+    // selection provenance and clear the picker so the seed/restore effect
+    // re-runs from scratch — seeding from the sticky preference (or the
+    // default), exactly as on a fresh page load. Without this, a
+    // just-opened conversation's `explicit` scope would carry into the new
+    // chat and the effect would no-op on it.
+    selectionProvenanceRef.current = "unset";
+    setSelectedGroupId(null);
+    setSelectedConnectionId(null);
+    setSelectedRoutingMode(null);
   }
 
   // Wait for auth mode detection before rendering — prevents flash of chat UI

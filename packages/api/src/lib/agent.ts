@@ -972,8 +972,11 @@ export async function runAgent({
           // #3066 — drop the conversation's excluded datasources. The tool is
           // bound to exactly this set below, so exclusion is enforced at both
           // prompt-build and tool-execution (the agent can't route to an id
-          // that isn't in the bound set). Omitted ⇒ exclude nothing.
-          ...(restExcludedDatasourceIds ? { excluded: restExcludedDatasourceIds } : {}),
+          // that isn't in the bound set). Empty / omitted ⇒ exclude nothing
+          // (guard on length, not truthiness — `[]` is truthy).
+          ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
+            ? { excluded: restExcludedDatasourceIds }
+            : {}),
         })
       : [];
     if (restDatasources.length > 0) {

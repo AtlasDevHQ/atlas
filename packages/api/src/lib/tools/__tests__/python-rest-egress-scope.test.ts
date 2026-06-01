@@ -117,4 +117,17 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     // No `excluded` key — the resolver excludes nothing for egress.
     expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
   });
+
+  it("treats an empty exclude-set the same as omitted — no `excluded` key (#3066)", async () => {
+    // `[]` is truthy in JS; the resolver must guard on length so an empty set
+    // (the common production value — the transport always sends the array)
+    // resolves to "exclude nothing", consistent with the undefined path.
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: [],
+    };
+    await defaultResolveRestDatasource();
+    expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
+  });
 });

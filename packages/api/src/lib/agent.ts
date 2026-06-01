@@ -29,6 +29,7 @@ import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources } from "./openapi/workspace-datasource";
+import type { RestDatasource } from "./openapi/datasource";
 import { buildAgentRepresentation } from "./openapi/representation";
 import { REST_OPERATION_DESCRIPTION, createExecuteRestOperationTool } from "./tools/rest-operation";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -274,6 +275,31 @@ export function buildRestDatasourceScopeNote(
     `**Environment scope:** workspace-global — available in every environment.` +
     pinClause
   );
+}
+
+/**
+ * #3067 — REST-only focus banner. Prepended to the REST representation when a
+ * conversation is focused on a single datasource and `executeSQL` is suspended,
+ * so the model knows SQL is off and answers from the API only. Exported so a
+ * unit test can pin that the focused branch frames the turn as REST-only.
+ */
+export const REST_ONLY_FOCUS_GUIDANCE = `## REST-only focus — SQL is suspended
+
+This conversation is **focused on a single REST datasource**. SQL execution (\`executeSQL\`) is **suspended** for this turn: there is no SQL tool available. Answer the user using \`executeRestOperation\` against the datasource described below, and only that datasource. Do not reference SQL tables or attempt to write SQL. If the question genuinely needs the SQL warehouse instead of this API, tell the user the conversation is focused on a single datasource and they can clear the focus in the scope picker to re-enable SQL.`;
+
+/**
+ * #3067 — build a copy of a tool registry with `executeSQL` removed, for a
+ * REST-only focused turn. Every other tool (explore, executePython, plugin /
+ * action / REST tools merged on top) is preserved. Returns an UNFROZEN
+ * registry — the caller merges the REST tool on top and freezes.
+ */
+function registryWithoutExecuteSQL(base: ToolRegistry): ToolRegistry {
+  const stripped = new ToolRegistry();
+  for (const [name, entry] of base.entries()) {
+    if (name === "executeSQL") continue;
+    stripped.register(entry);
+  }
+  return stripped;
 }
 
 function buildMultiSourceSection(
@@ -759,6 +785,10 @@ export async function runAgent({
   // REST resolver below so an excluded datasource never reaches the prompt
   // or the bound `executeRestOperation` tool. Undefined ⇒ exclude nothing.
   const restExcludedDatasourceIds = reqCtx?.restExcludedDatasourceIds;
+  // #3067 — per-conversation REST-only focus. When set, the REST block below
+  // resolves ONLY this datasource and suspends `executeSQL` (REST-only turn).
+  // Undefined / null ⇒ not focused (default scope: SQL routing + exclude-set).
+  const restFocusDatasourceId = reqCtx?.restFocusDatasourceId;
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -965,9 +995,43 @@ export async function runAgent({
   // that environment's scoped REST datasources; a scoped one never leaks past it.
   let activeRegistry = toolRegistry;
   let restRepresentation: string | undefined;
+  // #3067 — set true once a REST-only focus actually resolves to a datasource;
+  // gates executeSQL suspension + the focus prompt banner below.
+  let sqlSuspended = false;
   try {
-    const restDatasources = orgId
-      ? await resolveWorkspaceRestDatasources(orgId, {
+    // Resolve the REST datasource set this turn runs against. Default scope
+    // (group-scope + exclude-set), unless the conversation is FOCUSED on one
+    // datasource (#3067), in which case only that one resolves and SQL is off.
+    let restDatasources: ReadonlyArray<RestDatasource> = [];
+    if (orgId) {
+      if (restFocusDatasourceId) {
+        // #3067 — REST-only focus: resolve ONLY the focus target. The resolver
+        // short-circuits group-scope + the exclude-set (they're inert while
+        // focused). Suspend executeSQL only if the focus actually resolves.
+        const focused = await resolveWorkspaceRestDatasources(orgId, {
+          focus: restFocusDatasourceId,
+        });
+        if (focused.length > 0) {
+          restDatasources = focused;
+          sqlSuspended = true;
+        } else {
+          // Focus target gone (uninstalled / credential unresolvable) — fall
+          // back SAFELY to default scope: SQL stays active and the exclude-set
+          // applies, exactly as an un-focused conversation resolves (the
+          // "focused datasource was uninstalled" acceptance criterion).
+          log.warn(
+            { focus: restFocusDatasourceId },
+            "REST-only focus datasource did not resolve — falling back to default scope (SQL active)",
+          );
+          restDatasources = await resolveWorkspaceRestDatasources(orgId, {
+            activeGroupId: activeRestGroupId,
+            ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
+              ? { excluded: restExcludedDatasourceIds }
+              : {}),
+          });
+        }
+      } else {
+        restDatasources = await resolveWorkspaceRestDatasources(orgId, {
           activeGroupId: activeRestGroupId,
           // #3066 — drop the conversation's excluded datasources. The tool is
           // bound to exactly this set below, so exclusion is enforced at both
@@ -977,8 +1041,16 @@ export async function runAgent({
           ...(restExcludedDatasourceIds && restExcludedDatasourceIds.length > 0
             ? { excluded: restExcludedDatasourceIds }
             : {}),
-        })
-      : [];
+        });
+      }
+    }
+    // #3067 — suspend executeSQL for a focused REST-only turn by stripping it
+    // from the base registry, so neither the prompt's tool list nor the runtime
+    // exposes a SQL tool. Default turns keep the registry untouched.
+    const baseRegistry = sqlSuspended
+      ? registryWithoutExecuteSQL(toolRegistry)
+      : toolRegistry;
+    activeRegistry = baseRegistry;
     if (restDatasources.length > 0) {
       const restRegistry = new ToolRegistry();
       restRegistry.register({
@@ -991,7 +1063,7 @@ export async function runAgent({
           resolveDatasources: async () => restDatasources,
         }),
       });
-      activeRegistry = ToolRegistry.merge(toolRegistry, restRegistry).freeze();
+      activeRegistry = ToolRegistry.merge(baseRegistry, restRegistry).freeze();
       // Representation mode is the #2931 bake-off knob, resolved per install from
       // its `workspace_plugins.config`. Path A vs Path B differ only in how the
       // surface is described; both drive the same executeRestOperation. With more
@@ -1019,6 +1091,11 @@ export async function runAgent({
         }
       }
       restRepresentation = sections.join("\n\n");
+      // #3067 — prepend the REST-only focus banner so the model treats the turn
+      // as API-only (the SQL tool is already gone from the registry above).
+      if (sqlSuspended) {
+        restRepresentation = `${REST_ONLY_FOCUS_GUIDANCE}\n\n${restRepresentation}`;
+      }
     }
   } catch (err) {
     log.warn(

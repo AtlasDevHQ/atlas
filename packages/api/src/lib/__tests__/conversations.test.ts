@@ -25,6 +25,7 @@ import {
   forkConversation,
   convertToNotebook,
   updateConversationRestExcluded,
+  updateConversationRestFocus,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -133,8 +134,8 @@ describe("conversations module", () => {
       const result = await createConversation({ userId: "u1", title: "Test" });
       expect(result).toEqual({ id: "conv-123" });
       expect(queryCalls[0].sql).toContain("INSERT INTO conversations");
-      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id]
-      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, [], null]);
+      // [user_id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id]
+      expect(queryCalls[0].params).toEqual(["u1", "Test", "web", null, null, null, [], null, null]);
     });
 
     it("returns null when no DB", async () => {
@@ -155,7 +156,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-456" }] });
 
       await createConversation({});
-      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null, [], null]);
+      expect(queryCalls[0].params).toEqual([null, null, "web", null, null, null, [], null, null]);
     });
 
     it("accepts custom surface and connectionId", async () => {
@@ -163,7 +164,7 @@ describe("conversations module", () => {
       setResults({ rows: [{ id: "conv-789" }] });
 
       await createConversation({ surface: "api", connectionId: "wh" });
-      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null, [], null]);
+      expect(queryCalls[0].params).toEqual([null, null, "api", "wh", null, null, [], null, null]);
     });
 
     it("includes orgId when provided", async () => {
@@ -172,7 +173,7 @@ describe("conversations module", () => {
 
       const result = await createConversation({ userId: "u1", orgId: "org-123" });
       expect(result).toEqual({ id: "conv-org" });
-      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, null, [], "org-123"]);
+      expect(queryCalls[0].params).toEqual(["u1", null, "web", null, null, null, [], null, "org-123"]);
     });
 
     // #2345 — group-aware routing. Both columns are independent;
@@ -196,6 +197,7 @@ describe("conversations module", () => {
         "g_prod",
         null,
         [],
+        null,
         "org-1",
       ]);
     });
@@ -221,6 +223,32 @@ describe("conversations module", () => {
         "g_prod",
         null,
         [],
+        null,
+        "org-1",
+      ]);
+    });
+
+    // #3067 — persist a REST-only focus at creation (the rest_focus_datasource_id
+    // param sits between the exclude-set and org_id).
+    it("persists restFocusDatasourceId when the conversation is created focused", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "conv-focus" }] });
+
+      await createConversation({
+        userId: "u1",
+        restFocusDatasourceId: "ds-stripe",
+        orgId: "org-1",
+      });
+      expect(queryCalls[0].sql).toContain("rest_focus_datasource_id");
+      expect(queryCalls[0].params).toEqual([
+        "u1",
+        null,
+        "web",
+        null,
+        null,
+        null,
+        [],
+        "ds-stripe",
         "org-1",
       ]);
     });
@@ -1399,6 +1427,44 @@ describe("conversations module", () => {
       expect(queryCalls).toHaveLength(0);
     });
 
+    // #3067 — the REST-only focus write helper. Binds the install_id (or null
+    // to clear) to the nullable text column ($1), org/user-scopes the UPDATE,
+    // and returns the same fail-soft result contract.
+    it("updateConversationRestFocus writes the install_id, scoped + parameterized", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationRestFocus("c1", "ds-stripe", "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[0].sql).toContain("UPDATE conversations SET rest_focus_datasource_id = $1");
+      expect(queryCalls[0].sql).toContain("(org_id = $4 OR org_id IS NULL)");
+      expect(queryCalls[0].params).toEqual(["ds-stripe", "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationRestFocus persists null to CLEAR focus (back to default scope)", async () => {
+      enableInternalDB();
+      setResults({ rows: [{ id: "c1" }] });
+
+      const result = await updateConversationRestFocus("c1", null, "u1", "org-B");
+      expect(result).toEqual({ ok: true });
+      // $1 is null — the clear path the transport must support.
+      expect(queryCalls[0].params).toEqual([null, "c1", "u1", "org-B"]);
+    });
+
+    it("updateConversationRestFocus returns not_found when no row matches (cross-org)", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await updateConversationRestFocus("c1", "ds-stripe", "u1", "org-B");
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("updateConversationRestFocus short-circuits to no_db when the internal DB is off", async () => {
+      const result = await updateConversationRestFocus("c1", "ds-stripe");
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+      expect(queryCalls).toHaveLength(0);
+    });
+
     it("shareConversation scopes the preflight SELECT by orgId (shareMode='org')", async () => {
       enableInternalDB();
       // Preflight sees no matching row because of cross-org filter.
@@ -1493,7 +1559,7 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
     });
@@ -1508,7 +1574,7 @@ describe("conversations module", () => {
         orgId: "org-B",
       });
       expect(result).toEqual({ ok: false, reason: "not_found" });
-      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, org_id");
+      expect(queryCalls[0].sql).toContain("SELECT id, title, surface, connection_id, connection_group_id, routing_mode, rest_excluded_datasource_ids, rest_focus_datasource_id, org_id");
       expect(queryCalls[0].sql).toContain("(org_id = $3 OR org_id IS NULL)");
       expect(queryCalls[0].params).toEqual(["src-c1", "u1", "org-B"]);
     });

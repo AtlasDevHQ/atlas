@@ -528,6 +528,68 @@ describe("resolveWorkspaceRestDatasources — per-conversation exclude-set (#306
   });
 });
 
+describe("resolveWorkspaceRestDatasources — REST-only focus (#3067, S2b)", () => {
+  const rows: OpenApiInstallRow[] = [
+    { install_id: "ds-global", config: config({ display_name: "Global" }) }, // no group_id
+    { install_id: "ds-prod", config: config({ display_name: "Prod", group_id: "prod" }) },
+    { install_id: "ds-eu", config: config({ display_name: "EU", group_id: "eu" }) },
+  ];
+
+  it("resolves ONLY the focus target", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-prod",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-prod"]);
+  });
+
+  it("short-circuits the activeGroupId scope filter (focus a group-scoped ds with a mismatched active group)", async () => {
+    // ds-eu is scoped to "eu"; focusing it while the active group is "prod"
+    // still resolves it — focus is an explicit single pick, group-scope is inert.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      activeGroupId: "prod",
+      focus: "ds-eu",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-eu"]);
+  });
+
+  it("short-circuits the exclude-set (focus a datasource that is also excluded)", async () => {
+    // The exclude-set is inert while focused — focusing ds-prod resolves it
+    // even though it's in the exclude-set.
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      excluded: ["ds-prod"],
+      focus: "ds-prod",
+    });
+    expect(result.map((d) => d.id)).toEqual(["ds-prod"]);
+  });
+
+  it("returns [] when the focus target matches no install (fall-back-to-default signal)", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-uninstalled",
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("an empty-string focus is ignored (resolves the default scope, not 'focus on nothing')", async () => {
+    const result = await resolveWorkspaceRestDatasources("org-1", {
+      query: queryReturning(rows),
+      focus: "",
+    });
+    expect(result.map((d) => d.id).sort()).toEqual(["ds-eu", "ds-global", "ds-prod"]);
+  });
+
+  it("the primary resolver honours focus (python egress lockstep)", async () => {
+    const primary = await resolveWorkspacePrimaryRestDatasource("org-1", {
+      query: queryReturning(rows),
+      focus: "ds-eu",
+    });
+    expect(primary?.id).toBe("ds-eu");
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 //  Resolve-time SSRF guard (#3006)
 // ─────────────────────────────────────────────────────────────────────

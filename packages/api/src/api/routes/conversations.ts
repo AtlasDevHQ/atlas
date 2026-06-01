@@ -102,6 +102,14 @@ const ConversationSchema = z.object({
    * `routingMode`). Mirrors the `Conversation` wire type.
    */
   restExcludedDatasourceIds: z.array(z.string()).optional(),
+  /**
+   * Per-conversation REST-only focus (#3067). The single `install_id` the
+   * conversation targets exclusively (suspending `executeSQL`), or `null`
+   * when not focused. Genuinely nullable (the column is plain nullable
+   * `text`); optional so pre-#3067 rows / SDK consumers need not supply it.
+   * Mirrors the `Conversation` wire type.
+   */
+  restFocusDatasourceId: z.string().nullable().optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

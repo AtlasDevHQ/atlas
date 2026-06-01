@@ -144,6 +144,18 @@ export interface ResolveWorkspaceDeps {
    * this — a staged write replays regardless of the conversation's scope.
    */
   readonly excluded?: ReadonlyArray<string>;
+  /**
+   * Per-conversation REST-only focus (#3067, S2b). When set to an
+   * `install_id`, resolve ONLY that datasource — the focus SHORT-CIRCUITS
+   * both {@link activeGroupId} group-scope and the {@link excluded}
+   * exclude-set (ADR-0011: those fields are inert while focused). A focus
+   * id that matches no install in the workspace's tenant-scoped rows yields
+   * `[]`, so the caller falls back safely to default scope (the agent loop
+   * keeps `executeSQL` active). Omitted / null / empty = not focused (apply
+   * group-scope + exclude-set as normal). The confirm-replay path omits this
+   * — like {@link excluded}, a staged write replays regardless of focus.
+   */
+  readonly focus?: string | null;
 }
 
 /**
@@ -183,6 +195,22 @@ function rowsNotExcluded(
   if (!excluded || excluded.length === 0) return rows;
   const excludeSet = new Set(excluded);
   return rows.filter((row) => !excludeSet.has(row.install_id));
+}
+
+/**
+ * REST-only focus filter (#3067, S2b). Keeps ONLY the install whose
+ * `install_id` matches the focus target — operating over the already
+ * tenant-scoped rows (`workspace_id = $1` in {@link defaultQuery}), so a focus
+ * can never resolve another workspace's datasource. Returns `[]` when the focus
+ * matches no install (the datasource was uninstalled), which the agent loop
+ * reads as "fall back to default scope". Pure over the raw `install_id`, so it
+ * too runs before credential build.
+ */
+function rowsFocused(
+  rows: ReadonlyArray<OpenApiInstallRow>,
+  focus: string,
+): ReadonlyArray<OpenApiInstallRow> {
+  return rows.filter((row) => row.install_id === focus);
 }
 
 /**
@@ -549,6 +577,14 @@ export async function resolveWorkspaceRestDatasourcesOrThrow(
   // A query failure propagates here, on purpose — the caller turns it into a
   // distinct "temporarily unavailable" signal rather than an empty result.
   const rows = await query(workspaceId);
+  // #3067 — REST-only focus short-circuits both filters below: a focused
+  // conversation resolves ONLY the focus target, with group-scope and the
+  // exclude-set inert (ADR-0011). A focus that matches no install yields []
+  // here, so the agent loop falls back to default scope. Guard on length so a
+  // stray empty string can't be a "focus on nothing".
+  if (deps.focus && deps.focus.length > 0) {
+    return buildDatasourcesFromRows(workspaceId, rowsFocused(rows, deps.focus), mint);
+  }
   // #3044 — drop out-of-scope datasources BEFORE build, so the reconnect tally
   // (and the never-rejects `[]` contract) is computed only over the in-scope set.
   const scopedRows = rowsInActiveGroup(rows, deps.activeGroupId);

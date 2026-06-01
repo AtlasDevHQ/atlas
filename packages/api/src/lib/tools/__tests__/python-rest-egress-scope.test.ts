@@ -18,8 +18,13 @@ let mockReqCtx:
       connectionGroupId?: string;
       connectionId?: string;
       restExcludedDatasourceIds?: readonly string[];
+      restFocusDatasourceId?: string | null;
     }
   | undefined;
+
+// #3067 — what the primary resolver returns for a FOCUS call. Default null
+// (the focus target is gone → egress falls back to default scope).
+let focusResolvesTo: { id: string } | null = null;
 
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
@@ -46,6 +51,9 @@ let primaryCalls: Array<{ orgId: string; deps: unknown }> = [];
 mock.module("@atlas/api/lib/openapi/workspace-datasource", () => ({
   resolveWorkspacePrimaryRestDatasource: async (orgId: string, deps: unknown) => {
     primaryCalls.push({ orgId, deps });
+    // A focus call resolves to the configured datasource (or null = gone); any
+    // other (default-scope) call resolves to null in these tests.
+    if (deps && typeof deps === "object" && "focus" in deps) return focusResolvesTo;
     return null;
   },
   resolveWorkspaceRestDatasources: async () => [],
@@ -60,6 +68,7 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
   beforeEach(() => {
     mockReqCtx = undefined;
     primaryCalls = [];
+    focusResolvesTo = null;
   });
 
   it("threads the conversation's connectionGroupId as activeGroupId", async () => {
@@ -129,5 +138,38 @@ describe("defaultResolveRestDatasource — env-scope lockstep (#3044)", () => {
     };
     await defaultResolveRestDatasource();
     expect(primaryCalls[0]!.deps).toEqual({ activeGroupId: "eu" });
+  });
+
+  // #3067 — a REST-only focused conversation limits the sandbox egress to the
+  // single focus target, so Python can't probe any other host either.
+  it("resolves ONLY the focus target when focused — no fall-through (#3067)", async () => {
+    focusResolvesTo = { id: "ds-stripe" };
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: ["ds-x"],
+      restFocusDatasourceId: "ds-stripe",
+    };
+    const result = await defaultResolveRestDatasource();
+    // Exactly one call, scoped to focus only — group + exclude are inert.
+    expect(primaryCalls).toHaveLength(1);
+    expect(primaryCalls[0]!.deps).toEqual({ focus: "ds-stripe" });
+    expect(result).toEqual({ id: "ds-stripe" });
+  });
+
+  it("falls back to default scope when the focus target is gone (#3067)", async () => {
+    // Focus resolves to null (uninstalled) → egress mirrors agent.ts's safe
+    // fallback: a SECOND call resolves the default scope (activeGroupId + excluded).
+    focusResolvesTo = null;
+    mockReqCtx = {
+      user: { activeOrganizationId: "org-1" },
+      connectionGroupId: "eu",
+      restExcludedDatasourceIds: ["ds-x"],
+      restFocusDatasourceId: "ds-gone",
+    };
+    await defaultResolveRestDatasource();
+    expect(primaryCalls).toHaveLength(2);
+    expect(primaryCalls[0]!.deps).toEqual({ focus: "ds-gone" });
+    expect(primaryCalls[1]!.deps).toEqual({ activeGroupId: "eu", excluded: ["ds-x"] });
   });
 });

@@ -443,6 +443,20 @@ export async function defaultResolveRestDatasource(): Promise<RestDatasource | n
   const reqCtx = getRequestContext();
   const orgId = reqCtx?.user?.activeOrganizationId;
   if (!orgId) return null;
+  const { resolveWorkspacePrimaryRestDatasource } = await import(
+    "@atlas/api/lib/openapi/workspace-datasource"
+  );
+  // #3067 — keep the sandbox egress allowlist in lockstep with a REST-only
+  // focused conversation: when focused, the only reachable host is the focus
+  // target. Resolve ONLY it; if it resolves, that's the sole egress target. If
+  // the focus datasource is gone, fall through to default scope (mirrors
+  // agent.ts's safe fallback) rather than leaving Python with no egress while
+  // the agent loop runs in default mode.
+  const focus = reqCtx?.restFocusDatasourceId;
+  if (focus) {
+    const focused = await resolveWorkspacePrimaryRestDatasource(orgId, { focus });
+    if (focused) return focused;
+  }
   // #3044 — keep the sandbox egress allowlist in lockstep with the agent's
   // in-scope datasources: a datasource scoped to a different environment group
   // must not be reachable from Python either. Resolve the active environment the
@@ -456,9 +470,6 @@ export async function defaultResolveRestDatasource(): Promise<RestDatasource | n
     const ctx = await loadGroupRoutingContext(orgId, reqCtx.connectionId);
     activeGroupId = ctx.groupId ?? null;
   }
-  const { resolveWorkspacePrimaryRestDatasource } = await import(
-    "@atlas/api/lib/openapi/workspace-datasource"
-  );
   // #3066 — keep the sandbox egress allowlist in lockstep with the conversation's
   // REST exclude-set too: a datasource the conversation excluded must not be
   // reachable from Python either, or the agent could probe an excluded host's

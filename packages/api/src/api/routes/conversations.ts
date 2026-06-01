@@ -84,6 +84,14 @@ const ConversationSchema = z.object({
    * conversations created before the multi-environment slice (#2345).
    */
   connectionGroupId: z.string().nullable(),
+  /**
+   * Three-state Auto/Pin/All routing picker state (#2518). `null` on a
+   * persisted row is read as `"pin"` by the runtime. Optional + nullable so
+   * pre-#2518 rows and external SDK consumers need not supply it. Mirrors the
+   * `Conversation` wire type — runtime already serializes this via
+   * `rowToConversation`; the spec was missing it (drift, #3071).
+   */
+  routingMode: z.enum(["auto", "pin", "all"]).nullable().optional(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

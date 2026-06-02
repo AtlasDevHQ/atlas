@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.4",
+    title: "Conversation Scope",
+    date: "2026-06-02",
+    summary:
+      "Each conversation now carries its own data scope, and it sticks. Atlas unifies the chat scope picker across two axes — which SQL connections a question routes to (a connection group plus an Auto / Pin / All-environments mode) and which REST/OpenAPI datasources are in play (exclude individual sources, or focus a conversation on REST only and suspend SQL entirely). Scope is per-conversation and authoritative: a workspace-level sticky preference seeds new chats, but each conversation remembers its own routing and is restored exactly when you reopen it — fixing the long-standing reset-on-reload where a fresh page load silently fell back to the default. The active conversation now lives in the URL, so a reload or a shared link reopens the same chat. The in-app workspace chat and the embeddable widget are now the same component, so scope behaves identically everywhere Atlas chat appears.",
+    highlights: [
+      "Per-conversation scope that persists — each chat remembers its connection group, routing mode (Auto / Pin / All), and REST datasource selection; reopening a conversation restores exactly the scope it was last used with",
+      "Sticky workspace preference seeds new chats — your last-used scope becomes the default for new conversations, but never overwrites a conversation's own saved scope",
+      "REST scope — exclude specific REST/OpenAPI datasources from a conversation, or set a REST-only focus that suspends SQL entirely for that chat",
+      "Active conversation in the URL — a reload or shared link reopens the same conversation; the composer locks while a conversation loads so a message can't be sent against the wrong scope",
+      "Unified chat surface — the in-app workspace chat now renders the same component as the embeddable widget, so Conversation scope behaves identically in-app and embedded",
+      "Reset-on-reload fixed — a fresh page load no longer drops your scope back to the default",
+    ],
+  },
+  {
     version: "v0.0.3",
     title: "Spec Lifecycle",
     date: "2026-05-31",

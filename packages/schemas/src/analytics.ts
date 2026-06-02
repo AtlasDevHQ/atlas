@@ -130,8 +130,10 @@ interface TokenSummary {
   totalCacheWriteTokens: number;
   /**
    * Billed/effective token-equivalent after prompt-cache discounts (#3106) —
-   * the figure the gross `totalTokens` overstates. Cache reads are repriced at
-   * ~0.1×, cache writes at ~1.25×; output is undiscounted.
+   * typically below the gross `totalTokens` when cache reads dominate, but a
+   * cache-write-heavy window can exceed it (writes are repriced at ~1.25×).
+   * Cache reads are repriced at ~0.1×, cache writes at ~1.25×; output is
+   * undiscounted.
    */
   effectiveTokens: number;
   totalRequests: number;

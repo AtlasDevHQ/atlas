@@ -151,11 +151,19 @@ export function TokenUsageTab() {
               />
               <StatCard
                 title="Effective / Billed"
-                value={formatNumber(summary.effectiveTokens)}
+                // A correct response never yields effective 0 with gross > 0, so
+                // that combination means the field is absent (an older API
+                // response during a rolling deploy, defaulted to 0) — show "—"
+                // rather than a confident-but-wrong "0 · ~100% below gross".
+                value={summary.totalTokens > 0 && summary.effectiveTokens === 0
+                  ? "—"
+                  : formatNumber(summary.effectiveTokens)}
                 icon={<Receipt className="size-4" />}
-                description={summary.totalTokens > 0 && summary.effectiveTokens < summary.totalTokens
-                  ? `~${(((summary.totalTokens - summary.effectiveTokens) / summary.totalTokens) * 100).toFixed(0)}% below gross · after cache`
-                  : "after prompt-cache discount"}
+                description={summary.totalTokens > 0 && summary.effectiveTokens === 0
+                  ? "awaiting cache data"
+                  : summary.totalTokens > 0 && summary.effectiveTokens < summary.totalTokens
+                    ? `~${(((summary.totalTokens - summary.effectiveTokens) / summary.totalTokens) * 100).toFixed(0)}% below gross · after cache`
+                    : "after prompt-cache discount"}
               />
               <StatCard
                 title="Prompt (input)"

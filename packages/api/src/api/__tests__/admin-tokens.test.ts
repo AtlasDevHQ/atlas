@@ -76,6 +76,12 @@ describe("admin token usage routes", () => {
       expect(body.totalCompletionTokens).toBe(5000);
       expect(body.totalTokens).toBe(20000);
       expect(body.totalRequests).toBe(10);
+      // Older rows / a pre-cache-split API response omit the cache columns →
+      // no discount, so the summary-level effective total equals gross. Guards
+      // the `row?.total_cache_read ?? "0"` fall-through against a NaN regression.
+      expect(body.totalCacheReadTokens).toBe(0);
+      expect(body.totalCacheWriteTokens).toBe(0);
+      expect(body.effectiveTokens).toBe(20000);
 
       // Verify org-scoping: SQL must include org_id filter and pass orgId as param
       const lastCall = mocks.mockInternalQuery.mock.calls.at(-1);
@@ -227,6 +233,84 @@ describe("admin token usage routes", () => {
       expect(body.byModel[0].cacheWriteTokens).toBe(8000);
       // fresh 22000 + read 5000 + write 10000 + output 2000 = 39000
       expect(body.byModel[0].effectiveTokens).toBe(39000);
+    });
+
+    it("clamps fresh input to zero when the cache split saturates the prompt (#3106)", async () => {
+      // Steady state once a conversation warms: prompt_tokens is entirely
+      // cache read+write, so fresh input is 0. This is the COMMON shape, not an
+      // edge — the effectiveTokens Math.max(0, …) clamp must hold here.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            total_prompt: "70000", // == cache_read + cache_write → fresh input 0
+            total_completion: "5000",
+            total_cache_read: "60000",
+            total_cache_write: "10000",
+            total_requests: "4",
+          },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+      // fresh 0 + read 60000×0.1 (6000) + write 10000×1.25 (12500) + output 5000
+      expect(body.effectiveTokens).toBe(23500);
+    });
+
+    it("never reports a negative effective total when cache exceeds the prompt (#3106)", async () => {
+      // Defensive: a skewed/legacy row where cache read+write > prompt must not
+      // drive fresh input (and the effective total) negative.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            total_prompt: "65000", // < cache_read + cache_write (70000)
+            total_completion: "5000",
+            total_cache_read: "60000",
+            total_cache_write: "10000",
+            total_requests: "4",
+          },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+      // fresh clamps to 0 → 6000 + 12500 + 5000 = 23500 (not negative)
+      expect(body.effectiveTokens).toBe(23500);
+      expect(body.effectiveTokens).toBeGreaterThanOrEqual(0);
+    });
+
+    it("re-prices cache writes at a premium so effective can exceed gross (#3106)", async () => {
+      // Cache writes are billed at 1.25× input, so a write-dominated window has
+      // an effective total ABOVE gross — intended, not a bug. Pins the factor
+      // so a future refactor can't silently assume effective ≤ gross.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            total_prompt: "100000", // all of it freshly written to cache
+            total_completion: "0",
+            total_cache_read: "0",
+            total_cache_write: "100000",
+            total_requests: "1",
+          },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+      expect(body.totalTokens).toBe(100000); // gross
+      expect(body.effectiveTokens).toBe(125000); // 100000 × 1.25 — above gross
     });
 
     it("returns 404 when no internal DB", async () => {

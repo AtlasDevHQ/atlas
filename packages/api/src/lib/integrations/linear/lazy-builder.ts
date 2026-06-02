@@ -18,12 +18,13 @@
  * mutation lives in one place; refresh / retry semantics differ only
  * by builder.
  *
- * Cache eviction (OAuth path): on permanent refresh failure, `withRetry`
- * evicts THIS instance from `lazyPluginLoader` before re-throwing
- * `LinearReconnectRequiredError`. Same wire as Salesforce / Jira —
- * keeps the agent from cycling through 401 / refresh / fail on every
- * call.
+ * Cache eviction (OAuth path): on permanent refresh failure, the shared
+ * {@link createOAuthRetry} harness evicts THIS instance from the lazy
+ * loader before re-throwing `IntegrationReconnectRequiredError`. Same wire
+ * as Salesforce / Jira — keeps the agent from cycling through 401 /
+ * refresh / fail on every call.
  *
+ * @see packages/api/src/lib/integrations/_shared/oauth-retry.ts — shared retry harness
  * @see packages/api/src/lib/plugins/lazy-loader.ts — generic loader
  * @see ./../install/linear-token-refresh.ts — refresh + reconnect surface
  * @see ./../jira/lazy-builder.ts — sibling reference implementation
@@ -35,14 +36,14 @@ import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/s
 import { decryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import {
   refreshLinearToken,
-  LinearReconnectRequiredError,
+  IntegrationReconnectRequiredError,
 } from "@atlas/api/lib/integrations/install/linear-token-refresh";
+import { createOAuthRetry } from "@atlas/api/lib/integrations/_shared/oauth-retry";
 import {
   LINEAR_APIKEY_CATALOG_ID,
   LINEAR_APIKEY_SECRET_FIELDS_SCHEMA,
 } from "@atlas/api/lib/integrations/install/linear-apikey-secret-schema";
 import {
-  lazyPluginLoader,
   type LazyPluginBuilder,
   type LazyPluginBuilderArgs,
 } from "@atlas/api/lib/plugins/lazy-loader";
@@ -348,9 +349,10 @@ export function createLinearOAuthLazyBuilder(
 
     const status = readInstallStatus(installConfig);
     if (status === "reconnect_needed") {
-      throw new LinearReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Linear install needs to be reconnected — workspace_plugins.config.status is reconnect_needed.",
         workspaceId,
+        platform: "linear",
         upstreamError: "install_marked_reconnect_needed",
       });
     }
@@ -371,33 +373,28 @@ export function createLinearOAuthLazyBuilder(
       );
     }
 
-    let activeAccessToken = bundle.accessToken;
-
-    async function withRetry<T>(fn: (accessToken: string) => Promise<T>): Promise<T> {
-      try {
-        return await fn(activeAccessToken);
-      } catch (err) {
-        if (!isUnauthorizedError(err)) throw err;
-        log.info({ workspaceId }, "Linear session expired — refreshing token");
-        try {
-          const refreshed = await refreshLinearToken({
-            workspaceId,
-            clientId: config.clientId,
-            clientSecret: config.clientSecret,
-          });
-          activeAccessToken = refreshed.accessToken;
-          return await fn(activeAccessToken);
-        } catch (refreshErr) {
-          if (refreshErr instanceof LinearReconnectRequiredError) {
-            // Fire-and-forget evict — see Jira/Salesforce builder for
-            // the rationale. Tagged as void to silence the floating-
-            // promise check.
-            void lazyPluginLoader.evict(workspaceId, catalogId);
-          }
-          throw refreshErr;
-        }
-      }
-    }
+    // Shared retry harness: on a 401 it runs `refreshLinearToken` (which
+    // writes the rotated refresh_token to `integration_credentials` and
+    // clears reconnect_needed) and retries once on the refreshed token.
+    // On permanent refresh failure it evicts THIS cached instance before
+    // re-throwing — same wire as Salesforce / Jira.
+    const withRetry = createOAuthRetry<string>({
+      workspaceId,
+      catalogId,
+      platformLabel: "Linear",
+      logger: log,
+      initialContext: bundle.accessToken,
+      isSessionExpired: isUnauthorizedError,
+      reconnectErrorClass: IntegrationReconnectRequiredError,
+      refreshContext: async () => {
+        const refreshed = await refreshLinearToken({
+          workspaceId,
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+        });
+        return refreshed.accessToken;
+      },
+    });
 
     const instance: LinearPluginInstance = {
       id: `linear:${workspaceId}`,
@@ -432,11 +429,11 @@ export function createLinearOAuthLazyBuilder(
 // ---------------------------------------------------------------------------
 
 /**
- * Error class equivalent to {@link LinearReconnectRequiredError} but for
- * the API-key install mode. Not part of the Effect-tagged-error union
- * because the API-key install has no refresh flow — the surface is
- * "rotate your key", not "re-run OAuth". The tool layer catches
- * `instanceof` and maps to its `apikey_rejected` status.
+ * Error class equivalent to {@link IntegrationReconnectRequiredError} (the
+ * OAuth-path reconnect surface) but for the API-key install mode. Not part
+ * of the Effect-tagged-error union because the API-key install has no
+ * refresh flow — the surface is "rotate your key", not "re-run OAuth". The
+ * tool layer catches `instanceof` and maps to its `apikey_rejected` status.
  */
 export class LinearApiKeyRejectedError extends Error {
   readonly _tag = "LinearApiKeyRejectedError" as const;

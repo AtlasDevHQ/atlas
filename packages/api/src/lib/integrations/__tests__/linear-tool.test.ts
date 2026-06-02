@@ -32,7 +32,7 @@ import {
   LinearGraphQLError,
   LINEAR_CATALOG_ID,
 } from "../linear/lazy-builder";
-import { LinearReconnectRequiredError } from "../install/linear-token-refresh";
+import { IntegrationReconnectRequiredError } from "../install/linear-token-refresh";
 
 const WSID = "ws-linear-tool-test";
 
@@ -158,12 +158,13 @@ describe("createLinearIssue — dispatch", () => {
 // ---------------------------------------------------------------------------
 
 describe("createLinearIssue — reconnect surfaces", () => {
-  it("returns reconnect_required (mode=oauth) when OAuth instantiation throws LinearReconnectRequiredError", async () => {
+  it("returns reconnect_required (mode=oauth) when OAuth instantiation throws IntegrationReconnectRequiredError", async () => {
     const tool = createCreateLinearIssueTool(
       makeDeps({
-        oauth: new LinearReconnectRequiredError({
+        oauth: new IntegrationReconnectRequiredError({
           message: "reconnect",
           workspaceId: WSID,
+          platform: "linear",
           upstreamError: "invalid_grant",
         }),
       }),
@@ -189,15 +190,16 @@ describe("createLinearIssue — reconnect surfaces", () => {
     expect(result.message).toMatch(/Linear \(API Key\)|personal API key/i);
   });
 
-  it("returns reconnect_required (mode=oauth) when OAuth issueCreate mid-call throws LinearReconnectRequiredError", async () => {
+  it("returns reconnect_required (mode=oauth) when OAuth issueCreate mid-call throws IntegrationReconnectRequiredError", async () => {
     // Hits the post-instantiate branch — the instance was created, but
     // the actual call failed because the builder's `withRetry` couldn't
     // refresh successfully and rethrew.
     const oauth = makeFakeInstance(() =>
       Promise.reject(
-        new LinearReconnectRequiredError({
+        new IntegrationReconnectRequiredError({
           message: "mid-call",
           workspaceId: WSID,
+          platform: "linear",
           upstreamError: "invalid_grant",
         }),
       ),

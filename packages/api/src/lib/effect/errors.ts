@@ -344,81 +344,54 @@ export class PlatformOAuthExchangeError extends Data.TaggedError("PlatformOAuthE
 }> {}
 
 /**
- * Salesforce refresh-token rotation failed permanently — `invalid_grant`,
- * `invalid_client`, `inactive_user`, `org_locked`, `inactive_org`. The
- * install row's `workspace_plugins.config.status` has already been
- * flipped to `"reconnect_needed"` by the refresh flow; this error is
- * the signal to the route layer (or the agent loop) that the install
- * needs admin attention.
+ * A lazy-OAuth integration install's refresh-token rotation failed
+ * permanently, so the install needs admin attention. Covers Salesforce
+ * (#2658), Jira (#2659), and Linear (#2750) — one error for all three
+ * (#2708, extraction justified at the rule of three). The install row's
+ * `workspace_plugins.config.status` has already been flipped to
+ * `"reconnect_needed"` by the refresh flow; this error is the signal to
+ * the route layer (or the agent loop) that the install needs a Reconnect.
  *
- * Maps to HTTP 409 Conflict — the request is well-formed but the
- * install resource is in a state that prevents fulfilment. Defined
- * here (not in `salesforce-token-refresh.ts`) so it participates in
- * the `AtlasError` union and the `mapTaggedError` exhaustive switch
- * — escaping to a Hono `runHandler` should produce a clean 409 with
- * a request id, not an opaque 500.
+ * The `platform` field carries which integration failed (`"salesforce"`,
+ * `"jira"`, `"linear"`) — the disambiguation the three per-platform
+ * `_tag` values used to provide before they collapsed into this one.
+ *
+ * Maps to HTTP 409 Conflict — the request is well-formed but the install
+ * resource is in a state that prevents fulfilment. Defined here (not in
+ * the per-platform `*-token-refresh.ts` modules) so it participates in
+ * the `AtlasError` union and the `mapTaggedError` exhaustive switch —
+ * escaping to a Hono `runHandler` produces a clean 409 with a request
+ * id, not an opaque 500.
  *
  * @see packages/api/src/lib/integrations/install/salesforce-token-refresh.ts
- */
-export class SalesforceReconnectRequiredError extends Data.TaggedError(
-  "SalesforceReconnectRequiredError",
-)<{
-  readonly message: string;
-  readonly workspaceId: string;
-  /** Raw Salesforce error code (`invalid_grant`, etc.). Forensic-only. */
-  readonly upstreamError: string;
-}> {}
-
-/**
- * Jira refresh-token rotation failed permanently — Atlassian returned
- * `invalid_grant`, the stored refresh token was rejected, or the
- * Connected App scopes no longer include `offline_access`. The install
- * row's `workspace_plugins.config.status` has already been flipped to
- * `"reconnect_needed"` by the refresh flow; this error signals the route
- * layer / agent loop that the install needs admin attention.
- *
- * Maps to HTTP 409 Conflict — same wire shape as
- * {@link SalesforceReconnectRequiredError}. Per the #2659 "if you find
- * yourself adding shared infra, STOP and file an extraction issue"
- * rule, the duplication is intentional in this PR — a single
- * `IntegrationReconnectRequiredError(platform)` is a follow-up
- * extraction once the third consumer arrives.
- *
  * @see packages/api/src/lib/integrations/install/jira-token-refresh.ts
- */
-export class JiraReconnectRequiredError extends Data.TaggedError(
-  "JiraReconnectRequiredError",
-)<{
-  readonly message: string;
-  readonly workspaceId: string;
-  /** Raw Atlassian error code (`invalid_grant`, etc.). Forensic-only. */
-  readonly upstreamError: string;
-}> {}
-
-/**
- * Linear OAuth refresh-token rotation failed permanently — Linear returned
- * `invalid_grant` / `invalid_client`, the stored refresh token was rejected,
- * or the OAuth App's `actor=app` scope was revoked. The install row's
- * `workspace_plugins.config.status` has already been flipped to
- * `"reconnect_needed"` by the refresh flow.
- *
- * Maps to HTTP 409 Conflict — same wire shape as
- * {@link JiraReconnectRequiredError}. Third consumer of the pattern.
- * The {@link IntegrationReconnectRequiredError} extraction (filed as a
- * follow-up at #2659 review time) becomes justified at three; this
- * Linear addition makes the rule of three concrete, so the extraction
- * issue can land in a follow-up PR.
- *
  * @see packages/api/src/lib/integrations/install/linear-token-refresh.ts
  */
-export class LinearReconnectRequiredError extends Data.TaggedError(
-  "LinearReconnectRequiredError",
+export class IntegrationReconnectRequiredError extends Data.TaggedError(
+  "IntegrationReconnectRequiredError",
 )<{
   readonly message: string;
   readonly workspaceId: string;
-  /** Raw Linear error code (`invalid_grant`, etc.). Forensic-only. */
+  /** Which integration failed: `"salesforce"`, `"jira"`, `"linear"`. */
+  readonly platform: string;
+  /** Raw upstream error code (`invalid_grant`, etc.). Forensic-only. */
   readonly upstreamError: string;
 }> {}
+
+/**
+ * @deprecated #2708 — use {@link IntegrationReconnectRequiredError}.
+ * Per-platform aliases retained one release for any straggler importers;
+ * removed next release. All three resolve to the same unified class (so
+ * `instanceof` and `_tag` checks see `IntegrationReconnectRequiredError`).
+ */
+export const SalesforceReconnectRequiredError = IntegrationReconnectRequiredError;
+export type SalesforceReconnectRequiredError = IntegrationReconnectRequiredError;
+/** @deprecated #2708 — use {@link IntegrationReconnectRequiredError}. */
+export const JiraReconnectRequiredError = IntegrationReconnectRequiredError;
+export type JiraReconnectRequiredError = IntegrationReconnectRequiredError;
+/** @deprecated #2708 — use {@link IntegrationReconnectRequiredError}. */
+export const LinearReconnectRequiredError = IntegrationReconnectRequiredError;
+export type LinearReconnectRequiredError = IntegrationReconnectRequiredError;
 
 // ── Telegram static-bot install (#2748 — 1.5.3 Phase D keystone) ────
 
@@ -937,9 +910,7 @@ export type AtlasError =
   | UnsafeRegionMigrationResetError
   | AmbiguousEntityError
   | PlatformOAuthExchangeError
-  | SalesforceReconnectRequiredError
-  | JiraReconnectRequiredError
-  | LinearReconnectRequiredError
+  | IntegrationReconnectRequiredError
   | TelegramChatIdInvalidError
   | TelegramReachabilityError
   | TelegramApiUnavailableError
@@ -1017,9 +988,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "UnsafeRegionMigrationResetError",
   "AmbiguousEntityError",
   "PlatformOAuthExchangeError",
-  "SalesforceReconnectRequiredError",
-  "JiraReconnectRequiredError",
-  "LinearReconnectRequiredError",
+  "IntegrationReconnectRequiredError",
   "TelegramChatIdInvalidError",
   "TelegramReachabilityError",
   "TelegramApiUnavailableError",

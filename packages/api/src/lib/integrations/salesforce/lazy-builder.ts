@@ -7,9 +7,9 @@
  *   1. Reads `workspace_plugins.config` (passed in as `args.config`)
  *      to surface admin-visible state (`instance_url`, `status`).
  *   2. If `config.status === "reconnect_needed"`, the build refuses
- *      with `SalesforceReconnectRequiredError` so the agent loop
- *      surfaces a specific "this install needs Reconnect" message
- *      rather than silently failing with a 401.
+ *      with `IntegrationReconnectRequiredError` (`platform: "salesforce"`)
+ *      so the agent loop surfaces a specific "this install needs
+ *      Reconnect" message rather than silently failing with a 401.
  *   3. Reads `integration_credentials` for the bundle (already
  *      decrypted by the store helper).
  *   4. Constructs a jsforce Connection in OAuth-token mode (skipping
@@ -18,24 +18,25 @@
  *      The agent's Salesforce tool dispatches through this method.
  *
  * Refresh strategy: the builder does NOT pro-actively refresh on
- * `expires_at`. Instead, the `query` wrapper catches Salesforce's
- * INVALID_SESSION_ID error, runs the refresh, and retries once. This
- * matches the existing static-config plugin's `withSessionRetry`
- * pattern and means a stale `expires_at` (Salesforce's session
- * timeout is operator-configurable and we don't trust the cached
- * value) doesn't trigger spurious refreshes.
+ * `expires_at`. Instead, the shared {@link createOAuthRetry} harness
+ * wraps each `query`, catches Salesforce's INVALID_SESSION_ID error,
+ * runs the refresh, and retries once. This matches the existing
+ * static-config plugin's `withSessionRetry` pattern and means a stale
+ * `expires_at` (Salesforce's session timeout is operator-configurable
+ * and we don't trust the cached value) doesn't trigger spurious
+ * refreshes.
  *
  * Cache eviction: on permanent refresh failure (`invalid_grant` and
- * friends), `withRetry` evicts THIS instance from `lazyPluginLoader`
- * before re-throwing `SalesforceReconnectRequiredError`. The next
+ * friends), the retry harness evicts THIS instance from the lazy loader
+ * before re-throwing `IntegrationReconnectRequiredError`. The next
  * tool-call rebuilds from the fresh `workspace_plugins.config`
  * (which now carries `status: "reconnect_needed"` thanks to the
- * refresh flow's UPDATE) and the build short-circuits to
- * `SalesforceReconnectRequiredError` at the status check — the agent
- * sees a specific "Reconnect" error instead of cycling through
- * INVALID_SESSION_ID / refresh / fail on every call until process
- * restart.
+ * refresh flow's UPDATE) and the build short-circuits to that same
+ * reconnect error at the status check — the agent sees a specific
+ * "Reconnect" error instead of cycling through INVALID_SESSION_ID /
+ * refresh / fail on every call until process restart.
  *
+ * @see packages/api/src/lib/integrations/_shared/oauth-retry.ts — shared retry harness
  * @see packages/api/src/lib/plugins/lazy-loader.ts — generic loader
  * @see ./../install/salesforce-token-refresh.ts — refresh + reconnect surface
  */
@@ -45,10 +46,10 @@ import { readCredentialBundle } from "@atlas/api/lib/integrations/credentials/st
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import {
   refreshSalesforceToken,
-  SalesforceReconnectRequiredError,
+  IntegrationReconnectRequiredError,
 } from "@atlas/api/lib/integrations/install/salesforce-token-refresh";
+import { createOAuthRetry } from "@atlas/api/lib/integrations/_shared/oauth-retry";
 import {
-  lazyPluginLoader,
   type LazyPluginBuilder,
   type LazyPluginBuilderArgs,
 } from "@atlas/api/lib/plugins/lazy-loader";
@@ -97,6 +98,15 @@ function readInstanceUrl(config: Record<string, unknown>): string | null {
 }
 
 /**
+ * Minimal slice of the jsforce `Connection` surface the builder uses —
+ * just enough to keep the lazy-OAuth `withRetry` context typed (jsforce
+ * itself is an untyped optional peer dep loaded via {@link requireJsforce}).
+ */
+interface JsforceConnection {
+  query(soql: string): Promise<{ records?: Record<string, unknown>[] }>;
+}
+
+/**
  * jsforce import shim. Mirrors the static-config plugin's pattern:
  * jsforce is an optional peer dep, so the require is wrapped in a
  * try/catch that throws a clear error if the operator hasn't
@@ -139,9 +149,10 @@ export function createSalesforceLazyBuilder(
 
     const status = readInstallStatus(installConfig);
     if (status === "reconnect_needed") {
-      throw new SalesforceReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Salesforce install needs to be reconnected — workspace_plugins.config.status is reconnect_needed.",
         workspaceId,
+        platform: "salesforce",
         upstreamError: "install_marked_reconnect_needed",
       });
     }
@@ -177,58 +188,40 @@ export function createSalesforceLazyBuilder(
       );
     }
 
-    let activeAccessToken = bundle.accessToken;
-
     const jsforce = requireJsforce();
     // jsforce Connection accepts `{ instanceUrl, accessToken }` to skip
     // the login step entirely — exactly what we want post-OAuth-dance.
-    let conn = new jsforce.Connection({ instanceUrl, accessToken: activeAccessToken });
-
-    /**
-     * Run a callback against jsforce; on INVALID_SESSION_ID, refresh
-     * the token (via {@link refreshSalesforceToken} — which writes to
-     * `integration_credentials` and clears reconnect_needed) and
-     * retry once. On permanent refresh failure, evict THIS cached
-     * instance before re-throwing so the next tool-call rebuilds
-     * from the fresh `workspace_plugins.config` and short-circuits
-     * to `SalesforceReconnectRequiredError` at the status check.
-     */
-    async function withRetry<T>(fn: (c: typeof conn) => Promise<T>): Promise<T> {
-      try {
-        return await fn(conn);
-      } catch (err) {
-        if (!isSessionExpiredError(err)) throw err;
-        log.info({ workspaceId }, "Salesforce session expired — refreshing token");
-        try {
-          const refreshed = await refreshSalesforceToken({
-            workspaceId,
-            clientId: config.clientId,
-            clientSecret: config.clientSecret,
-            loginUrl: config.loginUrl,
-          });
-          activeAccessToken = refreshed.accessToken;
-          conn = new jsforce.Connection({
-            instanceUrl: refreshed.instanceUrl,
-            accessToken: activeAccessToken,
-          });
-          return await fn(conn);
-        } catch (refreshErr) {
-          // Permanent failure (revoked Connected App, deleted user, etc.)
-          // must NOT keep the cached instance alive — the next tool call
-          // would loop forever on stale credentials. Evict so the next
-          // call rebuilds, reads the fresh `status: "reconnect_needed"`,
-          // and surfaces the specific error to the agent.
-          if (refreshErr instanceof SalesforceReconnectRequiredError) {
-            // Fire-and-forget evict — `evict` only logs on teardown
-            // failure; we don't want a logger glitch to mask the
-            // underlying refresh error. Tagged as void to silence the
-            // floating-promise check.
-            void lazyPluginLoader.evict(workspaceId, catalogId);
-          }
-          throw refreshErr;
-        }
-      }
-    }
+    // The shared retry harness owns the live connection: on
+    // INVALID_SESSION_ID it runs `refreshSalesforceToken` (which writes
+    // to `integration_credentials` and clears reconnect_needed), rebuilds
+    // the connection on the rotated token, and retries once. On permanent
+    // refresh failure it evicts THIS cached instance before re-throwing,
+    // so the next tool call rebuilds from the fresh
+    // `workspace_plugins.config` and short-circuits to the reconnect
+    // error at the status check.
+    const withRetry = createOAuthRetry<JsforceConnection>({
+      workspaceId,
+      catalogId,
+      platformLabel: "Salesforce",
+      logger: log,
+      initialContext: new jsforce.Connection({ instanceUrl, accessToken: bundle.accessToken }),
+      isSessionExpired: isSessionExpiredError,
+      reconnectErrorClass: IntegrationReconnectRequiredError,
+      refreshContext: async () => {
+        const refreshed = await refreshSalesforceToken({
+          workspaceId,
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+          loginUrl: config.loginUrl,
+        });
+        return new jsforce.Connection({
+          // Fall back to the install-resolved instanceUrl if the refresh
+          // response omits one — never rebuild the connection without a host.
+          instanceUrl: refreshed.instanceUrl ?? instanceUrl,
+          accessToken: refreshed.accessToken,
+        });
+      },
+    });
 
     const instance: SalesforcePluginInstance = {
       id: `salesforce:${workspaceId}`,
@@ -241,7 +234,7 @@ export function createSalesforceLazyBuilder(
         return withRetry(async (c) => {
           let timer: ReturnType<typeof setTimeout>;
           const result = await Promise.race([
-            c.query(soql) as Promise<{ records?: Record<string, unknown>[] }>,
+            c.query(soql),
             new Promise<never>((_, reject) => {
               timer = setTimeout(
                 () => reject(new Error("Salesforce query timed out")),
@@ -250,7 +243,7 @@ export function createSalesforceLazyBuilder(
             }),
           ]).finally(() => clearTimeout(timer!));
 
-          const records = (result.records ?? []) as Record<string, unknown>[];
+          const records = result.records ?? [];
           if (records.length === 0) return { columns: [], rows: [] };
           const columns = Object.keys(records[0]).filter((k) => k !== "attributes");
           const rows = records.map((rec) => {

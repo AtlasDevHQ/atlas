@@ -13,7 +13,7 @@
  *   - **Permanent failures classify the same way.** Atlassian returns
  *     `invalid_grant` when the stored refresh token is rejected; we
  *     flip `workspace_plugins.config.status` to `"reconnect_needed"`
- *     and surface `JiraReconnectRequiredError`.
+ *     and surface `IntegrationReconnectRequiredError`.
  *   - **Operator-side misconfig stays transient.** `invalid_client` is
  *     wrong env (`JIRA_CLIENT_ID` / `JIRA_CLIENT_SECRET` typo); marking
  *     the workspace `reconnect_needed` would force every tenant admin
@@ -32,14 +32,16 @@ import {
   saveCredentialBundle,
   type CredentialBundle,
 } from "@atlas/api/lib/integrations/credentials/store";
-import { JiraReconnectRequiredError } from "@atlas/api/lib/effect/errors";
+import { IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import { JIRA_CATALOG_ID, JIRA_SLUG } from "./jira-oauth-handler";
 
 // Re-export so the lazy-builder + future callers can pull from this
 // module. Canonical definition lives in `effect/errors.ts` so the error
 // participates in the `AtlasError` union + `mapTaggedError` exhaustive
 // switch (409 Conflict + `conflict` wire code).
-export { JiraReconnectRequiredError };
+export { IntegrationReconnectRequiredError };
+/** @deprecated #2708 — use {@link IntegrationReconnectRequiredError}; alias removed next release. */
+export { JiraReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("integrations.install.jira-refresh");
 
@@ -91,7 +93,7 @@ interface RefreshArgs {
 /**
  * POST `auth.atlassian.com/oauth/token` with `grant_type=refresh_token`.
  * On HTTP 4xx carrying one of the {@link PERMANENT_REFRESH_FAILURE_CODES},
- * throws `JiraReconnectRequiredError`. On anything else (network failure,
+ * throws `IntegrationReconnectRequiredError`. On anything else (network failure,
  * 5xx, unknown 4xx), throws a plain `Error` so the caller treats it as
  * transient.
  */
@@ -138,9 +140,10 @@ async function exchangeRefreshToken(
         { workspaceId, errorCode, description: failure.error_description },
         "Jira refresh failed permanently — flagging reconnect_needed",
       );
-      throw new JiraReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Jira install needs to be reconnected — refresh token rejected by Atlassian.",
         workspaceId,
+        platform: "jira",
         upstreamError: errorCode,
       });
     }
@@ -200,7 +203,7 @@ export interface RefreshJiraTokenArgs {
  * Refresh the Jira access token for `workspaceId`. Returns the updated
  * `CredentialBundle` (also persisted to `integration_credentials` with
  * the rotated refresh_token). On permanent failure throws
- * `JiraReconnectRequiredError` and flips
+ * `IntegrationReconnectRequiredError` and flips
  * `workspace_plugins.config.status` to `"reconnect_needed"`.
  */
 export async function refreshJiraToken(
@@ -218,9 +221,10 @@ export async function refreshJiraToken(
       "Jira credential bundle has no refresh_token — flagging reconnect_needed",
     );
     await markReconnectNeeded(args.workspaceId);
-    throw new JiraReconnectRequiredError({
+    throw new IntegrationReconnectRequiredError({
       message: "Jira install has no refresh token — App must grant the offline_access scope.",
       workspaceId: args.workspaceId,
+      platform: "jira",
       upstreamError: "no_refresh_token",
     });
   }
@@ -236,7 +240,7 @@ export async function refreshJiraToken(
       args.workspaceId,
     );
   } catch (err) {
-    if (err instanceof JiraReconnectRequiredError) {
+    if (err instanceof IntegrationReconnectRequiredError) {
       await markReconnectNeeded(args.workspaceId);
     }
     throw err;

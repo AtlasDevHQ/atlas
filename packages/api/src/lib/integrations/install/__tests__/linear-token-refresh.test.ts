@@ -166,7 +166,7 @@ describe("refreshLinearToken — happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("refreshLinearToken — permanent failures", () => {
-  it("flips reconnect_needed and throws LinearReconnectRequiredError on invalid_grant", async () => {
+  it("flips reconnect_needed and throws IntegrationReconnectRequiredError on invalid_grant", async () => {
     mockReadCredentialBundle.mockImplementation(() => Promise.resolve(STORED_BUNDLE));
     mockFetch.mockImplementation(() =>
       Promise.resolve(
@@ -175,7 +175,7 @@ describe("refreshLinearToken — permanent failures", () => {
     );
 
     await expect(refreshMod.refreshLinearToken(LINEAR_ARGS)).rejects.toBeInstanceOf(
-      refreshMod.LinearReconnectRequiredError,
+      refreshMod.IntegrationReconnectRequiredError,
     );
 
     const flipCall = mockInternalQuery.mock.calls.find(
@@ -198,7 +198,7 @@ describe("refreshLinearToken — permanent failures", () => {
         ),
       );
       await expect(refreshMod.refreshLinearToken(LINEAR_ARGS)).rejects.toBeInstanceOf(
-        refreshMod.LinearReconnectRequiredError,
+        refreshMod.IntegrationReconnectRequiredError,
       );
     },
   );
@@ -209,7 +209,7 @@ describe("refreshLinearToken — permanent failures", () => {
     );
 
     await expect(refreshMod.refreshLinearToken(LINEAR_ARGS)).rejects.toBeInstanceOf(
-      refreshMod.LinearReconnectRequiredError,
+      refreshMod.IntegrationReconnectRequiredError,
     );
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -237,7 +237,7 @@ describe("refreshLinearToken — transient failures", () => {
     expect(caught).toBeInstanceOf(Error);
     // Critically NOT a reconnect error — operator-side env typo should
     // not force every tenant admin to re-OAuth.
-    expect(caught).not.toBeInstanceOf(refreshMod.LinearReconnectRequiredError);
+    expect(caught).not.toBeInstanceOf(refreshMod.IntegrationReconnectRequiredError);
 
     const flipCall = mockInternalQuery.mock.calls.find(
       (c) =>

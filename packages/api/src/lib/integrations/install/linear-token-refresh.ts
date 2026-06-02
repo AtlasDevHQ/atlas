@@ -30,14 +30,16 @@ import {
   saveCredentialBundle,
   type CredentialBundle,
 } from "@atlas/api/lib/integrations/credentials/store";
-import { LinearReconnectRequiredError } from "@atlas/api/lib/effect/errors";
+import { IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import { LINEAR_CATALOG_ID, LINEAR_SLUG } from "./linear-oauth-handler";
 
 // Re-export so the lazy-builder + future callers can pull from this
 // module. Canonical definition lives in `effect/errors.ts` so the error
 // participates in the `AtlasError` union + `mapTaggedError` exhaustive
 // switch (409 Conflict + `conflict` wire code, alongside Salesforce + Jira).
-export { LinearReconnectRequiredError };
+export { IntegrationReconnectRequiredError };
+/** @deprecated #2708 — use {@link IntegrationReconnectRequiredError}; alias removed next release. */
+export { LinearReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("integrations.install.linear-refresh");
 
@@ -94,7 +96,7 @@ interface RefreshArgs {
 /**
  * POST `api.linear.app/oauth/token` with `grant_type=refresh_token`.
  * On HTTP 4xx carrying one of the {@link PERMANENT_REFRESH_FAILURE_CODES},
- * throws `LinearReconnectRequiredError`. On anything else (network failure,
+ * throws `IntegrationReconnectRequiredError`. On anything else (network failure,
  * 5xx, unknown 4xx, `invalid_client`), throws a plain `Error` so the
  * caller treats it as transient.
  */
@@ -143,9 +145,10 @@ async function exchangeRefreshToken(
         { workspaceId, errorCode, description: failure.error_description },
         "Linear refresh failed permanently — flagging reconnect_needed",
       );
-      throw new LinearReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Linear install needs to be reconnected — refresh token rejected by Linear.",
         workspaceId,
+        platform: "linear",
         upstreamError: errorCode,
       });
     }
@@ -206,7 +209,7 @@ export interface RefreshLinearTokenArgs {
  * Refresh the Linear access token for `workspaceId`. Returns the updated
  * `CredentialBundle` (also persisted to `integration_credentials` with
  * the rotated refresh_token). On permanent failure throws
- * `LinearReconnectRequiredError` and flips
+ * `IntegrationReconnectRequiredError` and flips
  * `workspace_plugins.config.status` to `"reconnect_needed"`.
  */
 export async function refreshLinearToken(
@@ -224,9 +227,10 @@ export async function refreshLinearToken(
       "Linear credential bundle has no refresh_token — flagging reconnect_needed",
     );
     await markReconnectNeeded(args.workspaceId);
-    throw new LinearReconnectRequiredError({
+    throw new IntegrationReconnectRequiredError({
       message: "Linear install has no refresh token — App must request the offline scope.",
       workspaceId: args.workspaceId,
+      platform: "linear",
       upstreamError: "no_refresh_token",
     });
   }
@@ -242,7 +246,7 @@ export async function refreshLinearToken(
       args.workspaceId,
     );
   } catch (err) {
-    if (err instanceof LinearReconnectRequiredError) {
+    if (err instanceof IntegrationReconnectRequiredError) {
       await markReconnectNeeded(args.workspaceId);
     }
     throw err;

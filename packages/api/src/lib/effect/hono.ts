@@ -286,19 +286,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
           entityType: error.entityType,
         },
       };
-    // #2658 / #2659 — lazy-OAuth integration install's refresh-token
-    // rotation failed permanently; the install is flagged
-    // `reconnect_needed` in `workspace_plugins.config` and the admin
-    // must re-run OAuth. 409 (not 502) because the request is
-    // well-formed but the resource is in a state the user controls.
-    // Reuses the `"conflict"` wire code rather than adding
-    // `"reconnect_required"` to the closed `HttpErrorCode` vocabulary
-    // — the message + the `_tag` in error logs disambiguate. Both
-    // tags collapse to one case so the mapping stays canonical across
-    // the integration_credentials platforms.
-    case "SalesforceReconnectRequiredError":
-    case "JiraReconnectRequiredError":
-    case "LinearReconnectRequiredError":
+    // #2708 — a lazy-OAuth integration install (Salesforce #2658, Jira
+    // #2659, Linear #2750) had its refresh-token rotation fail
+    // permanently; the install is flagged `reconnect_needed` in
+    // `workspace_plugins.config` and the admin must re-run OAuth. 409
+    // (not 502) because the request is well-formed but the resource is
+    // in a state the user controls. Reuses the `"conflict"` wire code
+    // rather than adding `"reconnect_required"` to the closed
+    // `HttpErrorCode` vocabulary — the message + the error's `platform`
+    // field in logs disambiguate. One tag for all three platforms (the
+    // per-platform tags collapsed into `IntegrationReconnectRequiredError`).
+    case "IntegrationReconnectRequiredError":
       return {
         status: 409,
         code: "conflict",

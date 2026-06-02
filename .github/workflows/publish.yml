@@ -34,6 +34,7 @@ on:
       - 'email-v*'
       - 'jira-v*'
       - 'twenty-v*'
+      - 'webhook-action-v*'
       # Plugins — context
       - 'yaml-context-v*'
       # Community
@@ -176,6 +177,10 @@ jobs:
       - name: Publish @useatlas/twenty
         if: startsWith(github.ref, 'refs/tags/twenty-v')
         run: cd plugins/twenty && npm publish --access public --provenance
+
+      - name: Publish @useatlas/webhook-action
+        if: startsWith(github.ref, 'refs/tags/webhook-action-v')
+        run: cd plugins/webhook-action && npm publish --access public --provenance
 
       # Context
       - name: Publish @useatlas/yaml-context

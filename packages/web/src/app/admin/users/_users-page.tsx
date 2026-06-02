@@ -387,7 +387,7 @@ export function UsersPage({ scope }: UsersPageProps) {
         if (cancelled) return;
         if (result.error) {
           setInvitations([]);
-          setInvitationsError(result.error.message);
+          setInvitationsError(result.error.message ?? "Failed to load invitations.");
           return;
         }
         setInvitations(

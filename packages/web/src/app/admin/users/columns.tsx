@@ -27,8 +27,11 @@ export interface Invitation {
   role: string;
   status: string;
   inviterId: string;
-  expiresAt: string;
-  createdAt: string;
+  // Better Auth types these as `Date`; over JSON the client receives ISO
+  // strings. Accept both so BA's declared type and the runtime value both
+  // type-check — the column renders them through `RelativeTimestamp`.
+  expiresAt: string | Date;
+  createdAt: string | Date;
 }
 
 // ── Shared badge styles ──────────────────────────────────────────

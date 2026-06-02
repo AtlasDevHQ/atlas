@@ -169,14 +169,14 @@ export default function ConsentPage() {
         setError(res.error.message ?? "Consent failed.");
         return;
       }
-      const redirectURI = res?.data?.redirectURI;
-      if (!redirectURI) {
+      const redirectUrl = res?.data?.url;
+      if (!redirectUrl) {
         setError(
           "Consent succeeded but no redirect was returned. Reopen the OAuth flow from your client.",
         );
         return;
       }
-      window.location.href = redirectURI;
+      window.location.href = redirectUrl;
     } catch (err) {
       if (err instanceof TypeError) {
         setError(

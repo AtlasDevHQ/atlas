@@ -1,0 +1,45 @@
+# Staging smoke fixture — drives `atlas ops smoke-crm` from
+# `.github/workflows/staging-smoke.yml` after every staging deploy.
+#
+# This is the MINIMAL counterpart to the full coverage matrix in
+# `scripts/test-fixtures/crm-personas.yml` (10 personas, used by the unit
+# tests). The staging smoke only needs to prove the end-to-end flusher path
+# is alive after a deploy: enqueue → crm_outbox → flusher drains → dispatch
+# to the (staging) Twenty workspace → Person upsert. It is not trying to
+# re-prove the full #2865 regression matrix on every deploy.
+#
+# WHY ONLY demo + signup (no sales-form / conversion) ───────────────────────
+# The smoke runs UNATTENDED on every staging deploy WITHOUT `--wipe-twenty`,
+# so it must be idempotent across repeated runs against the same shared
+# staging Twenty workspace. Two properties make demo/signup safe to repeat:
+#
+#   1. Person upsert is keyed on email — repeat dispatches update the same
+#      Person in place (no duplicate), and `atlasFirstSource` is sticky.
+#   2. demo/signup events produce ZERO Notes.
+#
+# A `sales-form` persona would break property (2): `createNote`
+# (plugins/twenty/src/client.ts) is NOT idempotent — it appends a fresh Note
+# on every dispatch. Across repeated no-wipe deploys the observed Note count
+# for that email would climb (1, 2, 3, …) while the fixture expects exactly
+# 1, tripping `noteCountMismatches` (always dirty in `isClean`, scoped to
+# fixture emails) and failing the smoke from the second deploy onward. The
+# Note path is exercised by the full fixture under the unit tests + the
+# manual `--wipe-twenty` local run, not by this unattended deploy smoke.
+#
+# The two personas use distinct, stable, obviously-synthetic emails on a
+# `smoke.useatlas.dev` subdomain so an operator eyeballing the staging Twenty
+# workspace can recognise them as fixtures and they never collide with real
+# demo/signup leads.
+
+personas:
+  # demo → exercises the demo flusher path (Person upsert, no Note).
+  - source: demo
+    email: staging-smoke-demo@smoke.useatlas.dev
+    ip: 203.0.113.1
+
+  # signup → exercises the signup flusher path (Person upsert with a name,
+  # no Note). Distinct email from the demo persona, so there is no within-run
+  # ordering dependency between the two — each asserts independently.
+  - source: signup
+    email: staging-smoke-signup@smoke.useatlas.dev
+    name: Staging Smoke

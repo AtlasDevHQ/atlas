@@ -388,6 +388,73 @@ describe("computeDiff — dirty diffs", () => {
     expect(isClean(diff)).toBe(false);
   });
 
+  test("no-wipe mode tolerates a duplicate on a NON-fixture email (shared staging workspace)", () => {
+    // The unattended staging smoke (#2898) runs without --wipe-twenty against
+    // a shared Twenty workspace that may already hold unrelated duplicate
+    // leads. A duplicate on an email the fixture never touched must NOT fail
+    // the smoke — otherwise one stray pre-existing dup fails every deploy.
+    // Mirrors the `unexpectedPersons` informational-by-default rule. (Codex
+    // P2 on PR #3090.)
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        { id: "p_1", email: "fixture@example.com", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+        { id: "p_2", email: "stranger@example.com" }, // unrelated pre-existing dup
+        { id: "p_3", email: "stranger@example.com" },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.duplicateObservedEmails).toEqual([]);
+    expect(isClean(diff)).toBe(true);
+  });
+
+  test("a duplicate ON a fixture email is still dirty in no-wipe mode (#2865 still caught)", () => {
+    // Scoping duplicates to fixture emails must NOT weaken #2865 detection:
+    // the upsert-dedup regression duplicates the fixture rows too.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        { id: "p_1", email: "fixture@example.com", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+        { id: "p_2", email: "fixture@example.com", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+      ],
+      notes: [],
+    };
+    const diff = computeDiff(expected, observed);
+    expect(diff.duplicateObservedEmails).toEqual(["fixture@example.com"]);
+    expect(isClean(diff)).toBe(false);
+  });
+
+  test("strict-workspace mode widens the duplicate check to ANY email (post-wipe must be pristine)", () => {
+    // After --wipe-twenty the workspace should be empty before the smoke runs,
+    // so a duplicate anywhere — fixture email or not — means the wipe was
+    // partial / a dedupe regression is live. Strict widens the scope to global.
+    const events: AtlasLeadEvent[] = [
+      { source: "demo", email: "fixture@example.com", ip: null, userAgent: null },
+    ];
+    const expected = buildExpectedState(events);
+    const observed: ObservedState = {
+      persons: [
+        { id: "p_1", email: "fixture@example.com", atlasFirstSource: "DEMO", atlasLastSource: "DEMO" },
+        { id: "p_2", email: "stranger@example.com" },
+        { id: "p_3", email: "stranger@example.com" },
+      ],
+      notes: [],
+    };
+    const lenient = computeDiff(expected, observed);
+    expect(lenient.duplicateObservedEmails).toEqual([]); // tolerated no-wipe
+    expect(isClean(lenient)).toBe(true);
+    const strict = computeDiff(expected, observed, { requireCleanWorkspace: true });
+    expect(strict.duplicateObservedEmails).toEqual(["stranger@example.com"]);
+    expect(isClean(strict)).toBe(false);
+  });
+
   test("strict-workspace mode flips unexpectedPersons from informational to dirty", () => {
     // Codex P2-A: after --wipe-twenty the workspace should be empty before
     // the smoke runs. Residual rows = partial/truncated wipe = dirty.

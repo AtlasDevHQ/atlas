@@ -185,9 +185,18 @@ export interface SmokeDiff {
   readonly unexpectedPersons: ReadonlyArray<string>;
   /**
    * Emails seen MORE THAN ONCE on the observed side — Twenty workspace
-   * has duplicate Person records for the same email. Always dirty: a
-   * dedupe regression in `findPersonByEmail` (the #2865 family) is
-   * exactly what produces this shape.
+   * has duplicate Person records for the same email. A dedupe regression
+   * in `findPersonByEmail` (the #2865 family) is exactly what produces
+   * this shape.
+   *
+   * Scoped like `unexpectedPersons`: in the default (no-wipe) mode only a
+   * duplicate of a FIXTURE email is recorded. An unattended smoke runs
+   * against a shared workspace that may already carry unrelated duplicate
+   * leads, so failing on those would be noise — and the #2865 regression
+   * still surfaces because it duplicates the fixture rows too (every upsert
+   * hits the same code path). Under `requireCleanWorkspace` (post
+   * `--wipe-twenty`) the workspace should be pristine, so EVERY duplicate
+   * is recorded. Dirty whenever non-empty (see `isClean`).
    */
   readonly duplicateObservedEmails: ReadonlyArray<string>;
   /** Per-Person field mismatches. The load-bearing slice — these mean the dispatcher wrote the wrong value. */
@@ -206,10 +215,13 @@ export interface SmokeDiff {
 
 export interface ComputeDiffOptions {
   /**
-   * When true (the CLI sets this whenever `--wipe-twenty` was passed),
-   * `unexpectedPersons` and `duplicateObservedEmails` both mark the diff
-   * dirty. The post-wipe workspace should be deterministic — residual
-   * rows mean the wipe was partial or truncated.
+   * When true (the CLI sets this whenever `--wipe-twenty` was passed), the
+   * post-wipe workspace is expected to be deterministic, so the shared-
+   * workspace tolerances tighten: `unexpectedPersons` flips from
+   * informational to dirty, and `duplicateObservedEmails` widens from
+   * fixture-scoped to GLOBAL — any duplicate email anywhere is dirty,
+   * because residual / duplicated rows mean the wipe was partial or
+   * truncated.
    */
   readonly requireCleanWorkspace?: boolean;
 }
@@ -224,12 +236,20 @@ export interface ComputeDiffOptions {
  *    Twenty data shouldn't fail the smoke unless the operator opted into
  *    `--wipe-twenty`. The CLI surfaces them in the report regardless so the
  *    operator notices, but the exit code stays clean.
+ *  - `duplicateObservedEmails` is dirty when non-empty, but fixture-scoped by
+ *    default (a shared no-wipe workspace may carry unrelated duplicates);
+ *    `requireCleanWorkspace` widens it to every observed email.
  */
 export function computeDiff(
   expected: ExpectedState,
   observed: ObservedState,
   options: ComputeDiffOptions = {},
 ): SmokeDiff {
+  // Fixture emails drive the no-wipe scoping of `duplicateObservedEmails`
+  // below, so compute the set up front.
+  const expectedEmails = new Set(expected.persons.map((p) => p.email));
+  const strict = options.requireCleanWorkspace === true;
+
   const observedByEmail = new Map<string, ObservedPerson>();
   const duplicateObservedEmails: string[] = [];
   for (const o of observed.persons) {
@@ -240,14 +260,22 @@ export function computeDiff(
       // shape. Record once per email, then keep the first row as the
       // representative for the field-comparison loop below — the duplicate
       // is already surfaced via `duplicateObservedEmails`.
-      if (!duplicateObservedEmails.includes(key)) {
-        duplicateObservedEmails.push(key);
+      //
+      // Scope (mirrors `unexpectedPersons`): by default only flag a
+      // duplicate of a fixture email. An unattended no-wipe smoke runs
+      // against a shared staging workspace that may already hold unrelated
+      // duplicate leads — failing every deploy on those would be noise, and
+      // the #2865 regression still surfaces because it duplicates the
+      // fixture rows too. Strict mode (post-wipe) widens this to every email.
+      if (strict || expectedEmails.has(key)) {
+        if (!duplicateObservedEmails.includes(key)) {
+          duplicateObservedEmails.push(key);
+        }
       }
       continue;
     }
     observedByEmail.set(key, o);
   }
-  const expectedEmails = new Set(expected.persons.map((p) => p.email));
 
   const missingPersons: string[] = [];
   const mismatchedPersons: PersonMismatch[] = [];
@@ -315,7 +343,7 @@ export function computeDiff(
     mismatchedPersons,
     missingNotes,
     noteCountMismatches,
-    strictWorkspace: options.requireCleanWorkspace === true,
+    strictWorkspace: strict,
   };
 }
 
@@ -431,8 +459,11 @@ function noteKey(email: string, title: string, body: string): string {
  * passed): after a wipe, residual rows mean the wipe was partial /
  * truncated, so unexpected Persons flip to dirty.
  *
- * `duplicateObservedEmails` is always dirty — a dedupe regression in
- * `findPersonByEmail` is exactly the #2865 failure shape.
+ * `duplicateObservedEmails` is dirty whenever non-empty — a dedupe
+ * regression in `findPersonByEmail` is exactly the #2865 failure shape.
+ * `computeDiff` decides WHICH duplicates land in that list (fixture-scoped
+ * by default, global under `strictWorkspace`); `isClean` just reacts to the
+ * result.
  */
 export function isClean(diff: SmokeDiff): boolean {
   if (

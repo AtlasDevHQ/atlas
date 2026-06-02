@@ -35,6 +35,12 @@ const mockGetForOrg: Mock<(orgId: string, connId: string) => unknown> = mock(
 const mockGetForWorkspace: Mock<(workspaceId: string, installId: string) => unknown> = mock(
   () => mockOrgDBConnection,
 );
+// Whether a per-workspace config backs the read — decides whether pool metrics
+// target the clone (poolOrgId = authOrgId) or the bare entry.
+let mockHasForWorkspaceResult = false;
+const mockHasForWorkspace: Mock<(workspaceId: string, installId: string) => boolean> = mock(
+  () => mockHasForWorkspaceResult,
+);
 const mockRecordQuery: Mock<(id: string, durationMs: number, orgId?: string) => void> = mock(() => {});
 const mockRecordSuccess: Mock<(id: string, orgId?: string) => void> = mock(() => {});
 const mockRecordError: Mock<(id: string, orgId?: string) => void> = mock(() => {});
@@ -61,6 +67,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
       isOrgPoolingEnabled: () => mockOrgPoolingEnabled,
       getForOrg: mockGetForOrg,
       getForWorkspace: mockGetForWorkspace,
+      hasForWorkspace: mockHasForWorkspace,
       recordQuery: mockRecordQuery,
       recordSuccess: mockRecordSuccess,
       recordError: mockRecordError,
@@ -177,6 +184,8 @@ describe("executeSQL org-scoped routing", () => {
     mockGetForOrg.mockReturnValue(mockOrgDBConnection);
     mockGetForWorkspace.mockReset();
     mockGetForWorkspace.mockReturnValue(mockOrgDBConnection);
+    mockHasForWorkspaceResult = false;
+    mockHasForWorkspace.mockClear();
     mockRecordQuery.mockReset();
     mockRecordSuccess.mockReset();
     mockRecordError.mockReset();
@@ -215,6 +224,9 @@ describe("executeSQL org-scoped routing", () => {
     // that would return whichever workspace registered the install_id first.
     mockOrgPoolingEnabled = false;
     mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-1" } };
+    // A per-workspace config backs this shared install_id → getForWorkspace
+    // routes to a clone keyed by the workspace.
+    mockHasForWorkspaceResult = true;
 
     const result = await executeTool(
       { sql: "SELECT id FROM companies", explanation: "test", connectionId: "warehouse" },
@@ -226,6 +238,27 @@ describe("executeSQL org-scoped routing", () => {
     expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[0]).toBe("org-1");
     expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[1]).toBe("warehouse");
     expect(mockGetForOrg.mock.calls.length).toBe(0);
+    // Pool metrics target the clone (poolOrgId = authOrgId), NOT the bare entry,
+    // so a failing clone auto-drains correctly (#3109, Codex review).
+    expect(mockRecordQuery.mock.calls.length).toBe(1);
+    expect((mockRecordQuery.mock.calls as unknown[][])[0]?.[2]).toBe("org-1");
+    expect((mockRecordSuccess.mock.calls as unknown[][])[0]?.[1]).toBe("org-1");
+  });
+
+  it("keeps pool metrics on the bare entry when no per-workspace config backs the read (#3109)", async () => {
+    // Org pooling OFF, workspace present, but the install_id is NOT shared (no
+    // per-workspace config) → bare pool, metrics stay unscoped.
+    mockOrgPoolingEnabled = false;
+    mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-1" } };
+    mockHasForWorkspaceResult = false;
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test", connectionId: "warehouse" },
+      { toolCallId: "tc-ws-bare", messages: [], abortSignal: undefined as unknown as AbortSignal },
+    );
+    expect(result.success).toBe(true);
+    expect(mockRecordQuery.mock.calls.length).toBe(1);
+    expect((mockRecordQuery.mock.calls as unknown[][])[0]?.[2]).toBeUndefined();
   });
 
   it("uses org pool when org pooling is enabled and user has orgId", async () => {

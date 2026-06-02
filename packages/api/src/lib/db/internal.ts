@@ -953,17 +953,16 @@ export async function migrateInternalDB(): Promise<void> {
  * translates the resulting (row, decrypted config) pair into the typed
  * `DatasourcePoolConfig` we hand to `ConnectionRegistry.register`.
  *
- * Multi-tenant note: today's pre-cutover registry has a long-standing
- * bug where two workspaces sharing an `install_id` (e.g. both naming
- * their warehouse `warehouse`, or both auto-owning the demo at
- * `install_id='__demo__'`) collapse onto a single base URL via
- * `DISTINCT ON (id)`. The cleanest fix is per-(workspace, install_id)
- * registration, but that's a deeper ConnectionRegistry refactor than
- * this slice carries — slice 6 preserves today's behaviour (`DISTINCT
- * ON (install_id)` picks the most-recently-installed row) and #2783
- * tracks the per-(workspace, install_id) refactor. The `default`
- * connection (auto-initialised from `ATLAS_DATASOURCE_URL`) continues
- * to be runtime-only and is NOT touched here.
+ * Multi-tenant (#2783): loads EVERY non-archived datasource install — one
+ * row per (workspace_id, install_id) — and registers each via the bridge,
+ * which keys the routing config by (workspace_id, install_id). Two workspaces
+ * sharing an `install_id` (e.g. both naming their warehouse `warehouse`, or
+ * both auto-owning the demo at `install_id='__demo__'`) therefore get
+ * independent base configs instead of collapsing onto a single base URL — the
+ * old `DISTINCT ON (install_id)` hack that silently routed one workspace's
+ * queries to the other's DB is gone. The `default` connection (auto-initialised
+ * from `ATLAS_DATASOURCE_URL`) continues to be runtime-only and is NOT touched
+ * here.
  */
 export async function loadSavedConnections(): Promise<number> {
   if (!hasInternalDB()) return 0;
@@ -989,14 +988,14 @@ export async function loadSavedConnections(): Promise<number> {
       config: Record<string, unknown> | null;
       config_schema: unknown;
     };
-    // Exclude `status = 'archived'` so per-workspace demo-hide rows
-    // never feed their decrypted URL to the registry. `DISTINCT ON
-    // (install_id)` preserves today's pre-cutover behaviour where two
-    // workspaces sharing an install_id collapse onto the most-recently-
-    // installed row's URL — see the multi-tenant note above.
+    // Exclude `status = 'archived'` so per-workspace demo-hide rows never
+    // feed their decrypted URL to the registry. One row per (workspace_id,
+    // install_id) — the bridge keys routing config by that composite, so two
+    // workspaces sharing an install_id no longer collapse (#2783, retires the
+    // old `DISTINCT ON (install_id)` hack). Deterministic order so the bare
+    // install-id metadata row (first-write-wins, see the bridge) is stable.
     const rows = await internalQuery<WpRow>(
-      `SELECT DISTINCT ON (wp.install_id)
-              wp.workspace_id,
+      `SELECT wp.workspace_id,
               wp.install_id,
               pc.slug AS catalog_slug,
               wp.config,
@@ -1006,7 +1005,7 @@ export async function loadSavedConnections(): Promise<number> {
         WHERE wp.pillar = 'datasource'
           AND wp.status != 'archived'
           AND pc.slug = ANY($1::text[])
-        ORDER BY wp.install_id, wp.installed_at DESC, wp.workspace_id ASC`,
+        ORDER BY wp.install_id, wp.workspace_id ASC, wp.installed_at DESC`,
       [BUILTIN_DATASOURCE_CATALOG_SLUGS as readonly string[]],
     );
 

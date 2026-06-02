@@ -17,6 +17,11 @@ const registerCalls: Array<{ id: string; url: string; schema?: string; descripti
 const unregisterCalls: string[] = [];
 let registeredIds = new Set<string>();
 
+// Per-(workspace, install_id) registrations — the routing source of truth (#2783).
+const wsRegisterCalls: Array<{ workspaceId: string; installId: string; url: string; schema?: string; description?: string }> = [];
+let wsRegisteredKeys = new Set<string>();
+const wsKey = (workspaceId: string, installId: string) => `${workspaceId}::${installId}`;
+
 const mockRegister: Mock<(id: string, cfg: { url: string; schema?: string; description?: string }) => void> = mock(
   (id: string, cfg: { url: string; schema?: string; description?: string }) => {
     registerCalls.push({ id, url: cfg.url, schema: cfg.schema, description: cfg.description });
@@ -30,12 +35,23 @@ const mockUnregister: Mock<(id: string) => boolean> = mock((id: string) => {
   return had;
 });
 const mockHas: Mock<(id: string) => boolean> = mock((id: string) => registeredIds.has(id));
+const mockRegisterForWorkspace: Mock<(workspaceId: string, installId: string, cfg: { url: string; schema?: string; description?: string }) => void> = mock(
+  (workspaceId: string, installId: string, cfg: { url: string; schema?: string; description?: string }) => {
+    wsRegisterCalls.push({ workspaceId, installId, url: cfg.url, schema: cfg.schema, description: cfg.description });
+    wsRegisteredKeys.add(wsKey(workspaceId, installId));
+  },
+);
+const mockHasForWorkspace: Mock<(workspaceId: string, installId: string) => boolean> = mock(
+  (workspaceId: string, installId: string) => wsRegisteredKeys.has(wsKey(workspaceId, installId)),
+);
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
     register: mockRegister,
     unregister: mockUnregister,
     has: mockHas,
+    registerForWorkspace: mockRegisterForWorkspace,
+    hasForWorkspace: mockHasForWorkspace,
   },
 }));
 
@@ -46,16 +62,22 @@ beforeEach(async () => {
   bridge = await import("../datasource-registry-bridge");
   registerCalls.length = 0;
   unregisterCalls.length = 0;
+  wsRegisterCalls.length = 0;
   registeredIds = new Set<string>();
+  wsRegisteredKeys = new Set<string>();
   mockRegister.mockClear();
   mockUnregister.mockClear();
   mockHas.mockClear();
+  mockRegisterForWorkspace.mockClear();
+  mockHasForWorkspace.mockClear();
 });
 
 afterEach(() => {
   registerCalls.length = 0;
   unregisterCalls.length = 0;
+  wsRegisterCalls.length = 0;
   registeredIds = new Set<string>();
+  wsRegisteredKeys = new Set<string>();
 });
 
 const ROW = (slug: string) =>
@@ -108,14 +130,42 @@ describe("registerDatasourceInstall", () => {
     expect(registerCalls).toHaveLength(0);
   });
 
-  it("is idempotent — returns false when install_id is already registered", () => {
+  it("is idempotent for the same (workspace, install_id) — returns false on re-register", () => {
     bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
     const second = bridge.registerDatasourceInstall(ROW("postgres"), {
       url: "postgresql://u@different/d2",
     });
     expect(second).toBe(false);
-    // Only one register call landed — the existing pool wasn't torn down.
+    // Only one bare register call landed — the existing pool wasn't torn down.
     expect(registerCalls).toHaveLength(1);
+  });
+
+  it("registers two workspaces sharing an install_id independently (#2783)", () => {
+    // Pre-#2783, the bridge keyed only on install_id, so the second workspace's
+    // install collapsed onto the first's bare row. Now each (workspace,
+    // install_id) gets its own routing config.
+    const alpha = bridge.registerDatasourceInstall(
+      { ...ROW("postgres"), workspaceId: "ws-alpha" },
+      { url: "postgresql://alpha-host/wh" },
+    );
+    const beta = bridge.registerDatasourceInstall(
+      { ...ROW("postgres"), workspaceId: "ws-beta" },
+      { url: "postgresql://beta-host/wh" },
+    );
+
+    // Both are fresh registrations — no collapse.
+    expect(alpha).toBe(true);
+    expect(beta).toBe(true);
+
+    // Two distinct per-(workspace, install_id) configs, each with its own URL.
+    expect(wsRegisterCalls).toHaveLength(2);
+    expect(wsRegisterCalls[0]).toMatchObject({ workspaceId: "ws-alpha", installId: "prod", url: "postgresql://alpha-host/wh" });
+    expect(wsRegisterCalls[1]).toMatchObject({ workspaceId: "ws-beta", installId: "prod", url: "postgresql://beta-host/wh" });
+
+    // The bare install-id row is written once (first-write-wins) — it backs
+    // only install-id-keyed metadata, not routing.
+    expect(registerCalls).toHaveLength(1);
+    expect(registerCalls[0].url).toBe("postgresql://alpha-host/wh");
   });
 
   it("throws when the resolver rejects (missing required field)", () => {

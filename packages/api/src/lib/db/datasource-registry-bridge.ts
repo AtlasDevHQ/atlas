@@ -63,25 +63,39 @@ export function registerDatasourceInstall(
     return false;
   }
 
-  // Idempotent re-register: if the install_id is already registered (boot
-  // ran, or a prior `installDatasource` registered it), keep the existing
-  // pool. The route layer pre-`healthCheck`'s a fresh pool before writing
-  // the DB row, so by the time we reach the bridge the pool is already
-  // healthy and re-registering would tear down its open connections.
-  // `loadSavedConnections` already has the same skip; this guard means the
-  // facade can call the bridge unconditionally after a successful install.
-  if (connections.has(row.installId)) {
-    return false;
-  }
-
-  connections.register(row.installId, {
+  const config = {
     url: poolConfig.url,
     ...(poolConfig.description !== undefined ? { description: poolConfig.description } : {}),
     ...(poolConfig.dbType === "postgres" && poolConfig.schema
       ? { schema: poolConfig.schema }
       : {}),
-  });
-  return true;
+  };
+
+  // Per-(workspace, install_id) config registration — the routing source of
+  // truth that retires the `DISTINCT ON (install_id)` multi-tenant collision
+  // (#2783). `getForOrg(workspaceId, installId)` clones an org pool from THIS
+  // config, so two workspaces sharing an install_id route to their own DBs.
+  // Config-only + upsert (no live pool to tear down), so it's registered
+  // unconditionally — a datasource config update refreshes routing here.
+  const compositeExisted = connections.hasForWorkspace(row.workspaceId, row.installId);
+  connections.registerForWorkspace(row.workspaceId, row.installId, config);
+
+  // Bare install-id registration keeps install-id-keyed readers
+  // (getDBType / getTargetHost / validators) and self-hosted
+  // `connections.get(installId)` working. Idempotent on the bare id so a
+  // healthy pre-registered pool isn't torn down — the route layer
+  // pre-`healthCheck`'s a fresh pool before writing the DB row, and boot's
+  // `loadSavedConnections` registers the first workspace's row. Two workspaces
+  // sharing an install_id collapse onto one bare row by design (it backs only
+  // install-id-keyed metadata, not routing — routing uses the per-workspace
+  // config above).
+  const bareExisted = connections.has(row.installId);
+  if (!bareExisted) {
+    connections.register(row.installId, config);
+  }
+
+  // Fresh if either registration newly landed — the boot loader counts these.
+  return !compositeExisted || !bareExisted;
 }
 
 /**

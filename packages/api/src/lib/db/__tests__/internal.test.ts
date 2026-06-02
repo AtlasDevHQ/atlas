@@ -376,12 +376,14 @@ describe("internal DB module", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "warehouse",
             catalog_slug: "postgres",
             config: { url: "postgresql://host/wh", description: "Warehouse", schema: "analytics" },
             config_schema: POSTGRES_CONFIG_SCHEMA,
           },
           {
+            workspace_id: "ws-1",
             install_id: "reporting",
             catalog_slug: "postgres",
             config: { url: "postgresql://host/rp" },
@@ -397,6 +399,49 @@ describe("internal DB module", () => {
       expect(connections.has("reporting")).toBe(true);
     });
 
+    it("registers independent base configs for two workspaces sharing an install_id (#2783)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      // Two workspaces both name their datasource `warehouse`, pointing at
+      // DIFFERENT databases. Pre-#2783, `DISTINCT ON (install_id)` collapsed
+      // these onto a single base pool — silently routing one tenant's queries
+      // to the other's DB. Now each (workspace, install_id) is registered
+      // independently.
+      pool._setResult({
+        rows: [
+          {
+            workspace_id: "ws-alpha",
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://alpha-host/wh" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
+          {
+            workspace_id: "ws-beta",
+            install_id: "warehouse",
+            catalog_slug: "postgres",
+            config: { url: "postgresql://beta-host/wh" },
+            config_schema: POSTGRES_CONFIG_SCHEMA,
+          },
+        ],
+      });
+      _resetPool(pool);
+
+      const count = await loadSavedConnections();
+      // Both installs load — no collapse onto one row.
+      expect(count).toBe(2);
+
+      // Each workspace resolves its OWN base config, keyed by (workspace, install_id).
+      expect(connections.hasForWorkspace("ws-alpha", "warehouse")).toBe(true);
+      expect(connections.hasForWorkspace("ws-beta", "warehouse")).toBe(true);
+
+      // ...and to its OWN target host — the proof the collision is gone. Under
+      // the old DISTINCT ON, only one row reached the registry, so the other
+      // workspace's lookup would miss (or resolve the wrong host).
+      expect(connections.getTargetHostForWorkspace("ws-alpha", "warehouse")).toBe("alpha-host");
+      expect(connections.getTargetHostForWorkspace("ws-beta", "warehouse")).toBe("beta-host");
+    });
+
     it("skips individual install failures without aborting", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool } = createMockPool();
@@ -404,12 +449,14 @@ describe("internal DB module", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "good",
             catalog_slug: "postgres",
             config: { url: "postgresql://host/db" },
             config_schema: POSTGRES_CONFIG_SCHEMA,
           },
           {
+            workspace_id: "ws-1",
             install_id: "bad",
             catalog_slug: "postgres",
             config: { url: "badscheme://host/db" },
@@ -434,6 +481,7 @@ describe("internal DB module", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "warehouse",
             catalog_slug: "snowflake",
             config: { url: "snowflake://user:pass@account/db" },
@@ -1186,6 +1234,7 @@ describe("connection URL encryption", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "warehouse",
             catalog_slug: "postgres",
             config: { url: encryptedUrl, description: "Warehouse" },
@@ -1220,12 +1269,14 @@ describe("connection URL encryption", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "good-conn",
             catalog_slug: "postgres",
             config: { url: goodEncrypted },
             config_schema: POSTGRES_CONFIG_SCHEMA,
           },
           {
+            workspace_id: "ws-1",
             install_id: "bad-conn",
             catalog_slug: "postgres",
             config: { url: badEncrypted },
@@ -1249,6 +1300,7 @@ describe("connection URL encryption", () => {
       pool._setResult({
         rows: [
           {
+            workspace_id: "ws-1",
             install_id: "legacy",
             catalog_slug: "postgres",
             // Bare plaintext URL — `decryptSecretFields` short-circuits

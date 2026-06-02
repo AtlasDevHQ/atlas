@@ -129,6 +129,9 @@ mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
     get: () => mockDBConnection,
     getDefault: () => mockDBConnection,
+    // #3109 — org-scoped runDiff/runDriftDiff now resolve introspection per
+    // (workspace, install_id); fall back to the same mock connection.
+    getForWorkspace: () => mockDBConnection,
     getDBType: () => "postgres" as const,
     getTargetHost: () => "localhost",
     list: () => ["default"],

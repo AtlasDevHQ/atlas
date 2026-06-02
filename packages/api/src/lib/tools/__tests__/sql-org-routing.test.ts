@@ -31,6 +31,10 @@ let mockOrgPoolingEnabled = false;
 const mockGetForOrg: Mock<(orgId: string, connId: string) => unknown> = mock(
   () => mockOrgDBConnection,
 );
+// #3109 — the org-pooling-OFF per-(workspace, install_id) read path.
+const mockGetForWorkspace: Mock<(workspaceId: string, installId: string) => unknown> = mock(
+  () => mockOrgDBConnection,
+);
 const mockRecordQuery: Mock<(id: string, durationMs: number, orgId?: string) => void> = mock(() => {});
 const mockRecordSuccess: Mock<(id: string, orgId?: string) => void> = mock(() => {});
 const mockRecordError: Mock<(id: string, orgId?: string) => void> = mock(() => {});
@@ -56,6 +60,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
       getDefault: () => mockBaseDBConnection,
       isOrgPoolingEnabled: () => mockOrgPoolingEnabled,
       getForOrg: mockGetForOrg,
+      getForWorkspace: mockGetForWorkspace,
       recordQuery: mockRecordQuery,
       recordSuccess: mockRecordSuccess,
       recordError: mockRecordError,
@@ -170,6 +175,8 @@ describe("executeSQL org-scoped routing", () => {
     mockRequestContext = undefined;
     mockGetForOrg.mockReset();
     mockGetForOrg.mockReturnValue(mockOrgDBConnection);
+    mockGetForWorkspace.mockReset();
+    mockGetForWorkspace.mockReturnValue(mockOrgDBConnection);
     mockRecordQuery.mockReset();
     mockRecordSuccess.mockReset();
     mockRecordError.mockReset();
@@ -199,6 +206,26 @@ describe("executeSQL org-scoped routing", () => {
     // recordQuery should have been called without orgId
     expect(mockRecordQuery.mock.calls.length).toBe(1);
     expect((mockRecordQuery.mock.calls as unknown[][])[0]?.[2]).toBeUndefined();
+  });
+
+  it("routes a non-default connection per-workspace when org pooling is OFF (#3109)", async () => {
+    // Acceptance criterion #1's production entry point: org pooling disabled but
+    // a workspace context present + an explicit connectionId. The resolve path
+    // must call getForWorkspace(authOrgId, connId) — NOT the bare get(connId)
+    // that would return whichever workspace registered the install_id first.
+    mockOrgPoolingEnabled = false;
+    mockRequestContext = { user: { id: "u1", activeOrganizationId: "org-1" } };
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "test", connectionId: "warehouse" },
+      { toolCallId: "tc-ws", messages: [], abortSignal: undefined as unknown as AbortSignal },
+    );
+    expect(result.success).toBe(true);
+    // getForWorkspace routed it; org-pool path was not taken.
+    expect(mockGetForWorkspace.mock.calls.length).toBe(1);
+    expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[0]).toBe("org-1");
+    expect((mockGetForWorkspace.mock.calls as unknown[][])[0]?.[1]).toBe("warehouse");
+    expect(mockGetForOrg.mock.calls.length).toBe(0);
   });
 
   it("uses org pool when org pooling is enabled and user has orgId", async () => {

@@ -199,6 +199,31 @@ describe("validateSQL with plugin forbidden patterns", () => {
     expect((await validateSQL("SELECT 1 UNION SELECT 2", "plain")).valid).toBe(true);
     delete process.env.ATLAS_TABLE_WHITELIST;
   });
+
+  test("workspace-scoped validateSQL ignores a sibling's bare plugin patterns (#3109)", async () => {
+    const { connections } = await import("@atlas/api/lib/db/connection");
+    const { validateSQL } = await import("@atlas/api/lib/tools/sql");
+
+    // Bare entry carries a plugin forbiddenPattern; a sibling workspace has a
+    // NATIVE per-workspace config for the SAME install_id. validateSQL(sql,
+    // connId, workspaceId) must thread workspaceId into getDBType /
+    // getForbiddenPatterns / parserDatabase so the native workspace is NOT
+    // bound by the bare entry's plugin metadata.
+    connections.registerDirect("warehouse", mockConn(), "postgres", undefined, undefined, {
+      forbiddenPatterns: [/\bUNION\b/i],
+    });
+    connections.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+
+    process.env.ATLAS_TABLE_WHITELIST = "false";
+    try {
+      // Bare scope (no workspaceId) — the plugin pattern applies → blocked.
+      expect((await validateSQL("SELECT 1 UNION SELECT 2", "warehouse")).valid).toBe(false);
+      // Workspace scope — native config, plugin pattern does NOT apply → allowed.
+      expect((await validateSQL("SELECT 1 UNION SELECT 2", "warehouse", "ws-alpha")).valid).toBe(true);
+    } finally {
+      delete process.env.ATLAS_TABLE_WHITELIST;
+    }
+  });
 });
 
 // --- wireDatasourcePlugins passes metadata through ---

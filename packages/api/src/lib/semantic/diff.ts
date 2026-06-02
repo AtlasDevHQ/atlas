@@ -272,8 +272,9 @@ export async function getDBSchemaRaw(
 export async function getDBSchema(
   connectionId: string = "default",
   allowedTables?: Set<string>,
+  workspaceId?: string,
 ): Promise<Map<string, EntitySnapshot>> {
-  const snapshots = await getDBSchemaRaw(connectionId);
+  const snapshots = await getDBSchemaRaw(connectionId, workspaceId);
   return filterSnapshotsByWhitelist(snapshots, allowedTables);
 }
 
@@ -487,7 +488,9 @@ export async function runDiff(
   options: DiffOptions = {},
 ): Promise<SemanticDiffResponse> {
   const allowedTables = await resolveAllowedTables(connectionId, options);
-  const dbSnapshots = await getDBSchema(connectionId, allowedTables);
+  // Scope introspection to the querying workspace (#3109) so a shared
+  // install_id reads the correct tenant's schema, not a sibling's.
+  const dbSnapshots = await getDBSchema(connectionId, allowedTables, options.orgId);
   const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);
@@ -532,7 +535,9 @@ export async function runDriftDiff(
   warnings: string[];
 }> {
   const allowedTables = await resolveAllowedTables(connectionId, options);
-  const rawDBSnapshots = await getDBSchemaRaw(connectionId);
+  // Scope introspection to the querying workspace (#3109) so a shared
+  // install_id reads the correct tenant's schema, not a sibling's.
+  const rawDBSnapshots = await getDBSchemaRaw(connectionId, options.orgId);
   const dbSnapshots = filterSnapshotsByWhitelist(rawDBSnapshots, allowedTables);
   const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
 

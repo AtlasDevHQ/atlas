@@ -280,6 +280,15 @@ The `executeSQL` tool exposes a `scope` parameter (`auto` / `pin` / `all`) that 
 
 OTel traces tag each agent step with `atlas.routing_mode` for cross-environment analytics; see [Observability](/platform-ops/observability).
 
+### Per-conversation REST datasource scope
+
+REST/OpenAPI datasources (see [OpenAPI datasources](/plugins/datasources/openapi-generic)) carry their own per-conversation scope axis, controlled from the same chat-header picker and **independent of SQL routing mode**:
+
+- **Exclude a datasource** — drop one or more REST datasources from a conversation. The agent still runs SQL and queries every *other* in-scope REST datasource, but the excluded ones are invisible to it for that chat. Use when a connected API is noisy or irrelevant to the question at hand.
+- **REST-only focus** — focus a conversation on a single REST datasource. This **suspends `executeSQL`** (and SQL-authoring tools like `createDashboard`) for the conversation: the agent answers only via `executeRestOperation` against the focused datasource and is told SQL is unavailable. Clearing the focus re-enables SQL and returns the conversation to its prior scope.
+
+Both axes are **per-conversation and authoritative**: scope is restored exactly when you reopen a conversation, and a workspace-level sticky preference seeds new chats without ever overwriting a conversation's saved scope. SQL routing mode (`auto` / `pin` / `all`) and the REST exclude-set apply together; a REST-only focus overrides both until it is cleared.
+
 ---
 
 ## SDK and API usage

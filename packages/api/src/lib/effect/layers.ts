@@ -124,14 +124,22 @@ function withFiberDeathLog<A, E, R>(
   );
 }
 
-// ── Per-tick observability spans for periodic cleanup fibers (#2945) ──
+// ── Per-tick observability spans for periodic scheduler fibers (#2945, #2944, #2987) ──
 // `withFiberDeathLog` (above) only fires when a defect kills the fiber.
 // A healthy tick emits nothing, so "wedged silently" and "ran fine,
 // nothing to do" are indistinguishable in traces, and a hung-but-not-
-// crashed fiber never trips the death log. Wrap each of these cleanup
+// crashed fiber never trips the death log. Wrap each of these periodic
 // tick bodies in `withEffectSpan` so every repeat iteration emits one
 // span — a wedged fiber then shows up as an absence of spans against its
 // expected cadence.
+//
+// OK-on-failure trade-off: each tick's loop-liveness `catchAll` sits INSIDE
+// the span, so a failed-but-recovered tick still records span status OK (the
+// error itself goes to `log.warn`). These spans answer "is the fiber still
+// ticking?" via presence/absence + cadence, NOT "did this tick error?". The
+// lone exception is `orphan_task_reconcile` below, which rides a result
+// attribute and so deliberately inverts the ordering (raw tick spanned,
+// `catchAll` applied OUTSIDE) to keep that attribute truthful — see its site.
 //
 // Membership splits into two single-source records, by fiber kind:
 //

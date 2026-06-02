@@ -55,17 +55,20 @@ export type SignStrategy = (body: string) => SignedRequest;
  * receivers strip the `sha256=` prefix first (as the documented customer
  * verify-helper does).
  *
- * The timestamp is captured when the strategy is built (immediately before
- * delivery) so it is identical across every retry of a single delivery.
- * Inject `timestampSeconds` for deterministic tests.
+ * The timestamp is computed when the body is signed, not when the strategy is
+ * built — so a strategy reused across multiple deliveries gets a fresh
+ * timestamp each time (otherwise a cached signer would reuse a stale timestamp
+ * and trip the receiver's replay window). `deliverWebhook` signs once per
+ * delivery and reuses the result across retries, so it stays stable within a
+ * single delivery. Inject `timestampSeconds` for deterministic tests.
  */
 export function timestamped(opts: {
   readonly secret: string;
-  /** Unix seconds. Defaults to `Math.floor(Date.now() / 1000)`. */
+  /** Unix seconds. Defaults to `Math.floor(Date.now() / 1000)` at sign time. */
   readonly timestampSeconds?: number;
 }): SignStrategy {
-  const ts = opts.timestampSeconds ?? Math.floor(Date.now() / 1000);
   return (body) => {
+    const ts = opts.timestampSeconds ?? Math.floor(Date.now() / 1000);
     const signature = `sha256=${crypto
       .createHmac("sha256", opts.secret)
       .update(`${ts}:${body}`)

@@ -112,17 +112,48 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function truncateExcerpt(text: string): string | undefined {
+  if (!text) return undefined;
+  return text.length > MAX_RESPONSE_EXCERPT
+    ? `${text.slice(0, MAX_RESPONSE_EXCERPT)}…`
+    : text;
+}
+
 /**
- * Read a bounded excerpt of an error response body. Best-effort: the status
- * code already carries the signal, so an unreadable body is not fatal.
+ * Read a bounded excerpt of an error response body. Reads at most a little past
+ * `MAX_RESPONSE_EXCERPT` from the stream and cancels the rest, so a hostile
+ * receiver returning a huge 4xx body can't force an unbounded allocation.
+ * Best-effort: the status code already carries the signal, so an unreadable
+ * body is not fatal.
  */
 async function readExcerpt(res: Response): Promise<string | undefined> {
   try {
-    const text = await res.text();
-    if (!text) return undefined;
-    return text.length > MAX_RESPONSE_EXCERPT
-      ? `${text.slice(0, MAX_RESPONSE_EXCERPT)}…`
-      : text;
+    const body = res.body;
+    if (!body) {
+      // No readable stream (e.g. a hand-rolled Response in a test) — fall back
+      // to text(); the slice still bounds the returned excerpt.
+      return truncateExcerpt(await res.text());
+    }
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let out = "";
+    try {
+      while (out.length <= MAX_RESPONSE_EXCERPT) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      // Drop the unread remainder so a huge body isn't buffered.
+      try {
+        await reader.cancel();
+      } catch {
+        // intentionally ignored: cancel() only rejects when the stream is
+        // already errored/closed, in which case there is nothing left to drop.
+      }
+    }
+    out += decoder.decode();
+    return truncateExcerpt(out);
   } catch {
     // intentionally ignored: the body excerpt is a diagnostic breadcrumb, not
     // load-bearing — an already-consumed or closed stream just yields no text.

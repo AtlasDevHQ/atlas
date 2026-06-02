@@ -58,6 +58,25 @@ describe("timestamped", () => {
     expect(ts).toBeLessThanOrEqual(after);
   });
 
+  it("computes a fresh timestamp per invocation, not at factory time", () => {
+    // Guards the footgun: a strategy cached and reused across many deliveries
+    // must not reuse the timestamp from when it was built (which would trip the
+    // receiver's replay window). The default timestamp is read at sign time.
+    const realNow = Date.now;
+    try {
+      let fakeMs = 1700000000_000;
+      Date.now = () => fakeMs;
+      const sign = timestamped({ secret: SECRET }); // built once, reused below
+      const first = sign(BODY).headers["X-Webhook-Timestamp"];
+      fakeMs += 10_000; // 10s later
+      const second = sign(BODY).headers["X-Webhook-Timestamp"];
+      expect(first).toBe("1700000000");
+      expect(second).toBe("1700000010");
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it("is key-sensitive", () => {
     const a = timestamped({ secret: "k1", timestampSeconds: TS })(BODY).signature;
     const b = timestamped({ secret: "k2", timestampSeconds: TS })(BODY).signature;

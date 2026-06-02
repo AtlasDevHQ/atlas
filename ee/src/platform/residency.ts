@@ -70,12 +70,12 @@ const STAGING_REGION = "staging" satisfies DeployRegion;
  * so callers must narrow through `isDeployRegion` before consulting it — open
  * regions route through the residency map directly.
  */
-export const DEPLOY_REGION_ROUTING: Record<DeployRegion, "residency" | "local"> = {
+export const DEPLOY_REGION_ROUTING = {
   us: "residency",
   eu: "residency",
   apac: "residency",
   staging: "local",
-};
+} as const satisfies Record<DeployRegion, "residency" | "local">;
 
 // ── Typed errors ────────────────────────────────────────────────────
 

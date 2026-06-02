@@ -1,11 +1,23 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import crypto from "node:crypto";
 import { Effect } from "effect";
-import { asPercentage } from "@useatlas/types";
+import type { Fetcher } from "@useatlas/webhook-publisher";
+import { asPercentage, type SLAAlert } from "@useatlas/types";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ──────────────────────────────────────────────────────────
 
-const ee = createEEMock();
+// Persistent logger spies so the deliverAlert tests can assert on warn/error.
+// `createLogger` is invoked once at module load, so returning the same object
+// keeps the captured `log` reference inspectable.
+const logSpies = {
+  info: mock((..._args: unknown[]) => {}),
+  warn: mock((..._args: unknown[]) => {}),
+  error: mock((..._args: unknown[]) => {}),
+  debug: mock((..._args: unknown[]) => {}),
+};
+
+const ee = createEEMock({ logger: { createLogger: () => logSpies } });
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("../lib/db-guard", () => ({
@@ -25,6 +37,7 @@ const {
   updateThresholds,
   getAlerts,
   acknowledgeAlert,
+  deliverAlert,
 } = await import("./alerting");
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -165,5 +178,108 @@ describe("acknowledgeAlert", () => {
 
     const result = await run(acknowledgeAlert("nonexistent", "admin-1"));
     expect(result).toBe(false);
+  });
+});
+
+describe("deliverAlert", () => {
+  const ALERT: SLAAlert = {
+    id: "alert-1",
+    workspaceId: "ws-1",
+    workspaceName: "Acme",
+    type: "latency_p99",
+    status: "firing",
+    currentValue: 6000,
+    threshold: 5000,
+    message: "p99 latency exceeded",
+    firedAt: "2026-04-01T00:00:00Z",
+    resolvedAt: null,
+    acknowledgedAt: null,
+    acknowledgedBy: null,
+  };
+  const URL = "https://hooks.example.com/sla";
+  const SECRET = "sla-shared-secret-at-least-16-chars";
+
+  beforeEach(() => {
+    ee.reset();
+    logSpies.warn.mockClear();
+    logSpies.error.mockClear();
+  });
+
+  it("signs with the timestamped strategy + keeps the payload shape when a secret is set", async () => {
+    const ts = 1700000000;
+    let captured: { headers?: Record<string, string>; body?: string } = {};
+    const fetcher = mock(async (_url: string, init: RequestInit) => {
+      captured = {
+        headers: init.headers as Record<string, string>,
+        body: init.body as string,
+      };
+      return new Response(null, { status: 200 });
+    });
+
+    await run(
+      deliverAlert(ALERT, {
+        fetcher: fetcher as unknown as Fetcher,
+        webhookUrl: URL,
+        secret: SECRET,
+        nowSeconds: ts,
+      }),
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(captured.headers?.["X-Webhook-Timestamp"]).toBe(String(ts));
+    const expected =
+      "sha256=" +
+      crypto.createHmac("sha256", SECRET).update(`${ts}:${captured.body}`).digest("hex");
+    expect(captured.headers?.["X-Webhook-Signature"]).toBe(expected);
+
+    // Payload is byte-identical to the pre-signing version.
+    const payload = JSON.parse(captured.body ?? "{}");
+    expect(payload).toMatchObject({ type: "sla.alert.fired" });
+    expect(payload.alert.id).toBe("alert-1");
+    expect(typeof payload.timestamp).toBe("string");
+    expect(logSpies.warn).not.toHaveBeenCalled();
+  });
+
+  it("retries a 5xx up to 3 attempts, then logs the failure", async () => {
+    let calls = 0;
+    const fetcher = mock(async () => {
+      calls++;
+      return new Response("upstream", { status: 503 });
+    });
+
+    await run(
+      deliverAlert(ALERT, {
+        fetcher: fetcher as unknown as Fetcher,
+        webhookUrl: URL,
+        secret: SECRET,
+      }),
+    );
+
+    expect(calls).toBe(3);
+    expect(logSpies.error).toHaveBeenCalled();
+  }, 10_000);
+
+  it("delivers unsigned (Content-Type only) and warns when no secret is set", async () => {
+    let headers: Record<string, string> = {};
+    const fetcher = mock(async (_url: string, init: RequestInit) => {
+      headers = init.headers as Record<string, string>;
+      return new Response(null, { status: 200 });
+    });
+
+    await run(
+      deliverAlert(ALERT, {
+        fetcher: fetcher as unknown as Fetcher,
+        webhookUrl: URL,
+        // Empty secret forces the unsigned path deterministically, without
+        // depending on (or mutating) the ambient ATLAS_SLA_WEBHOOK_SECRET env.
+        secret: "",
+      }),
+    );
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers["X-Webhook-Signature"]).toBeUndefined();
+    expect(headers["X-Webhook-Timestamp"]).toBeUndefined();
+    expect(logSpies.warn).toHaveBeenCalled();
   });
 });

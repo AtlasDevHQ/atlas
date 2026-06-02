@@ -852,6 +852,7 @@ SaaS only. Thresholds for SLA alerting.
 | `ATLAS_SLA_LATENCY_P99_MS` | — | P99 latency threshold in milliseconds. When unset, the system applies an internal default of 5000ms for alert evaluation |
 | `ATLAS_SLA_ERROR_RATE_PCT` | — | Error rate threshold as a percentage (0–100). When unset, the system applies an internal default of 5% for alert evaluation |
 | `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for SLA alert notifications. Receives POST requests with alert payloads |
+| `ATLAS_SLA_WEBHOOK_SECRET` | — | HMAC secret for signing SLA alert deliveries. When set, each POST carries `X-Webhook-Signature` (`sha256=<hex>` over `${timestamp}:${body}`) + `X-Webhook-Timestamp`. Unset = unsigned (back-compat) |
 
 ### Backups
 

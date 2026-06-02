@@ -154,6 +154,12 @@ inbound plugin's `verifyHmacWithTimestamp` helper directly, strip the
   snapshot; if a tick crashes mid-fan-out, the next tick re-derives and
   re-delivers the same diff.
 
+The signing format and retry budget above are a stable contract: every
+Atlas outbound webhook (this feed, SLA alerts, the webhook-action plugin)
+shares one delivery primitive, so the `sha256=<hex>` over `${ts}:${body}`
+convention and the 3-attempt backoff are identical across them and will not
+drift between releases.
+
 ## Slack adapter recipe
 
 Atlas does not store customer Slack webhook URLs (credential-management

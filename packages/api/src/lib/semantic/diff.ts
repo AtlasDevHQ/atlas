@@ -219,9 +219,15 @@ export function filterSnapshotsByWhitelist(
  */
 export async function getDBSchemaRaw(
   connectionId: string = "default",
+  workspaceId?: string,
 ): Promise<Map<string, EntitySnapshot>> {
-  const conn = connections.get(connectionId);
-  const dbType = connections.getDBType(connectionId);
+  // When a workspace context is available, resolve per (workspace, install_id)
+  // so a shared install_id reads the correct tenant's schema, not whichever
+  // workspace registered the install_id first (#3109).
+  const conn = workspaceId
+    ? connections.getForWorkspace(workspaceId, connectionId)
+    : connections.get(connectionId);
+  const dbType = connections.getDBType(connectionId, workspaceId);
 
   let sql: string;
   if (dbType === "mysql") {
@@ -266,8 +272,9 @@ export async function getDBSchemaRaw(
 export async function getDBSchema(
   connectionId: string = "default",
   allowedTables?: Set<string>,
+  workspaceId?: string,
 ): Promise<Map<string, EntitySnapshot>> {
-  const snapshots = await getDBSchemaRaw(connectionId);
+  const snapshots = await getDBSchemaRaw(connectionId, workspaceId);
   return filterSnapshotsByWhitelist(snapshots, allowedTables);
 }
 
@@ -481,7 +488,9 @@ export async function runDiff(
   options: DiffOptions = {},
 ): Promise<SemanticDiffResponse> {
   const allowedTables = await resolveAllowedTables(connectionId, options);
-  const dbSnapshots = await getDBSchema(connectionId, allowedTables);
+  // Scope introspection to the querying workspace (#3109) so a shared
+  // install_id reads the correct tenant's schema, not a sibling's.
+  const dbSnapshots = await getDBSchema(connectionId, allowedTables, options.orgId);
   const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);
@@ -526,7 +535,9 @@ export async function runDriftDiff(
   warnings: string[];
 }> {
   const allowedTables = await resolveAllowedTables(connectionId, options);
-  const rawDBSnapshots = await getDBSchemaRaw(connectionId);
+  // Scope introspection to the querying workspace (#3109) so a shared
+  // install_id reads the correct tenant's schema, not a sibling's.
+  const rawDBSnapshots = await getDBSchemaRaw(connectionId, options.orgId);
   const dbSnapshots = filterSnapshotsByWhitelist(rawDBSnapshots, allowedTables);
   const { snapshots: yamlSnapshots, warnings } = await resolveYAMLSnapshots(connectionId, options);
 

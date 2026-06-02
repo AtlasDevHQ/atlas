@@ -195,7 +195,7 @@ async function reconcileCreateFromDb(input: ReconcileInput): Promise<ReconcileRe
     };
   }
 
-  const schema = await getDBSchemaRaw(input.connection);
+  const schema = await getDBSchemaRaw(input.connection, input.orgId);
   const snapshot = schema.get(input.name);
   if (!snapshot) {
     return {

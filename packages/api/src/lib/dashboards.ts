@@ -866,7 +866,10 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
         { connectionGroupId: card.connectionGroupId },
         dashboardOrgId,
       );
-      const validation = await validateSQL(card.sql, resolvedConnectionId ?? undefined);
+      // Scope validation to the dashboard's workspace so a shared install_id
+      // validates against the right dialect — matches the getForOrg routing
+      // below (#3109).
+      const validation = await validateSQL(card.sql, resolvedConnectionId ?? undefined, dashboardOrgId ?? undefined);
       if (!validation.valid) {
         log.warn({ cardId: card.id, error: validation.error }, "Auto-refresh: card SQL failed validation");
         failed++;

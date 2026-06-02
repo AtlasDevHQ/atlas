@@ -79,9 +79,10 @@ export function registerDatasourceInstall(
   // config, so two workspaces sharing an install_id route to their own DBs.
   // Config-only + upsert (no live pool to tear down), so it's registered
   // unconditionally — a datasource config update replaces the base config used
-  // for SUBSEQUENT org-pool clones here (an org pool already cloned into
-  // `orgEntries` keeps the prior config until it's evicted/restarted — see
-  // #3109 for eager org-pool drain on update).
+  // for SUBSEQUENT org-pool clones here. The update path drains the existing
+  // clone first via `unregisterDatasourceInstall` →
+  // `connections.drainWorkspacePool`, so the next query re-clones from this new
+  // config without waiting for LRU eviction / restart (#3109).
   const compositeExisted = connections.hasForWorkspace(row.workspaceId, row.installId);
   connections.registerForWorkspace(row.workspaceId, row.installId, config);
 
@@ -113,7 +114,11 @@ export function registerDatasourceInstall(
  *  1. Removes the per-(workspace, install_id) routing config — `getForOrg`
  *     resolves it with priority over the bare entry, so leaving it would let
  *     an uninstalled datasource keep routing to a stale URL (#2783).
- *  2. Removes the shared bare `entries` row ONLY when no OTHER workspace still
+ *  2. Drains the live org-pool clone for this (workspace, install_id) so a
+ *     config update / uninstall propagates immediately instead of serving the
+ *     OLD config until LRU eviction / restart (#3109). Step 1 drops the routing
+ *     config; this drops the live pool, keeping them symmetric.
+ *  3. Removes the shared bare `entries` row ONLY when no OTHER workspace still
  *     owns the install_id (`hasWorkspacePoolsFor`). A sibling sharing the
  *     install_id keeps the bare row so its install-id-keyed metadata
  *     (getDBType / getTargetHost / validators) keeps resolving.
@@ -124,6 +129,10 @@ export function registerDatasourceInstall(
  */
 export function unregisterDatasourceInstall(workspaceId: string, installId: string): boolean {
   const removedWorkspace = connections.unregisterForWorkspace(workspaceId, installId);
+  // Eagerly tear down the live org-pool clone for this (workspace, install_id)
+  // so a config update / uninstall takes effect on the next query — without
+  // this the cloned pool keeps the prior config until LRU/restart (#3109).
+  connections.drainWorkspacePool(workspaceId, installId);
   // Drop the shared bare row only once the last workspace owning this
   // install_id is gone — siblings keep their install-id-keyed metadata.
   const removedBare =

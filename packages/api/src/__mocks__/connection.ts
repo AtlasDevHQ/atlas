@@ -42,6 +42,9 @@ export interface ConnectionsOverrides {
   recordSuccess?: AnyFn;
   isOrgPoolingEnabled?: AnyFn;
   getForOrg?: AnyFn;
+  getForWorkspace?: AnyFn;
+  hasForWorkspace?: AnyFn;
+  drainWorkspacePool?: AnyFn;
   getOrgPoolMetrics?: AnyFn;
   getOrgPoolConfig?: AnyFn;
   listOrgs?: AnyFn;
@@ -90,6 +93,11 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     has: () => true,
     isOrgPoolingEnabled: () => false,
     getForOrg: () => dbConn,
+    getForWorkspace: () => dbConn,
+    // Default: no per-workspace config registered in the mock, so the
+    // org-pooling-OFF read path keeps pool metrics on the bare entry (#3109).
+    hasForWorkspace: () => false,
+    drainWorkspacePool: () => 0,
     recordQuery: () => {},
     recordSuccess: () => {},
     recordError: () => {},

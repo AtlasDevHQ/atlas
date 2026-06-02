@@ -53,6 +53,15 @@ const mockHasWorkspacePoolsFor: Mock<(installId: string) => boolean> = mock((ins
   }
   return false;
 });
+// Eager org-pool clone drain on uninstall/update (#3109). The bridge calls it
+// alongside unregisterForWorkspace so a stale clone can't outlive the config.
+const drainCalls: Array<{ workspaceId: string; installId: string }> = [];
+const mockDrainWorkspacePool: Mock<(workspaceId: string, installId: string) => number> = mock(
+  (workspaceId: string, installId: string) => {
+    drainCalls.push({ workspaceId, installId });
+    return 0;
+  },
+);
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
@@ -63,6 +72,7 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     hasForWorkspace: mockHasForWorkspace,
     unregisterForWorkspace: mockUnregisterForWorkspace,
     hasWorkspacePoolsFor: mockHasWorkspacePoolsFor,
+    drainWorkspacePool: mockDrainWorkspacePool,
   },
 }));
 
@@ -74,6 +84,7 @@ beforeEach(async () => {
   registerCalls.length = 0;
   unregisterCalls.length = 0;
   wsRegisterCalls.length = 0;
+  drainCalls.length = 0;
   registeredIds = new Set<string>();
   wsRegisteredKeys = new Set<string>();
   mockRegister.mockClear();
@@ -83,12 +94,14 @@ beforeEach(async () => {
   mockHasForWorkspace.mockClear();
   mockUnregisterForWorkspace.mockClear();
   mockHasWorkspacePoolsFor.mockClear();
+  mockDrainWorkspacePool.mockClear();
 });
 
 afterEach(() => {
   registerCalls.length = 0;
   unregisterCalls.length = 0;
   wsRegisterCalls.length = 0;
+  drainCalls.length = 0;
   registeredIds = new Set<string>();
   wsRegisteredKeys = new Set<string>();
 });
@@ -222,6 +235,25 @@ describe("unregisterDatasourceInstall", () => {
     expect(wsRegisteredKeys.has(wsKey("ws-1", "prod"))).toBe(false);
     // Bare row removed too (no sibling workspace owns the install_id).
     expect(unregisterCalls).toContain("prod");
+  });
+
+  it("eagerly drains the live org-pool clone for the (workspace, install_id) (#3109)", () => {
+    // Both uninstall and updateDatasourceConfig route through this bridge fn, so
+    // a single drain hook here covers both — the cloned pool can't keep serving
+    // the prior config until LRU/restart.
+    bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
+    bridge.unregisterDatasourceInstall("ws-1", "prod");
+    expect(drainCalls).toEqual([{ workspaceId: "ws-1", installId: "prod" }]);
+  });
+
+  it("drains the targeted clone even when a sibling keeps the bare row", () => {
+    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
+    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
+
+    bridge.unregisterDatasourceInstall("ws-a", "prod");
+    // Only ws-a's clone is drained; ws-b's pool is left intact.
+    expect(drainCalls).toEqual([{ workspaceId: "ws-a", installId: "prod" }]);
+    expect(unregisterCalls).not.toContain("prod");
   });
 
   it("keeps the shared bare row when a sibling workspace still owns the install_id", () => {

@@ -115,7 +115,10 @@ let pendingReservations = 0;
 // The resolver is pure and cannot log, so the malformed-override warn lives
 // here at the call site where a logger is available.
 function maxSessions(): number {
-  const raw = process.env.ATLAS_MCP_MAX_SESSIONS;
+  // Mirror resolveMcpMaxSessions's `.trim()` so a whitespace-only value is
+  // treated as unset (no spurious warn) — the warn fires only for a genuinely
+  // malformed non-empty override, matching what the resolver actually rejects.
+  const raw = process.env.ATLAS_MCP_MAX_SESSIONS?.trim();
   if (raw) {
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed < 1) {

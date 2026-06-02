@@ -151,8 +151,11 @@ RUN mkdir -p /app/plugins/chat/node_modules/@useatlas && \
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
 # Profile-aware seed gate (#2937): start.sh shells out to this to resolve
-# ATLAS_SEED_DEMO through the env-profile. Dependency-free (imports only
-# @atlas/api/lib/env-profile), so it needs no extra node_modules symlink.
+# ATLAS_SEED_DEMO through the env-profile. It imports env-profile by RELATIVE
+# path (../packages/api/src/lib/env-profile) because a script under /app/scripts/
+# is outside the @atlas/api package and there is no node_modules/@atlas/api to
+# resolve here; env-profile is dependency-free so the relative import is
+# self-contained. The build-time assertion below proves it resolves.
 COPY --chown=atlas:atlas examples/docker/scripts/resolve-seed-demo.ts ./scripts/resolve-seed-demo.ts
 COPY --chown=atlas:atlas deploy/api/atlas.config.ts ./atlas.config.ts
 COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh

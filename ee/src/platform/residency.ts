@@ -31,7 +31,7 @@ import {
   ResidencyError,
   type ResidencyErrorCode,
 } from "@atlas/api/lib/residency/errors";
-import type { DeployRegion, RegionStatus, WorkspaceRegion } from "@useatlas/types";
+import { isDeployRegion, type DeployRegion, type RegionStatus, type WorkspaceRegion } from "@useatlas/types";
 
 const log = createLogger("ee:residency");
 
@@ -46,6 +46,36 @@ const log = createLogger("ee:residency");
  * here rather than silently re-enabling routing.
  */
 const STAGING_REGION = "staging" satisfies DeployRegion;
+
+/**
+ * Per-deploy-region routing intent (#2983). Maps every closed first-party
+ * {@link DeployRegion} to whether `resolveRegionDatabaseUrl` routes it through
+ * the residency pool (`"residency"`) or short-circuits to a `null` route that
+ * falls through to the local DB connection (`"local"`).
+ *
+ * The point is to force a *conscious* decision per region. Because the type is
+ * keyed `Record<DeployRegion, …>`, adding a member to the `DeployRegion` union
+ * fails to type-check this table until its routing intent is recorded here — a
+ * new region can never silently inherit a default route through the structural
+ * `config.residency.regions[region]` lookup. This COMPLEMENTS, and does not
+ * duplicate, `_AssertDeployRegionsExhaustive` in `@useatlas/types`: that guard
+ * keeps the runtime `DEPLOY_REGIONS` tuple in sync with the union (tuple
+ * membership); this keeps the *routing intent* in sync with it.
+ *
+ * Today only `staging` routes `"local"` (the pre-prod soak instance — see
+ * {@link STAGING_REGION}); `us` / `eu` / `apac` are real residency targets.
+ * Mind the OPEN/CLOSED distinction (see `@useatlas/types` `deploy.ts`): only the
+ * closed `DeployRegion` union keys this table. A workspace's stored region is an
+ * OPEN `Region` string (operator-defined, e.g. `us-east`) and is NOT keyed here,
+ * so callers must narrow through `isDeployRegion` before consulting it — open
+ * regions route through the residency map directly.
+ */
+export const DEPLOY_REGION_ROUTING = {
+  us: "residency",
+  eu: "residency",
+  apac: "residency",
+  staging: "local",
+} as const satisfies Record<DeployRegion, "residency" | "local">;
 
 // ── Typed errors ────────────────────────────────────────────────────
 
@@ -219,9 +249,15 @@ export const resolveRegionDatabaseUrl = (
     const region = yield* Effect.promise(() => getWorkspaceRegion(workspaceId));
     if (!region) return null;
 
-    // Staging arm (#2908): the staging deploy region is never a residency
-    // target. Return null *before* the regionConfig lookup so a staging-keyed
-    // workspace falls through to the local DB connection — without tripping
+    // Staging arm (#2983 / #2908): the per-deploy-region routing table
+    // (DEPLOY_REGION_ROUTING) marks staging `"local"`, so it is never a
+    // residency target. `region` is an OPEN `Region` string, so the guard below
+    // narrows it through `isDeployRegion` before consulting the (closed-union-
+    // keyed) table — open operator-defined regions are not keyed there and fall
+    // through to the residency map; closed deploy regions marked `"residency"`
+    // (us|eu|apac) likewise fall through, so only `"local"` regions short-
+    // circuit here. Return null *before* the regionConfig lookup so a staging-
+    // keyed workspace falls through to the local DB connection — without tripping
     // the "region no longer configured / contract may be violated" error path
     // below. Short-circuiting here also wins over any `staging` entry in
     // residency.regions, so staging can never claim to be a residency-mapped
@@ -243,7 +279,7 @@ export const resolveRegionDatabaseUrl = (
     // `stagingInResidencyConfig` is retained in the event payload for operator
     // context (it tells prod operators a dead entry sits in their map) but no
     // longer gates the log level.
-    if (region === STAGING_REGION) {
+    if (isDeployRegion(region) && DEPLOY_REGION_ROUTING[region] === "local") {
       const stagingInResidencyConfig = STAGING_REGION in config.residency.regions;
       const onStagingDeploy = resolveDeployEnv() === "staging";
       const event = {

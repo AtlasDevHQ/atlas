@@ -73,6 +73,11 @@ RUN cd packages/types && bun run build
 RUN cd packages/sdk && bun run build
 RUN cd packages/plugin-sdk && bun run build
 RUN cd packages/react && bun run build
+# @useatlas/webhook-publisher's package.json exports also point to ./dist/index.js.
+# The API loads it at boot via the sub-processor publisher (scheduler tick) and
+# the EE SLA alerter, so its dist must exist or module resolution ENOENTs at
+# runtime. It has no @useatlas deps, so its build order in this group is free.
+RUN cd packages/webhook-publisher && bun run build
 
 # --- nsjail build stage (parallel with builder) ---
 ARG INSTALL_NSJAIL=false
@@ -115,6 +120,12 @@ COPY --from=builder --chown=atlas:atlas /app/packages/schemas ./packages/schemas
 # and ENOENTs at boot, hard-failing the SaaS deploy. Added in #2608
 # (slice 1 of #2607) when atlas.config.ts started importing chatPlugin.
 COPY --from=builder --chown=atlas:atlas /app/packages/plugin-sdk ./packages/plugin-sdk
+# @useatlas/webhook-publisher — workspace symlink target for the API's
+# sub-processor publisher + the EE SLA alerter (both import it). Its
+# package.json exports point to ./dist (built in the builder stage above);
+# without this COPY the node_modules/@useatlas/webhook-publisher symlink
+# dangles and the first scheduler tick / SLA alert ENOENTs at runtime.
+COPY --from=builder --chown=atlas:atlas /app/packages/webhook-publisher ./packages/webhook-publisher
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies

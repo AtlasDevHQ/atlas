@@ -10,6 +10,13 @@
  */
 
 import { Effect } from "effect";
+import {
+  cappedExponentialDelays,
+  deliverWebhook,
+  timestamped,
+  type Fetcher,
+  type SignStrategy,
+} from "@useatlas/webhook-publisher";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -376,31 +383,108 @@ function toAlert(row: {
 }
 
 /**
- * Deliver alert notification via webhook or email (best-effort).
- * Sends an HTTP POST with a JSON payload to the configured webhook URL.
+ * Unsigned fallback for URL-only deploys (no `ATLAS_SLA_WEBHOOK_SECRET`):
+ * deliver with just `Content-Type` and no signature header. Kept purely for
+ * back-compat — operators are nudged once (`warnUnsignedOnce`) to configure a
+ * secret so receivers can verify the alert originated from Atlas.
  */
-const deliverAlert = (alert: SLAAlert): Effect.Effect<void, Error> =>
+const unsignedStrategy: SignStrategy = () => ({
+  signature: "",
+  headers: { "Content-Type": "application/json" },
+});
+
+// One-time nag so an unsigned URL-only deploy keeps working but the operator
+// is told (once, not per-alert — alert storms shouldn't spam this) to set a
+// secret. Latched at the process level; resets naturally on restart.
+let unsignedDeliveryWarned = false;
+function warnUnsignedOnce(): void {
+  if (unsignedDeliveryWarned) return;
+  unsignedDeliveryWarned = true;
+  log.warn(
+    { errorId: "sla_webhook_unsigned" },
+    "ATLAS_SLA_WEBHOOK_URL is set but ATLAS_SLA_WEBHOOK_SECRET is not — SLA alert webhooks are delivered UNSIGNED. Set ATLAS_SLA_WEBHOOK_SECRET so receivers can verify the X-Webhook-Signature header (see docs/platform-ops/sla-monitoring).",
+  );
+}
+
+/** Options exist purely for test injection; production reads `process.env`. */
+export interface DeliverAlertOptions {
+  /** Injectable fetch — test seam. Defaults to the global `fetch`. */
+  readonly fetcher?: Fetcher;
+  /** Override `ATLAS_SLA_WEBHOOK_URL` (test seam). */
+  readonly webhookUrl?: string;
+  /** Override `ATLAS_SLA_WEBHOOK_SECRET` (test seam). */
+  readonly secret?: string;
+  /** Pin the signature timestamp for deterministic tests. */
+  readonly nowSeconds?: number;
+  /** Injectable sleep — test seam to skip real backoff waits. */
+  readonly sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Deliver an SLA alert notification via webhook (best-effort).
+ *
+ * No-op when `ATLAS_SLA_WEBHOOK_URL` is unset (unchanged). When a URL is set
+ * the delivery now **signs and retries** via the shared
+ * `@useatlas/webhook-publisher` primitive — closing the gap where SLA alerts
+ * shipped unsigned and unretried:
+ *   - `ATLAS_SLA_WEBHOOK_SECRET` set   → `timestamped` HMAC
+ *     (`X-Webhook-Signature: sha256=…` + `X-Webhook-Timestamp`).
+ *   - secret unset                     → unsigned, Content-Type only, with a
+ *     one-time warn (back-compat for existing URL-only deploys).
+ * Up to 3 attempts (2 retries) with [1000, 2000]ms capped-exponential
+ * backoff, 10s per-attempt timeout. The payload shape is byte-identical to
+ * the pre-signing version.
+ */
+export const deliverAlert = (
+  alert: SLAAlert,
+  options: DeliverAlertOptions = {},
+): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
-    const webhookUrl = process.env.ATLAS_SLA_WEBHOOK_URL;
+    const webhookUrl = options.webhookUrl ?? process.env.ATLAS_SLA_WEBHOOK_URL;
     if (!webhookUrl) return;
 
-    const response = yield* Effect.tryPromise({
-      try: () => fetch(webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "sla.alert.fired",
-          alert,
-          timestamp: new Date().toISOString(),
+    // An empty string counts as "no secret" → unsigned (back-compat) path, not
+    // an empty-key HMAC. `??` preserves "", so the guard and the `sign` ternary
+    // both branch on truthiness and must stay in sync.
+    const secret = options.secret ?? process.env.ATLAS_SLA_WEBHOOK_SECRET;
+    if (!secret) warnUnsignedOnce();
+    const sign: SignStrategy = secret
+      ? timestamped({ secret, timestampSeconds: options.nowSeconds })
+      : unsignedStrategy;
+
+    const outcome = yield* Effect.tryPromise({
+      try: () =>
+        deliverWebhook({
+          url: webhookUrl,
+          payload: {
+            type: "sla.alert.fired",
+            alert,
+            timestamp: new Date().toISOString(),
+          },
+          sign,
+          retry: {
+            maxAttempts: 3,
+            delaysMs: cappedExponentialDelays({ baseMs: 1000, count: 2 }),
+          },
+          timeoutMs: 10_000,
+          fetcher: options.fetcher,
+          sleep: options.sleep,
         }),
-      }),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
-    if (!response.ok) {
-      const body = yield* Effect.promise(() => response.text().catch(() => "(unreadable body)"));
+    if (outcome.kind !== "ok") {
       log.error(
-        { status: response.status, alertId: alert.id, responseBody: body.slice(0, 500) },
+        {
+          alertId: alert.id,
+          status: outcome.kind === "http_error" ? outcome.status : undefined,
+          // Bounded body excerpt the package captures for permanent (4xx)
+          // rejections — preserves the diagnostic the pre-refactor log had.
+          responseText:
+            outcome.kind === "http_error" ? outcome.responseText : undefined,
+          error: outcome.error,
+          attempts: outcome.attempts,
+        },
         "SLA alert webhook delivery failed — alert notification was not delivered",
       );
     }

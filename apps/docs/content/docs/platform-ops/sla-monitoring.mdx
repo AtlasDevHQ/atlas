@@ -73,6 +73,57 @@ Set `ATLAS_SLA_WEBHOOK_URL` to receive alert notifications via HTTP POST:
 }
 ```
 
+Delivery retries `5xx` responses and transport errors with bounded
+exponential backoff (up to 3 attempts, 1s before retry 2 and 2s before
+retry 3, 10s per-attempt timeout). `4xx` responses are treated as
+permanent and not retried.
+
+#### Signature verification
+
+Set `ATLAS_SLA_WEBHOOK_SECRET` to HMAC-sign every alert delivery so your
+receiver can confirm it originated from Atlas. When the secret is set, two
+headers ride alongside the body — the same `timestamped` convention as the
+[sub-processor feed](/docs/integrations/sub-processor-feed):
+
+| Header | Value |
+|--------|-------|
+| `X-Webhook-Timestamp` | Unix seconds at signing time. |
+| `X-Webhook-Signature` | HMAC-SHA256 over `${X-Webhook-Timestamp}:${rawBody}`, formatted as `sha256=<hex_digest>` (Stripe/GitHub-style). |
+
+```ts
+import crypto from "node:crypto";
+
+function verify(rawBody: string, headers: Headers, secret: string): boolean {
+  const ts = headers.get("x-webhook-timestamp");
+  const sig = headers.get("x-webhook-signature");
+  if (!ts || !sig) return false;
+
+  // Reject requests outside a 5-minute window to block replays. Guard against
+  // a non-numeric timestamp — `Number("x")` is NaN and `NaN > 300` is false,
+  // which would otherwise let a malformed timestamp skip the freshness check.
+  const now = Math.floor(Date.now() / 1000);
+  const tsSeconds = Number(ts);
+  if (!Number.isFinite(tsSeconds) || Math.abs(now - tsSeconds) > 300) {
+    return false;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${ts}:${rawBody}`)
+    .digest("hex");
+  // Strip the `sha256=` prefix, then constant-time compare.
+  const provided = sig.replace(/^sha256=/, "");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(provided);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+If `ATLAS_SLA_WEBHOOK_SECRET` is left unset, deliveries are sent unsigned
+(Content-Type only) for backward compatibility, and Atlas logs a one-time
+warning recommending you configure a secret. The payload body is identical
+whether or not signing is enabled.
+
 ## Configuration
 
 ### Environment Variables
@@ -82,6 +133,7 @@ Set `ATLAS_SLA_WEBHOOK_URL` to receive alert notifications via HTTP POST:
 | `ATLAS_SLA_LATENCY_P99_MS` | `5000` | Default P99 latency alert threshold (ms) |
 | `ATLAS_SLA_ERROR_RATE_PCT` | `5` | Default error rate alert threshold (%) |
 | `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for alert delivery |
+| `ATLAS_SLA_WEBHOOK_SECRET` | — | HMAC secret for signing alert deliveries (`X-Webhook-Signature`). Unset = unsigned (back-compat) |
 
 Thresholds can also be configured through the admin UI, which takes precedence over env vars.
 

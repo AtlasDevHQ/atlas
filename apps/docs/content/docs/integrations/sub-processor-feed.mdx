@@ -113,9 +113,14 @@ function verify(rawBody: string, headers: Headers, token: string): boolean {
   const sig = headers.get("x-webhook-signature");
   if (!ts || !sig) return false;
 
-  // Reject requests outside a 5-minute window to block replays.
+  // Reject requests outside a 5-minute window to block replays. Guard against
+  // a non-numeric timestamp — `Number("x")` is NaN and `NaN > 300` is false,
+  // which would otherwise let a malformed timestamp skip the freshness check.
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(ts)) > 300) return false;
+  const tsSeconds = Number(ts);
+  if (!Number.isFinite(tsSeconds) || Math.abs(now - tsSeconds) > 300) {
+    return false;
+  }
 
   const expected =
     "sha256=" +
@@ -153,6 +158,14 @@ inbound plugin's `verifyHmacWithTimestamp` helper directly, strip the
 - Each tick fans out the diff against the most recent published
   snapshot; if a tick crashes mid-fan-out, the next tick re-derives and
   re-delivers the same diff.
+
+The signing format and retry budget above are a stable contract: this feed
+and the SLA alert webhook share one delivery primitive, so the
+`sha256=<hex>` over `${ts}:${body}` convention and the 3-attempt backoff are
+identical across both and will not drift between releases. (Atlas's
+action-webhook plugin signs differently — `X-Atlas-Signature`, bare hex over
+the raw body, no timestamp — so a verifier written for this feed won't
+validate those deliveries.)
 
 ## Slack adapter recipe
 

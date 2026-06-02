@@ -66,6 +66,11 @@
 
 import crypto from "crypto";
 
+import {
+  cappedExponentialDelays,
+  deliverWebhook,
+  timestamped,
+} from "@useatlas/webhook-publisher";
 import { z } from "zod";
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -185,22 +190,16 @@ export function signRequest(
   token: string,
   nowSeconds: number = Math.floor(Date.now() / 1000),
 ): SignedRequest {
+  // Delegates to the shared `timestamped` strategy so the wire format stays
+  // identical to (and locked against) every other Atlas outbound sender.
+  // `nowSeconds` is already resolved by the default param, so the returned
+  // `.timestamp` matches the `X-Webhook-Timestamp` header the strategy emits.
   const body = JSON.stringify(payload);
-  const signingInput = `${nowSeconds}:${body}`;
-  const signature = `sha256=${crypto
-    .createHmac("sha256", token)
-    .update(signingInput)
-    .digest("hex")}`;
-  return {
-    body,
-    timestamp: nowSeconds,
-    signature,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Webhook-Timestamp": String(nowSeconds),
-      "X-Webhook-Signature": signature,
-    },
-  };
+  const { signature, headers } = timestamped({
+    secret: token,
+    timestampSeconds: nowSeconds,
+  })(body);
+  return { body, timestamp: nowSeconds, signature, headers };
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -217,10 +216,13 @@ export type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 export async function deliver(
   subscription: SubscriptionRow,
   event: ChangeEvent,
-  options: { fetcher?: Fetcher; nowSeconds?: number } = {},
+  options: {
+    fetcher?: Fetcher;
+    nowSeconds?: number;
+    /** Injectable sleep — test seam. Defaults to a real timer in the package. */
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<DeliveryAttempt> {
-  const fetcher = options.fetcher ?? globalFetch;
-
   let token: string;
   try {
     token = decryptSecret(subscription.token_encrypted);
@@ -234,107 +236,109 @@ export async function deliver(
       },
       "Sub-processor subscription token cannot be decrypted — check ATLAS_ENCRYPTION_KEYS keyset / rotation history. The next tick will fail identically until this is resolved.",
     );
-    // Re-throw so the outer scheduler catchAll records a tick failure.
-    // A decrypt failure is a configuration emergency, not a delivery
-    // hiccup — silently retrying every 6h would just hide the misconfig.
+    // Re-throw BEFORE any network call so the outer scheduler catchAll records
+    // a tick failure. A decrypt failure is a configuration emergency, not a
+    // delivery hiccup — silently retrying every 6h would just hide the
+    // misconfig. (deliverWebhook is therefore never reached, so its fetcher
+    // is never invoked.)
     throw err instanceof Error ? err : new Error(String(err));
   }
 
-  const signed = signRequest(event, token, options.nowSeconds);
+  // Transport + retry + per-attempt timeout now live in the shared
+  // `@useatlas/webhook-publisher` primitive. The `timestamped` strategy
+  // reproduces the exact `sha256=<hmac(${ts}:${body})>` wire format, the retry
+  // budget stays 3 attempts with [1000, 2000]ms capped-exponential backoff,
+  // and 4xx is still permanent (1 attempt) while 5xx/transport retries to 3.
+  const outcome = await deliverWebhook({
+    url: subscription.url,
+    payload: event,
+    sign: timestamped({ secret: token, timestampSeconds: options.nowSeconds }),
+    retry: {
+      maxAttempts: DELIVERY_MAX_ATTEMPTS,
+      delaysMs: cappedExponentialDelays({
+        baseMs: DELIVERY_BACKOFF_BASE_MS,
+        count: DELIVERY_MAX_ATTEMPTS - 1,
+      }),
+    },
+    timeoutMs: DELIVERY_TIMEOUT_MS,
+    fetcher: options.fetcher,
+    sleep: options.sleep,
+  });
 
-  let lastError: string | null = null;
-  let lastStatus: number | null = null;
-
-  for (let attempt = 1; attempt <= DELIVERY_MAX_ATTEMPTS; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
-    try {
-      const res = await fetcher(subscription.url, {
-        method: "POST",
-        headers: { ...signed.headers },
-        body: signed.body,
-        signal: controller.signal,
-      });
-      lastStatus = res.status;
-      if (res.ok) {
-        return {
-          kind: "ok",
-          subscriptionId: subscription.id,
-          status: res.status,
-          attempts: attempt,
-        };
-      }
-      // 4xx is a permanent failure — no point retrying. 5xx + transport
-      // errors get the backoff treatment.
-      if (res.status >= 400 && res.status < 500) {
-        // Surface as error (not warn): a 4xx after our own validation
-        // shipped means the subscriber's endpoint rejects our payload —
-        // a contract bug worth visibility, not a transient blip.
-        log.error(
-          {
-            subscriptionId: subscription.id,
-            status: res.status,
-            url: subscription.url,
-            eventKind: event.event,
-            entry: event.entry.name,
-            errorId: "subprocessor_delivery_4xx",
-          },
-          "Sub-processor webhook delivery rejected with 4xx — the subscriber's endpoint will not see this event again unless reconstructed from sub_processor_snapshots",
-        );
-        return {
-          kind: "http_error",
-          subscriptionId: subscription.id,
-          status: res.status,
-          attempts: attempt,
-          error: `http_${res.status}`,
-        };
-      }
-      lastError = `http_${res.status}`;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-    } finally {
-      clearTimeout(timer);
-    }
-
-    if (attempt < DELIVERY_MAX_ATTEMPTS) {
-      const wait = DELIVERY_BACKOFF_BASE_MS * 2 ** (attempt - 1);
-      await sleep(wait);
-    }
+  // deliverWebhook does no logging of its own (and neither did the old loop
+  // per-attempt) — so reproduce the two original log points from the FINAL
+  // outcome. A 4xx is a contract bug worth `error` visibility; an exhausted
+  // 5xx / transport failure is a transient `warn`.
+  if (
+    outcome.kind === "http_error" &&
+    outcome.status >= 400 &&
+    outcome.status < 500
+  ) {
+    log.error(
+      {
+        subscriptionId: subscription.id,
+        status: outcome.status,
+        url: subscription.url,
+        eventKind: event.event,
+        entry: event.entry.name,
+        errorId: "subprocessor_delivery_4xx",
+      },
+      "Sub-processor webhook delivery rejected with 4xx — the subscriber's endpoint will not see this event again unless reconstructed from sub_processor_snapshots",
+    );
+  } else if (outcome.kind !== "ok") {
+    log.warn(
+      {
+        subscriptionId: subscription.id,
+        status: outcome.kind === "http_error" ? outcome.status : null,
+        err: outcome.error,
+        eventKind: event.event,
+        entry: event.entry.name,
+        errorId: "subprocessor_delivery_exhausted",
+      },
+      "Sub-processor webhook delivery failed after retries",
+    );
   }
 
-  log.warn(
-    {
-      subscriptionId: subscription.id,
-      status: lastStatus,
-      err: lastError,
-      eventKind: event.event,
-      entry: event.entry.name,
-      errorId: "subprocessor_delivery_exhausted",
-    },
-    "Sub-processor webhook delivery failed after retries",
-  );
-  return lastStatus !== null
-    ? {
+  // Map the package's DeliveryOutcome → the existing tagged DeliveryAttempt
+  // union: add `subscriptionId`, drop `signature`/`responseText`, keep
+  // `error = http_<status>` (the package already normalizes it that way).
+  switch (outcome.kind) {
+    case "ok":
+      return {
+        kind: "ok",
+        subscriptionId: subscription.id,
+        status: outcome.status,
+        attempts: outcome.attempts,
+      };
+    case "http_error":
+      return {
         kind: "http_error",
         subscriptionId: subscription.id,
-        status: lastStatus,
-        attempts: DELIVERY_MAX_ATTEMPTS,
-        error: lastError ?? `http_${lastStatus}`,
-      }
-    : {
+        status: outcome.status,
+        attempts: outcome.attempts,
+        error: outcome.error,
+      };
+    case "transport_error":
+      return {
         kind: "transport_error",
         subscriptionId: subscription.id,
-        attempts: DELIVERY_MAX_ATTEMPTS,
-        error: lastError ?? "transport_error",
+        attempts: outcome.attempts,
+        error: outcome.error,
       };
+    default: {
+      // `@useatlas/webhook-publisher` is independently versioned — if a future
+      // release adds a fourth `DeliveryOutcome` kind, fail the build here
+      // rather than silently returning `undefined` (noImplicitReturns is off).
+      const _exhaustive: never = outcome;
+      throw new Error(
+        `Unhandled delivery outcome: ${JSON.stringify(_exhaustive)}`,
+      );
+    }
+  }
 }
 
 function globalFetch(input: string, init: RequestInit): Promise<Response> {
   return fetch(input, init);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ──────────────────────────────────────────────────────────────────────

@@ -157,7 +157,7 @@ describe("refreshJiraToken — happy path (refresh-token rotation)", () => {
 // ---------------------------------------------------------------------------
 
 describe("refreshJiraToken — permanent failure", () => {
-  it("on invalid_grant: throws JiraReconnectRequiredError + marks status reconnect_needed", async () => {
+  it("on invalid_grant: throws IntegrationReconnectRequiredError + marks status reconnect_needed", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
     mockFetch.mockImplementationOnce(() =>
       Promise.resolve(
@@ -169,8 +169,9 @@ describe("refreshJiraToken — permanent failure", () => {
     );
 
     await expect(refreshMod.refreshJiraToken(JIRA_ARGS)).rejects.toMatchObject({
-      _tag: "JiraReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
       workspaceId: WSID,
+      platform: "jira",
       upstreamError: "invalid_grant",
     });
 
@@ -186,14 +187,15 @@ describe("refreshJiraToken — permanent failure", () => {
     expect(markUpdate).toBeDefined();
   });
 
-  it("on bundle missing refresh_token: short-circuits to JiraReconnectRequiredError without a fetch", async () => {
+  it("on bundle missing refresh_token: short-circuits to IntegrationReconnectRequiredError without a fetch", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce({
       ...STORED_BUNDLE,
       refreshToken: null,
     });
 
     await expect(refreshMod.refreshJiraToken(JIRA_ARGS)).rejects.toMatchObject({
-      _tag: "JiraReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "jira",
       upstreamError: "no_refresh_token",
     });
 

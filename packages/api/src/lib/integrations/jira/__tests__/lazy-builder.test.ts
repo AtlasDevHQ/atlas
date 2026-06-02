@@ -9,7 +9,7 @@
  *   - 401 from the Jira REST API (not `INVALID_SESSION_ID`) is the
  *     "session expired" signal.
  *   - On permanent refresh failure → cache eviction wire fires (same
- *     contract as Salesforce, different error tag).
+ *     contract as Salesforce; shared IntegrationReconnectRequiredError).
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -34,19 +34,25 @@ const mockRefreshJiraToken: Mock<(args: unknown) => Promise<unknown>> = mock(() 
   }),
 );
 
-class TestJiraReconnectRequiredError extends Error {
-  readonly _tag = "JiraReconnectRequiredError" as const;
+// Lightweight stand-in for the shared IntegrationReconnectRequiredError
+// (#2708) — injected via the mocked token-refresh module so the builder's
+// `instanceof reconnectErrorClass` eviction check matches without pulling
+// the real effect/errors graph.
+class TestReconnectError extends Error {
+  readonly _tag = "IntegrationReconnectRequiredError" as const;
   readonly workspaceId: string;
+  readonly platform: string;
   readonly upstreamError: string;
-  constructor(args: { workspaceId: string; upstreamError: string }) {
-    super(`reconnect_needed: ${args.upstreamError}`);
+  constructor(args: { message?: string; workspaceId: string; platform: string; upstreamError: string }) {
+    super(args.message ?? `reconnect_needed: ${args.upstreamError}`);
     this.workspaceId = args.workspaceId;
+    this.platform = args.platform;
     this.upstreamError = args.upstreamError;
   }
 }
 mock.module("@atlas/api/lib/integrations/install/jira-token-refresh", () => ({
   refreshJiraToken: mockRefreshJiraToken,
-  JiraReconnectRequiredError: TestJiraReconnectRequiredError,
+  IntegrationReconnectRequiredError: TestReconnectError,
   JIRA_SLUG: "jira",
   JIRA_CATALOG_ID: "catalog:jira",
 }));
@@ -227,7 +233,8 @@ describe("createJiraLazyBuilder — reconnect_needed", () => {
         config: { cloudid: CLOUDID, status: "reconnect_needed" },
       }),
     ).rejects.toMatchObject({
-      _tag: "JiraReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "jira",
       upstreamError: "install_marked_reconnect_needed",
     });
 
@@ -311,14 +318,15 @@ describe("createJiraLazyBuilder — session retry", () => {
     );
   });
 
-  it("propagates JiraReconnectRequiredError AND evicts the cached instance on permanent refresh failure", async () => {
+  it("propagates IntegrationReconnectRequiredError AND evicts the cached instance on permanent refresh failure", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
     mockFetch.mockImplementationOnce(() =>
       Promise.resolve(new Response("Unauthorized", { status: 401 })),
     );
     mockRefreshJiraToken.mockRejectedValueOnce(
-      new TestJiraReconnectRequiredError({
+      new TestReconnectError({
         workspaceId: WSID,
+        platform: "jira",
         upstreamError: "invalid_grant",
       }),
     );
@@ -331,7 +339,8 @@ describe("createJiraLazyBuilder — session retry", () => {
     })) as JiraPluginInstance;
 
     await expect(instance.queryJira("project = ATL")).rejects.toMatchObject({
-      _tag: "JiraReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "jira",
       upstreamError: "invalid_grant",
     });
 

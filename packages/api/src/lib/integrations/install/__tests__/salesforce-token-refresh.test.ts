@@ -5,12 +5,12 @@
  *   - Happy refresh: exchanges grant_type=refresh_token, persists
  *     updated bundle, clears reconnect_needed.
  *   - Permanent failure (invalid_grant): throws
- *     SalesforceReconnectRequiredError + marks
+ *     IntegrationReconnectRequiredError + marks
  *     workspace_plugins.config.status = 'reconnect_needed'.
  *   - Transient failure (network / 5xx): throws plain Error without
  *     marking reconnect_needed.
  *   - Bundle missing refresh_token: short-circuits to
- *     SalesforceReconnectRequiredError without an HTTP call.
+ *     IntegrationReconnectRequiredError without an HTTP call.
  *   - Salesforce omitting refresh_token in response: previous token
  *     stays in the persisted bundle.
  */
@@ -170,7 +170,7 @@ describe("refreshSalesforceToken — happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("refreshSalesforceToken — permanent failure", () => {
-  it("throws SalesforceReconnectRequiredError on invalid_grant and marks reconnect_needed", async () => {
+  it("throws IntegrationReconnectRequiredError on invalid_grant and marks reconnect_needed", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce(STORED_BUNDLE);
     mockFetch.mockImplementationOnce(() =>
       Promise.resolve(
@@ -182,8 +182,9 @@ describe("refreshSalesforceToken — permanent failure", () => {
     );
 
     await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toMatchObject({
-      _tag: "SalesforceReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
       workspaceId: WSID,
+      platform: "salesforce",
       upstreamError: "invalid_grant",
     });
 
@@ -211,7 +212,8 @@ describe("refreshSalesforceToken — permanent failure", () => {
       );
 
       await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toMatchObject({
-        _tag: "SalesforceReconnectRequiredError",
+        _tag: "IntegrationReconnectRequiredError",
+        platform: "salesforce",
         upstreamError: errorCode,
       });
       const markedCall = mockInternalQuery.mock.calls.find(
@@ -349,14 +351,15 @@ describe("refreshSalesforceToken — transient failure", () => {
 // ---------------------------------------------------------------------------
 
 describe("refreshSalesforceToken — no refresh_token in bundle", () => {
-  it("short-circuits to SalesforceReconnectRequiredError and marks reconnect_needed (no HTTP call)", async () => {
+  it("short-circuits to IntegrationReconnectRequiredError and marks reconnect_needed (no HTTP call)", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce({
       ...STORED_BUNDLE,
       refreshToken: null,
     });
 
     await expect(refreshMod.refreshSalesforceToken(SF_ARGS)).rejects.toMatchObject({
-      _tag: "SalesforceReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "salesforce",
       upstreamError: "no_refresh_token",
     });
 

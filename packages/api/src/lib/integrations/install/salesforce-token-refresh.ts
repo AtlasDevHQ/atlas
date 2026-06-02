@@ -48,18 +48,20 @@ import {
   saveCredentialBundle,
   type CredentialBundle,
 } from "@atlas/api/lib/integrations/credentials/store";
-import { SalesforceReconnectRequiredError } from "@atlas/api/lib/effect/errors";
+import { IntegrationReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 import {
   DEFAULT_ACCESS_TOKEN_LIFETIME_MS,
   SALESFORCE_CATALOG_ID,
   SALESFORCE_SLUG,
 } from "./salesforce-oauth-handler";
 
-// Re-export so the lazy-builder + callers that already pull from this
-// module keep working. Canonical definition lives in `effect/errors.ts`
-// so the error participates in the `AtlasError` union + `mapTaggedError`
-// exhaustive switch (409 Conflict + `reconnect_required` wire code).
-export { SalesforceReconnectRequiredError };
+// Re-export so the lazy-builder + callers that pull from this module keep
+// working. Canonical definition lives in `effect/errors.ts` so the error
+// participates in the `AtlasError` union + `mapTaggedError` exhaustive
+// switch (409 Conflict + `conflict` wire code).
+export { IntegrationReconnectRequiredError };
+/** @deprecated #2708 — use {@link IntegrationReconnectRequiredError}; alias removed next release. */
+export { SalesforceReconnectRequiredError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("integrations.install.salesforce-refresh");
 
@@ -108,7 +110,7 @@ interface RefreshArgs {
 /**
  * POST `<loginUrl>/services/oauth2/token` with `grant_type=refresh_token`.
  * On HTTP 400 carrying one of the {@link PERMANENT_REFRESH_FAILURE_CODES}
- * codes, throws `SalesforceReconnectRequiredError`. On anything else
+ * codes, throws `IntegrationReconnectRequiredError`. On anything else
  * (network failure, 5xx, unknown 4xx), throws a plain `Error` so the
  * caller treats it as transient.
  */
@@ -157,9 +159,10 @@ async function exchangeRefreshToken(
         { workspaceId, errorCode, description: failure.error_description },
         "Salesforce refresh failed permanently — flagging reconnect_needed",
       );
-      throw new SalesforceReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Salesforce install needs to be reconnected — refresh token rejected by upstream.",
         workspaceId,
+        platform: "salesforce",
         upstreamError: errorCode,
       });
     }
@@ -186,7 +189,7 @@ async function markReconnectNeeded(workspaceId: string): Promise<void> {
   } catch (err) {
     // The install row vanishing between the credential read and this
     // UPDATE is rare but possible (concurrent disconnect). Log + swallow
-    // — the caller already threw `SalesforceReconnectRequiredError`,
+    // — the caller already threw `IntegrationReconnectRequiredError`,
     // which is the signal the route surface needs.
     log.warn(
       { workspaceId, err: err instanceof Error ? err.message : String(err) },
@@ -234,7 +237,7 @@ export interface RefreshSalesforceTokenArgs {
  * Refresh the Salesforce access token for `workspaceId`. Returns the
  * updated `CredentialBundle` (also persisted to
  * `integration_credentials`). On permanent failure throws
- * `SalesforceReconnectRequiredError` and flips
+ * `IntegrationReconnectRequiredError` and flips
  * `workspace_plugins.config.status` to `"reconnect_needed"`.
  *
  * Callers (LazyPluginLoader builder, agent tool-call wrapper) catch
@@ -260,9 +263,10 @@ export async function refreshSalesforceToken(
       "Salesforce credential bundle has no refresh_token — flagging reconnect_needed",
     );
     await markReconnectNeeded(args.workspaceId);
-    throw new SalesforceReconnectRequiredError({
+    throw new IntegrationReconnectRequiredError({
       message: "Salesforce install has no refresh token — Connected App must grant the refresh_token / offline_access scopes.",
       workspaceId: args.workspaceId,
+      platform: "salesforce",
       upstreamError: "no_refresh_token",
     });
   }
@@ -281,7 +285,7 @@ export async function refreshSalesforceToken(
       args.workspaceId,
     );
   } catch (err) {
-    if (err instanceof SalesforceReconnectRequiredError) {
+    if (err instanceof IntegrationReconnectRequiredError) {
       await markReconnectNeeded(args.workspaceId);
     }
     throw err;

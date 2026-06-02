@@ -8,9 +8,9 @@
  *   1. Reads `workspace_plugins.config` (passed in as `args.config`)
  *      to surface admin-visible state (`cloudid`, `status`).
  *   2. If `config.status === "reconnect_needed"`, the build refuses
- *      with `JiraReconnectRequiredError` so the agent loop surfaces a
- *      specific "this install needs Reconnect" message rather than
- *      silently failing with a 401.
+ *      with `IntegrationReconnectRequiredError` (`platform: "jira"`) so
+ *      the agent loop surfaces a specific "this install needs Reconnect"
+ *      message rather than silently failing with a 401.
  *   3. Reads `integration_credentials` for the bundle (already
  *      decrypted by the store helper).
  *   4. Constructs an instance that calls the Jira REST API via `fetch`
@@ -27,17 +27,19 @@
  *   5. Returns a {@link PluginLike} carrying `queryJira(jql)`. Agent's
  *      Jira tool dispatches through this method.
  *
- * Refresh strategy: matches Salesforce — on 401, runs the refresh,
- * retries once. Atlassian rotates the refresh token on every refresh
- * (Salesforce sometimes returns one, sometimes not), but that detail
- * is hidden inside `refreshJiraToken` which writes the rotated value
- * back to `integration_credentials`.
+ * Refresh strategy: matches Salesforce — the shared {@link
+ * createOAuthRetry} harness catches a 401, runs the refresh, and retries
+ * once. Atlassian rotates the refresh token on every refresh (Salesforce
+ * sometimes returns one, sometimes not), but that detail is hidden inside
+ * `refreshJiraToken` which writes the rotated value back to
+ * `integration_credentials`.
  *
- * Cache eviction: on permanent refresh failure, `withRetry` evicts THIS
- * instance from `lazyPluginLoader` before re-throwing
- * `JiraReconnectRequiredError`. Same wire as Salesforce — keeps the
+ * Cache eviction: on permanent refresh failure, the retry harness evicts
+ * THIS instance from the lazy loader before re-throwing
+ * `IntegrationReconnectRequiredError`. Same wire as Salesforce — keeps the
  * agent from cycling through 401 / refresh / fail on every call.
  *
+ * @see packages/api/src/lib/integrations/_shared/oauth-retry.ts — shared retry harness
  * @see packages/api/src/lib/plugins/lazy-loader.ts — generic loader
  * @see ./../install/jira-token-refresh.ts — refresh + reconnect surface
  * @see ./../salesforce/lazy-builder.ts — first reference implementation
@@ -48,10 +50,10 @@ import { readCredentialBundle } from "@atlas/api/lib/integrations/credentials/st
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import {
   refreshJiraToken,
-  JiraReconnectRequiredError,
+  IntegrationReconnectRequiredError,
 } from "@atlas/api/lib/integrations/install/jira-token-refresh";
+import { createOAuthRetry } from "@atlas/api/lib/integrations/_shared/oauth-retry";
 import {
-  lazyPluginLoader,
   type LazyPluginBuilder,
   type LazyPluginBuilderArgs,
 } from "@atlas/api/lib/plugins/lazy-loader";
@@ -80,6 +82,16 @@ export interface JiraPluginInstance extends PluginLike {
 export interface JiraLazyBuilderConfig {
   readonly clientId: string;
   readonly clientSecret: string;
+}
+
+/**
+ * The lazy-OAuth retry context for Jira — the cloud-aware base URL plus
+ * the live access token. The shared {@link createOAuthRetry} harness
+ * swaps a fresh copy in after a successful mid-flight refresh.
+ */
+interface JiraCallContext {
+  readonly baseUrl: string;
+  readonly accessToken: string;
 }
 
 /**
@@ -239,9 +251,10 @@ export function createJiraLazyBuilder(
 
     const status = readInstallStatus(installConfig);
     if (status === "reconnect_needed") {
-      throw new JiraReconnectRequiredError({
+      throw new IntegrationReconnectRequiredError({
         message: "Jira install needs to be reconnected — workspace_plugins.config.status is reconnect_needed.",
         workspaceId,
+        platform: "jira",
         upstreamError: "install_marked_reconnect_needed",
       });
     }
@@ -267,9 +280,9 @@ export function createJiraLazyBuilder(
     // Fall back to reconstructing from the install config's `cloudid`
     // when the bundle's value is empty — defensive, shouldn't happen
     // in practice.
-    let activeBaseUrl: string;
+    let initialBaseUrl: string;
     if (bundle.instanceUrl && bundle.instanceUrl.length > 0) {
-      activeBaseUrl = bundle.instanceUrl;
+      initialBaseUrl = bundle.instanceUrl;
     } else {
       const cloudid = readCloudid(installConfig);
       if (!cloudid) {
@@ -277,58 +290,46 @@ export function createJiraLazyBuilder(
           `LazyPluginLoader: Jira install for workspace ${workspaceId} has no cloudid`,
         );
       }
-      activeBaseUrl = `https://api.atlassian.com/ex/jira/${cloudid}`;
+      initialBaseUrl = `https://api.atlassian.com/ex/jira/${cloudid}`;
     }
 
-    let activeAccessToken = bundle.accessToken;
-
-    /**
-     * Run a callback against the Jira API; on 401, refresh the token
-     * (via {@link refreshJiraToken} — which writes the rotated
-     * refresh_token to `integration_credentials` and clears
-     * reconnect_needed) and retry once. On permanent refresh failure,
-     * evict THIS cached instance before re-throwing.
-     */
-    async function withRetry<T>(fn: (baseUrl: string, accessToken: string) => Promise<T>): Promise<T> {
-      try {
-        return await fn(activeBaseUrl, activeAccessToken);
-      } catch (err) {
-        if (!isSessionExpiredError(err)) throw err;
-        log.info({ workspaceId }, "Jira session expired — refreshing token");
-        try {
-          const refreshed = await refreshJiraToken({
-            workspaceId,
-            clientId: config.clientId,
-            clientSecret: config.clientSecret,
-          });
-          activeAccessToken = refreshed.accessToken;
-          if (refreshed.instanceUrl && refreshed.instanceUrl.length > 0) {
-            activeBaseUrl = refreshed.instanceUrl;
-          }
-          return await fn(activeBaseUrl, activeAccessToken);
-        } catch (refreshErr) {
-          if (refreshErr instanceof JiraReconnectRequiredError) {
-            // Fire-and-forget evict — see Salesforce builder for the
-            // rationale. Tagged as void to silence the floating-promise
-            // check.
-            void lazyPluginLoader.evict(workspaceId, catalogId);
-          }
-          throw refreshErr;
-        }
-      }
-    }
+    // Shared retry harness: on a 401 it runs `refreshJiraToken` (which
+    // writes the rotated refresh_token to `integration_credentials` and
+    // clears reconnect_needed) and retries once against the refreshed
+    // context. Atlassian's refresh may omit a new base URL, so
+    // `refreshContext` falls back to the prior one. On permanent refresh
+    // failure the harness evicts THIS cached instance before re-throwing.
+    const withRetry = createOAuthRetry<JiraCallContext>({
+      workspaceId,
+      catalogId,
+      platformLabel: "Jira",
+      logger: log,
+      initialContext: { baseUrl: initialBaseUrl, accessToken: bundle.accessToken },
+      isSessionExpired: isSessionExpiredError,
+      reconnectErrorClass: IntegrationReconnectRequiredError,
+      refreshContext: async (current) => {
+        const refreshed = await refreshJiraToken({
+          workspaceId,
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+        });
+        const baseUrl =
+          refreshed.instanceUrl && refreshed.instanceUrl.length > 0
+            ? refreshed.instanceUrl
+            : current.baseUrl;
+        return { baseUrl, accessToken: refreshed.accessToken };
+      },
+    });
 
     const instance: JiraPluginInstance = {
       id: `jira:${workspaceId}`,
       types: ["datasource"] as const,
       version: "0.1.0",
       name: "Jira",
-      config: { instanceUrl: activeBaseUrl, scope: bundle.scope },
+      config: { instanceUrl: initialBaseUrl, scope: bundle.scope },
 
       async queryJira(jql: string, timeoutMs = 30_000): Promise<JiraQueryResult> {
-        return withRetry((baseUrl, accessToken) =>
-          runJqlSearch(baseUrl, accessToken, jql, timeoutMs),
-        );
+        return withRetry((ctx) => runJqlSearch(ctx.baseUrl, ctx.accessToken, jql, timeoutMs));
       },
 
       async teardown(): Promise<void> {
@@ -339,7 +340,7 @@ export function createJiraLazyBuilder(
     };
 
     log.info(
-      { workspaceId, instanceUrl: activeBaseUrl, scope: bundle.scope },
+      { workspaceId, instanceUrl: initialBaseUrl, scope: bundle.scope },
       "Jira lazy plugin instantiated",
     );
     return instance;

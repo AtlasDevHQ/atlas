@@ -74,7 +74,7 @@ import {
   type LinearPluginInstance,
   type LinearIssueCreateResult,
 } from "./linear/lazy-builder";
-import { LinearReconnectRequiredError } from "./install/linear-token-refresh";
+import { IntegrationReconnectRequiredError } from "./install/linear-token-refresh";
 
 const log = createLogger("integrations.linear.tool");
 
@@ -237,7 +237,7 @@ export function createCreateLinearIssueTool(deps: CreateLinearIssueToolDeps = {}
           if (instance) mode = "apikey";
         }
       } catch (err) {
-        if (err instanceof LinearReconnectRequiredError) {
+        if (err instanceof IntegrationReconnectRequiredError) {
           log.warn(
             { workspaceId, err: err.message },
             "createLinearIssue aborted — Linear OAuth install needs Reconnect",
@@ -330,7 +330,7 @@ export function createCreateLinearIssueTool(deps: CreateLinearIssueToolDeps = {}
         );
         return { status: "created", mode, issue };
       } catch (err) {
-        if (err instanceof LinearReconnectRequiredError) {
+        if (err instanceof IntegrationReconnectRequiredError) {
           log.warn(
             { workspaceId, err: err.message },
             "createLinearIssue: Linear OAuth refresh failed permanently mid-call",

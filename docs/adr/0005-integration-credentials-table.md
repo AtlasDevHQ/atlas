@@ -77,7 +77,7 @@ Credentials must never outlive the install record. The FK on `catalog_id` cascad
 Access tokens expire; the refresh flow in `packages/api/src/lib/integrations/install/salesforce-token-refresh.ts` calls `<loginUrl>/services/oauth2/token` with `grant_type=refresh_token`:
 
 - **Refresh succeeded** — re-encrypt + UPDATE `integration_credentials` (bumps `updated_at` — also surfaces as "last refreshed" in admin UI); clear `workspace_plugins.config.status` back to `"ok"`.
-- **Permanent failure** (Salesforce returns `invalid_grant`, `invalid_client`, `inactive_user`, `org_locked`, `inactive_org`, or `rate_limit_exceeded`) — flip `workspace_plugins.config.status` to `"reconnect_needed"` and throw `SalesforceReconnectRequiredError`. The admin UI's catalog card renders a "Reconnect needed" badge + Reconnect button.
+- **Permanent failure** (Salesforce returns `invalid_grant`, `invalid_client`, `inactive_user`, `org_locked`, `inactive_org`, or `rate_limit_exceeded`) — flip `workspace_plugins.config.status` to `"reconnect_needed"` and throw `IntegrationReconnectRequiredError` (`platform: "salesforce"`; the shared reconnect error since #2708 — Jira and Linear raise the same tag). The admin UI's catalog card renders a "Reconnect needed" badge + Reconnect button.
 - **Transient failure** (network, 5xx, unknown 4xx error code) — throw plain `Error`. The agent's next tool call retries. No `reconnect_needed` flip without evidence the install is broken.
 
 The `reconnect_needed` field is part of `workspace_plugins.config`, not `integration_credentials`, because admin-UI reads need it without decrypting the credential bundle.

@@ -36,19 +36,25 @@ const mockRefreshLinearToken: Mock<(args: unknown) => Promise<unknown>> = mock((
   }),
 );
 
-class TestLinearReconnectRequiredError extends Error {
-  readonly _tag = "LinearReconnectRequiredError" as const;
+// Lightweight stand-in for the shared IntegrationReconnectRequiredError
+// (#2708) — injected via the mocked token-refresh module so the builder's
+// `instanceof reconnectErrorClass` eviction check matches without pulling
+// the real effect/errors graph.
+class TestReconnectError extends Error {
+  readonly _tag = "IntegrationReconnectRequiredError" as const;
   readonly workspaceId: string;
+  readonly platform: string;
   readonly upstreamError: string;
-  constructor(args: { workspaceId: string; upstreamError: string }) {
-    super(`reconnect_needed: ${args.upstreamError}`);
+  constructor(args: { message?: string; workspaceId: string; platform: string; upstreamError: string }) {
+    super(args.message ?? `reconnect_needed: ${args.upstreamError}`);
     this.workspaceId = args.workspaceId;
+    this.platform = args.platform;
     this.upstreamError = args.upstreamError;
   }
 }
 mock.module("@atlas/api/lib/integrations/install/linear-token-refresh", () => ({
   refreshLinearToken: mockRefreshLinearToken,
-  LinearReconnectRequiredError: TestLinearReconnectRequiredError,
+  IntegrationReconnectRequiredError: TestReconnectError,
   LINEAR_SLUG: "linear",
   LINEAR_CATALOG_ID: "catalog:linear",
 }));
@@ -178,7 +184,7 @@ describe("createLinearOAuthLazyBuilder", () => {
         catalogId: "catalog:linear",
         config: { status: "reconnect_needed" },
       }),
-    ).rejects.toBeInstanceOf(TestLinearReconnectRequiredError);
+    ).rejects.toBeInstanceOf(TestReconnectError);
 
     // No GraphQL traffic should fire — we threw before constructing the
     // instance.
@@ -236,8 +242,9 @@ describe("createLinearOAuthLazyBuilder", () => {
     mockFetch.mockImplementation(() => Promise.resolve(new Response("nope", { status: 401 })));
     mockRefreshLinearToken.mockImplementation(() =>
       Promise.reject(
-        new TestLinearReconnectRequiredError({
+        new TestReconnectError({
           workspaceId: WSID,
+          platform: "linear",
           upstreamError: "invalid_grant",
         }),
       ),
@@ -254,7 +261,7 @@ describe("createLinearOAuthLazyBuilder", () => {
     })) as LinearPluginInstance;
 
     await expect(instance.createLinearIssue({ title: "x" })).rejects.toBeInstanceOf(
-      TestLinearReconnectRequiredError,
+      TestReconnectError,
     );
 
     // Eviction fires so the agent doesn't keep re-trying through a

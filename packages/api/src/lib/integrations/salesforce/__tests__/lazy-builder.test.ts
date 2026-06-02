@@ -5,7 +5,7 @@
  *   - Happy path: reads workspace config + credentials, constructs a
  *     jsforce client, exposes `query(soql)`.
  *   - workspace_plugins.config.status='reconnect_needed' short-circuits
- *     to SalesforceReconnectRequiredError without reading credentials.
+ *     to IntegrationReconnectRequiredError without reading credentials.
  *   - Missing credentials row → clear error message.
  *   - INVALID_SESSION_ID during query → refresh + retry path runs.
  */
@@ -31,19 +31,25 @@ const mockRefreshSalesforceToken: Mock<(args: unknown) => Promise<unknown>> = mo
     instanceUrl: "https://na139.my.salesforce.com",
   }),
 );
-class TestSalesforceReconnectRequiredError extends Error {
-  readonly _tag = "SalesforceReconnectRequiredError" as const;
+// Lightweight stand-in for the shared IntegrationReconnectRequiredError
+// (#2708) — injected via the mocked token-refresh module so the builder's
+// `instanceof reconnectErrorClass` eviction check matches without pulling
+// the real effect/errors graph.
+class TestReconnectError extends Error {
+  readonly _tag = "IntegrationReconnectRequiredError" as const;
   readonly workspaceId: string;
+  readonly platform: string;
   readonly upstreamError: string;
-  constructor(args: { workspaceId: string; upstreamError: string }) {
-    super(`reconnect_needed: ${args.upstreamError}`);
+  constructor(args: { message?: string; workspaceId: string; platform: string; upstreamError: string }) {
+    super(args.message ?? `reconnect_needed: ${args.upstreamError}`);
     this.workspaceId = args.workspaceId;
+    this.platform = args.platform;
     this.upstreamError = args.upstreamError;
   }
 }
 mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh", () => ({
   refreshSalesforceToken: mockRefreshSalesforceToken,
-  SalesforceReconnectRequiredError: TestSalesforceReconnectRequiredError,
+  IntegrationReconnectRequiredError: TestReconnectError,
   SALESFORCE_SLUG: "salesforce",
   SALESFORCE_CATALOG_ID: "catalog:salesforce",
 }));
@@ -171,7 +177,8 @@ describe("createSalesforceLazyBuilder — reconnect_needed", () => {
         config: { instance_url: "https://na139.my.salesforce.com", status: "reconnect_needed" },
       }),
     ).rejects.toMatchObject({
-      _tag: "SalesforceReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "salesforce",
       upstreamError: "install_marked_reconnect_needed",
     });
 
@@ -239,12 +246,13 @@ describe("createSalesforceLazyBuilder — session retry", () => {
     });
   });
 
-  it("propagates SalesforceReconnectRequiredError when the refresh fails permanently AND evicts the cached instance", async () => {
+  it("propagates IntegrationReconnectRequiredError when the refresh fails permanently AND evicts the cached instance", async () => {
     mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
     mockJsforceQuery.mockRejectedValueOnce(new Error("INVALID_SESSION_ID"));
     mockRefreshSalesforceToken.mockRejectedValueOnce(
-      new TestSalesforceReconnectRequiredError({
+      new TestReconnectError({
         workspaceId: WSID,
+        platform: "salesforce",
         upstreamError: "invalid_grant",
       }),
     );
@@ -258,7 +266,8 @@ describe("createSalesforceLazyBuilder — session retry", () => {
     })) as SalesforcePluginInstance;
 
     await expect(instance.query("SELECT Id FROM Account")).rejects.toMatchObject({
-      _tag: "SalesforceReconnectRequiredError",
+      _tag: "IntegrationReconnectRequiredError",
+      platform: "salesforce",
       upstreamError: "invalid_grant",
     });
 

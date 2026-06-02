@@ -149,6 +149,56 @@ describe("createOAuthRetry — session expiry refresh + retry", () => {
     expect(refreshContext).toHaveBeenCalledTimes(1);
     expect(mockEvict).not.toHaveBeenCalled();
   });
+
+  it("coalesces concurrent session-expiry refreshes into a single refresh (single-flight)", async () => {
+    // Two callers observe the same stale context and both hit session expiry.
+    // Without single-flight they'd each fire refreshContext — and on a
+    // rotating-refresh-token provider the loser would falsely brick the
+    // install. Gate the refresh on an unresolved promise so both await it.
+    let refreshCalls = 0;
+    let releaseRefresh!: (next: string) => void;
+    const refreshGate = new Promise<string>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const refreshContext = mock((_current: string) => {
+      refreshCalls += 1;
+      return refreshGate;
+    });
+    const withRetry = retryMod.createOAuthRetry<string>({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      platformLabel: "Test",
+      logger,
+      initialContext: "tok-0",
+      isSessionExpired,
+      reconnectErrorClass: TestReconnectError,
+      refreshContext,
+    });
+
+    const callOnce = (label: string): Promise<string> => {
+      let firstAttempt = true;
+      return withRetry((ctx) => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          return Promise.reject(new SessionExpired("401"));
+        }
+        return Promise.resolve(`${label}:${ctx}`);
+      });
+    };
+
+    const p1 = callOnce("a");
+    const p2 = callOnce("b");
+    // Flush microtasks so both callers reach the (still-pending) refresh.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseRefresh("tok-1");
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBe("a:tok-1");
+    expect(r2).toBe("b:tok-1");
+    // The crux: one refresh served both callers.
+    expect(refreshCalls).toBe(1);
+    expect(mockEvict).not.toHaveBeenCalled();
+  });
 });
 
 describe("createOAuthRetry — eviction on permanent failure", () => {

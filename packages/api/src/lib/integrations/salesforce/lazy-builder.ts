@@ -215,7 +215,9 @@ export function createSalesforceLazyBuilder(
           loginUrl: config.loginUrl,
         });
         return new jsforce.Connection({
-          instanceUrl: refreshed.instanceUrl,
+          // Fall back to the install-resolved instanceUrl if the refresh
+          // response omits one — never rebuild the connection without a host.
+          instanceUrl: refreshed.instanceUrl ?? instanceUrl,
           accessToken: refreshed.accessToken,
         });
       },

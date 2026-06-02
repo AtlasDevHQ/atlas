@@ -55,6 +55,9 @@ class TestReconnectError extends Error {
 mock.module("@atlas/api/lib/integrations/install/linear-token-refresh", () => ({
   refreshLinearToken: mockRefreshLinearToken,
   IntegrationReconnectRequiredError: TestReconnectError,
+  // Deprecated alias still exported by the real module (#2708) — mock the
+  // full export surface so the alias resolves to the same fake.
+  LinearReconnectRequiredError: TestReconnectError,
   LINEAR_SLUG: "linear",
   LINEAR_CATALOG_ID: "catalog:linear",
 }));

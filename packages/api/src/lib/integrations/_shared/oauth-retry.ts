@@ -96,6 +96,26 @@ export function createOAuthRetry<Ctx>(config: OAuthRetryConfig<Ctx>): OAuthWithR
   } = config;
   let context = config.initialContext;
 
+  // Single-flight refresh. Concurrent `withRetry` calls on the same cached
+  // instance can all observe the same stale `context` and would otherwise
+  // each fire `refreshContext`. For platforms that rotate the refresh token
+  // on every refresh (Jira, Linear), the second exchange reuses an
+  // already-consumed token, fails `invalid_grant`, and bricks a healthy
+  // install with a false reconnect + eviction. Gate refreshes through one
+  // in-flight promise so later callers await the winner's result. The slot
+  // clears once settled, so a genuinely new expiry still refreshes.
+  let refreshInFlight: Promise<Ctx> | null = null;
+  const refreshOnce = (current: Ctx): Promise<Ctx> => {
+    refreshInFlight ??= (async () => {
+      try {
+        return await refreshContext(current);
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+    return refreshInFlight;
+  };
+
   return async function withRetry<T>(fn: (ctx: Ctx) => Promise<T>): Promise<T> {
     try {
       return await fn(context);
@@ -103,7 +123,7 @@ export function createOAuthRetry<Ctx>(config: OAuthRetryConfig<Ctx>): OAuthWithR
       if (!isSessionExpired(err)) throw err;
       logger.info({ workspaceId }, `${platformLabel} session expired — refreshing token`);
       try {
-        context = await refreshContext(context);
+        context = await refreshOnce(context);
         return await fn(context);
       } catch (refreshErr) {
         // Permanent failure (revoked grant, deleted user, scope loss) must

@@ -50,6 +50,9 @@ class TestReconnectError extends Error {
 mock.module("@atlas/api/lib/integrations/install/salesforce-token-refresh", () => ({
   refreshSalesforceToken: mockRefreshSalesforceToken,
   IntegrationReconnectRequiredError: TestReconnectError,
+  // Deprecated alias still exported by the real module (#2708) — mock the
+  // full export surface so the alias resolves to the same fake.
+  SalesforceReconnectRequiredError: TestReconnectError,
   SALESFORCE_SLUG: "salesforce",
   SALESFORCE_CATALOG_ID: "catalog:salesforce",
 }));

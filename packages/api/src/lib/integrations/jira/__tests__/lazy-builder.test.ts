@@ -53,6 +53,9 @@ class TestReconnectError extends Error {
 mock.module("@atlas/api/lib/integrations/install/jira-token-refresh", () => ({
   refreshJiraToken: mockRefreshJiraToken,
   IntegrationReconnectRequiredError: TestReconnectError,
+  // Deprecated alias still exported by the real module (#2708) — mock the
+  // full export surface so the alias resolves to the same fake.
+  JiraReconnectRequiredError: TestReconnectError,
   JIRA_SLUG: "jira",
   JIRA_CATALOG_ID: "catalog:jira",
 }));

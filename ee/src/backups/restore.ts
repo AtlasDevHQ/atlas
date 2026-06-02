@@ -14,7 +14,12 @@ import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Effect } from "effect";
 import { requireEnterpriseEffect } from "../index";
-import { EnterpriseError } from "@atlas/api/lib/effect/errors";
+import {
+  EnterpriseError,
+  BackupNotFoundError,
+  BackupInvalidStateError,
+  BackupRestoreTokenError,
+} from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupById, ensureTable } from "./engine";
@@ -42,11 +47,16 @@ export const requestRestore = (backupId: string): Effect.Effect<
 
     const backup = yield* getBackupById(backupId);
     if (!backup) {
-      return yield* Effect.fail(new Error("Backup not found"));
+      // Tagged → route maps to 404 structurally (#2989). Message preserved.
+      return yield* Effect.fail(new BackupNotFoundError({ message: "Backup not found" }));
     }
 
     if (backup.status !== "completed" && backup.status !== "verified") {
-      return yield* Effect.fail(new Error(`Cannot restore backup with status "${backup.status}" — only completed or verified backups can be restored`));
+      return yield* Effect.fail(
+        new BackupInvalidStateError({
+          message: `Cannot restore backup with status "${backup.status}" — only completed or verified backups can be restored`,
+        }),
+      );
     }
 
     const token = crypto.randomUUID();
@@ -82,12 +92,14 @@ export const executeRestore = (
 
     const pending = pendingRestores.get(confirmationToken);
     if (!pending) {
-      return yield* Effect.fail(new Error("Invalid or expired confirmation token"));
+      // Tagged → confirm route maps to 400 structurally (#2989), no
+      // `message.includes("Invalid or expired")`. Message preserved.
+      return yield* Effect.fail(new BackupRestoreTokenError({ message: "Invalid or expired confirmation token" }));
     }
 
     if (pending.expiresAt < Date.now()) {
       pendingRestores.delete(confirmationToken);
-      return yield* Effect.fail(new Error("Confirmation token has expired — request a new one"));
+      return yield* Effect.fail(new BackupRestoreTokenError({ message: "Confirmation token has expired — request a new one" }));
     }
 
     pendingRestores.delete(confirmationToken);
@@ -100,7 +112,8 @@ export const executeRestore = (
 
     const backup = yield* getBackupById(backupId);
     if (!backup) {
-      return yield* Effect.fail(new Error("Backup not found — it may have been purged"));
+      // Purged between request and confirm → 404 structurally (#2989).
+      return yield* Effect.fail(new BackupNotFoundError({ message: "Backup not found — it may have been purged" }));
     }
 
     log.warn({ backupId }, "Starting database restore — creating pre-restore backup first");

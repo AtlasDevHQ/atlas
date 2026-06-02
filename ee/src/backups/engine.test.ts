@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
@@ -74,6 +74,7 @@ const {
   ensureTable,
   getBackupConfig,
   updateBackupConfig,
+  createBackup,
   listBackups,
   getBackupById,
   purgeExpiredBackups,
@@ -98,17 +99,19 @@ describe("ensureTable", () => {
 
   it("creates tables and seeds config on first call", async () => {
     // Queue empty results for all CREATE TABLE/ALTER/INDEX/INSERT queries
-    ee.queueMockRows([], [], [], [], []);
+    ee.queueMockRows([], [], [], [], [], []);
     await run(ensureTable());
-    // Should have run: CREATE TABLE backups, ALTER TABLE add verify_level,
-    // CREATE INDEX, CREATE TABLE backup_config, INSERT seed = 5 queries.
-    expect(ee.capturedQueries.length).toBe(5);
+    // Should have run: CREATE TABLE backups, ALTER add verify_level, ALTER add
+    // expected_table_count, CREATE INDEX, CREATE TABLE backup_config, INSERT
+    // seed = 6 queries.
+    expect(ee.capturedQueries.length).toBe(6);
     expect(ee.capturedQueries[0].sql).toContain("CREATE TABLE IF NOT EXISTS backups");
     expect(ee.capturedQueries[1].sql).toContain("ADD COLUMN IF NOT EXISTS verify_level");
+    expect(ee.capturedQueries[2].sql).toContain("ADD COLUMN IF NOT EXISTS expected_table_count");
   });
 
   it("skips creation on second call (idempotent)", async () => {
-    ee.queueMockRows([], [], [], [], []);
+    ee.queueMockRows([], [], [], [], [], []);
     await run(ensureTable());
     const firstCount = ee.capturedQueries.length;
     await run(ensureTable());
@@ -129,8 +132,8 @@ describe("getBackupConfig", () => {
   });
 
   it("returns config row from DB", async () => {
-    // ensureTable (4) + config SELECT (1)
-    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
+    // ensureTable (6) + config SELECT (1)
+    ee.queueMockRows([], [], [], [], [], [], [defaultConfigRow]);
     const config = await run(getBackupConfig());
     expect(config.schedule).toBe("0 3 * * *");
     expect(config.retention_days).toBe(30);
@@ -138,8 +141,8 @@ describe("getBackupConfig", () => {
   });
 
   it("returns defaults when config row missing", async () => {
-    // ensureTable (4) + empty config SELECT (1)
-    ee.queueMockRows([], [], [], [], []);
+    // ensureTable (6) + empty config SELECT (1)
+    ee.queueMockRows([], [], [], [], [], []);
     const config = await run(getBackupConfig());
     expect(config.schedule).toBe("0 3 * * *");
     expect(config.retention_days).toBe(30);
@@ -153,14 +156,75 @@ describe("updateBackupConfig", () => {
   });
 
   it("upserts partial config", async () => {
-    // ensureTable (4) + config SELECT (1) + UPSERT (1)
-    ee.queueMockRows([], [], [], [], [], [defaultConfigRow], []);
+    // ensureTable (6) + config SELECT (1) + UPSERT (1)
+    ee.queueMockRows([], [], [], [], [], [], [defaultConfigRow], []);
     await run(updateBackupConfig({ schedule: "0 1 * * *" }));
     // The last query should be the upsert (not the seed from ensureTable)
     const upsertQuery = ee.capturedQueries[ee.capturedQueries.length - 1];
     expect(upsertQuery.sql).toContain("ON CONFLICT");
     expect(upsertQuery.params[0]).toBe("0 1 * * *"); // new schedule
     expect(upsertQuery.params[1]).toBe(30); // unchanged retention
+  });
+});
+
+describe("createBackup — expected_table_count baseline (#2989)", () => {
+  let priorDatabaseUrl: string | undefined;
+
+  beforeEach(() => {
+    ee.reset();
+    _resetTableReady();
+    mockSpawn.mockClear();
+    priorDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/testdb";
+  });
+
+  afterEach(() => {
+    if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = priorDatabaseUrl;
+  });
+
+  // Query order for createBackup:
+  //   ensureTable (6) + getBackupConfig SELECT (1) + INSERT in-progress (1)
+  //   + countSourceBaseTables SELECT (1) + completed UPDATE (1) = 10 queries.
+  const completedUpdate = () =>
+    ee.capturedQueries.find((q) => q.sql.includes("status = 'completed'"));
+
+  it("persists the source's public BASE TABLE count into the completed UPDATE", async () => {
+    ee.queueMockRows(
+      [], [], [], [], [], [],            // ensureTable
+      [defaultConfigRow],                 // getBackupConfig SELECT
+      [{ id: "b1" }],                     // INSERT ... RETURNING id
+      [{ count: "5" }],                   // countSourceBaseTables
+      [],                                 // completed UPDATE
+    );
+
+    const result = await run(createBackup());
+    expect(result.status).toBe("completed");
+
+    const update = completedUpdate();
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("expected_table_count = $2");
+    // params = [size_bytes, expected_table_count, id]
+    expect(update!.params[1]).toBe(5);
+    expect(update!.params[2]).toBe("b1");
+  });
+
+  it("falls back to null (best-effort) when the table count is unreadable — backup still completes", async () => {
+    ee.queueMockRows(
+      [], [], [], [], [], [],            // ensureTable
+      [defaultConfigRow],                 // getBackupConfig SELECT
+      [{ id: "b1" }],                     // INSERT ... RETURNING id
+      [],                                 // countSourceBaseTables → no row → NaN → null
+      [],                                 // completed UPDATE
+    );
+
+    const result = await run(createBackup());
+    // A missing count must NOT abort an otherwise-good backup.
+    expect(result.status).toBe("completed");
+
+    const update = completedUpdate();
+    expect(update).toBeDefined();
+    expect(update!.params[1]).toBeNull();
   });
 });
 
@@ -172,15 +236,15 @@ describe("listBackups", () => {
 
   it("returns backup rows", async () => {
     const row = { id: "b1", created_at: "2026-01-01", size_bytes: "1000", status: "completed", storage_path: "/tmp/b1.sql.gz", retention_expires_at: "2026-02-01", error_message: null };
-    // ensureTable (4) + SELECT (1)
-    ee.queueMockRows([], [], [], [], [], [row]);
+    // ensureTable (6) + SELECT (1)
+    ee.queueMockRows([], [], [], [], [], [], [row]);
     const backups = await run(listBackups());
     expect(backups).toHaveLength(1);
     expect(backups[0].id).toBe("b1");
   });
 
   it("returns empty array when no backups", async () => {
-    ee.queueMockRows([], [], [], [], []);
+    ee.queueMockRows([], [], [], [], [], []);
     const backups = await run(listBackups());
     expect(backups).toHaveLength(0);
   });
@@ -194,15 +258,15 @@ describe("getBackupById", () => {
 
   it("returns backup when found", async () => {
     const row = { id: "b1", created_at: "2026-01-01", size_bytes: "1000", status: "completed", storage_path: "/tmp/b1.sql.gz", retention_expires_at: "2026-02-01", error_message: null };
-    // ensureTable (4) + SELECT (1)
-    ee.queueMockRows([], [], [], [], [], [row]);
+    // ensureTable (6) + SELECT (1)
+    ee.queueMockRows([], [], [], [], [], [], [row]);
     const backup = await run(getBackupById("b1"));
     expect(backup).not.toBeNull();
     expect(backup!.id).toBe("b1");
   });
 
   it("returns null when not found", async () => {
-    ee.queueMockRows([], [], [], [], []);
+    ee.queueMockRows([], [], [], [], [], []);
     const backup = await run(getBackupById("nonexistent"));
     expect(backup).toBeNull();
   });
@@ -219,8 +283,8 @@ describe("purgeExpiredBackups", () => {
       { id: "b1", storage_path: "/tmp/b1.sql.gz" },
       { id: "b2", storage_path: "/tmp/b2.sql.gz" },
     ];
-    // ensureTable (4) + SELECT expired (1) + DELETE b1 (1) + DELETE b2 (1)
-    ee.queueMockRows([], [], [], [], [], expired, [], []);
+    // ensureTable (6) + SELECT expired (1) + DELETE b1 (1) + DELETE b2 (1)
+    ee.queueMockRows([], [], [], [], [], [], expired, [], []);
     mockUnlink = mock(() => Promise.resolve(undefined));
 
     const count = await run(purgeExpiredBackups());
@@ -229,8 +293,8 @@ describe("purgeExpiredBackups", () => {
 
   it("handles ENOENT — file already gone, still deletes DB record", async () => {
     const expired = [{ id: "b1", storage_path: "/tmp/gone.sql.gz" }];
-    // ensureTable (4) + SELECT expired (1) + DELETE (1)
-    ee.queueMockRows([], [], [], [], [], expired, []);
+    // ensureTable (6) + SELECT expired (1) + DELETE (1)
+    ee.queueMockRows([], [], [], [], [], [], expired, []);
     mockUnlink = mock(() => {
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
@@ -243,8 +307,8 @@ describe("purgeExpiredBackups", () => {
 
   it("skips DB deletion when file delete fails with non-ENOENT", async () => {
     const expired = [{ id: "b1", storage_path: "/tmp/locked.sql.gz" }];
-    // ensureTable (4) + SELECT expired (1) — no DELETE (file unlink fails)
-    ee.queueMockRows([], [], [], [], [], expired);
+    // ensureTable (6) + SELECT expired (1) — no DELETE (file unlink fails)
+    ee.queueMockRows([], [], [], [], [], [], expired);
     mockUnlink = mock(() => {
       const err = new Error("EACCES") as NodeJS.ErrnoException;
       err.code = "EACCES";
@@ -256,8 +320,8 @@ describe("purgeExpiredBackups", () => {
   });
 
   it("returns 0 when no expired backups", async () => {
-    // ensureTable (4) + SELECT expired returns empty (1)
-    ee.queueMockRows([], [], [], [], []);
+    // ensureTable (6) + SELECT expired returns empty (1)
+    ee.queueMockRows([], [], [], [], [], []);
     const count = await run(purgeExpiredBackups());
     expect(count).toBe(0);
   });
@@ -270,8 +334,8 @@ describe("listStorageFiles", () => {
   });
 
   it("returns only .sql.gz files", async () => {
-        // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
+        // getBackupConfig: ensureTable (6) + SELECT config (1)
+    ee.queueMockRows([], [], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => Promise.resolve(["a.sql.gz", "b.sql.gz", "notes.txt"]));
 
     const files = await run(listStorageFiles());
@@ -279,8 +343,8 @@ describe("listStorageFiles", () => {
   });
 
   it("returns empty array when directory does not exist (ENOENT)", async () => {
-        // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
+        // getBackupConfig: ensureTable (6) + SELECT config (1)
+    ee.queueMockRows([], [], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => {
       const err = new Error("ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
@@ -292,8 +356,8 @@ describe("listStorageFiles", () => {
   });
 
   it("propagates non-ENOENT errors", async () => {
-        // getBackupConfig: ensureTable (4) + SELECT config (1)
-    ee.queueMockRows([], [], [], [], [], [defaultConfigRow]);
+        // getBackupConfig: ensureTable (6) + SELECT config (1)
+    ee.queueMockRows([], [], [], [], [], [], [defaultConfigRow]);
     mockReaddir = mock(() => {
       const err = new Error("EACCES") as NodeJS.ErrnoException;
       err.code = "EACCES";

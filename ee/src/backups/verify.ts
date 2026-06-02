@@ -12,8 +12,13 @@
  *    corrupt-tailed makes psql exit non-zero (or yields zero base tables) under
  *    ON_ERROR_STOP=on, so verification FAILS — which header-only checking missed.
  *    NOTE: this is a *structural* smoke (base tables exist after restore), not a
- *    row-level completeness proof — a dump truncated on a clean statement
- *    boundary after some tables already restored can still pass. See #2941.
+ *    row-level completeness proof. #2989 hardened it with a table-COUNT
+ *    assertion: backups record the source's public BASE TABLE count at creation
+ *    time, and verification fails if fewer tables restore than the source had —
+ *    catching a dump truncated on a clean statement boundary (psql exits 0 but
+ *    drops tables) that the bare base-table check missed. A dump truncated mid-
+ *    way through the LAST table's data (same table count, fewer rows) can still
+ *    pass — row-level completeness remains out of scope. See #2941 / #2989.
  *
  *  - **header-only** (degraded fallback): when no scratch URL is configured we
  *    gunzip the first 4096 bytes and check for the pg_dump header string. This
@@ -38,7 +43,11 @@ import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { Effect } from "effect";
 import { requireEnterpriseEffect } from "../index";
-import { EnterpriseError } from "@atlas/api/lib/effect/errors";
+import {
+  EnterpriseError,
+  BackupNotFoundError,
+  BackupInvalidStateError,
+} from "@atlas/api/lib/effect/errors";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -73,11 +82,15 @@ export const verifyBackup = (
 
     const backup = yield* getBackupById(backupId);
     if (!backup) {
-      return yield* Effect.fail(new Error("Backup not found"));
+      // Tagged so the platform-backups route maps it to 404 structurally
+      // (no `message.includes("not found")`). Message preserved verbatim.
+      return yield* Effect.fail(new BackupNotFoundError({ message: "Backup not found" }));
     }
 
     if (backup.status !== "completed" && backup.status !== "verified") {
-      return yield* Effect.fail(new Error(`Cannot verify backup with status "${backup.status}"`));
+      return yield* Effect.fail(
+        new BackupInvalidStateError({ message: `Cannot verify backup with status "${backup.status}"` }),
+      );
     }
 
     const scratchUrl = process.env.ATLAS_BACKUP_VERIFY_SCRATCH_URL;
@@ -90,7 +103,7 @@ export const verifyBackup = (
 
     // Inner effect uses tryPromise so errors land in the typed channel
     const verifyWork = scratchUrl
-      ? verifyByRestore(backupId, backup.storage_path, scratchUrl)
+      ? verifyByRestore(backupId, backup.storage_path, scratchUrl, backup.expected_table_count)
       : verifyByHeader(backupId, backup.storage_path);
 
     return yield* verifyWork.pipe(
@@ -141,15 +154,21 @@ export const verifyBackup = (
  * yields zero base tables → verification fails.
  *
  * This is a *structural* smoke (base tables exist after restore), not a
- * row-level completeness proof. A dump truncated on a clean statement boundary
- * after some tables already restored can still pass — recording the source DB's
- * expected base-table count at backup time and asserting `restored >= expected`
- * is a tracked follow-up to #2941.
+ * row-level completeness proof. But it now also closes the clean-boundary gap
+ * from #2941 (resolved in #2989): when the backup recorded the source DB's
+ * `expectedTableCount` at creation time, we assert `restored >= expected`. A
+ * dump truncated on a CLEAN statement boundary (after some tables already
+ * restored) exits psql 0 yet restores FEWER tables than the source had — the
+ * bare "> 0 base tables" check missed this; the count assertion catches it.
+ * `expectedTableCount` is null for pre-#2989 backups (or when the count
+ * couldn't be read at backup time), in which case the assertion is skipped and
+ * behaviour falls back to the structural smoke alone.
  */
 const verifyByRestore = (
   backupId: string,
   storagePath: string,
   scratchUrl: string,
+  expectedTableCount: number | null,
 ): Effect.Effect<{ verified: boolean; message: string; level: VerifyLevel }, Error> =>
   Effect.gen(function* () {
     // Safety net: refuse to wipe the scratch DB if it resolves to the same
@@ -203,6 +222,26 @@ const verifyByRestore = (
       };
     }
 
+    // Count assertion (#2989): a dump truncated on a CLEAN statement boundary
+    // restores fewer tables than the source had, yet exits psql 0 — the
+    // tableCount > 0 check above can't see it. When the backup recorded the
+    // source's table count, require restored >= expected.
+    if (expectedTableCount !== null && tableCount < expectedTableCount) {
+      const message =
+        `Restore smoke restored ${tableCount} base table(s) but the source had ${expectedTableCount} at backup time — ` +
+        `the dump is incomplete (likely truncated on a clean statement boundary)`;
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE backups SET status = 'failed', verify_level = 'full-restore', error_message = $1 WHERE id = $2`,
+            [message, backupId],
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      log.error({ backupId, tableCount, expectedTableCount }, "Backup verification failed — restored fewer base tables than the source had");
+      return { verified: false, message, level: "full-restore" as const };
+    }
+
     yield* Effect.tryPromise({
       try: () =>
         internalQuery(
@@ -212,10 +251,11 @@ const verifyByRestore = (
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    log.info({ backupId, tableCount, level: "full-restore" }, "Backup verified via restore-into-scratch-DB smoke");
+    log.info({ backupId, tableCount, expectedTableCount, level: "full-restore" }, "Backup verified via restore-into-scratch-DB smoke");
+    const expectedNote = expectedTableCount !== null ? ` (>= ${expectedTableCount} expected)` : "";
     return {
       verified: true,
-      message: `Backup verified — structural smoke: ${tableCount} base table(s) restored into the scratch DB (not a row-level completeness proof)`,
+      message: `Backup verified — structural smoke: ${tableCount} base table(s) restored into the scratch DB${expectedNote} (not a row-level completeness proof)`,
       level: "full-restore" as const,
     };
   });

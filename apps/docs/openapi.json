@@ -68528,7 +68528,7 @@
             }
           },
           "404": {
-            "description": "Enterprise feature not enabled",
+            "description": "Enterprise feature not enabled, or the backup was purged before confirmation",
             "content": {
               "application/json": {
                 "schema": {

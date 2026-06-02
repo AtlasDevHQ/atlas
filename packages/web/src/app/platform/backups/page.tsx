@@ -41,7 +41,7 @@ import { BackupsResponseSchema, BackupConfigSchema } from "@/ui/lib/admin-schema
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
-import type { BackupConfig, BackupStatus } from "@/ui/lib/types";
+import type { BackupConfig, BackupEntry, BackupStatus } from "@/ui/lib/types";
 import {
   Archive,
   CheckCircle2,
@@ -57,12 +57,41 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-function statusBadge(status: BackupStatus) {
+function statusBadge(status: BackupStatus, verifyLevel: BackupEntry["verifyLevel"]) {
   switch (status) {
     case "completed":
       return <Badge variant="outline" className="gap-1 border-green-500 text-green-600"><CheckCircle2 className="size-3" />Completed</Badge>;
-    case "verified":
-      return <Badge variant="outline" className="gap-1 border-primary/50 text-primary"><ShieldCheck className="size-3" />Verified</Badge>;
+    case "verified": {
+      // Surface the verification DEPTH, not just "Verified" (#2989/#2941).
+      // full-restore = restored into a scratch DB and counted tables (proven
+      // restorable). header-only = degraded fallback (valid pg_dump header
+      // only; NOT proven restorable) — render it amber as a caution.
+      if (verifyLevel === "header-only") {
+        return (
+          <Badge
+            variant="outline"
+            className="gap-1 border-amber-500 text-amber-600"
+            title="Verified via header-only check — a valid pg_dump header, but NOT proven restorable. Set ATLAS_BACKUP_VERIFY_SCRATCH_URL to enable full restore-into-scratch-DB verification."
+          >
+            <ShieldCheck className="size-3" />Verified (header-only)
+          </Badge>
+        );
+      }
+      return (
+        <Badge
+          variant="outline"
+          className="gap-1 border-primary/50 text-primary"
+          title={
+            verifyLevel === "full-restore"
+              ? "Verified via full restore — the dump was restored into a disposable scratch DB and its tables were counted (proven restorable)."
+              : "Verified."
+          }
+        >
+          <ShieldCheck className="size-3" />
+          {verifyLevel === "full-restore" ? "Verified (full-restore)" : "Verified"}
+        </Badge>
+      );
+    }
     case "in_progress":
       return <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600"><Loader2 className="size-3 animate-spin" />In Progress</Badge>;
     case "failed":
@@ -251,7 +280,7 @@ function BackupsPageContent() {
                 <TableRow key={backup.id}>
                   <TableCell className="font-medium">{formatTimestamp(backup.createdAt)}</TableCell>
                   <TableCell>
-                    {statusBadge(backup.status)}
+                    {statusBadge(backup.status, backup.verifyLevel)}
                     {backup.errorMessage && (
                       <p className="mt-1 text-xs text-destructive">{backup.errorMessage}</p>
                     )}

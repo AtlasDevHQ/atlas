@@ -62,6 +62,19 @@ export const ensureTable = (): Effect.Effect<void, EnterpriseError | Error> =>
         `ALTER TABLE backups ADD COLUMN IF NOT EXISTS verify_level TEXT`,
       ),
     );
+    // expected_table_count records the source DB's public BASE TABLE count
+    // at backup time. verifyByRestore asserts restored >= expected to catch
+    // a dump truncated on a CLEAN statement boundary — psql exits 0 but the
+    // restore is incomplete, which the bare "> 0 base tables" check misses
+    // (#2989, follow-up to #2941). Mirrored in
+    // `packages/api/src/lib/db/schema.ts` (`expectedTableCount`) so the next
+    // `drizzle-kit generate` doesn't emit a DROP COLUMN. Idempotent ALTER
+    // adds it at runtime for deployments whose `backups` table predates this.
+    yield* Effect.promise(() =>
+      internalQuery(
+        `ALTER TABLE backups ADD COLUMN IF NOT EXISTS expected_table_count INTEGER`,
+      ),
+    );
     yield* Effect.promise(() =>
       internalQuery(
         `CREATE INDEX IF NOT EXISTS idx_backups_status ON backups (status, created_at DESC)`,
@@ -180,6 +193,37 @@ function parseDatabaseUrl(url: string): { args: string[]; password: string | und
 }
 
 /**
+ * Count the source DB's public BASE TABLE count — the verification baseline
+ * persisted on each backup (#2989). Queried via `internalQuery` (the same
+ * internal Postgres pg_dump dumps), filtered to `BASE TABLE` in the `public`
+ * schema so it lines up with what `verifyByRestore` counts after restoring.
+ *
+ * Best-effort: returns `null` (not a failure) when the count can't be read,
+ * so a transient query error never aborts an otherwise-good backup — verify
+ * simply skips the `restored >= expected` assertion for that backup.
+ */
+const countSourceBaseTables = (): Effect.Effect<number | null, never> =>
+  Effect.tryPromise({
+    try: () =>
+      internalQuery<{ count: string }>(
+        `SELECT count(*)::text AS count FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
+      ),
+    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+  }).pipe(
+    Effect.map((rows) => {
+      const n = rows[0] ? parseInt(rows[0].count, 10) : Number.NaN;
+      return Number.isNaN(n) ? null : n;
+    }),
+    Effect.catchAll((err) => {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Could not count source base tables for the backup verification baseline — verify will skip the count assertion",
+      );
+      return Effect.succeed(null);
+    }),
+  );
+
+/**
  * Create a backup of the internal database.
  *
  * Uses pg_dump with plain-text format, then gzip-compresses the output.
@@ -260,17 +304,21 @@ export const createBackup = (): Effect.Effect<
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
+      // Capture the source DB's public BASE TABLE count as the verification
+      // baseline (#2989). Best-effort — null when unreadable.
+      const expectedTableCount = yield* countSourceBaseTables();
+
       // Mark as completed
       yield* Effect.tryPromise({
         try: () =>
           internalQuery(
-            `UPDATE backups SET status = 'completed', size_bytes = $1 WHERE id = $2`,
-            [fileStat.size, backupId],
+            `UPDATE backups SET status = 'completed', size_bytes = $1, expected_table_count = $2 WHERE id = $3`,
+            [fileStat.size, expectedTableCount, backupId],
           ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
-      log.info({ backupId, storagePath, sizeBytes: fileStat.size }, "Backup completed successfully");
+      log.info({ backupId, storagePath, sizeBytes: fileStat.size, expectedTableCount }, "Backup completed successfully");
       return { id: backupId, storagePath, sizeBytes: fileStat.size, status: "completed" as const };
     });
 
@@ -308,6 +356,13 @@ export type BackupRow = {
   error_message: string | null;
   /** Depth of the last verification — 'full-restore' | 'header-only' | null (never verified). */
   verify_level: string | null;
+  /**
+   * Source DB's public BASE TABLE count captured at backup time (#2989).
+   * `verifyByRestore` asserts the restored count is >= this. Null for
+   * backups created before this column existed, or when the count couldn't
+   * be read — verify then skips the assertion.
+   */
+  expected_table_count: number | null;
 };
 
 type BackupRowQuery = {
@@ -319,6 +374,7 @@ type BackupRowQuery = {
   retention_expires_at: string;
   error_message: string | null;
   verify_level: string | null;
+  expected_table_count: number | null;
 };
 
 export const listBackups = (limit = 50): Effect.Effect<BackupRow[], EnterpriseError | Error> =>
@@ -326,7 +382,7 @@ export const listBackups = (limit = 50): Effect.Effect<BackupRow[], EnterpriseEr
     yield* ensureTable();
     const rows = yield* Effect.promise(() =>
       internalQuery<BackupRowQuery>(
-        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level
+        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level, expected_table_count
          FROM backups
          ORDER BY created_at DESC
          LIMIT $1`,
@@ -341,7 +397,7 @@ export const getBackupById = (id: string): Effect.Effect<BackupRow | null, Enter
     yield* ensureTable();
     const rows = yield* Effect.promise(() =>
       internalQuery<BackupRowQuery>(
-        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level
+        `SELECT id, created_at::text, size_bytes::text, status, storage_path, retention_expires_at::text, error_message, verify_level, expected_table_count
          FROM backups WHERE id = $1`,
         [id],
       ),

@@ -243,6 +243,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         message: error.message,
         body: { installId: error.installId, reason: error.reason },
       };
+    // #2989 — backup not in a verifiable/restorable state (status not
+    // completed/verified), or the restore confirmation token is missing/
+    // expired. Both are admin-correctable (wait for the backup, pick
+    // another, or request a fresh token) so 400 is the right surface.
+    // Replaces the platform-backups routes' `message.includes(...)`
+    // classification with structural `_tag` mapping. The message carries
+    // the offending status / token detail verbatim — both are admin-safe
+    // (no secrets, no connection strings).
+    case "BackupInvalidStateError":
+    case "BackupRestoreTokenError":
+      return { status: 400, code: "bad_request", message: error.message };
 
     // ── 403 Forbidden — policy/permission violations ─────────────
     case "ForbiddenPatternError":
@@ -254,6 +265,11 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
 
     // ── 404 Not Found ────────────────────────────────────────────
     case "ConnectionNotFoundError":
+      return { status: 404, code: "not_found", message: error.message };
+    // #2989 — backup id has no matching row (never existed, or purged
+    // between a restore request and its confirm). Replaces the
+    // platform-backups routes' `message.includes("not found")` check.
+    case "BackupNotFoundError":
       return { status: 404, code: "not_found", message: error.message };
 
     // ── 409 Conflict — operation rejected because of resource state ─

@@ -157,7 +157,7 @@ const confirmRestoreRoute = createRoute({
     400: { description: "Invalid or expired token", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Enterprise feature not enabled, or the backup was purged before confirmation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -313,29 +313,23 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    const verifyResult = yield* backupsMod.verifyBackup(backupId).pipe(Effect.either);
-    if (verifyResult._tag === "Left") {
-      const message = verifyResult.left.message;
-      if (message.includes("not found")) {
-        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
-      }
-      if (message.includes("Cannot verify")) {
-        return c.json({ error: "invalid_state", message, requestId }, 400);
-      }
-      throw verifyResult.left;
-    }
-    log.info({ backupId, verified: verifyResult.right.verified, requestId }, "Backup verification completed");
+    // #2989 — `verifyBackup` fails with tagged errors (`BackupNotFoundError`
+    // → 404, `BackupInvalidStateError` → 400) that `runEffect` maps
+    // structurally via `mapTaggedError`. No `Effect.either` + message
+    // string-matching: the codebase bans string-based error classification.
+    const verifyResult = yield* backupsMod.verifyBackup(backupId);
+    log.info({ backupId, verified: verifyResult.verified, requestId }, "Backup verification completed");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.backup.verify,
       targetType: "backup",
       targetId: backupId,
       scope: "platform",
-      metadata: { verified: verifyResult.right.verified, message: verifyResult.right.message },
+      metadata: { verified: verifyResult.verified, message: verifyResult.message },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
-    return c.json(verifyResult.right, 200);
+    return c.json(verifyResult, 200);
   }), { label: "verify backup" });
 });
 
@@ -352,17 +346,10 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    const restoreResult = yield* backupsMod.requestRestore(backupId).pipe(Effect.either);
-    if (restoreResult._tag === "Left") {
-      const message = restoreResult.left.message;
-      if (message.includes("not found")) {
-        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
-      }
-      if (message.includes("Cannot restore")) {
-        return c.json({ error: "invalid_state", message, requestId }, 400);
-      }
-      throw restoreResult.left;
-    }
+    // #2989 — `requestRestore` fails with tagged errors
+    // (`BackupNotFoundError` → 404, `BackupInvalidStateError` → 400)
+    // mapped structurally by `runEffect`. No message string-matching.
+    const restoreResult = yield* backupsMod.requestRestore(backupId);
     log.warn({ backupId, requestId }, "Restore requested by platform admin");
 
     logAdminAction({
@@ -373,7 +360,7 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
-    return c.json(restoreResult.right, 200);
+    return c.json(restoreResult, 200);
   }), { label: "request restore" });
 });
 
@@ -390,29 +377,24 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    return yield* backupsMod.executeRestore(body.confirmationToken).pipe(
-      Effect.map((result) => {
-        log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
+    // #2989 — `executeRestore` fails with `BackupRestoreTokenError` → 400
+    // (invalid/expired token) and `BackupNotFoundError` → 404 (purged
+    // mid-flow), both mapped structurally by `runEffect`. Any other
+    // failure (the restore subprocess) is a generic Error → 500. No
+    // `message.includes(...)` token classification, no `Effect.die`.
+    const result = yield* backupsMod.executeRestore(body.confirmationToken);
+    log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
 
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.backup.confirmRestore,
-          targetType: "backup",
-          targetId: c.req.param("id"),
-          scope: "platform",
-          metadata: { preRestoreBackupId: result.preRestoreBackupId },
-          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        });
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.backup.confirmRestore,
+      targetType: "backup",
+      targetId: c.req.param("id"),
+      scope: "platform",
+      metadata: { preRestoreBackupId: result.preRestoreBackupId },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
 
-        return c.json(result, 200);
-      }),
-      Effect.catchAll((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes("Invalid or expired") || message.includes("expired")) {
-          return Effect.succeed(c.json({ error: "invalid_token", message, requestId }, 400));
-        }
-        return Effect.die(err);
-      }),
-    );
+    return c.json(result, 200);
   }), { label: "execute restore" });
 });
 

@@ -2,7 +2,8 @@ import { describe, expect, test, afterEach } from "bun:test";
 
 // Import after mocks — getProviderType reads process.env at call time, so no
 // module-level mocking is needed.
-const { getProviderType, getDefaultProvider, getModel } = await import("@atlas/api/lib/providers");
+const { getProviderType, getDefaultProvider, getModel, getModelForConfig, resolveModelId } =
+  await import("@atlas/api/lib/providers");
 
 // ---------------------------------------------------------------------------
 // Env snapshot — capture/restore only the vars this test touches
@@ -11,8 +12,10 @@ const { getProviderType, getDefaultProvider, getModel } = await import("@atlas/a
 const origProvider = process.env.ATLAS_PROVIDER;
 const origModel = process.env.ATLAS_MODEL;
 const origVercel = process.env.VERCEL;
+const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
 const origCompatBaseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
 const origCompatApiKey = process.env.OPENAI_COMPATIBLE_API_KEY;
+const origGatewayKey = process.env.AI_GATEWAY_API_KEY;
 
 afterEach(() => {
   if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
@@ -24,11 +27,17 @@ afterEach(() => {
   if (origVercel !== undefined) process.env.VERCEL = origVercel;
   else delete process.env.VERCEL;
 
+  if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+  else delete process.env.ATLAS_DEPLOY_MODE;
+
   if (origCompatBaseURL !== undefined) process.env.OPENAI_COMPATIBLE_BASE_URL = origCompatBaseURL;
   else delete process.env.OPENAI_COMPATIBLE_BASE_URL;
 
   if (origCompatApiKey !== undefined) process.env.OPENAI_COMPATIBLE_API_KEY = origCompatApiKey;
   else delete process.env.OPENAI_COMPATIBLE_API_KEY;
+
+  if (origGatewayKey !== undefined) process.env.AI_GATEWAY_API_KEY = origGatewayKey;
+  else delete process.env.AI_GATEWAY_API_KEY;
 });
 
 // ---------------------------------------------------------------------------
@@ -140,14 +149,85 @@ describe("getProviderType", () => {
 });
 
 describe("getDefaultProvider", () => {
-  test("returns 'anthropic' when VERCEL is not set", () => {
+  test("returns 'anthropic' when self-hosted (no VERCEL, no SaaS deploy mode)", () => {
     delete process.env.VERCEL;
+    delete process.env.ATLAS_DEPLOY_MODE;
     expect(getDefaultProvider()).toBe("anthropic");
   });
 
   test("returns 'gateway' when VERCEL is set", () => {
+    delete process.env.ATLAS_DEPLOY_MODE;
     process.env.VERCEL = "1";
     expect(getDefaultProvider()).toBe("gateway");
+  });
+
+  // SaaS runs on Railway where VERCEL is unset — the deploy-mode signal is what
+  // makes the hosted default `gateway` (so an unset ATLAS_PROVIDER doesn't fall
+  // back to anthropic-direct and bill/report the wrong model). #3098.
+  test("returns 'gateway' when ATLAS_DEPLOY_MODE=saas even without VERCEL", () => {
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    expect(getDefaultProvider()).toBe("gateway");
+  });
+
+  test("self-hosted deploy mode keeps the anthropic default", () => {
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
+    expect(getDefaultProvider()).toBe("anthropic");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModelId — single source of truth for the unset/effective default
+// (#3098). The billing page's "Default AI model" picker and the agent loop
+// must resolve the SAME model when a workspace hasn't saved one; otherwise the
+// UI advertises one model while another is billed.
+// ---------------------------------------------------------------------------
+
+describe("resolveModelId — SSOT default (#3098)", () => {
+  test("gateway default equals getModelForConfig().modelId (no drift)", () => {
+    // The agent builds its model via getModelForConfig(); the billing endpoint
+    // reports the default via resolveModelId(). Both must agree for the gateway
+    // provider when nothing is saved.
+    process.env.AI_GATEWAY_API_KEY = "test-key"; // lets getModelForConfig build the gateway model
+    delete process.env.ATLAS_MODEL;
+    const agentDefault = getModelForConfig("gateway", undefined).modelId;
+    expect(resolveModelId("gateway", undefined)).toBe(agentDefault);
+  });
+
+  test("platform gateway default is Sonnet 4.6 (documented decision, #3098)", () => {
+    delete process.env.ATLAS_MODEL;
+    // Decision: the hosted/gateway default is the balanced, ~5x-cheaper Sonnet
+    // 4.6 — NOT Opus 4.8. Pinning it here so UI and runtime can't silently
+    // diverge back to the expensive default.
+    expect(resolveModelId("gateway", undefined)).toBe("anthropic/claude-sonnet-4.6");
+  });
+
+  test("an explicitly saved model overrides the default", () => {
+    delete process.env.ATLAS_MODEL;
+    expect(resolveModelId("gateway", "anthropic/claude-opus-4.8")).toBe("anthropic/claude-opus-4.8");
+  });
+
+  test("falls back to ATLAS_MODEL env when no override is given", () => {
+    process.env.ATLAS_MODEL = "anthropic/claude-haiku-4.5";
+    expect(resolveModelId("gateway", undefined)).toBe("anthropic/claude-haiku-4.5");
+  });
+
+  test("throws for openai-compatible with no model and no default", () => {
+    delete process.env.ATLAS_MODEL;
+    expect(() => resolveModelId("openai-compatible", undefined)).toThrow("ATLAS_MODEL is required");
+  });
+
+  // The bug end-to-end: a SaaS deployment with nothing configured must resolve
+  // gateway → Sonnet 4.6, NOT anthropic → Opus. With no provider override and no
+  // ATLAS_PROVIDER, the provider falls through to getDefaultProvider() (gateway
+  // on SaaS), then to PROVIDER_DEFAULTS.gateway. #3098.
+  test("unset provider+model on SaaS resolves the gateway Sonnet default", () => {
+    delete process.env.ATLAS_PROVIDER;
+    delete process.env.ATLAS_MODEL;
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-4.6");
   });
 });
 

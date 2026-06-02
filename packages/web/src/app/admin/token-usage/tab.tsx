@@ -19,6 +19,14 @@ import { TokenSummarySchema, TrendsResponseSchema, TokenUserResponseSchema } fro
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { formatISODate, formatNumber, parseISODate } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { DatePicker } from "@/components/ui/date-picker";
 import { Button } from "@/components/ui/button";
 import { StatCard } from "@/ui/components/admin/stat-card";
@@ -31,7 +39,7 @@ import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
 import { getTokenUsageColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
-import { Coins, TrendingUp, Users, MessageSquare, Search } from "lucide-react";
+import { Coins, TrendingUp, Users, MessageSquare, Search, Cpu } from "lucide-react";
 import { useState } from "react";
 
 const TokenChart = dynamic(() => import("./token-chart"), { ssr: false });
@@ -133,37 +141,91 @@ export function TokenUsageTab() {
         ) : summaryLoading ? (
           <LoadingState message="Loading summary..." />
         ) : summary ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              title="Total Tokens"
-              value={formatNumber(summary.totalTokens)}
-              icon={<Coins className="size-4" />}
-            />
-            <StatCard
-              title="Prompt Tokens"
-              value={formatNumber(summary.totalPromptTokens)}
-              icon={<TrendingUp className="size-4" />}
-              description={summary.totalTokens > 0
-                ? `${((summary.totalPromptTokens / summary.totalTokens) * 100).toFixed(0)}% of total`
-                : undefined}
-            />
-            <StatCard
-              title="Completion Tokens"
-              value={formatNumber(summary.totalCompletionTokens)}
-              icon={<TrendingUp className="size-4" />}
-              description={summary.totalTokens > 0
-                ? `${((summary.totalCompletionTokens / summary.totalTokens) * 100).toFixed(0)}% of total`
-                : undefined}
-            />
-            <StatCard
-              title="Total Requests"
-              value={formatNumber(summary.totalRequests)}
-              icon={<MessageSquare className="size-4" />}
-              description={summary.totalRequests > 0 && summary.totalTokens > 0
-                ? `~${formatNumber(Math.round(summary.totalTokens / summary.totalRequests))} tokens/req`
-                : undefined}
-            />
-          </div>
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <StatCard
+                title="Gross Tokens"
+                value={formatNumber(summary.totalTokens)}
+                icon={<Coins className="size-4" />}
+                description="input + output, not billed"
+              />
+              <StatCard
+                title="Prompt (input)"
+                value={formatNumber(summary.totalPromptTokens)}
+                icon={<TrendingUp className="size-4" />}
+                description={summary.totalTokens > 0
+                  ? `${((summary.totalPromptTokens / summary.totalTokens) * 100).toFixed(0)}% of total · gross`
+                  : "gross"}
+              />
+              <StatCard
+                title="Completion (output)"
+                value={formatNumber(summary.totalCompletionTokens)}
+                icon={<TrendingUp className="size-4" />}
+                description={summary.totalTokens > 0
+                  ? `${((summary.totalCompletionTokens / summary.totalTokens) * 100).toFixed(0)}% of total`
+                  : undefined}
+              />
+              <StatCard
+                title="Total Requests"
+                value={formatNumber(summary.totalRequests)}
+                icon={<MessageSquare className="size-4" />}
+                description={summary.totalRequests > 0 && summary.totalTokens > 0
+                  ? `~${formatNumber(Math.round(summary.totalTokens / summary.totalRequests))} tokens/req`
+                  : undefined}
+              />
+            </div>
+
+            {/* Figures above are GROSS input tokens: every agent step re-sends
+                the prompt prefix, so the same context is counted once per step
+                — this is not the billed amount.
+                TODO(#3099): once token_usage persists cache_read_tokens /
+                cache_write_tokens, surface the effective/billed split here
+                (gross − prompt-cache discount). */}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              Token figures are <span className="font-medium text-foreground">gross input tokens</span>,
+              not the billed amount — each agent step re-sends the prompt prefix,
+              so shared context is counted multiple times. Billed/effective
+              tokens (after prompt-cache discounts) are tracked separately
+              (#3099).
+            </p>
+
+            {summary.byModel.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Cpu className="size-4" />
+                    Usage by Model
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Model</TableHead>
+                        <TableHead>Provider</TableHead>
+                        <TableHead className="text-right">Prompt</TableHead>
+                        <TableHead className="text-right">Completion</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">Requests</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {summary.byModel.map((m) => (
+                        <TableRow key={`${m.provider}/${m.model}`}>
+                          <TableCell className="font-medium">{m.model}</TableCell>
+                          <TableCell className="text-muted-foreground">{m.provider}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNumber(m.promptTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNumber(m.completionTokens)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{formatNumber(m.totalTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{m.requestCount}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            )}
+          </>
         ) : null}
 
         <Card>

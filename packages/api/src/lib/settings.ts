@@ -297,7 +297,10 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "LLM provider for the agent",
     type: "select",
     options: ["anthropic", "openai", "bedrock", "ollama", "openai-compatible", "gateway"],
-    default: "anthropic",
+    // No static default: an unset provider must fall through to
+    // `getDefaultProvider()` (providers.ts), which picks `gateway` for
+    // hosted/SaaS and `anthropic` for self-hosted. A hardcoded "anthropic"
+    // here would override that and make SaaS report/run the wrong default (#3098).
     envVar: "ATLAS_PROVIDER",
     requiresRestart: true,
     scope: "platform",

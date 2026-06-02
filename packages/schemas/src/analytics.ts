@@ -106,11 +106,25 @@ export const AuditUsersResponseSchema = z.object({
 // Token usage
 // ---------------------------------------------------------------------------
 
+interface ModelUsageRow {
+  model: string;
+  provider: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  requestCount: number;
+}
 interface TokenSummary {
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;
   totalRequests: number;
+  /**
+   * Per-model token breakdown over the same window (#3098). Lets an operator
+   * see WHICH model burned the tokens — the signal that made the silent
+   * Opus-vs-Sonnet default surprise invisible until a raw DB query.
+   */
+  byModel: ModelUsageRow[];
   from: string;
   to: string;
 }
@@ -130,11 +144,23 @@ interface TrendPoint {
   requestCount: number;
 }
 
+export const ModelUsageRowSchema = z.object({
+  model: z.string(),
+  provider: z.string(),
+  promptTokens: z.number(),
+  completionTokens: z.number(),
+  totalTokens: z.number(),
+  requestCount: z.number(),
+}) satisfies z.ZodType<ModelUsageRow, unknown>;
+
 export const TokenSummarySchema = z.object({
   totalPromptTokens: z.number(),
   totalCompletionTokens: z.number(),
   totalTokens: z.number(),
   totalRequests: z.number(),
+  // Additive (#3098): `.default([])` so a web bundle parsing an older API
+  // response (pre-byModel) still validates during a rolling deploy.
+  byModel: z.array(ModelUsageRowSchema).default([]),
   from: IsoTimestampSchema,
   to: IsoTimestampSchema,
 }) satisfies z.ZodType<TokenSummary, unknown>;

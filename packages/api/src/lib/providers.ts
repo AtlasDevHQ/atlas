@@ -44,12 +44,29 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
   "openai-compatible": undefined,
-  gateway: "anthropic/claude-opus-4.8",
+  // Hosted/gateway default: balanced Sonnet 4.6, NOT Opus 4.8. The gateway
+  // path is the SaaS billing surface, where an unset workspace would otherwise
+  // silently run (and be billed for) Opus 4.8 at ~5x the input cost while the
+  // billing picker advertised Sonnet (#3098). Keep this in lockstep with the
+  // billing page's displayed default — both flow through `resolveModelId()`.
+  gateway: "anthropic/claude-sonnet-4.6",
 };
 
-/** Returns the default provider string based on runtime environment. */
+/**
+ * Returns the default provider string based on runtime environment.
+ *
+ * Hosted/SaaS deployments route through the Vercel AI Gateway (the operator's
+ * metered key), so they default to `gateway`; self-hosted defaults to
+ * anthropic-direct (BYO `ANTHROPIC_API_KEY`). `VERCEL` covers Vercel-hosted;
+ * `ATLAS_DEPLOY_MODE=saas` covers the Railway-hosted SaaS where `VERCEL` is
+ * unset (#3098). Single source of truth for "which provider when none is
+ * explicitly configured" — the `ATLAS_PROVIDER` setting has no static default,
+ * so an unset provider falls through to here rather than forcing `anthropic`.
+ */
 export function getDefaultProvider(): ConfigProvider {
-  return process.env.VERCEL ? "gateway" : "anthropic";
+  return process.env.VERCEL || process.env.ATLAS_DEPLOY_MODE === "saas"
+    ? "gateway"
+    : "anthropic";
 }
 
 /** Anthropic-family model ids contain "anthropic" or "claude". */
@@ -76,11 +93,23 @@ export function isGatewayAnthropicModel(modelId: string): boolean {
 }
 
 /**
- * Read and validate ATLAS_PROVIDER / ATLAS_MODEL from env.
- * Returns the validated config provider string and the resolved model ID.
+ * Resolve provider + model ID from optional overrides, falling back to env
+ * vars (`ATLAS_PROVIDER` / `ATLAS_MODEL`) and finally the per-provider
+ * {@link PROVIDER_DEFAULTS}.
+ *
+ * This is the single source of truth for "which model does Atlas run". Both
+ * the env path ({@link resolveProvider}) and the settings path
+ * ({@link getModelForConfig} / {@link resolveModelId}) delegate here so the
+ * billing UI's advertised default and the agent loop's actual default can
+ * never diverge (#3098).
+ *
+ * @throws {Error} on an unknown provider or a provider with no resolvable model.
  */
-function resolveProvider(): { provider: ConfigProvider; modelId: string } {
-  const raw = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+function resolveSelection(
+  providerOverride?: string,
+  modelOverride?: string,
+): { provider: ConfigProvider; modelId: string } {
+  const raw = providerOverride ?? process.env.ATLAS_PROVIDER ?? getDefaultProvider();
   if (!VALID_PROVIDERS.has(raw as ConfigProvider)) {
     throw new Error(
       `Unknown provider "${raw}". Supported: ${[...VALID_PROVIDERS].join(", ")}`
@@ -88,7 +117,7 @@ function resolveProvider(): { provider: ConfigProvider; modelId: string } {
   }
   // Safe: validated by VALID_PROVIDERS.has() above
   const provider = raw as ConfigProvider;
-  const modelId = process.env.ATLAS_MODEL ?? PROVIDER_DEFAULTS[provider];
+  const modelId = modelOverride ?? process.env.ATLAS_MODEL ?? PROVIDER_DEFAULTS[provider];
   if (!modelId) {
     throw new Error(
       `ATLAS_MODEL is required when using the "${provider}" provider. ` +
@@ -96,6 +125,32 @@ function resolveProvider(): { provider: ConfigProvider; modelId: string } {
     );
   }
   return { provider, modelId };
+}
+
+/**
+ * Read and validate ATLAS_PROVIDER / ATLAS_MODEL from env.
+ * Returns the validated config provider string and the resolved model ID.
+ */
+function resolveProvider(): { provider: ConfigProvider; modelId: string } {
+  return resolveSelection();
+}
+
+/**
+ * Resolve the model ID Atlas would actually run for the given (optional)
+ * provider/model overrides — WITHOUT building an SDK client.
+ *
+ * This is the lightweight, side-effect-free SSOT used by surfaces that need to
+ * display the effective/default model (e.g. the billing "Default AI model"
+ * row) but must not instantiate a provider client or require provider API keys
+ * to do so. The agent loop resolves the same value via {@link getModelForConfig}
+ * (which additionally builds the client); both share {@link resolveSelection},
+ * so the displayed default and the billed default cannot drift (#3098).
+ *
+ * @throws {Error} on an unknown provider or a provider with no resolvable model
+ *   (e.g. `openai-compatible` with neither an override nor `ATLAS_MODEL`).
+ */
+export function resolveModelId(providerOverride?: string, modelOverride?: string): string {
+  return resolveSelection(providerOverride, modelOverride).modelId;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,21 +257,7 @@ export function getModelForConfig(
   providerOverride?: string,
   modelOverride?: string,
 ): { model: LanguageModel; providerType: ProviderType; modelId: string } {
-  const raw = providerOverride ?? process.env.ATLAS_PROVIDER ?? getDefaultProvider();
-  if (!VALID_PROVIDERS.has(raw as ConfigProvider)) {
-    throw new Error(
-      `Unknown provider "${raw}". Supported: ${[...VALID_PROVIDERS].join(", ")}`
-    );
-  }
-  const provider = raw as ConfigProvider;
-  const modelId = modelOverride ?? process.env.ATLAS_MODEL ?? PROVIDER_DEFAULTS[provider];
-  if (!modelId) {
-    throw new Error(
-      `ATLAS_MODEL is required when using the "${provider}" provider. ` +
-        "Set it to the model ID served by your inference server (e.g. ATLAS_MODEL=llama3.1)."
-    );
-  }
-
+  const { provider, modelId } = resolveSelection(providerOverride, modelOverride);
   return {
     model: buildModel(provider, modelId),
     providerType: resolveProviderType(provider, modelId),

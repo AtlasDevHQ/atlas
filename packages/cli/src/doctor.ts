@@ -35,12 +35,15 @@ const PROVIDER_KEY_MAP: Record<string, string> = {
   gateway: "AI_GATEWAY_API_KEY",
 };
 
+// Keep in lockstep with PROVIDER_DEFAULTS in packages/api/src/lib/providers.ts.
+// gateway → Sonnet 4.6 (the hosted/SaaS default, ~5x cheaper than Opus); the
+// rest mirror the agent's per-provider defaults (#3098).
 const PROVIDER_DEFAULTS: Record<string, string> = {
-  anthropic: "claude-opus-4-6",
+  anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
-  bedrock: "anthropic.claude-opus-4-6-v1:0",
+  bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
-  gateway: "anthropic/claude-opus-4.6",
+  gateway: "anthropic/claude-sonnet-4.6",
 };
 
 // ---------------------------------------------------------------------------

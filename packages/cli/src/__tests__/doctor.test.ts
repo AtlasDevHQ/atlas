@@ -358,7 +358,7 @@ describe("checkProvider", () => {
     const result = checkProvider();
     expect(result.status).toBe("pass");
     expect(result.detail).toContain("anthropic");
-    expect(result.detail).toContain("claude-opus-4-6");
+    expect(result.detail).toContain("claude-opus-4-8");
   });
 
   test("pass with custom model", () => {

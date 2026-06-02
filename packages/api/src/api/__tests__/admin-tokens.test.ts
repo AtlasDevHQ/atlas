@@ -62,6 +62,7 @@ describe("admin token usage routes", () => {
     it("returns token summary with org_id filter", async () => {
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
         return Promise.resolve([
           { total_prompt: "15000", total_completion: "5000", total_requests: "10" },
         ]);
@@ -82,6 +83,65 @@ describe("admin token usage routes", () => {
       const [sql, params] = lastCall!;
       expect(sql).toContain("org_id");
       expect(params).toContain("org-test");
+    });
+
+    it("returns a per-model token breakdown so operators see which model burned tokens (#3098)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) {
+          return Promise.resolve([
+            { model: "anthropic/claude-opus-4.8", provider: "gateway", total_prompt: "120000", total_completion: "2000", request_count: "2" },
+            { model: "anthropic/claude-sonnet-4.6", provider: "gateway", total_prompt: "8000", total_completion: "500", request_count: "1" },
+          ]);
+        }
+        return Promise.resolve([
+          { total_prompt: "128000", total_completion: "2500", total_requests: "3" },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+
+      expect(Array.isArray(body.byModel)).toBe(true);
+      expect(body.byModel).toHaveLength(2);
+      expect(body.byModel[0]).toEqual({
+        model: "anthropic/claude-opus-4.8",
+        provider: "gateway",
+        promptTokens: 120000,
+        completionTokens: 2000,
+        totalTokens: 122000,
+        requestCount: 2,
+      });
+      expect(body.byModel[1].model).toBe("anthropic/claude-sonnet-4.6");
+
+      // The model breakdown must be org-scoped like every other tokens query.
+      const groupByCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("GROUP BY model"),
+      );
+      expect(groupByCall).toBeDefined();
+      expect(groupByCall![0]).toContain("org_id");
+      expect(groupByCall![1]).toContain("org-test");
+    });
+
+    it("labels null model/provider rows as 'unknown' in the breakdown", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) {
+          return Promise.resolve([
+            { model: null, provider: null, total_prompt: "100", total_completion: "10", request_count: "1" },
+          ]);
+        }
+        return Promise.resolve([{ total_prompt: "100", total_completion: "10", total_requests: "1" }]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+      expect(body.byModel[0].model).toBe("unknown");
+      expect(body.byModel[0].provider).toBe("unknown");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -105,6 +165,7 @@ describe("admin token usage routes", () => {
     it("accepts date range parameters", async () => {
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
         return Promise.resolve([{ total_prompt: "0", total_completion: "0", total_requests: "0" }]);
       });
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=2026-01-01&to=2026-03-01"));

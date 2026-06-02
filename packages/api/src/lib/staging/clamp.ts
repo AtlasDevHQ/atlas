@@ -67,43 +67,80 @@ interface OutboundClamp {
  * `lib/email/delivery.ts`) keeps the clamp dependency-free of the email
  * subsystem. Today `EmailMessage.to` is a single `string`; the array arm is
  * forward-looking — IF the delivery layer later grows a multi-recipient `to`,
- * this check already tolerates it. Only the `to` field is inspected; every
- * other field rides through the shallow copy untouched.
+ * this check already tolerates it. Applied per-field to every entry in
+ * {@link RECIPIENT_FIELDS}; a field that is absent or not recipient-shaped is
+ * left untouched by the shallow copy.
  */
 function isRecipientField(to: unknown): to is string | string[] {
   return typeof to === "string" || (Array.isArray(to) && to.every((x) => typeof x === "string"));
 }
 
 /**
- * Email recipient redirect: rewrite `to` to the single staging sink address,
- * preserving every non-recipient field — `subject`, the body, `from`,
- * headers, and anything else — via the shallow copy. The `to` field's SHAPE
- * is preserved so the `(T) => T` contract stays type-honest: a single-string
- * `to` becomes the sink string; an array `to` becomes a one-element array
- * `[sink]`. Either way there is exactly one recipient — staging never needs
- * to fan out, and one sink keeps the soak inbox simple — but collapsing an
- * array to a bare string would make `to`'s runtime value diverge from its
+ * Every recipient field a clamp must redirect. `to` is the only one today's
+ * `EmailMessage` (`lib/email/delivery.ts`: `{ to, subject, html }`) carries,
+ * but `cc` / `bcc` / `replyTo` are recipient fields too — and a nodemailer
+ * `SendMailOptions` payload (the per-workspace SMTP agent path, #3095) already
+ * declares all four. If any of them is ever populated, it MUST be redirected to
+ * the sink as well, or a staging soak would deliver to those real addresses
+ * while `to` looks correctly clamped. Redirecting the whole set up front closes
+ * that latent trap now rather than leaving it armed for a future field-add
+ * (#2984), so a payload growing `cc`/`bcc`/`replyTo` cannot ride through the
+ * shallow copy unredirected.
+ */
+const RECIPIENT_FIELDS = ["to", "cc", "bcc", "replyTo"] as const;
+
+/**
+ * Email recipient redirect: rewrite EVERY populated recipient field
+ * (`to`/`cc`/`bcc`/`replyTo`) to the single staging sink address, preserving
+ * every non-recipient field — `subject`, the body, `from`, headers, and
+ * anything else — via the shallow copy. Each redirected field's SHAPE is
+ * preserved so the `(T) => T` contract stays type-honest: a single-string
+ * field becomes the sink string; an array field becomes a one-element array
+ * `[sink]`. Either way there is exactly one recipient per field — staging never
+ * needs to fan out, and one sink keeps the soak inbox simple — but collapsing an
+ * array to a bare string would make the field's runtime value diverge from its
  * declared `string[]` type, an unsound `(T) => T` a typed caller (e.g. one
- * doing `result.to.map(...)`) would trip over.
+ * doing `result.cc.map(...)`) would trip over.
  *
- * SCOPE — `to` is the ONLY recipient field redirected, because the current
- * `EmailMessage` (`lib/email/delivery.ts`: `{ to, subject, html }`) has no
- * other recipient field. If the email layer ever grows `cc` / `bcc` /
- * `replyTo`, they are recipient fields too and MUST be redirected here as
- * well — otherwise a staging soak would deliver to those real addresses
- * while `to` looks correctly clamped (tracked as #2984). The non-recipient
- * fields above are intentionally preserved, not leaked.
+ * A field that is absent or not recipient-shaped (`isRecipientField` false —
+ * e.g. a numeric `cc`, or a `headers` object carrying a `Reply-To` value) is
+ * left untouched: only real top-level recipient values are redirected, never
+ * mis-stamped. The non-recipient fields are intentionally preserved, not leaked.
+ *
+ * SCOPE of the structural guard: it covers the `string | string[]` recipient
+ * shapes only. nodemailer also permits `Address` objects (`{ name, address }`)
+ * and `Array<string | Address>` for these fields; an `Address`-shaped recipient
+ * is NOT recipient-shaped to `isRecipientField`, so it would ride through
+ * unredirected. That is safe TODAY because both callers only ever produce string
+ * recipients (`EmailMessage.to` is a `string`; the SMTP agent path builds
+ * `to: Array.from(to)` from Zod-validated `string` addresses), but a future
+ * caller that passes `Address` objects MUST widen `isRecipientField` to match
+ * them — otherwise such a recipient would reach a real address on a staging soak.
  */
 const EMAIL_CLAMP: OutboundClamp = {
   name: "email",
-  appliesTo: (sendable) => isRecipientField((sendable as { to?: unknown }).to),
+  // Claim any payload carrying at least one recipient-shaped field. Keying on
+  // the whole recipient set (not just `to`) means a future payload that omits
+  // `to` but sets `cc` can't slip past classification and leak the `cc`.
+  appliesTo: (sendable) =>
+    RECIPIENT_FIELDS.some((field) =>
+      isRecipientField((sendable as Record<string, unknown>)[field]),
+    ),
   rewrite: (sendable) => {
     const sink = resolveMailSink();
-    // Preserve `to`'s shape (string -> sink string; array -> `[sink]`) so the
-    // returned object honestly matches its declared `T` — see the doc above.
-    const currentTo = (sendable as { to?: unknown }).to;
-    const to = Array.isArray(currentTo) ? [sink] : sink;
-    return { ...sendable, to };
+    // Shallow copy, then redirect each populated recipient field in place,
+    // preserving its string-vs-array shape so the returned object honestly
+    // matches its declared `T` — see the doc above. The `Record` view is only
+    // used to mutate; the spread copy itself stays typed as `T`.
+    const next = { ...sendable };
+    const view = next as Record<string, unknown>;
+    for (const field of RECIPIENT_FIELDS) {
+      const current = view[field];
+      if (isRecipientField(current)) {
+        view[field] = Array.isArray(current) ? [sink] : sink;
+      }
+    }
+    return next;
   },
 };
 

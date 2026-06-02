@@ -117,9 +117,19 @@ landed**):
   `staging`, the wiring layer logs a warn (keys only — no recipient/body) so the
   drift is visible; fix it by setting `ATLAS_API_REGION=staging` on the service.
 
-> **cc / bcc / replyTo are not yet redirected** — the current `EmailMessage` has
-> only `to`. Adding any new recipient field means extending the clamp too
-> ([#2984](https://github.com/AtlasDevHQ/atlas/issues/2984)).
+> **Every recipient field is redirected** — `to`, `cc`, `bcc`, and `replyTo` all
+> land on the sink ([#2984](https://github.com/AtlasDevHQ/atlas/issues/2984), landed).
+> Today's `EmailMessage` only carries `to`, but the clamp redirects the whole
+> recipient set up front so a future field-add (or the nodemailer
+> `SendMailOptions` payload on the per-workspace SMTP agent path —
+> [#3095](https://github.com/AtlasDevHQ/atlas/issues/3095)) can't ride a real
+> address through unredirected.
+>
+> The per-workspace SMTP **agent** email tool (`lib/integrations/email-tool.ts`)
+> is a parallel outbound path that bypasses `delivery.ts`; it applies the same
+> clamp at its transport boundary
+> ([#3095](https://github.com/AtlasDevHQ/atlas/issues/3095), landed), so an agent
+> on a staging soak can't email a real recipient either.
 
 ### Deploy trigger model
 
@@ -306,8 +316,10 @@ Atlas uses GitHub in two distinct ways; staging may need either or both:
      must be set (the redirect URI is resolved from it — see [§3](#3-env-var-checklist));
      otherwise the handlers log "not registered" and the install routes return
      501.
-     > ⚠️ These `GITHUB_APP_*` vars are read by `register.ts` but are **not yet
-     > documented in `.env.example`** — see [§7 Incidental findings](#7-incidental-findings).
+     > These `GITHUB_APP_*` vars are documented in `.env.example` (the **GitHub
+     > Data integration** block) and in the env-var reference docs page
+     > (`apps/docs/content/docs/reference/environment-variables.mdx` → GitHub
+     > Integration) ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088), landed).
 2. **GitHub social login** (Better Auth sign-in). A separate OAuth App
    (not GitHub App).
    - **Console:** <https://github.com/settings/developers> → **OAuth Apps** →
@@ -421,7 +433,7 @@ entry in that file is accounted for here. Legend:
 | `BETTER_AUTH_SECRET` | 🔒 | Distinct 32-byte random (`openssl rand -base64 32`). Doubles as the at-rest key fallback — keep it off prod's value. |
 | `BETTER_AUTH_URL` | 🟦 | `https://api.staging.useatlas.dev`. |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` if needed). |
-| `ATLAS_ADMIN_EMAIL` | 🟦 | The deterministic staging admin (e.g. `admin@staging.useatlas.dev`). Note `StagingSeed` separately seeds an admin via `STAGING_ADMIN_EMAIL`/`STAGING_ADMIN_PASSWORD` (see [§7](#7-incidental-findings)). |
+| `ATLAS_ADMIN_EMAIL` | 🟦 | The deterministic staging admin (e.g. `admin@staging.useatlas.dev`). Note `StagingSeed` separately seeds an admin at the **fixed constant** `admin@staging.useatlas.dev` (`STAGING_ADMIN_EMAIL` in `seed.ts` — not an env var), reading only `STAGING_ADMIN_PASSWORD` from the environment (see [§7](#7-incidental-findings)). |
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | ⚪ | Leave unset (`ATLAS_ADMIN_EMAIL` is set). |
 | `ATLAS_AUTH_MODE` | ⚪ | Unset — auto-detected to `managed` (matches prod SaaS). |
 | `ATLAS_API_KEY`, `ATLAS_AUTH_JWKS_URL`, `ATLAS_AUTH_ISSUER`, `ATLAS_AUTH_AUDIENCE`, `ATLAS_AUTH_ROLE_CLAIM`, `ATLAS_API_KEY_ROLE` | ⚪ | API-key / BYOT auth modes — unset on SaaS staging. |
@@ -552,15 +564,15 @@ entry in that file is accounted for here. Legend:
 
 | Var(s) | Class | Staging value source |
 | ------ | ----- | -------------------- |
-| `ATLAS_PUBLIC_API_URL` | 🟦 | **`https://api.staging.useatlas.dev` — required.** `resolvePublicApiUrl()` builds every OAuth install handler's redirect URI from this; unset ⇒ Slack/Linear/GitHub/Salesforce install routes return 501 ([§2](#2-oauth--provider-apps)). Referenced in `.env.example` prose but not a declared entry — see [§7](#7-incidental-findings). |
+| `ATLAS_PUBLIC_API_URL` | 🟦 | **`https://api.staging.useatlas.dev` — required.** `resolvePublicApiUrl()` builds every OAuth install handler's redirect URI from this; unset ⇒ Slack/Linear/GitHub/Salesforce install routes return 501 ([§2](#2-oauth--provider-apps)). Now a declared `.env.example` entry under **Networking** ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed). |
 | `ATLAS_PUBLIC_URL` | 🟦 | `https://api.staging.useatlas.dev`. Distinct from `ATLAS_PUBLIC_API_URL` — this one is the action-approval URL base; it is **not** a fallback for the OAuth redirect URI. |
 | `ATLAS_CORS_ORIGIN` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` as needed). |
 | `ATLAS_API_URL` | ⚪ | Dev rewrite target — unset in deployed staging. |
 | `ATLAS_PUBLIC_WEB_URL` | 🟦 | `https://app.staging.useatlas.dev`. |
 | `NEXT_PUBLIC_ATLAS_API_URL` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`web-staging`). **Build-time** — the `deploy/web/Dockerfile` already declares this as a build `ARG`; pass it as a Railway build arg, not just a runtime var. |
 | `NEXT_PUBLIC_ATLAS_AUTH_MODE` | 🟦🏗️ | `managed` (`web-staging`). **Build-time** — already a `deploy/web/Dockerfile` build `ARG`. |
-| `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | 🟦🏗️ | `atlas-staging` — **must equal** the API's `ATLAS_COOKIE_PREFIX`. **Build-time and load-bearing for prod/staging isolation:** `packages/web/src/proxy.ts` reads it as a static `process.env.NEXT_PUBLIC_*` inlined at build. The `deploy/web/Dockerfile` does **not** yet thread it as a build `ARG` (only `NEXT_PUBLIC_ATLAS_API_URL` + `NEXT_PUBLIC_ATLAS_AUTH_MODE`), so a runtime-only var leaves the proxy defaulting to `atlas` and treating prod's broadly-scoped cookie as a staging session. Threading this build arg needs a Dockerfile change — tracked in [§7](#7-incidental-findings). |
-| `NEXT_PUBLIC_ATLAS_API_BASE` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`www-staging`). **Build-time, www-only.** `apps/www/src/components/talk-to-sales-form.tsx` posts to `NEXT_PUBLIC_ATLAS_API_BASE ?? "https://api.useatlas.dev"`; unset ⇒ the staging landing page's talk-to-sales form submits to the **prod** API. Not in `.env.example` — see [§7](#7-incidental-findings). |
+| `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | 🟦🏗️ | `atlas-staging` — **must equal** the API's `ATLAS_COOKIE_PREFIX`. **Build-time and load-bearing for prod/staging isolation:** `packages/web/src/proxy.ts` reads it as a static `process.env.NEXT_PUBLIC_*` inlined at build. `deploy/web/Dockerfile` now threads it as a build `ARG` (alongside `NEXT_PUBLIC_ATLAS_API_URL` + `NEXT_PUBLIC_ATLAS_AUTH_MODE`) ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed) — pass it as a Railway **build arg**, not just a runtime var, or the proxy defaults to `atlas` and treats prod's broadly-scoped cookie as a staging session. |
+| `NEXT_PUBLIC_ATLAS_API_BASE` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`www-staging`). **Build-time, www-only.** `apps/www/src/components/talk-to-sales-form.tsx` posts to `NEXT_PUBLIC_ATLAS_API_BASE ?? "https://api.useatlas.dev"`; unset ⇒ the staging landing page's talk-to-sales form submits to the **prod** API. Now documented in `.env.example` ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096), landed); `www` builds with NIXPACKS so the Railway service var is inlined at build (no Dockerfile to thread). |
 
 > 🏗️ = **build-time** `NEXT_PUBLIC_*` variable. Next.js inlines these into the
 > client bundle at `bun run build`, so they must be present as build args/ENV
@@ -652,11 +664,15 @@ entry in that file is accounted for here. Legend:
 | ------ | ----- | -------------------- |
 | `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID`, `RAILWAY_WEB_SERVICE_ID` | 🔒 | Only if staging exercises the custom-domain feature. Use the `staging` environment ID and `web-staging` service ID; the token stays workspace-scoped. |
 
-> **Staging-only env vars not in `.env.example`.** `StagingSeed` and the smoke
-> harness read `STAGING_ADMIN_EMAIL`, `STAGING_ADMIN_PASSWORD`,
-> `STAGING_MAIL_SINK`, `STAGING_TWENTY_API_KEY`, and `STAGING_TWENTY_BASE_URL`.
-> These are documented in [§7 Incidental findings](#7-incidental-findings) and
-> should be set on `api-staging` even though they don't appear in the file above.
+> **Staging seed env vars.** `StagingSeed` and the smoke harness read
+> `STAGING_ADMIN_PASSWORD`, `STAGING_MAIL_SINK`, `STAGING_TWENTY_API_KEY`, and
+> `STAGING_TWENTY_BASE_URL` — now documented in `.env.example` under
+> **Staging seed (SaaS staging region only)**
+> ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088), landed). Set them on
+> `api-staging`. The seeded admin **email** is the fixed constant
+> `admin@staging.useatlas.dev` (`STAGING_ADMIN_EMAIL` in `seed.ts`), not an env
+> var. The CI-only smoke secrets `STAGING_DATABASE_URL` / `STAGING_SLACK_WEBHOOK_URL`
+> live in GitHub Actions, not on the service.
 
 ---
 
@@ -820,36 +836,50 @@ for "I tagged but prod didn't deploy" once cutover is complete.
 ## 7. Incidental findings
 
 Building the env-var checklist (and the Codex review of this PR) surfaced
-`.env.example` and deploy-config gaps. Per project convention these are **filed
-as issues, not fixed inline in this PR**:
+`.env.example` and deploy-config gaps. **All are now resolved** — the staging
+hardening cluster ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088) +
+[#3096](https://github.com/AtlasDevHQ/atlas/issues/3096)) closed them rather than
+leaving them as deferred tickets:
 
-1. **`STAGING_*` family undocumented.** `StagingSeed`
-   (`packages/api/src/lib/staging/seed.ts`) and the smoke harness read
-   `STAGING_ADMIN_EMAIL`, `STAGING_ADMIN_PASSWORD`, `STAGING_MAIL_SINK`,
-   `STAGING_TWENTY_API_KEY`, and `STAGING_TWENTY_BASE_URL` from the environment,
-   but none appear in `.env.example`.
-2. **`GITHUB_APP_*` family undocumented.** The `github`/`github-data` OAuth
-   handlers (`packages/api/src/lib/integrations/install/register.ts`) read
-   `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`,
-   `GITHUB_APP_CLIENT_ID`, and `GITHUB_APP_CLIENT_SECRET`, distinct from the
-   social-login `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` that the file does
-   document.
-3. **`ATLAS_PUBLIC_API_URL` not a declared entry.** It is the **required** base
-   for every OAuth install handler's redirect URI (`resolvePublicApiUrl()`), yet
-   it only appears in `.env.example` prose, not as its own `# ATLAS_PUBLIC_API_URL=`
-   entry.
-4. **`NEXT_PUBLIC_ATLAS_API_BASE` absent.** `apps/www`'s talk-to-sales form
+1. ✅ **`STAGING_*` family documented** ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088)).
+   `StagingSeed` (`packages/api/src/lib/staging/seed.ts`) and the smoke harness
+   read `STAGING_ADMIN_PASSWORD`, `STAGING_MAIL_SINK`, `STAGING_TWENTY_API_KEY`,
+   and `STAGING_TWENTY_BASE_URL` — now in `.env.example` under **Staging seed
+   (SaaS staging region only)** and in the env-var reference docs. The seeded
+   admin **email** is the fixed constant `admin@staging.useatlas.dev`
+   (`STAGING_ADMIN_EMAIL` in `seed.ts`), not an env var, so it's documented as a
+   note rather than a settable entry.
+2. ✅ **`GITHUB_APP_*` family documented** ([#3088](https://github.com/AtlasDevHQ/atlas/issues/3088)).
+   The `github`/`github-data` OAuth handlers
+   (`packages/api/src/lib/integrations/install/register.ts`) read `GITHUB_APP_ID`,
+   `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_CLIENT_ID`, and
+   `GITHUB_APP_CLIENT_SECRET` — now in `.env.example` under **GitHub Data
+   integration** and a dedicated **GitHub Integration** section of the env-var
+   reference, distinct from the social-login `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`.
+3. ✅ **`ATLAS_PUBLIC_API_URL` declared** ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096)).
+   The **required** base for every OAuth install handler's redirect URI
+   (`resolvePublicApiUrl()`) now has its own `# ATLAS_PUBLIC_API_URL=` entry under
+   **Networking** in `.env.example`, documenting that `ATLAS_CORS_ORIGIN` is
+   intentionally not a fallback.
+4. ✅ **`NEXT_PUBLIC_ATLAS_API_BASE` documented** ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096)).
+   `apps/www`'s talk-to-sales form
    (`apps/www/src/components/talk-to-sales-form.tsx`) falls back to the prod API
-   when this is unset; it appears nowhere in `.env.example`.
-5. **`deploy/web/Dockerfile` doesn't thread `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` as a
-   build arg.** `packages/web/src/proxy.ts` reads it at build time, but the
-   Dockerfile only declares `ARG`s for `NEXT_PUBLIC_ATLAS_API_URL` and
-   `NEXT_PUBLIC_ATLAS_AUTH_MODE` — so a staging cookie prefix set only at runtime
-   silently defaults to `atlas`, defeating prod/staging session isolation. Needs
-   a Dockerfile (build-arg) change.
+   when unset; the build-time var is now in `.env.example`. `www` builds with
+   NIXPACKS, so the Railway service var is inlined at build (no Dockerfile to
+   thread).
+5. ✅ **`deploy/web/Dockerfile` threads `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX`**
+   ([#3096](https://github.com/AtlasDevHQ/atlas/issues/3096)).
+   `packages/web/src/proxy.ts` reads it at build time; the Dockerfile now declares
+   `ARG NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` + `ENV` alongside the API-URL/auth-mode
+   args, so a build arg actually reaches the bundle (a runtime-only value would
+   silently default to `atlas` and defeat prod/staging session isolation).
 
-Items 1–2 are tracked in [#3088](https://github.com/AtlasDevHQ/atlas/issues/3088);
-items 3–5 in [#3096](https://github.com/AtlasDevHQ/atlas/issues/3096).
+A sixth finding — the `RegionGuardLive` ⟂ EE residency-resolver contradiction on
+the `staging` region — was reconciled under
+[#3097](https://github.com/AtlasDevHQ/atlas/issues/3097): on the staging deploy
+the EE resolver now treats the boot-required `staging` entry in
+`residency.regions` as legitimate (quiet debug), not dead config (warn). See the
+RESOLVED CONTRACT note in `deploy/api-staging/atlas.config.ts`.
 
 ---
 

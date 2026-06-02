@@ -80,6 +80,8 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { decryptSecretFields } from "@atlas/api/lib/plugins/secrets";
+import { resolveOutboundClampRegion } from "@atlas/api/lib/email/delivery";
+import { clampOutbound } from "@atlas/api/lib/staging/clamp";
 import {
   lazyPluginLoader,
   LazyPluginBuilderMissingError,
@@ -274,7 +276,22 @@ export function createEmailLazyBuilder(
           subject,
           html: body,
         };
-        const info = await transport.sendMail(message);
+        // Staging outbound clamp (#3095). The per-workspace SMTP transport is a
+        // PARALLEL outbound path: it calls nodemailer's `transport.sendMail`
+        // directly and never routes through `lib/email/delivery.ts`, so the
+        // central `clampOutbound` chokepoint there never runs. Apply the clamp
+        // here, at the transport boundary, with the SAME fail-closed region
+        // resolution `delivery.ts` uses (`resolveOutboundClampRegion()` biases
+        // hard toward "staging" so a fat-fingered ATLAS_API_REGION can't reopen
+        // the leak). This is a STRUCTURAL clamp — every caller of the instance
+        // is covered, not just the agent tool — because the recipient is
+        // agent-supplied and must never reach a real address from a staging
+        // soak. `clampOutbound` redirects every recipient field (#2984), so a
+        // future `cc`/`bcc` on this message is covered too. Identity off
+        // staging (`resolveOutboundClampRegion` returns null → no rewrite).
+        const clampRegion = resolveOutboundClampRegion();
+        const outbound = clampRegion ? clampOutbound(clampRegion, message) : message;
+        const info = await transport.sendMail(outbound);
         return {
           messageId: typeof info.messageId === "string" ? info.messageId : undefined,
           envelope: info.envelope,

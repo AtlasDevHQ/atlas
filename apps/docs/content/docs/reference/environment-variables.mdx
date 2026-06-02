@@ -742,6 +742,21 @@ JIRA_DEFAULT_PROJECT=PROJ
 
 ---
 
+## GitHub Integration
+
+The GitHub **App** action integration (create issues / open PRs). **Distinct from the social-login [`GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`](#social-login-oauth)** — those are for Better Auth sign-in. Read by `packages/api/src/lib/integrations/install/register.ts`; when the `github` catalog row is enabled but any of the five below is unset, `/api/v1/integrations/github/install` returns `501`. Register an App at [github.com/settings/apps](https://github.com/settings/apps) with the callback URL `${ATLAS_PUBLIC_API_URL}/api/v1/integrations/github/callback`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_APP_ID` | — | Numeric App ID from the App settings page |
+| `GITHUB_APP_SLUG` | — | App slug from `https://github.com/apps/<slug>` |
+| `GITHUB_APP_PRIVATE_KEY` | — | App private key (`.pem` contents). Also used to mint short-lived installation tokens at query time |
+| `GITHUB_APP_CLIENT_ID` | — | App OAuth Client ID (per-workspace install consent flow) |
+| `GITHUB_APP_CLIENT_SECRET` | — | App OAuth Client Secret. Pair with `GITHUB_APP_CLIENT_ID` |
+| `GITHUB_APP_INSTALLATION_ID` | — | **Self-host single-tenant only** (`github-single-tenant` catalog row): pins the App's install to one org. Not used by the multi-tenant `github` row |
+
+---
+
 ## OpenAPI Datasources
 
 The generic [OpenAPI (REST) datasource](/plugins/datasources/openapi-generic) is configured **per-install** from Admin → Connections — spec URL, credential, write allowlist, and representation mode are all per-workspace config, not env vars. The variables below are global operator knobs that apply across every install.
@@ -793,10 +808,26 @@ Operator-only. These env vars wire Atlas-the-company's own lead pipeline (`ee/sr
 | `TWENTY_BASE_URL` | `https://crm.useatlas.dev` | Override the default Twenty host. Only the SaaS operator pipeline reads this — plugin installs use admin-UI or `atlas.config.ts` |
 | `TURNSTILE_SECRET_KEY` | — | Cloudflare Turnstile secret for siteverify on `/api/v1/contact`. When unset, `verifyTurnstile()` fails closed (no submissions accepted) |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | — | Cloudflare Turnstile public site key. Read by the `<TalkToSalesForm>` component in `apps/www`. When unset, the form renders a "bot protection not configured" notice |
+| `NEXT_PUBLIC_ATLAS_API_BASE` | `https://api.useatlas.dev` | **Build-time** var for `apps/www`: the API origin the landing-page talk-to-sales form POSTs `/api/v1/contact` to (`talk-to-sales-form.tsx`). Also read by `sub-processor-webhook-button.tsx` (its own unset-default is `https://app.useatlas.dev`), so this single var repoints **both** `www` client components. `www` builds with NIXPACKS, so the Railway service var is inlined at build. On `www-staging` set it to `https://api.staging.useatlas.dev` — an unset value sends staging's submissions to the **prod** API |
 | `ATLAS_CONTACT_RATE_LIMIT_RPM` | `5` | Per-IP requests-per-minute cap on the `POST /api/v1/contact` talk-to-sales route. `0` disables rate limiting. Invalid values fall back to the default |
 | `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED` | `true` | Whether this API pod runs the `crm_outbox` flusher tick. Set `false` on non-primary regions (EU/APAC) that defer dispatch to the US-primary flusher; boot/shutdown recovery sweeps still run |
 | `ATLAS_CRM_OUTBOX_TICK_SECONDS` | `5` | Seconds between `crm_outbox` flush ticks. Clamped to `[1, 3600]`; non-numeric/≤0 values fall back to the default |
 | `ATLAS_CRM_OUTBOX_WARN_THRESHOLD` | `100` | Outbox depth above which a warning is emitted to metrics. Clamped to `[1, 1000000]`; invalid values fall back to the default |
+
+---
+
+## Staging Soak
+
+Operator-only, **SaaS staging region only** (the `api-staging` service with `ATLAS_DEPLOY_ENV=staging` + `ATLAS_API_REGION=staging`). Inert everywhere else. Read by the staging seed (`packages/api/src/lib/staging/seed.ts`) and the `STAGING_MAIL_SINK` by the [outbound clamp](#email-delivery) (`lib/staging/clamp.ts`). The seeded admin **email** is a fixed constant — `admin@staging.useatlas.dev` — not env-configurable; only the password is read from env.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STAGING_ADMIN_PASSWORD` | — | Password for the seeded staging admin (`admin@staging.useatlas.dev`). Unset → the admin user is not seeded (seed logs a warn and skips) |
+| `STAGING_MAIL_SINK` | `staging-mail@useatlas.dev` | Sink address the StagingClamp redirects **all** outbound recipients (`to`/`cc`/`bcc`/`replyTo`) to, so a soak can never email a real address. Empty/whitespace-only falls back to the default |
+| `STAGING_TWENTY_API_KEY` | — | API key for the **staging** Twenty CRM workspace. Unset → the staging seed skips the Twenty install |
+| `STAGING_TWENTY_BASE_URL` | — | Base URL of the **staging** Twenty instance (its own workspace, never prod's `crm.useatlas.dev`). Required alongside `STAGING_TWENTY_API_KEY` for the Twenty install |
+
+> `STAGING_DATABASE_URL` and `STAGING_SLACK_WEBHOOK_URL` are CI-only secrets for the [staging-smoke workflow](https://github.com/AtlasDevHQ/atlas/blob/main/.github/workflows/staging-smoke.yml) (set in GitHub Actions, not as app env vars).
 
 ---
 

@@ -57,6 +57,10 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 mock.module("@atlas/api/lib/residency/misrouting", () => ({
   detectMisrouting: () => Promise.resolve(null),
   isStrictRoutingEnabled: () => false,
+  // `getApiRegion` is pulled transitively via the agent tool registry
+  // (email-tool → email/delivery → resolveOutboundClampRegion → getApiRegion).
+  // null → no staging clamp; this test doesn't exercise the outbound clamp.
+  getApiRegion: () => null,
 }));
 
 // ── Logger — capture warn calls so we can assert silent skip ─────────

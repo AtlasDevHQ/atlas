@@ -203,6 +203,10 @@ const mockSendEmailWithTransport: Mock<(...args: unknown[]) => Promise<DeliveryR
 mock.module("@atlas/api/lib/email/delivery", () => ({
   sendEmail: mockSendEmail,
   sendEmailWithTransport: mockSendEmailWithTransport,
+  // Pulled transitively via the agent tool registry (email-tool imports
+  // resolveOutboundClampRegion from this module). null → no staging clamp;
+  // this route test exercises provider config, not the outbound clamp.
+  resolveOutboundClampRegion: () => null,
 }));
 
 // --- Other mocks needed by the admin router ---

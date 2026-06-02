@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.5",
+    title: "Gateway Caching & Billing Accuracy",
+    date: "2026-06-02",
+    summary:
+      "This release tightens how Atlas runs and reports its model usage. Prompts routed through the AI Gateway to Anthropic are now cached, so repeated context and long system prompts are billed at the lower cache-read rate instead of full price on every turn — and the usage page now breaks out the cache-read vs. cache-write token split so you can see what caching is saving. Billing and usage reporting are also more honest: the usage page shows the model a workspace is actually running rather than a stale default, and hosted (SaaS) workspaces now resolve their default model through the AI Gateway, so the model picker and the real default can no longer disagree.",
+    highlights: [
+      "AI Gateway prompt caching — prompts sent through the gateway to Anthropic now reuse cached context instead of paying the full token price on every turn",
+      "Cache token accounting — the usage page breaks out cache-read and cache-write tokens, making the savings from caching visible",
+      "Accurate model reporting — usage and billing surface the model a workspace is actually running, not a stale picker default",
+      "SaaS defaults to the AI Gateway — hosted workspaces resolve their default model through the gateway, keeping the picker and the effective default in sync",
+      "Reliability — fixed a connection-pool recovery fiber that could leak when a database pool resets",
+    ],
+  },
+  {
     version: "v0.0.4",
     title: "Conversation Scope",
     date: "2026-06-02",

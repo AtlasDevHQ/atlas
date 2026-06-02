@@ -976,15 +976,17 @@ export default defineConfig({
   // (the staging service's own database). `strictRouting: false` matches
   // prod; with one region there is nothing to misroute regardless.
   //
-  // KNOWN SEAM (#3097): the `staging` arm below is REQUIRED by RegionGuardLive
-  // to boot, but the EE residency resolver (ee/src/platform/residency.ts)
-  // treats `staging` in residency.regions as "dead config" and warns for any
-  // staging-keyed workspace. There is no config-only state that satisfies both
-  // guards; the reconciliation (carve out staging in RegionGuardLive, or relax
-  // the resolver on the staging deploy) is tracked in #3097 and must land
-  // before the service is activated (slices 19–22). Low-impact today: the
-  // seeded `staging-internal` org carries no region, so the resolver returns
-  // early and never warns.
+  // RESOLVED CONTRACT (#3097): the `staging` arm below is REQUIRED by
+  // RegionGuardLive (lib/effect/saas-guards.ts) to boot — without it the
+  // claimed `staging` region would not be declared and boot would hard-fail.
+  // The EE residency resolver (ee/src/platform/residency.ts) was reconciled to
+  // match: on the staging deploy (`resolveDeployEnv() === "staging"`) it treats
+  // this `staging` entry as the legitimate boot-guard requirement, NOT dead
+  // config, and stays on the quiet debug path for staging-keyed workspaces
+  // (pinned by `ee/src/platform/residency.test.ts`). So the two subsystems now
+  // agree: declare `staging` here to boot; the resolver excludes it from
+  // routing silently on this deploy. (Off the staging deploy, a `staging` entry
+  // remains dead config and the resolver still warns.)
   residency: {
     defaultRegion: "staging",
     strictRouting: false,

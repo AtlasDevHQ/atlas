@@ -223,24 +223,29 @@ export const resolveRegionDatabaseUrl = (
     // target. Return null *before* the regionConfig lookup so a staging-keyed
     // workspace falls through to the local DB connection — without tripping
     // the "region no longer configured / contract may be violated" error path
-    // below. Short-circuiting here also wins over any accidental `staging`
-    // entry in residency.regions, so staging can never claim to be a
-    // residency-mapped region. us|eu|apac are untouched.
+    // below. Short-circuiting here also wins over any `staging` entry in
+    // residency.regions, so staging can never claim to be a residency-mapped
+    // region. us|eu|apac are untouched.
     //
-    // Observability is deploy-aware. `region === "staging"` is only routine on
-    // the staging deploy itself (every residency-configured request lands
-    // here) — there it's debug-level noise. On any other deploy it is an
-    // impossible-by-policy state: `assignWorkspaceRegion` rejects `"staging"`
-    // via `isValidRegion`, so the only way a workspace carries it is an
-    // unguarded write (direct DB / backfill / region migration). That means a
-    // workspace believed residency-pinned is being silently served the default
-    // pool — a compliance signal that must be loud + alertable in prod, not a
-    // debug whisper. Likewise, a `staging` entry in residency.regions is dead
-    // config (it is never routed): flag it (`stagingInResidencyConfig`) and
-    // warn even on the staging deploy so the operator learns it is ignored.
+    // Observability is deploy-aware, and keyed PURELY on the deploy env (#3097).
+    // On the staging deploy a staging-keyed workspace is routine — every
+    // residency-configured request lands here — so it's debug-level noise. The
+    // `staging` entry that `deploy/api-staging/atlas.config.ts` declares in
+    // residency.regions is NOT dead config there: it is REQUIRED by
+    // RegionGuardLive (`lib/effect/saas-guards.ts`) to boot the api-staging
+    // service. So its presence must NOT promote this fall-through to a warn on
+    // the staging deploy — that contradiction (boot demands the entry; this
+    // resolver warned because of it) was the #3097 seam. On any OTHER deploy a
+    // staging-keyed workspace is an impossible-by-policy state (a workspace
+    // believed residency-pinned is being silently served the default pool — a
+    // compliance signal that must be loud + alertable), and a `staging` entry
+    // in a prod config IS genuinely dead config. Either case warns off-staging.
+    // `stagingInResidencyConfig` is retained in the event payload for operator
+    // context (it tells prod operators a dead entry sits in their map) but no
+    // longer gates the log level.
     if (region === STAGING_REGION) {
       const stagingInResidencyConfig = STAGING_REGION in config.residency.regions;
-      const routineOnStagingDeploy = resolveDeployEnv() === "staging" && !stagingInResidencyConfig;
+      const onStagingDeploy = resolveDeployEnv() === "staging";
       const event = {
         workspaceId,
         region,
@@ -249,7 +254,7 @@ export const resolveRegionDatabaseUrl = (
       };
       const message =
         "Workspace keyed to staging region — excluded from residency routing, falling through to local DB";
-      if (routineOnStagingDeploy) {
+      if (onStagingDeploy) {
         log.debug(event, message);
       } else {
         log.warn(event, message);

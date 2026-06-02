@@ -244,7 +244,7 @@ describe("residency", () => {
       expect(result).toBeNull();
     });
 
-    // ── Staging arm (#2908) ───────────────────────────────────────────
+    // ── Staging arm (#2908 / #3097) ───────────────────────────────────
     // Staging is a DeployRegion but never a residency target — a
     // staging-keyed workspace always falls through to the local DB connection
     // (result is null, never an error). What varies is the *observability*
@@ -253,10 +253,12 @@ describe("residency", () => {
     //   • the loud "contract may be violated" error path NEVER fires (the
     //     log assertion is what distinguishes the staging arm from the
     //     misconfiguration path — both return null), and
-    //   • the arm is debug-quiet ONLY when staging-keying is routine, i.e. on
-    //     the staging deploy with no dead `staging` config; otherwise it warns
-    //     with a structured `event` so prod mis-keying / dead config is
-    //     alertable rather than a silent fall-through to the default pool.
+    //   • the level is keyed PURELY on the deploy env (#3097): debug-quiet on
+    //     the staging deploy (regardless of whether `staging` sits in
+    //     residency.regions — there it's the RegionGuardLive boot requirement,
+    //     NOT dead config), and a structured warn on every other deploy so prod
+    //     mis-keying / dead config is alertable rather than a silent
+    //     fall-through to the default pool.
     // `STAGING_REGION` is anchored via `satisfies DeployRegion`, so a mis-cased
     // literal can't reach the equality check — no case-variant test needed.
 
@@ -319,26 +321,32 @@ describe("residency", () => {
       });
     });
 
-    it("on the staging deploy: still warns when staging is dead config in residency.regions", async () => {
-      // Dead config is loud regardless of deploy env — a `staging` entry in
-      // residency.regions is never routed, so the operator should hear about it
-      // even on the staging deploy where staging-keying is otherwise routine.
+    it("on the staging deploy: stays debug-quiet even when staging is declared in residency.regions (#3097)", async () => {
+      // #3097 reconciliation (option 2): on the staging deploy, a `staging`
+      // entry in residency.regions is the RegionGuardLive boot requirement —
+      // `deploy/api-staging/atlas.config.ts` declares it precisely so the
+      // api-staging service can boot — NOT dead config. So the fall-through
+      // stays routine (debug), and `stagingInResidencyConfig: true` must NOT
+      // promote it to a warn. This mirrors the actual api-staging config shape:
+      // `defaultRegion: "staging"` with a single `staging` region arm.
       mockConfig = {
         residency: {
           regions: {
-            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
             staging: { label: "Staging", databaseUrl: "postgresql://staging/atlas", datasourceUrl: "postgresql://staging/data" },
           },
-          defaultRegion: "us-east",
+          defaultRegion: "staging",
         },
       };
       mockRows.push([{ region: "staging" }]);
       const result = await withDeployEnv("staging", () => run(resolveRegionDatabaseUrl("org-1")));
       expect(result).toBeNull();
       expect(loggerErrors).toHaveLength(0);
-      expect(loggerDebugs).toHaveLength(0);
-      expect(loggerWarns).toHaveLength(1);
-      expect(loggerWarns[0][0]).toMatchObject({ stagingInResidencyConfig: true });
+      expect(loggerWarns).toHaveLength(0);
+      expect(loggerDebugs).toHaveLength(1);
+      expect(loggerDebugs[0][0]).toMatchObject({
+        event: "residency.staging_excluded",
+        stagingInResidencyConfig: true,
+      });
     });
   });
 

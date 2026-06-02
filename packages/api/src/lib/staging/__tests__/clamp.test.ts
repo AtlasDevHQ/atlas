@@ -66,6 +66,24 @@ function emailWithArrayTo() {
   };
 }
 
+/**
+ * A payload exercising every recipient field (#2984). `to` is a single string,
+ * `cc` an array, `bcc` a single string, `replyTo` an array — the four shapes a
+ * nodemailer `SendMailOptions` (the #3095 agent SMTP path) can carry — so the
+ * clamp's per-field shape preservation is asserted across both forms at once.
+ */
+function emailWithAllRecipientFields() {
+  return {
+    to: "primary.customer@example.com",
+    cc: ["cc.one@example.com", "cc.two@example.com"],
+    bcc: "hidden.customer@example.com",
+    replyTo: ["reply.here@example.com"],
+    subject: "Quarterly summary",
+    body: "<p>Numbers attached.</p>",
+    from: "Atlas <noreply@useatlas.dev>",
+  };
+}
+
 // --- Hermetic env control -------------------------------------------------
 // The sink env var is the ONE documented input beyond `region`. Save and
 // restore it around every test so the default-sink cases are deterministic
@@ -146,6 +164,75 @@ describe("clampOutbound — staging redirects email to the sink", () => {
     const result = clampOutbound("staging", { to: [] as string[], subject: "empty array" });
     expect(result.to).toEqual([DEFAULT_SINK]);
     expect(result.subject).toBe("empty array");
+  });
+});
+
+describe("clampOutbound — every recipient field is redirected (#2984)", () => {
+  // The latent trap #2984 closes: with only `to` redirected, a payload carrying
+  // `cc`/`bcc`/`replyTo` real addresses would deliver to them on staging while
+  // `to` looked correctly clamped. Every recipient field must land on the sink.
+  it("redirects to / cc / bcc / replyTo all to the sink, preserving each field's shape", () => {
+    const original = emailWithAllRecipientFields();
+    const result = clampOutbound("staging", original);
+
+    // Single-string fields → sink string; array fields → one-element [sink].
+    expect(result.to).toBe(DEFAULT_SINK);
+    expect(result.bcc).toBe(DEFAULT_SINK);
+    expect(result.cc).toEqual([DEFAULT_SINK]);
+    expect(result.replyTo).toEqual([DEFAULT_SINK]);
+
+    // No real address survives in ANY recipient field.
+    const serialized = JSON.stringify({
+      to: result.to,
+      cc: result.cc,
+      bcc: result.bcc,
+      replyTo: result.replyTo,
+    });
+    expect(serialized).not.toContain("primary.customer@example.com");
+    expect(serialized).not.toContain("cc.one@example.com");
+    expect(serialized).not.toContain("hidden.customer@example.com");
+    expect(serialized).not.toContain("reply.here@example.com");
+
+    // Non-recipient fields ride through untouched; input is not mutated.
+    expect(result.subject).toBe("Quarterly summary");
+    expect(result.from).toBe("Atlas <noreply@useatlas.dev>");
+    expect(original.cc).toEqual(["cc.one@example.com", "cc.two@example.com"]);
+  });
+
+  // A payload that omits `to` but carries `cc` must still be claimed and
+  // redirected — classification keys on the whole recipient set, not just `to`,
+  // so a `to`-less payload can't slip through and leak its `cc`.
+  it("redirects cc even when `to` is absent", () => {
+    const result = clampOutbound("staging", {
+      cc: ["leak.cc@example.com"],
+      subject: "no to field",
+    });
+    expect(result.cc).toEqual([DEFAULT_SINK]);
+    expect(result.subject).toBe("no to field");
+  });
+
+  // Prod regions stay identity even with the extra recipient fields — the
+  // identity fast-path returns the same reference, no per-field rewrite.
+  it("is identity for prod regions across all recipient fields", () => {
+    const email = emailWithAllRecipientFields();
+    const result = clampOutbound("us", email);
+    expect(result).toBe(email);
+    expect(result.cc).toEqual(["cc.one@example.com", "cc.two@example.com"]);
+    expect(result.bcc).toBe("hidden.customer@example.com");
+  });
+
+  // A recipient field present but NOT recipient-shaped (numeric `cc`) is left
+  // untouched — only real address values are redirected, never mis-stamped.
+  it("leaves a non-recipient-shaped cc untouched while still clamping `to`", () => {
+    // A numeric `cc` is not a recipient field (`isRecipientField` false), so it
+    // is left as-is — only real address values are redirected, never mis-stamped.
+    const result = clampOutbound("staging", {
+      to: "real@example.com",
+      cc: 42,
+      subject: "weird cc",
+    });
+    expect(result.to).toBe(DEFAULT_SINK);
+    expect(result.cc).toBe(42);
   });
 });
 

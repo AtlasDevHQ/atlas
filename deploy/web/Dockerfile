@@ -72,8 +72,18 @@ RUN cd packages/react && bun run build
 # and bake the prod URL into staging's bundle.
 ARG NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev
 ARG NEXT_PUBLIC_ATLAS_AUTH_MODE=managed
+# Session-cookie name prefix the proxy reads (packages/web/src/proxy.ts reads
+# `process.env.NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` as a build-time-inlined
+# reference). MUST be threaded as a build ARG, not just a runtime service var:
+# a runtime-only value leaves the proxy baked with the `atlas` default, so
+# prod's broadly-scoped `.useatlas.dev` cookie (delivered to staging because
+# staging is a subdomain) would be treated as a valid staging session —
+# defeating prod/staging session isolation. Prod keeps the default; web-staging
+# overrides via `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas-staging` as a build arg.
+ARG NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=atlas
 ENV NEXT_PUBLIC_ATLAS_API_URL=$NEXT_PUBLIC_ATLAS_API_URL
 ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=$NEXT_PUBLIC_ATLAS_AUTH_MODE
+ENV NEXT_PUBLIC_ATLAS_COOKIE_PREFIX=$NEXT_PUBLIC_ATLAS_COOKIE_PREFIX
 RUN cd packages/web && bun run build
 
 # --- runner ---

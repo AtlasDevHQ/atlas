@@ -33,7 +33,7 @@
  * rule.
  */
 
-import { beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
 
 import {
   createEmailLazyBuilder,
@@ -210,6 +210,83 @@ describe("createEmailLazyBuilder — error paths", () => {
     }
     expect(caught).toBeInstanceOf(EmailDecryptFailureError);
     expect((caught as EmailDecryptFailureError).workspaceId).toBe(WSID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Builder — staging outbound clamp (#3095)
+// ---------------------------------------------------------------------------
+
+describe("createEmailLazyBuilder — staging outbound clamp (#3095)", () => {
+  /** Documented default sink when STAGING_MAIL_SINK is unset (clamp.ts). */
+  const DEFAULT_SINK = "staging-mail@useatlas.dev";
+
+  // The clamp region is resolved from ATLAS_DEPLOY_ENV / ATLAS_API_REGION at
+  // call time (`resolveOutboundClampRegion`, read fresh from `process.env`).
+  // Save/restore both around every case so the staging branch is deterministic
+  // regardless of the surrounding shell/CI env and can't leak into siblings.
+  let savedDeployEnv: string | undefined;
+  let savedApiRegion: string | undefined;
+  let savedSink: string | undefined;
+
+  beforeEach(() => {
+    savedDeployEnv = process.env.ATLAS_DEPLOY_ENV;
+    savedApiRegion = process.env.ATLAS_API_REGION;
+    savedSink = process.env.STAGING_MAIL_SINK;
+    delete process.env.ATLAS_DEPLOY_ENV;
+    delete process.env.ATLAS_API_REGION;
+    delete process.env.STAGING_MAIL_SINK;
+  });
+
+  const restore = (key: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
+
+  afterEach(() => {
+    restore("ATLAS_DEPLOY_ENV", savedDeployEnv);
+    restore("ATLAS_API_REGION", savedApiRegion);
+    restore("STAGING_MAIL_SINK", savedSink);
+  });
+
+  async function sendVia(): Promise<unknown> {
+    let lastMessage: unknown = null;
+    const mockSendMail = mock((message: unknown) => {
+      lastMessage = message;
+      return Promise.resolve({ messageId: "<id@example.com>", envelope: {} });
+    });
+    const build = createEmailLazyBuilder({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      createTransport: mock(() => ({ sendMail: mockSendMail, close: mock() })) as any,
+    });
+    const instance = (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: HAPPY_DECRYPTED_CONFIG,
+    })) as EmailPluginInstance;
+    await instance.sendEmail({ to: ["real.customer@example.com"], subject: "Hi", body: "<p>Hi</p>" });
+    return lastMessage;
+  }
+
+  it("redirects the recipient to the staging sink when ATLAS_DEPLOY_ENV=staging", async () => {
+    process.env.ATLAS_DEPLOY_ENV = "staging";
+    const message = (await sendVia()) as { to: unknown };
+    // Array `to` shape is preserved → one-element [sink]. The real recipient
+    // never reaches the transport on a staging soak box.
+    expect(message.to).toEqual([DEFAULT_SINK]);
+  });
+
+  it("redirects the recipient when ATLAS_API_REGION=staging (deploy env unset)", async () => {
+    process.env.ATLAS_API_REGION = "staging";
+    const message = (await sendVia()) as { to: unknown };
+    expect(message.to).toEqual([DEFAULT_SINK]);
+  });
+
+  it("sends to the real recipient off staging (no clamp)", async () => {
+    // Neither staging signal set → resolveOutboundClampRegion() is null → the
+    // message rides through untouched, so prod/self-hosted/dev are unaffected.
+    const message = (await sendVia()) as { to: unknown };
+    expect(message.to).toEqual(["real.customer@example.com"]);
   });
 });
 

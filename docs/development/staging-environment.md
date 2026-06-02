@@ -158,10 +158,16 @@ as their prod counterparts (`api`, `web`, `www`):
 1. **New** → **GitHub Repo** → `AtlasDevHQ/atlas`.
 2. For each service set:
    - **Root directory / Dockerfile** — match the prod service's build config
-     (the `deploy/<service>` layout). `api-staging` will use
-     `deploy/api-staging/atlas.config.ts` once **slice 8 ([#2912](https://github.com/AtlasDevHQ/atlas/issues/2912))**
-     lands; until then it can point at the prod `deploy/api/atlas.config.ts`,
-     which already knows `staging` as a residency region.
+     (the `deploy/<service>` layout). `api-staging` requires its own
+     `deploy/api-staging/atlas.config.ts` — **slice 8 ([#2912](https://github.com/AtlasDevHQ/atlas/issues/2912)),
+     pending — and it is a hard prerequisite for a green `api-staging`.** Do
+     **not** point `api-staging` at the prod `deploy/api/atlas.config.ts` as a
+     stopgap: that config declares `eu`/`apac` residency entries whose
+     `databaseUrl` resolves from `ATLAS_REGION_EU_DB_URL` /
+     `ATLAS_REGION_APAC_DB_URL` (non-null-asserted), and config validation
+     rejects an empty region URL — so `api-staging`, which starts from an empty
+     Railway environment, would fail to boot until those prod-region URLs were
+     also set (which you do not want on staging).
    - **Watch branch** — `main` (this is what makes every merge auto-deploy to
      staging). Prod services watch `prod`; staging services watch `main`.
    - **Wait for CI** — optional; staging is the soak, so deploying ahead of CI is
@@ -206,11 +212,21 @@ the `useatlas.dev` DNS zone:
 > set them in the `api-staging` Railway service ([§3](#3-env-var-checklist)).
 
 The integration OAuth callback path convention is
-`https://api.staging.useatlas.dev/api/v1/integrations/<provider>/callback`. The
+`https://api.staging.useatlas.dev/api/v1/integrations/<slug>/callback`, where
+`<slug>` is the **catalog slug** (e.g. `github-data`, not `github`). The
 Better Auth **social-login** callback convention is
 `https://api.staging.useatlas.dev/api/auth/callback/<provider>` (Google, GitHub
 social sign-in). Confirm the exact path against each handler before submitting it
 to the provider.
+
+> **`ATLAS_PUBLIC_API_URL` must be set for any of these OAuth handlers to
+> register.** `resolvePublicApiUrl()` in `register.ts` builds every redirect URI
+> from `ATLAS_PUBLIC_API_URL`; when it is unset, the Slack/Linear/Salesforce/GitHub
+> handlers log "not registered" at boot and their install routes return 501.
+> `ATLAS_CORS_ORIGIN` is intentionally **not** a fallback (it's the web origin,
+> which mismatches the provider redirect URI in split-origin deploys). Set
+> `ATLAS_PUBLIC_API_URL=https://api.staging.useatlas.dev` on `api-staging` — see
+> [§3](#3-env-var-checklist).
 
 ### 2a. Slack — *pending slice 12 (#2900)*
 
@@ -240,14 +256,25 @@ to the provider.
 
 Atlas uses GitHub in two distinct ways; staging may need either or both:
 
-1. **GitHub App** (the `github-data` OAuth datasource). Create a **separate**
-   GitHub App named `atlas-staging` with its own webhook URL.
+1. **GitHub App** — backs **both** the `github` action integration **and** the
+   `github-data` OAuth datasource (they reuse the same `GITHUB_APP_*`
+   registration). Create a **separate** GitHub App named `atlas-staging` with its
+   own webhook URL.
    - **Console:** <https://github.com/settings/apps> → **New GitHub App**
    - **Docs:** [Creating GitHub Apps](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app)
-   - **Callback URL:** `https://api.staging.useatlas.dev/api/v1/integrations/github/callback`
+   - **Callback URLs — register *both* on the App** (the handlers build distinct
+     redirect URIs per slug in `register.ts`, so a single callback won't serve
+     both):
+     - `https://api.staging.useatlas.dev/api/v1/integrations/github-data/callback`
+       — the **datasource** install handler (slug `github-data`).
+     - `https://api.staging.useatlas.dev/api/v1/integrations/github/callback`
+       — the **action integration** handler (slug `github`).
    - **Env vars produced:** `GITHUB_APP_ID`, `GITHUB_APP_SLUG`,
      `GITHUB_APP_PRIVATE_KEY` (the `.pem` contents), `GITHUB_APP_CLIENT_ID`,
-     `GITHUB_APP_CLIENT_SECRET`.
+     `GITHUB_APP_CLIENT_SECRET`. All five are required, and `ATLAS_PUBLIC_API_URL`
+     must be set (the redirect URI is resolved from it — see [§3](#3-env-var-checklist));
+     otherwise the handlers log "not registered" and the install routes return
+     501.
      > ⚠️ These `GITHUB_APP_*` vars are read by `register.ts` but are **not yet
      > documented in `.env.example`** — see [§7 Incidental findings](#7-incidental-findings).
 2. **GitHub social login** (Better Auth sign-in). A separate OAuth App
@@ -492,13 +519,20 @@ entry in that file is accounted for here. Legend:
 
 | Var(s) | Class | Staging value source |
 | ------ | ----- | -------------------- |
-| `ATLAS_PUBLIC_URL` | 🟦 | `https://api.staging.useatlas.dev`. |
+| `ATLAS_PUBLIC_API_URL` | 🟦 | **`https://api.staging.useatlas.dev` — required.** `resolvePublicApiUrl()` builds every OAuth install handler's redirect URI from this; unset ⇒ Slack/Linear/GitHub/Salesforce install routes return 501 ([§2](#2-oauth--provider-apps)). Referenced in `.env.example` prose but not a declared entry — see [§7](#7-incidental-findings). |
+| `ATLAS_PUBLIC_URL` | 🟦 | `https://api.staging.useatlas.dev`. Distinct from `ATLAS_PUBLIC_API_URL` — this one is the action-approval URL base; it is **not** a fallback for the OAuth redirect URI. |
 | `ATLAS_CORS_ORIGIN` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` as needed). |
 | `ATLAS_API_URL` | ⚪ | Dev rewrite target — unset in deployed staging. |
 | `ATLAS_PUBLIC_WEB_URL` | 🟦 | `https://app.staging.useatlas.dev`. |
-| `NEXT_PUBLIC_ATLAS_API_URL` | 🟦 | `https://api.staging.useatlas.dev` (set on `web-staging`). |
-| `NEXT_PUBLIC_ATLAS_AUTH_MODE` | 🟦 | `managed` (set on `web-staging`). |
-| `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | 🟦 | `atlas-staging` — **must equal** the API's `ATLAS_COOKIE_PREFIX` (set on `web-staging`). |
+| `NEXT_PUBLIC_ATLAS_API_URL` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`web-staging`). **Build-time** — the `deploy/web/Dockerfile` already declares this as a build `ARG`; pass it as a Railway build arg, not just a runtime var. |
+| `NEXT_PUBLIC_ATLAS_AUTH_MODE` | 🟦🏗️ | `managed` (`web-staging`). **Build-time** — already a `deploy/web/Dockerfile` build `ARG`. |
+| `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` | 🟦🏗️ | `atlas-staging` — **must equal** the API's `ATLAS_COOKIE_PREFIX`. **Build-time and load-bearing for prod/staging isolation:** `packages/web/src/proxy.ts` reads it as a static `process.env.NEXT_PUBLIC_*` inlined at build. The `deploy/web/Dockerfile` does **not** yet thread it as a build `ARG` (only `NEXT_PUBLIC_ATLAS_API_URL` + `NEXT_PUBLIC_ATLAS_AUTH_MODE`), so a runtime-only var leaves the proxy defaulting to `atlas` and treating prod's broadly-scoped cookie as a staging session. Threading this build arg needs a Dockerfile change — tracked in [§7](#7-incidental-findings). |
+| `NEXT_PUBLIC_ATLAS_API_BASE` | 🟦🏗️ | `https://api.staging.useatlas.dev` (`www-staging`). **Build-time, www-only.** `apps/www/src/components/talk-to-sales-form.tsx` posts to `NEXT_PUBLIC_ATLAS_API_BASE ?? "https://api.useatlas.dev"`; unset ⇒ the staging landing page's talk-to-sales form submits to the **prod** API. Not in `.env.example` — see [§7](#7-incidental-findings). |
+
+> 🏗️ = **build-time** `NEXT_PUBLIC_*` variable. Next.js inlines these into the
+> client bundle at `bun run build`, so they must be present as build args/ENV
+> before the build step — setting them only as runtime service vars has no
+> effect on the already-built bundle.
 
 ### Observability & runtime
 
@@ -615,8 +649,12 @@ The chain is: **Railway staging-deploy success → GitHub `repository_dispatch` 
      -d '{"event_type":"staging-deploy-success"}'
    ```
 
-   The `GH_DISPATCH_TOKEN` is a fine-scoped PAT with `repo` (or
-   `contents: read` + dispatch) permission, stored as a Railway secret.
+   The `GH_DISPATCH_TOKEN` must be able to **write** the dispatch: a
+   fine-grained PAT needs **`Contents: write`** repository permission (GitHub
+   requires write for `repository_dispatch` — see the
+   [REST docs](https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event));
+   a read-only token is rejected. A classic PAT needs the `repo` scope. Store it
+   as a Railway secret.
 
 2. **`staging-smoke.yml` listens for the dispatch** (*pending slice 10*):
 
@@ -692,12 +730,17 @@ ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm --database-url "$STAGING_DAT
 ## 6. Cutover playbook — moving prod onto the tag pattern
 
 > References slice 22 ([#2918](https://github.com/AtlasDevHQ/atlas/issues/2918)) —
-> **HITL, pending**. This is the one-time switch that flips prod from
-> "every `main` push deploys" to "only a release tag deploys."
+> **HITL**. This is the one-time switch that flips prod from "every `main` push
+> deploys" to "only a release tag deploys."
 
-The day staging is wired, the prod Railway services must stop watching `main` and
-start watching the `prod` branch. Until that flip, prod still auto-deploys on
-merge — staging alone changes nothing about the prod gate.
+**This already happened.** Per [release-process.md](./release-process.md), the
+dual trigger went **live with `v0.0.1`** (wired in
+[#2921](https://github.com/AtlasDevHQ/atlas/issues/2921)): prod already watches
+the `prod` branch, advanced only by `/release` — the pre-`v0.0.1`
+main-to-prod autodeploy is **retired**. A merge to `main` no longer reaches
+customers on its own. The steps below document the cutover procedure for
+reference and re-verification; the remaining slice-22 scope is confirming that
+**every** prod service — including `www` — is on `prod` (not `main`).
 
 **Steps:**
 
@@ -719,17 +762,16 @@ merge — staging alone changes nothing about the prod gate.
    surface).
 4. **Bridge the gap immediately with the first tag.** Any PR merged on cutover
    day *after* the flip but *before* the first prod tag won't reach prod until a
-   tag fires. Push the first regular tag right after the flip to close the
-   window:
-   ```bash
-   /release v0.0.1   # or the next tag in train
-   ```
-   This is why cutover and the first `/release` are a single coordinated step.
+   tag fires. The first regular tag (`v0.0.1`, cut 2026-05-29) closed this window
+   right after the flip — this is why cutover and the first `/release` were a
+   single coordinated step. If you ever re-run a cutover, push the next tag in
+   train (`/release`) immediately after repointing.
 5. **Verify lineage.** `git rev-parse origin/prod` should equal the tagged SHA,
    and the five prod services should show a fresh deploy sourced from `prod`.
-6. **Update the memory + docs.** Flip the `feedback_no_staging_env` memory to
-   "staging shipped — see `docs/development/staging-environment.md`," and confirm
-   `release-process.md` reflects the now-live dual trigger.
+6. **Update the memory + docs.** Cutover is reflected in the
+   `feedback_no_staging_env` / staging-environment memory ("staging shipped —
+   see `docs/development/staging-environment.md`"), and `release-process.md`
+   documents the now-live dual trigger.
 
 **Rollback during cutover.** If a prod service misbehaves on the first
 `prod`-sourced deploy, Railway's per-service health-check rollback restores the
@@ -744,22 +786,37 @@ for "I tagged but prod didn't deploy" once cutover is complete.
 
 ## 7. Incidental findings
 
-While building the env-var checklist, two `.env.example` gaps surfaced. Per
-project convention these are **filed as issues, not fixed inline in this PR**:
+Building the env-var checklist (and the Codex review of this PR) surfaced
+`.env.example` and deploy-config gaps. Per project convention these are **filed
+as issues, not fixed inline in this PR**:
 
 1. **`STAGING_*` family undocumented.** `StagingSeed`
    (`packages/api/src/lib/staging/seed.ts`) and the smoke harness read
    `STAGING_ADMIN_EMAIL`, `STAGING_ADMIN_PASSWORD`, `STAGING_MAIL_SINK`,
    `STAGING_TWENTY_API_KEY`, and `STAGING_TWENTY_BASE_URL` from the environment,
    but none appear in `.env.example`.
-2. **`GITHUB_APP_*` family undocumented.** The `github-data` OAuth datasource
-   handler (`packages/api/src/lib/integrations/install/register.ts`) reads
+2. **`GITHUB_APP_*` family undocumented.** The `github`/`github-data` OAuth
+   handlers (`packages/api/src/lib/integrations/install/register.ts`) read
    `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY`,
    `GITHUB_APP_CLIENT_ID`, and `GITHUB_APP_CLIENT_SECRET`, distinct from the
    social-login `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` that the file does
    document.
+3. **`ATLAS_PUBLIC_API_URL` not a declared entry.** It is the **required** base
+   for every OAuth install handler's redirect URI (`resolvePublicApiUrl()`), yet
+   it only appears in `.env.example` prose, not as its own `# ATLAS_PUBLIC_API_URL=`
+   entry.
+4. **`NEXT_PUBLIC_ATLAS_API_BASE` absent.** `apps/www`'s talk-to-sales form
+   (`apps/www/src/components/talk-to-sales-form.tsx`) falls back to the prod API
+   when this is unset; it appears nowhere in `.env.example`.
+5. **`deploy/web/Dockerfile` doesn't thread `NEXT_PUBLIC_ATLAS_COOKIE_PREFIX` as a
+   build arg.** `packages/web/src/proxy.ts` reads it at build time, but the
+   Dockerfile only declares `ARG`s for `NEXT_PUBLIC_ATLAS_API_URL` and
+   `NEXT_PUBLIC_ATLAS_AUTH_MODE` — so a staging cookie prefix set only at runtime
+   silently defaults to `atlas`, defeating prod/staging session isolation. Needs
+   a Dockerfile (build-arg) change.
 
-Both are tracked in [#3088](https://github.com/AtlasDevHQ/atlas/issues/3088).
+Items 1–2 are tracked in [#3088](https://github.com/AtlasDevHQ/atlas/issues/3088);
+items 3–5 in [#3096](https://github.com/AtlasDevHQ/atlas/issues/3096).
 
 ---
 

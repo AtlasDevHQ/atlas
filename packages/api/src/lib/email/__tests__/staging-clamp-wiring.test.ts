@@ -21,6 +21,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+// Real logger module, spread into the mock below so we override ONLY
+// `createLogger` and keep every other export intact ("mock all exports" rule —
+// a partial mock would `undefined` out `withRequestContext`, `redactPaths`,
+// etc. for anything in the SUT's import graph that uses them).
+import * as actualLogger from "@atlas/api/lib/logger";
 
 // ---------------------------------------------------------------------------
 // Capturing logger mock — lets the warn-observability test assert the wiring
@@ -43,6 +48,7 @@ const record = (sink: LogCall[]) => (obj: any, msg?: any) => {
 };
 
 mock.module("@atlas/api/lib/logger", () => ({
+  ...actualLogger,
   createLogger: () => ({
     info: () => {},
     warn: record(warnCalls),

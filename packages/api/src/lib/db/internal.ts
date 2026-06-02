@@ -876,6 +876,9 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds is_operator_workspace column to Better Auth's "organization"
   // table (#2702).
   "0090_organization_is_operator_workspace.sql",
+  // Adds last_active_at column to Better Auth's "organization" table for
+  // BYOT-catalog dormancy gating (#2377).
+  "0115_org_last_active_at.sql",
 ];
 
 /**

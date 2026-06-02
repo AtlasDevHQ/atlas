@@ -15,7 +15,7 @@
  *   - EE-module-missing branch routes to `ee_unavailable` skip reason.
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Effect, Layer } from "effect";
 
 // Force enterprise on so `ConditionalEELayer` in
@@ -38,6 +38,14 @@ let mockInternalDB = true;
 let mockStaleRows: Array<{ org_id: string; provider: string; bedrock_region: string | null }> = [];
 let staleQueryCalls = 0;
 let staleQueryShouldThrow: Error | null = null;
+// Captures the SQL + params of the most recent stale-row query so dormancy-gate
+// tests can assert the JOIN / threshold wiring (#2377). The mock returns
+// `mockStaleRows` regardless, so the gate behavior under test lives in the SQL.
+let lastStaleQuery: { sql: string; params: unknown[] } | null = null;
+// Auth mode seen by the scheduler's dormancy branch. Defaults to "none" so the
+// legacy TTL-only query runs in every pre-existing test; the #2377 tests flip
+// it to "managed" to exercise the dormancy JOIN.
+let mockAuthMode = "none";
 
 let mockWorkspaceConfigs: Map<
   string,
@@ -77,13 +85,22 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockInternalDB,
-  internalQuery: async () => {
+  internalQuery: async (sql: string, params: unknown[]) => {
     staleQueryCalls++;
+    lastStaleQuery = { sql, params };
     if (staleQueryShouldThrow) throw staleQueryShouldThrow;
     return mockStaleRows;
   },
   internalExecute: () => {},
   getInternalDB: () => ({}),
+}));
+
+// Mock auth-mode detection so the dormancy JOIN (managed-auth only) can be
+// driven deterministically. All exports mocked per CLAUDE.md.
+mock.module("@atlas/api/lib/auth/detect", () => ({
+  detectAuthMode: () => mockAuthMode,
+  getAuthModeSource: () => null,
+  resetAuthModeCache: () => {},
 }));
 
 mock.module("@atlas/api/lib/audit", () => ({
@@ -295,6 +312,7 @@ const {
   _resetBackoffForTests,
   _resetEeProbeForTests,
   _computeBackoffMsForTests,
+  _getDormancyThresholdMsForTests,
   triggerByotCatalogRefreshCycle,
   BYOT_CATALOG_REFRESH_ACTOR,
 } = await import("../byot-catalog-refresh");
@@ -307,6 +325,8 @@ function resetAll() {
   mockStaleRows = [];
   staleQueryCalls = 0;
   staleQueryShouldThrow = null;
+  lastStaleQuery = null;
+  mockAuthMode = "none";
   mockWorkspaceConfigs = new Map();
   anthropicFetcherCalls = [];
   openaiFetcherCalls = [];
@@ -772,5 +792,111 @@ describe("byot catalog refresh — triggerByotCatalogRefreshCycle wrapper", () =
     const result = await triggerByotCatalogRefreshCycle();
     expect(result.status).toBe("failure");
     expect(result.error).toBe("db down");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dormancy gate (#2377)
+// ---------------------------------------------------------------------------
+
+describe("byot catalog refresh — dormancy gate (#2377)", () => {
+  beforeEach(resetAll);
+
+  const THIRTY_DAYS_MS = 30 * ONE_DAY_MS;
+
+  it("joins organization + filters last_active_at when managed-auth and threshold > 0", async () => {
+    mockAuthMode = "managed";
+    await Effect.runPromise(
+      runByotCatalogRefreshCycle({ dormancyThresholdMs: THIRTY_DAYS_MS }),
+    );
+
+    expect(lastStaleQuery).not.toBeNull();
+    expect(lastStaleQuery!.sql).toContain("LEFT JOIN organization");
+    expect(lastStaleQuery!.sql).toContain("org.last_active_at");
+    // staleThreshold ($1), limit ($2), dormancyThreshold ($3)
+    expect(lastStaleQuery!.params).toContain(THIRTY_DAYS_MS);
+    expect(lastStaleQuery!.params.length).toBe(3);
+  });
+
+  it("falls back to the TTL-only query in non-managed auth (organization absent)", async () => {
+    mockAuthMode = "byot";
+    await Effect.runPromise(
+      runByotCatalogRefreshCycle({ dormancyThresholdMs: THIRTY_DAYS_MS }),
+    );
+
+    expect(lastStaleQuery).not.toBeNull();
+    expect(lastStaleQuery!.sql).not.toContain("organization");
+    expect(lastStaleQuery!.sql).not.toContain("last_active_at");
+    expect(lastStaleQuery!.params.length).toBe(2);
+  });
+
+  it("disables the gate when the threshold is 0 even under managed auth", async () => {
+    mockAuthMode = "managed";
+    await Effect.runPromise(runByotCatalogRefreshCycle({ dormancyThresholdMs: 0 }));
+
+    expect(lastStaleQuery).not.toBeNull();
+    expect(lastStaleQuery!.sql).not.toContain("organization");
+    expect(lastStaleQuery!.params.length).toBe(2);
+  });
+
+  it("still refreshes active orgs returned by the gated query", async () => {
+    mockAuthMode = "managed";
+    mockStaleRows = [{ org_id: "org-active", provider: "anthropic", bedrock_region: null }];
+    mockWorkspaceConfigs.set("org-active", {
+      provider: "anthropic",
+      model: "x",
+      apiKey: "k",
+      baseUrl: null,
+      bedrockRegion: null,
+    });
+
+    const result = await Effect.runPromise(
+      runByotCatalogRefreshCycle({ dormancyThresholdMs: THIRTY_DAYS_MS }),
+    );
+    expect(result.refreshed).toBe(1);
+    expect(anthropicFetcherCalls).toEqual([{ orgId: "org-active", apiKey: "k" }]);
+  });
+});
+
+describe("byot catalog refresh — dormancy threshold env resolution (#2377)", () => {
+  const ENV_KEY = "ATLAS_BYOT_DORMANCY_DAYS";
+  let original: string | undefined;
+
+  beforeEach(() => {
+    original = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it("defaults to 30 days when unset", () => {
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
+  });
+
+  it("honors a positive whole-day override", () => {
+    process.env[ENV_KEY] = "7";
+    expect(_getDormancyThresholdMsForTests()).toBe(7 * ONE_DAY_MS);
+  });
+
+  it("returns 0 (gate disabled) for an explicit 0", () => {
+    process.env[ENV_KEY] = "0";
+    expect(_getDormancyThresholdMsForTests()).toBe(0);
+  });
+
+  it("rejects a non-integer day value → default (never floors to 0 / disables)", () => {
+    process.env[ENV_KEY] = "0.5";
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
+    process.env[ENV_KEY] = "7.9";
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
+  });
+
+  it("falls back to the default for garbage / negative values", () => {
+    process.env[ENV_KEY] = "not-a-number";
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
+    process.env[ENV_KEY] = "-5";
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
   });
 });

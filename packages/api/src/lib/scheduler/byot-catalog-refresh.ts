@@ -19,10 +19,15 @@
  *     with a rotated-and-broken key would otherwise be retried 365 times a
  *     year. Pod restart resets the backoff state — acceptable trade-off vs
  *     the migration that a persistent counter would require.
- *   - Dormancy gate deferred to #2377. `organization.last_active_at` does
- *     not exist on the Better-Auth-managed `organization` table; until then
- *     the daily TTL itself acts as a coarse dormancy gate (a workspace
- *     nobody is touching ages out once a day, not 144 times a day).
+ *   - Dormancy gate (#2377). On top of the daily TTL, the stale-row query
+ *     skips orgs whose `organization.last_active_at` is older than
+ *     `ATLAS_BYOT_DORMANCY_DAYS` (default 30) — a workspace nobody has
+ *     touched in a month stops burning provider rate-limit + audit noise on
+ *     refreshes its admins will never see. The gate is managed-auth-only
+ *     (the `organization` table exists only there) and self-disables when
+ *     `ATLAS_BYOT_DORMANCY_DAYS=0`; in both cases the TTL-only legacy query
+ *     runs. `last_active_at` is stamped (throttled) on authenticated chat
+ *     turns by `markOrgActive` (lib/db/org-activity.ts).
  *   - Every per-row outcome is audit-logged via the existing
  *     `model_config.catalog_refresh*` actions. Cycle-level
  *     `catalog_refresh_cycle` emits every tick — the absence of a cycle row
@@ -40,6 +45,8 @@ import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AdminActionType } from "@atlas/api/lib/audit/actions";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -62,11 +69,40 @@ const log = createLogger("byot-catalog-refresh");
  */
 export const BYOT_CATALOG_REFRESH_ACTOR = "system:byot-catalog-refresh" as const;
 
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
 /** 24h — both the default tick interval and the staleness gate. */
-const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_INTERVAL_MS = ONE_DAY_MS;
 
 /** Bound per-tick runtime; backlog catches up across ticks via `NULLS FIRST`. */
 const DEFAULT_BATCH_SIZE = 100;
+
+/** Default dormancy window (#2377): skip orgs idle longer than this. */
+const DEFAULT_DORMANCY_DAYS = 30;
+
+/**
+ * Resolve the dormancy threshold (ms) from `ATLAS_BYOT_DORMANCY_DAYS`.
+ *
+ * The contract is a whole number of days. Only an explicit `0` DISABLES the
+ * gate (the cycle falls back to the TTL-only query). Every other invalid input
+ * — empty, negative, NaN, unparseable, OR a non-integer like `0.5` — fails
+ * safe to the 30-day default rather than silently disabling or guessing a
+ * fractional window. (A bare `Math.floor` would turn `0.5` into `0` and
+ * accidentally disable the gate, so non-integers are rejected outright.)
+ */
+function getDormancyThresholdMs(): number {
+  const raw = process.env.ATLAS_BYOT_DORMANCY_DAYS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
+  const n = Number(raw);
+  if (n === 0) return 0; // explicit operator opt-out
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
+  }
+  return n * ONE_DAY_MS;
+}
+
+/** Test-only: expose the env-driven dormancy resolver. */
+export const _getDormancyThresholdMsForTests = getDormancyThresholdMs;
 
 /** Failures past this exponent stay at the cap. 2^5 = exactly 32 days. */
 const MAX_BACKOFF_EXPONENT = 5;
@@ -143,22 +179,22 @@ interface StaleRowDb extends Record<string, unknown> {
 async function findStaleByotCatalogs(
   staleThresholdMs: number,
   limit: number,
+  dormancyThresholdMs: number,
 ): Promise<StaleRow[]> {
   if (!hasInternalDB()) return [];
 
-  // Mirrors the SQL in the issue body. The interval is parameterized as
-  // milliseconds → `now() - $1::bigint * interval '1 ms'` so the threshold
-  // is configurable without inlining the int into a string literal.
+  // Dormancy gate (#2377). Only joinable when the Better-Auth `organization`
+  // table exists — i.e. managed auth. In byot / simple-key / none modes the
+  // table is absent (a JOIN would error) and dormancy is moot single-tenant,
+  // so we fall back to the TTL-only query. `dormancyThresholdMs <= 0` is the
+  // operator opt-out (ATLAS_BYOT_DORMANCY_DAYS=0). The SQL lives in
+  // `buildStaleCatalogQuery` so the real-Postgres smoke can assert its
+  // row-selection semantics (orphan/NULL/dormant/active) against a live DB.
+  const dormancyEnabled = dormancyThresholdMs > 0 && detectAuthMode() === "managed";
+
   const rows = await internalQuery<StaleRowDb>(
-    `SELECT wmc.org_id, wmc.provider, wmc.bedrock_region
-     FROM workspace_model_config wmc
-     LEFT JOIN workspace_model_catalog wmcat
-       ON wmcat.org_id = wmc.org_id AND wmcat.provider = wmc.provider
-     WHERE wmc.provider IN ('anthropic', 'openai', 'bedrock')
-       AND (wmcat.fetched_at IS NULL OR wmcat.fetched_at < now() - ($1::bigint * interval '1 ms'))
-     ORDER BY wmcat.fetched_at NULLS FIRST
-     LIMIT $2`,
-    [staleThresholdMs, limit],
+    buildStaleCatalogQuery(dormancyEnabled),
+    dormancyEnabled ? [staleThresholdMs, limit, dormancyThresholdMs] : [staleThresholdMs, limit],
   );
 
   const result: StaleRow[] = [];
@@ -407,6 +443,12 @@ function zeroResult(): ByotRefreshCycleResult {
 interface CycleOptions {
   staleThresholdMs?: number;
   batchSize?: number;
+  /**
+   * Dormancy gate (#2377): orgs idle longer than this are skipped. Defaults
+   * to `ATLAS_BYOT_DORMANCY_DAYS` (30d). `0` disables the gate. Managed-auth
+   * only — see `findStaleByotCatalogs`.
+   */
+  dormancyThresholdMs?: number;
   /** Override `Date.now()` for tests. */
   nowFn?: () => number;
 }
@@ -434,10 +476,11 @@ export const runByotCatalogRefreshCycle = (
 
     const staleThresholdMs = opts.staleThresholdMs ?? DEFAULT_INTERVAL_MS;
     const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+    const dormancyThresholdMs = opts.dormancyThresholdMs ?? getDormancyThresholdMs();
     const now = opts.nowFn ?? Date.now;
 
     const fetchResult = yield* Effect.tryPromise({
-      try: () => findStaleByotCatalogs(staleThresholdMs, batchSize),
+      try: () => findStaleByotCatalogs(staleThresholdMs, batchSize, dormancyThresholdMs),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(
       Effect.map((rows) => ({ ok: true as const, rows })),

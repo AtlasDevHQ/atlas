@@ -11,6 +11,23 @@
 
 Git-tag releases off the `v0.0.x` train. Most recent first. See [ADR-0008](../../docs/adr/0008-versioning-and-release-tags.md) (versioning) and [ADR-0009](../../docs/adr/0009-tag-organized-roadmap.md) (roadmap shape).
 
+## v0.0.4 — Conversation Scope (Shipped)
+
+Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes — **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (per-conversation exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats (precedence row > sticky > default seed); fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues). See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
+
+- [x] **S1a — restore the sticky scope preference on a fresh chat** ([#3064](https://github.com/AtlasDevHQ/atlas/issues/3064)) — fixes reset-on-reload via `resolveEnvSelection` + a `_hasHydrated` gate. Shipped in [#3070](https://github.com/AtlasDevHQ/atlas/pull/3070).
+- [x] **S1b — restore a conversation's scope when opened** ([#3065](https://github.com/AtlasDevHQ/atlas/issues/3065)) — `resolveConversationScope` validates the stored row against loaded groups + preserves legacy group-less pins. Shipped in [#3072](https://github.com/AtlasDevHQ/atlas/pull/3072) + follow-ups #3073/#3074.
+- [x] **S2a — REST scope: exclude datasources from a conversation** ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066)) — migration 0112 `rest_excluded_datasource_ids text[]`; resolver `excluded` filter + bound-tool enforcement + checkbox picker. Shipped in [#3077](https://github.com/AtlasDevHQ/atlas/pull/3077).
+- [x] **S2b — REST-only focus: suspend SQL for a conversation** ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067)) — migration 0113 `rest_focus_datasource_id`; resolver short-circuits group-scope + exclude-set; agent strips `executeSQL` + `REST_ONLY_FOCUS_GUIDANCE`, fails closed on a resolver throw. Shipped in [#3079](https://github.com/AtlasDevHQ/atlas/pull/3079).
+- [x] **S3 — persist the active conversation in the URL** ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068)) — conversationId → URL via co-located `search-params.ts`; URL-driven open effect, history push/replace, composer locked while loading. Shipped in [#3084](https://github.com/AtlasDevHQ/atlas/pull/3084).
+- [x] **REST-only-workspace picker visibility + independent exclude-set lifecycle** ([#3078](https://github.com/AtlasDevHQ/atlas/issues/3078)) — zero-group REST-only picker; decoupled `restProvenance`. Shipped in [#3082](https://github.com/AtlasDevHQ/atlas/pull/3082).
+- [x] **OpenAPI drift — `ConversationSchema` omits `routingMode`** ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071)) — independent doc-fix surfaced by S1b. Shipped in [#3075](https://github.com/AtlasDevHQ/atlas/pull/3075).
+- [x] **Primary workspace chat gains Conversation REST scope** ([#3081](https://github.com/AtlasDevHQ/atlas/issues/3081)) — `(workspace)/page.tsx` unified onto the single `AtlasChat` component (embedded REST picker, nested main, health gate) — parity with the embeddable widget. Shipped in [#3085](https://github.com/AtlasDevHQ/atlas/pull/3085).
+
+Surface-reachability caveat: this milestone's `ui/components/atlas-chat.tsx` is distinct from the older `packages/react/.../atlas-chat.tsx` that `/demo` + `@useatlas/react` render. Milestone #59 closed + tagged `v0.0.4` @ `4495b9c3` 2026-06-02; `changelog-data.ts` got a `v0.0.4 — Conversation Scope` entry at tag time.
+
+---
+
 ## v0.0.3 — Spec Lifecycle (Shipped)
 
 Keeps an installed OpenAPI datasource's view of its upstream current — refresh cadence, auto re-discovery, structured drift detection, and a shared cross-workspace spec cache so a public upstream is downloaded once. Split from v0.0.2 per [#3013](https://github.com/AtlasDevHQ/atlas/issues/3013) to keep that milestone inside its PRD contract ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58), 6 issues). All work shipped ahead of a formal kickoff.

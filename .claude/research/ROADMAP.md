@@ -20,20 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues — all shipped) — feature-complete, ready to `/release v0.0.4`. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
-
-Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 + the #3071 doc-fix independent:
-
-- [x] S1a — Restore the sticky scope preference on a fresh chat — fixes reset-on-reload ([#3064](https://github.com/AtlasDevHQ/atlas/issues/3064), bug, no deps) — PR #3070
-- [x] S1b — Restore a conversation's scope when it is opened ([#3065](https://github.com/AtlasDevHQ/atlas/issues/3065), bug) — PR #3072 + scope-validation follow-up
-- [x] S2a — REST scope: exclude datasources from a conversation ([#3066](https://github.com/AtlasDevHQ/atlas/issues/3066), feature) — PR #3077 (migration 0112 `rest_excluded_datasource_ids`; resolver + bound-tool enforcement; checkbox picker)
-- [x] S2b — REST-only focus: suspend SQL for a conversation ([#3067](https://github.com/AtlasDevHQ/atlas/issues/3067), feature) — PR #3079 (migration 0113 `rest_focus_datasource_id`; resolver short-circuits group-scope + exclude-set; agent loop strips `executeSQL` + fails closed on a load/reconnect error)
-- [x] S3 — Persist the active conversation in the URL ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068), refactor) — PR #3084 (conversationId → URL via co-located `search-params.ts`; URL-driven open effect; history push/replace; composer locked while loading)
-- [x] REST-only-workspace picker visibility + independent exclude-set lifecycle ([#3078](https://github.com/AtlasDevHQ/atlas/issues/3078), feature) — PR #3082 (zero-group REST-only picker; decoupled `restProvenance`)
-- [x] OpenAPI drift — `ConversationSchema` omits `routingMode` ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071), bug, independent doc-fix surfaced by S1b) — PR #3075
-- [x] Primary workspace chat `(workspace)/page.tsx` gains Conversation REST scope — parity with the embeddable `<AtlasChat>` ([#3081](https://github.com/AtlasDevHQ/atlas/issues/3081), feature) — PR #3085 (unified onto the single `AtlasChat` component; embedded REST picker, nested main, health gate)
-
-Parent [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) stays in the Architecture Backlog (left unmodified per `/to-issues`). The **Staging environment** track (below) continues in parallel, independent of the tag train.
+No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2026-06-02 (see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
 
 ---
 
@@ -61,6 +48,7 @@ Persistent candidate clusters (not milestoned):
 
 Shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md):
 
+- `v0.0.4` — **Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues) — per-conversation data scope across two axes: SQL routing (connection group + Auto/Pin/All) and REST scope (exclude-set + REST-only focus that suspends SQL); sticky workspace pref seeds new chats; active conversation persists in the URL; primary workspace chat unified onto the single `AtlasChat` component. ADR-0011; fixes reset-on-reload (#3063). Closed + tagged `v0.0.4` 2026-06-02.
 - `v0.0.3` — **Spec Lifecycle** ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58), 6 issues) — keeps an installed OpenAPI datasource's upstream view current: per-install refresh interval, structured drift diff, shared cross-workspace spec/graph cache (credential never shared), scheduler auto re-discovery fiber, breaking-change drift signal. Split from v0.0.2 per #3013. Closed + tagged `v0.0.3` 2026-05-31.
 - `v0.0.2` — **REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54), 24 issues) — generic OpenAPI primitive makes REST services (Twenty, Stripe, GitHub, Notion) first-class read-side datasources; per-endpoint write allowlist + confirm-before-write; SSRF egress guard. Maps 1:1 to PRD #2868. Closed 2026-05-31.
 - `v0.0.1` — **Release Process Bootstrap** ([milestone #56](https://github.com/AtlasDevHQ/atlas/milestone/56), 7 issues) — first git tag; tag-gated prod deploys (dedicated `prod`-branch trigger), customer-facing Stability Contract, ADR-0008/0009, `/release` flow. Docs + tooling only — no runtime feature.

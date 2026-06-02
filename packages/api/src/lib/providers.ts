@@ -52,8 +52,27 @@ export function getDefaultProvider(): ConfigProvider {
   return process.env.VERCEL ? "gateway" : "anthropic";
 }
 
-function isBedrockAnthropicModel(modelId: string): boolean {
+/** Anthropic-family model ids contain "anthropic" or "claude". */
+function isAnthropicFamilyModelId(modelId: string): boolean {
   return modelId.includes("anthropic") || modelId.includes("claude");
+}
+
+function isBedrockAnthropicModel(modelId: string): boolean {
+  return isAnthropicFamilyModelId(modelId);
+}
+
+/**
+ * Whether a gateway-routed model id targets an Anthropic-family model.
+ *
+ * Gateway model ids are `<provider>/<model>` (e.g. `anthropic/claude-opus-4.8`,
+ * `vertex/claude-...`). The AI Gateway forwards `providerOptions.anthropic` to
+ * the underlying provider, so any Anthropic-family route accepts — and needs —
+ * the same explicit `cacheControl` markers as the direct Anthropic provider.
+ * Anthropic caching is opt-in (unlike OpenAI's implicit caching), so without
+ * the markers the gateway → Anthropic path runs fully uncached (#3099).
+ */
+export function isGatewayAnthropicModel(modelId: string): boolean {
+  return isAnthropicFamilyModelId(modelId);
 }
 
 /**

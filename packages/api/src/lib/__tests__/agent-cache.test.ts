@@ -141,9 +141,42 @@ describe("applyCacheControl", () => {
     expect(result).toEqual(msgs);
   });
 
-  test("returns messages unchanged for 'gateway'", () => {
+  test("returns messages unchanged for 'gateway' with no model id", () => {
     const msgs = makeMessages(3);
     const result = applyCacheControl(msgs, "gateway");
+    expect(result).toEqual(msgs);
+  });
+
+  // --- Gateway → Anthropic (#3099) ----------------------------------------
+  // The AI Gateway forwards `providerOptions.anthropic` to the underlying
+  // provider, so a gateway route to an Anthropic model needs the SAME explicit
+  // marker as the direct Anthropic provider — otherwise prod (ATLAS_PROVIDER=
+  // gateway, anthropic/claude-opus-4.8) runs fully uncached. This regression
+  // test fails if the gateway case ever silently no-ops for an Anthropic model.
+
+  test("adds anthropic cacheControl for 'gateway' routing to an Anthropic model", () => {
+    const msgs = makeMessages(3);
+    const result = applyCacheControl(msgs, "gateway", "anthropic/claude-opus-4.8");
+
+    expect(result[0]).not.toHaveProperty("providerOptions");
+    expect(result[1]).not.toHaveProperty("providerOptions");
+    expect(result[2].providerOptions).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+
+  test("adds anthropic cacheControl for 'gateway' routing to a Vertex Anthropic model", () => {
+    const msgs = makeMessages(2);
+    const result = applyCacheControl(msgs, "gateway", "vertex/claude-sonnet-4");
+
+    expect(result[1].providerOptions).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+
+  test("returns messages unchanged for 'gateway' routing to a non-Anthropic model", () => {
+    const msgs = makeMessages(3);
+    const result = applyCacheControl(msgs, "gateway", "openai/gpt-4o");
     expect(result).toEqual(msgs);
   });
 
@@ -273,8 +306,49 @@ describe("buildSystemParam", () => {
     expect(typeof result).toBe("string");
   });
 
-  test("returns plain string for 'gateway'", () => {
+  test("returns plain string for 'gateway' with no model id", () => {
     const result = buildSystemParam("gateway");
+    expect(typeof result).toBe("string");
+  });
+
+  // #3099 — gateway routing to an Anthropic model must cache the system prompt
+  // exactly like the direct Anthropic provider (the gateway forwards the marker).
+  test("returns SystemModelMessage with anthropic cacheControl for 'gateway' → Anthropic model", () => {
+    // modelId is the trailing positional arg; intermediate args default through.
+    const result = buildSystemParam(
+      "gateway",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "developer",
+      undefined,
+      "anthropic/claude-opus-4.8",
+    );
+    expect(typeof result).toBe("object");
+    const msg = result as { role: string; content: string; providerOptions: Record<string, unknown> };
+    expect(msg.role).toBe("system");
+    expect(typeof msg.content).toBe("string");
+    expect(msg.providerOptions).toEqual({
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+
+  test("returns plain string for 'gateway' → non-Anthropic model", () => {
+    const result = buildSystemParam(
+      "gateway",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "developer",
+      undefined,
+      "openai/gpt-4o",
+    );
     expect(typeof result).toBe("string");
   });
 

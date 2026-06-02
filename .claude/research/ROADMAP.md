@@ -20,7 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues — 7 shipped) — in flight. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
+**`v0.0.4` — Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues — all shipped) — feature-complete, ready to `/release v0.0.4`. Unifies the chat scope picker (`ChatScopePicker`, was `ChatEnvPicker`) across two axes: **SQL routing** (connection group + members + Auto/Pin/All) and **REST scope** (exclude-set + REST-only focus). Per-conversation authoritative, with a sticky workspace-scoped preference that seeds new chats; fixes the [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) reset-on-reload bug at the seed/restore seam. See [ADR-0011](../../docs/adr/0011-unified-conversation-scope.md) (supersedes ADR-0010 picker-surface only) + `CONTEXT.md` → Conversation scope.
 
 Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 + the #3071 doc-fix independent:
 
@@ -31,7 +31,7 @@ Slices form a near-linear chain (S1a → S1b → S2a → S2b), with S3 + the #30
 - [x] S3 — Persist the active conversation in the URL ([#3068](https://github.com/AtlasDevHQ/atlas/issues/3068), refactor) — PR #3084 (conversationId → URL via co-located `search-params.ts`; URL-driven open effect; history push/replace; composer locked while loading)
 - [x] REST-only-workspace picker visibility + independent exclude-set lifecycle ([#3078](https://github.com/AtlasDevHQ/atlas/issues/3078), feature) — PR #3082 (zero-group REST-only picker; decoupled `restProvenance`)
 - [x] OpenAPI drift — `ConversationSchema` omits `routingMode` ([#3071](https://github.com/AtlasDevHQ/atlas/issues/3071), bug, independent doc-fix surfaced by S1b) — PR #3075
-- [ ] Primary workspace chat `(workspace)/page.tsx` lacks Conversation REST scope (exclude-set + focus) — parity with the embeddable `<AtlasChat>` ([#3081](https://github.com/AtlasDevHQ/atlas/issues/3081), feature) ⟵ last open; gates `/release v0.0.4`
+- [x] Primary workspace chat `(workspace)/page.tsx` gains Conversation REST scope — parity with the embeddable `<AtlasChat>` ([#3081](https://github.com/AtlasDevHQ/atlas/issues/3081), feature) — PR #3085 (unified onto the single `AtlasChat` component; embedded REST picker, nested main, health gate)
 
 Parent [#3063](https://github.com/AtlasDevHQ/atlas/issues/3063) stays in the Architecture Backlog (left unmodified per `/to-issues`). The **Staging environment** track (below) continues in parallel, independent of the tag train.
 

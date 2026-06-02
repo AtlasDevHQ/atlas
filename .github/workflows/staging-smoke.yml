@@ -4,10 +4,12 @@ name: Staging Smoke
 #
 # Fires after a successful staging deploy and proves two things end-to-end:
 #   1. The deploy actually landed AND the API is wearing the staging region
-#      identity — `GET /api/v1/health` (public, no auth, already surfaces
+#      identity — `GET /api/health` (public, no auth, already surfaces
 #      `region` via getApiRegion()) must report `region == "staging"`. We use
-#      /health rather than /api/v1/mode on purpose: /mode requires auth and
-#      would 401 here (Codex caught this on PR #2894).
+#      /api/health rather than /api/v1/mode on purpose: /mode requires auth and
+#      would 401 here (Codex caught this on PR #2894). Note the path is
+#      /api/health, not /api/v1/health — the health router is mounted outside
+#      the /api/v1 prefix.
 #   2. The CRM lead-capture flusher path is alive — `atlas ops smoke-crm`
 #      enqueues a tiny persona fixture into `crm_outbox`, waits for the
 #      flusher to drain, then asserts the resulting Twenty Persons match.
@@ -57,7 +59,10 @@ permissions:
 
 env:
   BUN_VERSION: "1.3.13"
-  STAGING_HEALTH_URL: "https://staging.useatlas.dev/api/v1/health"
+  # The health router is mounted at /api/health (packages/api/src/api/index.ts:
+  # `app.route("/api/health", health)`), NOT under the /api/v1 prefix — there is
+  # no /api/v1/health route. The issue body said /api/v1/health, but that 404s.
+  STAGING_HEALTH_URL: "https://staging.useatlas.dev/api/health"
 
 # Don't let two staging deploys race their smokes against the same shared
 # Twenty workspace + crm_outbox — overlapping enqueues would confuse the

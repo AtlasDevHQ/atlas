@@ -30,7 +30,7 @@ No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md); 22 slices (slices 1–4, 6, 7, 9 + Railway dual-trigger [#2921](https://github.com/AtlasDevHQ/atlas/issues/2921) landed). Runs in parallel to the tag train; the open HITL provisioning slices (#2916/#2917/#2918) + `deploy/api-staging/` config (#2912) remain.
+- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). The code slices have largely landed (clamp wiring #2913/#2985, `api-staging` config #2912, misrouting coverage #2982, smoke workflow #2898; runbook #2899 in review). Remaining: the HITL OAuth/Railway provisioning slices (#2900–#2918) plus a review-surfaced staging-hardening cluster (#3095/#2984/#3088/#3096/#3097).
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

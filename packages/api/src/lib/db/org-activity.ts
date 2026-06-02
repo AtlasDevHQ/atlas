@@ -60,24 +60,26 @@ const _lastMarkedActive = new Map<string, number>();
  */
 export function markOrgActive(orgId: string | undefined | null): void {
   if (!orgId) return;
-  if (!hasInternalDB()) return;
-  // The `organization` table only exists under managed auth (see module
-  // doc). Cached + cheap; safe to call per request.
-  if (detectAuthMode() !== "managed") return;
-
-  const now = Date.now();
-  const last = _lastMarkedActive.get(orgId);
-  if (last !== undefined && now - last < ACTIVITY_THROTTLE_MS) return;
-
-  if (_lastMarkedActive.size >= MAX_TRACKED_ORGS) {
-    _lastMarkedActive.clear();
-  }
-  _lastMarkedActive.set(orgId, now);
-
   try {
+    if (!hasInternalDB()) return;
+    // The `organization` table only exists under managed auth (see module
+    // doc). Cached + cheap; safe to call per request. Kept INSIDE the try so
+    // the "never throws" contract holds even on an invalid ATLAS_AUTH_MODE
+    // (detectAuthMode throws on that — cached, would normally fail at boot).
+    if (detectAuthMode() !== "managed") return;
+
+    const now = Date.now();
+    const last = _lastMarkedActive.get(orgId);
+    if (last !== undefined && now - last < ACTIVITY_THROTTLE_MS) return;
+
+    if (_lastMarkedActive.size >= MAX_TRACKED_ORGS) {
+      _lastMarkedActive.clear();
+    }
+    _lastMarkedActive.set(orgId, now);
+
     // Fire-and-forget. internalExecute logs async failures + trips its own
-    // circuit breaker; the synchronous try/catch only covers a pool-init
-    // throw (already guarded by hasInternalDB above, but belt-and-braces).
+    // circuit breaker; this try also covers the synchronous pool-init throw
+    // (already guarded by hasInternalDB above, but belt-and-braces).
     internalExecute(`UPDATE organization SET last_active_at = now() WHERE id = $1`, [orgId]);
   } catch (err) {
     // A failed activity stamp must never surface to the caller — the worst
@@ -85,7 +87,7 @@ export function markOrgActive(orgId: string | undefined | null): void {
     // in fact active, which self-corrects on the next stamped request.
     log.warn(
       { err: err instanceof Error ? err.message : String(err), orgId },
-      "markOrgActive: synchronous internalExecute throw — activity not stamped",
+      "markOrgActive: activity not stamped",
     );
   }
 }

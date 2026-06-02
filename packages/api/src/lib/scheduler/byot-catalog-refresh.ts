@@ -46,6 +46,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AdminActionType } from "@atlas/api/lib/audit/actions";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -81,17 +82,21 @@ const DEFAULT_DORMANCY_DAYS = 30;
 
 /**
  * Resolve the dormancy threshold (ms) from `ATLAS_BYOT_DORMANCY_DAYS`.
- * Default 30 days. `0` (or any non-positive / unparseable value normalizes
- * to 0) DISABLES the gate — the cycle falls back to the TTL-only query, so
- * operators can opt out without a code change. Returns whole-day multiples
- * of `ONE_DAY_MS`.
+ *
+ * Only an explicit `0` DISABLES the gate (the cycle falls back to the
+ * TTL-only query) — empty, negative, NaN, and unparseable values fail safe to
+ * the 30-day default rather than silently disabling. A positive value is
+ * floored to whole days and clamped to a 1-day minimum, so a sub-day value
+ * (e.g. `0.5`) gates at 1 day instead of flooring to 0 and accidentally
+ * disabling the gate.
  */
 function getDormancyThresholdMs(): number {
   const raw = process.env.ATLAS_BYOT_DORMANCY_DAYS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) return n === 0 ? 0 : DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
-  return Math.floor(n) * ONE_DAY_MS;
+  if (n === 0) return 0; // explicit operator opt-out
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
+  return Math.max(1, Math.floor(n)) * ONE_DAY_MS;
 }
 
 /** Test-only: expose the env-driven dormancy resolver. */
@@ -180,37 +185,13 @@ async function findStaleByotCatalogs(
   // table exists — i.e. managed auth. In byot / simple-key / none modes the
   // table is absent (a JOIN would error) and dormancy is moot single-tenant,
   // so we fall back to the TTL-only query. `dormancyThresholdMs <= 0` is the
-  // operator opt-out (ATLAS_BYOT_DORMANCY_DAYS=0).
+  // operator opt-out (ATLAS_BYOT_DORMANCY_DAYS=0). The SQL lives in
+  // `buildStaleCatalogQuery` so the real-Postgres smoke can assert its
+  // row-selection semantics (orphan/NULL/dormant/active) against a live DB.
   const dormancyEnabled = dormancyThresholdMs > 0 && detectAuthMode() === "managed";
 
-  // The interval is parameterized as milliseconds → `now() - $n::bigint *
-  // interval '1 ms'` so each threshold is configurable without inlining the
-  // int into a string literal.
-  //
-  // LEFT JOIN organization + `last_active_at IS NULL OR …`: an orphaned
-  // config (org row missing) is treated as active and still refreshed, so the
-  // gate only ever ADDS skips for orgs that demonstrably exist AND are idle —
-  // it never silently drops a refresh that the legacy query would have done.
   const rows = await internalQuery<StaleRowDb>(
-    dormancyEnabled
-      ? `SELECT wmc.org_id, wmc.provider, wmc.bedrock_region
-         FROM workspace_model_config wmc
-         LEFT JOIN organization org ON org.id = wmc.org_id
-         LEFT JOIN workspace_model_catalog wmcat
-           ON wmcat.org_id = wmc.org_id AND wmcat.provider = wmc.provider
-         WHERE wmc.provider IN ('anthropic', 'openai', 'bedrock')
-           AND (org.last_active_at IS NULL OR org.last_active_at > now() - ($3::bigint * interval '1 ms'))
-           AND (wmcat.fetched_at IS NULL OR wmcat.fetched_at < now() - ($1::bigint * interval '1 ms'))
-         ORDER BY wmcat.fetched_at NULLS FIRST
-         LIMIT $2`
-      : `SELECT wmc.org_id, wmc.provider, wmc.bedrock_region
-         FROM workspace_model_config wmc
-         LEFT JOIN workspace_model_catalog wmcat
-           ON wmcat.org_id = wmc.org_id AND wmcat.provider = wmc.provider
-         WHERE wmc.provider IN ('anthropic', 'openai', 'bedrock')
-           AND (wmcat.fetched_at IS NULL OR wmcat.fetched_at < now() - ($1::bigint * interval '1 ms'))
-         ORDER BY wmcat.fetched_at NULLS FIRST
-         LIMIT $2`,
+    buildStaleCatalogQuery(dormancyEnabled),
     dormancyEnabled ? [staleThresholdMs, limit, dormancyThresholdMs] : [staleThresholdMs, limit],
   );
 

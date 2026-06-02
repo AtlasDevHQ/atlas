@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import { z } from "zod";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
+import { buildStaleCatalogQuery } from "@atlas/api/lib/scheduler/byot-catalog-query";
 
 // Real-Postgres migration smoke. Skips cleanly when TEST_DATABASE_URL
 // is unset so local dev that hasn't run `bun run db:up` is unaffected.
@@ -1885,6 +1886,119 @@ describeIfPg("migrate-pg: 0096 step 3 demo backfill fixture (#2793 gap 1 follow-
       expect(row.config.db_type).toBe("postgres");
       expect(row.config.description).toBe("Atlas-managed demo Postgres dataset");
     }
+  }, PG_TEST_TIMEOUT_MS);
+});
+
+// #2377 — organization dormancy gate. Migration 0115 (`ALTER TABLE
+// organization ADD COLUMN last_active_at`) is Better-Auth-managed, so the
+// main run above skips it — this block applies it explicitly against a stub
+// `organization` table to validate the ALTER on real Postgres, then asserts
+// the dormancy-gate SELECT (the exact production SQL from
+// `buildStaleCatalogQuery`) actually selects active + orphaned-config orgs
+// and skips the dormant one. The scheduler unit tests mock `internalQuery`,
+// so this is the only place the `IS NULL OR last_active_at > threshold`
+// predicate runs against live rows — it guards the diff's most safety-
+// critical claim (the gate never drops a refresh the legacy query would do).
+// ─────────────────────────────────────────────────────────────────────
+
+describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
+  let pool: Pool;
+  const schemaName = `dormancy_2377_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+  const migrationsDir = join(import.meta.dir, "..", "migrations");
+  const ONE_DAY_MS = 86_400_000;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: TEST_DB_URL });
+    pool.on("connect", (client) => {
+      void client.query(`SET search_path TO "${schemaName}"`).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`migrate-pg 0115 dormancy: SET search_path failed: ${message}`);
+      });
+    });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
+  });
+
+  afterAll(async () => {
+    if (!pool) return;
+    await pool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await pool.end();
+  });
+
+  it("applies 0115 then selects active + orphan, skips dormant", async () => {
+    // Run the normal set so workspace_model_config / workspace_model_catalog
+    // exist. organization is skipped (Better-Auth-managed), so we stub it.
+    await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
+
+    // Minimal pre-0115 `organization` shape (no last_active_at yet).
+    await pool.query(`CREATE TABLE organization (id TEXT PRIMARY KEY, name TEXT)`);
+    await pool.query(
+      `INSERT INTO organization (id, name) VALUES ('org-active', 'A'), ('org-dormant', 'D')`,
+    );
+
+    // Apply the REAL migration 0115 verbatim — this exercises the ALTER
+    // (guard + NOT NULL DEFAULT now() + backfill) against live Postgres.
+    const sql0115 = readFileSync(
+      join(migrationsDir, "0115_org_last_active_at.sql"),
+      "utf-8",
+    );
+    await pool.query(sql0115);
+
+    // Column landed NOT NULL and existing rows backfilled.
+    const col = await pool.query<{ is_nullable: string; data_type: string }>(
+      `SELECT is_nullable, data_type FROM information_schema.columns
+        WHERE table_name = 'organization' AND column_name = 'last_active_at'`,
+    );
+    expect(col.rows[0]?.is_nullable).toBe("NO");
+    expect(col.rows[0]?.data_type).toBe("timestamp with time zone");
+    const backfilled = await pool.query<{ n: string }>(
+      `SELECT count(*) AS n FROM organization WHERE last_active_at IS NULL`,
+    );
+    expect(backfilled.rows[0]?.n).toBe("0");
+
+    // active = now (within window); dormant = 60 days ago (outside 30d window).
+    await pool.query(`UPDATE organization SET last_active_at = now() WHERE id = 'org-active'`);
+    await pool.query(
+      `UPDATE organization SET last_active_at = now() - interval '60 days' WHERE id = 'org-dormant'`,
+    );
+
+    // Configs for active, dormant, and an ORPHAN (no organization row).
+    await pool.query(
+      `INSERT INTO workspace_model_config (org_id, provider, model, api_key_encrypted) VALUES
+         ('org-active', 'anthropic', 'm', 'enc'),
+         ('org-dormant', 'anthropic', 'm', 'enc'),
+         ('org-orphan', 'anthropic', 'm', 'enc')`,
+    );
+    // All catalogs stale (2 days old) vs the 1-day TTL below.
+    await pool.query(
+      `INSERT INTO workspace_model_catalog (org_id, provider, region, payload, fetched_at) VALUES
+         ('org-active', 'anthropic', '', '[]'::jsonb, now() - interval '2 days'),
+         ('org-dormant', 'anthropic', '', '[]'::jsonb, now() - interval '2 days'),
+         ('org-orphan', 'anthropic', '', '[]'::jsonb, now() - interval '2 days')`,
+    );
+
+    // Gated (managed) query: stale=1d, limit=100, dormancy=30d.
+    const gated = await pool.query<{ org_id: string }>(buildStaleCatalogQuery(true), [
+      ONE_DAY_MS,
+      100,
+      30 * ONE_DAY_MS,
+    ]);
+    // active (recent) + orphan (NULL via LEFT JOIN miss → treated active);
+    // dormant (60d) is filtered out.
+    expect(gated.rows.map((r) => r.org_id).sort()).toEqual(["org-active", "org-orphan"]);
+
+    // Legacy (TTL-only) query: no dormancy filter → all three stale rows.
+    const legacy = await pool.query<{ org_id: string }>(buildStaleCatalogQuery(false), [
+      ONE_DAY_MS,
+      100,
+    ]);
+    expect(legacy.rows.map((r) => r.org_id).sort()).toEqual([
+      "org-active",
+      "org-dormant",
+      "org-orphan",
+    ]);
+
+    // 0115 is idempotent — re-applying the ALTER IF NOT EXISTS is a no-op.
+    await expect(pool.query(sql0115)).resolves.toBeDefined();
   }, PG_TEST_TIMEOUT_MS);
 });
 

@@ -431,6 +431,7 @@
       "version": "0.0.1",
       "devDependencies": {
         "@types/node": "^25.5.0",
+        "typescript": "^6.0.2",
       },
     },
     "plugins/bigquery": {
@@ -778,14 +779,16 @@
     },
     "plugins/webhook-action": {
       "name": "@useatlas/webhook-action",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
+        "@useatlas/webhook-publisher": "workspace:*",
         "ai": "^6.0.141",
         "zod": "^4.3.6",
       },
       "peerDependencies": {
         "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/webhook-publisher": ">=0.0.1",
         "ai": "^6.0.0",
         "zod": "^4.0.0",
       },

@@ -6,9 +6,16 @@
  * computing the same MAC over the raw request body and constant-
  * time comparing against the header. This is the same shape as the
  * Stripe / GitHub / Shopify webhook conventions.
+ *
+ * The signing + retry + per-attempt timeout internals come from
+ * `@useatlas/webhook-publisher` (strategy `rawBody`) — the shared
+ * primitive that backs all three of Atlas's outbound senders. The
+ * on-the-wire format is unchanged: `rawBody` emits the same bare-hex
+ * `X-Atlas-Signature` + `Content-Type: application/json`, and the
+ * `none` / `exponential` retry policy + 30s timeout are preserved.
  */
 
-import crypto from "crypto";
+import { deliverWebhook, rawBody, type RetryPolicy } from "@useatlas/webhook-publisher";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -34,9 +41,12 @@ export interface WebhookActionPluginConfig {
 /**
  * Compute `X-Atlas-Signature` for a given body. Exported for tests and
  * for receiver-side verification helpers that ship with the docs.
+ * Delegates to the `rawBody` signing strategy from
+ * `@useatlas/webhook-publisher` — identical bare-hex
+ * `HMAC_SHA256(signing_secret, body)`.
  */
 export function hmacSign(signingSecret: string, body: string): string {
-  return crypto.createHmac("sha256", signingSecret).update(body).digest("hex");
+  return rawBody({ secret: signingSecret })(body).signature;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,90 +70,63 @@ export interface WebhookPostResult {
  * ~5.25s across 4 attempts — short enough that the agent loop's
  * tool-call timeout doesn't fire mid-retry, long enough that a brief
  * destination blip recovers without surfacing as a tool failure.
+ * Supplied to `deliverWebhook` as the `delaysMs` schedule (one extra
+ * attempt than gaps → `maxAttempts = RETRY_DELAYS_MS.length + 1`).
  */
 const RETRY_DELAYS_MS = [250, 1_000, 4_000] as const;
+
+/** Per-attempt timeout — matches the pre-extraction sender. */
+const TIMEOUT_MS = 30_000;
 
 export async function executeWebhookPost(
   config: WebhookActionPluginConfig,
   params: WebhookPostParams,
 ): Promise<WebhookPostResult> {
-  const body = JSON.stringify(params.payload);
-  const signature = hmacSign(config.signing_secret, body);
   const retryPolicy = config.retry_policy ?? "exponential";
+  const retry: RetryPolicy =
+    retryPolicy === "exponential"
+      ? { maxAttempts: RETRY_DELAYS_MS.length + 1, delaysMs: RETRY_DELAYS_MS }
+      : { maxAttempts: 1, delaysMs: [] };
 
-  const attempt = async (): Promise<Response> =>
-    fetch(config.url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Atlas-Signature": signature,
-      },
-      body,
-      signal: AbortSignal.timeout(30_000),
-    });
-
-  let lastError: unknown;
-  const maxAttempts = retryPolicy === "exponential" ? RETRY_DELAYS_MS.length + 1 : 1;
-
-  for (let i = 0; i < maxAttempts; i++) {
-    let response: Response | null = null;
-    try {
-      response = await attempt();
-    } catch (err) {
-      // Network / timeout error — retryable under exponential, not under none.
-      lastError = err;
-      if (retryPolicy === "none") throw err;
-      // Plugins have no logger context handle here (initialize ctx is
-      // not threaded into the tool execute closure); console.warn is the
-      // only breadcrumb path. Visible in the agent loop's stderr so an
-      // operator can correlate retries with destination outages.
-      console.warn(
-        `[webhook-action] attempt ${i + 1}/${maxAttempts} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    if (response) {
-      if (response.ok) {
-        return { status: response.status, signature };
-      }
-      // 4xx is a destination-side rejection — surface immediately even
-      // under exponential. Only 5xx is treated as transient.
-      if (response.status < 500) {
-        const detail = await safeErrorDetail(response);
-        throw new Error(
-          `Webhook POST failed: HTTP ${response.status}${detail ? ` — ${detail}` : ""}`,
+  const outcome = await deliverWebhook({
+    url: config.url,
+    payload: params.payload,
+    sign: rawBody({ secret: config.signing_secret }),
+    retry,
+    timeoutMs: TIMEOUT_MS,
+    onFailedAttempt: ({ attempt, maxAttempts, failure }) => {
+      // Plugins have no logger context handle here (initialize ctx is not
+      // threaded into the tool execute closure); console.warn is the only
+      // breadcrumb path. Visible in the agent loop's stderr so an operator
+      // can correlate retries with destination outages. Only retryable
+      // failures log — the pre-extraction code never logged a breadcrumb
+      // for a 4xx (it threw immediately).
+      if (failure.kind === "transport_error") {
+        console.warn(
+          `[webhook-action] attempt ${attempt}/${maxAttempts} failed: ${failure.error}`,
+        );
+      } else if (failure.status >= 500) {
+        console.warn(
+          `[webhook-action] attempt ${attempt}/${maxAttempts} returned HTTP ${failure.status}`,
         );
       }
-      lastError = new Error(`Webhook POST failed: HTTP ${response.status}`);
-      console.warn(
-        `[webhook-action] attempt ${i + 1}/${maxAttempts} returned HTTP ${response.status}`,
-      );
-    }
+    },
+  });
 
-    if (i < maxAttempts - 1) {
-      await sleep(RETRY_DELAYS_MS[i] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1]);
-    }
+  if (outcome.kind === "ok") {
+    return { status: outcome.status, signature: outcome.signature };
   }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Webhook POST failed: ${String(lastError)}`);
-}
-
-async function safeErrorDetail(response: Response): Promise<string> {
-  try {
-    const text = await response.text();
-    return text.length > 200 ? `${text.slice(0, 200)}…` : text;
-  } catch {
-    // intentionally ignored: response body is unreadable (already consumed
-    // or stream closed) — status code on the thrown error still carries
-    // the signal; the body excerpt was a best-effort breadcrumb.
-    return "";
+  if (outcome.kind === "http_error") {
+    // The package reads a bounded body excerpt only for permanent (4xx)
+    // rejections with a non-empty readable body, so `responseText` is
+    // present exactly where the old `safeErrorDetail` appended one and
+    // absent for an exhausted 5xx (or an empty/unreadable 4xx body).
+    throw new Error(
+      `Webhook POST failed: HTTP ${outcome.status}${outcome.responseText ? ` — ${outcome.responseText}` : ""}`,
+    );
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  // transport_error — network blip / timeout, retries exhausted.
+  throw new Error(outcome.error);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { Effect } from "effect";
+import { isDeployRegion } from "@useatlas/types";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ const {
   resolveRegionDatabaseUrl,
   listWorkspaceRegions,
   isConfiguredRegion,
+  DEPLOY_REGION_ROUTING,
   ResidencyError,
 } = await import("./residency");
 
@@ -244,6 +246,31 @@ describe("residency", () => {
       expect(result).toBeNull();
     });
 
+    it("a closed deploy region marked 'residency' (us) routes through the residency map (#2983)", async () => {
+      // `us` is a closed DeployRegion (isDeployRegion("us") === true) but its
+      // DEPLOY_REGION_ROUTING intent is "residency", so it must NOT short-circuit
+      // like the "local" staging arm — it falls through to the structural
+      // config.residency.regions["us"] lookup and resolves a real datasource. No
+      // staging-exclusion log fires.
+      mockConfig = {
+        residency: {
+          regions: {
+            us: { label: "US", databaseUrl: "postgresql://us/atlas", datasourceUrl: "postgresql://us/data" },
+          },
+          defaultRegion: "us",
+        },
+      };
+      mockRows.push([{ region: "us" }]);
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
+      expect(result).not.toBeNull();
+      expect(result!.region).toBe("us");
+      expect(result!.databaseUrl).toBe("postgresql://us/atlas");
+      expect(result!.datasourceUrl).toBe("postgresql://us/data");
+      expect(loggerDebugs).toHaveLength(0);
+      expect(loggerWarns).toHaveLength(0);
+      expect(loggerErrors).toHaveLength(0);
+    });
+
     // ── Staging arm (#2908 / #3097) ───────────────────────────────────
     // Staging is a DeployRegion but never a residency target — a
     // staging-keyed workspace always falls through to the local DB connection
@@ -375,6 +402,44 @@ describe("residency", () => {
     it("returns false when residency is not configured", () => {
       mockConfig = {};
       expect(isConfiguredRegion("us-east")).toBe(false);
+    });
+  });
+
+  // ── Routing intent table (#2983) ──────────────────────────────────────
+  // DEPLOY_REGION_ROUTING is the SSOT for the residency-vs-local decision in
+  // resolveRegionDatabaseUrl. Its `Record<DeployRegion, …>` type is the real
+  // tripwire: adding a member to the DeployRegion union fails to compile until
+  // its routing intent is recorded here. These runtime assertions pin the
+  // *values* and confirm the table composes with (rather than duplicates) the
+  // DEPLOY_REGIONS tuple guard — every key is a genuine closed DeployRegion and
+  // every value is a recognised intent.
+  describe("DEPLOY_REGION_ROUTING (#2983)", () => {
+    it("records a routing intent for exactly the four deploy regions", () => {
+      expect(Object.keys(DEPLOY_REGION_ROUTING).toSorted()).toEqual([
+        "apac",
+        "eu",
+        "staging",
+        "us",
+      ]);
+    });
+
+    it("every key is a genuine closed DeployRegion (no open Region keys)", () => {
+      for (const region of Object.keys(DEPLOY_REGION_ROUTING)) {
+        expect(isDeployRegion(region)).toBe(true);
+      }
+    });
+
+    it("every intent is 'residency' or 'local'", () => {
+      for (const intent of Object.values(DEPLOY_REGION_ROUTING)) {
+        expect(["residency", "local"]).toContain(intent);
+      }
+    });
+
+    it("us/eu/apac route to residency; staging routes to local", () => {
+      expect(DEPLOY_REGION_ROUTING.us).toBe("residency");
+      expect(DEPLOY_REGION_ROUTING.eu).toBe("residency");
+      expect(DEPLOY_REGION_ROUTING.apac).toBe("residency");
+      expect(DEPLOY_REGION_ROUTING.staging).toBe("local");
     });
   });
 

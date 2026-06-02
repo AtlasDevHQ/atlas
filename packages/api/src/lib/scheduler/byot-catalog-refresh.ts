@@ -83,20 +83,22 @@ const DEFAULT_DORMANCY_DAYS = 30;
 /**
  * Resolve the dormancy threshold (ms) from `ATLAS_BYOT_DORMANCY_DAYS`.
  *
- * Only an explicit `0` DISABLES the gate (the cycle falls back to the
- * TTL-only query) — empty, negative, NaN, and unparseable values fail safe to
- * the 30-day default rather than silently disabling. A positive value is
- * floored to whole days and clamped to a 1-day minimum, so a sub-day value
- * (e.g. `0.5`) gates at 1 day instead of flooring to 0 and accidentally
- * disabling the gate.
+ * The contract is a whole number of days. Only an explicit `0` DISABLES the
+ * gate (the cycle falls back to the TTL-only query). Every other invalid input
+ * — empty, negative, NaN, unparseable, OR a non-integer like `0.5` — fails
+ * safe to the 30-day default rather than silently disabling or guessing a
+ * fractional window. (A bare `Math.floor` would turn `0.5` into `0` and
+ * accidentally disable the gate, so non-integers are rejected outright.)
  */
 function getDormancyThresholdMs(): number {
   const raw = process.env.ATLAS_BYOT_DORMANCY_DAYS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
   const n = Number(raw);
   if (n === 0) return 0; // explicit operator opt-out
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
-  return Math.max(1, Math.floor(n)) * ONE_DAY_MS;
+  if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+    return DEFAULT_DORMANCY_DAYS * ONE_DAY_MS;
+  }
+  return n * ONE_DAY_MS;
 }
 
 /** Test-only: expose the env-driven dormancy resolver. */

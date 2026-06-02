@@ -886,9 +886,11 @@ describe("byot catalog refresh — dormancy threshold env resolution (#2377)", (
     expect(_getDormancyThresholdMsForTests()).toBe(0);
   });
 
-  it("clamps a positive sub-day value to 1 day (does not floor to 0 / disable)", () => {
+  it("rejects a non-integer day value → default (never floors to 0 / disables)", () => {
     process.env[ENV_KEY] = "0.5";
-    expect(_getDormancyThresholdMsForTests()).toBe(ONE_DAY_MS);
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
+    process.env[ENV_KEY] = "7.9";
+    expect(_getDormancyThresholdMsForTests()).toBe(30 * ONE_DAY_MS);
   });
 
   it("falls back to the default for garbage / negative values", () => {

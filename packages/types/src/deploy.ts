@@ -33,10 +33,26 @@ export type DeployRegion = "us" | "eu" | "apac" | "staging";
 
 /**
  * The closed set of {@link DeployRegion} values, as a runtime tuple. Kept
- * adjacent to the type so the two cannot drift: a new region added to the
- * union without an entry here is a `satisfies` compile error below.
+ * adjacent to the type so the two cannot drift — enforced in BOTH directions:
+ *  - `satisfies readonly DeployRegion[]` rejects an entry here that is not a
+ *    `DeployRegion` (tuple ⊆ union — catches a typo'd tuple entry).
+ *  - `_AssertDeployRegionsExhaustive` below rejects a region added to the
+ *    `DeployRegion` union without a matching entry here (union ⊆ tuple — the
+ *    direction `satisfies` alone does NOT catch).
  */
 const DEPLOY_REGIONS = ["us", "eu", "apac", "staging"] as const satisfies readonly DeployRegion[];
+
+/**
+ * Compile-time exhaustiveness check. If a region is ever added to
+ * {@link DeployRegion} without a matching {@link DEPLOY_REGIONS} entry, the
+ * `Exclude` is non-`never`, this type collapses to `never`, and the assignment
+ * below fails to type-check — so the runtime guard can never silently fail to
+ * recognize a region the type system already knows about. (`satisfies` above
+ * only guards the opposite direction.)
+ */
+type _AssertDeployRegionsExhaustive =
+  [Exclude<DeployRegion, (typeof DEPLOY_REGIONS)[number]>] extends [never] ? true : never;
+const _deployRegionsExhaustive: _AssertDeployRegionsExhaustive = true;
 
 /**
  * Exact runtime narrowing guard for {@link DeployRegion}.

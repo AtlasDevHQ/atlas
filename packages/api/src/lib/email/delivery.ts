@@ -38,10 +38,16 @@ const log = createLogger("email-delivery");
  * `isDeployRegion` and the template ref bumped, this local copy can be replaced
  * with the import.
  *
- * `satisfies readonly DeployRegion[]` keeps the literal set from drifting out
- * of sync with the union.
+ * Drift is guarded in BOTH directions, mirroring the canonical copy:
+ * `satisfies readonly DeployRegion[]` rejects a typo'd entry (tuple ⊆ union),
+ * and `_AssertDeployRegionsExhaustive` rejects a region added to the union
+ * without a matching entry here (union ⊆ tuple) — the direction `satisfies`
+ * alone does not catch.
  */
 const DEPLOY_REGIONS = ["us", "eu", "apac", "staging"] as const satisfies readonly DeployRegion[];
+type _AssertDeployRegionsExhaustive =
+  [Exclude<DeployRegion, (typeof DEPLOY_REGIONS)[number]>] extends [never] ? true : never;
+const _deployRegionsExhaustive: _AssertDeployRegionsExhaustive = true;
 function isDeployRegion(value: string | null): value is DeployRegion {
   return value !== null && (DEPLOY_REGIONS as readonly string[]).includes(value);
 }
@@ -181,6 +187,21 @@ function warnStagingRegionMisconfig(payload: EmailMessage): void {
       "outbound mail was clamped to the staging sink defensively, but set ATLAS_API_REGION=staging " +
       "on this service to fix the drift (#2985)",
   );
+}
+
+/**
+ * The single staging-clamp chokepoint (#2913/#2985): warn on a region/env
+ * misconfig (keys only), then redirect recipients to the staging sink when this
+ * is the staging soak box. EVERY public send entry point ({@link sendEmail} and
+ * {@link sendEmailWithTransport}) funnels through this, so no provider path can
+ * email a real recipient from staging. Identity for prod / self-hosted / dev
+ * (`resolveOutboundClampRegion` returns `null`, and `clampOutbound` is identity
+ * for the three prod regions regardless).
+ */
+function clampForOutbound(message: EmailMessage): EmailMessage {
+  warnStagingRegionMisconfig(message);
+  const clampRegion = resolveOutboundClampRegion();
+  return clampRegion ? clampOutbound(clampRegion, message) : message;
 }
 
 export interface EmailMessage {
@@ -337,12 +358,8 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
   // sink BEFORE any provider send so the soak box can never email a real
   // address. `outbound` replaces `message` for the rest of the function so
   // EVERY delivery path (DB transport, platform, webhook, Resend) is covered —
-  // a path that kept using the raw `message` would leak. Identity for prod /
-  // self-hosted / dev (`resolveOutboundClampRegion()` returns `null` there, and
-  // `clampOutbound` is identity for the three prod regions anyway).
-  warnStagingRegionMisconfig(message);
-  const clampRegion = resolveOutboundClampRegion();
-  const outbound = clampRegion ? clampOutbound(clampRegion, message) : message;
+  // a path that kept using the raw `message` would leak.
+  const outbound = clampForOutbound(message);
 
   // 1. Try DB-stored config for the org
   if (orgId) {
@@ -382,12 +399,18 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
 /**
  * Send an email using explicit transport credentials.
  * Used by the admin test endpoint to validate credentials before saving.
+ *
+ * Routes through the SAME staging clamp as {@link sendEmail} (#2913/#2985):
+ * this is a second outbound entry point, and the admin "test email" endpoint
+ * sends to an admin-supplied recipient — without the clamp a staging soak admin
+ * testing credentials would email a real address. On staging the test still
+ * validates the transport; the message just lands in the sink.
  */
 export async function sendEmailWithTransport(
   message: EmailMessage,
   transport: EmailTransport,
 ): Promise<DeliveryResult> {
-  return deliverViaTransport(message, transport);
+  return deliverViaTransport(clampForOutbound(message), transport);
 }
 
 // ---------------------------------------------------------------------------

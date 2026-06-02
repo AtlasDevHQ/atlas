@@ -51,7 +51,8 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { sendEmail, assertStagingMailRegion } = await import("../delivery");
+const { sendEmail, sendEmailWithTransport, assertStagingMailRegion } = await import("../delivery");
+type EmailTransport = Parameters<typeof sendEmailWithTransport>[1];
 
 // ---------------------------------------------------------------------------
 // Env snapshot + fetch capture
@@ -63,6 +64,7 @@ const ENV_KEYS = [
   "STAGING_MAIL_SINK",
   "RESEND_API_KEY",
   "ATLAS_EMAIL_FROM",
+  "ATLAS_SMTP_URL",
 ] as const;
 const saved: Record<string, string | undefined> = {};
 const originalFetch = globalThis.fetch;
@@ -303,5 +305,79 @@ describe("assertStagingMailRegion (#2985)", () => {
     delete process.env.ATLAS_DEPLOY_ENV;
     delete process.env.ATLAS_API_REGION;
     expect(() => assertStagingMailRegion()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The clamp is applied ONCE before the provider branch, so it must cover every
+// provider — not just Resend. These lock that invariant against a future
+// refactor that adds a provider path consuming the raw (unclamped) message.
+// ---------------------------------------------------------------------------
+
+describe("sendEmail — clamp covers the webhook provider path too", () => {
+  // Route through deliverWebhook instead of deliverResend: set ATLAS_SMTP_URL
+  // and clear RESEND_API_KEY (otherwise the platform-config path resolves a
+  // Resend transport and short-circuits before the webhook branch). Env is set
+  // inside the test body (not a describe beforeEach) so it survives the
+  // file-level beforeEach that clears every ENV_KEY regardless of hook ordering.
+  // The fetch capture records `body.to`, which the webhook sends as a bare string.
+  const WEBHOOK_URL = "https://smtp-bridge.example.com/send";
+
+  it("rewrites the recipient to the sink on staging (webhook path)", async () => {
+    delete process.env.RESEND_API_KEY;
+    process.env.ATLAS_SMTP_URL = WEBHOOK_URL;
+    process.env.ATLAS_API_REGION = "staging";
+
+    const result = await sendEmail({ to: REAL, subject: "x", html: "<p>x</p>" });
+
+    expect(result.provider).toBe("webhook");
+    expect(lastResendTo).toBe(DEFAULT_SINK); // webhook `to` is a bare string
+  });
+
+  it("delivers the real recipient off staging (webhook path, region=us)", async () => {
+    delete process.env.RESEND_API_KEY;
+    process.env.ATLAS_SMTP_URL = WEBHOOK_URL;
+    process.env.ATLAS_API_REGION = "us";
+
+    await sendEmail({ to: REAL, subject: "x", html: "<p>x</p>" });
+
+    expect(lastResendTo).toBe(REAL);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sendEmailWithTransport is the SECOND outbound entry point (admin "test
+// email" with fresh credentials). It must clamp too, or a staging admin
+// testing creds would email a real recipient (#2913/#2985).
+// ---------------------------------------------------------------------------
+
+describe("sendEmailWithTransport — clamps the admin test-email path", () => {
+  const resendTransport: EmailTransport = {
+    provider: "resend",
+    senderAddress: "Atlas <noreply@useatlas.dev>",
+    config: { provider: "resend", apiKey: "re_transport_key" },
+  };
+
+  it("rewrites the admin-supplied recipient to the sink on staging", async () => {
+    process.env.ATLAS_API_REGION = "staging";
+
+    const result = await sendEmailWithTransport(
+      { to: REAL, subject: "x", html: "<p>x</p>" },
+      resendTransport,
+    );
+
+    expect(result.success).toBe(true);
+    expect(lastResendTo).toEqual([DEFAULT_SINK]);
+  });
+
+  it("delivers to the admin-supplied recipient off staging (region=us)", async () => {
+    process.env.ATLAS_API_REGION = "us";
+
+    await sendEmailWithTransport(
+      { to: REAL, subject: "x", html: "<p>x</p>" },
+      resendTransport,
+    );
+
+    expect(lastResendTo).toEqual([REAL]);
   });
 });

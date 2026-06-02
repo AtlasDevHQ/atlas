@@ -20,7 +20,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 ## Next
 
-No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2026-06-02 (see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
+No tag in flight — the train is between tags. `v0.0.5` was tagged + released 2026-06-02 (a patch rollup — gateway prompt caching, billing/model accuracy, reliability + the prod-inert staging code; see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
 
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 
@@ -50,6 +50,7 @@ Persistent candidate clusters (not milestoned):
 
 Shipped milestones live in [`ROADMAP-archive.md`](./ROADMAP-archive.md):
 
+- `v0.0.5` — **Gateway Caching & Billing Accuracy** (no milestone — first patch-rollup tag) — AI Gateway→Anthropic prompt caching now active in prod with the cache-token split surfaced on the usage page (#3103); billing/usage report the actual model and default SaaS workspaces to the gateway (#3104); circuit-breaker recovery-fiber leak fixed (#3092); two test-gate flakes resolved (#3105). Also lands the prod-inert staging soak environment — staging milestone #57 stays open pending HITL provisioning. Tagged `v0.0.5` 2026-06-02.
 - `v0.0.4` — **Conversation Scope** ([milestone #59](https://github.com/AtlasDevHQ/atlas/milestone/59), 8 issues) — per-conversation data scope across two axes: SQL routing (connection group + Auto/Pin/All) and REST scope (exclude-set + REST-only focus that suspends SQL); sticky workspace pref seeds new chats; active conversation persists in the URL; primary workspace chat unified onto the single `AtlasChat` component. ADR-0011; fixes reset-on-reload (#3063). Closed + tagged `v0.0.4` 2026-06-02.
 - `v0.0.3` — **Spec Lifecycle** ([milestone #58](https://github.com/AtlasDevHQ/atlas/milestone/58), 6 issues) — keeps an installed OpenAPI datasource's upstream view current: per-install refresh interval, structured drift diff, shared cross-workspace spec/graph cache (credential never shared), scheduler auto re-discovery fiber, breaking-change drift signal. Split from v0.0.2 per #3013. Closed + tagged `v0.0.3` 2026-05-31.
 - `v0.0.2` — **REST Datasources** ([milestone #54](https://github.com/AtlasDevHQ/atlas/milestone/54), 24 issues) — generic OpenAPI primitive makes REST services (Twenty, Stripe, GitHub, Notion) first-class read-side datasources; per-endpoint write allowlist + confirm-before-write; SSRF egress guard. Maps 1:1 to PRD #2868. Closed 2026-05-31.

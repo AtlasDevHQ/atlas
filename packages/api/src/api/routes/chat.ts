@@ -28,6 +28,7 @@ import {
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { markOrgActive } from "@atlas/api/lib/db/org-activity";
 import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
@@ -614,6 +615,15 @@ chat.openapi(chatRoute, async (c) => {
         wsCheck.httpStatus ?? 403,
       );
     }
+
+    // #2377 — stamp workspace activity now that the org is authenticated and
+    // confirmed live (status check above). The BYOT catalog refresh scheduler
+    // reads `organization.last_active_at` to keep refreshing this workspace's
+    // model catalog; without a recent stamp the workspace ages into the
+    // dormancy gate and its catalog stops refreshing. Throttled +
+    // fire-and-forget + managed-auth-gated inside the helper — a no-op on the
+    // hot path almost always, and never able to fail the chat turn.
+    markOrgActive(authResult.user?.activeOrganizationId);
 
     // Migration write-lock — block new conversations while workspace is migrating
     const chatOrgId = authResult.user?.activeOrganizationId;

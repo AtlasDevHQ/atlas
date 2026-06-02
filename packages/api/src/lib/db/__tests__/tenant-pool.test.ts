@@ -7,6 +7,15 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resolve } from "path";
 
+// Reads the connection string a cloned org pool actually connects to. The
+// cache-busting `import(...?t=)` below bypasses `mock.module("pg")`, so a real
+// pg Pool (BoundPool) backs each connection — it exposes `options.connectionString`.
+// This is the load-bearing #2783 assertion: a regression cloning from the wrong
+// config object would connect to the wrong tenant's DB.
+function poolConnString(conn: import("../connection").DBConnection): string | undefined {
+  return (conn as { _pool?: { options?: { connectionString?: string } } })._pool?.options?.connectionString;
+}
+
 // Mock pg
 mock.module("pg", () => ({
   Pool: class MockPool {
@@ -89,6 +98,80 @@ describe("ConnectionRegistry org-scoped pools", () => {
 
     it("throws for non-existent base connection", () => {
       expect(() => registry.getForOrg("org-1", "nonexistent")).toThrow("not registered");
+    });
+
+    // #2783 — per-(workspace, install_id) base resolution. Two workspaces
+    // sharing an install_id must clone from their OWN config, not collapse onto
+    // a single bare row.
+    it("clones each workspace's org pool from its OWN per-workspace config — no bare entry needed", () => {
+      // Only per-workspace configs registered — NO bare `entries["warehouse"]`.
+      // Pre-fix, getForOrg cloned from `entries.get(connectionId)` and would
+      // throw here; now it resolves the (workspace, install_id) composite.
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "postgresql://beta-host/wh" });
+
+      const alpha = registry.getForOrg("ws-alpha", "warehouse");
+      const beta = registry.getForOrg("ws-beta", "warehouse");
+
+      expect(alpha).toBeDefined();
+      expect(beta).toBeDefined();
+      expect(alpha).not.toBe(beta); // independent pools — no collapse
+
+      // Same (workspace, install_id) returns the cached clone.
+      expect(registry.getForOrg("ws-alpha", "warehouse")).toBe(alpha);
+
+      // The cloned pools actually CONNECT to their own per-workspace URL — the
+      // load-bearing #2783 assertion (a regression cloning from the wrong
+      // config object would connect to the wrong tenant's DB).
+      expect(poolConnString(alpha)).toBe("postgresql://alpha-host/wh");
+      expect(poolConnString(beta)).toBe("postgresql://beta-host/wh");
+    });
+
+    it("per-workspace config WINS over a bare entry for the same install_id", () => {
+      // The production shape: the bridge registers BOTH a bare row and a
+      // per-workspace config. getForOrg must clone from the per-workspace URL,
+      // never the bare one.
+      registry.register("warehouse", { url: "postgresql://shared-host/wh" });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+
+      const conn = registry.getForOrg("ws-alpha", "warehouse");
+      expect(poolConnString(conn)).toBe("postgresql://alpha-host/wh");
+    });
+
+    it("throws for a workspace with no per-workspace config and no bare fallback", () => {
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      // ws-gamma never registered `warehouse`, and there is no bare entry.
+      expect(() => registry.getForOrg("ws-gamma", "warehouse")).toThrow("not registered");
+    });
+
+    it("fail-closes on getForOrg cache-miss after unregisterForWorkspace (no stale route)", () => {
+      // Regression guard for the review finding: the per-workspace config must
+      // be removable so an uninstalled datasource can't keep routing. With no
+      // bare fallback, a post-unregister cache-miss throws rather than cloning
+      // from a stale URL.
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      expect(registry.unregisterForWorkspace("ws-alpha", "warehouse")).toBe(true);
+      expect(() => registry.getForOrg("ws-alpha", "warehouse")).toThrow("not registered");
+    });
+
+    it("falls back to the bare entry when no per-workspace config exists", () => {
+      // default / region / self-hosted installs live on the bare map.
+      registry.register("default", { url: "postgresql://localhost/test" });
+      const conn = registry.getForOrg("ws-any", "default");
+      expect(conn).toBeDefined();
+    });
+
+    it("unregisterForWorkspace removes only the targeted (workspace, install_id) config", () => {
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "postgresql://beta-host/wh" });
+
+      expect(registry.unregisterForWorkspace("ws-alpha", "warehouse")).toBe(true);
+      // Sibling workspace's config is untouched — no cross-workspace eviction.
+      expect(registry.hasForWorkspace("ws-alpha", "warehouse")).toBe(false);
+      expect(registry.hasForWorkspace("ws-beta", "warehouse")).toBe(true);
+
+      // Idempotent: removing an absent config returns false.
+      expect(registry.unregisterForWorkspace("ws-alpha", "warehouse")).toBe(false);
     });
 
     it("lazy-initializes default connection when orgId is used", () => {

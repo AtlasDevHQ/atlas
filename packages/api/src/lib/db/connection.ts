@@ -400,6 +400,26 @@ interface RegistryEntry {
   region?: string;
 }
 
+/**
+ * Per-(workspace, install_id) base connection config.
+ *
+ * Config-only by design — holds NO live pool. `getForOrg(workspaceId, installId)`
+ * clones an org-scoped pool from `config`/`dbType` on first access, so these
+ * entries never open connections themselves (re-registration is therefore
+ * cheap, which is how a datasource config update refreshes routing).
+ *
+ * This is the routing source of truth that retires the `DISTINCT ON
+ * (install_id)` multi-tenant collision (#2783): two workspaces sharing an
+ * install_id (e.g. both naming their warehouse `warehouse`, or both auto-owning
+ * the demo at `install_id='__demo__'`) each get their own config here instead
+ * of collapsing onto a single bare `entries` row.
+ */
+interface WorkspaceBaseEntry {
+  config: ConnectionConfig;
+  dbType: DBType;
+  targetHost: string;
+}
+
 /** Configuration for per-org pool isolation. */
 export interface OrgPoolSettings {
   /** Whether org-scoped pooling is active. Only true when pool.perOrg is explicitly configured. */
@@ -441,6 +461,13 @@ export class ConnectionRegistry {
   private drainCooldownSet = new Set<string>();
   /** Tracks cooldown expiry timestamps for remaining-time messages. */
   private drainCooldownExpiry = new Map<string, number>();
+
+  /**
+   * Per-(workspace, install_id) base configs, keyed by {@link _workspaceKey}.
+   * Config-only — `getForOrg` clones org-scoped pools from these on demand, so
+   * no live connections are held here. See {@link WorkspaceBaseEntry} and #2783.
+   */
+  private workspaceEntries = new Map<string, WorkspaceBaseEntry>();
 
   // --- Org-scoped pool isolation ---
   /** Org pool entries keyed by "orgId:connectionId". */
@@ -544,12 +571,27 @@ export class ConnectionRegistry {
   }
 
   /**
+   * Composite key for per-(workspace, install_id) base configs. Uses a NUL
+   * separator — neither workspace ids (cuid/uuid) nor install ids contain it,
+   * so the key is unambiguous without escaping.
+   */
+  private _workspaceKey(workspaceId: string, installId: string): string {
+    return `${workspaceId}\u0000${installId}`;
+  }
+
+  /**
    * Get an org-scoped connection pool. Lazy-creates on first access.
    *
    * Each org gets its own pool instance using the same URL/config as the base
    * connection but with org-specific pool limits (maxConnections, idleTimeoutMs).
    * Plugin-managed connections (no config) are returned directly since plugins
    * manage their own pooling.
+   *
+   * Base config is resolved by (workspace, install_id) first (#2783): two
+   * workspaces sharing an install_id each clone from their OWN per-workspace
+   * config rather than collapsing onto a single bare `entries` row. The bare
+   * entry remains the fallback for the runtime-only `default`, region pools,
+   * plugin-managed connections, and self-hosted single-tenant installs.
    *
    * Warmup probes fire asynchronously in the background after pool creation.
    * LRU eviction removes the least recently used org's pools when maxOrgs is exceeded.
@@ -568,15 +610,34 @@ export class ConnectionRegistry {
       this.getDefault();
     }
 
+    // Resolve the base config, preferring the per-(workspace, install_id)
+    // entry (the #2783 routing fix). `orgId` IS the workspace id in Atlas.
+    const wsBase = this.workspaceEntries.get(this._workspaceKey(orgId, connectionId));
     const baseEntry = this.entries.get(connectionId);
-    if (!baseEntry) {
+    if (!wsBase && !baseEntry) {
       throw new ConnectionNotRegisteredError({ message: `Connection "${connectionId}" is not registered.`, id: connectionId });
     }
 
-    // Plugin-managed connections don't have config — return base directly
-    if (!baseEntry.config) {
+    // Plugin-managed connections don't have config — return base directly.
+    // Reached only when there's no per-workspace config to clone from (plugin
+    // pools register on the bare map via registerDirect).
+    if (!wsBase && baseEntry && !baseEntry.config) {
       return baseEntry.conn;
     }
+
+    // Per-workspace config wins; bare entry is the fallback. Plugin validators /
+    // metadata only ever live on the bare entry (native per-workspace configs
+    // carry neither). The `baseConfig`/`baseDbType` guard below can't actually
+    // fire given the checks above, but keeps the types honest without `!`.
+    const baseConfig = wsBase?.config ?? baseEntry?.config;
+    const baseDbType = wsBase?.dbType ?? baseEntry?.dbType;
+    if (!baseConfig || !baseDbType) {
+      throw new ConnectionNotRegisteredError({ message: `Connection "${connectionId}" is not registered.`, id: connectionId });
+    }
+    const baseDescription = wsBase?.config.description ?? baseEntry?.description;
+    const baseTargetHost = wsBase?.targetHost ?? baseEntry?.targetHost ?? "(unknown)";
+    const baseValidate = baseEntry?.validate;
+    const basePluginMeta = baseEntry?.pluginMeta;
 
     // Evict LRU org if at org-count capacity
     this._evictLRUOrg();
@@ -603,14 +664,14 @@ export class ConnectionRegistry {
 
     // Create org-scoped pool with org-specific limits
     const orgConfig: ConnectionConfig = {
-      ...baseEntry.config,
+      ...baseConfig,
       maxConnections: this.orgPoolSettings.maxConnections,
       idleTimeoutMs: this.orgPoolSettings.idleTimeoutMs,
     };
 
     let newConn: DBConnection;
     try {
-      newConn = createConnection(baseEntry.dbType, orgConfig);
+      newConn = createConnection(baseDbType, orgConfig);
     } catch (err) {
       log.error(
         { orgId, connectionId, err: errorMessage(err) },
@@ -620,16 +681,16 @@ export class ConnectionRegistry {
     }
     const entry: RegistryEntry = {
       conn: newConn,
-      dbType: baseEntry.dbType,
-      description: baseEntry.description,
+      dbType: baseDbType,
+      description: baseDescription,
       lastQueryAt: Date.now(),
       config: orgConfig,
-      targetHost: baseEntry.targetHost,
+      targetHost: baseTargetHost,
       consecutiveFailures: 0,
       lastHealth: null,
       firstFailureAt: null,
-      validate: baseEntry.validate,
-      pluginMeta: baseEntry.pluginMeta,
+      validate: baseValidate,
+      pluginMeta: basePluginMeta,
       totalQueries: 0,
       totalErrors: 0,
       totalQueryTimeMs: 0,
@@ -798,6 +859,77 @@ export class ConnectionRegistry {
         log.warn({ err: errorMessage(err), connectionId: id }, "Failed to close previous connection during re-registration");
       });
     }
+  }
+
+  /**
+   * Register a per-(workspace, install_id) base config (#2783).
+   *
+   * Config-only: stores the URL/schema/dbType so `getForOrg(workspaceId,
+   * installId)` clones an org-scoped pool from the CORRECT per-workspace URL,
+   * instead of collapsing onto a single bare `entries` row when two workspaces
+   * share an install_id. No pool is opened here — org pools are created lazily
+   * by `getForOrg` — so this is an idempotent upsert: re-registering with a new
+   * config replaces it, which is how a datasource config update refreshes
+   * routing.
+   *
+   * Throws (via `detectDBType`) on a non-native URL scheme — callers filter to
+   * postgres/mysql before invoking (plugin-managed pools register on the bare
+   * map via `registerDirect`).
+   */
+  registerForWorkspace(workspaceId: string, installId: string, config: ConnectionConfig): void {
+    const dbType = detectDBType(config.url);
+    const targetHost = extractTargetHost(config.url);
+    this.workspaceEntries.set(this._workspaceKey(workspaceId, installId), {
+      config,
+      dbType,
+      targetHost,
+    });
+  }
+
+  /** Whether a per-(workspace, install_id) base config is registered. */
+  hasForWorkspace(workspaceId: string, installId: string): boolean {
+    return this.workspaceEntries.has(this._workspaceKey(workspaceId, installId));
+  }
+
+  /**
+   * Whether ANY workspace still has a per-workspace config for this install_id.
+   * Lets the uninstall path keep the shared bare `entries` row (and its
+   * install-id-keyed metadata) alive until the last workspace owning the
+   * install_id is gone. O(n) over `workspaceEntries` — uninstall is rare.
+   */
+  hasWorkspacePoolsFor(installId: string): boolean {
+    const suffix = `\u0000${installId}`;
+    for (const key of this.workspaceEntries.keys()) {
+      if (key.endsWith(suffix)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Target host (no credentials) for a per-(workspace, install_id) base config,
+   * or "(unknown)" if none is registered. Used by tests / diagnostics to prove
+   * two workspaces sharing an install_id resolve to independent URLs.
+   */
+  getTargetHostForWorkspace(workspaceId: string, installId: string): string {
+    return this.workspaceEntries.get(this._workspaceKey(workspaceId, installId))?.targetHost ?? "(unknown)";
+  }
+
+  /**
+   * Remove a per-(workspace, install_id) base config. Returns true if one was
+   * present. Called by the bridge on uninstall / config-delete so the routing
+   * config (which `getForOrg` resolves with priority over the bare entry)
+   * doesn't outlive the install and silently route to a stale URL.
+   *
+   * Only the targeted workspace's config is removed — a sibling workspace
+   * sharing the install_id keeps its own. Org pools already cloned into
+   * `orgEntries` are left intact: the next query re-resolves on cache miss
+   * (falling through to the bare entry, or throwing), and LRU / restart
+   * reclaims the idle clone. The shared bare `entries` row is handled by the
+   * caller via the {@link hasWorkspacePoolsFor} guard so siblings keep
+   * resolving install-id-keyed metadata.
+   */
+  unregisterForWorkspace(workspaceId: string, installId: string): boolean {
+    return this.workspaceEntries.delete(this._workspaceKey(workspaceId, installId));
   }
 
   /** Register a pre-built connection (e.g. for benchmark harness or datasource plugin). */
@@ -1324,12 +1456,13 @@ export class ConnectionRegistry {
     }
     await Promise.all(closing);
     this.entries.clear();
+    this.workspaceEntries.clear();
     this.orgEntries.clear();
     this.orgAccessSeq.clear();
     _resetWhitelists();
   }
 
-  /** Clears all registered connections (base + org) and resets the table whitelist cache. Used during graceful shutdown, tests, and the benchmark harness. */
+  /** Clears all registered connections (base + per-workspace + org) and resets the table whitelist cache. Used during graceful shutdown, tests, and the benchmark harness. */
   _reset(): void {
     this.stopHealthChecks();
     this.drainCooldownSet.clear();
@@ -1345,6 +1478,7 @@ export class ConnectionRegistry {
       });
     }
     this.entries.clear();
+    this.workspaceEntries.clear();
     this.orgEntries.clear();
     this.orgAccessSeq.clear();
     _resetWhitelists();

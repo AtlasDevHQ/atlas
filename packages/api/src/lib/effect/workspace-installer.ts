@@ -702,8 +702,8 @@ export interface WorkspaceInstallerShape {
    * tooling / migration scripts; the admin UI uses soft archive
    * exclusively.
    *
-   * Both paths call `unregisterDatasourceInstall(installId)` so live
-   * queries against the install fail-closed immediately, matching the
+   * Both paths call `unregisterDatasourceInstall(workspaceId, installId)` so
+   * live queries against the install fail-closed immediately, matching the
    * legacy route's `connections.unregister` side-effect.
    */
   readonly uninstallDatasource: (
@@ -723,8 +723,8 @@ export interface WorkspaceInstallerShape {
    *
    * URL changes are NOT registered automatically; the route owns the
    * test-connect-then-update dance. After a successful write the
-   * facade does call `unregisterDatasourceInstall(installId)` to evict
-   * the now-stale pool — the next query rebuilds from the new config.
+   * facade does call `unregisterDatasourceInstall(workspaceId, installId)` to
+   * evict the now-stale pool — the next query rebuilds from the new config.
    */
   readonly updateDatasourceConfig: (
     workspaceId: WorkspaceId,
@@ -1573,7 +1573,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       // Tear the pool down whichever path we took — live queries against
       // the archived install fail-closed immediately rather than at TTL.
       try {
-        lazyDatasourceBridge().unregisterDatasourceInstall(installId);
+        lazyDatasourceBridge().unregisterDatasourceInstall(workspaceId, installId);
       } catch (err) {
         log.warn(
           {
@@ -1730,7 +1730,7 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
       // against an unregistered install throws `ConnectionNotRegisteredError`
       // until next boot (codex P1, #2784).
       try {
-        lazyDatasourceBridge().unregisterDatasourceInstall(installId);
+        lazyDatasourceBridge().unregisterDatasourceInstall(workspaceId, installId);
       } catch (err) {
         log.warn(
           {

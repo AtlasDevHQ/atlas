@@ -39,9 +39,11 @@ import {
  * with the `ConnectionRegistry`.
  *
  * Returns:
- *   - `true`  — a fresh registration was performed
- *   - `false` — either the dbType is plugin-managed (filter short-circuit)
- *               or the install_id was already registered (idempotent re-register)
+ *   - `true`  — a fresh registration was performed (the per-(workspace,
+ *               install_id) config and/or the bare install_id row was new)
+ *   - `false` — either the dbType is plugin-managed (filter short-circuit) or
+ *               BOTH the per-(workspace, install_id) config and the bare
+ *               install_id were already registered (full idempotent re-register)
  *
  * Throws on any resolver violation (missing required field, invalid
  * schema identifier, unknown catalog slug). Resolver runs before the
@@ -63,39 +65,70 @@ export function registerDatasourceInstall(
     return false;
   }
 
-  // Idempotent re-register: if the install_id is already registered (boot
-  // ran, or a prior `installDatasource` registered it), keep the existing
-  // pool. The route layer pre-`healthCheck`'s a fresh pool before writing
-  // the DB row, so by the time we reach the bridge the pool is already
-  // healthy and re-registering would tear down its open connections.
-  // `loadSavedConnections` already has the same skip; this guard means the
-  // facade can call the bridge unconditionally after a successful install.
-  if (connections.has(row.installId)) {
-    return false;
-  }
-
-  connections.register(row.installId, {
+  const config = {
     url: poolConfig.url,
     ...(poolConfig.description !== undefined ? { description: poolConfig.description } : {}),
     ...(poolConfig.dbType === "postgres" && poolConfig.schema
       ? { schema: poolConfig.schema }
       : {}),
-  });
-  return true;
+  };
+
+  // Per-(workspace, install_id) config registration — the routing source of
+  // truth that retires the `DISTINCT ON (install_id)` multi-tenant collision
+  // (#2783). `getForOrg(workspaceId, installId)` clones an org pool from THIS
+  // config, so two workspaces sharing an install_id route to their own DBs.
+  // Config-only + upsert (no live pool to tear down), so it's registered
+  // unconditionally — a datasource config update replaces the base config used
+  // for SUBSEQUENT org-pool clones here (an org pool already cloned into
+  // `orgEntries` keeps the prior config until it's evicted/restarted — see
+  // #3109 for eager org-pool drain on update).
+  const compositeExisted = connections.hasForWorkspace(row.workspaceId, row.installId);
+  connections.registerForWorkspace(row.workspaceId, row.installId, config);
+
+  // Bare install-id registration keeps install-id-keyed readers
+  // (getDBType / getTargetHost / validators) and self-hosted
+  // `connections.get(installId)` working. Idempotent on the bare id so a
+  // healthy pre-registered pool isn't torn down — the route layer
+  // pre-`healthCheck`'s a fresh pool before writing the DB row, and boot's
+  // `loadSavedConnections` registers the first workspace's row. Two workspaces
+  // sharing an install_id collapse onto one bare row by design (it backs only
+  // install-id-keyed metadata, not routing — routing uses the per-workspace
+  // config above).
+  const bareExisted = connections.has(row.installId);
+  if (!bareExisted) {
+    connections.register(row.installId, config);
+  }
+
+  // Fresh if either registration newly landed — the boot loader counts these.
+  return !compositeExisted || !bareExisted;
 }
 
 /**
  * Unregister an install from the `ConnectionRegistry`. Returns `false`
- * when the install was not registered (plugin-managed pool, or a soft-
- * archived row that never landed in the registry). Mirrors
- * {@link registerDatasourceInstall} so the install / uninstall paths in
- * `WorkspaceInstaller` stay symmetric.
+ * when nothing was registered (plugin-managed pool, or a soft-archived row
+ * that never landed in the registry). Mirrors {@link registerDatasourceInstall}
+ * so the install / uninstall paths in `WorkspaceInstaller` stay symmetric.
  *
- * The registry's own `unregister` throws if the id isn't present; we
- * guard with `has()` so the soft-archive path (status → archived) is a
- * no-op when the row was never pooled (e.g. clickhouse).
+ * Symmetric with the dual-registration in {@link registerDatasourceInstall}:
+ *  1. Removes the per-(workspace, install_id) routing config — `getForOrg`
+ *     resolves it with priority over the bare entry, so leaving it would let
+ *     an uninstalled datasource keep routing to a stale URL (#2783).
+ *  2. Removes the shared bare `entries` row ONLY when no OTHER workspace still
+ *     owns the install_id (`hasWorkspacePoolsFor`). A sibling sharing the
+ *     install_id keeps the bare row so its install-id-keyed metadata
+ *     (getDBType / getTargetHost / validators) keeps resolving.
+ *
+ * The registry's own `unregister` throws if the id isn't present; we guard
+ * with `has()` so the soft-archive path (status → archived) is a no-op when
+ * the row was never pooled (e.g. clickhouse).
  */
-export function unregisterDatasourceInstall(installId: string): boolean {
-  if (!connections.has(installId)) return false;
-  return connections.unregister(installId);
+export function unregisterDatasourceInstall(workspaceId: string, installId: string): boolean {
+  const removedWorkspace = connections.unregisterForWorkspace(workspaceId, installId);
+  // Drop the shared bare row only once the last workspace owning this
+  // install_id is gone — siblings keep their install-id-keyed metadata.
+  const removedBare =
+    !connections.hasWorkspacePoolsFor(installId) &&
+    connections.has(installId) &&
+    connections.unregister(installId);
+  return removedWorkspace || removedBare;
 }

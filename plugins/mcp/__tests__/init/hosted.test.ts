@@ -1189,14 +1189,23 @@ describe("runHostedAuthFlow — malformed JWT discriminant", () => {
 
 describe("runInit --hosted --write failure path", () => {
   it("surfaces a write failure and leaves any existing config untouched", async () => {
+    // The write failure is injected via chmod(0o500) on the target dir. Skip
+    // where those permission bits don't block writes: win32 (no POSIX perms)
+    // and root, where uid 0 bypasses POSIX permission checks entirely so the
+    // write would succeed and exitCode would be 0. Real CI runs as a non-root
+    // POSIX user, so this path stays covered there (#2821).
+    if (process.platform === "win32") return;
+    if (process.getuid?.() === 0) {
+      console.warn(
+        "[skip] hosted write-failure case: running as root (uid 0) bypasses chmod(0o500); covered by non-root CI.",
+      );
+      return;
+    }
     const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-hosted-fail-"));
     // Pre-existing config we expect to survive the failed write.
     const target = join(dir, "claude_desktop_config.json");
     const original = `${JSON.stringify({ mcpServers: { existing: { command: "x", args: [] } } }, null, 2)}\n`;
     writeFileSync(target, original, { encoding: "utf8" });
-    // Make the directory read-only so the tmp write fails. POSIX-only —
-    // skip on win32 where chmod permission bits aren't enforced.
-    if (process.platform === "win32") return;
     chmodSync(dir, 0o500);
     const { serve, controller } = fakeServe({});
     const cap = captureStdio();
@@ -1232,6 +1241,10 @@ describe("runInit --hosted --write failure path", () => {
 
   it("surfaces a directory-creation failure with the directory in the message", async () => {
     if (process.platform === "win32") return;
+    // Note: no root guard here. Unlike the chmod-based case above, this failure
+    // is injected structurally (mkdir under a regular file → ENOTDIR), which the
+    // kernel returns regardless of uid — so root sees the same failure and this
+    // case stays meaningful under root execution (verified via `unshare -r`).
     const dir = mkdtempSync(join(tmpdir(), "atlas-mcp-init-hosted-mkdir-"));
     // Write a regular file where we want to create a subdirectory — the
     // recursive mkdir will fail with ENOTDIR.

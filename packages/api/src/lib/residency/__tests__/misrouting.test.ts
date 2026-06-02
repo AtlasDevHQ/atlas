@@ -251,6 +251,102 @@ describe("misrouting detection", () => {
       expect(result2).not.toBeNull();
       expect(result2!.expectedRegion).toBe("eu-west");
     });
+
+    // ── Staging region (#2982) ──────────────────────────────────────
+    //
+    // `staging` is the 4th DeployRegion (#2897). `detectMisrouting` is
+    // region-agnostic — it just compares the workspace region string against
+    // `getApiRegion()` and reads `regions[workspaceRegion]?.apiUrl` for the
+    // redirect hint — so these cases pin behavior structurally rather than
+    // exercising new code paths. The point is to lock it before the staging
+    // instance goes live so a future refactor can't silently regress routing.
+    //
+    // NOTE on the redirect hint: the issue (#2982) was filed when `staging`
+    // was intentionally ABSENT from `residency.regions`, so the hint resolved
+    // to `undefined`. PR #2925 later ADDED a `staging` arm (so the SaaS region
+    // guard accepts ATLAS_API_REGION=staging without a hard-fail boot — see
+    // deploy/api/atlas.config.ts), which means in today's prod config the hint
+    // resolves to `https://api.staging.useatlas.dev`. We pin BOTH states: the
+    // absent-arm case (issue's original premise) and the present-arm case
+    // (current deploy reality). Either way `detectMisrouting` behaves correctly
+    // — the only difference is whether a `correctApiUrl` accompanies the flag.
+    describe("staging region", () => {
+      it("does NOT flag a staging-keyed workspace on the staging instance", async () => {
+        process.env.ATLAS_API_REGION = "staging";
+        mockWorkspaceRegion = "staging";
+        const result = await detectMisrouting("org-staging", "req-1");
+        // Matches at misrouting.ts:144 (workspaceRegion === apiRegion) → null.
+        expect(result).toBeNull();
+        expect(getMisroutedCount()).toBe(0);
+      });
+
+      it("flags a staging-keyed workspace on a prod instance with NO correctApiUrl when staging is absent from residency.regions", async () => {
+        // Mirrors the issue's original premise: staging not in residency.regions.
+        process.env.ATLAS_API_REGION = "us";
+        mockWorkspaceRegion = "staging";
+        mockConfig = {
+          residency: {
+            defaultRegion: "us",
+            regions: {
+              us: { label: "United States", databaseUrl: "postgres://...", apiUrl: "https://api.useatlas.dev" },
+              eu: { label: "Europe", databaseUrl: "postgres://...", apiUrl: "https://api-eu.useatlas.dev" },
+              apac: { label: "Asia Pacific", databaseUrl: "postgres://...", apiUrl: "https://api-apac.useatlas.dev" },
+              // staging intentionally NOT present → regions["staging"]?.apiUrl is undefined
+            },
+          },
+        };
+        const result = await detectMisrouting("org-staging", "req-1");
+        expect(result).not.toBeNull();
+        expect(result!.expectedRegion).toBe("staging");
+        expect(result!.actualRegion).toBe("us");
+        // Pinned: no redirect hint when the region is absent from config.
+        expect(result!.correctApiUrl).toBeUndefined();
+        expect(getMisroutedCount()).toBe(1);
+      });
+
+      it("flags a staging-keyed workspace on a prod instance WITH a correctApiUrl when staging is present in residency.regions (current deploy config, #2925)", async () => {
+        // Mirrors today's deploy/api/atlas.config.ts: staging IS in the regions map.
+        process.env.ATLAS_API_REGION = "us";
+        mockWorkspaceRegion = "staging";
+        mockConfig = {
+          residency: {
+            defaultRegion: "us",
+            regions: {
+              us: { label: "United States", databaseUrl: "postgres://...", apiUrl: "https://api.useatlas.dev" },
+              staging: { label: "Staging", databaseUrl: "postgres://...", apiUrl: "https://api.staging.useatlas.dev" },
+            },
+          },
+        };
+        const result = await detectMisrouting("org-staging", "req-1");
+        expect(result).not.toBeNull();
+        expect(result!.expectedRegion).toBe("staging");
+        expect(result!.actualRegion).toBe("us");
+        // Present-arm reality: the hint resolves to the staging apiUrl.
+        expect(result!.correctApiUrl).toBe("https://api.staging.useatlas.dev");
+        expect(getMisroutedCount()).toBe(1);
+      });
+
+      it("flags a prod-keyed workspace on the staging instance", async () => {
+        process.env.ATLAS_API_REGION = "staging";
+        mockWorkspaceRegion = "us";
+        mockConfig = {
+          residency: {
+            defaultRegion: "staging",
+            regions: {
+              us: { label: "United States", databaseUrl: "postgres://...", apiUrl: "https://api.useatlas.dev" },
+              staging: { label: "Staging", databaseUrl: "postgres://...", apiUrl: "https://api.staging.useatlas.dev" },
+            },
+          },
+        };
+        const result = await detectMisrouting("org-prod-us", "req-1");
+        expect(result).not.toBeNull();
+        expect(result!.expectedRegion).toBe("us");
+        expect(result!.actualRegion).toBe("staging");
+        // The us workspace is redirected back to the us instance.
+        expect(result!.correctApiUrl).toBe("https://api.useatlas.dev");
+        expect(getMisroutedCount()).toBe(1);
+      });
+    });
   });
 
   // ── Counter reset ─────────────────────────────────────────────────

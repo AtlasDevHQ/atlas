@@ -154,11 +154,34 @@ describe("deliver", () => {
       calls++;
       return new Response("upstream", { status: 502 });
     });
-    const result = await deliver(SUB, EVENT, { fetcher: fetcher as Fetcher });
+    // Inject a no-op sleep so the [1s, 2s] backoff doesn't add 3s of real wait.
+    const result = await deliver(SUB, EVENT, {
+      fetcher: fetcher as Fetcher,
+      sleep: () => Promise.resolve(),
+    });
     expect(result.kind).toBe("http_error");
     if (result.kind === "http_error") {
       expect(result.attempts).toBe(3);
       expect(result.status).toBe(502);
+    }
+    expect(calls).toBe(3);
+  });
+
+  it("maps a transport error to kind=transport_error after exhausting retries", async () => {
+    let calls = 0;
+    const fetcher = mock(async () => {
+      calls++;
+      throw new TypeError("ECONNREFUSED");
+    });
+    const result = await deliver(SUB, EVENT, {
+      fetcher: fetcher as Fetcher,
+      sleep: () => Promise.resolve(),
+    });
+    expect(result.kind).toBe("transport_error");
+    if (result.kind === "transport_error") {
+      expect(result.attempts).toBe(3);
+      expect(result.subscriptionId).toBe("sub-1");
+      expect(result.error).toContain("ECONNREFUSED");
     }
     expect(calls).toBe(3);
   });

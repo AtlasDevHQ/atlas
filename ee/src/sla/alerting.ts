@@ -416,6 +416,8 @@ export interface DeliverAlertOptions {
   readonly secret?: string;
   /** Pin the signature timestamp for deterministic tests. */
   readonly nowSeconds?: number;
+  /** Injectable sleep — test seam to skip real backoff waits. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -429,8 +431,9 @@ export interface DeliverAlertOptions {
  *     (`X-Webhook-Signature: sha256=…` + `X-Webhook-Timestamp`).
  *   - secret unset                     → unsigned, Content-Type only, with a
  *     one-time warn (back-compat for existing URL-only deploys).
- * Retries 3× with [1000, 2000]ms capped-exponential backoff, 10s per-attempt
- * timeout. The payload shape is byte-identical to the pre-signing version.
+ * Up to 3 attempts (2 retries) with [1000, 2000]ms capped-exponential
+ * backoff, 10s per-attempt timeout. The payload shape is byte-identical to
+ * the pre-signing version.
  */
 export const deliverAlert = (
   alert: SLAAlert,
@@ -440,6 +443,9 @@ export const deliverAlert = (
     const webhookUrl = options.webhookUrl ?? process.env.ATLAS_SLA_WEBHOOK_URL;
     if (!webhookUrl) return;
 
+    // An empty string counts as "no secret" → unsigned (back-compat) path, not
+    // an empty-key HMAC. `??` preserves "", so the guard and the `sign` ternary
+    // both branch on truthiness and must stay in sync.
     const secret = options.secret ?? process.env.ATLAS_SLA_WEBHOOK_SECRET;
     if (!secret) warnUnsignedOnce();
     const sign: SignStrategy = secret
@@ -462,6 +468,7 @@ export const deliverAlert = (
           },
           timeoutMs: 10_000,
           fetcher: options.fetcher,
+          sleep: options.sleep,
         }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });

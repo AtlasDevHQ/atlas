@@ -216,7 +216,12 @@ export type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 export async function deliver(
   subscription: SubscriptionRow,
   event: ChangeEvent,
-  options: { fetcher?: Fetcher; nowSeconds?: number } = {},
+  options: {
+    fetcher?: Fetcher;
+    nowSeconds?: number;
+    /** Injectable sleep — test seam. Defaults to a real timer in the package. */
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<DeliveryAttempt> {
   let token: string;
   try {
@@ -257,6 +262,7 @@ export async function deliver(
     },
     timeoutMs: DELIVERY_TIMEOUT_MS,
     fetcher: options.fetcher,
+    sleep: options.sleep,
   });
 
   // deliverWebhook does no logging of its own (and neither did the old loop
@@ -319,6 +325,15 @@ export async function deliver(
         attempts: outcome.attempts,
         error: outcome.error,
       };
+    default: {
+      // `@useatlas/webhook-publisher` is independently versioned — if a future
+      // release adds a fourth `DeliveryOutcome` kind, fail the build here
+      // rather than silently returning `undefined` (noImplicitReturns is off).
+      const _exhaustive: never = outcome;
+      throw new Error(
+        `Unhandled delivery outcome: ${JSON.stringify(_exhaustive)}`,
+      );
+    }
   }
 }
 

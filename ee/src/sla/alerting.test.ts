@@ -252,13 +252,19 @@ describe("deliverAlert", () => {
         fetcher: fetcher as unknown as Fetcher,
         webhookUrl: URL,
         secret: SECRET,
+        // No-op sleep keeps the [1s, 2s] backoff from adding real wall-clock.
+        sleep: () => Promise.resolve(),
       }),
     );
 
     expect(calls).toBe(3);
     expect(logSpies.error).toHaveBeenCalled();
-  }, 10_000);
+  });
 
+  // NOTE: `warnUnsignedOnce` latches at the module level (one warn per
+  // process). This is the only test that drives the unsigned path, so the
+  // latch is still un-tripped when it runs. A second unsigned-path test would
+  // need the latch reset to assert the warn fires.
   it("delivers unsigned (Content-Type only) and warns when no secret is set", async () => {
     let headers: Record<string, string> = {};
     const fetcher = mock(async (_url: string, init: RequestInit) => {

@@ -1483,6 +1483,13 @@ export type BackupRowShape = {
   readonly error_message: string | null;
   /** Depth of the last verification ('full-restore' | 'header-only') or null if never verified. */
   readonly verify_level: string | null;
+  // NOTE: `expected_table_count` (the EE `BackupRow`'s verification baseline,
+  // #2989) is intentionally NOT surfaced here. It's a verification-internal
+  // detail consumed only by `verifyByRestore` via the direct engine import —
+  // the route reads backups through this Tag and the wire `BackupEntry`, both
+  // of which render verification *depth* (`verify_level`) and *outcome*
+  // (`status` + `error_message`), never the raw expected count. Keep it off
+  // this boundary and out of `@useatlas/types` unless a consumer needs it.
 };
 
 export type CreateBackupResult = {

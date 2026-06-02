@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
@@ -74,6 +74,7 @@ const {
   ensureTable,
   getBackupConfig,
   updateBackupConfig,
+  createBackup,
   listBackups,
   getBackupById,
   purgeExpiredBackups,
@@ -163,6 +164,67 @@ describe("updateBackupConfig", () => {
     expect(upsertQuery.sql).toContain("ON CONFLICT");
     expect(upsertQuery.params[0]).toBe("0 1 * * *"); // new schedule
     expect(upsertQuery.params[1]).toBe(30); // unchanged retention
+  });
+});
+
+describe("createBackup — expected_table_count baseline (#2989)", () => {
+  let priorDatabaseUrl: string | undefined;
+
+  beforeEach(() => {
+    ee.reset();
+    _resetTableReady();
+    mockSpawn.mockClear();
+    priorDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/testdb";
+  });
+
+  afterEach(() => {
+    if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = priorDatabaseUrl;
+  });
+
+  // Query order for createBackup:
+  //   ensureTable (6) + getBackupConfig SELECT (1) + INSERT in-progress (1)
+  //   + countSourceBaseTables SELECT (1) + completed UPDATE (1) = 10 queries.
+  const completedUpdate = () =>
+    ee.capturedQueries.find((q) => q.sql.includes("status = 'completed'"));
+
+  it("persists the source's public BASE TABLE count into the completed UPDATE", async () => {
+    ee.queueMockRows(
+      [], [], [], [], [], [],            // ensureTable
+      [defaultConfigRow],                 // getBackupConfig SELECT
+      [{ id: "b1" }],                     // INSERT ... RETURNING id
+      [{ count: "5" }],                   // countSourceBaseTables
+      [],                                 // completed UPDATE
+    );
+
+    const result = await run(createBackup());
+    expect(result.status).toBe("completed");
+
+    const update = completedUpdate();
+    expect(update).toBeDefined();
+    expect(update!.sql).toContain("expected_table_count = $2");
+    // params = [size_bytes, expected_table_count, id]
+    expect(update!.params[1]).toBe(5);
+    expect(update!.params[2]).toBe("b1");
+  });
+
+  it("falls back to null (best-effort) when the table count is unreadable — backup still completes", async () => {
+    ee.queueMockRows(
+      [], [], [], [], [], [],            // ensureTable
+      [defaultConfigRow],                 // getBackupConfig SELECT
+      [{ id: "b1" }],                     // INSERT ... RETURNING id
+      [],                                 // countSourceBaseTables → no row → NaN → null
+      [],                                 // completed UPDATE
+    );
+
+    const result = await run(createBackup());
+    // A missing count must NOT abort an otherwise-good backup.
+    expect(result.status).toBe("completed");
+
+    const update = completedUpdate();
+    expect(update).toBeDefined();
+    expect(update!.params[1]).toBeNull();
   });
 });
 

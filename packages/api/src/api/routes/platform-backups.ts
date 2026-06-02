@@ -157,7 +157,7 @@ const confirmRestoreRoute = createRoute({
     400: { description: "Invalid or expired token", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Enterprise feature not enabled, or the backup was purged before confirmation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });

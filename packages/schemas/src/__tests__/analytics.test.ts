@@ -75,9 +75,16 @@ describe("token usage", () => {
       from: "2026-04-01T00:00:00.000Z",
       to: "2026-04-20T00:00:00.000Z",
     };
-    // byModel is additive (#3098): when an older API response omits it, the
-    // schema fills [] so the web always gets an array to map over.
-    expect(TokenSummarySchema.parse(row)).toEqual({ ...row, byModel: [] });
+    // byModel is additive (#3098) and the cache split + effective total are
+    // additive (#3106): when an older API response omits them, the schema fills
+    // [] / 0 so the web always gets a value to render during a rolling deploy.
+    expect(TokenSummarySchema.parse(row)).toEqual({
+      ...row,
+      byModel: [],
+      totalCacheReadTokens: 0,
+      totalCacheWriteTokens: 0,
+      effectiveTokens: 0,
+    });
   });
 
   test("TokenSummarySchema parses a per-model breakdown (#3098)", () => {
@@ -102,6 +109,11 @@ describe("token usage", () => {
     expect(parsed.byModel).toHaveLength(1);
     expect(parsed.byModel[0].model).toBe("anthropic/claude-opus-4.8");
     expect(parsed.byModel[0].provider).toBe("gateway");
+    // Per-model cache split + effective are additive (#3106): a pre-cache-split
+    // row omits them and the schema fills 0.
+    expect(parsed.byModel[0].cacheReadTokens).toBe(0);
+    expect(parsed.byModel[0].cacheWriteTokens).toBe(0);
+    expect(parsed.byModel[0].effectiveTokens).toBe(0);
   });
 
   test("TokenSummarySchema rejects non-ISO from", () => {

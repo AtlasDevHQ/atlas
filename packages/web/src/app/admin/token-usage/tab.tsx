@@ -39,7 +39,7 @@ import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
 import { getTokenUsageColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
-import { Coins, TrendingUp, Users, MessageSquare, Search, Cpu } from "lucide-react";
+import { Coins, TrendingUp, Users, MessageSquare, Search, Cpu, Receipt, Database, DatabaseZap } from "lucide-react";
 import { useState } from "react";
 
 const TokenChart = dynamic(() => import("./token-chart"), { ssr: false });
@@ -150,6 +150,14 @@ export function TokenUsageTab() {
                 description="input + output, not billed"
               />
               <StatCard
+                title="Effective / Billed"
+                value={formatNumber(summary.effectiveTokens)}
+                icon={<Receipt className="size-4" />}
+                description={summary.totalTokens > 0 && summary.effectiveTokens < summary.totalTokens
+                  ? `~${(((summary.totalTokens - summary.effectiveTokens) / summary.totalTokens) * 100).toFixed(0)}% below gross · after cache`
+                  : "after prompt-cache discount"}
+              />
+              <StatCard
                 title="Prompt (input)"
                 value={formatNumber(summary.totalPromptTokens)}
                 icon={<TrendingUp className="size-4" />}
@@ -166,6 +174,22 @@ export function TokenUsageTab() {
                   : undefined}
               />
               <StatCard
+                title="Cache Read"
+                value={formatNumber(summary.totalCacheReadTokens)}
+                icon={<Database className="size-4" />}
+                description={summary.totalPromptTokens > 0
+                  ? `${((summary.totalCacheReadTokens / summary.totalPromptTokens) * 100).toFixed(0)}% of input · ~90% cheaper`
+                  : "served from cache · ~90% cheaper"}
+              />
+              <StatCard
+                title="Cache Write"
+                value={formatNumber(summary.totalCacheWriteTokens)}
+                icon={<DatabaseZap className="size-4" />}
+                description={summary.totalPromptTokens > 0
+                  ? `${((summary.totalCacheWriteTokens / summary.totalPromptTokens) * 100).toFixed(0)}% of input · ~25% premium`
+                  : "written to cache · ~25% premium"}
+              />
+              <StatCard
                 title="Total Requests"
                 value={formatNumber(summary.totalRequests)}
                 icon={<MessageSquare className="size-4" />}
@@ -175,18 +199,19 @@ export function TokenUsageTab() {
               />
             </div>
 
-            {/* Figures above are GROSS input tokens: every agent step re-sends
-                the prompt prefix, so the same context is counted once per step
-                — this is not the billed amount.
-                TODO(#3099): once token_usage persists cache_read_tokens /
-                cache_write_tokens, surface the effective/billed split here
-                (gross − prompt-cache discount). */}
+            {/* Gross figures count every agent step's re-sent prompt prefix once
+                per step, so shared context is double-counted — not the bill.
+                Effective / Billed re-prices the prompt-cache split (reads
+                ~0.1×, writes ~1.25× input; output undiscounted) and is the
+                closer proxy to the actual cost. */}
             <p className="text-[11px] leading-relaxed text-muted-foreground">
-              Token figures are <span className="font-medium text-foreground">gross input tokens</span>,
-              not the billed amount — each agent step re-sends the prompt prefix,
-              so shared context is counted multiple times. Billed/effective
-              tokens (after prompt-cache discounts) are tracked separately
-              (#3099).
+              <span className="font-medium text-foreground">Gross</span> tokens
+              count every agent step&apos;s re-sent prompt prefix, so shared
+              context is counted multiple times — not the billed amount.{" "}
+              <span className="font-medium text-foreground">Effective / Billed</span>{" "}
+              re-prices the prompt-cache split (reads ~0.1×, writes ~1.25× input;
+              output undiscounted) for a closer proxy to the actual cost. Both
+              are token-equivalents, not a dollar figure.
             </p>
 
             {summary.byModel.length > 0 && (
@@ -205,7 +230,10 @@ export function TokenUsageTab() {
                         <TableHead>Provider</TableHead>
                         <TableHead className="text-right">Prompt</TableHead>
                         <TableHead className="text-right">Completion</TableHead>
-                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">Gross</TableHead>
+                        <TableHead className="text-right">Cache Read</TableHead>
+                        <TableHead className="text-right">Cache Write</TableHead>
+                        <TableHead className="text-right">Effective</TableHead>
                         <TableHead className="text-right">Requests</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -216,7 +244,10 @@ export function TokenUsageTab() {
                           <TableCell className="text-muted-foreground">{m.provider}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNumber(m.promptTokens)}</TableCell>
                           <TableCell className="text-right tabular-nums">{formatNumber(m.completionTokens)}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">{formatNumber(m.totalTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{formatNumber(m.totalTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">{formatNumber(m.cacheReadTokens)}</TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">{formatNumber(m.cacheWriteTokens)}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums">{formatNumber(m.effectiveTokens)}</TableCell>
                           <TableCell className="text-right tabular-nums">{m.requestCount}</TableCell>
                         </TableRow>
                       ))}

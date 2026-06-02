@@ -36,6 +36,42 @@ function parseDateRange(
   return { fromDate, toDate };
 }
 
+/**
+ * Anthropic ephemeral (5-min TTL) prompt-cache pricing, expressed relative to
+ * the fresh-input token price (#3106):
+ *   - cache READ  ≈ 0.10× — context replayed from cache is ~90% cheaper
+ *   - cache WRITE ≈ 1.25× — seeding the cache carries a ~25% premium
+ * Source: migration 0114 + reference_gateway_anthropic_caching.
+ */
+const CACHE_READ_FACTOR = 0.1;
+const CACHE_WRITE_FACTOR = 1.25;
+
+/**
+ * Convert gross token counts into a single billed/effective token-equivalent.
+ *
+ * `promptTokens` is the GROSS input total — cache read/write are *subsets* of
+ * it (the AI SDK reports `inputTokens = noCache + cacheRead + cacheWrite`, and
+ * agent.ts persists that total to `token_usage.prompt_tokens`). So the fresh
+ * (full-price) input is `prompt − cacheRead − cacheWrite`, and the effective
+ * figure re-prices the two cache buckets at their discounted rates. Output
+ * tokens carry no cache discount. Kept in token units (not dollars) to stay
+ * comparable with the gross figure shown alongside it.
+ */
+function effectiveTokens(
+  promptTokens: number,
+  completionTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
+): number {
+  const freshInput = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
+  const billed =
+    freshInput +
+    cacheReadTokens * CACHE_READ_FACTOR +
+    cacheWriteTokens * CACHE_WRITE_FACTOR +
+    completionTokens;
+  return Math.max(0, Math.round(billed));
+}
+
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -130,11 +166,15 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
         internalQuery<{
           total_prompt: string;
           total_completion: string;
+          total_cache_read: string;
+          total_cache_write: string;
           total_requests: string;
         }>(
           `SELECT
              COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
              COALESCE(SUM(completion_tokens), 0) AS total_completion,
+             COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read,
+             COALESCE(SUM(cache_write_tokens), 0) AS total_cache_write,
              COUNT(*) AS total_requests
            FROM token_usage
            WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3`,
@@ -145,6 +185,8 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
           provider: string | null;
           total_prompt: string;
           total_completion: string;
+          total_cache_read: string;
+          total_cache_write: string;
           request_count: string;
         }>(
           `SELECT
@@ -152,6 +194,8 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
              provider,
              COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
              COALESCE(SUM(completion_tokens), 0) AS total_completion,
+             COALESCE(SUM(cache_read_tokens), 0) AS total_cache_read,
+             COALESCE(SUM(cache_write_tokens), 0) AS total_cache_write,
              COUNT(*) AS request_count
            FROM token_usage
            WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3
@@ -164,22 +208,42 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
     });
 
     const row = rows[0];
+    const totalPromptTokens = parseInt(row?.total_prompt ?? "0", 10);
+    const totalCompletionTokens = parseInt(row?.total_completion ?? "0", 10);
+    const totalCacheReadTokens = parseInt(row?.total_cache_read ?? "0", 10);
+    const totalCacheWriteTokens = parseInt(row?.total_cache_write ?? "0", 10);
     return c.json({
-      totalPromptTokens: parseInt(row?.total_prompt ?? "0", 10),
-      totalCompletionTokens: parseInt(row?.total_completion ?? "0", 10),
-      totalTokens: parseInt(row?.total_prompt ?? "0", 10) + parseInt(row?.total_completion ?? "0", 10),
+      totalPromptTokens,
+      totalCompletionTokens,
+      totalTokens: totalPromptTokens + totalCompletionTokens,
+      // Prompt-cache split (#3106): both are subsets of totalPromptTokens.
+      totalCacheReadTokens,
+      totalCacheWriteTokens,
+      // Billed/effective token-equivalent after prompt-cache discounts — the
+      // figure the gross totals overstate (cache reads are ~90% cheaper).
+      effectiveTokens: effectiveTokens(
+        totalPromptTokens,
+        totalCompletionTokens,
+        totalCacheReadTokens,
+        totalCacheWriteTokens,
+      ),
       totalRequests: parseInt(row?.total_requests ?? "0", 10),
       // Rows with a NULL model/provider (older usage records written before the
       // column existed) surface as "unknown" rather than being dropped.
       byModel: modelRows.map((m) => {
         const promptTokens = parseInt(m.total_prompt ?? "0", 10);
         const completionTokens = parseInt(m.total_completion ?? "0", 10);
+        const cacheReadTokens = parseInt(m.total_cache_read ?? "0", 10);
+        const cacheWriteTokens = parseInt(m.total_cache_write ?? "0", 10);
         return {
           model: m.model ?? "unknown",
           provider: m.provider ?? "unknown",
           promptTokens,
           completionTokens,
           totalTokens: promptTokens + completionTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          effectiveTokens: effectiveTokens(promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens),
           requestCount: parseInt(m.request_count ?? "0", 10),
         };
       }),

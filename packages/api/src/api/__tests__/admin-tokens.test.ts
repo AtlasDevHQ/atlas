@@ -112,6 +112,10 @@ describe("admin token usage routes", () => {
         promptTokens: 120000,
         completionTokens: 2000,
         totalTokens: 122000,
+        // No cache columns in this mock row → no discount, effective == gross.
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        effectiveTokens: 122000,
         requestCount: 2,
       });
       expect(body.byModel[1].model).toBe("anthropic/claude-sonnet-4.6");
@@ -142,6 +146,87 @@ describe("admin token usage routes", () => {
       const body = await res.json() as any;
       expect(body.byModel[0].model).toBe("unknown");
       expect(body.byModel[0].provider).toBe("unknown");
+    });
+
+    it("aggregates the prompt-cache split and a billed/effective total (#3106)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) return Promise.resolve([]);
+        return Promise.resolve([
+          {
+            total_prompt: "100000",
+            total_completion: "5000",
+            total_cache_read: "60000",
+            total_cache_write: "10000",
+            total_requests: "10",
+          },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+
+      expect(body.totalCacheReadTokens).toBe(60000);
+      expect(body.totalCacheWriteTokens).toBe(10000);
+      expect(body.totalTokens).toBe(105000); // gross = prompt(100k) + completion(5k)
+      // prompt_tokens is the GROSS input total (cache read/write are subsets of it):
+      //   fresh input  = 100000 − 60000 − 10000 = 30000  → billed 1×
+      //   cache read   = 60000 × 0.10 =  6000
+      //   cache write  = 10000 × 1.25 = 12500
+      //   completion   =  5000        →  5000
+      //   effective    = 30000 + 6000 + 12500 + 5000 = 53500
+      expect(body.effectiveTokens).toBe(53500);
+
+      // The cache columns must be summed under the same org filter as the totals.
+      const totalsCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("cache_read_tokens") &&
+          !sql.includes("GROUP BY model"),
+      );
+      expect(totalsCall).toBeDefined();
+      expect(totalsCall![0]).toContain("org_id");
+      expect(totalsCall![1]).toContain("org-test");
+    });
+
+    it("includes the cache split and effective total per model (#3106)", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        if (sql.includes("GROUP BY model")) {
+          return Promise.resolve([
+            {
+              model: "anthropic/claude-opus-4.8",
+              provider: "gateway",
+              total_prompt: "80000",
+              total_completion: "2000",
+              total_cache_read: "50000",
+              total_cache_write: "8000",
+              request_count: "2",
+            },
+          ]);
+        }
+        return Promise.resolve([
+          {
+            total_prompt: "80000",
+            total_completion: "2000",
+            total_cache_read: "50000",
+            total_cache_write: "8000",
+            total_requests: "2",
+          },
+        ]);
+      });
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+
+      expect(body.byModel[0].cacheReadTokens).toBe(50000);
+      expect(body.byModel[0].cacheWriteTokens).toBe(8000);
+      // fresh 22000 + read 5000 + write 10000 + output 2000 = 39000
+      expect(body.byModel[0].effectiveTokens).toBe(39000);
     });
 
     it("returns 404 when no internal DB", async () => {

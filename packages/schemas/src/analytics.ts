@@ -112,12 +112,28 @@ interface ModelUsageRow {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Prompt-cache tokens served from cache (subset of promptTokens, #3106). */
+  cacheReadTokens: number;
+  /** Prompt-cache tokens written to cache (subset of promptTokens, #3106). */
+  cacheWriteTokens: number;
+  /** Billed/effective token-equivalent after prompt-cache discounts (#3106). */
+  effectiveTokens: number;
   requestCount: number;
 }
 interface TokenSummary {
   totalPromptTokens: number;
   totalCompletionTokens: number;
   totalTokens: number;
+  /** Prompt-cache tokens served from cache (subset of totalPromptTokens, #3106). */
+  totalCacheReadTokens: number;
+  /** Prompt-cache tokens written to cache (subset of totalPromptTokens, #3106). */
+  totalCacheWriteTokens: number;
+  /**
+   * Billed/effective token-equivalent after prompt-cache discounts (#3106) —
+   * the figure the gross `totalTokens` overstates. Cache reads are repriced at
+   * ~0.1×, cache writes at ~1.25×; output is undiscounted.
+   */
+  effectiveTokens: number;
   totalRequests: number;
   /**
    * Per-model token breakdown over the same window (#3098). Lets an operator
@@ -150,6 +166,11 @@ export const ModelUsageRowSchema = z.object({
   promptTokens: z.number(),
   completionTokens: z.number(),
   totalTokens: z.number(),
+  // Additive (#3106): `.default(0)` so a web bundle parsing a pre-cache-split
+  // API response still validates during a rolling deploy.
+  cacheReadTokens: z.number().default(0),
+  cacheWriteTokens: z.number().default(0),
+  effectiveTokens: z.number().default(0),
   requestCount: z.number(),
 }) satisfies z.ZodType<ModelUsageRow, unknown>;
 
@@ -157,6 +178,11 @@ export const TokenSummarySchema = z.object({
   totalPromptTokens: z.number(),
   totalCompletionTokens: z.number(),
   totalTokens: z.number(),
+  // Additive (#3106): `.default(0)` so a web bundle parsing a pre-cache-split
+  // API response still validates during a rolling deploy.
+  totalCacheReadTokens: z.number().default(0),
+  totalCacheWriteTokens: z.number().default(0),
+  effectiveTokens: z.number().default(0),
   totalRequests: z.number(),
   // Additive (#3098): `.default([])` so a web bundle parsing an older API
   // response (pre-byModel) still validates during a rolling deploy.

@@ -28,6 +28,7 @@ import {
   describe,
   it,
   expect,
+  beforeAll,
   beforeEach,
   afterEach,
   mock,
@@ -187,6 +188,30 @@ describe("/api/v1/integrations/discord", () => {
   const savedBotToken = process.env.DISCORD_BOT_TOKEN;
   const savedClientId = process.env.DISCORD_CLIENT_ID;
   const savedPublicApiUrl = process.env.ATLAS_PUBLIC_API_URL;
+
+  // Warm the app/runtime build once, up front, with a generous timeout. The
+  // first `getApp()` pays the full `import("../../api/index")` build cost; the
+  // rest are cheap (module-cached). Paying it here — rather than letting it
+  // land on whichever test runs first — keeps that one-time cost from racing
+  // the default 5s per-test timeout under heavy isolated-runner concurrency
+  // (#3089).
+  //
+  // The discord install/callback routes read DISCORD_CLIENT_ID at module-load
+  // time to decide implemented (302) vs. not-configured (501) — see
+  // teams-discord-always-mount.test.ts. Since this import is what primes the
+  // module cache for every test, it must happen with the discord env set, or
+  // the routes bind in 501 mode for the whole file. Mirror the `beforeEach`
+  // env here; `beforeEach`/`afterEach` still own per-test setup and restore.
+  beforeAll(async () => {
+    process.env.DISCORD_BOT_TOKEN = "test-bot-token";
+    process.env.DISCORD_CLIENT_ID = "test-client-id";
+    process.env.DISCORD_PUBLIC_KEY = "test-public-key";
+    process.env.ATLAS_PUBLIC_API_URL = "https://atlas.test";
+    if (!process.env.ATLAS_ENCRYPTION_KEY) {
+      process.env.ATLAS_ENCRYPTION_KEY = "test-encryption-key-32-bytes-long-aa";
+    }
+    await getApp();
+  }, 30_000);
 
   beforeEach(() => {
     process.env.DISCORD_BOT_TOKEN = "test-bot-token";

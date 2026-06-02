@@ -12,6 +12,7 @@ const { getProviderType, getDefaultProvider, getModel, getModelForConfig, resolv
 const origProvider = process.env.ATLAS_PROVIDER;
 const origModel = process.env.ATLAS_MODEL;
 const origVercel = process.env.VERCEL;
+const origDeployMode = process.env.ATLAS_DEPLOY_MODE;
 const origCompatBaseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
 const origCompatApiKey = process.env.OPENAI_COMPATIBLE_API_KEY;
 const origGatewayKey = process.env.AI_GATEWAY_API_KEY;
@@ -25,6 +26,9 @@ afterEach(() => {
 
   if (origVercel !== undefined) process.env.VERCEL = origVercel;
   else delete process.env.VERCEL;
+
+  if (origDeployMode !== undefined) process.env.ATLAS_DEPLOY_MODE = origDeployMode;
+  else delete process.env.ATLAS_DEPLOY_MODE;
 
   if (origCompatBaseURL !== undefined) process.env.OPENAI_COMPATIBLE_BASE_URL = origCompatBaseURL;
   else delete process.env.OPENAI_COMPATIBLE_BASE_URL;
@@ -145,14 +149,31 @@ describe("getProviderType", () => {
 });
 
 describe("getDefaultProvider", () => {
-  test("returns 'anthropic' when VERCEL is not set", () => {
+  test("returns 'anthropic' when self-hosted (no VERCEL, no SaaS deploy mode)", () => {
     delete process.env.VERCEL;
+    delete process.env.ATLAS_DEPLOY_MODE;
     expect(getDefaultProvider()).toBe("anthropic");
   });
 
   test("returns 'gateway' when VERCEL is set", () => {
+    delete process.env.ATLAS_DEPLOY_MODE;
     process.env.VERCEL = "1";
     expect(getDefaultProvider()).toBe("gateway");
+  });
+
+  // SaaS runs on Railway where VERCEL is unset — the deploy-mode signal is what
+  // makes the hosted default `gateway` (so an unset ATLAS_PROVIDER doesn't fall
+  // back to anthropic-direct and bill/report the wrong model). #3098.
+  test("returns 'gateway' when ATLAS_DEPLOY_MODE=saas even without VERCEL", () => {
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    expect(getDefaultProvider()).toBe("gateway");
+  });
+
+  test("self-hosted deploy mode keeps the anthropic default", () => {
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
+    expect(getDefaultProvider()).toBe("anthropic");
   });
 });
 
@@ -195,6 +216,18 @@ describe("resolveModelId — SSOT default (#3098)", () => {
   test("throws for openai-compatible with no model and no default", () => {
     delete process.env.ATLAS_MODEL;
     expect(() => resolveModelId("openai-compatible", undefined)).toThrow("ATLAS_MODEL is required");
+  });
+
+  // The bug end-to-end: a SaaS deployment with nothing configured must resolve
+  // gateway → Sonnet 4.6, NOT anthropic → Opus. With no provider override and no
+  // ATLAS_PROVIDER, the provider falls through to getDefaultProvider() (gateway
+  // on SaaS), then to PROVIDER_DEFAULTS.gateway. #3098.
+  test("unset provider+model on SaaS resolves the gateway Sonnet default", () => {
+    delete process.env.ATLAS_PROVIDER;
+    delete process.env.ATLAS_MODEL;
+    delete process.env.VERCEL;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    expect(resolveModelId(undefined, undefined)).toBe("anthropic/claude-sonnet-4.6");
   });
 });
 

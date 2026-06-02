@@ -52,9 +52,21 @@ const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   gateway: "anthropic/claude-sonnet-4.6",
 };
 
-/** Returns the default provider string based on runtime environment. */
+/**
+ * Returns the default provider string based on runtime environment.
+ *
+ * Hosted/SaaS deployments route through the Vercel AI Gateway (the operator's
+ * metered key), so they default to `gateway`; self-hosted defaults to
+ * anthropic-direct (BYO `ANTHROPIC_API_KEY`). `VERCEL` covers Vercel-hosted;
+ * `ATLAS_DEPLOY_MODE=saas` covers the Railway-hosted SaaS where `VERCEL` is
+ * unset (#3098). Single source of truth for "which provider when none is
+ * explicitly configured" — the `ATLAS_PROVIDER` setting has no static default,
+ * so an unset provider falls through to here rather than forcing `anthropic`.
+ */
 export function getDefaultProvider(): ConfigProvider {
-  return process.env.VERCEL ? "gateway" : "anthropic";
+  return process.env.VERCEL || process.env.ATLAS_DEPLOY_MODE === "saas"
+    ? "gateway"
+    : "anthropic";
 }
 
 function isBedrockAnthropicModel(modelId: string): boolean {

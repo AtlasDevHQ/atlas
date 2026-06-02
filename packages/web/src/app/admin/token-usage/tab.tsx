@@ -255,7 +255,12 @@ export function TokenUsageTab() {
                           <TableCell className="text-right tabular-nums">{formatNumber(m.totalTokens)}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{formatNumber(m.cacheReadTokens)}</TableCell>
                           <TableCell className="text-right tabular-nums text-muted-foreground">{formatNumber(m.cacheWriteTokens)}</TableCell>
-                          <TableCell className="text-right font-medium tabular-nums">{formatNumber(m.effectiveTokens)}</TableCell>
+                          {/* effective 0 with gross > 0 means the field is absent
+                              (older API response mid rolling-deploy) — show "—"
+                              instead of a misleading 0, matching the StatCard. */}
+                          <TableCell className="text-right font-medium tabular-nums">
+                            {m.totalTokens > 0 && m.effectiveTokens === 0 ? "—" : formatNumber(m.effectiveTokens)}
+                          </TableCell>
                           <TableCell className="text-right tabular-nums">{m.requestCount}</TableCell>
                         </TableRow>
                       ))}

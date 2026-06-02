@@ -19,6 +19,7 @@ import {
   hardDeleteWorkspace,
   _resetPool,
   _resetCircuitBreaker,
+  _hasRecoveryFiber,
   encryptSecret,
   decryptSecret,
   getEncryptionKey,
@@ -35,6 +36,12 @@ import { connections } from "../connection";
 // (1.5.4 / #2800).
 afterAll(() => {
   connections._reset();
+  // Tear down any circuit-breaker recovery fiber left by the last test in the
+  // file (e.g. the SqlClient-path circuit test). Without this, a fiber sleeping
+  // out its 30s recovery probe survives past the suite — harmless within this
+  // isolated process, but we keep the file fiber-clean as a matter of hygiene
+  // (#3083). Within-file cross-test leaks are prevented by _resetPool itself.
+  _resetCircuitBreaker();
 });
 
 /** Mirrors migration 0093's `postgres` catalog `config_schema`. Pinned
@@ -573,6 +580,51 @@ describe("internal DB module", () => {
       internalExecute("INSERT INTO audit_log (auth_mode) VALUES ($1)", ["none"]);
       await new Promise((r) => setTimeout(r, 10));
       expect(freshCalls.queries.length).toBe(1); // query went through
+    });
+
+    // Regression for #3083. Tripping the breaker forks a recovery fiber that
+    // sleeps 30s of wall-clock and then probes `getInternalDB().query("SELECT 1")`
+    // against whatever pool is *currently* installed. Before the fix, _resetPool
+    // reset the circuit flags but left that fiber running — so ~30s later it
+    // fired a spurious SELECT 1 into the next test's mock pool. That only
+    // surfaced under the isolated runner's 32-way concurrency, where the file
+    // runs slowly enough to still be executing 30s after the trip; in isolation
+    // the file finishes first and the probe lands harmlessly. We pin the
+    // mechanism (fiber torn down on reset) rather than the 30s behaviour so the
+    // regression stays fast and deterministic.
+    it("tears down the recovery fiber on reset so it can't probe a swapped-out pool (#3083)", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setError(new Error("connection refused"));
+      _resetPool(pool);
+
+      // No fiber until the breaker actually trips.
+      expect(_hasRecoveryFiber()).toBe(false);
+
+      for (let i = 0; i < 5; i++) {
+        internalExecute("INSERT INTO audit_log (auth_mode) VALUES ($1)", ["none"]);
+      }
+      // Let the fire-and-forget rejections settle so the breaker opens and forks
+      // the recovery fiber (the trip happens in the .catch microtask).
+      await new Promise((r) => setTimeout(r, 50));
+      expect(_hasRecoveryFiber()).toBe(true);
+
+      // Installing a fresh pool must kill the fiber — otherwise it survives to
+      // probe `freshPool` 30s later.
+      const { pool: freshPool } = createMockPool();
+      _resetPool(freshPool);
+      expect(_hasRecoveryFiber()).toBe(false);
+
+      // And _resetCircuitBreaker tears it down too (re-trip, then reset).
+      pool._setError(new Error("connection refused"));
+      _resetPool(pool);
+      for (let i = 0; i < 5; i++) {
+        internalExecute("INSERT INTO audit_log (auth_mode) VALUES ($1)", ["none"]);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+      expect(_hasRecoveryFiber()).toBe(true);
+      _resetCircuitBreaker();
+      expect(_hasRecoveryFiber()).toBe(false);
     });
   });
 });

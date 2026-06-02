@@ -73350,7 +73350,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to Platform OAuth authorization page on success, or to `/admin/integrations?error=<platform>&reason=plan_upgrade_required` when the workspace's plan does not admit the install (browser callers)."
+            "description": "Redirect to Platform OAuth authorization page on success, or to `/admin/integrations?error=<platform>&reason=<code>` when the install is refused before the redirect (browser callers): `plan_upgrade_required` when the workspace's plan tier does not admit the install, or `plan_limit_reached` (#2998) when a chat integration would exceed the plan's chat-integration cap."
           },
           "400": {
             "description": "Platform is not OAuth-installable, or unknown",
@@ -73473,18 +73473,69 @@
             }
           },
           "429": {
-            "description": "Rate limited",
+            "description": "Chat-integration cap reached for the workspace's plan tier (`plan_limit_exceeded`, JSON-Accept caller), or rate limited.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "limit": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "limit"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
                 }
               }
             }
           },
           "501": {
             "description": "OAuth handler not registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable: `billing_check_failed` (pre-redirect cap precheck)",
             "content": {
               "application/json": {
                 "schema": {

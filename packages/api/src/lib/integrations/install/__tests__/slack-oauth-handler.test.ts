@@ -105,11 +105,25 @@ const mockCheckChatLimitAndInstall: Mock<
   ) => Promise<GateResult>
 > = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: DEFAULT_PERSISTED_ID }] }));
 
+// Read-only pre-redirect cap precheck (#2998), called by `startInstall`. The
+// `at cap` / `check failed` startInstall tests override it via
+// `mockImplementationOnce`; the default is "allowed" so the happy-path
+// startInstall + every handleCallback test sails past it.
+type PrecheckResult =
+  | { allowed: true }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimit: Mock<
+  (orgId: string | undefined, catalogId: string) => Promise<PrecheckResult>
+> = mock(() => Promise.resolve({ allowed: true as const }));
+
 // Mock every value export — a partial `mock.module()` causes a `SyntaxError`
 // in other files importing the missing exports (per CLAUDE.md "Mock all
-// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here; the
+// exports"). `checkChatIntegrationLimit` (pre-redirect precheck) +
+// `checkChatIntegrationLimitAndInstall` (callback gate) are exercised here; the
 // rest are inert no-ops.
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimit: mockCheckChatLimit,
   checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
   CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
   checkResourceLimit: () => Promise.resolve({ allowed: true }),
@@ -155,6 +169,8 @@ beforeEach(() => {
   setKeys("v1:test-key-one");
   mockSlackAPI.mockClear();
   mockSaveInstallation.mockClear();
+  mockCheckChatLimit.mockClear();
+  mockCheckChatLimit.mockImplementation(() => Promise.resolve({ allowed: true as const }));
   mockCheckChatLimitAndInstall.mockClear();
   mockCheckChatLimitAndInstall.mockImplementation(() =>
     Promise.resolve({ allowed: true as const, rows: [{ id: DEFAULT_PERSISTED_ID }] }),
@@ -208,6 +224,51 @@ describe("SlackOAuthInstallHandler.startInstall", () => {
     expect(verifyOAuthStateToken(stateToken)).toEqual({
       workspaceId: WSID,
       catalogId: "slack",
+    });
+  });
+
+  // ── Pre-redirect chat-integration cap gate (#2998) ────────────────
+
+  it("runs the cap precheck for (workspaceId, 'catalog:slack') before minting the redirect", async () => {
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+
+    await handler.startInstall(WSID);
+
+    expect(mockCheckChatLimit).toHaveBeenCalledTimes(1);
+    const [org, catalog] = mockCheckChatLimit.mock.calls[0];
+    expect(org).toBe(WSID);
+    expect(catalog).toBe("catalog:slack");
+  });
+
+  it("throws ChatIntegrationLimitError (no redirect minted) when the workspace is at its cap", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "cap_reached" as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+
+    await expect(handler.startInstall(WSID)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the precheck fails closed", async () => {
+    mockCheckChatLimit.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new SlackOAuthInstallHandler(SLACK_CONFIG);
+
+    await expect(handler.startInstall(WSID)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
     });
   });
 });

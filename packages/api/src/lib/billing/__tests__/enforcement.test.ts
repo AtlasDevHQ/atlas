@@ -93,7 +93,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkChatIntegrationLimitAndInstall, CHAT_INTEGRATION_COUNT_SQL, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type ChatIntegrationInstallResult, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimit, checkChatIntegrationLimitAndInstall, CHAT_INTEGRATION_COUNT_SQL, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type ChatIntegrationInstallResult, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
@@ -753,6 +753,113 @@ describe("checkResourceLimit", () => {
   it("allows pro tier under chat-integration limit", async () => {
     mockWorkspace = makeWorkspace({ plan_tier: "pro" });
     const result = await checkResourceLimit("org-1", "chat_integrations", 2);
+    expect(result.allowed).toBe(true);
+  });
+});
+
+// ===========================================================================
+// checkChatIntegrationLimit — read-only pre-redirect cap precheck (#2998)
+//
+// The chat handlers run this BEFORE minting the provider OAuth redirect so an
+// at-cap workspace is refused before completing the whole dance. It reuses the
+// SAME count aggregate + checkResourceLimit decision as the atomic gate, but
+// opens no transaction and runs no INSERT — `mockConnectCount` must stay 0.
+// ===========================================================================
+
+describe("checkChatIntegrationLimit (read-only precheck)", () => {
+  const SLACK = "catalog:slack";
+
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockWorkspaceDetailsShouldThrow = false;
+    mockWorkspace = null;
+    mockInternalQueryResult = [];
+    mockInternalQueryShouldThrow = false;
+    mockTxnClient = null;
+    mockConnectCount = 0;
+    invalidatePlanCache();
+  });
+
+  // ── No-enforcement short-circuits ─────────────────────────────────
+
+  it("allows when no orgId provided (and opens no transaction)", async () => {
+    const result = await checkChatIntegrationLimit(undefined, SLACK);
+    expect(result.allowed).toBe(true);
+    expect(mockConnectCount).toBe(0);
+  });
+
+  it("allows when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+    expect(mockConnectCount).toBe(0);
+  });
+
+  it("allows when the workspace has no organization row (fail-open, no plan)", async () => {
+    mockWorkspace = null;
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Fail-closed paths (→ 503 "try again") ─────────────────────────
+
+  it("fails closed (check_failed) when the workspace lookup throws", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockWorkspaceDetailsShouldThrow = true;
+    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.errorMessage).toContain("Unable to verify plan limits");
+  });
+
+  it("fails closed (check_failed) when the count query throws", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockInternalQueryShouldThrow = true;
+    const denied = expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.errorMessage).toContain("Unable to verify plan limits");
+  });
+
+  it("fails closed (check_failed) when the count returns no row (no coerce-to-0)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockInternalQueryResult = [];
+    expectCheckFailed(await checkChatIntegrationLimit("org-1", SLACK));
+  });
+
+  // ── Reconnect carve-out — never blocked ───────────────────────────
+
+  it("allows reconnect (this_count > 0) even when over the cap", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // Slack already installed (this_count=1) and the workspace is over its
+    // starter cap on other platforms — reconnect must still be allowed.
+    mockInternalQueryResult = [{ others: 5, this_count: 1 }];
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Net-new decisions ─────────────────────────────────────────────
+
+  it("allows starter net-new under the cap (others=0)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockInternalQueryResult = [{ others: 0, this_count: 0 }];
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
+    expect(result.allowed).toBe(true);
+    // Read-only — never opened a transaction.
+    expect(mockConnectCount).toBe(0);
+  });
+
+  it("blocks starter net-new at the cap (cap_reached, carries the limit)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    // One other chat platform already installed; starter cap = 1.
+    mockInternalQueryResult = [{ others: 1, this_count: 0 }];
+    const denied = expectResourceDenied(await checkChatIntegrationLimit("org-1", SLACK));
+    expect(denied.limit).toBe(1);
+    expect(denied.errorMessage).toContain("Upgrade");
+    // Still read-only on the deny path.
+    expect(mockConnectCount).toBe(0);
+  });
+
+  it("allows business (unlimited) net-new", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "business" });
+    mockInternalQueryResult = [{ others: 9, this_count: 0 }];
+    const result = await checkChatIntegrationLimit("org-1", SLACK);
     expect(result.allowed).toBe(true);
   });
 });

@@ -40,7 +40,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { slackAPI } from "@atlas/api/lib/slack/api";
 import { saveInstallation } from "@atlas/api/lib/slack/store";
 import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
-import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
+import { checkChatIntegrationLimit, checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -122,6 +122,40 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     readonly redirectUrl: string;
     readonly stateToken: string;
   }> {
+    // ── Pre-redirect chat-integration cap gate (#2998) ─────────────
+    // Refuse an at-cap workspace BEFORE minting the Slack authorize URL, so it
+    // never completes the full OAuth dance (Slack minting a bot token +
+    // installing the app) only to be turned away at the callback. This is a
+    // read-only precheck — `handleCallback` STILL runs the atomic
+    // check-and-install gate (`checkChatIntegrationLimitAndInstall`) as the
+    // TOCTOU guard, because a workspace can reach its cap between here and the
+    // callback. Mirrors the route's existing pre-redirect `min_plan` gate.
+    const capCheck = await checkChatIntegrationLimit(workspaceId, SLACK_CATALOG_ID);
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Couldn't read the chat-integration count — fail closed, but as a
+        // transient 503 "try again", NOT a 429 "upgrade your plan". Same
+        // distinction the callback path draws.
+        log.error(
+          { workspaceId },
+          "Slack install blocked pre-redirect — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Slack install blocked pre-redirect — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
     const stateToken = mintOAuthStateToken(workspaceId, SLACK_SLUG);
     const url = new URL("https://slack.com/oauth/v2/authorize");
     url.searchParams.set("client_id", this.config.clientId);

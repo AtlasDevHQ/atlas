@@ -544,6 +544,112 @@ export const CHAT_INTEGRATION_COUNT_SQL = `SELECT
    AND status <> 'archived'`;
 
 /**
+ * Read-only chat-integration cap precheck — the pre-redirect gate (#2998).
+ *
+ * {@link checkChatIntegrationLimitAndInstall} is the *atomic* check-and-INSERT
+ * the chat handlers run at OAuth callback time. But by callback time the
+ * customer has already completed the entire OAuth dance — Slack has minted a
+ * bot token and installed the app — only to be refused. This function lets a
+ * handler refuse an at-cap workspace BEFORE it mints the provider redirect, so
+ * an at-cap Starter workspace never starts a dance it can't finish.
+ *
+ * It is deliberately NOT serialized against concurrent installs and runs no
+ * INSERT: it opens no transaction and takes no advisory lock. The callback's
+ * atomic gate remains the TOCTOU guard — a workspace can reach its cap between
+ * this precheck and the callback. This is a fail-fast precheck, not the
+ * correctness boundary.
+ *
+ * Mirrors the atomic gate's enforcement skips and reconnect carve-out exactly,
+ * so the two never disagree on a workspace that isn't racing itself:
+ *   - No `orgId` / no internal DB → allowed (no enforcement context).
+ *   - Workspace lookup *error* → `check_failed` (fail closed → 503 "try again").
+ *   - No `organization` row (pre-migration / Better-Auth-only) → allowed (no
+ *     plan, no cap — the same deliberate fail-open the atomic gate makes).
+ *   - Reconnect (`this_count > 0`) → allowed: re-auth of an already-installed
+ *     platform never increases the distinct count, so a grandfathered over-cap
+ *     workspace can still re-auth what it owns.
+ *   - Otherwise compare the *other* chat platforms to the plan cap via
+ *     {@link checkResourceLimit}.
+ *
+ * Returns a {@link ResourceLimitResult}: `cap_reached` (→ 429 "upgrade") and
+ * `check_failed` (→ 503 "try again") map to the same HTTP statuses the callback
+ * path surfaces, so callers translate one set of arms regardless of which gate
+ * fired.
+ *
+ * @param orgId - Workspace id. When absent (or no internal DB) there's no cap.
+ * @param catalogId - Catalog row id of the platform being installed (e.g.
+ *   `"catalog:slack"`). Excluded from the `others` count so reconnecting the
+ *   same platform is never blocked.
+ */
+export async function checkChatIntegrationLimit(
+  orgId: string | undefined,
+  catalogId: string,
+): Promise<ResourceLimitResult> {
+  // No enforcement context — no cap to apply.
+  if (!orgId || !hasInternalDB()) {
+    return { allowed: true };
+  }
+
+  // Resolve the workspace plan. Fail closed on a lookup *error* (transient DB
+  // fault → 503), the same posture as checkResourceLimit / the atomic gate.
+  let workspace: WorkspaceRow | null;
+  try {
+    workspace = await getCachedWorkspace(orgId);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
+      "Failed to resolve workspace for chat-integration cap precheck — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: CHAT_CAP_CHECK_FAILED_MSG };
+  }
+
+  // No `organization` row → no plan → no cap. The ONLY deliberate fail-open
+  // here, matching the atomic gate (a lookup *error* fails closed above; a
+  // genuine *absence* allows).
+  if (!workspace) {
+    return { allowed: true };
+  }
+
+  // Count chat-pillar installs, partitioned the same way as the atomic gate
+  // (this platform vs. every other), via the SAME aggregate so the precheck and
+  // the callback gate never disagree.
+  let counts: { others: number; this_count: number } | undefined;
+  try {
+    const rows = await internalQuery<{ others: number; this_count: number }>(
+      CHAT_INTEGRATION_COUNT_SQL,
+      [orgId, catalogId],
+    );
+    counts = rows[0];
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, catalogId },
+      "Failed to count chat integrations for cap precheck — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: CHAT_CAP_CHECK_FAILED_MSG };
+  }
+  // The aggregate always returns exactly one row; an empty result means the
+  // driver/query contract was violated. Fail closed rather than coerce the
+  // absent count to 0 — that would silently breach the cap.
+  if (!counts) {
+    log.error(
+      { orgId, catalogId },
+      "Chat-integration count query returned no row for cap precheck — blocking as precaution",
+    );
+    return { allowed: false, reason: "check_failed", errorMessage: CHAT_CAP_CHECK_FAILED_MSG };
+  }
+
+  // Reconnect (already installed) is never blocked — re-auth doesn't grow the
+  // distinct count, so skip the cap comparison entirely.
+  if (counts.this_count > 0) {
+    return { allowed: true };
+  }
+
+  // Net-new platform → compare the *other* chat platforms to the plan cap.
+  // getCachedWorkspace warmed the cache above, so this reads from cache.
+  return checkResourceLimit(orgId, "chat_integrations", counts.others);
+}
+
+/**
  * The `workspace_plugins` INSERT the gate runs inside its transaction. Raw
  * SQL + params (rather than a structured descriptor) because each caller owns
  * its own UPSERT shape; the gate stays agnostic and just executes it under the

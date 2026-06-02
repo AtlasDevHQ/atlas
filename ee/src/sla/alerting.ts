@@ -478,6 +478,10 @@ export const deliverAlert = (
         {
           alertId: alert.id,
           status: outcome.kind === "http_error" ? outcome.status : undefined,
+          // Bounded body excerpt the package captures for permanent (4xx)
+          // rejections — preserves the diagnostic the pre-refactor log had.
+          responseText:
+            outcome.kind === "http_error" ? outcome.responseText : undefined,
           error: outcome.error,
           attempts: outcome.attempts,
         },

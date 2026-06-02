@@ -113,9 +113,14 @@ function verify(rawBody: string, headers: Headers, token: string): boolean {
   const sig = headers.get("x-webhook-signature");
   if (!ts || !sig) return false;
 
-  // Reject requests outside a 5-minute window to block replays.
+  // Reject requests outside a 5-minute window to block replays. Guard against
+  // a non-numeric timestamp — `Number("x")` is NaN and `NaN > 300` is false,
+  // which would otherwise let a malformed timestamp skip the freshness check.
   const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - Number(ts)) > 300) return false;
+  const tsSeconds = Number(ts);
+  if (!Number.isFinite(tsSeconds) || Math.abs(now - tsSeconds) > 300) {
+    return false;
+  }
 
   const expected =
     "sha256=" +

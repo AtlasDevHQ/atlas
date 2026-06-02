@@ -360,6 +360,7 @@ describe("migrateAuthTables", () => {
             { name: "0112_conversation_rest_excluded_datasources.sql" },
             { name: "0113_conversation_rest_focus_datasource.sql" },
             { name: "0114_token_usage_cache_tokens.sql" },
+            { name: "0115_org_last_active_at.sql" },
           ],
         };
       }

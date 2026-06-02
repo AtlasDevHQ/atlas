@@ -133,7 +133,8 @@ describe("runMigrations", () => {
     //   Plus 0112 (conversations.rest_excluded_datasource_ids, S2a, #3066) = 113.
     //   Plus 0113 (conversations.rest_focus_datasource_id, S2b, #3067) = 114.
     //   Plus 0114 (token_usage.cache_read_tokens/cache_write_tokens, #3099) = 115.
-    expect(count).toBe(115);
+    //   Plus 0115 (organization.last_active_at for BYOT dormancy gate, #2377) = 116.
+    expect(count).toBe(116);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -277,6 +278,7 @@ describe("runMigrations", () => {
         "0112_conversation_rest_excluded_datasources.sql",
         "0113_conversation_rest_focus_datasource.sql",
         "0114_token_usage_cache_tokens.sql",
+        "0115_org_last_active_at.sql",
       ],
     });
 

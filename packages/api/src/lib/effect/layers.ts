@@ -124,28 +124,56 @@ function withFiberDeathLog<A, E, R>(
   );
 }
 
-// ── Per-tick observability spans for periodic cleanup fibers (#2945) ──
+// ── Per-tick observability spans for periodic scheduler fibers (#2945, #2944, #2987) ──
 // `withFiberDeathLog` (above) only fires when a defect kills the fiber.
 // A healthy tick emits nothing, so "wedged silently" and "ran fine,
 // nothing to do" are indistinguishable in traces, and a hung-but-not-
-// crashed fiber never trips the death log. Wrap each of these cleanup
+// crashed fiber never trips the death log. Wrap each of these periodic
 // tick bodies in `withEffectSpan` so every repeat iteration emits one
 // span — a wedged fiber then shows up as an absence of spans against its
 // expected cadence.
 //
-// Membership: 9 cleanup fibers. Eight were retrofitted with a span by
-// #2945 (the TTL/ratelimit/state sweeps below); the ninth,
-// `orphan_task_reconcile` (#2944), shipped with its span from day one and
-// additionally attaches the orphan count as a result attribute (the only one
-// of these nine cleanup fibers that passes `setResultAttributes` — the BYOT
-// catalog-refresh fiber and the scheduler engine use that 4th arg elsewhere).
-// The other periodic fibers forked in `makeSchedulerLive` remain out of
-// scope —
-// `sub_processor_publisher`, `settings_refresh`, `onboarding_email`, and
-// `expert_scheduler` still lack a per-tick span, while the CRM/email
-// outbox flushers already have their own heartbeat + stall-watchdog
-// liveness signal. Spanning the remaining periodic fibers is tracked in
-// #2987.
+// OK-on-failure trade-off: each tick's loop-liveness `catchAll` sits INSIDE
+// the span, so a failed-but-recovered tick still records span status OK (the
+// error itself goes to `log.warn`). These spans answer "is the fiber still
+// ticking?" via presence/absence + cadence, NOT "did this tick error?". The
+// lone exception is `orphan_task_reconcile` below, which rides a result
+// attribute and so deliberately inverts the ordering (raw tick spanned,
+// `catchAll` applied OUTSIDE) to keep that attribute truthful — see its site.
+//
+// Membership splits into two single-source records, by fiber kind:
+//
+//   • SCHEDULER_CLEANUP_SPAN_NAMES — 9 cleanup/sweep fibers (they evict
+//     expired in-memory or DB state). Eight were retrofitted with a span by
+//     #2945 (the TTL/ratelimit/state sweeps below); the ninth,
+//     `orphan_task_reconcile` (#2944), shipped with its span from day one and
+//     additionally attaches the orphan count as a result attribute (the only
+//     fiber in either record that passes `setResultAttributes` — the BYOT
+//     catalog-refresh fiber and the scheduler engine use that 4th arg
+//     elsewhere, inside their own modules).
+//
+//   • SCHEDULER_WORK_SPAN_NAMES — 4 background-work fibers (they perform
+//     recurring side-effecting work rather than evicting state):
+//     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
+//     `expert_scheduler`. Spanned by #2987 — identical rationale and wrap
+//     shape, no result attributes (each tick returns void, matching the 8
+//     attribute-less cleanup fibers).
+//
+// Two records, not one: "cleanup sweep" vs "background work" is a real
+// distinction (it drives the log wording and the operator's mental model),
+// so each record stays the single source of truth for its own kind. Both are
+// pinned by the same parameterized guard in `layers.test.ts`.
+//
+// Deliberately NOT spanned: the CRM + transactional-email outbox flushers and
+// their stall-watchdog fibers (`lead_outbox_*`, `email_outbox_*`). They
+// already carry a STRONGER liveness signal than a presence/absence span — a
+// periodic heartbeat log when the queue is idle PLUS a separate watchdog
+// fiber that raises an error log when no tick is observed in > 2× the
+// interval. A per-tick span would be redundant with that, so #2987 leaves
+// them on heartbeat + watchdog. Self-spanning module fibers
+// (`byot_catalog_refresh`, `openapi_install_rediscover`, the scheduler engine
+// `tick`/`task.run`) define their span inside their own module and so never
+// appear in either record here.
 //
 // Span names follow the existing `atlas.<area>.<op>` dotted convention
 // (cf. `atlas.sql.execute`, `atlas.scheduler.task.run`, and the
@@ -154,11 +182,12 @@ function withFiberDeathLog<A, E, R>(
 // label; the LOW finding in #2945 is about NOT dropping the dotted
 // `atlas.scheduler.` prefix, not about the underscores within the op.
 //
-// This record is the single source of truth for the span names: each
-// wrap site below reads from it. `layers.test.ts` asserts both the exact
-// name set AND (via a structural source-scan guard) that all 9 wrap sites
-// are present, so renaming an entry OR deleting a `withEffectSpan(...)`
-// wrap at a call site is a test failure rather than a silent regression.
+// Each record is the single source of truth for its span names: every wrap
+// site below reads from it. `layers.test.ts` asserts, for each record, both
+// the exact name set AND (via a structural source-scan guard) that every key
+// has exactly one matching `withEffectSpan(<RECORD>.<key>` wrap site — so
+// renaming an entry OR deleting a wrap at a call site is a test failure
+// rather than a silent regression.
 export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   oauth_state_cleanup: "atlas.scheduler.oauth_state_cleanup",
   rate_limit_cleanup: "atlas.scheduler.rate_limit_cleanup",
@@ -169,6 +198,16 @@ export const SCHEDULER_CLEANUP_SPAN_NAMES = {
   conversation_rate_sweep: "atlas.scheduler.conversation_rate_sweep",
   share_token_cleanup: "atlas.scheduler.share_token_cleanup",
   orphan_task_reconcile: "atlas.scheduler.orphan_task_reconcile",
+} as const satisfies Record<string, `atlas.scheduler.${string}`>;
+
+// Per-tick spans for the background-work fibers (#2987). Same wrap shape and
+// rationale as the cleanup record above; see the block comment for why these
+// are a separate record and why the outbox flushers are excluded.
+export const SCHEDULER_WORK_SPAN_NAMES = {
+  sub_processor_publisher: "atlas.scheduler.sub_processor_publisher",
+  settings_refresh: "atlas.scheduler.settings_refresh",
+  onboarding_email: "atlas.scheduler.onboarding_email",
+  expert_scheduler: "atlas.scheduler.expert_scheduler",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1249,7 +1288,9 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "settings_refresh",
-          tick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
+          withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.settings_refresh, {}, tick).pipe(
+            Effect.repeat(Schedule.spaced(Duration.millis(intervalMs))),
+          ),
         ),
       );
 
@@ -1359,7 +1400,9 @@ export function makeSchedulerLive(
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "onboarding_email",
-            emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.onboarding_email, {}, emailTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS))),
+            ),
           ),
         );
       } else {
@@ -1403,7 +1446,9 @@ export function makeSchedulerLive(
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "expert_scheduler",
-            expertTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs())))),
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.expert_scheduler, {}, expertTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs()))),
+            ),
           ),
         );
         log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
@@ -1853,7 +1898,11 @@ export function makeSchedulerLive(
       yield* Effect.forkScoped(
         withFiberDeathLog(
           "sub_processor_publisher",
-          subProcessorTick.pipe(
+          withEffectSpan(
+            SCHEDULER_WORK_SPAN_NAMES.sub_processor_publisher,
+            {},
+            subProcessorTick,
+          ).pipe(
             Effect.repeat(
               Schedule.spaced(
                 Duration.millis(subProcessorPublisher.SUBPROCESSOR_PUBLISH_INTERVAL_MS),

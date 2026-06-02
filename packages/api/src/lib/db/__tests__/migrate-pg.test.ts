@@ -1946,7 +1946,9 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
     // Column landed NOT NULL and existing rows backfilled.
     const col = await pool.query<{ is_nullable: string; data_type: string }>(
       `SELECT is_nullable, data_type FROM information_schema.columns
-        WHERE table_name = 'organization' AND column_name = 'last_active_at'`,
+        WHERE table_schema = current_schema()
+          AND table_name = 'organization'
+          AND column_name = 'last_active_at'`,
     );
     expect(col.rows[0]?.is_nullable).toBe("NO");
     expect(col.rows[0]?.data_type).toBe("timestamp with time zone");

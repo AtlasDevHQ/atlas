@@ -41,7 +41,7 @@ const PROVIDER_KEY_MAP: Record<string, string> = {
 const PROVIDER_DEFAULTS: Record<string, string> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
-  bedrock: "anthropic.claude-opus-4-8-v1:0",
+  bedrock: "anthropic.claude-opus-4-8",
   ollama: "llama3.1",
   gateway: "anthropic/claude-sonnet-4.6",
 };

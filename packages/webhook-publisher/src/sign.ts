@@ -7,9 +7,12 @@
  *   timestamped (house standard — sub-processor feed + SLA alerts)
  *     X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>
  *     X-Webhook-Timestamp: <unix-seconds>
- *     Verified by the inbound `@useatlas/webhook` plugin
- *     (`verifyHmacWithTimestamp`) and the customer verify-helper in the
- *     sub-processor-feed docs. The `sha256=` prefix is Stripe/GitHub style.
+ *     Byte-identical to the existing sub-processor sender. The `${ts}:${body}`
+ *     signing input is the same convention the inbound `@useatlas/webhook`
+ *     verifier (`verifyHmacWithTimestamp`) uses — but that verifier compares
+ *     against BARE hex, so a receiver must strip the `sha256=` prefix
+ *     (Stripe/GitHub style) before comparing. The documented customer
+ *     verify-helper in the sub-processor-feed docs does exactly that.
  *
  *   rawBody (Stripe/GitHub style — webhook-action plugin)
  *     X-Atlas-Signature: <hmac(rawBody)>
@@ -46,8 +49,11 @@ export type SignStrategy = (body: string) => SignedRequest;
 
 /**
  * Timestamped strategy — `X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>`
- * plus `X-Webhook-Timestamp`. This is the Atlas house standard, matched by the
- * inbound verifier and the documented customer verify-helper.
+ * plus `X-Webhook-Timestamp`. Byte-identical to the existing sub-processor
+ * sender. The `${ts}:${body}` signing input matches the inbound
+ * `@useatlas/webhook` verifier, but that verifier compares against bare hex —
+ * receivers strip the `sha256=` prefix first (as the documented customer
+ * verify-helper does).
  *
  * The timestamp is captured when the strategy is built (immediately before
  * delivery) so it is identical across every retry of a single delivery.

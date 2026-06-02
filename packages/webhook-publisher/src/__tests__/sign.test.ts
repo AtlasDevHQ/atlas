@@ -34,11 +34,14 @@ describe("timestamped", () => {
     expect(signed.headers["Content-Type"]).toBe("application/json");
   });
 
-  it("is verifiable by the inbound `${ts}:${body}` algorithm (tolerating the sha256= prefix)", () => {
+  it("is verifiable by a receiver that strips the prefix and HMACs `${ts}:${body}`", () => {
     const signed = timestamped({ secret: SECRET, timestampSeconds: TS })(BODY);
     const ts = Number.parseInt(signed.headers["X-Webhook-Timestamp"], 10);
-    // Mirror plugins/webhook/src/replay.ts verifyHmacWithTimestamp, which
-    // strips the prefix before constant-time comparing.
+    // A correct receiver strips the `sha256=` prefix, then HMACs the same
+    // `${ts}:${body}` input — exactly the documented customer verify-helper in
+    // the sub-processor-feed docs. (The inbound `@useatlas/webhook` verifier
+    // shares this signing input but compares against bare hex, so it needs the
+    // same prefix strip before it would accept these headers.)
     const expectedHex = crypto
       .createHmac("sha256", SECRET)
       .update(`${ts}:${BODY}`)

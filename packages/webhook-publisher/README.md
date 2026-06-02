@@ -61,9 +61,11 @@ X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>
 X-Webhook-Timestamp: <unix-seconds>
 ```
 
-The `sha256=` prefix is Stripe/GitHub style. Verified by the inbound
-`@useatlas/webhook` plugin and the customer verify-helper in the sub-processor
-docs.
+The `sha256=` prefix is Stripe/GitHub style, and this is byte-identical to
+Atlas's existing sub-processor sender. The `${ts}:${body}` signing input matches
+the inbound `@useatlas/webhook` verifier, but that verifier compares against
+**bare hex** — so receivers strip the `sha256=` prefix first, as the
+verify-helper below (and the one in the sub-processor docs) does.
 
 **Verify recipe (receiver):**
 

@@ -13,7 +13,7 @@ import {
   type Fetcher,
   type FailedAttempt,
 } from "../deliver";
-import { rawBody } from "../sign";
+import { rawBody, timestamped } from "../sign";
 
 const SIGN = rawBody({ secret: "test-secret" });
 const URL = "https://hooks.example.com/endpoint";
@@ -107,6 +107,61 @@ describe("deliverWebhook — 4xx is permanent", () => {
       throw new Error(`expected http_error, got ${outcome.kind}`);
     }
   });
+
+  it("still returns a tagged http_error when the body is unreadable", async () => {
+    // An already-consumed/closed stream makes res.text() reject. The 4xx must
+    // not turn into an unhandled throw — it stays a tagged outcome with no
+    // excerpt (the status is the load-bearing signal; the body is a breadcrumb).
+    const unreadable = {
+      ok: false,
+      status: 409,
+      text: () => Promise.reject(new Error("body stream already read")),
+    } as unknown as Response;
+    const fetcher: Fetcher = async () => unreadable;
+    const outcome = await deliverWebhook({ url: URL, payload: {}, sign: SIGN, fetcher });
+    expect(outcome).toMatchObject({ kind: "http_error", status: 409, attempts: 1 });
+    if (outcome.kind === "http_error") {
+      expect(outcome.responseText).toBeUndefined();
+    }
+  });
+});
+
+describe("deliverWebhook — signs once, byte-identical across retries", () => {
+  // The load-bearing invariant for byte-identical consumer migration: the body
+  // is stringified once and signed once OUTSIDE the retry loop, so the
+  // timestamp + signature + body are identical on every attempt. A refactor
+  // that moved signing into the loop would regenerate the timestamp per attempt
+  // and silently change the wire bytes mid-delivery — this test would fail.
+  it("sends the same timestamp, signature, and body on every attempt", async () => {
+    const seen: Array<{ headers: Record<string, string>; body: string }> = [];
+    let n = 0;
+    const fetcher: Fetcher = async (_url, init) => {
+      seen.push({
+        headers: init.headers as Record<string, string>,
+        body: init.body as string,
+      });
+      n += 1;
+      return new Response(null, { status: n < 3 ? 500 : 200 });
+    };
+    const { sleep } = recordingSleep();
+    const outcome = await deliverWebhook({
+      url: URL,
+      payload: { event: "added", entry: { name: "Vercel" } },
+      sign: timestamped({ secret: "shared", timestampSeconds: 1700000000 }),
+      retry: { maxAttempts: 3, delaysMs: [1, 1] },
+      fetcher,
+      sleep,
+    });
+    expect(outcome).toMatchObject({ kind: "ok", attempts: 3 });
+    expect(seen).toHaveLength(3);
+    const [first] = seen;
+    expect(first.headers["X-Webhook-Timestamp"]).toBe("1700000000");
+    for (const attempt of seen) {
+      expect(attempt.headers["X-Webhook-Timestamp"]).toBe(first.headers["X-Webhook-Timestamp"]);
+      expect(attempt.headers["X-Webhook-Signature"]).toBe(first.headers["X-Webhook-Signature"]);
+      expect(attempt.body).toBe(first.body);
+    }
+  });
 });
 
 describe("deliverWebhook — 5xx retries", () => {
@@ -131,6 +186,26 @@ describe("deliverWebhook — 5xx retries", () => {
     }
     expect(calls).toHaveLength(3);
     expect(waits).toEqual([10, 20]);
+  });
+
+  it("does not read the body on 5xx exhaustion, even when one is present", async () => {
+    // A non-empty 5xx body must still yield responseText: undefined — proving
+    // readExcerpt is skipped for transient failures (only 4xx reads it).
+    const { fetcher } = statusFetcher(500, "upstream stack trace");
+    const { sleep } = recordingSleep();
+    const outcome = await deliverWebhook({
+      url: URL,
+      payload: {},
+      sign: SIGN,
+      retry: { maxAttempts: 2, delaysMs: [1] },
+      fetcher,
+      sleep,
+    });
+    if (outcome.kind === "http_error") {
+      expect(outcome.responseText).toBeUndefined();
+    } else {
+      throw new Error(`expected http_error, got ${outcome.kind}`);
+    }
   });
 
   it("stops early if a retry succeeds", async () => {
@@ -277,6 +352,46 @@ describe("deliverWebhook — onFailedAttempt", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0].willRetry).toBe(false);
+  });
+
+  it("reports the full FailedAttempt shape for an http failure", async () => {
+    const { fetcher } = statusFetcher(503);
+    const { sleep } = recordingSleep();
+    const seen: FailedAttempt[] = [];
+    await deliverWebhook({
+      url: URL,
+      payload: {},
+      sign: SIGN,
+      retry: { maxAttempts: 2, delaysMs: [1] },
+      fetcher,
+      sleep,
+      onFailedAttempt: (a) => seen.push(a),
+    });
+    expect(seen).toEqual([
+      { attempt: 1, maxAttempts: 2, willRetry: true, failure: { kind: "http_error", status: 503 } },
+      { attempt: 2, maxAttempts: 2, willRetry: false, failure: { kind: "http_error", status: 503 } },
+    ]);
+  });
+
+  it("reports the full FailedAttempt shape for a transport failure", async () => {
+    const fetcher: Fetcher = async () => {
+      throw new Error("boom");
+    };
+    const { sleep } = recordingSleep();
+    const seen: FailedAttempt[] = [];
+    await deliverWebhook({
+      url: URL,
+      payload: {},
+      sign: SIGN,
+      retry: { maxAttempts: 2, delaysMs: [1] },
+      fetcher,
+      sleep,
+      onFailedAttempt: (a) => seen.push(a),
+    });
+    expect(seen).toEqual([
+      { attempt: 1, maxAttempts: 2, willRetry: true, failure: { kind: "transport_error", error: "boom" } },
+      { attempt: 2, maxAttempts: 2, willRetry: false, failure: { kind: "transport_error", error: "boom" } },
+    ]);
   });
 });
 

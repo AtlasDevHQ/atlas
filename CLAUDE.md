@@ -39,7 +39,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Tailwind CSS 4** — Via `@tailwindcss/postcss`, not v3
 - [ ] **shadcn/ui v2** — New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** — never hand-roll. Install: `bun x shadcn@latest add <component>` from `packages/web/`. Uses `cn()` from `@/lib/utils`
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, `pino-pretty`, `stripe` must stay in `serverExternalPackages` in the `create-atlas` template
-- [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api`. Shared types live in `@useatlas/types`, re-exported via `packages/web/src/ui/lib/types.ts`
+- [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api`. Shared types live in `@useatlas/types` (wire types) and `@useatlas/schemas` (Zod validation), re-exported via `packages/web/src/ui/lib/types.ts`
 - [ ] **`lib/` must not import from `api/routes/`** — The data/helper layer (`src/lib/**`) stays above the Hono route layer (`src/api/**`). Inverted imports pull auth/logger/middleware into every `lib/` consumer and break partial `mock.module()` mocks. Extract route helpers to a `lib/*.ts` module (see `lib/mode.ts` ↔ `api/routes/middleware.ts`)
 - [ ] **nuqs for URL state** — [nuqs](https://nuqs.47ng.com/) for pagination, filters, selected items. Parsers in `search-params.ts` next to the page. Transient UI state stays `useState`
 - [ ] **zustand for cross-page UI state** — [zustand](https://zustand.docs.pmnd.rs/) for transient state that outlives a component but isn't URL-shareable (command menus, wizards, undo). Stores in `packages/web/src/lib/stores/<name>-store.ts`, client components only. Not for local (`useState`), URL (`nuqs`), or server state (`useAdminFetch`)
@@ -177,10 +177,12 @@ bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source
 | Package | Name | Description |
 |---------|------|-------------|
 | `packages/types` | `@useatlas/types` | Shared TypeScript types (wire format) across API, web, SDK, react |
+| `packages/schemas` | `@useatlas/schemas` | Shared Zod schemas (wire format) — SSOT for API route validation + web response parsing |
 | `packages/api` | `@atlas/api` | Hono API server, agent loop, tools, auth, DB |
 | `packages/web` | `@atlas/web` | Next.js frontend, chat UI (exports `./ui/context`, `./ui/components/atlas-chat`) |
 | `packages/cli` | `@atlas/cli` | CLI: profiler, schema diff, enrichment, query |
 | `packages/mcp` | `@atlas/mcp` | MCP server (stdio + SSE transport) |
+| `packages/oauth-helper` | `@atlas/oauth-helper` | Internal OAuth 2.1 + DCR + PKCE primitives shared by sdk + mcp (not published) |
 | `packages/sandbox-sidecar` | `@atlas/sandbox-sidecar` | Isolated explore/python sidecar |
 | `packages/sdk` | `@useatlas/sdk` | TypeScript SDK for Atlas API |
 | `packages/react` | `@useatlas/react` | Embeddable React chat component + headless hooks |
@@ -189,6 +191,7 @@ bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source
 | `apps/docs` | `@atlas/docs` | Documentation site (Fumadocs) |
 | `examples/docker` | — | Self-hosted Docker deploy + optional nsjail |
 | `examples/nextjs-standalone` | — | Pure Next.js + embedded Hono API (Vercel) |
+| `examples/embedded-mcp-onboarding` | — | Embedded Atlas MCP onboarding flow example |
 | `create-atlas` | `create-atlas-agent` | Scaffolding CLI (`bun create atlas-agent`) |
 | `create-atlas-plugin` | `create-atlas-plugin` | Plugin scaffolding CLI (`bun create atlas-plugin`) |
 | `ee/` | `@atlas/ee` | Enterprise features — source-available, commercial license |

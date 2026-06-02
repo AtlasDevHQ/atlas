@@ -62,7 +62,7 @@ describe("?prompt= prefill (#3081)", () => {
     render(createElement(PromptHarness, { onPrefill }), {
       wrapper: wrapper({ id: "conv-1" }),
     });
-    await new Promise((r) => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 50));
     expect(onPrefill).not.toHaveBeenCalled();
   });
 

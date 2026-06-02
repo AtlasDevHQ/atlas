@@ -18,10 +18,10 @@ import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useUiStore } from "@/lib/stores/ui-store";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { authClient } from "@/lib/auth/client";
-
-function isNotebookRoute(pathname: string) {
-  return pathname === "/notebook" || pathname.startsWith("/notebook/");
-}
+import {
+  buildPromptDeliveryUrl,
+  isNotebookRoute,
+} from "@/ui/components/prompt-delivery";
 
 // One persistent shell above /, /notebook, and /dashboards. Mounted by the
 // (workspace) route group's server layout so the rail's collapsed/expanded
@@ -91,15 +91,17 @@ export function WorkspaceShell({
 
   // Modals route their result through a `prompt` URL param. The chat surface
   // prefills the input; the notebook surface sends as a message. Dashboards
-  // has no chat input, so we navigate to / before prefilling.
+  // has no chat input, so we navigate to / before prefilling. The active
+  // conversation `?id=` is preserved on chat/notebook (see
+  // `buildPromptDeliveryUrl`) so a prefill doesn't clear the open thread.
   function deliverPrompt(text: string) {
-    const encoded = encodeURIComponent(text);
-    if (pathname === "/") {
-      router.replace(`/?prompt=${encoded}`, { scroll: false });
-    } else if (isNotebookRoute(pathname)) {
-      router.replace(`/notebook?prompt=${encoded}`, { scroll: false });
+    const url = buildPromptDeliveryUrl(pathname, selectedConversationId, text);
+    // `replace` on the active surface so the prefill doesn't add a history
+    // entry; `push` when arriving from dashboards (a real navigation).
+    if (pathname === "/" || isNotebookRoute(pathname)) {
+      router.replace(url, { scroll: false });
     } else {
-      router.push(`/?prompt=${encoded}`);
+      router.push(url);
     }
   }
 

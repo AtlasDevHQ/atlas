@@ -12,6 +12,7 @@ import { useIsAdmin } from "@/ui/hooks/use-platform-admin-guard";
 import { IncidentBanner } from "@/ui/components/incident-banner";
 import { ConnectDataPrompt } from "@/ui/components/connect-data-prompt";
 import { AtlasChat } from "@/ui/components/atlas-chat";
+import { Button } from "@/components/ui/button";
 
 const OPENSTATUS_SLUG = process.env.NEXT_PUBLIC_OPENSTATUS_SLUG;
 const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
@@ -64,11 +65,13 @@ function ChatPage() {
     router.replace("/admin");
   }, [landingLoading, redirectingToAdmin, router]);
 
-  // Minimal transport purely to feed the datasource summary (headers + the auth
-  // gate). The WorkspaceShell does the same; the `/api/health` probe dedups via
-  // React Query, so a second instance is cheap. `<AtlasChat>` owns its own
-  // transport for the chat itself.
-  const { getHeaders, authResolved } = useAtlasTransport({
+  // Minimal transport to feed the datasource summary (headers + auth gate) and
+  // to surface a hard health failure before we render a dead-looking chat. The
+  // WorkspaceShell mounts its own transport too, but the `/api/health` probe is
+  // deduped by a module-level cache inside `useAtlasTransport` (`_cachedAuthMode`),
+  // so the second instance reuses the first probe and is cheap. `<AtlasChat>`
+  // owns its own transport for the chat itself.
+  const { getHeaders, authResolved, healthWarning } = useAtlasTransport({
     apiUrl: getApiUrl(),
     isCrossOrigin: isCrossOrigin(),
     getConversationId: () => null,
@@ -85,6 +88,24 @@ function ChatPage() {
     enabled: authResolved && isSignedIn,
   });
   const needsDataSetup = datasource.data?.tableCount === 0;
+
+  // A failed `/api/health` probe means the API is unreachable / misconfigured.
+  // Surface the actionable error + a Retry instead of rendering an
+  // apparently-working chat wired to a dead backend — in `embedded` mode
+  // `<AtlasChat>` only renders `healthWarning` as a faint inline hint, far too
+  // subtle for a hard failure. Restores the pre-#3081 inline page's health gate.
+  if (healthWarning) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="text-center">
+          <p className="text-sm text-red-600 dark:text-red-400">{healthWarning}</p>
+          <Button className="mt-4" onClick={() => window.location.reload()}>
+            Retry
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // Suppress the chat during the one-frame window between the preference fetch
   // resolving as `admin` and the router landing on /admin (avoids a flash of

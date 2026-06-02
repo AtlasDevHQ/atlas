@@ -27,6 +27,7 @@ import {
   verifyOAuthStateToken,
 } from "../oauth-state-token";
 import type { WorkspaceId } from "@useatlas/types";
+import type { ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
 
 // ---------------------------------------------------------------------------
 // Module mocks (must hoist above the handler import below)
@@ -109,10 +110,12 @@ const mockCheckChatLimitAndInstall: Mock<
 // `at cap` / `check failed` startInstall tests override it via
 // `mockImplementationOnce`; the default is "allowed" so the happy-path
 // startInstall + every handleCallback test sails past it.
-type PrecheckResult =
-  | { allowed: true }
-  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
-  | { allowed: false; reason: "check_failed"; errorMessage: string };
+//
+// Anchor the mock's result type to the REAL `ResourceLimitResult` (type-only
+// import — no runtime code pulled into the mock graph) so the mock can't drift
+// from the production return shape. Mirrors the drift-proof `Extract<>` pattern
+// in `billing/__tests__/enforcement.test.ts`.
+type PrecheckResult = ResourceLimitResult;
 const mockCheckChatLimit: Mock<
   (orgId: string | undefined, catalogId: string) => Promise<PrecheckResult>
 > = mock(() => Promise.resolve({ allowed: true as const }));

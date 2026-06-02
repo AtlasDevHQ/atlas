@@ -129,7 +129,10 @@ export class SlackOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // read-only precheck — `handleCallback` STILL runs the atomic
     // check-and-install gate (`checkChatIntegrationLimitAndInstall`) as the
     // TOCTOU guard, because a workspace can reach its cap between here and the
-    // callback. Mirrors the route's existing pre-redirect `min_plan` gate.
+    // callback. Same *timing* as the route's pre-redirect `min_plan` gate
+    // (refuse before the dance), though that gate denies with 403
+    // `plan_upgrade_required` while this one surfaces 429 `plan_limit_reached`
+    // (cap hit) or 503 `billing_check_failed` (count unreadable).
     const capCheck = await checkChatIntegrationLimit(workspaceId, SLACK_CATALOG_ID);
     if (!capCheck.allowed) {
       if (capCheck.reason === "check_failed") {

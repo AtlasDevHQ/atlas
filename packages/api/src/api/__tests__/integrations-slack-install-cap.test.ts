@@ -286,4 +286,20 @@ describe("/api/v1/integrations/slack/install — chat-integration cap (#2998)", 
     expect(body.error).toBe("billing_check_failed");
     expect(resp.headers.get("location")).toBeNull();
   });
+
+  it("returns 503 (NOT a redirect) for browser callers when the count can't be read", async () => {
+    // The count-unreadable case is intentionally NOT content-type-aware: a
+    // transient infra fault is a 503 "try again" for browsers too, never a
+    // `reason=plan_limit_reached` redirect (which is reserved for a genuine
+    // cap hit). Locks the asymmetry the route comment documents.
+    countRowResponse = [];
+    const app = await getApp();
+    const resp = await app.request("/api/v1/integrations/slack/install", {
+      method: "GET",
+      headers: { accept: "text/html,application/xhtml+xml" },
+      redirect: "manual",
+    });
+    expect(resp.status).toBe(503);
+    expect(resp.headers.get("location")).toBeNull();
+  });
 });

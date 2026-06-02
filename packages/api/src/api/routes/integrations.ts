@@ -746,15 +746,18 @@ integrations.openapi(installRoute, async (c) =>
     // BEFORE Slack mints a bot token / installs the app — it no longer
     // completes the whole dance only to be turned away at the callback. The
     // callback's atomic gate stays in place as the TOCTOU guard. We translate
-    // the thrown tagged errors exactly as the callback handler does:
+    // the cap/billing tagged errors the same way the callback handler does
+    // (`startInstall` exchanges no code, so unlike the callback it has no
+    // `PlatformOAuthExchangeError`/`upstream_error` arm):
     //   - ChatIntegrationLimitError → browser: 302 to the admin UI with
     //     `reason=plan_limit_reached`; JSON callers fall through to the 429
     //     `plan_limit_exceeded` mapping in runHandler.
     //   - BillingCheckFailedError (count couldn't be read) → left to the 503
     //     `billing_check_failed` mapper: a transient "try again", not an
     //     upgrade prompt, for browser and JSON callers alike.
-    // Other OAuth handlers don't run a chat cap (they're not chat-pillar), so
-    // this catch is a no-op for them.
+    // Handlers that don't run a chat-cap precheck never throw
+    // ChatIntegrationLimitError here, so this catch is inert for them and just
+    // re-throws — every other error propagates unchanged to runHandler.
     let redirectUrl: string;
     try {
       ({ redirectUrl } = await handler.startInstall(workspaceId));

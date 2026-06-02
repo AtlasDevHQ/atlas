@@ -275,12 +275,18 @@ type ValidateResult = Awaited<ReturnType<FormBasedInstallHandler["validateConfig
 
 let callbackImpl: () => Promise<CallbackResult> = async () => null;
 
+// startInstall is swapped per test so the `/install` error-passthrough tests
+// can make it throw (#2998 — the route wraps startInstall in a try/catch that
+// must re-throw anything that isn't ChatIntegrationLimitError unchanged).
+type StartInstallResult = Awaited<ReturnType<OAuthPlatformInstallHandler["startInstall"]>>;
+let startInstallImpl: () => Promise<StartInstallResult> = async () => ({
+  redirectUrl: "https://slack.com/oauth/v2/authorize?client_id=test&state=stub",
+  stateToken: "stub",
+});
+
 const fakeHandler: OAuthPlatformInstallHandler = {
   kind: "oauth" as const,
-  startInstall: async () => ({
-    redirectUrl: "https://slack.com/oauth/v2/authorize?client_id=test&state=stub",
-    stateToken: "stub",
-  }),
+  startInstall: async () => startInstallImpl(),
   handleCallback: async () => callbackImpl(),
 };
 
@@ -343,6 +349,10 @@ afterAll(() => {
 
 beforeEach(() => {
   callbackImpl = async () => null;
+  startInstallImpl = async () => ({
+    redirectUrl: "https://slack.com/oauth/v2/authorize?client_id=test&state=stub",
+    stateToken: "stub",
+  });
   mockInternalQuery.mockImplementation(async (sql: string) => {
     if (sql.includes("FROM organization")) {
       return [{ plan_tier: "business", is_operator_workspace: false }];
@@ -407,6 +417,40 @@ function partialResult(): CallbackResult {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("GET /api/v1/integrations/slack/install — startInstall error passthrough (#2998)", () => {
+  it("redirects to the handler's authorize URL on the happy path", async () => {
+    const res = await request("/api/v1/integrations/slack/install", {
+      headers: { Accept: "text/html" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location") ?? "").toContain("slack.com/oauth/v2/authorize");
+  });
+
+  it("re-throws a non-cap error from startInstall unchanged (→ 500, NOT an admin redirect)", async () => {
+    // The route's pre-redirect try/catch (#2998) special-cases only
+    // ChatIntegrationLimitError. Every other throw — a state-token mint
+    // failure, an unexpected DB error, a logic bug — must propagate to
+    // runHandler's defect mapping (500 + requestId), never get silently
+    // converted into a `reason=plan_limit_reached` redirect. This guards the
+    // shared seam: the same route drives Salesforce / Jira / Linear / GitHub
+    // startInstall, none of which run a chat cap.
+    startInstallImpl = async () => {
+      throw new Error("boom — unexpected startInstall failure");
+    };
+    const res = await request("/api/v1/integrations/slack/install", {
+      headers: { Accept: "text/html" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(500);
+    // Did NOT degrade into a browser redirect to the admin UI.
+    expect(res.headers.get("location")).toBeNull();
+    const body = (await res.json()) as Record<string, unknown>;
+    // 500s carry a requestId for log correlation (CLAUDE.md).
+    expect(body.requestId).toBeTypeOf("string");
+  });
+});
 
 describe("GET /api/v1/integrations/slack/callback — happy path", () => {
   it("redirects to /admin/integrations?installed=slack on success", async () => {

@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { useQueryStates } from "nuqs";
 import { useQueryClient } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
@@ -23,6 +23,7 @@ import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
 import {
   ChatEnvPicker,
+  shouldRenderEnvPicker,
   resolveConversationScope,
   resolveEnvSelection,
   useChatEnvGroups,
@@ -106,7 +107,36 @@ function SaveButton({
   );
 }
 
-export function AtlasChat() {
+interface AtlasChatProps {
+  /**
+   * Embedded inside a host app shell (the hosted `(workspace)` chat). When true,
+   * suppress the built-in conversation sidebar, the app-identity header
+   * (logo/tagline/ThemeToggle/UserMenu + the prompt-library / schema-explorer
+   * buttons), and the `SchemaExplorer` / `PromptLibrary` / `ChangePasswordDialog`
+   * mounts — the host `WorkspaceShell` already owns all of those (it shares the
+   * same `useUiStore` modal keys + conversation React-Query cache). The
+   * env-picker, message thread, composer, and save/share remain. Default false:
+   * the scaffold / demo render the full standalone chrome.
+   */
+  embedded?: boolean;
+  /**
+   * Host-provided: the workspace has no queryable tables yet. When true and the
+   * thread is empty, the composer is hidden and `emptyStateOverride` is shown so
+   * the user is funnelled into connecting data before the agent can fail.
+   */
+  needsDataSetup?: boolean;
+  /**
+   * Empty-state node rendered when `needsDataSetup` and there are no messages
+   * (the hosted "connect data" prompt). Ignored otherwise.
+   */
+  emptyStateOverride?: ReactNode;
+}
+
+export function AtlasChat({
+  embedded = false,
+  needsDataSetup = false,
+  emptyStateOverride,
+}: AtlasChatProps = {}) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   // In developer mode the chat talks to draft connections. If the admin
   // hasn't drafted one yet, surface a dedicated empty state instead of
@@ -284,6 +314,16 @@ export function AtlasChat() {
     enabled: authResolved && isSignedIn,
     getHeaders,
     getCredentials,
+  });
+
+  // Whether the env/member picker has anything to show. In `embedded` mode the
+  // header collapses to just the picker, so gate the header row on this to avoid
+  // an empty bordered strip on a legacy 1×1 workspace. Standalone renders the
+  // full header (logo / theme / user menu) regardless of this flag.
+  const showEnvPicker = shouldRenderEnvPicker({
+    groups: envGroupsQuery.groups,
+    reason: envGroupsQuery.reason,
+    error: envGroupsQuery.error,
   });
 
   // Seed / restore the env-picker selection on a fresh chat. #3064 — the
@@ -879,6 +919,29 @@ export function AtlasChat() {
     // (above), and entering it later must re-drive the open.
   }, [chatUrlParams.id, sessionResolved, isSignedIn, envGroupsQuery.hasLoaded, loadingConversation, authMode, apiKey]);
 
+  // `?prompt=` deep-link prefill. The hosted `WorkspaceShell` delivers a query
+  // through this param (`deliverPrompt`) when the user picks from the prompt
+  // library / schema explorer, and /wizard's Done step + /signup/success
+  // starters use it too. Key on the dispatched value (not a once-per-mount flag)
+  // so a second delivery of the same text re-fires — this surface stays mounted
+  // across sibling navigations. Prefill only (no auto-submit; that would race
+  // transport readiness); clearing only `prompt` leaves `?id=` intact since nuqs
+  // merges keys. Standalone (scaffold/demo) has no shell, so `prompt` stays "".
+  const lastPrefilledRef = useRef<string | null>(null);
+  useEffect(() => {
+    const text = chatUrlParams.prompt;
+    if (!text) return;
+    if (text === lastPrefilledRef.current) return;
+    lastPrefilledRef.current = text;
+    setInput(text);
+    void setChatUrlParams({ prompt: "" }).catch((err: unknown) => {
+      console.warn(
+        "[atlas-chat] failed to clear prompt param:",
+        err instanceof Error ? err.message : String(err),
+      );
+    });
+  }, [chatUrlParams.prompt, setChatUrlParams]);
+
   // Wait for auth mode detection before rendering — prevents flash of chat UI
   // when managed auth is active but session hasn't been checked yet.
   if (!authResolved || (isManaged && managedSession.isPending)) {
@@ -889,8 +952,11 @@ export function AtlasChat() {
 
   return (
     <>
-      <div className="flex h-dvh">
-        {convos.available && (
+      {/* `embedded` fills the host shell's <SidebarInset> (h-full/flex-1)
+          instead of claiming the viewport (h-dvh) and drops the duplicate
+          `id="main"` the shell already provides. */}
+      <div className={embedded ? "flex min-h-0 flex-1" : "flex h-dvh"}>
+        {!embedded && convos.available && (
           <ConversationSidebar
             conversations={convos.conversations}
             selectedId={convos.selectedId}
@@ -903,10 +969,16 @@ export function AtlasChat() {
           />
         )}
 
-        <main id="main" tabIndex={-1} className="flex flex-1 flex-col overflow-hidden">
+        <main id={embedded ? undefined : "main"} tabIndex={-1} className="flex flex-1 flex-col overflow-hidden">
           <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-hidden p-4">
+            {/* In `embedded` mode the host shell owns the app-identity header
+                (logo, theme, user menu) + the sidebar/modals, so collapse this
+                header to just the env-picker — and only when it has something to
+                show, so a legacy 1×1 workspace doesn't render an empty row. */}
+            {(!embedded || showEnvPicker) && (
             <header className="mb-4 flex-none border-b border-zinc-100 pb-3 dark:border-zinc-800">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
+                {!embedded && (
                 <div className="flex items-center gap-3">
                   {convos.available && (
                     <Button
@@ -927,6 +999,7 @@ export function AtlasChat() {
                     </div>
                   </div>
                 </div>
+                )}
                 <div className="flex items-center gap-2">
                   {/* #2345 — env/member picker. Hides itself when only
                       one member is configured (legacy single-connection
@@ -1001,6 +1074,8 @@ export function AtlasChat() {
                       });
                     }}
                   />
+                  {!embedded && (
+                  <>
                   <Button
                     variant="ghost"
                     size="icon"
@@ -1021,9 +1096,12 @@ export function AtlasChat() {
                   </Button>
                   <ThemeToggle className="size-11 sm:size-8 text-zinc-500 dark:text-zinc-400" />
                   {isSignedIn && <UserMenu />}
+                  </>
+                  )}
                 </div>
               </div>
             </header>
+            )}
 
             {(healthWarning || transientWarning || convos.fetchError) && (
               <p className="mb-2 text-xs text-zinc-400 dark:text-zinc-500">{healthWarning || transientWarning || convos.fetchError}</p>
@@ -1050,7 +1128,12 @@ export function AtlasChat() {
                 >
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
-                    showDevChatEmpty ? (
+                    // #3081 — host-gated "connect data" empty state takes
+                    // precedence: a zero-table workspace funnels into setup
+                    // before the agent can run and fail confusingly.
+                    needsDataSetup ? (
+                      emptyStateOverride
+                    ) : showDevChatEmpty ? (
                       <DeveloperChatEmptyState />
                     ) : (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
@@ -1243,6 +1326,10 @@ export function AtlasChat() {
                   />
                 )}
 
+                {/* #3081 — hide the composer on a zero-table workspace's empty
+                    thread (emptyStateOverride shows above) so the user connects
+                    data before the agent runs. */}
+                {!(needsDataSetup && messages.length === 0) && (
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -1271,33 +1358,41 @@ export function AtlasChat() {
                     <Send className="size-4" />
                   </Button>
                 </form>
+                )}
               </>
             )}
           </div>
         </main>
       </div>
-      <SchemaExplorer
-        open={schemaExplorerOpen}
-        onOpenChange={setSchemaExplorerOpen}
-        onInsertQuery={(text) => setInput(text)}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <PromptLibrary
-        open={promptLibraryOpen}
-        onOpenChange={setPromptLibraryOpen}
-        onSendPrompt={handleSend}
-        getHeaders={getHeaders}
-        getCredentials={getCredentials}
-      />
-      <ChangePasswordDialog
-        open={
-          !passwordDialogDismissed &&
-          passwordData?.kind === "allowed" &&
-          passwordData.passwordChangeRequired
-        }
-        onComplete={() => setPasswordDialogDismissed(true)}
-      />
+      {/* In `embedded` mode the host shell mounts these against the SAME
+          `useUiStore` keys, so suppress surface #2's copies to avoid a double
+          mount; ChangePasswordDialog isn't part of the hosted chat. */}
+      {!embedded && (
+        <>
+          <SchemaExplorer
+            open={schemaExplorerOpen}
+            onOpenChange={setSchemaExplorerOpen}
+            onInsertQuery={(text) => setInput(text)}
+            getHeaders={getHeaders}
+            getCredentials={getCredentials}
+          />
+          <PromptLibrary
+            open={promptLibraryOpen}
+            onOpenChange={setPromptLibraryOpen}
+            onSendPrompt={handleSend}
+            getHeaders={getHeaders}
+            getCredentials={getCredentials}
+          />
+          <ChangePasswordDialog
+            open={
+              !passwordDialogDismissed &&
+              passwordData?.kind === "allowed" &&
+              passwordData.passwordChangeRequired
+            }
+            onComplete={() => setPasswordDialogDismissed(true)}
+          />
+        </>
+      )}
     </>
   );
 }

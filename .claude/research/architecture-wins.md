@@ -2309,3 +2309,38 @@ Plus a freshness gap: a datasource config update left the already-cloned org poo
 **Out of scope (follow-up):** the Effect `ConnectionRegistry` Tag surface (`services.ts` `ConnectionRegistryShape`) was deliberately NOT widened to accept `workspaceId`, so `makeOrgSqlClientLive` (`effect/sql.ts`) still reads dbType via the 1-arg `getDBType`. That constructor has no live (non-test) caller today — it's dormant — so threading the Tag is left for whenever it's revived. The singleton-backed hot path (`sql.ts` agent pipeline) is fully scoped.
 
 **Category:** Module-deepening — extends the #2783 per-(workspace, install_id) routing boundary across the remaining singleton read seams (resolve + metadata + drift introspection + drain) behind a small, opt-in interface (`getForWorkspace` / scoped readers / `drainWorkspacePool`), so the tenant-isolation invariant holds on every singleton path into `ConnectionRegistry`, not just the org-pooling-ON clone path.
+
+---
+
+## 80. `@useatlas/webhook-publisher` — one `deliverWebhook` + pluggable `SignStrategy` backing all three outbound senders (#2016)
+
+**Date:** 2026-06-02
+**Issue:** #2016 (architecture) — the "file this when a second consumer appears" trigger, fully discharged
+**PRs:** #3118 (package), #3119 (server consumers), #3120 (webhook-action plugin + railpack build fix)
+
+**Problem:** Atlas had grown **three** independent outbound webhook senders, each with its own hand-rolled signing + retry + timeout, drifting apart:
+- sub-processor publisher (`packages/api/.../sub-processor-publisher`) — `X-Webhook-Signature: sha256=<hmac(${ts}:${body})>` timestamped, 3× capped-exp backoff, 10s timeout, tagged outcomes.
+- webhook-action plugin (`plugins/webhook-action`) — `X-Atlas-Signature: <hmac(rawBody)>` (Stripe/GitHub style), `[250/1k/4k]ms`, 30s timeout.
+- SLA alerter (`ee/src/sla/alerting.ts`) — **unsigned, single fetch, no retry** ← the real gap: a customer couldn't verify an alert originated from Atlas, and one network blip silently dropped it.
+
+Three copies of the same fiddly transport logic — and the newest consumer (SLA) had silently regressed to no signing / no retry.
+
+**Solution:** Extract one framework-free primitive and migrate all three onto it, preserving each wire format exactly via **pluggable signing strategies**:
+- **`deliverWebhook({ url, payload, sign, retry, timeoutMs, fetcher?, onFailedAttempt?, sleep? })`** (`packages/webhook-publisher/src/deliver.ts`, ~284 LOC) — bounded retry from an explicit `{ maxAttempts, delaysMs }` policy, per-attempt `AbortController` timeout, 4xx-permanent vs 5xx/transport-retry classification, a bounded (≤200-char) body excerpt read only for permanent rejections, and a **never-throws** tagged `DeliveryOutcome` (`ok` | `http_error` | `transport_error`). Its only side-channel is a caller-injected `onFailedAttempt` observer — the server emits structured logs, the plugin emits `console.warn` — so no logger dependency is baked in.
+- **`SignStrategy = (body) => SignedRequest`** (`sign.ts`, ~106 LOC) — `timestamped({ secret })` (house standard, `X-Webhook-Signature` + `X-Webhook-Timestamp`, matches the inbound `@useatlas/webhook` verifier) and `rawBody({ secret })` (`X-Atlas-Signature`, bare hex). The body is signed once per delivery and reused across retries, so a timestamped signature stays stable within a delivery — byte-identical to the pre-extraction senders.
+- Transport-only, no Effect — the plugin (no Effect runtime) awaits it directly; the `ee/` SLA caller wraps it in `Effect.tryPromise`.
+
+Migration outcomes:
+- **sub-processor** (#3119) — internals swapped for `deliverWebhook` + `timestamped`; tagged `DeliveryAttempt`, at-least-once tick, and decrypt-failure re-throw all preserved; existing tests stayed green.
+- **SLA alerter** (#3119) — adopted `deliverWebhook` + `timestamped` → **gained signing + retry it never had** (the headline fix, not just DRY), via `ATLAS_SLA_WEBHOOK_SECRET` + a documented verify recipe.
+- **webhook-action** (#3120) — `hmacSign` reimplemented as `rawBody({secret})(body).signature`; `executeWebhookPost` re-mapped onto `deliverWebhook`; the hand-rolled `for` retry loop + `attempt()` + `safeErrorDetail()` + `sleep()` deleted (`tool.ts` 166→145 LOC). `none`/`exponential` policy + 30s timeout + `X-Atlas-Signature` wire format byte-identical; 19/19 plugin tests green untouched; `hmacSign`/`executeWebhookPost` still exported.
+
+**Impact:**
+- **One tested transport/sign primitive replaces three divergent copies** — the package suite covers signature vectors + retry/backoff/4xx-vs-5xx/timeout/excerpt-bounding once, and each consumer keeps only its thin behaviour-pinning suite. Net: ~390 LOC of shared transport+sign logic backs all three senders, versus three drifting hand-rolls (and a 4th that would have been the next copy).
+- **The silent SLA gap is closed** — alerts now sign (timestamped) + retry; origin is verifiable and a blip no longer drops them.
+- **No wire format broke** — `rawBody` / `timestamped` keep each consumer byte-identical; the inbound verifier + customer verify-helpers still match.
+- **Published + consumable** — `@useatlas/webhook-publisher@0.0.1` (server bundles it; scaffold templates pin it) and `@useatlas/webhook-action@0.0.2` both live on npm.
+
+**Bonus (build robustness, #3120):** declaring `typescript` as `webhook-publisher`'s own devDep fixed a www-staging railpack failure — its `prepare` ran `bun x tsc`, which (lacking a package-local `tsc`) ephemeral-fetched the deprecated `tsc` npm shim and raced/failed once it became the 3rd concurrent `bun x tsc` in the workspace install. A package whose build runs `tsc` should declare `typescript`, not lean on root hoisting.
+
+**Category:** Module-deepening — a narrow `deliverWebhook` + pluggable-`SignStrategy` interface over the broad, irregular surface of "sign + retry + time-out an outbound POST without breaking any consumer's wire format," collapsing three hand-rolled copies (one of which had silently lost signing + retry) into a single framework-free primitive consumed by both the Effect server and the Effect-less plugin.

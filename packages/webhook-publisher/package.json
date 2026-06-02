@@ -1,0 +1,54 @@
+{
+  "name": "@useatlas/webhook-publisher",
+  "version": "0.0.1",
+  "description": "Framework-free outbound webhook sender for Atlas — HMAC signing strategies + bounded retry",
+  "type": "module",
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/sign.ts src/deliver.ts --outdir dist --target node --packages external && bun x tsc -p tsconfig.build.json",
+    "prepare": "bun run build",
+    "test": "bun test src/__tests__/sign.test.ts && bun test src/__tests__/deliver.test.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./sign": {
+      "types": "./dist/sign.d.ts",
+      "import": "./dist/sign.js",
+      "default": "./dist/sign.js"
+    },
+    "./deliver": {
+      "types": "./dist/deliver.d.ts",
+      "import": "./dist/deliver.js",
+      "default": "./dist/deliver.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "keywords": [
+    "atlas",
+    "webhook",
+    "hmac",
+    "signature",
+    "retry",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/webhook-publisher"
+  },
+  "homepage": "https://www.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.5.0"
+  }
+}

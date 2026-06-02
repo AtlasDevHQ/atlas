@@ -26,7 +26,9 @@ No tag in flight — the train is between tags. `v0.0.5` was tagged + released 2
 
 - [x] Usage page surfaces the prompt-cache read/write split + billed-vs-effective tokens (#3106 → #3107) — completes the v0.0.5 caching groundwork.
 - [x] Chat-integration install cap enforced before the Slack OAuth redirect, not only in the callback (#2998 → #3108).
-- [x] ConnectionRegistry retires the multi-tenant `DISTINCT ON` collision via per-(workspace, install) registration (#2783 → #3110); follow-up #3109 threads workspace context through bare readers.
+- [x] ConnectionRegistry retires the multi-tenant `DISTINCT ON` collision via per-(workspace, install) registration (#2783 → #3110); the read-side follow-up (#3109 → #3114) threads workspace context through the bare readers + eagerly drains stale org pools (win #79).
+- [x] Reliability + observability hardening: backups verify/restore map structural failures to tagged errors + assert row counts (#2989 → #3115); per-tick spans now cover every periodic scheduler fiber (#2987 → #3112); BYOT catalog refresh skips dormant orgs via `organization.last_active_at` (#2377 → #3113).
+- [x] Architecture deepening: env-profile phase-2 migrates the last per-env runtime defaults (#2937 → #3116); region routing forces an exhaustive `Record<DeployRegion, …>` decision (#2983 → #3111); the three per-platform OAuth reconnect errors + refresh-retry loops collapse into one shared harness (#2708 → #3117).
 
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 

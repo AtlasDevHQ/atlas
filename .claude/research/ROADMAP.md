@@ -22,6 +22,8 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2026-06-02 (see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
 
+- [ ] Staging environment (PRD #2893) — 22-slice build, target late June 2026.
+
 ---
 
 ## Planned tags

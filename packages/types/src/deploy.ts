@@ -30,3 +30,31 @@
  * clamp) can name the cases exhaustively without re-spelling the literals.
  */
 export type DeployRegion = "us" | "eu" | "apac" | "staging";
+
+/**
+ * The closed set of {@link DeployRegion} values, as a runtime tuple. Kept
+ * adjacent to the type so the two cannot drift: a new region added to the
+ * union without an entry here is a `satisfies` compile error below.
+ */
+const DEPLOY_REGIONS = ["us", "eu", "apac", "staging"] as const satisfies readonly DeployRegion[];
+
+/**
+ * Exact runtime narrowing guard for {@link DeployRegion}.
+ *
+ * The staging email-clamp wiring (`packages/api/src/lib/email/delivery.ts`,
+ * #2913/#2985) reads the deploy region from `getApiRegion(): string | null`
+ * and MUST narrow it through this guard rather than an unchecked
+ * `as DeployRegion` cast. The guard is deliberately EXACT — no trim, no
+ * lowercase, no prefix match: only the four literal first-party regions
+ * return `true`.
+ *
+ * Exactness is the safety property. A "close" value — `null`, `"Staging"`,
+ * `"staging "` with whitespace, a granular `"us-west"`, a typo — returns
+ * `false`, and the wiring site treats a `false` result as "not a known
+ * region" and fails CLOSED (clamps outbound mail / hard-fails boot) instead
+ * of mistaking a mislabelled staging box for a prod region and emailing a
+ * real recipient. Loosening this guard would silently re-open that leak.
+ */
+export function isDeployRegion(value: string | null): value is DeployRegion {
+  return value !== null && (DEPLOY_REGIONS as readonly string[]).includes(value);
+}

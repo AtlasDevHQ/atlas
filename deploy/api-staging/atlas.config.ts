@@ -13,6 +13,15 @@
  *     is "staging" so the config self-identifies even if the env var is
  *     somehow unset, and the RegionGuardLive boot guard (saas-guards.ts)
  *     finds "staging" declared in residency.regions instead of hard-failing.
+ *   - Deploy-env profile: the api-staging service MUST also set
+ *     ATLAS_DEPLOY_ENV=staging (a SEPARATE env var from ATLAS_API_REGION,
+ *     read by `resolveDeployEnv()` in lib/env-profile.ts). It is NOT set in
+ *     this file — it is part of the per-service Railway env contract (slice
+ *     21, #2917). Unset → `resolveDeployEnv()` defaults to "production", so
+ *     auth would run the PROD env profile (cookie prefix `atlas`, prod email-
+ *     verification policy) and collide with the prod cookie slot. Setting it
+ *     also keeps the EE residency resolver on its quiet staging-debug path
+ *     (`resolveDeployEnv() === "staging"`).
  *   - Single-region soak: staging is one region, one Postgres (DATABASE_URL),
  *     excluded from the residency router (PRD story 17). There are no us/eu/
  *     apac arms here — staging never claims to be a residency target and
@@ -22,11 +31,12 @@
  *     stay env-var-driven, so staging reaches its own Twenty Cloud workspace
  *     via TWENTY_BASE_URL rather than a hardcoded prod hostname.
  *
- * Per-service secrets/credentials live in Railway env vars on the
- * api-staging service (staging OAuth apps, staging Twenty key, staging
- * DATABASE_URL) — never inlined here. A separate file (rather than reusing
- * the prod config with conditionals) keeps regional drift explicit and
- * reviewable.
+ * Per-service secrets/credentials + the two discriminator env vars
+ * (ATLAS_API_REGION=staging, ATLAS_DEPLOY_ENV=staging) live in Railway env
+ * vars on the api-staging service (plus staging OAuth apps, staging Twenty
+ * key, staging DATABASE_URL) — never inlined here. A separate file (rather
+ * than reusing the prod config with conditionals) keeps regional drift
+ * explicit and reviewable.
  *
  * NOTE: this file is not COPYed into any image yet — the api-staging Railway
  * service + its Dockerfile/railway.json wiring land in staging slices 19–22
@@ -965,6 +975,16 @@ export default defineConfig({
   // never routes to a prod regional DB. The single Postgres is DATABASE_URL
   // (the staging service's own database). `strictRouting: false` matches
   // prod; with one region there is nothing to misroute regardless.
+  //
+  // KNOWN SEAM (#3097): the `staging` arm below is REQUIRED by RegionGuardLive
+  // to boot, but the EE residency resolver (ee/src/platform/residency.ts)
+  // treats `staging` in residency.regions as "dead config" and warns for any
+  // staging-keyed workspace. There is no config-only state that satisfies both
+  // guards; the reconciliation (carve out staging in RegionGuardLive, or relax
+  // the resolver on the staging deploy) is tracked in #3097 and must land
+  // before the service is activated (slices 19–22). Low-impact today: the
+  // seeded `staging-internal` org carries no region, so the resolver returns
+  // early and never warns.
   residency: {
     defaultRegion: "staging",
     strictRouting: false,

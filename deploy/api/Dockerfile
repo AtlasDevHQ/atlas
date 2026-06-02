@@ -150,6 +150,10 @@ RUN mkdir -p /app/plugins/chat/node_modules/@useatlas && \
 # Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
+# Profile-aware seed gate (#2937): start.sh shells out to this to resolve
+# ATLAS_SEED_DEMO through the env-profile. Dependency-free (imports only
+# @atlas/api/lib/env-profile), so it needs no extra node_modules symlink.
+COPY --chown=atlas:atlas examples/docker/scripts/resolve-seed-demo.ts ./scripts/resolve-seed-demo.ts
 COPY --chown=atlas:atlas deploy/api/atlas.config.ts ./atlas.config.ts
 COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh
 # Build-time assertion: canonical seed must be non-empty and the bundled
@@ -157,6 +161,13 @@ COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh
 # time rather than booting against an empty DB. (#2021 review-pass)
 RUN test -s ./data/demo.sql || (echo "ERROR: ./data/demo.sql is empty or missing" >&2 && exit 1)
 RUN test -d ./semantic/entities && [ "$(ls -A ./semantic/entities 2>/dev/null)" ] || (echo "ERROR: ./semantic/entities is missing or empty" >&2 && exit 1)
+# Build-time assertion (#2937): the profile-aware seed shim must resolve its
+# @atlas/api/lib/env-profile import in the image layout and print a clean
+# boolean. Run WITHOUT redirecting stderr so a broken import (exports-map drift,
+# a regressed COPY, a moved module) fails the build loudly here — otherwise
+# start.sh's `2>/dev/null` would silently degrade the seed gate to the legacy
+# raw check forever, with no log line anywhere.
+RUN out="$(bun /app/scripts/resolve-seed-demo.ts)"; [ "$out" = "true" ] || [ "$out" = "false" ] || (echo "ERROR: resolve-seed-demo.ts did not print a clean boolean: [$out]" >&2 && exit 1)
 # pg is installed in packages/api/node_modules (not hoisted to root).
 # seed-demo.ts runs from /app/scripts/ and needs pg — symlink it so
 # bun's module resolution finds it from the root node_modules.

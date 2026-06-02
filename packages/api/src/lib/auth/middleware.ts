@@ -15,6 +15,7 @@ import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
+import { resolveRateLimitRpm } from "@atlas/api/lib/env-profile";
 import { Effect } from "effect";
 import { SSOPolicy } from "@atlas/api/lib/effect/services";
 import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
@@ -37,7 +38,14 @@ let lastWarnedChatRpmValue: string | undefined;
 let lastWarnedAdminRpmValue: string | undefined;
 
 function getRpmLimit(): number {
-  const raw = getSetting("ATLAS_RATE_LIMIT_RPM");
+  // Precedence: platform DB override > env var > deploy-env profile default.
+  // `getSetting` is called WITHOUT an orgId here, so only a platform-level DB
+  // override (Tier 2) is consulted — never a workspace-level one — and it
+  // returns the env var (Tier 3) when no DB override is set. It yields
+  // `undefined` only when neither is set, at which point the env-profile
+  // default fills the gap (`resolveRateLimitRpm` → `undefined` for the
+  // production/development profiles, so self-hosted stays disabled-by-default).
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM") ?? resolveRateLimitRpm();
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {

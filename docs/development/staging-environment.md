@@ -433,7 +433,7 @@ entry in that file is accounted for here. Legend:
 | `BETTER_AUTH_SECRET` | 🔒 | Distinct 32-byte random (`openssl rand -base64 32`). Doubles as the at-rest key fallback — keep it off prod's value. |
 | `BETTER_AUTH_URL` | 🟦 | `https://api.staging.useatlas.dev`. |
 | `BETTER_AUTH_TRUSTED_ORIGINS` | 🟦 | `https://app.staging.useatlas.dev` (+ `www.staging.useatlas.dev` if needed). |
-| `ATLAS_ADMIN_EMAIL` | 🟦 | The deterministic staging admin (e.g. `admin@staging.useatlas.dev`). Note `StagingSeed` separately seeds an admin via `STAGING_ADMIN_EMAIL`/`STAGING_ADMIN_PASSWORD` (see [§7](#7-incidental-findings)). |
+| `ATLAS_ADMIN_EMAIL` | 🟦 | The deterministic staging admin (e.g. `admin@staging.useatlas.dev`). Note `StagingSeed` separately seeds an admin at the **fixed constant** `admin@staging.useatlas.dev` (`STAGING_ADMIN_EMAIL` in `seed.ts` — not an env var), reading only `STAGING_ADMIN_PASSWORD` from the environment (see [§7](#7-incidental-findings)). |
 | `ATLAS_ALLOW_FIRST_SIGNUP_ADMIN` | ⚪ | Leave unset (`ATLAS_ADMIN_EMAIL` is set). |
 | `ATLAS_AUTH_MODE` | ⚪ | Unset — auto-detected to `managed` (matches prod SaaS). |
 | `ATLAS_API_KEY`, `ATLAS_AUTH_JWKS_URL`, `ATLAS_AUTH_ISSUER`, `ATLAS_AUTH_AUDIENCE`, `ATLAS_AUTH_ROLE_CLAIM`, `ATLAS_API_KEY_ROLE` | ⚪ | API-key / BYOT auth modes — unset on SaaS staging. |

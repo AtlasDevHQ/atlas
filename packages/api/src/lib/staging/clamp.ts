@@ -106,6 +106,16 @@ const RECIPIENT_FIELDS = ["to", "cc", "bcc", "replyTo"] as const;
  * e.g. a numeric `cc`, or a `headers` object carrying a `Reply-To` value) is
  * left untouched: only real top-level recipient values are redirected, never
  * mis-stamped. The non-recipient fields are intentionally preserved, not leaked.
+ *
+ * SCOPE of the structural guard: it covers the `string | string[]` recipient
+ * shapes only. nodemailer also permits `Address` objects (`{ name, address }`)
+ * and `Array<string | Address>` for these fields; an `Address`-shaped recipient
+ * is NOT recipient-shaped to `isRecipientField`, so it would ride through
+ * unredirected. That is safe TODAY because both callers only ever produce string
+ * recipients (`EmailMessage.to` is a `string`; the SMTP agent path builds
+ * `to: Array.from(to)` from Zod-validated `string` addresses), but a future
+ * caller that passes `Address` objects MUST widen `isRecipientField` to match
+ * them — otherwise such a recipient would reach a real address on a staging soak.
  */
 const EMAIL_CLAMP: OutboundClamp = {
   name: "email",

@@ -359,6 +359,7 @@ describe("migrateAuthTables", () => {
             { name: "0111_github_data_catalog.sql" },
             { name: "0112_conversation_rest_excluded_datasources.sql" },
             { name: "0113_conversation_rest_focus_datasource.sql" },
+            { name: "0114_token_usage_cache_tokens.sql" },
           ],
         };
       }

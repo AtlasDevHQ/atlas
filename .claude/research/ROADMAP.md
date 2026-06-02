@@ -22,7 +22,7 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2026-06-02 (see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
 
-- [ ] Staging environment (PRD #2893) — 22-slice build, target late June 2026.
+- [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 
 ---
 
@@ -30,7 +30,7 @@ No tag in flight — the train is between tags. `v0.0.4` was tagged + released 2
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). The code slices have largely landed (clamp wiring #2913/#2985, `api-staging` config #2912, misrouting coverage #2982, smoke workflow #2898; runbook #2899 in review). Remaining: the HITL OAuth/Railway provisioning slices (#2900–#2918) plus a review-surfaced staging-hardening cluster (#3095/#2984/#3088/#3096/#3097).
+- **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
 
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 

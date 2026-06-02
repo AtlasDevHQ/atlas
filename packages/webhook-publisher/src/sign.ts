@@ -1,0 +1,106 @@
+/**
+ * Pluggable HMAC-SHA256 signing strategies for outbound webhooks.
+ *
+ * Atlas ships two on-the-wire conventions, both kept here so no consumer's
+ * format ever drifts:
+ *
+ *   timestamped (house standard — sub-processor feed + SLA alerts)
+ *     X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>
+ *     X-Webhook-Timestamp: <unix-seconds>
+ *     Byte-identical to the existing sub-processor sender. The `${ts}:${body}`
+ *     signing input is the same convention the inbound `@useatlas/webhook`
+ *     verifier (`verifyHmacWithTimestamp`) uses — but that verifier compares
+ *     against BARE hex, so a receiver must strip the `sha256=` prefix
+ *     (Stripe/GitHub style) before comparing. The documented customer
+ *     verify-helper in the sub-processor-feed docs does exactly that.
+ *
+ *   rawBody (Stripe/GitHub style — webhook-action plugin)
+ *     X-Atlas-Signature: <hmac(rawBody)>
+ *     No timestamp, no prefix — bare hex over the exact request body.
+ *
+ * A strategy is a pure function of the serialized body. `deliverWebhook`
+ * signs the body exactly once and reuses the headers across retries, so the
+ * timestamp (when present) is stable for the whole delivery — matching the
+ * pre-extraction senders byte-for-byte.
+ */
+
+import crypto from "node:crypto";
+
+const CONTENT_TYPE_JSON = "application/json";
+
+/** The signature value plus the full header set to send with the request. */
+export interface SignedRequest {
+  /**
+   * The value placed in the signature header — surfaced so callers can echo
+   * it back for audit (the webhook-action plugin returns it to the agent).
+   * For `timestamped` this includes the `sha256=` prefix; for `rawBody` it is
+   * bare hex.
+   */
+  readonly signature: string;
+  /** Headers to merge into the outbound request, including `Content-Type`. */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/**
+ * A signing strategy: given the serialized request body, produce the
+ * signature and the headers that carry it. Pure and synchronous.
+ */
+export type SignStrategy = (body: string) => SignedRequest;
+
+/**
+ * Timestamped strategy — `X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>`
+ * plus `X-Webhook-Timestamp`. Byte-identical to the existing sub-processor
+ * sender. The `${ts}:${body}` signing input matches the inbound
+ * `@useatlas/webhook` verifier, but that verifier compares against bare hex —
+ * receivers strip the `sha256=` prefix first (as the documented customer
+ * verify-helper does).
+ *
+ * The timestamp is computed when the body is signed, not when the strategy is
+ * built — so a strategy reused across multiple deliveries gets a fresh
+ * timestamp each time (otherwise a cached signer would reuse a stale timestamp
+ * and trip the receiver's replay window). `deliverWebhook` signs once per
+ * delivery and reuses the result across retries, so it stays stable within a
+ * single delivery. Inject `timestampSeconds` for deterministic tests.
+ */
+export function timestamped(opts: {
+  readonly secret: string;
+  /** Unix seconds. Defaults to `Math.floor(Date.now() / 1000)` at sign time. */
+  readonly timestampSeconds?: number;
+}): SignStrategy {
+  return (body) => {
+    const ts = opts.timestampSeconds ?? Math.floor(Date.now() / 1000);
+    const signature = `sha256=${crypto
+      .createHmac("sha256", opts.secret)
+      .update(`${ts}:${body}`)
+      .digest("hex")}`;
+    return {
+      signature,
+      headers: {
+        "Content-Type": CONTENT_TYPE_JSON,
+        "X-Webhook-Timestamp": String(ts),
+        "X-Webhook-Signature": signature,
+      },
+    };
+  };
+}
+
+/**
+ * Raw-body strategy — `X-Atlas-Signature: <hmac(rawBody)>` (bare hex, no
+ * timestamp). Stripe/GitHub/Shopify webhook convention; receivers verify by
+ * recomputing the MAC over the raw request body.
+ */
+export function rawBody(opts: { readonly secret: string }): SignStrategy {
+  return (body) => {
+    const signature = crypto
+      .createHmac("sha256", opts.secret)
+      .update(body)
+      .digest("hex");
+    return {
+      signature,
+      headers: {
+        "Content-Type": CONTENT_TYPE_JSON,
+        "X-Atlas-Signature": signature,
+      },
+    };
+  };
+}

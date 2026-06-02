@@ -18,8 +18,191 @@ import {
   type EmailProvider,
   type ProviderConfig,
 } from "@atlas/api/lib/integrations/types";
+import type { DeployRegion } from "@useatlas/types";
+import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
+import { resolveDeployEnv } from "@atlas/api/lib/env-profile";
+import { clampOutbound } from "@atlas/api/lib/staging/clamp";
 
 const log = createLogger("email-delivery");
+
+/**
+ * Local mirror of `isDeployRegion` from `@useatlas/types` (its canonical home,
+ * where it is also exported + unit-tested). It is duplicated here — rather than
+ * imported — ON PURPOSE: this file is scaffold-bound source (the create-atlas
+ * template regenerates from `packages/api/src`), so importing a *value* export
+ * that the pinned-published `@useatlas/types` does not yet ship would fail
+ * `scripts/check-published-symbols.ts` and break the scaffold smoke tests
+ * (value exports erase to nothing in the published tarball — the
+ * version-bump-ordering rule). `DeployRegion` is imported type-only above
+ * because types erase and are safe. Once `@useatlas/types` is published with
+ * `isDeployRegion` and the template ref bumped, this local copy can be replaced
+ * with the import.
+ *
+ * Drift is guarded in BOTH directions, mirroring the canonical copy:
+ * `satisfies readonly DeployRegion[]` rejects a typo'd entry (tuple ⊆ union),
+ * and `_AssertDeployRegionsExhaustive` rejects a region added to the union
+ * without a matching entry here (union ⊆ tuple) — the direction `satisfies`
+ * alone does not catch.
+ */
+const DEPLOY_REGIONS = ["us", "eu", "apac", "staging"] as const satisfies readonly DeployRegion[];
+type _AssertDeployRegionsExhaustive =
+  [Exclude<DeployRegion, (typeof DEPLOY_REGIONS)[number]>] extends [never] ? true : never;
+const _deployRegionsExhaustive: _AssertDeployRegionsExhaustive = true;
+function isDeployRegion(value: string | null): value is DeployRegion {
+  return value !== null && (DEPLOY_REGIONS as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// Staging outbound clamp wiring (#2913 + #2985)
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the {@link DeployRegion} to clamp outbound mail against — FAIL-CLOSED
+ * for the staging soak box (#2985). The clamp's whole job is "a staging soak
+ * can never email a real recipient," so the resolution biases hard toward
+ * clamping whenever there is any chance this is the staging box.
+ *
+ * Two independent signals are read; the deploy ENV is authoritative:
+ *
+ *  1. `resolveDeployEnv()` (the `ATLAS_DEPLOY_ENV` axis) — if this is a
+ *     staging-shaped deploy we return `"staging"` UNCONDITIONALLY, regardless
+ *     of what region is stamped. This is the load-bearing fail-closed branch:
+ *     it catches the misconfig that a plain region narrow CANNOT — a staging
+ *     box whose `ATLAS_API_REGION` was fat-fingered to a *valid* prod region
+ *     like `"us"` (which `isDeployRegion` happily accepts, so a region-only
+ *     check would route it through the prod identity path and email a real
+ *     recipient). It also covers a malformed / `"Staging"` / whitespace /
+ *     unset region on a staging box.
+ *  2. Otherwise narrow `getApiRegion()` (the `ATLAS_API_REGION` discriminator)
+ *     through {@link isDeployRegion}. An exact match (`us`/`eu`/`apac`/
+ *     `staging`) is used as-is — `clampOutbound` is identity for the three
+ *     prod regions and rewrites recipients only for `staging`. Anything else
+ *     (`null` unset → self-hosted / dev / CI; a granular `"us-west"`; an
+ *     operator-defined residency key) is NOT a deploy region off the staging
+ *     env, so we return `null` → no clamp, mail flows normally.
+ *
+ * Why the ENV axis is authoritative rather than the region: the threat is a
+ * staging box that emails a real address. `ATLAS_DEPLOY_ENV=staging` is the
+ * one signal a soak operator sets deliberately to say "this is the soak box";
+ * keying the clamp off it means no single fat-fingered `ATLAS_API_REGION` can
+ * re-open the leak. The companion {@link assertStagingMailRegion} boot assert
+ * makes the region/env divergence fail the boot outright; this runtime
+ * resolver is the defense-in-depth that still clamps if that assert is ever
+ * bypassed or disabled.
+ *
+ * @returns the region to pass to {@link clampOutbound}, or `null` when no
+ *          clamp applies (prod / self-hosted / dev / CI).
+ */
+export function resolveOutboundClampRegion(): DeployRegion | null {
+  // Authoritative fail-closed signal — a staging-shaped deploy ALWAYS clamps.
+  if (resolveDeployEnv() === "staging") return "staging";
+  const region = getApiRegion();
+  return isDeployRegion(region) ? region : null;
+}
+
+/**
+ * Is `payload` an email-shaped outbound (both `subject` and `html` present)?
+ * Pure + exported so the staging misconfig-warn decision is unit-testable
+ * without the logger. Used ONLY to decide whether to emit the observability
+ * warn — never to gate the clamp itself (the clamp is structural on `to`).
+ */
+export function isEmailShapedPayload(payload: unknown): boolean {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "subject" in payload &&
+    "html" in payload
+  );
+}
+
+/**
+ * Should the wiring layer warn about a staging region misconfig for this
+ * payload? True when the deploy ENV is `staging` (the soak box) but the region
+ * discriminator (`ATLAS_API_REGION`) is NOT exactly `"staging"`, and the
+ * payload is email-shaped. Pure + exported for unit testing (#2985).
+ *
+ * This is the observable signal of the silent-leak class: a naive wiring that
+ * narrowed `ATLAS_API_REGION` without the fail-closed env branch WOULD have
+ * routed this email through the prod identity path and emailed a real
+ * recipient. {@link resolveOutboundClampRegion} forces the clamp regardless so
+ * nothing leaks, but the operator still needs to SEE — and fix — the divergent
+ * `ATLAS_API_REGION`.
+ */
+export function shouldWarnStagingRegionMisconfig(payload: unknown): boolean {
+  if (resolveDeployEnv() !== "staging") return false;
+  if (getApiRegion() === "staging") return false;
+  return isEmailShapedPayload(payload);
+}
+
+/**
+ * Boot assert (#2985): a staging-shaped deploy (`ATLAS_DEPLOY_ENV=staging`)
+ * MUST also stamp `ATLAS_API_REGION=staging`. Throws otherwise so boot fails
+ * loudly rather than serving a soak box that can't recognize itself as staging
+ * and would email real recipients.
+ *
+ * This is the hard-fail half of the #2985 fail-closed pair. The runtime
+ * {@link resolveOutboundClampRegion} ALREADY clamps unconditionally on a
+ * staging-env deploy, so a leak is prevented even without this assert — but a
+ * silently-mislabeled staging box (`ATLAS_API_REGION=us`) is itself a bug that
+ * should never ship: it breaks region-keyed routing, seeding, and metrics, not
+ * just mail. Failing the boot turns that latent misconfig into an immediate,
+ * diagnosable error instead of a box that quietly behaves like prod.
+ *
+ * No-op off the staging env (prod / self-hosted / dev), so prod boots — which
+ * legitimately carry `ATLAS_API_REGION` of `us`/`eu`/`apac` and an
+ * `ATLAS_DEPLOY_ENV` of `production` (or unset) — are never affected.
+ *
+ * Wired into the staging boot Layer (`effect/layers.ts:StagingSeedLive`),
+ * BEFORE its region gate, so the dangerous "env=staging, region=us" case is
+ * caught (the gate would otherwise early-return and let the box serve mail).
+ */
+export function assertStagingMailRegion(): void {
+  if (resolveDeployEnv() !== "staging") return;
+  const region = getApiRegion();
+  if (region === "staging") return;
+  throw new Error(
+    `Staging deploy misconfigured: ATLAS_DEPLOY_ENV=staging but ATLAS_API_REGION=${JSON.stringify(region)} ` +
+      `(expected exactly "staging"). The outbound mail clamp keys off ATLAS_API_REGION; a non-"staging" value ` +
+      `would let the staging soak box email real recipients. Set ATLAS_API_REGION=staging on this service (#2985).`,
+  );
+}
+
+/**
+ * Emit the staging region-misconfig warn (KEYS ONLY — never the recipient or
+ * body). Logs only the two config keys an operator must reconcile (`deployEnv`,
+ * `apiRegion`); the message states the clamp already fired defensively so the
+ * entry reads as "fix your config," not "mail leaked."
+ */
+function warnStagingRegionMisconfig(payload: EmailMessage): void {
+  if (!shouldWarnStagingRegionMisconfig(payload)) return;
+  log.warn(
+    {
+      // KEYS ONLY: the two config values an operator must reconcile. Both are
+      // deploy-region/env labels — NOT the recipient, subject, or body — so
+      // they are safe to log. The recipient/body are deliberately absent.
+      deployEnv: resolveDeployEnv(),
+      apiRegion: getApiRegion(),
+    },
+    "Staging deploy has ATLAS_API_REGION != 'staging' while sending an email-shaped payload — " +
+      "outbound mail was clamped to the staging sink defensively, but set ATLAS_API_REGION=staging " +
+      "on this service to fix the drift (#2985)",
+  );
+}
+
+/**
+ * The single staging-clamp chokepoint (#2913/#2985): warn on a region/env
+ * misconfig (keys only), then redirect recipients to the staging sink when this
+ * is the staging soak box. EVERY public send entry point ({@link sendEmail} and
+ * {@link sendEmailWithTransport}) funnels through this, so no provider path can
+ * email a real recipient from staging. Identity for prod / self-hosted / dev
+ * (`resolveOutboundClampRegion` returns `null`, and `clampOutbound` is identity
+ * for the three prod regions regardless).
+ */
+function clampForOutbound(message: EmailMessage): EmailMessage {
+  warnStagingRegionMisconfig(message);
+  const clampRegion = resolveOutboundClampRegion();
+  return clampRegion ? clampOutbound(clampRegion, message) : message;
+}
 
 export interface EmailMessage {
   to: string;
@@ -171,36 +354,43 @@ function getPlatformEmailConfig(): EmailTransport | null {
  * Pass `orgId` to enable DB-backed email config lookup. When omitted, falls back to platform/env settings.
  */
 export async function sendEmail(message: EmailMessage, orgId?: string): Promise<DeliveryResult> {
+  // Staging outbound clamp (#2913/#2985): redirect recipients to the staging
+  // sink BEFORE any provider send so the soak box can never email a real
+  // address. `outbound` replaces `message` for the rest of the function so
+  // EVERY delivery path (DB transport, platform, webhook, Resend) is covered —
+  // a path that kept using the raw `message` would leak.
+  const outbound = clampForOutbound(message);
+
   // 1. Try DB-stored config for the org
   if (orgId) {
     const transport = await getEmailTransport(orgId);
     if (transport) {
-      return deliverViaTransport(message, transport);
+      return deliverViaTransport(outbound, transport);
     }
   }
 
   // 2. Platform email provider (settings registry)
   const platformConfig = getPlatformEmailConfig();
   if (platformConfig) {
-    return deliverViaTransport(message, platformConfig);
+    return deliverViaTransport(outbound, platformConfig);
   }
 
   const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@ship.useatlas.dev>";
 
   // 3. Webhook delivery (generic email API)
   if (process.env.ATLAS_SMTP_URL) {
-    return deliverWebhook(message, fromAddress);
+    return deliverWebhook(outbound, fromAddress);
   }
 
   // 4. Resend API delivery (env-var fallback for backward compat)
   if (process.env.RESEND_API_KEY) {
-    return deliverResend(message, fromAddress);
+    return deliverResend(outbound, fromAddress);
   }
 
   // 5. Dev fallback — log instead of sending. Returns success: false so the email
   // is not recorded as sent, allowing retry when a provider is configured.
   log.warn(
-    { to: message.to, subject: message.subject },
+    { to: outbound.to, subject: outbound.subject },
     "Email delivery skipped — no email provider configured",
   );
   return { success: false, provider: "log", error: "No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)" };
@@ -209,12 +399,18 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
 /**
  * Send an email using explicit transport credentials.
  * Used by the admin test endpoint to validate credentials before saving.
+ *
+ * Routes through the SAME staging clamp as {@link sendEmail} (#2913/#2985):
+ * this is a second outbound entry point, and the admin "test email" endpoint
+ * sends to an admin-supplied recipient — without the clamp a staging soak admin
+ * testing credentials would email a real address. On staging the test still
+ * validates the transport; the message just lands in the sink.
  */
 export async function sendEmailWithTransport(
   message: EmailMessage,
   transport: EmailTransport,
 ): Promise<DeliveryResult> {
-  return deliverViaTransport(message, transport);
+  return deliverViaTransport(clampForOutbound(message), transport);
 }
 
 // ---------------------------------------------------------------------------

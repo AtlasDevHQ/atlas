@@ -86,7 +86,7 @@ import {
   type EmailOutboxDB,
   type RecoveryResult as EmailOutboxRecoveryResult,
 } from "@atlas/api/lib/email-outbox";
-import { sendEmail } from "@atlas/api/lib/email/delivery";
+import { sendEmail, assertStagingMailRegion } from "@atlas/api/lib/email/delivery";
 import {
   crmOutboxPendingCount,
   crmOutboxDeadCount,
@@ -1076,6 +1076,16 @@ export const StagingSeedLive: Layer.Layer<
 > = Layer.effect(
   StagingSeed,
   Effect.gen(function* () {
+    // Boot assert (#2985): a staging-shaped deploy (ATLAS_DEPLOY_ENV=staging)
+    // MUST stamp ATLAS_API_REGION=staging, else the outbound mail clamp
+    // (lib/email/delivery.ts) can't recognize the box as staging and would
+    // email real recipients. Runs BEFORE the region gate below so the
+    // dangerous "env=staging, region=us" misconfig is caught — the gate would
+    // otherwise early-return `skipped-region` and let the box serve real mail.
+    // A throw here becomes a boot-DAG defect → server.ts exits non-zero: a
+    // misconfigured staging boot is loud, never a silent skip (#2914 precedent).
+    assertStagingMailRegion();
+
     // Region gate first — non-staging boots are provably inert.
     if (getApiRegion() !== "staging") {
       return { outcome: "skipped-region" } satisfies StagingSeedResult;

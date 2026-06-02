@@ -15,13 +15,15 @@ rationale lives in the [staging PRD](../prd/staging-environment.md) ([#2893](htt
 this runbook is the **how**, the PRD is the **why**.
 
 > **Status (slice 11 of 22 — [milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)).**
-> The code-side slices are landed (DeployRegion type, ResidencyResolver staging
-> arm, StagingClamp, StagingSeed + boot wiring, web staging banner). The
-> **human-in-the-loop (HITL) infrastructure slices are still open** — Railway
-> environment + services, managed Postgres, CNAMEs, the seven provider OAuth
-> apps, env-var population, and the prod cutover. Each step below that depends on
-> an unlanded slice is marked **`pending slice NN (#issue)`**. Until those land,
-> treat those sections as the intended procedure, not a record of what exists.
+> **All code-side slices are landed** (DeployRegion type, ResidencyResolver
+> staging arm, `StagingClamp` + email-delivery wiring, `StagingSeed` + boot
+> wiring, the `deploy/api-staging/atlas.config.ts` variant, and the web staging
+> banner). The **human-in-the-loop (HITL) infrastructure slices are still open** —
+> Railway environment + services, managed Postgres, CNAMEs, the seven provider
+> OAuth apps, env-var population, and the prod cutover — along with the
+> smoke-test workflow (slice 10). Each step below that depends on an unlanded
+> slice is marked **`pending slice NN (#issue)`**. Until those land, treat those
+> sections as the intended procedure, not a record of what exists.
 
 ### Slice map
 
@@ -31,10 +33,10 @@ this runbook is the **how**, the PRD is the **why**.
 | 2 | [#2908](https://github.com/AtlasDevHQ/atlas/issues/2908) | `ResidencyResolver` staging no-op arm | ✅ landed |
 | 3 | [#2909](https://github.com/AtlasDevHQ/atlas/issues/2909) | `/api/v1/mode` exposes `deployRegion` | ✅ landed |
 | 4 | [#2910](https://github.com/AtlasDevHQ/atlas/issues/2910) | `StagingClamp` deep module | ✅ landed |
-| 5 | [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) | wire `StagingClamp` into `email/delivery.ts` | ⏳ pending |
+| 5 | [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) | wire `StagingClamp` into `email/delivery.ts` | ✅ landed |
 | 6 | [#2911](https://github.com/AtlasDevHQ/atlas/issues/2911) | `StagingSeed` deep module | ✅ landed |
 | 7 | [#2914](https://github.com/AtlasDevHQ/atlas/issues/2914) | wire `ensureStagingSeed` into `lib/startup.ts` | ✅ landed |
-| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | `deploy/api-staging/atlas.config.ts` variant | ⏳ pending |
+| 8 | [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) | `deploy/api-staging/atlas.config.ts` variant | ✅ landed |
 | 9 | [#2915](https://github.com/AtlasDevHQ/atlas/issues/2915) | web staging banner | ✅ landed |
 | 10 | [#2898](https://github.com/AtlasDevHQ/atlas/issues/2898) | `.github/workflows/staging-smoke.yml` | ⏳ pending |
 | 11 | [#2899](https://github.com/AtlasDevHQ/atlas/issues/2899) | this runbook | ✅ in progress |
@@ -89,6 +91,35 @@ the public `GET /api/health` response:
 
 If you ever see a tab with **no** amber banner that you *think* is staging, treat
 it as production until proven otherwise — check `GET /api/health` directly.
+
+### Outbound mail is clamped to a sink
+
+Staging runs the **real** email-delivery code against real providers (Resend,
+etc.), so without a guard a soak could email real-looking customer addresses and
+burn sender reputation. Every outbound email is therefore redirected to a single
+sink before the provider send (**slice 5, [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) —
+landed**):
+
+- `sendEmail` (`packages/api/src/lib/email/delivery.ts`) routes every message
+  through `clampOutbound` (`packages/api/src/lib/staging/clamp.ts`), which
+  rewrites the recipient to `STAGING_MAIL_SINK` (default
+  `staging-mail@useatlas.dev`). Subject, body, and headers are preserved.
+- The clamp is **fail-closed** ([#2985](https://github.com/AtlasDevHQ/atlas/issues/2985)):
+  it keys off `ATLAS_DEPLOY_ENV=staging` (the authoritative soak-box signal), so
+  a misconfigured or fat-fingered `ATLAS_API_REGION` — even a *valid* prod value
+  like `us` — cannot silently disable it. On a staging-shaped deploy, mail is
+  **always** clamped.
+- Boot **hard-fails** if a staging deploy doesn't also stamp
+  `ATLAS_API_REGION=staging` (`assertStagingMailRegion`, wired into
+  `StagingSeedLive`). A mislabeled staging box never serves — it exits non-zero
+  at boot rather than risk real mail.
+- If a staging box ever sends an email while `ATLAS_API_REGION` has drifted from
+  `staging`, the wiring layer logs a warn (keys only — no recipient/body) so the
+  drift is visible; fix it by setting `ATLAS_API_REGION=staging` on the service.
+
+> **cc / bcc / replyTo are not yet redirected** — the current `EmailMessage` has
+> only `to`. Adding any new recipient field means extending the clamp too
+> ([#2984](https://github.com/AtlasDevHQ/atlas/issues/2984)).
 
 ### Deploy trigger model
 
@@ -158,16 +189,16 @@ as their prod counterparts (`api`, `web`, `www`):
 1. **New** → **GitHub Repo** → `AtlasDevHQ/atlas`.
 2. For each service set:
    - **Root directory / Dockerfile** — match the prod service's build config
-     (the `deploy/<service>` layout). `api-staging` requires its own
-     `deploy/api-staging/atlas.config.ts` — **slice 8 ([#2912](https://github.com/AtlasDevHQ/atlas/issues/2912)),
-     pending — and it is a hard prerequisite for a green `api-staging`.** Do
-     **not** point `api-staging` at the prod `deploy/api/atlas.config.ts` as a
-     stopgap: that config declares `eu`/`apac` residency entries whose
-     `databaseUrl` resolves from `ATLAS_REGION_EU_DB_URL` /
-     `ATLAS_REGION_APAC_DB_URL` (non-null-asserted), and config validation
-     rejects an empty region URL — so `api-staging`, which starts from an empty
-     Railway environment, would fail to boot until those prod-region URLs were
-     also set (which you do not want on staging).
+     (the `deploy/<service>` layout). `api-staging` uses its own
+     `deploy/api-staging/atlas.config.ts` — **landed (slice 8,
+     [#2912](https://github.com/AtlasDevHQ/atlas/issues/2912) /
+     [#3087](https://github.com/AtlasDevHQ/atlas/issues/3087))**. Use it; do
+     **not** point `api-staging` at the prod `deploy/api/atlas.config.ts`: that
+     config declares `eu`/`apac` residency entries whose `databaseUrl` resolves
+     from `ATLAS_REGION_EU_DB_URL` / `ATLAS_REGION_APAC_DB_URL` (non-null-asserted),
+     and config validation rejects an empty region URL — so `api-staging`, which
+     starts from an empty Railway environment, would fail to boot. The dedicated
+     staging config avoids that by declaring only the `staging` region.
    - **Watch branch** — `main` (this is what makes every merge auto-deploy to
      staging). Prod services watch `prod`; staging services watch `main`.
    - **Wait for CI** — optional; staging is the soak, so deploying ahead of CI is
@@ -341,10 +372,12 @@ Atlas uses GitHub in two distinct ways; staging may need either or both:
   [Resend API keys](https://resend.com/docs/dashboard/api-keys/introduction)
 - **Env vars produced:** `RESEND_API_KEY`. Pair with `ATLAS_EMAIL_FROM` set to a
   `staging.useatlas.dev` sender.
-- **Safety net:** once `StagingClamp` is wired (**slice 5 ([#2913](https://github.com/AtlasDevHQ/atlas/issues/2913)),
-  pending**), every outbound email's `to` is rewritten to `STAGING_MAIL_SINK`
-  (default `staging-mail@useatlas.dev`) before it reaches Resend — so staging
-  cannot email real recipients even if a test seeds a real address.
+- **Safety net:** `StagingClamp` is wired into email delivery (**slice 5,
+  [#2913](https://github.com/AtlasDevHQ/atlas/issues/2913) — landed**), so every
+  outbound email's `to` is rewritten to `STAGING_MAIL_SINK` (default
+  `staging-mail@useatlas.dev`) before it reaches Resend — staging cannot email
+  real recipients even if a test seeds a real address. See
+  [Outbound mail is clamped to a sink](#outbound-mail-is-clamped-to-a-sink).
 
 > 📸 _Screenshot placeholder: Resend → Domains showing `staging.useatlas.dev` verified, and the staging API key._
 
@@ -841,6 +874,9 @@ After a `main` merge deploys to staging:
    `"region":"staging"` in the body.
 3. Sign in with the seeded admin and run a query end-to-end against the staging
    datasource.
+4. Trigger an email (e.g. a password reset) and confirm it lands in the
+   `STAGING_MAIL_SINK` inbox, **never** the real recipient — the outbound clamp
+   is working.
 
 ## References
 

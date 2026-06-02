@@ -844,6 +844,48 @@ export class BillingCheckFailedError extends Data.TaggedError("BillingCheckFaile
   readonly workspaceId: string;
 }> {}
 
+// ── Backups (#2989 — verify/restore structural error mapping) ──────
+
+/**
+ * Backup row not found for the supplied id. Surfaces from
+ * `verifyBackup` / `requestRestore` (and from `executeRestore` when the
+ * backup was purged between request and confirm). Maps to HTTP 404.
+ *
+ * Defined here (not in `ee/src/backups/`) so it participates in the
+ * `AtlasError` union and the `mapTaggedError` exhaustive switch — the
+ * platform-backups routes let it propagate and rely on the structural
+ * mapping instead of `message.includes("not found")` (#2989). The
+ * `_tag` is the load-bearing discriminant; the message is preserved
+ * verbatim for the EE unit tests' `rejects.toThrow(...)` assertions.
+ */
+export class BackupNotFoundError extends Data.TaggedError("BackupNotFoundError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * Backup is not in a state that permits the requested operation —
+ * verify/restore require `completed` or `verified` status. Maps to HTTP
+ * 400 (admin-correctable: wait for the backup to finish, or pick a
+ * different one). Replaces the route's `message.includes("Cannot verify"
+ * / "Cannot restore")` classification (#2989). The message carries the
+ * offending status verbatim.
+ */
+export class BackupInvalidStateError extends Data.TaggedError("BackupInvalidStateError")<{
+  readonly message: string;
+}> {}
+
+/**
+ * Restore confirmation token is missing, unknown, or expired. The
+ * two-step request → confirm restore flow issues a short-lived token;
+ * `executeRestore` fails with this when the token can't be redeemed.
+ * Maps to HTTP 400 — request a new token and retry. Replaces the
+ * confirm route's `message.includes("Invalid or expired" / "expired")`
+ * classification (#2989).
+ */
+export class BackupRestoreTokenError extends Data.TaggedError("BackupRestoreTokenError")<{
+  readonly message: string;
+}> {}
+
 // ── Scheduler ──────────────────────────────────────────────────────
 
 /** Scheduled task execution timed out. */
@@ -920,6 +962,9 @@ export type AtlasError =
   | InvalidInstallIdError
   | ChatIntegrationLimitError
   | BillingCheckFailedError
+  | BackupNotFoundError
+  | BackupInvalidStateError
+  | BackupRestoreTokenError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
@@ -997,6 +1042,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "InvalidInstallIdError",
   "ChatIntegrationLimitError",
   "BillingCheckFailedError",
+  "BackupNotFoundError",
+  "BackupInvalidStateError",
+  "BackupRestoreTokenError",
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",

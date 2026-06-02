@@ -1176,6 +1176,12 @@ export const backups = pgTable(
     // idempotent ALTER in ensureTable(); this mirror keeps drizzle-kit from
     // emitting a DROP COLUMN on the next generate.
     verifyLevel: text("verify_level"),
+    // Source DB's public BASE TABLE count captured at backup time (#2989).
+    // verifyByRestore asserts restored >= expected to catch a dump truncated
+    // on a clean statement boundary (psql exits 0 but incomplete). Like
+    // verify_level, added by an idempotent ALTER in ensureTable(); mirrored
+    // here so drizzle-kit doesn't emit a DROP COLUMN.
+    expectedTableCount: integer("expected_table_count"),
   },
   (t) => [
     index("idx_backups_status").on(t.status, sql`created_at DESC`),

@@ -64,6 +64,9 @@ const {
   InvalidInstallIdError,
   ChatIntegrationLimitError,
   BillingCheckFailedError,
+  BackupNotFoundError,
+  BackupInvalidStateError,
+  BackupRestoreTokenError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -477,6 +480,36 @@ describe("mapTaggedError", () => {
     expect(result.code).toBe("billing_check_failed");
     // No `limit` in the body — there's no meaningful cap to report.
     expect(result.body).toBeUndefined();
+  });
+
+  // ── Backups (#2989 — verify/restore structural error mapping) ──────
+  //
+  // The platform-backups routes drop `Effect.either` + `message.includes`
+  // and let these tagged errors propagate; `mapTaggedError` is the only
+  // place their HTTP status/code is decided.
+
+  it("maps BackupNotFoundError to 404 not_found (#2989)", () => {
+    const result = mapTaggedError(new BackupNotFoundError({ message: "Backup not found" }));
+    expect(result.status).toBe(404);
+    expect(result.code).toBe("not_found");
+    expect(result.message).toBe("Backup not found");
+  });
+
+  it("maps BackupInvalidStateError to 400 bad_request (#2989)", () => {
+    const result = mapTaggedError(
+      new BackupInvalidStateError({ message: 'Cannot verify backup with status "in_progress"' }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
+    expect(result.message).toBe('Cannot verify backup with status "in_progress"');
+  });
+
+  it("maps BackupRestoreTokenError to 400 bad_request (#2989)", () => {
+    const result = mapTaggedError(
+      new BackupRestoreTokenError({ message: "Invalid or expired confirmation token" }),
+    );
+    expect(result.status).toBe(400);
+    expect(result.code).toBe("bad_request");
   });
 });
 

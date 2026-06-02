@@ -73,7 +73,7 @@ const { verifyBackup, scratchTargetsSameAsPrimary } = await import("./verify");
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(effect as Effect.Effect<A, never>);
 
-const baseBackup = (storagePath: string) => ({
+const baseBackup = (storagePath: string, expectedTableCount: number | null = null) => ({
   id: "b1",
   created_at: "2026-01-01",
   size_bytes: "1000",
@@ -82,6 +82,8 @@ const baseBackup = (storagePath: string) => ({
   retention_expires_at: "2026-02-01",
   error_message: null,
   verify_level: null,
+  // #2989 — verification baseline. null skips the restored >= expected check.
+  expected_table_count: expectedTableCount,
 });
 
 // ── (2) Fail-loud — scratch URL set but psql can't run ───────────────
@@ -300,5 +302,42 @@ describeIfPg("verifyBackup full-restore — real Postgres smoke (#2941)", () => 
     expect(result.level).toBe("full-restore");
     expect(result.verified).toBe(false);
     expect(result.message).toContain("zero base tables");
+  });
+
+  it("REGRESSION: a clean-boundary-truncated dump now FAILS via the count assertion (#2989)", async () => {
+    // VALID_DUMP restores exactly ONE base table (widgets) and exits psql 0 —
+    // the bare "> 0 base tables" check passes. But the backup recorded that the
+    // SOURCE had 3 public base tables at creation time, so the dump must have
+    // been truncated on a clean statement boundary (the last 2 CREATE TABLEs
+    // never made it). restored (1) < expected (3) → verification FAILS.
+    const dumpPath = join(tmp, "fewer-tables.sql.gz");
+    writeFileSync(dumpPath, gzipSync(Buffer.from(VALID_DUMP)));
+    mockBackup = baseBackup(dumpPath, 3); // source had 3 public base tables
+    ee.queueMockRows([]); // status -> failed UPDATE
+
+    const result = await run(verifyBackup("b1"));
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.level).toBe("full-restore");
+    expect(result.verified).toBe(false);
+    expect(result.message).toContain("the source had 3");
+    expect(result.message).toMatch(/restored 1 base table/);
+  });
+
+  it("verifies a valid dump whose restored count MEETS the expected baseline (#2989)", async () => {
+    // VALID_DUMP restores 1 base table; the backup recorded expected = 1.
+    // restored (1) >= expected (1) → verified, and the success message notes
+    // the baseline was met.
+    const dumpPath = join(tmp, "meets-baseline.sql.gz");
+    writeFileSync(dumpPath, gzipSync(Buffer.from(VALID_DUMP)));
+    mockBackup = baseBackup(dumpPath, 1); // source had exactly 1 public base table
+    ee.queueMockRows([]); // status -> verified UPDATE
+
+    const result = await run(verifyBackup("b1"));
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(result.level).toBe("full-restore");
+    expect(result.verified).toBe(true);
+    expect(result.message).toContain(">= 1 expected");
   });
 });

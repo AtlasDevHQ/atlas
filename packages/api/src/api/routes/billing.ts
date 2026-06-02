@@ -30,6 +30,7 @@ import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { getSettingLive } from "@atlas/api/lib/settings";
+import { resolveModelId } from "@atlas/api/lib/providers";
 import { BillingStatusSchema } from "@useatlas/schemas";
 import { ADMIN_ROLES, type AdminRole } from "@useatlas/types/auth";
 import { ErrorSchema } from "./shared-schemas";
@@ -283,8 +284,9 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const plan = getPlanDefinition(workspace.plan_tier);
     const limits = getPlanLimits(workspace.plan_tier);
 
-    // Fetch seat count, connection count, subscription, and current model in parallel
-    const [seatCountResult, connectionCountResult, subResult, currentModelSetting] = yield* Effect.promise(() => Promise.all([
+    // Fetch seat count, connection count, subscription, and the saved model +
+    // provider settings in parallel
+    const [seatCountResult, connectionCountResult, subResult, currentModelSetting, providerSetting] = yield* Effect.promise(() => Promise.all([
       // Actual member count from Better Auth's member table
       internalQuery<{ count: number }>(
         `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1`,
@@ -335,12 +337,37 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         );
         return undefined;
       }),
+      // Provider setting — mirrors the agent loop's resolution so the reported
+      // default matches what actually runs. Usually unset (env/VERCEL picks the
+      // provider), in which case resolveModelId falls back to env + defaults.
+      getSettingLive("ATLAS_PROVIDER", orgId).catch((err) => {
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to read ATLAS_PROVIDER setting — resolving provider from env",
+        );
+        return undefined;
+      }),
     ]));
 
     const seatCount = Math.max(1, seatCountResult[0]?.count ?? 1);
     const connectionCount = connectionCountResult[0]?.count ?? 0;
     const subscription = subResult.length > 0 ? subResult[0] : null;
-    const currentModel = currentModelSetting || plan.defaultModel || "default";
+    // SSOT (#3098): currentModel is exactly what the agent loop resolves for
+    // this workspace — the saved ATLAS_MODEL if present, else the provider's
+    // default (gateway → Sonnet 4.6). The billing "Default AI model" picker
+    // displays this verbatim, so it can never advertise a model the engine
+    // won't actually run. Falls back to the plan's recommended model only if
+    // resolution throws (e.g. an openai-compatible provider with no model set).
+    let currentModel: string;
+    try {
+      currentModel = resolveModelId(providerSetting, currentModelSetting);
+    } catch (err) {
+      log.debug(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Model resolution failed for billing currentModel — using plan default",
+      );
+      currentModel = currentModelSetting || plan.defaultModel || "default";
+    }
 
     // Compute per-seat token budget (scales with actual seat count)
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);

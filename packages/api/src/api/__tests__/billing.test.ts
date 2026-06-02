@@ -114,10 +114,15 @@ mock.module("@atlas/api/lib/metering", () => ({
 
 // --- Settings mock ---
 
+// Only ATLAS_MODEL is a per-workspace override surfaced in the billing picker.
+// ATLAS_PROVIDER is a deploy-level choice resolved from env, so the mock
+// returns the saved model only for that key (mirrors the real store).
 let mockSettingLiveValue: string | undefined = undefined;
 
 mock.module("@atlas/api/lib/settings", () => ({
-  getSettingLive: mock(() => Promise.resolve(mockSettingLiveValue)),
+  getSettingLive: mock((key: string) =>
+    Promise.resolve(key === "ATLAS_MODEL" ? mockSettingLiveValue : undefined),
+  ),
   getSetting: mock(() => undefined),
   getSettingAuto: mock(() => undefined),
   setSetting: mock(async () => {}),
@@ -166,6 +171,10 @@ mock.module("@atlas/api/lib/semantic", () => ({
 // --- Import billing routes ---
 
 import { billing, _resetPortalRateLimits } from "../routes/billing";
+// Real resolver (not mocked) — the SSOT the billing endpoint and the agent
+// loop share. Tests assert the endpoint reports exactly what this resolves so
+// the picker default can't drift from the billed default (#3098).
+import { resolveModelId } from "@atlas/api/lib/providers";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 const app = new OpenAPIHono();
@@ -224,7 +233,11 @@ describe("billing routes", () => {
       // Per-seat pricing fields
       expect(body.seats).toEqual({ count: 3, max: 10 });
       expect(body.connections).toEqual({ count: 2, max: 1 });
-      expect(body.currentModel).toBe("anthropic/claude-haiku-4.5"); // plan default since no setting override (gateway-canonical format — SaaS resolves via Vercel)
+      // SSOT (#3098): with nothing saved, currentModel is exactly what the
+      // agent loop resolves — NOT the plan's recommended model. Asserting
+      // against the shared resolver guards against the picker advertising one
+      // model while another is billed.
+      expect(body.currentModel).toBe(resolveModelId(undefined, undefined));
       expect(body.overagePerMillionTokens).toBe(1.0);
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
@@ -265,6 +278,37 @@ describe("billing routes", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.connections.count).toBe(0);
+    });
+
+    it("reports the gateway provider default (Sonnet 4.6) when nothing is saved (#3098)", async () => {
+      // The exact bug: on the SaaS gateway path with no saved model, the
+      // picker must show what actually runs — Sonnet 4.6 — not the plan's
+      // recommended model and not a hardcoded UI fallback.
+      const origProvider = process.env.ATLAS_PROVIDER;
+      const origModel = process.env.ATLAS_MODEL;
+      process.env.ATLAS_PROVIDER = "gateway";
+      delete process.env.ATLAS_MODEL;
+      try {
+        mockSettingLiveValue = undefined; // nothing persisted
+        mockInternalQuery.mockImplementation((...args: unknown[]) => {
+          const sql = args[0];
+          if (typeof sql === "string" && sql.includes("member")) {
+            return Promise.resolve([{ count: 1 }]);
+          }
+          return Promise.resolve([]);
+        });
+
+        const res = await request("/api/v1/billing");
+        expect(res.status).toBe(200);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+        const body = await res.json() as any;
+        expect(body.currentModel).toBe("anthropic/claude-sonnet-4.6");
+      } finally {
+        if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
+        else delete process.env.ATLAS_PROVIDER;
+        if (origModel !== undefined) process.env.ATLAS_MODEL = origModel;
+        else delete process.env.ATLAS_MODEL;
+      }
     });
 
     it("uses setting override for currentModel when available", async () => {

@@ -499,11 +499,14 @@ function ResourceValue({ count, max }: { count: number; max: number | null }) {
 // ── Model row (progressive disclosure) ────────────────────────────
 
 function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
-  // Canonicalize stored value through the legacy-hyphen alias map so an
-  // older `claude-sonnet-4-6` setting still highlights "Sonnet 4.6" in
-  // the dropdown and saves the new gateway-canonical ID on next change.
-  const storedModel = data.currentModel ?? data.plan.defaultModel ?? "anthropic/claude-sonnet-4.6";
-  const currentModel = canonicalizeModel(storedModel);
+  // SSOT (#3098): the API resolves `currentModel` to exactly what the agent
+  // runs when nothing is saved — the same value the gateway provider default
+  // produces — so display it verbatim. NO hardcoded fallback here: a cosmetic
+  // default that disagrees with the resolver is the exact bug this fixes
+  // (the row showed "Sonnet 4.6" while unset workspaces ran Opus 4.8).
+  // canonicalize() only maps legacy-hyphen / deprecated-version values onto a
+  // picker row so an older `claude-sonnet-4-6` setting still highlights its row.
+  const currentModel = canonicalizeModel(data.currentModel);
   const currentLabel = modelLabel(currentModel);
 
   const { mutate, saving, error, clearError } = useAdminMutation({

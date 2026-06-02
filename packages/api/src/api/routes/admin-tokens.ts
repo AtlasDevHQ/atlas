@@ -122,20 +122,44 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
     }
     const { fromDate, toDate } = range;
 
-    const rows = yield* Effect.tryPromise({
-      try: () => internalQuery<{
-        total_prompt: string;
-        total_completion: string;
-        total_requests: string;
-      }>(
-        `SELECT
-           COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
-           COALESCE(SUM(completion_tokens), 0) AS total_completion,
-           COUNT(*) AS total_requests
-         FROM token_usage
-         WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3`,
-        [fromDate, toDate, orgId!],
-      ),
+    // Two parallel reads: the period totals, and a per-model breakdown so an
+    // operator can see WHICH model burned the tokens (#3098). The model
+    // dimension lives on token_usage but was previously aggregated away.
+    const [rows, modelRows] = yield* Effect.tryPromise({
+      try: () => Promise.all([
+        internalQuery<{
+          total_prompt: string;
+          total_completion: string;
+          total_requests: string;
+        }>(
+          `SELECT
+             COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
+             COALESCE(SUM(completion_tokens), 0) AS total_completion,
+             COUNT(*) AS total_requests
+           FROM token_usage
+           WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3`,
+          [fromDate, toDate, orgId!],
+        ),
+        internalQuery<{
+          model: string | null;
+          provider: string | null;
+          total_prompt: string;
+          total_completion: string;
+          request_count: string;
+        }>(
+          `SELECT
+             model,
+             provider,
+             COALESCE(SUM(prompt_tokens), 0) AS total_prompt,
+             COALESCE(SUM(completion_tokens), 0) AS total_completion,
+             COUNT(*) AS request_count
+           FROM token_usage
+           WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3
+           GROUP BY model, provider
+           ORDER BY (COALESCE(SUM(prompt_tokens), 0) + COALESCE(SUM(completion_tokens), 0)) DESC`,
+          [fromDate, toDate, orgId!],
+        ),
+      ]),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
@@ -145,6 +169,20 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
       totalCompletionTokens: parseInt(row?.total_completion ?? "0", 10),
       totalTokens: parseInt(row?.total_prompt ?? "0", 10) + parseInt(row?.total_completion ?? "0", 10),
       totalRequests: parseInt(row?.total_requests ?? "0", 10),
+      // Rows with a NULL model/provider (older usage records written before the
+      // column existed) surface as "unknown" rather than being dropped.
+      byModel: modelRows.map((m) => {
+        const promptTokens = parseInt(m.total_prompt ?? "0", 10);
+        const completionTokens = parseInt(m.total_completion ?? "0", 10);
+        return {
+          model: m.model ?? "unknown",
+          provider: m.provider ?? "unknown",
+          promptTokens,
+          completionTokens,
+          totalTokens: promptTokens + completionTokens,
+          requestCount: parseInt(m.request_count ?? "0", 10),
+        };
+      }),
       from: fromDate,
       to: toDate,
     }, 200);

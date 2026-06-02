@@ -75,7 +75,33 @@ describe("token usage", () => {
       from: "2026-04-01T00:00:00.000Z",
       to: "2026-04-20T00:00:00.000Z",
     };
-    expect(TokenSummarySchema.parse(row)).toEqual(row);
+    // byModel is additive (#3098): when an older API response omits it, the
+    // schema fills [] so the web always gets an array to map over.
+    expect(TokenSummarySchema.parse(row)).toEqual({ ...row, byModel: [] });
+  });
+
+  test("TokenSummarySchema parses a per-model breakdown (#3098)", () => {
+    const parsed = TokenSummarySchema.parse({
+      totalPromptTokens: 1000,
+      totalCompletionTokens: 500,
+      totalTokens: 1500,
+      totalRequests: 50,
+      byModel: [
+        {
+          model: "anthropic/claude-opus-4.8",
+          provider: "gateway",
+          promptTokens: 900,
+          completionTokens: 400,
+          totalTokens: 1300,
+          requestCount: 40,
+        },
+      ],
+      from: "2026-04-01T00:00:00.000Z",
+      to: "2026-04-20T00:00:00.000Z",
+    });
+    expect(parsed.byModel).toHaveLength(1);
+    expect(parsed.byModel[0].model).toBe("anthropic/claude-opus-4.8");
+    expect(parsed.byModel[0].provider).toBe("gateway");
   });
 
   test("TokenSummarySchema rejects non-ISO from", () => {

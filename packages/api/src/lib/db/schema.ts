@@ -388,6 +388,12 @@ export const tokenUsage = pgTable(
     conversationId: text("conversation_id"),
     promptTokens: integer("prompt_tokens").notNull().default(0),
     completionTokens: integer("completion_tokens").notNull().default(0),
+    // Prompt-cache split (#3099). Nullable, default 0 — existing rows backfill
+    // to 0 and the INSERT path always supplies a value (`?? 0`). cache_read =
+    // tokens served from cache (~90% cheaper); cache_write = tokens written to
+    // cache (~25% premium). From usage.inputTokenDetails.{cacheRead,cacheWrite}.
+    cacheReadTokens: integer("cache_read_tokens").default(0),
+    cacheWriteTokens: integer("cache_write_tokens").default(0),
     model: text("model"),
     provider: text("provider"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

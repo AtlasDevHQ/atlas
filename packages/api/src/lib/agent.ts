@@ -26,7 +26,7 @@ import type { LanguageModel } from "ai";
 import { Effect, Duration } from "effect";
 import type { ChatContextWarning } from "@useatlas/types";
 import { normalizeError } from "./effect/errors";
-import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
+import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, isGatewayAnthropicModel, type ProviderType } from "./providers";
 import { defaultRegistry, ToolRegistry } from "./tools/registry";
 import { resolveWorkspaceRestDatasources, resolveWorkspaceRestDatasourcesOrThrow } from "./openapi/workspace-datasource";
 import type { RestDatasource } from "./openapi/datasource";
@@ -532,6 +532,12 @@ export function buildSystemParam(
    * its operations with `executeRestOperation`. Absent for SQL-only workspaces.
    */
   restRepresentation?: string,
+  /**
+   * #3099 — Resolved model id, used only to detect when the `gateway` provider
+   * routes to an Anthropic-family model so the system prompt gets the same
+   * cache breakpoint as the direct Anthropic provider. Ignored otherwise.
+   */
+  modelId?: string,
 ): string | SystemModelMessage {
   let content = buildSystemPrompt(registry, orgSemanticIndex, learnedPatternsSection, routingContext, boundDashboardContext);
 
@@ -547,7 +553,8 @@ export function buildSystemParam(
     content += "\n\n## Warnings\n\n" + warnings.map((w) => `- ${w}`).join("\n");
   }
 
-  switch (providerType) {
+  const cacheProvider = cacheProviderFor(providerType, modelId);
+  switch (cacheProvider) {
     case "anthropic":
     case "bedrock-anthropic":
       return {
@@ -571,10 +578,28 @@ export function buildSystemParam(
     case "gateway":
       return content;
     default: {
-      const _exhaustive: never = providerType;
+      const _exhaustive: never = cacheProvider;
       throw new Error(`Unknown provider type: ${_exhaustive}`);
     }
   }
+}
+
+/**
+ * Resolve the provider whose prompt-cache convention applies to a request.
+ *
+ * Normally this is just `providerType`. The exception is the AI Gateway: it
+ * forwards `providerOptions.anthropic` to the underlying provider, so a gateway
+ * route to an Anthropic-family model needs the SAME explicit `cacheControl`
+ * markers as the direct Anthropic provider — without them the gateway →
+ * Anthropic path runs fully uncached (#3099). OpenAI/other gateway routes keep
+ * the no-op (implicit caching), and a gateway request with no resolvable model
+ * id falls back to the no-op too.
+ */
+function cacheProviderFor(providerType: ProviderType, modelId?: string): ProviderType {
+  if (providerType === "gateway" && modelId && isGatewayAnthropicModel(modelId)) {
+    return "anthropic";
+  }
+  return providerType;
 }
 
 /**
@@ -586,18 +611,23 @@ export function buildSystemParam(
  *
  * - Anthropic / Bedrock-Anthropic: `providerOptions.anthropic.cacheControl`
  * - Bedrock (non-Anthropic): `providerOptions.bedrock.cachePoint`
- * - OpenAI / Ollama / OpenAI-compatible / Gateway: no-op (OpenAI caches automatically)
+ * - Gateway → Anthropic model: `providerOptions.anthropic.cacheControl` (the
+ *   gateway forwards it to the underlying provider; needs `modelId` to detect)
+ * - OpenAI / Ollama / OpenAI-compatible / Gateway (non-Anthropic): no-op
+ *   (OpenAI-family caches automatically)
  */
 export function applyCacheControl(
   messages: ModelMessage[],
   providerType: ProviderType,
+  modelId?: string,
 ): ModelMessage[] {
   if (messages.length === 0) return messages;
 
   // Only Anthropic-family and Bedrock need explicit cache markers
   const lastIndex = messages.length - 1;
 
-  switch (providerType) {
+  const cacheProvider = cacheProviderFor(providerType, modelId);
+  switch (cacheProvider) {
     case "anthropic":
     case "bedrock-anthropic": {
       return messages.map((message, index) => {
@@ -629,7 +659,7 @@ export function applyCacheControl(
     case "gateway":
       return messages;
     default: {
-      const _exhaustive: never = providerType;
+      const _exhaustive: never = cacheProvider;
       throw new Error(`Unknown provider type: ${_exhaustive}`);
     }
   }
@@ -1170,7 +1200,7 @@ export async function runAgent({
   try {
     result = otelContext.with(agentCtx, () => streamText({
       model,
-      system: buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation),
+      system: buildSystemParam(providerType, activeRegistry, warnings, orgSemanticIndex, learnedPatternsSection, scopeRoutingContext, boundDashboardContext, presentationMode ?? "developer", restRepresentation, resolvedModelId),
       messages: modelMessages,
       tools,
       temperature: 0.2,
@@ -1193,7 +1223,7 @@ export async function runAgent({
 
       prepareStep: ({ messages: stepMessages }) => {
         return {
-          messages: applyCacheControl(stepMessages, providerType),
+          messages: applyCacheControl(stepMessages, providerType, resolvedModelId),
         };
       },
 
@@ -1236,13 +1266,15 @@ export async function runAgent({
         if (hasInternalDB() && totalUsage) {
           try {
             internalExecute(
-              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, model, provider, org_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              `INSERT INTO token_usage (user_id, conversation_id, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, model, provider, org_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
               [
                 userId,
                 conversationId ?? null,
                 totalUsage.inputTokens ?? 0,
                 totalUsage.outputTokens ?? 0,
+                totalUsage.inputTokenDetails?.cacheReadTokens ?? 0,
+                totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0,
                 resolvedModelId,
                 providerType,
                 orgId ?? null,

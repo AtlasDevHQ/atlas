@@ -46,6 +46,7 @@ mock.module("@atlas/api/lib/providers", () => ({
   getModelFromWorkspaceConfig: () => mockModel,
   getWorkspaceProviderType: () => "anthropic" as const,
   getDefaultProvider: () => "anthropic" as const,
+  isGatewayAnthropicModel: (modelId: string) => modelId.includes("anthropic") || modelId.includes("claude"),
 }));
 
 // Semantic loaders — toggleable so each test can independently choose

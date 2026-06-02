@@ -132,7 +132,8 @@ describe("runMigrations", () => {
     //   CHECK widen, slice 6c, #3030) = 112.
     //   Plus 0112 (conversations.rest_excluded_datasource_ids, S2a, #3066) = 113.
     //   Plus 0113 (conversations.rest_focus_datasource_id, S2b, #3067) = 114.
-    expect(count).toBe(114);
+    //   Plus 0114 (token_usage.cache_read_tokens/cache_write_tokens, #3099) = 115.
+    expect(count).toBe(115);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -275,6 +276,7 @@ describe("runMigrations", () => {
         "0111_github_data_catalog.sql",
         "0112_conversation_rest_excluded_datasources.sql",
         "0113_conversation_rest_focus_datasource.sql",
+        "0114_token_usage_cache_tokens.sql",
       ],
     });
 

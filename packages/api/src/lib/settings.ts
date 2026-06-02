@@ -99,6 +99,13 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "Rate Limit (RPM)",
     description: "Max requests per minute per user (0 or empty = disabled in self-hosted; SaaS rejects at boot)",
     type: "number",
+    // No static default: a hardcoded value here would be returned by
+    // getSetting() (Tier 4) BEFORE the deploy-env profile default could apply,
+    // shadowing it — same reason ATLAS_PROVIDER omits one. The per-env default
+    // (#2937) is supplied downstream by getRpmLimit() in auth/middleware.ts via
+    // resolveRateLimitRpm() (env-profile.ts), which keeps the DB-override >
+    // env-var > profile-default precedence intact. SaaS regions still stamp the
+    // env var explicitly (RateLimitGuardLive reads it raw and fails boot if unset).
     envVar: "ATLAS_RATE_LIMIT_RPM",
     // RateLimitGuardLive runs once at boot and refuses to start a SaaS
     // region with the limiter disabled. Hot-reloading this key would

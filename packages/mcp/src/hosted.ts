@@ -67,6 +67,7 @@ import { verifyAccessToken } from "better-auth/oauth2";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
+import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
@@ -108,20 +109,26 @@ const sessions = new Map<string, SessionEntry>();
 // the session is registered.
 let pendingReservations = 0;
 
-const DEFAULT_MAX_SESSIONS = 100;
-
+// The concurrent-session cap resolves through the env-profile
+// (`resolveMcpMaxSessions`): the `ATLAS_MCP_MAX_SESSIONS` override wins when a
+// positive integer, otherwise the deploy-env profile default (100) applies.
+// The resolver is pure and cannot log, so the malformed-override warn lives
+// here at the call site where a logger is available.
 function maxSessions(): number {
-  const raw = process.env.ATLAS_MCP_MAX_SESSIONS;
-  if (!raw) return DEFAULT_MAX_SESSIONS;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    log.warn(
-      { raw },
-      "ATLAS_MCP_MAX_SESSIONS is not a positive integer — falling back to default",
-    );
-    return DEFAULT_MAX_SESSIONS;
+  // Mirror resolveMcpMaxSessions's `.trim()` so a whitespace-only value is
+  // treated as unset (no spurious warn) — the warn fires only for a genuinely
+  // malformed non-empty override, matching what the resolver actually rejects.
+  const raw = process.env.ATLAS_MCP_MAX_SESSIONS?.trim();
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      log.warn(
+        { raw },
+        "ATLAS_MCP_MAX_SESSIONS is not a positive integer — falling back to the deploy-env profile default",
+      );
+    }
   }
-  return parsed;
+  return resolveMcpMaxSessions();
 }
 
 // ── Idle-session sweep ─────────────────────────────────────────────

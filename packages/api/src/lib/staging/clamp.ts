@@ -21,32 +21,16 @@
  * slot in as additional entries in {@link OUTBOUND_CLAMPS} without changing
  * this signature, so no caller breaks when the body grows.
  *
- * Purity: this function performs NO database reads, NO I/O, and reads NO env
- * vars beyond the single documented `STAGING_MAIL_SINK` (the email sink
- * address). `region` is always an explicit argument — never read from the
- * environment here — so the function is fully deterministic given its inputs
- * plus that one documented var.
+ * Purity: this function performs NO database reads and NO I/O. `region` is
+ * always an explicit argument — never read from the environment here — so the
+ * function is deterministic given its inputs plus the sink resolution. The
+ * only env reads happen inside {@link resolveMailSink} (the `STAGING_MAIL_SINK`
+ * override and, for its profile default, `ATLAS_DEPLOY_ENV`); both are
+ * documented, non-secret, and read only on the `staging` rewrite path.
  */
 
 import type { DeployRegion } from "@useatlas/types";
-
-/**
- * Default email sink when `STAGING_MAIL_SINK` is unset (PRD
- * docs/prd/staging-environment.md, Credentials hard wall).
- */
-const DEFAULT_MAIL_SINK = "staging-mail@useatlas.dev";
-
-/**
- * Resolve the staging email sink. Reads the one documented env var, trims it,
- * and falls back to the default for any empty/unset/whitespace-only value
- * (`||`, not `??`, so an explicitly-empty var doesn't blank the recipient;
- * the `.trim()` extends that guard to a whitespace-only var like `" "`, which
- * is truthy and would otherwise be stamped on as a blank-ish recipient —
- * bouncing silently in the transport or letting mail escape).
- */
-function resolveMailSink(): string {
-  return process.env.STAGING_MAIL_SINK?.trim() || DEFAULT_MAIL_SINK;
-}
+import { resolveMailSink } from "@atlas/api/lib/env-profile";
 
 /**
  * A registered outbound transform. `appliesTo` owns payload classification;

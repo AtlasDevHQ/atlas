@@ -547,15 +547,24 @@ describe("authenticateRequest()", () => {
 
 describe("checkRateLimit()", () => {
   const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+  const origDeployEnv = process.env.ATLAS_DEPLOY_ENV;
 
   beforeEach(() => {
     resetRateLimits();
     process.env.ATLAS_RATE_LIMIT_RPM = "5"; // low limit for tests
+    // The limiter now falls back to the ATLAS_DEPLOY_ENV profile default when
+    // ATLAS_RATE_LIMIT_RPM is unset (#2937). Pin the deploy env to the
+    // production profile (disabled default) so the env-var-driven cases below
+    // are deterministic regardless of the ambient ATLAS_DEPLOY_ENV; the
+    // profile-fallback cases set it explicitly.
+    delete process.env.ATLAS_DEPLOY_ENV;
   });
 
   afterEach(() => {
     if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
     else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    if (origDeployEnv !== undefined) process.env.ATLAS_DEPLOY_ENV = origDeployEnv;
+    else delete process.env.ATLAS_DEPLOY_ENV;
     resetRateLimits();
   });
 
@@ -636,6 +645,46 @@ describe("checkRateLimit()", () => {
 
     for (let i = 0; i < 100; i++) {
       expect(checkRateLimit("user6").allowed).toBe(true);
+    }
+  });
+
+  // #2937 — profile-fallback wiring: when ATLAS_RATE_LIMIT_RPM is unset, the
+  // limit comes from the ATLAS_DEPLOY_ENV profile (resolveRateLimitRpm). These
+  // exercise the `getSetting(...) ?? resolveRateLimitRpm()` seam in getRpmLimit,
+  // which the env-var-driven tests above never reach (they set the env var, so
+  // getSetting short-circuits before the fallback).
+  it("unset RPM on the production profile stays disabled (no behavior change for self-hosted)", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM;
+    process.env.ATLAS_DEPLOY_ENV = "production";
+    resetRateLimits();
+
+    for (let i = 0; i < 100; i++) {
+      expect(checkRateLimit("prod-user").allowed).toBe(true);
+    }
+  });
+
+  it("unset RPM on the staging profile engages the 300 default", () => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM;
+    process.env.ATLAS_DEPLOY_ENV = "staging";
+    resetRateLimits();
+
+    // 300 allowed, then the 301st is blocked — proves the staging profile
+    // default flows through getRpmLimit without the env var being stamped.
+    for (let i = 0; i < 300; i++) {
+      expect(checkRateLimit("staging-user").allowed).toBe(true);
+    }
+    expect(checkRateLimit("staging-user").allowed).toBe(false);
+  });
+
+  it("explicit empty RPM disables even on the staging profile (operator override wins)", () => {
+    // An explicitly-empty env var is the operator's deliberate "disable" — it
+    // must NOT fall through to the staging profile's 300 default.
+    process.env.ATLAS_RATE_LIMIT_RPM = "";
+    process.env.ATLAS_DEPLOY_ENV = "staging";
+    resetRateLimits();
+
+    for (let i = 0; i < 100; i++) {
+      expect(checkRateLimit("staging-disabled").allowed).toBe(true);
     }
   });
 

@@ -42,6 +42,8 @@ export interface ConnectionsOverrides {
   recordSuccess?: AnyFn;
   isOrgPoolingEnabled?: AnyFn;
   getForOrg?: AnyFn;
+  getForWorkspace?: AnyFn;
+  drainWorkspacePool?: AnyFn;
   getOrgPoolMetrics?: AnyFn;
   getOrgPoolConfig?: AnyFn;
   listOrgs?: AnyFn;
@@ -90,6 +92,8 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     has: () => true,
     isOrgPoolingEnabled: () => false,
     getForOrg: () => dbConn,
+    getForWorkspace: () => dbConn,
+    drainWorkspacePool: () => 0,
     recordQuery: () => {},
     recordSuccess: () => {},
     recordError: () => {},

@@ -219,9 +219,15 @@ export function filterSnapshotsByWhitelist(
  */
 export async function getDBSchemaRaw(
   connectionId: string = "default",
+  workspaceId?: string,
 ): Promise<Map<string, EntitySnapshot>> {
-  const conn = connections.get(connectionId);
-  const dbType = connections.getDBType(connectionId);
+  // When a workspace context is available, resolve per (workspace, install_id)
+  // so a shared install_id reads the correct tenant's schema, not whichever
+  // workspace registered the install_id first (#3109).
+  const conn = workspaceId
+    ? connections.getForWorkspace(workspaceId, connectionId)
+    : connections.get(connectionId);
+  const dbType = connections.getDBType(connectionId, workspaceId);
 
   let sql: string;
   if (dbType === "mysql") {

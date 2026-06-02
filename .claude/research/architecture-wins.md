@@ -2278,3 +2278,32 @@ The hard part is doing this WITHOUT a cross-tenant leak. A customer's internal-m
 - **Process-local + migration-free** — the same lifetime/tenancy discipline as the cache it generalizes; the canonical identity key anticipates a future DB-backed shared store (one row per identity, FK'd from installs) as a clean extension, deliberately out of scope here.
 
 **Category:** Module-deepening — a narrow interface (`isShareableSpec` / `sharedGraphFromSnapshot` / `probeShared` / `refreshSharedSpecsCycle`) over the broad, irregular surface of "share a spec across tenants without leaking one," generalizing the per-install graph cache (win #76) one axis further while keeping the tenant-isolation boundary the #3010 keying established.
+
+---
+
+## 79. Workspace-scoped connection read paths + eager org-pool drain (#3109)
+
+**Date:** 2026-06-02
+**Issue:** #3109 (architecture) — read-side follow-up to #2783/#3110
+**Branch:** refactor/3109-connection-registry-workspace-readers
+
+**Problem:** #2783 retired the `DISTINCT ON (install_id)` multi-tenant collision by making `getForOrg(workspaceId, installId)` resolve a per-(workspace, install_id) routing config (`workspaceEntries`) with priority over the shared bare `entries` row. But that fix only covered the WRITE/clone path. Two read seams still keyed on the bare install_id alone:
+
+1. **The org-pooling-OFF resolve path.** When `pool.perOrg` isn't configured (self-hosted multi-workspace, or any deploy without org pooling), `runUserQueryPipeline` skipped `getForOrg` and fell to `connections.get(installId)` — the bare pool, which belongs to whichever workspace registered the install_id FIRST. A sibling workspace sharing the install_id queried the wrong tenant's DB. (Fails closed in prod: SaaS pins `pool.perOrg`, so the bare path is unreachable there — this was correctness/defense-in-depth + self-hosted, not a prod leak.)
+2. **The metadata readers.** `getDBType` / `getTargetHost` / `getValidator` / `getParserDialect` / `getForbiddenPatterns` all read the bare `entries` row. The audit `targetHost` showed the wrong host, and — the sharp edge — a postgres+mysql pair sharing an install_id resolved the bare dbType, so the parser dialect was wrong and a VALID query for the minority-dialect workspace was rejected.
+
+Plus a freshness gap: a datasource config update left the already-cloned org pool in `orgEntries` serving the OLD config until LRU eviction or a restart.
+
+**Solution:** Thread the querying workspace through the read seams, reusing the #2783 primitives rather than adding a parallel cache:
+
+- **`getForWorkspace(workspaceId, installId, region?)`** — the read-side counterpart to `getForOrg`. If a per-workspace routing config exists it delegates to `getForOrg` (which already clones correctly); otherwise it falls back to the bare `get` (self-hosted single-tenant, plugin-managed, region pools — all authoritative on the bare map). The org-pooling-OFF resolve path and the two profiling tools now call it; `getRegionAwareConnection` (pooling ON) was already correct.
+- **The five metadata readers gain an optional trailing `workspaceId`.** `getDBType`/`getTargetHost` prefer the `workspaceEntries` value (the mixed-dialect + audit-host fixes); `getValidator`/`getParserDialect`/`getForbiddenPatterns` return the native default (undefined/`[]`) when a per-workspace config exists, because a native per-workspace datasource never carries plugin metadata — so a sibling's plugin validator/dialect can't leak. Optional param = structurally compatible with the existing `ConnectionRegistry` Effect Tag and every 1-arg caller (validate-sql route, health, admin), so the threading is opt-in per call site. `validateSQL` → `parserDatabase`/`getExtraPatterns` carry it the rest of the way.
+- **`drainWorkspacePool(workspaceId, installId)`** — closes the live `orgEntries` clone(s) for one (workspace, install_id) across all regions, leaving siblings intact, and drops the org's LRU bookkeeping when its last pool goes. The datasource bridge's `unregisterDatasourceInstall` calls it alongside `unregisterForWorkspace` (which drops only the routing config), so uninstall AND `updateDatasourceConfig` (both route through the bridge) now propagate on the next query instead of at TTL.
+
+**Impact:**
+- **Correctness restored on the org-pooling-OFF path** — a shared install_id resolves the querying workspace's own DB, dialect, and audit host (regression-tested via real-`pg` connection-string assertions, reusing the #2783 `poolConnString` harness).
+- **Mixed-dialect (postgres+mysql sharing an install_id) no longer mis-parses** — `getDBType(id, workspaceId)` resolves the per-workspace dialect, so the minority-dialect workspace's valid queries stop being rejected.
+- **Config update / uninstall is now eager** — the cloned pool is torn down at the bridge boundary; no LRU/restart wait.
+- **Zero new caches, zero schema, hot-path allocation-light** — built entirely on the #2783 `workspaceEntries` map + `getForOrg` clone machinery; the readers add one Map lookup gated behind the optional `workspaceId`.
+
+**Category:** Module-deepening — extends the #2783 per-(workspace, install_id) routing boundary across the remaining read seams (resolve + metadata + drain) behind a small, opt-in interface (`getForWorkspace` / scoped readers / `drainWorkspacePool`), so the tenant-isolation invariant holds on every path into `ConnectionRegistry`, not just the org-pooling-ON clone path.

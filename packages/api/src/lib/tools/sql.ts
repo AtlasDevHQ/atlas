@@ -284,10 +284,13 @@ const MYSQL_FORBIDDEN_PATTERNS = [
  * Falls back to the hardcoded switch for known types, and defaults to
  * "PostgresQL" for unknown/custom dbType strings (plugin escape hatch).
  */
-export function parserDatabase(dbType: DBType | string, connectionId?: string): string {
-  // 1. Plugin metadata takes precedence
+export function parserDatabase(dbType: DBType | string, connectionId?: string, workspaceId?: string): string {
+  // 1. Plugin metadata takes precedence. Scoped to (workspace, install_id) so a
+  //    shared install_id can't apply a sibling's plugin dialect — native
+  //    per-workspace configs return undefined here and fall through to the
+  //    dbType switch (which getDBType already resolved per-workspace) (#3109).
   if (connectionId) {
-    const pluginDialect = connections.getParserDialect(connectionId);
+    const pluginDialect = connections.getParserDialect(connectionId, workspaceId);
     if (pluginDialect) return pluginDialect;
   }
 
@@ -316,10 +319,12 @@ export function parserDatabase(dbType: DBType | string, connectionId?: string): 
  * Falls back to the hardcoded arrays for known types, and returns an empty
  * array for unknown/custom dbType strings.
  */
-function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegExp[] {
-  // 1. Plugin metadata takes precedence
+function getExtraPatterns(dbType: DBType | string, connectionId?: string, workspaceId?: string): RegExp[] {
+  // 1. Plugin metadata takes precedence. Workspace-scoped for the same reason as
+  //    parserDatabase — a native per-workspace config returns [] here so the
+  //    dbType switch below supplies the right base patterns (#3109).
   if (connectionId) {
-    const pluginPatterns = connections.getForbiddenPatterns(connectionId);
+    const pluginPatterns = connections.getForbiddenPatterns(connectionId, workspaceId);
     if (pluginPatterns.length > 0) return pluginPatterns;
   }
 
@@ -342,14 +347,17 @@ function getExtraPatterns(dbType: DBType | string, connectionId?: string): RegEx
   }
 }
 
-export async function validateSQL(sql: string, connectionId?: string): Promise<SQLValidationResult> {
+export async function validateSQL(sql: string, connectionId?: string, workspaceId?: string): Promise<SQLValidationResult> {
   // Resolve DB type for this connection.
   // When an explicit connectionId is given but not found, return a validation
   // error instead of silently falling back — wrong parser mode is a security risk.
+  // `workspaceId` scopes the dbType (and the dialect/pattern lookups below) to
+  // the per-(workspace, install_id) config so a shared install_id validates
+  // against the querying workspace's actual dialect, not a sibling's (#3109).
   let dbType: DBType | string;
   if (connectionId) {
     try {
-      dbType = connections.getDBType(connectionId);
+      dbType = connections.getDBType(connectionId, workspaceId);
     } catch (err) {
       log.warn({ err, connectionId }, "getDBType failed for connectionId");
       return { valid: false, error: `Connection "${connectionId}" is not registered.` };
@@ -396,7 +404,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
   // Strip comments before testing so that leading block/line comments
   // cannot bypass start-of-string anchored patterns (e.g. `/* x */ KILL ...`).
   const forRegex = stripSqlComments(trimmed);
-  const extraPatterns = getExtraPatterns(dbType, connectionId);
+  const extraPatterns = getExtraPatterns(dbType, connectionId, workspaceId);
   const patterns = [...FORBIDDEN_PATTERNS, ...extraPatterns];
   for (const pattern of patterns) {
     if (pattern.test(forRegex)) {
@@ -415,7 +423,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
   // attempt. The agent can always reformulate into standard SQL that parses.
   const cteNames = new Set<string>();
   try {
-    const ast = parser.astify(trimmed, { database: parserDatabase(dbType, connectionId) });
+    const ast = parser.astify(trimmed, { database: parserDatabase(dbType, connectionId, workspaceId) });
     const statements = Array.isArray(ast) ? ast : [ast];
 
     // Single-statement check — reject batched queries
@@ -469,7 +477,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
     warnWhitelistDisabled();
   } else {
     try {
-      const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
+      const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId, workspaceId) });
       const sqlReqCtx = getRequestContext();
       const orgId = sqlReqCtx?.user?.activeOrganizationId;
       // Lazy-load the per-org whitelist into the in-process cache.
@@ -540,7 +548,7 @@ export async function validateSQL(sql: string, connectionId?: string): Promise<S
   // 4. Extract classification data (best-effort, never blocks validation)
   const classification = extractClassification(
     trimmed,
-    parserDatabase(dbType, connectionId),
+    parserDatabase(dbType, connectionId, workspaceId),
     cteNames,
   );
 
@@ -640,10 +648,21 @@ function resolveConnectionEffect(
         resolvedConnId = result.resolvedConnId;
       } else if (connId === "default") {
         db = connections.getDefault();
+      } else if (authOrgId) {
+        // Org pooling disabled but a workspace context is present: route per
+        // (workspace, install_id) so a shared install_id resolves the correct
+        // tenant's DB. Bare `get(connId)` would return whichever workspace
+        // registered the install_id first (#3109).
+        db = connections.getForWorkspace(authOrgId, connId);
       } else {
         db = connections.get(connId);
       }
-      const dbType = connections.getDBType(resolvedConnId);
+      // Scope dbType to the querying workspace too — even when org pooling is ON
+      // (resolvedConnId === connId), the bare `getDBType` would return a
+      // sibling's dialect for a shared install_id. Region-routed pools
+      // (resolvedConnId === "region:…") have no per-workspace config, so this
+      // falls back to the bare entry (#3109).
+      const dbType = connections.getDBType(resolvedConnId, authOrgId);
       return { db, dbType };
     },
     catch: (err) => {
@@ -712,10 +731,11 @@ function runQueryValidationEffect(
   connId: string,
   dbType: DBType | string,
   customValidator: CustomValidator | undefined,
+  workspaceId?: string,
 ): Effect.Effect<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
   if (!customValidator) {
     return Effect.promise(async () => {
-      const validation = await validateSQL(sql, connId);
+      const validation = await validateSQL(sql, connId, workspaceId);
       if (!validation.valid) {
         return { ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
       }
@@ -1210,11 +1230,11 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
 
     const { db, dbType } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
 
-    const targetHost = connections.getTargetHost(connId);
-    const customValidator = connections.getValidator(connId);
+    const targetHost = connections.getTargetHost(connId, authOrgId);
+    const customValidator = connections.getValidator(connId, authOrgId);
     const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
 
-    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator);
+    const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
     if (!initial.ok) {
       logQueryAudit({
         sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
@@ -1351,7 +1371,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
 
         let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
         if (normalizedMutated !== normalizedSql) {
-          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator);
+          const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
           if (!revalidation.ok) {
             logQueryAudit({
               sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
@@ -1512,12 +1532,12 @@ async function executeSqlForConnection({
       // Step 1: Resolve connection (tagged errors)
       const { db, dbType } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
 
-      const targetHost = connections.getTargetHost(connId);
-      const customValidator = connections.getValidator(connId);
+      const targetHost = connections.getTargetHost(connId, authOrgId);
+      const customValidator = connections.getValidator(connId, authOrgId);
       const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
 
       // Step 2: Validate (custom validator or standard SQL validation)
-      const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator);
+      const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
       if (!initial.ok) {
         logQueryAudit({
           sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
@@ -1757,7 +1777,7 @@ async function executeSqlForConnection({
           // Re-validate if plugin rewrote the SQL
           let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
           if (normalizedMutated !== normalizedSql) {
-            const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator);
+            const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator, authOrgId);
             if (!revalidation.ok) {
               logQueryAudit({
                 sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,

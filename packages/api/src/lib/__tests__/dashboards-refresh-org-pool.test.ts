@@ -147,7 +147,9 @@ describe("refreshDashboardCards org-scoped pool selection", () => {
     const result = await refreshDashboardCards("dash-1");
 
     expect(result).toEqual({ refreshed: 1, failed: 0, total: 1 });
-    expect(mockValidateSQL).toHaveBeenCalledWith("SELECT 1 AS total", "warehouse");
+    // Validation is workspace-scoped (#3109) so a shared install_id validates
+    // against the dashboard workspace's dialect — matches the getForOrg routing.
+    expect(mockValidateSQL).toHaveBeenCalledWith("SELECT 1 AS total", "warehouse", "org-1");
     expect(mockGetForOrg).toHaveBeenCalledWith("org-1", "warehouse");
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockGetDefault).not.toHaveBeenCalled();

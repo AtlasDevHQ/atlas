@@ -62,13 +62,18 @@ export const checkDataDistribution = tool({
         };
       }
 
+      // When org pooling is off we still route per (workspace, install_id) via
+      // getForWorkspace so a shared install_id resolves the querying
+      // workspace's DB, not a sibling's (#3109).
       const db = poolOrgId
         ? connections.getForOrg(poolOrgId, connId)
         : connId === "default"
           ? getDB()
-          : connections.get(connId);
+          : authOrgId
+            ? connections.getForWorkspace(authOrgId, connId)
+            : connections.get(connId);
 
-      const dbType = connections.getDBType(connId);
+      const dbType = connections.getDBType(connId, authOrgId);
       const tbl = quoteIdent(table);
       const col = quoteIdent(column);
 

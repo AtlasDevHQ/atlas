@@ -197,6 +197,146 @@ describe("ConnectionRegistry org-scoped pools", () => {
     });
   });
 
+  // #3109 — read-side follow-up to #2783. With org pooling OFF, the bare
+  // `get(installId)` path collided on a shared install_id; `getForWorkspace`
+  // routes per (workspace, install_id) so the correct tenant DB is resolved.
+  describe("getForWorkspace (org-pooling-off per-workspace routing)", () => {
+    it("routes a shared install_id to the correct per-workspace DB with org pooling OFF", () => {
+      // No setOrgPoolConfig → pooling disabled. Bare row is the first registrant
+      // (shared-host); each workspace registers its OWN config.
+      registry.register("warehouse", { url: "postgresql://shared-host/wh" });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "postgresql://beta-host/wh" });
+
+      expect(registry.isOrgPoolingEnabled()).toBe(false);
+
+      const alpha = registry.getForWorkspace("ws-alpha", "warehouse");
+      const beta = registry.getForWorkspace("ws-beta", "warehouse");
+
+      // Each resolves its OWN URL — the bare `get` would have returned
+      // shared-host for both.
+      expect(poolConnString(alpha)).toBe("postgresql://alpha-host/wh");
+      expect(poolConnString(beta)).toBe("postgresql://beta-host/wh");
+      expect(alpha).not.toBe(beta);
+    });
+
+    it("falls back to the bare pool (no clone) when no per-workspace config exists", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      const conn = registry.getForWorkspace("ws-any", "default");
+      // Bare pool returned directly — not an org-scoped clone.
+      expect(conn).toBe(registry.get("default"));
+      expect(registry.hasOrgPool("ws-any", "default")).toBe(false);
+    });
+
+    it("throws when neither a per-workspace config nor a bare entry exists", () => {
+      expect(() => registry.getForWorkspace("ws-x", "ghost")).toThrow("not registered");
+    });
+  });
+
+  describe("workspace-scoped metadata readers (#3109)", () => {
+    it("getDBType prefers the per-workspace dbType (mixed-dialect shared install_id)", () => {
+      // Bare row is postgres (first registrant); ws-beta's config is mysql.
+      registry.register("warehouse", { url: "postgresql://shared-host/wh" });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "mysql://beta/wh" });
+
+      expect(registry.getDBType("warehouse")).toBe("postgres"); // bare
+      expect(registry.getDBType("warehouse", "ws-alpha")).toBe("postgres");
+      // The fix: a valid mysql query for ws-beta is no longer parsed as postgres.
+      expect(registry.getDBType("warehouse", "ws-beta")).toBe("mysql");
+    });
+
+    it("getTargetHost reflects the querying workspace", () => {
+      registry.register("warehouse", { url: "postgresql://shared-host/wh" });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha-host/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "postgresql://beta-host/wh" });
+
+      expect(registry.getTargetHost("warehouse")).toBe("shared-host"); // bare
+      expect(registry.getTargetHost("warehouse", "ws-alpha")).toBe("alpha-host");
+      expect(registry.getTargetHost("warehouse", "ws-beta")).toBe("beta-host");
+    });
+
+    it("validator/dialect/patterns return native defaults for a per-workspace config", () => {
+      // Constructed case: the bare entry carries plugin metadata while a native
+      // per-workspace config exists. Scoped readers must NOT leak the bare
+      // plugin metadata to the (native) workspace.
+      const validator = () => ({ valid: true });
+      registry.registerDirect("warehouse", mockConn(), "postgres", "desc", validator, {
+        parserDialect: "BigQuery",
+        forbiddenPatterns: [/EVIL/i],
+      });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha/wh" });
+
+      // Bare (no workspace) still sees the plugin metadata.
+      expect(registry.getValidator("warehouse")).toBe(validator);
+      expect(registry.getParserDialect("warehouse")).toBe("BigQuery");
+      expect(registry.getForbiddenPatterns("warehouse")).toHaveLength(1);
+
+      // Workspace-scoped: native config → plugin metadata does not apply.
+      expect(registry.getValidator("warehouse", "ws-alpha")).toBeUndefined();
+      expect(registry.getParserDialect("warehouse", "ws-alpha")).toBeUndefined();
+      expect(registry.getForbiddenPatterns("warehouse", "ws-alpha")).toEqual([]);
+    });
+
+    it("scoped readers fall back to the bare entry when the workspace has no config", () => {
+      registry.register("warehouse", { url: "mysql://shared/wh" });
+      expect(registry.getDBType("warehouse", "ws-none")).toBe("mysql");
+      expect(registry.getTargetHost("warehouse", "ws-none")).toBe("shared");
+    });
+  });
+
+  describe("drainWorkspacePool (#3109 — eager clone drain on uninstall/update)", () => {
+    it("drains only the targeted (workspace, install_id) clone, leaving siblings intact", () => {
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha/wh" });
+      registry.registerForWorkspace("ws-beta", "warehouse", { url: "postgresql://beta/wh" });
+      registry.getForOrg("ws-alpha", "warehouse");
+      registry.getForOrg("ws-beta", "warehouse");
+
+      expect(registry.drainWorkspacePool("ws-alpha", "warehouse")).toBe(1);
+      expect(registry.hasOrgPool("ws-alpha", "warehouse")).toBe(false);
+      expect(registry.hasOrgPool("ws-beta", "warehouse")).toBe(true); // sibling untouched
+    });
+
+    it("re-clones from the updated config after drain — no LRU/restart needed", () => {
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://old-host/wh" });
+      const before = registry.getForOrg("ws-alpha", "warehouse");
+      expect(poolConnString(before)).toBe("postgresql://old-host/wh");
+
+      // Simulate a config update: drain the stale clone + re-register new URL.
+      registry.drainWorkspacePool("ws-alpha", "warehouse");
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://new-host/wh" });
+
+      const after = registry.getForOrg("ws-alpha", "warehouse");
+      expect(after).not.toBe(before);
+      expect(poolConnString(after)).toBe("postgresql://new-host/wh");
+    });
+
+    it("returns 0 when no clone exists for the (workspace, install_id)", () => {
+      expect(registry.drainWorkspacePool("ws-none", "warehouse")).toBe(0);
+    });
+
+    it("drops the org's LRU bookkeeping when its last pool is drained", () => {
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha/wh" });
+      registry.getForOrg("ws-alpha", "warehouse");
+      expect(registry.listOrgs()).toContain("ws-alpha");
+
+      registry.drainWorkspacePool("ws-alpha", "warehouse");
+      expect(registry.listOrgs()).not.toContain("ws-alpha");
+    });
+
+    it("keeps the org's LRU entry when it still has other pools", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.registerForWorkspace("ws-alpha", "warehouse", { url: "postgresql://alpha/wh" });
+      registry.getForOrg("ws-alpha", "warehouse");
+      registry.getForOrg("ws-alpha", "default");
+
+      registry.drainWorkspacePool("ws-alpha", "warehouse");
+      expect(registry.hasOrgPool("ws-alpha", "warehouse")).toBe(false);
+      expect(registry.hasOrgPool("ws-alpha", "default")).toBe(true);
+      expect(registry.listOrgs()).toContain("ws-alpha");
+    });
+  });
+
   describe("LRU eviction", () => {
     it("evicts the least recently used org when maxOrgs is exceeded", () => {
       registry.setOrgPoolConfig({ maxOrgs: 2, maxConnections: 5, idleTimeoutMs: 30000, warmupProbes: 0, drainThreshold: 5 });

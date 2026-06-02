@@ -118,6 +118,10 @@ if (config.plugins?.length) {
         }
       : null,
     connections: {
+      // Plugins operate on the bare registry by their own connection id — there
+      // is no querying-workspace context here to scope by, so this stays a bare
+      // `get` (unlike the per-(workspace, install_id) read paths in the agent
+      // tools — #3109). Plugin-managed pools register on the bare map anyway.
       get: (id: string) => connections.get(id),
       list: () => connections.list(),
     },

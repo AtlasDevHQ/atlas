@@ -711,6 +711,29 @@ export class ConnectionRegistry {
     return newConn;
   }
 
+  /**
+   * Resolve a connection for a (workspace, install_id) WITHOUT requiring org
+   * pooling to be enabled (#3109).
+   *
+   * When a per-(workspace, install_id) routing config exists (the #2783
+   * multi-tenant shape), clone/reuse a per-workspace pool via {@link getForOrg}
+   * so a shared install_id resolves the CORRECT tenant's DB — the bare
+   * `entries` row may belong to whichever workspace registered the install_id
+   * first. Otherwise (no per-workspace config: self-hosted single-tenant,
+   * plugin-managed, region pools) fall back to the bare pool, which is
+   * authoritative.
+   *
+   * This is the read-side counterpart to the #2783 routing fix: `getForOrg`
+   * already resolves per-workspace when org pooling IS on, but the bare
+   * `get(installId)` path (org pooling off) would otherwise collide.
+   */
+  getForWorkspace(workspaceId: string, installId: string, region?: string): DBConnection {
+    if (this.workspaceEntries.has(this._workspaceKey(workspaceId, installId))) {
+      return this.getForOrg(workspaceId, installId, region);
+    }
+    return this.get(installId);
+  }
+
   /** Check if an org-scoped pool exists for the given org + connection. */
   hasOrgPool(orgId: string, connectionId: string = "default", region?: string): boolean {
     return this.orgEntries.has(this._orgKey(orgId, connectionId, region));
@@ -921,12 +944,11 @@ export class ConnectionRegistry {
    * doesn't outlive the install and silently route to a stale URL.
    *
    * Only the targeted workspace's config is removed — a sibling workspace
-   * sharing the install_id keeps its own. Org pools already cloned into
-   * `orgEntries` are left intact: the next query re-resolves on cache miss
-   * (falling through to the bare entry, or throwing), and LRU / restart
-   * reclaims the idle clone. The shared bare `entries` row is handled by the
-   * caller via the {@link hasWorkspacePoolsFor} guard so siblings keep
-   * resolving install-id-keyed metadata.
+   * sharing the install_id keeps its own. This drops only the ROUTING config;
+   * the live org-pool clone in `orgEntries` is torn down separately by
+   * {@link drainWorkspacePool} (the bridge calls both — #3109). The shared bare
+   * `entries` row is handled by the caller via the {@link hasWorkspacePoolsFor}
+   * guard so siblings keep resolving install-id-keyed metadata.
    */
   unregisterForWorkspace(workspaceId: string, installId: string): boolean {
     return this.workspaceEntries.delete(this._workspaceKey(workspaceId, installId));
@@ -1079,31 +1101,85 @@ export class ConnectionRegistry {
     }
   }
 
-  getDBType(id: string): DBType {
+  /**
+   * Database type for a connection.
+   *
+   * When `workspaceId` is given and a per-(workspace, install_id) routing config
+   * exists, its dbType wins over the shared bare `entries` row (#3109) — this is
+   * what makes the mixed-dialect case correct: two workspaces sharing an
+   * install_id where one is postgres and the other mysql each resolve their own
+   * dialect, so a valid query isn't rejected by the sibling's parser. Falls back
+   * to the bare entry (and throws if neither is registered).
+   */
+  getDBType(id: string, workspaceId?: string): DBType {
+    if (workspaceId) {
+      const ws = this.workspaceEntries.get(this._workspaceKey(workspaceId, id));
+      if (ws) return ws.dbType;
+    }
     const entry = this.entries.get(id);
     if (!entry) throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
     return entry.dbType;
   }
 
-  /** Return the hostname (without credentials) for a registered connection. Returns "(unknown)" if not registered. */
-  getTargetHost(id: string): string {
+  /**
+   * Hostname (without credentials) for a connection. Returns "(unknown)" if not
+   * registered.
+   *
+   * When `workspaceId` is given and a per-(workspace, install_id) routing config
+   * exists, its host wins over the shared bare `entries` row (#3109) so the
+   * query audit reflects the host the QUERYING workspace actually hit, not
+   * whichever sibling registered the install_id first.
+   */
+  getTargetHost(id: string, workspaceId?: string): string {
+    if (workspaceId) {
+      const ws = this.workspaceEntries.get(this._workspaceKey(workspaceId, id));
+      if (ws) return ws.targetHost;
+    }
     const entry = this.entries.get(id);
     if (!entry) return "(unknown)";
     return entry.targetHost;
   }
 
-  /** Return the custom query validator for a connection, if one was registered. Callers must verify connection existence first. */
-  getValidator(id: string): ((query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined {
+  /**
+   * Custom query validator for a connection, if one was registered. Callers must
+   * verify connection existence first.
+   *
+   * A per-(workspace, install_id) routing config is always a NATIVE
+   * postgres/mysql datasource — custom validators (and all plugin metadata) live
+   * only on the bare entry, registered via `registerDirect`. So when a
+   * per-workspace config exists for `(workspaceId, id)`, there is no custom
+   * validator for that workspace: return undefined rather than leak a sibling's
+   * bare validator (#3109).
+   */
+  getValidator(id: string, workspaceId?: string): ((query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined {
+    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+      return undefined;
+    }
     return this.entries.get(id)?.validate;
   }
 
-  /** Return the plugin-provided parser dialect for a connection, if any. */
-  getParserDialect(id: string): string | undefined {
+  /**
+   * Plugin-provided parser dialect for a connection, if any. Like
+   * {@link getValidator}, a per-(workspace, install_id) config is native, so its
+   * dialect derives from `getDBType` (not plugin metadata) — return undefined to
+   * fall through to the dbType-based default (#3109).
+   */
+  getParserDialect(id: string, workspaceId?: string): string | undefined {
+    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+      return undefined;
+    }
     return this.entries.get(id)?.pluginMeta?.parserDialect;
   }
 
-  /** Return plugin-provided forbidden patterns for a connection. Empty array if none. */
-  getForbiddenPatterns(id: string): RegExp[] {
+  /**
+   * Plugin-provided forbidden patterns for a connection. Empty array if none.
+   * Per-(workspace, install_id) configs are native (no plugin patterns), so the
+   * base + dbType-specific patterns apply — return [] for them (#3109).
+   */
+  getForbiddenPatterns(id: string, workspaceId?: string): RegExp[] {
+    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+      return [];
+    }
     return this.entries.get(id)?.pluginMeta?.forbiddenPatterns ?? [];
   }
 
@@ -1428,6 +1504,54 @@ export class ConnectionRegistry {
     await Promise.all(closing);
     log.info({ orgId, drained }, "Org pools drained");
     return { drained };
+  }
+
+  /**
+   * Eagerly drain the live org-scoped pool clone(s) for a specific
+   * (workspace, install_id), across all regions (#3109).
+   *
+   * Called by the datasource bridge on uninstall / config update so a stale
+   * clone in `orgEntries` doesn't keep serving queries against the OLD config
+   * until LRU eviction or a restart — the next query re-clones from the updated
+   * (or removed) per-workspace config. `unregisterForWorkspace` drops the
+   * routing config; this drops the live POOL, keeping the two symmetric.
+   *
+   * Only this (workspace, install_id)'s pools are closed — a sibling workspace
+   * sharing the install_id keeps its own clone. In-flight queries on the old
+   * pool complete: `pool.end()` waits for checked-out clients before closing.
+   * Returns the number of pools drained.
+   */
+  drainWorkspacePool(workspaceId: string, installId: string): number {
+    let drained = 0;
+    const keysToDelete: string[] = [];
+    for (const [key, entry] of this.orgEntries) {
+      const { orgId, connectionId } = this._parseOrgKey(key);
+      if (orgId === workspaceId && connectionId === installId) {
+        keysToDelete.push(key);
+        entry.conn.close().catch((err) => {
+          log.warn({ key, err: errorMessage(err) }, "Failed to close org pool during workspace drain");
+        });
+        drained++;
+      }
+    }
+    for (const key of keysToDelete) {
+      this.orgEntries.delete(key);
+    }
+
+    // If the org has no pools left, drop its LRU bookkeeping too — a stale
+    // zero-pool entry would otherwise inflate the maxOrgs eviction count.
+    if (drained > 0) {
+      const prefix = `${workspaceId}:`;
+      let stillHasPools = false;
+      for (const key of this.orgEntries.keys()) {
+        if (key.startsWith(prefix)) {
+          stillHasPools = true;
+          break;
+        }
+      }
+      if (!stillHasPools) this.orgAccessSeq.delete(workspaceId);
+    }
+    return drained;
   }
 
   /**

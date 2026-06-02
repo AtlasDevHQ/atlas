@@ -2,12 +2,15 @@ import { parseAsString } from "nuqs";
 
 /**
  * URL state for the chat surface (`AtlasChat`). The active conversation id is
- * reflected in `?id=` so a reload / deep-link reopens it (#3068). Mirrors the
- * workspace chat surface (`app/(workspace)/search-params.ts`) so both render the
- * same `/?id=<uuid>` scheme.
+ * reflected in `?id=` so a reload / deep-link reopens it (#3068). `?prompt=`
+ * prefills the composer — the hosted `WorkspaceShell` delivers a query through
+ * it (`deliverPrompt`) from the prompt library / schema explorer, and /wizard +
+ * /signup/success starters use it too. (Was `app/(workspace)/search-params.ts`,
+ * retired now that `AtlasChat` is the single web chat.)
  */
 export const chatSearchParams = {
   id: parseAsString.withDefault(""),
+  prompt: parseAsString.withDefault(""),
 };
 
 /**

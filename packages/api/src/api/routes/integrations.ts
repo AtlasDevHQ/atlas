@@ -175,8 +175,11 @@ const installRoute = createRoute({
     302: {
       description:
         "Redirect to Platform OAuth authorization page on success, or to " +
-        "`/admin/integrations?error=<platform>&reason=plan_upgrade_required` " +
-        "when the workspace's plan does not admit the install (browser callers).",
+        "`/admin/integrations?error=<platform>&reason=<code>` when the install is " +
+        "refused before the redirect (browser callers): `plan_upgrade_required` " +
+        "when the workspace's plan tier does not admit the install, or " +
+        "`plan_limit_reached` (#2998) when a chat integration would exceed the " +
+        "plan's chat-integration cap.",
     },
     400: { description: "Platform is not OAuth-installable, or unknown", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -193,8 +196,27 @@ const installRoute = createRoute({
       },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
+    // #2998 — chat-integration cap reached pre-redirect (`plan_limit_exceeded`,
+    // body carries the `limit`), OR rate limited. Browser callers get a 302 to
+    // the admin UI with `reason=plan_limit_reached` for the cap case instead.
+    429: {
+      description:
+        "Chat-integration cap reached for the workspace's plan tier " +
+        "(`plan_limit_exceeded`, JSON-Accept caller), or rate limited.",
+      content: {
+        "application/json": {
+          schema: z.union([ErrorSchema.extend({ limit: z.number() }), AuthErrorSchema]),
+        },
+      },
+    },
     501: { description: "OAuth handler not registered", content: { "application/json": { schema: ErrorSchema } } },
+    // #2998 — the chat-integration count couldn't be determined (transient DB
+    // fault), so the pre-redirect cap check failed closed: `billing_check_failed`
+    // "try again" (browser and JSON callers alike).
+    503: {
+      description: "Billing/plan-limit check unavailable: `billing_check_failed` (pre-redirect cap precheck)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
   },
 });
 
@@ -718,7 +740,39 @@ integrations.openapi(installRoute, async (c) =>
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
-    const { redirectUrl } = await handler.startInstall(workspaceId);
+    // ── Pre-redirect chat-integration cap gate (#2998) ────────────
+    // Slack's `startInstall` runs a read-only chat-integration cap precheck
+    // before minting the authorize URL, so an at-cap workspace is refused
+    // BEFORE Slack mints a bot token / installs the app — it no longer
+    // completes the whole dance only to be turned away at the callback. The
+    // callback's atomic gate stays in place as the TOCTOU guard. We translate
+    // the cap/billing tagged errors the same way the callback handler does
+    // (`startInstall` exchanges no code, so unlike the callback it has no
+    // `PlatformOAuthExchangeError`/`upstream_error` arm):
+    //   - ChatIntegrationLimitError → browser: 302 to the admin UI with
+    //     `reason=plan_limit_reached`; JSON callers fall through to the 429
+    //     `plan_limit_exceeded` mapping in runHandler.
+    //   - BillingCheckFailedError (count couldn't be read) → left to the 503
+    //     `billing_check_failed` mapper: a transient "try again", not an
+    //     upgrade prompt, for browser and JSON callers alike.
+    // Handlers that don't run a chat-cap precheck never throw
+    // ChatIntegrationLimitError here, so this catch is inert for them and just
+    // re-throws — every other error propagates unchanged to runHandler.
+    let redirectUrl: string;
+    try {
+      ({ redirectUrl } = await handler.startInstall(workspaceId));
+    } catch (err) {
+      if (err instanceof ChatIntegrationLimitError) {
+        log.info(
+          { platform, workspaceId: err.workspaceId, limit: err.limit },
+          "Install blocked pre-redirect — workspace at chat-integration cap",
+        );
+        if (prefersHtml(c.req.raw)) {
+          return c.redirect(buildPlatformAdminUrl("error", platform, { reason: "plan_limit_reached" }));
+        }
+      }
+      throw err;
+    }
     return c.redirect(redirectUrl);
   }),
 );

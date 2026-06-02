@@ -393,6 +393,26 @@ describe("deliverWebhook — onFailedAttempt", () => {
       { attempt: 2, maxAttempts: 2, willRetry: false, failure: { kind: "transport_error", error: "boom" } },
     ]);
   });
+
+  it("does not let a throwing observer escape — delivery stays a tagged outcome", async () => {
+    // The observer is a best-effort breadcrumb; a bug in it must not turn an
+    // expected delivery failure into an exception (the no-throw contract).
+    const { fetcher } = statusFetcher(500);
+    const { sleep } = recordingSleep();
+    const outcome = await deliverWebhook({
+      url: URL,
+      payload: {},
+      sign: SIGN,
+      retry: { maxAttempts: 2, delaysMs: [1] },
+      fetcher,
+      sleep,
+      onFailedAttempt: () => {
+        throw new Error("observer boom");
+      },
+    });
+    expect(outcome.kind).toBe("http_error");
+    if (outcome.kind === "http_error") expect(outcome.status).toBe(500);
+  });
 });
 
 describe("cappedExponentialDelays", () => {

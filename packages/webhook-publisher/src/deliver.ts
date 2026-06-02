@@ -240,7 +240,19 @@ export async function deliverWebhook(
     }
 
     const willRetry = !permanent && attempt < maxAttempts;
-    onFailedAttempt?.({ attempt, maxAttempts, willRetry, failure: lastFailure });
+    if (onFailedAttempt) {
+      try {
+        onFailedAttempt({ attempt, maxAttempts, willRetry, failure: lastFailure });
+      } catch (err) {
+        // A throwing observer must not corrupt the delivery: the contract is to
+        // return a tagged outcome, never throw on an expected failure. Surface
+        // the observer's bug at debug level without aborting the delivery.
+        console.debug(
+          "[webhook-publisher] onFailedAttempt callback threw:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
 
     if (permanent) break;
     if (attempt < maxAttempts) {

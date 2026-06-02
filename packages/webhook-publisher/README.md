@@ -56,7 +56,7 @@ stable for the whole delivery.
 
 ### `timestamped({ secret, timestampSeconds? })` — Atlas house standard
 
-```
+```text
 X-Webhook-Signature: sha256=<hmac(`${ts}:${body}`)>
 X-Webhook-Timestamp: <unix-seconds>
 ```
@@ -85,7 +85,7 @@ function verify(secret: string, header: string, timestamp: string, rawBody: stri
 
 ### `rawBody({ secret })` — Stripe/GitHub style
 
-```
+```text
 X-Atlas-Signature: <hmac(rawBody)>
 ```
 

@@ -44,6 +44,15 @@ const mockRegisterForWorkspace: Mock<(workspaceId: string, installId: string, cf
 const mockHasForWorkspace: Mock<(workspaceId: string, installId: string) => boolean> = mock(
   (workspaceId: string, installId: string) => wsRegisteredKeys.has(wsKey(workspaceId, installId)),
 );
+const mockUnregisterForWorkspace: Mock<(workspaceId: string, installId: string) => boolean> = mock(
+  (workspaceId: string, installId: string) => wsRegisteredKeys.delete(wsKey(workspaceId, installId)),
+);
+const mockHasWorkspacePoolsFor: Mock<(installId: string) => boolean> = mock((installId: string) => {
+  for (const key of wsRegisteredKeys) {
+    if (key.endsWith(`::${installId}`)) return true;
+  }
+  return false;
+});
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
@@ -52,6 +61,8 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     has: mockHas,
     registerForWorkspace: mockRegisterForWorkspace,
     hasForWorkspace: mockHasForWorkspace,
+    unregisterForWorkspace: mockUnregisterForWorkspace,
+    hasWorkspacePoolsFor: mockHasWorkspacePoolsFor,
   },
 }));
 
@@ -70,6 +81,8 @@ beforeEach(async () => {
   mockHas.mockClear();
   mockRegisterForWorkspace.mockClear();
   mockHasForWorkspace.mockClear();
+  mockUnregisterForWorkspace.mockClear();
+  mockHasWorkspacePoolsFor.mockClear();
 });
 
 afterEach(() => {
@@ -201,17 +214,35 @@ describe("registerDatasourceInstall", () => {
 });
 
 describe("unregisterDatasourceInstall", () => {
-  it("calls connections.unregister and returns true when registered", () => {
+  it("removes both the per-workspace config and the bare row when registered", () => {
     bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
-    const result = bridge.unregisterDatasourceInstall("prod");
+    const result = bridge.unregisterDatasourceInstall("ws-1", "prod");
     expect(result).toBe(true);
+    // Per-workspace routing config gone — no stale route survives.
+    expect(wsRegisteredKeys.has(wsKey("ws-1", "prod"))).toBe(false);
+    // Bare row removed too (no sibling workspace owns the install_id).
     expect(unregisterCalls).toContain("prod");
   });
 
+  it("keeps the shared bare row when a sibling workspace still owns the install_id", () => {
+    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
+    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
+
+    const result = bridge.unregisterDatasourceInstall("ws-a", "prod");
+    expect(result).toBe(true);
+
+    // ws-a's routing config is gone; ws-b's survives.
+    expect(wsRegisteredKeys.has(wsKey("ws-a", "prod"))).toBe(false);
+    expect(wsRegisteredKeys.has(wsKey("ws-b", "prod"))).toBe(true);
+    // Bare row is NOT torn down while ws-b still owns `prod` — sibling metadata
+    // (getDBType / getTargetHost) keeps resolving.
+    expect(unregisterCalls).not.toContain("prod");
+  });
+
   it("returns false when install_id was never registered (plugin-managed pool)", () => {
-    const result = bridge.unregisterDatasourceInstall("never-registered");
+    const result = bridge.unregisterDatasourceInstall("ws-1", "never-registered");
     expect(result).toBe(false);
-    // Never even called unregister — the has() guard short-circuits.
+    // Nothing to remove — neither the per-workspace config nor the bare row.
     expect(unregisterCalls).toHaveLength(0);
   });
 });

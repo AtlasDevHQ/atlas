@@ -417,7 +417,6 @@ interface RegistryEntry {
 interface WorkspaceBaseEntry {
   config: ConnectionConfig;
   dbType: DBType;
-  description?: string;
   targetHost: string;
 }
 
@@ -635,7 +634,7 @@ export class ConnectionRegistry {
     if (!baseConfig || !baseDbType) {
       throw new ConnectionNotRegisteredError({ message: `Connection "${connectionId}" is not registered.`, id: connectionId });
     }
-    const baseDescription = wsBase?.description ?? baseEntry?.description;
+    const baseDescription = wsBase?.config.description ?? baseEntry?.description;
     const baseTargetHost = wsBase?.targetHost ?? baseEntry?.targetHost ?? "(unknown)";
     const baseValidate = baseEntry?.validate;
     const basePluginMeta = baseEntry?.pluginMeta;
@@ -884,13 +883,26 @@ export class ConnectionRegistry {
       config,
       dbType,
       targetHost,
-      ...(config.description !== undefined ? { description: config.description } : {}),
     });
   }
 
   /** Whether a per-(workspace, install_id) base config is registered. */
   hasForWorkspace(workspaceId: string, installId: string): boolean {
     return this.workspaceEntries.has(this._workspaceKey(workspaceId, installId));
+  }
+
+  /**
+   * Whether ANY workspace still has a per-workspace config for this install_id.
+   * Lets the uninstall path keep the shared bare `entries` row (and its
+   * install-id-keyed metadata) alive until the last workspace owning the
+   * install_id is gone. O(n) over `workspaceEntries` — uninstall is rare.
+   */
+  hasWorkspacePoolsFor(installId: string): boolean {
+    const suffix = `\u0000${installId}`;
+    for (const key of this.workspaceEntries.keys()) {
+      if (key.endsWith(suffix)) return true;
+    }
+    return false;
   }
 
   /**
@@ -904,11 +916,16 @@ export class ConnectionRegistry {
 
   /**
    * Remove a per-(workspace, install_id) base config. Returns true if one was
-   * present. Org pools already cloned from it are left intact — the
-   * mode-visibility gate (`isConnectionVisibleInMode`) fail-closes queries to
-   * archived installs before `getForOrg` is reached, and LRU / restart reclaims
-   * the idle clone. The bare `entries` row (shared across workspaces for an
-   * install_id) is intentionally NOT touched here so sibling workspaces keep
+   * present. Called by the bridge on uninstall / config-delete so the routing
+   * config (which `getForOrg` resolves with priority over the bare entry)
+   * doesn't outlive the install and silently route to a stale URL.
+   *
+   * Only the targeted workspace's config is removed — a sibling workspace
+   * sharing the install_id keeps its own. Org pools already cloned into
+   * `orgEntries` are left intact: the next query re-resolves on cache miss
+   * (falling through to the bare entry, or throwing), and LRU / restart
+   * reclaims the idle clone. The shared bare `entries` row is handled by the
+   * caller via the {@link hasWorkspacePoolsFor} guard so siblings keep
    * resolving install-id-keyed metadata.
    */
   unregisterForWorkspace(workspaceId: string, installId: string): boolean {

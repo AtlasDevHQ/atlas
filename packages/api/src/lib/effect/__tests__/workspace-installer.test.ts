@@ -181,7 +181,7 @@ const mockBridgeRegister = mock(
     return true;
   },
 );
-const mockBridgeUnregister = mock((installId: string) => {
+const mockBridgeUnregister = mock((_workspaceId: string, installId: string) => {
   bridgeUnregisterCalls.push(installId);
   return true;
 });
@@ -236,7 +236,7 @@ function resetState() {
       return true;
     },
   );
-  mockBridgeUnregister.mockImplementation((installId: string) => {
+  mockBridgeUnregister.mockImplementation((_workspaceId: string, installId: string) => {
     bridgeUnregisterCalls.push(installId);
     return true;
   });

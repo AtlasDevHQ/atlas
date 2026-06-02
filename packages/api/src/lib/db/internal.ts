@@ -590,7 +590,19 @@ export async function closeInternalDB(): Promise<void> {
   }
 }
 
-/** Reset singleton for testing. Optionally inject a mock pool and/or SqlClient. */
+/**
+ * Reset singleton for testing. Optionally inject a mock pool and/or SqlClient.
+ *
+ * Also tears down any in-flight circuit-breaker recovery fiber. A recovery
+ * fiber sleeps 30s of wall-clock and then probes `getInternalDB().query("SELECT 1")`
+ * against whatever pool is currently installed. If we swap `_pool` here but
+ * leave the fiber running, ~30s later it fires a spurious `SELECT 1` into the
+ * *next* test's mock pool — a cross-test timing flake that only surfaces when
+ * the suite runs slowly enough (e.g. under the isolated runner's 32-way
+ * concurrency) for the file to still be executing 30s after the circuit
+ * tripped. Resetting the pool must reset the full circuit state, fiber
+ * included (#3083).
+ */
 export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.SqlClient | null): void {
   _pool = mockPool ?? null;
   _sqlClient = mockSql ?? null;
@@ -598,6 +610,7 @@ export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.S
   _consecutiveFailures = 0;
   _circuitOpen = false;
   _droppedCount = 0;
+  _interruptRecoveryFiber();
 }
 
 /**
@@ -753,15 +766,35 @@ export function internalExecute(sqlStr: string, params?: unknown[]): void {
   }
 }
 
+/**
+ * Interrupt the in-flight recovery fiber (if any) and clear the reference.
+ *
+ * Shared by `_resetCircuitBreaker` and `_resetPool` so neither can leave a
+ * fiber alive to probe a swapped-out pool 30s later (#3083). The fiber is
+ * sleeping in `Effect.sleep(30s)` at this point, so interruption is prompt —
+ * the probe never runs. We null the reference synchronously; the forked
+ * interrupt completes in the background.
+ */
+function _interruptRecoveryFiber(): void {
+  if (_recoveryFiber) {
+    Effect.runFork(Fiber.interrupt(_recoveryFiber));
+    _recoveryFiber = null;
+  }
+}
+
 /** Reset circuit breaker state. For testing only. */
 export function _resetCircuitBreaker(): void {
   _consecutiveFailures = 0;
   _circuitOpen = false;
   _droppedCount = 0;
-  if (_recoveryFiber) {
-    Effect.runFork(Fiber.interrupt(_recoveryFiber));
-    _recoveryFiber = null;
-  }
+  _interruptRecoveryFiber();
+}
+
+/** @internal — test seam. True when a background recovery fiber is in flight.
+ *  Lets the #3083 regression test assert that a pool/circuit reset tears the
+ *  fiber down, without waiting out the 30s recovery sleep. */
+export function _hasRecoveryFiber(): boolean {
+  return _recoveryFiber !== null;
 }
 
 /**

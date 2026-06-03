@@ -5,6 +5,7 @@ import { Clock } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { DataTable } from "@/ui/components/chat/data-table";
+import { Markdown } from "@/ui/components/chat/markdown";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
 import type { SharedCard } from "./types";
 
@@ -35,6 +36,21 @@ export interface SharedTileProps {
 
 export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTileProps) {
   const dark = useDarkMode();
+
+  // #3138 — a text / section-block card renders sanitized markdown (no data, no
+  // chart, no cached-at footer) so a shared-link viewer sees the same headers
+  // the owner authored — not the empty-data placeholder.
+  if (card.kind === "text") {
+    return (
+      <Card
+        className={`${spanClass} overflow-hidden px-4 py-3 text-sm leading-relaxed print:col-span-2 print:break-inside-avoid print:border-zinc-300 print:shadow-none`}
+        data-card-kind="text"
+      >
+        <Markdown content={card.content ?? ""} />
+      </Card>
+    );
+  }
+
   const columns = card.cachedColumns ?? [];
   const rows = validateRows(card.cachedRows);
   const hasData = columns.length > 0 && rows.length > 0;

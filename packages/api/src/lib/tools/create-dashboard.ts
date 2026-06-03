@@ -64,18 +64,22 @@ const ChartConfigSchema = z.object({
 /** A SQL-backed chart/table card (the original kind). `kind` is optional and
  *  defaults to a chart so the long-standing `{ title, sql, chartConfig }` shape
  *  keeps working — only a text card has to name its kind. */
-const ChartCardSchema = z.object({
-  kind: z.literal("chart").optional(),
-  title: z.string().min(1).max(200),
-  sql: z.string().min(1),
-  chartConfig: ChartConfigSchema,
-  layout: CardLayoutSchema.optional(),
-  connectionId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("Source connection — omit for the default datasource."),
-});
+const ChartCardSchema = z
+  .object({
+    kind: z.literal("chart").optional(),
+    title: z.string().min(1).max(200),
+    sql: z.string().min(1),
+    chartConfig: ChartConfigSchema,
+    layout: CardLayoutSchema.optional(),
+    connectionId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Source connection — omit for the default datasource."),
+  })
+  // Strict so a text card's `content` (or any stray key) can't ride along on a
+  // chart card and be silently dropped — fail fast instead.
+  .strict();
 
 /**
  * A markdown text / section-block card (#3138). No SQL, no chart — just a
@@ -83,14 +87,18 @@ const ChartCardSchema = z.object({
  * header usually lives in `content`); when omitted we derive a short row title
  * from the markdown for list/diff surfaces.
  */
-const TextCardSchema = z.object({
-  kind: z.literal("text"),
-  title: z.string().min(1).max(200).optional(),
-  content: dashboardTextCardContentSchema.describe(
-    'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
-  ),
-  layout: CardLayoutSchema.optional(),
-});
+const TextCardSchema = z
+  .object({
+    kind: z.literal("text"),
+    title: z.string().min(1).max(200).optional(),
+    content: dashboardTextCardContentSchema.describe(
+      'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
+    ),
+    layout: CardLayoutSchema.optional(),
+  })
+  // Strict so a text card can't smuggle a `sql`/`chartConfig` past the
+  // validation it skips — a mixed payload is a caller bug, reject it.
+  .strict();
 
 /**
  * A card is either a chart or a text block. We use a plain union (not a

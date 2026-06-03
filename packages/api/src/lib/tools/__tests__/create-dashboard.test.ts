@@ -424,6 +424,30 @@ describe("createDashboard tool", () => {
     expect(validateSQLMock).toHaveBeenCalledTimes(0);
   });
 
+  it("rejects a mixed payload — a text card carrying sql/chartConfig fails the input schema", () => {
+    // Strict schemas: a text card must not smuggle chart fields past the
+    // SQL validation it skips. The agent boundary validates against inputSchema
+    // (a Zod schema at runtime; the AI SDK types it as FlexibleSchema, so cast).
+    const schema = createDashboard.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const mixed = schema.safeParse({
+      title: "Bad",
+      cards: [{ kind: "text", content: "## Hi", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] } }],
+    });
+    expect(mixed.success).toBe(false);
+    // A clean text card and a clean chart card both still parse.
+    expect(
+      schema.safeParse({ title: "Ok", cards: [{ kind: "text", content: "## Hi" }] }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({
+        title: "Ok",
+        cards: [{ title: "C", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] } }],
+      }).success,
+    ).toBe(true);
+  });
+
   describe("deriveTextCardTitle", () => {
     it("strips a leading markdown heading marker", () => {
       expect(deriveTextCardTitle("## Top of funnel")).toBe("Top of funnel");

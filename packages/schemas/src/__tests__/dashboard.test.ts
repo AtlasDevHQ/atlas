@@ -87,6 +87,11 @@ describe("dashboardTextCardSchema", () => {
     expect(dashboardTextCardSchema.safeParse({ kind: "text", content: "" }).success).toBe(false);
   });
 
+  test("rejects whitespace-only content (would render as a blank band)", () => {
+    expect(dashboardTextCardContentSchema.safeParse("   ").success).toBe(false);
+    expect(dashboardTextCardContentSchema.safeParse("\n\n\t").success).toBe(false);
+  });
+
   test("rejects content past the length cap", () => {
     const tooLong = "a".repeat(DASHBOARD_TEXT_CARD_CONTENT_MAX + 1);
     expect(dashboardTextCardContentSchema.safeParse(tooLong).success).toBe(false);

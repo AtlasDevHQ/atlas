@@ -163,8 +163,10 @@ export const DASHBOARD_TEXT_CARD_CONTENT_MAX = 5_000;
  */
 export const dashboardTextCardContentSchema = z
   .string()
-  .min(1, "Text card content cannot be empty.")
-  .max(DASHBOARD_TEXT_CARD_CONTENT_MAX);
+  .max(DASHBOARD_TEXT_CARD_CONTENT_MAX)
+  // `.min(1)` would still accept "   " / "\n\n", which renders as a blank band.
+  // Require at least one non-whitespace character.
+  .refine((value) => value.trim().length > 0, "Text card content cannot be empty.");
 
 /**
  * Standalone wire shape of a `text` card's discriminant fields — the

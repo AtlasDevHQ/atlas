@@ -1030,6 +1030,49 @@ describe("dashboard-versioning DB helpers", () => {
       expect(releaseCalls).toBe(1);
     });
 
+    // Regression: an accepted `editSql` stage rewrites the draft card's SQL,
+    // which surfaces as an updateCard op — the publish UPDATE must persist it
+    // (it previously wrote every field EXCEPT sql, silently dropping the edit).
+    it("persists an edited card's SQL in the publish updateCard path", async () => {
+      enableInternalDB();
+      const baseline = snapshot([card("c1")]);
+      const draftEdit = applyChangeToDraft(baseline, {
+        kind: "editSql",
+        cardId: "c1",
+        newSql: "SELECT 2 AS edited",
+      });
+      expect(draftEdit.ok).toBe(true);
+      if (!draftEdit.ok) return;
+
+      setResults({ rows: [draftRow({ draft: draftEdit.snapshot, baseline })] });
+      setClientResults(
+        { rows: [] }, // BEGIN
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
+        { rows: [] }, // UPDATE dashboard_cards
+        { rows: [] }, // UPDATE dashboards touch
+        { rows: [] }, // DELETE draft
+        { rows: [] }, // COMMIT
+      );
+
+      const published = dashboardWithCards([card("c1")], {
+        updatedAt: "2026-05-17T00:00:00.000Z",
+      });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(true);
+
+      const updateCall = clientCalls.find(
+        (c) => /UPDATE dashboard_cards/.test(c.sql) && /\bsql =/.test(c.sql),
+      );
+      expect(updateCall).toBeDefined();
+      // The new SQL is bound, not dropped.
+      expect(updateCall!.params).toContain("SELECT 2 AS edited");
+    });
+
     it("rolls back on transaction error and returns error", async () => {
       enableInternalDB();
       const baseline = snapshot([card("c1")]);

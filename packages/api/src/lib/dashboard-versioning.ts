@@ -919,18 +919,23 @@ export async function publishDraft(opts: {
           await client.query(
             `UPDATE dashboard_cards
                 SET title = $1,
-                    chart_config = $2,
-                    content = $3,
-                    layout = $4,
-                    position = $5,
+                    sql = $2,
+                    chart_config = $3,
+                    content = $4,
+                    layout = $5,
+                    position = $6,
                     updated_at = now()
-              WHERE id = $6 AND dashboard_id = $7`,
+              WHERE id = $7 AND dashboard_id = $8`,
             [
               op.card.title,
+              // An accepted `editSql` stage rewrites the draft card's SQL
+              // (applyChangeToDraft → `editSql`), which `cardEquals` then
+              // surfaces as this updateCard op — so the new query MUST be
+              // persisted here or the publish silently drops it. A text card
+              // carries "" (defensive coerce against a legacy draft missing the key).
+              op.card.sql ?? "",
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
-              // #3138: keep content in sync on edit (e.g. a text card's markdown
-              // changed). NULL for a chart card; the SQL itself is intentionally
-              // not updatable here (see #2365).
+              // #3138: keep content in sync on edit (e.g. a text card's markdown changed).
               op.card.content ?? null,
               op.card.layout ? JSON.stringify(op.card.layout) : null,
               op.card.position,

@@ -25,7 +25,11 @@ wc -l /tmp/groupA.txt && cat /tmp/groupA.txt   # eyeball it
 ```
 Re-check the EXCLUDE list against `bun outdated` each time — when a Group B major lands, drop it from EXCLUDE; when a new major appears, add it.
 
-**Step 3: Apply.** You **must name the packages** — bare `bun update --filter '*'` does NOT move workspace-only deps (ai, hono, effect, mysql2, @tanstack/*, tailwindcss…); it reports "no changes". Naming them cascades the floor+lock bump across every workspace, staying within `^` ranges. (See `reference_bun_update_workspace_cascade` in auto-memory.)
+**Step 3: Apply.** **Both** `--filter '*'` **and** the explicit package names are load-bearing — keep them:
+- Without the **names**, bare `bun update --filter '*'` reports "no changes" for workspace-only deps (ai, hono, effect, mysql2, @tanstack/*, tailwindcss…).
+- Without `--filter '*'`, `bun update <pkg>` only re-resolves the lockfile and the **root** manifest — it does **not** rewrite sub-workspace `package.json` `^` floors (verified: `bun update hono` left a downgraded `packages/api` floor untouched). The floor cascade across every workspace is what `--filter '*'` does.
+
+(Verified on the pinned `bun@1.3.13` — `engines.bun` is `>=1.3.13 <1.3.14`. `bun update` here accepts `--filter`; if a future bun drops it, re-test before changing this line. See `reference_bun_update_workspace_cascade` in auto-memory.) `bun update` (no `--latest`) stays inside the existing `^` range, so no major can cross.
 ```bash
 bun update --filter '*' $(tr '\n' ' ' < /tmp/groupA.txt)
 bun x syncpack fix          # reconcile ranges across workspaces (.syncpackrc.json)
@@ -41,18 +45,21 @@ Any moved major = a Group B leak; remove it (restore that range) and re-run.
 
 **Step 5: Reconcile coupled bumps + code.** See the **Coupled constraints** table below. Then make any code edits the bumps force — e.g. an `@ts-expect-error` that a fixed upstream type now makes *unused* (tsgo errors on an unused directive, so it must be deleted). Find them via the type-check.
 
-**Step 6: Gate.** Local `/ci` (lint, type, **full test**, syncpack, drift, …) **plus the standalone build** — the unit/type gates do NOT exercise some failure modes:
+**Step 6: Gate.** The gate is the **full `/ci`** — not a subset. A dep sweep changes `package.json` + templates, so the drift checks `/ci` runs (template-drift, **published-symbols**, security-headers, railway-watch, schema-drift, oauth-helper, test-discipline) and `lint` are exactly the ones that catch sweep mistakes. Run `/ci` (lint, type, **full test**, syncpack, all drift checks), **plus** the two things `/ci` does NOT cover:
 ```bash
-bun run type && bun x syncpack lint && bun run test
-bun install --frozen-lockfile                                   # must say "no changes"
+# 1. frozen-lockfile parity (CI-only failure #1) — must say "no changes"
+bun install --frozen-lockfile
+# 2. the standalone Turbopack build (CI-only failure #2) — /ci doesn't build the example
 rm -rf examples/nextjs-standalone/.next
-bun run --filter '@atlas/nextjs-standalone' build               # ← CI-only failure #2 lives here
+bun run --filter '@atlas/nextjs-standalone' build
 ```
-Then `/ci` for the full remote-parity gate, `/pr` to open the PR, wait for **CodeRabbit + Codex** (never merge before the bots), squash-merge, `/reset`.
+For fast iteration before the final `/ci`, `cd packages/api && bun run scripts/test-isolated.ts --affected` (not the full suite). Then `/pr` to open the PR, wait for **CodeRabbit + Codex** (never merge before the bots), squash-merge, `/reset`.
 
 ---
 
 ## Group B — major bumps (one PR each, security-first)
+
+> **Coverage gap to own:** the Step-2 EXCLUDE drops each Group B package **entirely** from the within-major sweep — including its *safe within-major* patches. So a patch/minor security fix for a held package (e.g. `stripe`, `@vercel/sandbox`) is picked up by **neither** group by default. Mitigation: (a) every Group B PR should bump to the **latest within-major** as its baseline even when you're not yet ready for the major, and (b) treat a within-major security advisory on a held package as its own fast-track PR — don't wait for the major. When you do take a package's major, drop it from EXCLUDE so the sweep covers it again.
 
 Sequence by blast radius, not alphabetically:
 

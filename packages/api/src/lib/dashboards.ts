@@ -20,8 +20,10 @@ import type {
   DashboardCardLayout,
   DashboardWithCards,
   DashboardChartConfig,
+  DashboardParameter,
 } from "@atlas/api/lib/dashboard-types";
 import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
+import { dashboardParametersSchema } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
@@ -53,6 +55,28 @@ export const CardLayoutSchema = z.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse the `dashboards.parameters` JSONB into validated definitions. A
+ * malformed row degrades to `[]` with a logged warning rather than throwing —
+ * a single bad row should not 500 the whole dashboard fetch (mirrors the
+ * chart_config / layout handling in `rowToCard`).
+ */
+function parseParameters(raw: unknown, dashboardId: unknown): DashboardParameter[] {
+  if (raw == null) return [];
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const parsed = dashboardParametersSchema.safeParse(value);
+    if (parsed.success) return parsed.data as DashboardParameter[];
+    log.warn(
+      { dashboardId, issues: parsed.error.issues },
+      "Discarding malformed dashboards.parameters JSONB",
+    );
+  } catch (err) {
+    log.warn({ dashboardId, err: errorMessage(err) }, "Failed to parse parameters JSONB");
+  }
+  return [];
+}
+
 function rowToDashboard(r: Record<string, unknown>): Dashboard {
   return {
     id: r.id as string,
@@ -66,6 +90,7 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
     refreshSchedule: (r.refresh_schedule as string) ?? null,
     lastRefreshAt: r.last_refresh_at ? String(r.last_refresh_at) : null,
     nextRefreshAt: r.next_refresh_at ? String(r.next_refresh_at) : null,
+    parameters: parseParameters(r.parameters, r.id),
     cardCount: typeof r.card_count === "number" ? r.card_count : (typeof r.card_count === "string" ? parseInt(r.card_count, 10) : 0),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -247,14 +272,22 @@ export async function createDashboard(opts: {
   orgId?: string | null;
   title: string;
   description?: string | null;
+  /** Top-level parameter definitions (#2267). Cards bind to them via `:<key>`. */
+  parameters?: DashboardParameter[] | null;
 }): Promise<CrudDataResult<Dashboard>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboards (owner_id, org_id, title, description)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO dashboards (owner_id, org_id, title, description, parameters)
+       VALUES ($1, $2, $3, $4, $5::jsonb)
        RETURNING *, 0 AS card_count`,
-      [opts.ownerId, opts.orgId ?? null, opts.title, opts.description ?? null],
+      [
+        opts.ownerId,
+        opts.orgId ?? null,
+        opts.title,
+        opts.description ?? null,
+        JSON.stringify(opts.parameters ?? []),
+      ],
     );
     if (rows.length === 0) return { ok: false, reason: "error" };
     return { ok: true, data: rowToDashboard(rows[0]) };
@@ -349,6 +382,8 @@ export async function updateDashboard(
     title?: string;
     description?: string | null;
     refreshSchedule?: string | null;
+    /** Replace the dashboard's parameter definitions (#2267). */
+    parameters?: DashboardParameter[];
   },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -368,6 +403,10 @@ export async function updateDashboard(
   if (updates.refreshSchedule !== undefined) {
     setClauses.push(`refresh_schedule = $${paramIdx++}`);
     params.push(updates.refreshSchedule);
+  }
+  if (updates.parameters !== undefined) {
+    setClauses.push(`parameters = $${paramIdx++}::jsonb`);
+    params.push(JSON.stringify(updates.parameters));
   }
 
   if (setClauses.length === 0) return { ok: true };
@@ -841,6 +880,12 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
 }> {
   const { connections } = await import("@atlas/api/lib/db/connection");
   const { validateSQL } = await import("@atlas/api/lib/tools/sql");
+  const {
+    resolveDashboardParameterValues,
+    bindDashboardParameters,
+    extractPlaceholderNames,
+    isBindableDbType,
+  } = await import("@atlas/api/lib/dashboard-parameters");
 
   // Fetch dashboard with cards (unscoped — scheduler runs across all orgs;
   // SQL is re-validated before execution, connections come from stored card data)
@@ -852,6 +897,20 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
 
   const cards = dashResult.data.cards;
   const dashboardOrgId = dashResult.data.orgId ?? null;
+  // Auto-refresh renders the cached snapshot with the parameters' DEFAULT
+  // values (#2267) — there's no interactive viewer to supply overrides. A
+  // malformed default (e.g. an unparseable relative-date) degrades to no
+  // parameter values; cards that reference a placeholder then fail bind +
+  // skip (logged below) rather than executing an unbound query.
+  let defaultParamValues: Record<string, string | number | null> = {};
+  try {
+    defaultParamValues = resolveDashboardParameterValues(dashResult.data.parameters, undefined);
+  } catch (err) {
+    log.warn(
+      { dashboardId, err: errorMessage(err) },
+      "Auto-refresh: failed to resolve default parameter values",
+    );
+  }
   let refreshed = 0;
   let failed = 0;
 
@@ -880,7 +939,40 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
         : resolvedConnectionId
           ? connections.get(resolvedConnectionId)
           : connections.getDefault();
-      const queryResult = await db.query(card.sql, 30000);
+
+      // Bind dashboard parameters (#2267): rewrite `:<key>` → positional binds
+      // and pass the resolved DEFAULT values through the driver bind protocol.
+      // Non-parameterized cards run unchanged.
+      let execSql = card.sql;
+      let bindValues: unknown[] | undefined;
+      if (extractPlaceholderNames(card.sql).length > 0) {
+        let dbType: string | null = null;
+        try {
+          dbType = connections.getDBType(resolvedConnectionId ?? "default", dashboardOrgId ?? undefined);
+        } catch (dbTypeErr) {
+          // Surface the real failure — never silently coerce to "" and emit a
+          // misleading "non-PostgreSQL/MySQL" warning (CLAUDE.md "never
+          // silently swallow errors").
+          log.warn(
+            { cardId: card.id, connectionId: resolvedConnectionId ?? "default", err: errorMessage(dbTypeErr) },
+            "Auto-refresh: could not resolve datasource type for a parameterized card — skipping",
+          );
+          failed++;
+          continue;
+        }
+        if (!isBindableDbType(dbType)) {
+          log.warn(
+            { cardId: card.id, dbType },
+            "Auto-refresh: parameterized card on a non-PostgreSQL/MySQL datasource — skipping",
+          );
+          failed++;
+          continue;
+        }
+        const bound = bindDashboardParameters(card.sql, defaultParamValues, dbType);
+        execSql = bound.sql;
+        bindValues = bound.values;
+      }
+      const queryResult = await db.query(execSql, 30000, bindValues);
       const result = await refreshCard(card.id, dashboardId, {
         columns: queryResult.columns,
         rows: queryResult.rows as Record<string, unknown>[],

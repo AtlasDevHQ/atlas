@@ -256,6 +256,73 @@ describe("createDashboard tool", () => {
     // Baseline is empty (no published cards yet).
     const baseline = JSON.parse(draftParams[3] as string);
     expect(baseline.cards).toEqual([]);
+    // No parameters declared → INSERT persists an empty array (#2267).
+    expect(JSON.parse(dashParams[4] as string)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------
+  // Parameters (#2267)
+  // -------------------------------------------------------------------
+
+  it("persists declared parameters and accepts cards that reference them", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      {
+        rows: [
+          { id: "dash-p", title: "Signups", description: null, updated_at: "2026-05-17T12:00:00Z" },
+        ],
+      }, // INSERT dashboards RETURNING
+      { rows: [] }, // INSERT dashboard_user_drafts
+      { rows: [] }, // COMMIT
+    );
+
+    const result = await run({
+      title: "Signups",
+      parameters: [
+        { key: "date_from", type: "date", default: "now - 30 days", label: "From" },
+        { key: "date_to", type: "date", default: "now", label: "To" },
+      ],
+      cards: [
+        {
+          title: "Weekly signups",
+          sql: "SELECT day, COUNT(*) AS n FROM signups WHERE created_at >= :date_from AND created_at < :date_to GROUP BY day",
+          chartConfig: { type: "line", categoryColumn: "day", valueColumns: ["n"] },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    // The dashboard INSERT carries the parameter definitions.
+    const dashParams = clientQueryCalls[1].params!;
+    const persisted = JSON.parse(dashParams[4] as string);
+    expect(persisted).toHaveLength(2);
+    expect(persisted[0]).toMatchObject({ key: "date_from", type: "date" });
+    expect(persisted[1]).toMatchObject({ key: "date_to", type: "date" });
+  });
+
+  it("rejects a card that references an undeclared parameter (no transaction)", async () => {
+    enableInternalDB();
+
+    const result = await run({
+      title: "Signups",
+      // No `date_from` declared.
+      cards: [
+        {
+          title: "Weekly signups",
+          sql: "SELECT day, COUNT(*) AS n FROM signups WHERE created_at >= :date_from GROUP BY day",
+          chartConfig: { type: "line", categoryColumn: "day", valueColumns: ["n"] },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("err");
+    if (result.kind === "err") {
+      expect(result.error).toMatch(/:date_from/);
+      expect(result.validationErrors?.[0]?.cardTitle).toBe("Weekly signups");
+    }
+    // Rejected before opening a transaction — no client checked out.
+    expect(connectCalls).toBe(0);
   });
 
   it("passes connectionId to validateSQL for each card", async () => {

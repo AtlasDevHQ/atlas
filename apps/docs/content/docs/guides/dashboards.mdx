@@ -58,6 +58,57 @@ Single-environment workspaces don't see the picker — cards run against the wor
 
 ---
 
+## Parameters
+
+A static dashboard ages: "signups over the last 4 weeks" means "the 4 weeks as of when the SQL was written." **Parameters** fix this — they give a dashboard a top-level filter bar (a date range, a region, a segment) that every card binds to, so the same dashboard stays useful for months.
+
+### How it works
+
+A dashboard declares a list of parameters. Each card's SQL references them with `:<key>` placeholders:
+
+```sql
+SELECT date_trunc('week', created_at) AS week, COUNT(*) AS signups
+FROM signups
+WHERE created_at >= :date_from AND created_at < :date_to
+GROUP BY week
+ORDER BY week
+```
+
+A parameter definition is `{ key, type, default, label }`:
+
+| Field | Description |
+|-------|-------------|
+| `key` | Placeholder name — referenced in SQL as `:<key>`. Lower-snake identifier (`date_from`, `region`). |
+| `type` | `date`, `text`, or `number`. Drives the control in the bar and the value coercion. |
+| `default` | Value used when the viewer hasn't picked one. For `date`, an ISO date (`2026-01-01`) or a relative expression (`now`, `now - 30 days`, `now - 1 month`). For `text`/`number`, a literal. `null` for none. |
+| `label` | Shown above the control in the parameter bar. |
+
+The parameter bar renders above the grid. Changing any control re-renders **every card** with the new values; the URL carries the selection (`?dparams=...`) so a shared or bookmarked link reproduces the exact view. Clearing the bar (**Reset**) returns to the cached snapshot, which is rendered with the parameters' defaults.
+
+<Callout type="warn" title="Values are bound, never interpolated">
+Parameter values are substituted **server-side at execution time through parameterized queries** — the `:<key>` placeholder is rewritten to the driver's positional bind (`$1` on PostgreSQL, `?` on MySQL) and the value travels through the driver's bind protocol, never concatenated into the SQL text. The query still runs through the full Atlas pipeline (SELECT-only, AST-validated, table-whitelisted), so the injection surface stays closed. Parameter binding is supported on PostgreSQL and MySQL datasources.
+</Callout>
+
+### From chat
+
+Ask the agent to build a parameterized dashboard and it declares the parameters for you:
+
+> "Build a signups dashboard with a date range filter, defaulting to the last 30 days."
+
+The `createDashboard` tool accepts a `parameters` array and writes cards that reference `:date_from` / `:date_to` instead of hardcoding dates. Every `:placeholder` a card uses must be declared — the tool rejects a card that references an undeclared parameter.
+
+### Rendering with parameters (API)
+
+`POST /api/v1/dashboards/:id/cards/:cardId/render` executes a single card with supplied values and returns the rows **without** persisting them — it's the ephemeral, per-viewer render the bar uses:
+
+```json
+{ "parameters": { "date_from": "2026-01-01", "date_to": "2026-02-01" } }
+```
+
+Omitted parameters fall back to their defaults. Invalid values (a malformed date, a non-numeric number) are rejected with `400 invalid_parameters` before any SQL runs. The persisted card cache (shown on load and used by **Refresh**) is always rendered with the parameters' defaults.
+
+---
+
 ## Refreshing Data
 
 Cards store cached results. To update them:
@@ -138,12 +189,13 @@ All dashboard operations are available via the REST API:
 | `GET /api/v1/dashboards` | List dashboards |
 | `POST /api/v1/dashboards` | Create a dashboard |
 | `GET /api/v1/dashboards/:id` | Get dashboard with cards |
-| `PATCH /api/v1/dashboards/:id` | Update title, description, or schedule |
+| `PATCH /api/v1/dashboards/:id` | Update title, description, schedule, or parameters |
 | `DELETE /api/v1/dashboards/:id` | Delete a dashboard |
 | `POST /api/v1/dashboards/:id/cards` | Add a card |
 | `PATCH /api/v1/dashboards/:id/cards/:cardId` | Update card title or position |
 | `DELETE /api/v1/dashboards/:id/cards/:cardId` | Remove a card |
-| `POST /api/v1/dashboards/:id/cards/:cardId/refresh` | Refresh a single card |
+| `POST /api/v1/dashboards/:id/cards/:cardId/refresh` | Refresh a single card (persists; uses parameter defaults) |
+| `POST /api/v1/dashboards/:id/cards/:cardId/render` | Render a card with supplied parameter values (ephemeral) |
 | `POST /api/v1/dashboards/:id/refresh` | Refresh all cards |
 | `POST /api/v1/dashboards/:id/suggest` | Get AI card suggestions |
 | `POST /api/v1/dashboards/:id/share` | Generate share link |

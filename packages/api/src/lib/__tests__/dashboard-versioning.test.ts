@@ -83,6 +83,7 @@ function dashboardWithCards(
     refreshSchedule: null,
     lastRefreshAt: null,
     nextRefreshAt: null,
+    parameters: [],
     createdAt: "2026-05-17T00:00:00.000Z",
     updatedAt: "2026-05-17T00:00:00.000Z",
     cards: cards.map((c) => ({

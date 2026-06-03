@@ -1673,6 +1673,10 @@ export const dashboards = pgTable(
     refreshSchedule: text("refresh_schedule"),
     lastRefreshAt: timestamp("last_refresh_at", { withTimezone: true }),
     nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true }),
+    // Parameters (#2267) — JSONB array of definitions [{ key, type, default,
+    // label }]; cards bind to them via `:<key>`. See
+    // 0116_dashboard_parameters.sql + lib/dashboard-parameters.ts.
+    parameters: jsonb("parameters").notNull().default(sql`'[]'`),
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

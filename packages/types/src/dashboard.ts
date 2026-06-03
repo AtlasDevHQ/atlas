@@ -13,6 +13,42 @@ export interface DashboardChartConfig {
   valueColumns: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Dashboard parameters (#2267 — parameters slice)
+//
+// A dashboard exposes a set of named parameters (a date range, a region
+// filter, …) that every card's SQL can reference via `:<key>` placeholders
+// (e.g. `:date_from`, `:date_to`, `:region`). At execution time the value is
+// substituted server-side through a PARAMETERIZED query — bound, never
+// string-concatenated — so the SQL injection surface stays closed.
+//
+// The runtime Zod validation for these shapes lives in `@useatlas/schemas`
+// (`dashboardParameterSchema`); these are the wire-type mirrors. The value
+// enum is intentionally NOT exported from this package — adding a new value
+// export here trips the scaffold publish-symbol gate before the npm release.
+// ---------------------------------------------------------------------------
+
+/** Supported parameter value kinds. Drives the control rendered in the bar
+ *  and the server-side coercion of incoming values + relative-date defaults. */
+export type DashboardParameterType = "date" | "text" | "number";
+
+export interface DashboardParameter {
+  /** Placeholder name. Referenced in card SQL as `:<key>` (e.g. `date_from`
+   *  → `:date_from`). Lower-snake identifier: `^[a-z_][a-z0-9_]*$`. */
+  key: string;
+  type: DashboardParameterType;
+  /**
+   * Default value used when the viewer hasn't supplied one (initial load,
+   * cached snapshot refresh, scheduler). For `date`, either an ISO date
+   * (`YYYY-MM-DD`) or a relative expression resolved server-side
+   * (`now`, `now - 30 days`, `now - 3 months`, …) — never passed to SQL as
+   * text. For `text` / `number`, a literal. `null` means "no default".
+   */
+  default: string | number | null;
+  /** Human label shown above the control in the parameter bar. */
+  label: string;
+}
+
 /** NULL on a card means not yet placed — client auto-lays out by `position`. */
 export interface DashboardCardLayout {
   x: number;
@@ -37,6 +73,9 @@ export interface Dashboard {
   refreshSchedule: string | null;
   lastRefreshAt: string | null;
   nextRefreshAt: string | null;
+  /** Top-level parameters every card can bind to via `:<key>` placeholders.
+   *  Empty array when the dashboard has no parameters. */
+  parameters: DashboardParameter[];
   cardCount: number;
   createdAt: string;
   updatedAt: string;
@@ -93,6 +132,8 @@ export interface ProposedCard {
 export interface ProposedDashboardSpec {
   title: string;
   description?: string;
+  /** Optional parameters the proposed cards bind to via `:<key>` placeholders. */
+  parameters?: DashboardParameter[];
   cards: ProposedCard[];
 }
 
@@ -118,6 +159,20 @@ export interface PreviewCardResponse {
   rowCount: number;
   executionMs: number;
 }
+
+/**
+ * Request body for POST /api/v1/dashboards/:id/cards/:cardId/render — the
+ * view-time, parameter-aware execution of a saved card. Values are keyed by
+ * parameter key (`{ date_from: "2026-01-01", region: "us" }`); omitted keys
+ * fall back to the parameter's server-resolved default. The result is NOT
+ * persisted to the card cache — it's an ephemeral, per-viewer render.
+ */
+export interface RenderCardRequest {
+  parameters?: Record<string, string | number | null>;
+}
+
+/** Wire shape returned by the card render endpoint (mirrors {@link PreviewCardResponse}). */
+export type RenderCardResponse = PreviewCardResponse;
 
 /**
  * Per-user destructive-op staging (#2365, PRD #2362).

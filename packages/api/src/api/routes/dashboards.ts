@@ -57,6 +57,8 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
+import { dashboardParametersSchema, renderCardRequestSchema } from "@useatlas/schemas";
+import { resolveDashboardParameterValues, extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import { validationHook } from "./validation-hook";
@@ -85,12 +87,16 @@ const ChartConfigSchema = z.object({
 const CreateDashboardSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(2000).nullable().optional(),
+  /** Top-level parameter definitions (#2267) — cards bind via `:<key>`. */
+  parameters: dashboardParametersSchema.optional(),
 });
 
 const UpdateDashboardSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   description: z.string().max(2000).nullable().optional(),
   refreshSchedule: z.string().nullable().optional(),
+  /** Replace the dashboard's parameter definitions (#2267). */
+  parameters: dashboardParametersSchema.optional(),
 });
 
 const AddCardSchema = z.object({
@@ -706,6 +712,33 @@ const refreshCardRoute = createRoute({
   },
 });
 
+const renderCardRoute = createRoute({
+  method: "post",
+  path: "/{id}/cards/{cardId}/render",
+  tags: ["Dashboards"],
+  summary: "Render a card with parameters",
+  description:
+    "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. Requires admin role.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+      cardId: z.string().openapi({ param: { name: "cardId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+    body: { content: { "application/json": { schema: renderCardRequestSchema } } },
+  },
+  responses: {
+    200: { description: "Rendered rows for the supplied parameters", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID/parameters, SQL validation failure, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Approval required before execution", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate or concurrency limit", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Connection or approval system unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const refreshAllCardsRoute = createRoute({
   method: "post",
   path: "/{id}/refresh",
@@ -931,6 +964,7 @@ authed.openapi(
         orgId,
         title: parsed.title,
         description: parsed.description ?? null,
+        parameters: parsed.parameters ?? null,
       }));
 
       if (!result.ok) {
@@ -1424,6 +1458,36 @@ authed.openapi(
 
       const parsed = c.req.valid("json");
 
+      // Reject a parameter replacement that orphans a placeholder still
+      // referenced by an existing card (#2267, CodeRabbit). Otherwise the
+      // PATCH saves cleanly but the next render/refresh fails with an
+      // undeclared-parameter error. Validate against the published cards —
+      // the set that render/refresh actually execute.
+      if (parsed.parameters !== undefined) {
+        const existing = yield* Effect.promise(() => getDashboard(id, { orgId }));
+        if (existing.ok) {
+          const declared = new Set(parsed.parameters.map((p) => p.key));
+          const orphaned = new Set<string>();
+          for (const card of existing.data.cards) {
+            for (const name of extractPlaceholderNames(card.sql)) {
+              if (!declared.has(name)) orphaned.add(name);
+            }
+          }
+          if (orphaned.size > 0) {
+            return c.json(
+              {
+                error: "invalid_parameters",
+                message: `Cannot remove parameter(s) still referenced by cards: ${[...orphaned]
+                  .map((n) => `:${n}`)
+                  .join(", ")}. Update or remove those cards first.`,
+                requestId,
+              },
+              400,
+            );
+          }
+        }
+      }
+
       // Handle refreshSchedule separately (needs cron validation + next_refresh_at)
       if (parsed.refreshSchedule !== undefined) {
         if (parsed.refreshSchedule) {
@@ -1706,12 +1770,30 @@ authed.openapi(refreshCardRoute, async (c) => {
       }
       throw err;
     }
+    // The cached snapshot is rendered with the parameters' DEFAULT values
+    // (#2267) — interactive overrides go through the /render endpoint and are
+    // never persisted to the shared cache.
+    let defaultParamValues: Record<string, string | number | null>;
+    try {
+      defaultParamValues = resolveDashboardParameterValues(dash.data.parameters, undefined);
+    } catch (err) {
+      return c.json(
+        {
+          error: "invalid_parameters",
+          message: err instanceof Error ? err.message : "Invalid dashboard parameters.",
+          requestId,
+        },
+        400,
+      );
+    }
+
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const outcome = yield* Effect.promise(() =>
       runUserQueryPipeline({
         sql: cardResult.data.sql,
         ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
         explanation: `Dashboard card refresh: ${cardResult.data.title}`,
+        parameters: defaultParamValues,
       }),
     );
 
@@ -1736,6 +1818,91 @@ authed.openapi(refreshCardRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /:id/cards/:cardId/render — render a card with parameter values (#2267)
+//
+// View-time, parameter-aware execution. Resolves the supplied values (falling
+// back to per-parameter defaults) against the dashboard's declared parameters,
+// binds them server-side through the SQL pipeline, and returns the rows
+// WITHOUT touching the persisted card cache.
+// ---------------------------------------------------------------------------
+
+authed.openapi(renderCardRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+    const { id, cardId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
+      return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
+    }
+    const { parameters: suppliedParameters } = c.req.valid("json");
+
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+
+    const cardResult = yield* Effect.promise(() => getCard(cardId, id));
+    if (!cardResult.ok) {
+      return c.json({ error: "not_found", message: "Card not found." }, 404);
+    }
+
+    // Resolve + coerce the viewer's values against the declared parameters.
+    // Bad values (wrong type, unparseable default) fail closed with a 400 —
+    // they never reach SQL.
+    let paramValues: Record<string, string | number | null>;
+    try {
+      paramValues = resolveDashboardParameterValues(dash.data.parameters, suppliedParameters);
+    } catch (err) {
+      return c.json(
+        {
+          error: "invalid_parameters",
+          message: err instanceof Error ? err.message : "Invalid dashboard parameters.",
+          requestId,
+        },
+        400,
+      );
+    }
+
+    let resolvedConnectionId: string | null;
+    try {
+      resolvedConnectionId = yield* Effect.promise(() =>
+        resolveCardConnectionId(
+          { connectionGroupId: cardResult.data.connectionGroupId },
+          dash.data.orgId,
+        ),
+      );
+    } catch (err) {
+      if (err instanceof NoGroupMembersError) {
+        log.warn({ cardId, groupId: err.groupId, orgId: err.orgId, requestId }, "Card render: group has no members");
+        return c.json(
+          {
+            error: "group_no_members",
+            message: `Connection group "${err.groupId}" has no members. Add a connection or repoint the card.`,
+            requestId,
+          },
+          500,
+        );
+      }
+      throw err;
+    }
+
+    const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const outcome = yield* Effect.promise(() =>
+      runUserQueryPipeline({
+        sql: cardResult.data.sql,
+        ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
+        explanation: `Dashboard card render: ${cardResult.data.title}`,
+        parameters: paramValues,
+      }),
+    );
+
+    const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
+    return c.json(body as never, status);
+  }), { label: "render card" });
+});
+
+// ---------------------------------------------------------------------------
 // POST /:id/refresh — refresh all cards
 // ---------------------------------------------------------------------------
 
@@ -1752,6 +1919,23 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     if (!dashResult.ok) {
       const fail = crudFailResponse(dashResult.reason, requestId);
       return c.json(fail.body, fail.status);
+    }
+
+    // Bulk refresh persists each card's snapshot with the parameters' DEFAULT
+    // values (#2267). A malformed default fails the whole refresh up front
+    // rather than per-card.
+    let defaultParamValues: Record<string, string | number | null>;
+    try {
+      defaultParamValues = resolveDashboardParameterValues(dashResult.data.parameters, undefined);
+    } catch (err) {
+      return c.json(
+        {
+          error: "invalid_parameters",
+          message: err instanceof Error ? err.message : "Invalid dashboard parameters.",
+          requestId,
+        },
+        400,
+      );
     }
 
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
@@ -1794,6 +1978,7 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
           sql: card.sql,
           ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
           explanation: `Dashboard bulk refresh: ${card.title}`,
+          parameters: defaultParamValues,
         }),
       );
 

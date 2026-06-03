@@ -153,7 +153,8 @@ describe("refreshDashboardCards org-scoped pool selection", () => {
     expect(mockGetForOrg).toHaveBeenCalledWith("org-1", "warehouse");
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockGetDefault).not.toHaveBeenCalled();
-    expect(mockOrgQuery).toHaveBeenCalledWith("SELECT 1 AS total", 30000);
+    // Non-parameterized card → no bind values (#2267 added the optional 3rd arg).
+    expect(mockOrgQuery).toHaveBeenCalledWith("SELECT 1 AS total", 30000, undefined);
   });
 
   it("uses the org default pool for org-scoped cards without a connection group", async () => {

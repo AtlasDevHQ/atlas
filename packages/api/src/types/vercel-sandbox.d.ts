@@ -21,6 +21,20 @@
  *    `tools/backends/network-allowlist.ts` is preserved verbatim. The `@deprecated`
  *    tag is intentionally NOT mirrored here. Migrating to `.update()` is a
  *    tracked follow-up.
+ *
+ * v2 ergonomics adopted in #3126 (only the members actually used are added):
+ *  - `readFileToBuffer({ path })` reads a file off the sandbox FS as a `Buffer`
+ *    (or `null` if missing) — `tools/python-sandbox.ts` uses it to read the
+ *    structured result + chart PNGs directly, replacing the stdout result-marker.
+ *  - `fs` exposes a `node:fs/promises`-compatible surface; only `readdir`
+ *    (listing chart PNGs) is mirrored. `downloadFile` and the rest of `fs` are
+ *    intentionally omitted — Atlas does not use them.
+ *
+ * `tools/explore-sandbox.ts` and the `@useatlas/vercel-sandbox` plugin replace
+ * their hand-rolled try/finally + stop() with `AsyncDisposableStack` (a JS
+ * runtime feature, not an SDK type), adopting the sandbox with an explicit
+ * stop() disposer — so the create return is NOT required to be `AsyncDisposable`
+ * and that member is intentionally not mirrored here.
  */
 declare module "@vercel/sandbox" {
   interface SandboxCreateOptions {
@@ -69,6 +83,19 @@ declare module "@vercel/sandbox" {
     stderr(): Promise<string>;
   }
 
+  /**
+   * Subset of the v2 `node:fs/promises`-compatible filesystem surface
+   * (`sandbox.fs`). Only `readdir` is mirrored — `python-sandbox.ts` uses it to
+   * list the chart PNGs written by user code. The `withFileTypes: false`
+   * overload (plain string names) is all Atlas needs.
+   */
+  interface SandboxFileSystem {
+    readdir(
+      path: string,
+      options?: { signal?: AbortSignal; withFileTypes?: false }
+    ): Promise<string[]>;
+  }
+
   /** A transform applied to network requests matching a domain rule. */
   type NetworkTransformer = { headers?: Record<string, string> };
 
@@ -104,6 +131,20 @@ declare module "@vercel/sandbox" {
       args?: string[],
       opts?: { signal?: AbortSignal }
     ): Promise<CommandFinished>;
+    /**
+     * `node:fs/promises`-compatible filesystem surface. Atlas only uses
+     * `fs.readdir` (to list chart PNGs in `python-sandbox.ts`).
+     */
+    readonly fs: SandboxFileSystem;
+    /**
+     * Read a file off the sandbox FS as a `Buffer`, or `null` if it does not
+     * exist. `python-sandbox.ts` reads the structured result file + chart PNGs
+     * with this, replacing the stdout result-marker.
+     */
+    readFileToBuffer(
+      file: { path: string; cwd?: string },
+      opts?: { signal?: AbortSignal }
+    ): Promise<Buffer | null>;
     // v2 resolves to the applied NetworkPolicy; Atlas ignores the return.
     updateNetworkPolicy(policy: NetworkPolicyUpdate): Promise<unknown>;
     // v2 resolves to session/snapshot metadata (not the Sandbox); ignored.

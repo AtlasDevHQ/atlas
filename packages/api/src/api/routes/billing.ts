@@ -12,6 +12,7 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
+import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -468,7 +469,7 @@ billing.openapi(createPortalSessionRoute, async (c) => {
 
     // Non-null: guarded by the !workspace?.stripe_customer_id check above
     const customerId = workspace.stripe_customer_id!;
-    const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
+    const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: STRIPE_API_VERSION });
     const session = yield* Effect.promise(() => stripeClient.billingPortal.sessions.create({
       customer: customerId,
       return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",

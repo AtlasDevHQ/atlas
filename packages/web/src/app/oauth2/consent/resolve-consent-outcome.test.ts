@@ -39,6 +39,22 @@ describe("resolveConsentOutcome — error / empty", () => {
     expect(out).toMatchObject({ message: "Consent failed." });
   });
 
+  it("treats an empty/whitespace-only error message as missing (no blank UI error)", () => {
+    expect(resolveConsentOutcome({ error: { message: "" } })).toEqual({
+      kind: "error",
+      message: "Consent failed.",
+    });
+    expect(resolveConsentOutcome({ error: { message: "   " } })).toEqual({
+      kind: "error",
+      message: "Consent failed.",
+    });
+  });
+
+  it("trims surrounding whitespace from a real error message", () => {
+    const out = resolveConsentOutcome({ error: { message: "  client disabled  " } });
+    expect(out).toEqual({ kind: "error", message: "client disabled" });
+  });
+
   it("returns a 'no redirect' error when data is present but `url` is missing", () => {
     const out = resolveConsentOutcome({ data: { redirect: true } });
     expect(out.kind).toBe("error");

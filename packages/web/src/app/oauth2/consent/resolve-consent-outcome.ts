@@ -27,9 +27,12 @@ export type ConsentOutcome =
 export function resolveConsentOutcome(
   res: ConsentResponse | undefined,
 ): ConsentOutcome {
-  // Error envelope wins over a (possibly partial) data payload.
+  // Error envelope wins over a (possibly partial) data payload. Trim the
+  // server message and treat empty/whitespace-only as missing so a blank
+  // string never renders as an empty error in the UI.
   if (res?.error) {
-    return { kind: "error", message: res.error.message ?? "Consent failed." };
+    const message = res.error.message?.trim();
+    return { kind: "error", message: message || "Consent failed." };
   }
   // Read `.url` — the real redirect target on `@better-auth/oauth-provider`.
   const url = res?.data?.url;

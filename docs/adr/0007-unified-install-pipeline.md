@@ -125,6 +125,49 @@ ADR-0002 declared "`atlas.config.ts` is the canonical authoring surface; on each
 
 This ADR partially supersedes it for Datasources: built-in catalog rows for Datasources (Postgres, MySQL, …) are seeded by Atlas code itself at boot, not by `atlas.config.ts`. ADR-0002's principle remains accurate for eager plugins (chat) and operator-specific catalog entries; the "config is authoritative" claim is now narrowed to "for everything except built-in Atlas datasources." A status note on ADR-0002 cross-references here.
 
+## Addendum (2026-06-03) — static-bot routing-identifier install route shape (#3140)
+
+The four form-shaped static-bot chat platforms (Telegram `chat_id`, Teams
+`tenant_id`, Google Chat `workspace_id`, WhatsApp `phone_number_id`) capture a
+**routing identifier** the admin types into a form — there is no OAuth dance and
+no per-workspace credential (the bot is operator-shared via env-var tokens; the
+routing id is non-secret and persisted to `workspace_plugins.config`, which the
+chat runtime reads at message time). `StaticBotInstallHandler.confirmInstall`
+already owns the cap-counted `workspace_plugins(pillar='chat')` write, but the
+only live route wired to it was Discord's OAuth-shaped redirect
+(`integrations-discord.ts`). These four had no live install route at all after
+#3146 disabled the legacy cap-bypassing connect routes.
+
+**Decision: extend the existing `POST /{platform}/install-form` route to accept
+`install_model = "static-bot"`, rather than add a parallel dedicated static-bot
+route.** A routing-identifier capture *is* a non-OAuth form submit, so it shares
+that route's entire scaffold — admin-auth preamble, F-04 SaaS-mode=none guard,
+`enabled = true` catalog lookup, the `min_plan` plan-tier gate, and `runHandler`'s
+tagged-error→HTTP mapping. The route resolves the routing-identifier field from
+the catalog `config_schema` (the first `required` string field) and forwards its
+value to `confirmInstall` positionally, passing the remaining submitted fields as
+`extras`; the cap gate stays on the **single advisory-locked insert path** inside
+`confirmInstall` (`checkChatIntegrationLimitAndInstall`) — the route adds no
+second write path. A dedicated route was rejected: it would duplicate ~150 lines
+of that preamble/gate scaffold for no behavioural difference.
+
+**OAuth-shaped static-bots are refused on this route.** A handler whose optional
+`applicationId` is populated (Discord) captures its routing identifier through an
+OAuth bot-install redirect, which *proves the admin's workspace controls the
+target*. Accepting a directly-typed `guild_id` here would skip that ownership
+proof (`confirmInstall`'s reachability check confirms the bot is a member, not
+that the caller owns the guild), so the route returns 400 `oauth_shaped_static_bot`
+and points the caller at the platform's install endpoint. The `applicationId`
+discriminator on `StaticBotInstallHandler` is exactly the typed contract for this
+narrow.
+
+This issue (#3140) wires the **generic spine only** — route + admin form + the
+cap-gate seam. Per-platform enablement (flipping `implementation_status` off
+`coming_soon`, migrating each handler's `confirmInstall` onto
+`checkChatIntegrationLimitAndInstall`, and Teams' missing runtime `executeQuery`
+branch) lands in the per-platform slices #3141–#3144; the dead per-platform
+credential stores are retired in #3145.
+
 ## References
 
 - Three-pillar taxonomy: [ADR-0006](./0006-three-pillar-integration-taxonomy.md)

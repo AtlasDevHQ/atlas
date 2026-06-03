@@ -93,6 +93,7 @@ import {
 import { formatDateTime } from "@/lib/format";
 import { getApiUrl } from "@/lib/api-url";
 import { FormInstallModal } from "./form-install-modal";
+import { StaticBotInstallModal } from "./static-bot-install-modal";
 import { ByotForm, isByotEligibleSlug, type ByotEligibleSlug } from "./byot-form";
 
 // ---------------------------------------------------------------------------
@@ -410,6 +411,25 @@ function resolveDisconnectRoute(
   return { kind: "none" };
 }
 
+/**
+ * Static-bot slugs whose routing identifier the admin types into a form
+ * (#3140). These mirror the API's form-shaped static-bot contract: the bot is
+ * operator-shared and the admin supplies a routing identifier (Telegram
+ * `chat_id`, Teams `tenant_id`, Google Chat `workspace_id`, WhatsApp
+ * `phone_number_id`) that the install route forwards to `confirmInstall`.
+ *
+ * Discord is deliberately excluded: it is also `install_model: "static-bot"`
+ * but captures its routing identifier through an OAuth bot-install redirect
+ * (the API rejects a directly-typed `guild_id` on the form route), so its card
+ * keeps the non-form affordance rather than rendering a routing-id form.
+ */
+const STATIC_BOT_FORM_SLUGS: ReadonlySet<string> = new Set([
+  "telegram",
+  "teams",
+  "gchat",
+  "whatsapp",
+]);
+
 // ---------------------------------------------------------------------------
 // CatalogCard
 // ---------------------------------------------------------------------------
@@ -458,6 +478,11 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
 
   // Form modal open state (form install_model only).
   const [formModalOpen, setFormModalOpen] = useState(false);
+  // Static-bot routing-identifier modal open state (#3140). Only the
+  // form-shaped static-bot slugs (not Discord) capture their routing id here.
+  const [staticBotModalOpen, setStaticBotModalOpen] = useState(false);
+  const isStaticBotForm =
+    entry.installModel === "static-bot" && STATIC_BOT_FORM_SLUGS.has(entry.slug);
   // Driven by whichever disconnect mutation last fired so the inline
   // destructive strip inside the Shell body stays in lockstep with the
   // toast — admin sees the error in two places (toast + persisted strip)
@@ -625,15 +650,31 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           status={status_}
           action={collapsedAction(entry, {
             canByot,
+            isStaticBotForm,
             triggerRef,
             onByotToggle: () => setExpanded(true),
             onFormOpen: () => setFormModalOpen(true),
+            onStaticBotOpen: () => setStaticBotModalOpen(true),
           })}
         />
         {entry.installModel === "form" && (
           <FormInstallModal
             open={formModalOpen}
             onOpenChange={setFormModalOpen}
+            slug={entry.slug}
+            name={entry.name}
+            description={entry.description}
+            configSchema={entry.configSchema}
+            onInstalled={() => {
+              toast.success(`${entry.name} installed`);
+              onChange();
+            }}
+          />
+        )}
+        {isStaticBotForm && (
+          <StaticBotInstallModal
+            open={staticBotModalOpen}
+            onOpenChange={setStaticBotModalOpen}
             slug={entry.slug}
             name={entry.name}
             description={entry.description}
@@ -759,6 +800,20 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
           }}
         />
       )}
+      {isStaticBotForm && (
+        <StaticBotInstallModal
+          open={staticBotModalOpen}
+          onOpenChange={setStaticBotModalOpen}
+          slug={entry.slug}
+          name={entry.name}
+          description={entry.description}
+          configSchema={entry.configSchema}
+          onInstalled={() => {
+            toast.success(`${entry.name} installed`);
+            onChange();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -781,9 +836,16 @@ function installModelDescription(installModel: IntegrationsCatalogEntry["install
 
 interface CollapsedActionOptions {
   readonly canByot: boolean;
+  /**
+   * Whether this is a form-shaped static-bot slug (#3140) — the admin types a
+   * routing identifier into {@link StaticBotInstallModal} rather than running
+   * an OAuth dance. Excludes Discord (OAuth-shaped static-bot).
+   */
+  readonly isStaticBotForm: boolean;
   readonly triggerRef: React.RefObject<HTMLButtonElement | null>;
   readonly onByotToggle: () => void;
   readonly onFormOpen: () => void;
+  readonly onStaticBotOpen: () => void;
 }
 
 /**
@@ -798,7 +860,7 @@ interface CollapsedActionOptions {
  */
 function collapsedAction(
   entry: IntegrationsCatalogEntry,
-  { canByot, triggerRef, onByotToggle, onFormOpen }: CollapsedActionOptions,
+  { canByot, isStaticBotForm, triggerRef, onByotToggle, onFormOpen, onStaticBotOpen }: CollapsedActionOptions,
 ): React.ReactNode {
   // BYOT wins over OAuth Connect for chat slugs where the env vars are
   // missing — see canByot derivation in CatalogCard.
@@ -844,9 +906,26 @@ function collapsedAction(
       </Button>
     );
   }
-  // static-bot without `canByot` — the install handler hasn't shipped for
-  // this slug yet (see `coming_soon` in #2747). Inert disabled button
-  // keeps the card visible without misleading the admin into clicking.
+  // Form-shaped static-bot (#3140 — Telegram / Teams / Google Chat / WhatsApp):
+  // the admin types a routing identifier into StaticBotInstallModal, which
+  // POSTs to the cap-gated /install-form route. Replaces the inert "not yet
+  // shipped" Connect for these slugs.
+  if (isStaticBotForm) {
+    return (
+      <Button
+        size="sm"
+        onClick={onStaticBotOpen}
+        aria-label={`Install ${entry.name}`}
+        data-testid={`catalog-card-${entry.slug}-install`}
+      >
+        Install
+      </Button>
+    );
+  }
+  // Other static-bot (Discord — OAuth-shaped) without `canByot`: its routing
+  // id is captured via an OAuth bot-install redirect, not a typed form, so the
+  // inert disabled button keeps the card visible without a misleading click
+  // target here (Discord installs via its own OAuth endpoint).
   return (
     <Button size="sm" disabled aria-label={`Connect ${entry.name}`}>
       Connect

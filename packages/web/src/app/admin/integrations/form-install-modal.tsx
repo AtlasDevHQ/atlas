@@ -132,7 +132,9 @@ export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
 // needed for our use case). Cast through `unknown` because Zod's
 // generic ZodObject doesn't unify with the loose Record<string,
 // unknown> shape we synthesize from `configSchema`.
-function buildZodSchema(
+// Exported so the static-bot install modal (#3140) builds its form schema
+// from the same `configSchema` rules without duplicating them.
+export function buildZodSchema(
   fields: FormFieldDescriptor[],
 ): z.ZodType<Record<string, unknown>, Record<string, unknown>> {
   const shape: Record<string, z.ZodTypeAny> = {};
@@ -184,7 +186,9 @@ function buildZodSchema(
  * are passed through; `undefined` is treated as "no default" and the
  * input renders blank.
  */
-function buildDefaultValues(fields: FormFieldDescriptor[]): Record<string, unknown> {
+// Exported so the static-bot install modal (#3140) seeds its form from the
+// same `configSchema` defaults.
+export function buildDefaultValues(fields: FormFieldDescriptor[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of fields) {
     if (field.default === undefined) {

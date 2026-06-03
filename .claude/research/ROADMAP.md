@@ -22,7 +22,11 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 
 No tag in flight — the train is between tags. `v0.0.7` was tagged + released 2026-06-03 (a patch rollup — monorepo dependency refresh; see [History](#history)); the next tag's scope firms up as work begins. The **Staging environment** track ([Planned tags](#planned-tags)) continues in parallel, independent of the tag train.
 
-Nothing banked yet since `v0.0.7`.
+Banked since `v0.0.7`:
+
+- [x] Dashboard date-range + filter parameters — a top-level parameter bar binds every card via safe `:param` substitution through the SQL guard (parameterized, never string-interpolated). First slice of the dashboard-primitives gap ([#2267](https://github.com/AtlasDevHQ/atlas/issues/2267)); KPI cards + text blocks remain. ([#3136](https://github.com/AtlasDevHQ/atlas/pull/3136))
+- [x] Eventized CRM outbox flusher — replaced the 5s poll with an edge-triggered kick + retry timers + a low-frequency backstop. ([#2874](https://github.com/AtlasDevHQ/atlas/issues/2874) → [#3134](https://github.com/AtlasDevHQ/atlas/pull/3134))
+- [x] `@vercel/sandbox` v2 ergonomics — adopted `await using` + the v2 `fs` API in the sandbox backends, following the v0.0.7 v1→v2 bump. ([#3126](https://github.com/AtlasDevHQ/atlas/issues/3126) → [#3135](https://github.com/AtlasDevHQ/atlas/pull/3135))
 
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 

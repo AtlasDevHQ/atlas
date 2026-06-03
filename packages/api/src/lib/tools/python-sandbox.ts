@@ -533,12 +533,13 @@ export function createPythonSandboxBackend(
             try: async () => {
               const names = await sandbox.fs.readdir(chartDirAbs);
               const pngs = names.filter((n) => /^chart_.*\.png$/.test(n)).sort();
-              const bufs: Buffer[] = [];
-              for (const name of pngs) {
-                const buf = await sandbox.readFileToBuffer({ path: `${chartDirAbs}/${name}` });
-                if (buf) bufs.push(buf);
-              }
-              return bufs;
+              // Reads are independent — fan out rather than awaiting serially.
+              const bufs = await Promise.all(
+                pngs.map((name) =>
+                  sandbox.readFileToBuffer({ path: `${chartDirAbs}/${name}` }),
+                ),
+              );
+              return bufs.filter((buf): buf is Buffer => buf !== null);
             },
             catch: (err) => {
               const detail = sandboxErrorDetail(err);

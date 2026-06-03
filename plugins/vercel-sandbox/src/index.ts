@@ -206,9 +206,6 @@ interface SandboxInstance {
     exitCode: number;
   }>;
   stop(): Promise<void>;
-  // v2: `Sandbox.create()` returns `Sandbox & AsyncDisposable`, so the instance
-  // is disposable (the disposer calls stop()). Lets us use `await using`.
-  [Symbol.asyncDispose](): Promise<void>;
 }
 
 interface SandboxConstructor {
@@ -254,14 +251,18 @@ async function createVercelExploreBackend(
 
   // v2: stop the sandbox if the setup below throws; on success we `disposer.move()`
   // to disarm so the returned backend's close() owns it. Replaces the hand-rolled
-  // try/catch + stop(). The disposer swallows stop() errors so the original setup
-  // error is the one that surfaces.
+  // try/catch + stop(). A failed cleanup stop() is logged (not swallowed) — the
+  // original setup error still surfaces as the thrown error.
   await using disposer = new AsyncDisposableStack();
   disposer.adopt(sandbox, async (s) => {
     try {
       await s.stop();
-    } catch {
-      // best-effort cleanup — the original setup error is what surfaces
+    } catch (stopErr) {
+      log?.warn(
+        `[vercel-sandbox] Failed to stop sandbox during error cleanup: ${
+          stopErr instanceof Error ? stopErr.message : String(stopErr)
+        }`,
+      );
     }
   });
 
@@ -401,7 +402,25 @@ export function buildVercelSandboxPlugin(
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       const TIMEOUT = 30_000;
+      // NOTE: `await using` is intentionally NOT used here. The Promise.race
+      // timeout can win while the inner IIFE is still mid-create/runCommand, and
+      // the v2 SDK exposes no AbortSignal on the object-form runCommand or on
+      // create — so a scope-bound disposer would only fire once the (possibly
+      // hung) operation settled, leaking the microVM past the timeout. We keep an
+      // explicit sandbox reference and stop() it in every branch instead.
+      let sandbox: SandboxInstance | null = null;
       let timer: ReturnType<typeof setTimeout>;
+      const stopQuietly = async (sb: SandboxInstance) => {
+        try {
+          await sb.stop();
+        } catch (stopErr) {
+          log?.warn(
+            `[vercel-sandbox] Failed to stop health-check sandbox: ${
+              stopErr instanceof Error ? stopErr.message : String(stopErr)
+            }`,
+          );
+        }
+      };
       try {
         const result = await Promise.race([
           (async () => {
@@ -418,18 +437,15 @@ export function buildVercelSandboxPlugin(
               createOpts.teamId = config.teamId;
             }
 
-            // v2: create-and-dispose-in-one-scope. `await using` stops the
-            // sandbox when this scope exits (success, command failure, or
-            // throw), replacing the manual stop() that every branch needed.
-            // If the outer race times out first, disposal still runs once this
-            // scope settles, so the sandbox is never leaked.
-            await using sandbox = await Sandbox.create(createOpts);
+            sandbox = await Sandbox.create(createOpts);
             const res = await sandbox.runCommand({
               cmd: "sh",
               args: ["-c", "echo vercel-ok"],
               cwd: "/tmp",
             });
             const stdout = await res.stdout();
+            await stopQuietly(sandbox);
+            sandbox = null;
 
             if (res.exitCode === 0 && stdout.includes("vercel-ok")) {
               return { healthy: true as const };
@@ -446,10 +462,17 @@ export function buildVercelSandboxPlugin(
 
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
+          // Best-effort cleanup — the IIFE may still be creating if create() is
+          // what's slow. Cast needed: TS narrows `sandbox` to null (the IIFE
+          // ends with sandbox = null) but the race means it may not have run.
+          const sb = sandbox as SandboxInstance | null;
+          if (sb) await stopQuietly(sb);
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
+        const sb = sandbox as SandboxInstance | null;
+        if (sb) await stopQuietly(sb);
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

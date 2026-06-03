@@ -23,16 +23,18 @@
  *    tracked follow-up.
  *
  * v2 ergonomics adopted in #3126 (only the members actually used are added):
- *  - `Sandbox.create()` resolves to `Sandbox & AsyncDisposable`, so the
- *    create-and-dispose-in-one-scope backends (`tools/explore-sandbox.ts`, the
- *    `@useatlas/vercel-sandbox` plugin) can use `await using` /
- *    `AsyncDisposableStack` instead of a hand-rolled `try/finally` + `stop()`.
  *  - `readFileToBuffer({ path })` reads a file off the sandbox FS as a `Buffer`
  *    (or `null` if missing) — `tools/python-sandbox.ts` uses it to read the
  *    structured result + chart PNGs directly, replacing the stdout result-marker.
  *  - `fs` exposes a `node:fs/promises`-compatible surface; only `readdir`
  *    (listing chart PNGs) is mirrored. `downloadFile` and the rest of `fs` are
  *    intentionally omitted — Atlas does not use them.
+ *
+ * `tools/explore-sandbox.ts` and the `@useatlas/vercel-sandbox` plugin replace
+ * their hand-rolled try/finally + stop() with `AsyncDisposableStack` (a JS
+ * runtime feature, not an SDK type), adopting the sandbox with an explicit
+ * stop() disposer — so the create return is NOT required to be `AsyncDisposable`
+ * and that member is intentionally not mirrored here.
  */
 declare module "@vercel/sandbox" {
   interface SandboxCreateOptions {
@@ -120,9 +122,7 @@ declare module "@vercel/sandbox" {
       };
 
   class Sandbox {
-    // v2: the create return is `Sandbox & AsyncDisposable`, enabling
-    // `await using` / `AsyncDisposableStack` (the disposer calls `stop()`).
-    static create(opts?: SandboxCreateOptions): Promise<Sandbox & AsyncDisposable>;
+    static create(opts?: SandboxCreateOptions): Promise<Sandbox>;
     mkDir(path: string): Promise<void>;
     writeFiles(files: WriteFileEntry[]): Promise<void>;
     runCommand(params: RunCommandParams): Promise<CommandFinished>;

@@ -312,8 +312,12 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: slackConfigurable,
       };
 
-      // Teams status
-      const teamsConfigurable = !!process.env.TEAMS_APP_ID;
+      // Teams status — #2994 disabled the catalog/admin-UI install (the
+      // BYOT connect route was removed; the static-bot card is coming_soon),
+      // so it is no longer configurable from this surface. The orphaned
+      // `/api/v1/teams/install` OAuth module is a separate residual tracked
+      // in #3142 / #3145.
+      const teamsConfigurable = false;
       const teams = {
         connected: teamsInstall !== null,
         tenantId: teamsInstall?.tenant_id ?? null,
@@ -332,8 +336,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: discordConfigurable,
       };
 
-      // Telegram status — configurable in SaaS mode or when internal DB is available (BYOT)
-      const telegramConfigurable = deployMode === "saas" || hasInternalDB();
+      // Telegram status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3141).
+      const telegramConfigurable = false;
       const telegram = {
         connected: telegramInstall !== null,
         botId: telegramInstall?.bot_id ?? null,
@@ -342,9 +348,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: telegramConfigurable,
       };
 
-      // Google Chat status — BYOT-only, configurable when internal DB is available.
-      // SaaS always has internal DB, so hasInternalDB() alone suffices (no deployMode check needed).
-      const gchatConfigurable = hasInternalDB();
+      // Google Chat status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3143).
+      const gchatConfigurable = false;
       const gchat = {
         connected: gchatInstall !== null,
         projectId: gchatInstall?.project_id ?? null,
@@ -372,8 +379,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: linearConfigurable,
       };
 
-      // WhatsApp status — BYOT-only, configurable when internal DB is available.
-      const whatsappConfigurable = hasInternalDB();
+      // WhatsApp status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3144).
+      const whatsappConfigurable = false;
       const whatsapp = {
         connected: whatsappInstall !== null,
         phoneNumberId: whatsappInstall?.phone_number_id ?? null,

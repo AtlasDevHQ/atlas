@@ -154,7 +154,9 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "available",
+      // #2994: legacy connect route removed (cap bypass + non-functional);
+      // back to coming_soon until the cap-gated static-bot install ships (#3142).
+      implementation_status: "coming_soon",
       name: "Microsoft Teams",
       description:
         "Chat with Atlas inside Microsoft Teams. The operator wires a shared Azure Bot (TEAMS_APP_ID + TEAMS_APP_PASSWORD); customer admins upload the Atlas Teams manifest to their tenant (or install from AppSource), then point Atlas at their Microsoft Entra ID tenant GUID.",
@@ -240,7 +242,9 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "available",
+      // #2994: legacy connect route removed (cap bypass + non-functional);
+      // back to coming_soon until the cap-gated static-bot install ships (#3143).
+      implementation_status: "coming_soon",
       name: "Google Chat",
       description:
         "Chat with Atlas inside Google Chat. The operator wires a shared service account (GCHAT_SERVICE_ACCOUNT_JSON + GCHAT_PUBSUB_TOPIC) and publishes the Atlas listing in the Google Workspace Marketplace; customer admins install the listing per-Workspace, and Atlas captures the Workspace customer id from the Marketplace webhook.",
@@ -282,11 +286,12 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #2748 has shipped the handler; promote out of the slice 9
-      // `coming_soon` default that #2747 set on every Phase D
-      // placeholder. Discord / Teams / gchat / WhatsApp stay
-      // `coming_soon` until their own slices flip them.
-      implementation_status: "available",
+      // #2748 shipped the handler, but no live route ever called it — the
+      // only install path was the legacy connect route, which bypassed the
+      // chat-integration cap and produced a non-functional (non-routable)
+      // install. #2994 removed that route, so this is back to coming_soon
+      // until the cap-gated static-bot install ships (#3141).
+      implementation_status: "coming_soon",
       name: "Telegram",
       description:
         "Chat with Atlas inside a Telegram group, channel, or 1:1 conversation. The operator wires a shared bot (TELEGRAM_BOT_TOKEN); each workspace points the bot at one chat by id.",
@@ -339,7 +344,9 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      implementation_status: "available",
+      // #2994: legacy connect route removed (cap bypass + non-functional);
+      // back to coming_soon until the cap-gated static-bot install ships (#3144).
+      implementation_status: "coming_soon",
       name: "WhatsApp",
       description:
         "Chat with Atlas inside WhatsApp. The operator wires a shared Meta Business / WhatsApp Business Cloud API account (META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID); each workspace admin points Atlas at one WhatsApp Business phone number by its Meta phone_number_id. Higher plan tier — Meta charges the operator per-conversation.",

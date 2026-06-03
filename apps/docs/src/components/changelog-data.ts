@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.6",
+    title: "Webhook Delivery & Multi-Tenant Hardening",
+    date: "2026-06-02",
+    summary:
+      "A reliability and multi-tenant correctness rollup. Atlas's three outbound webhook senders — the sub-processor change feed, SLA breach alerts, and the webhook-action plugin — now share one delivery engine (HMAC signing, bounded retry with backoff, and a per-attempt timeout) with no change to any existing payload or header. The most visible effect: SLA webhook alerts are now signed and retried, where before they were sent unsigned and dropped on a single network blip. Multi-tenant connection routing is hardened so workspaces that share a datasource install always resolve their own database, SQL dialect, and audit host on every path, and editing or removing a datasource now takes effect immediately instead of waiting out a cache TTL. The usage page surfaces the prompt-cache read/write split from last release's accounting, alongside reliability fixes across backups, the scheduler, chat install limits, and admin auth.",
+    highlights: [
+      "Signed, retried SLA alerts — SLA webhook alerts are now HMAC-signed (timestamped) and retried with backoff instead of sent unsigned and dropped on a single network failure; a documented verify recipe lets receivers confirm an alert genuinely came from Atlas (#2016)",
+      "Unified outbound webhook delivery — the sub-processor change feed, SLA alerts, and the webhook-action plugin share one delivery engine (signing + bounded retry + per-attempt timeout) via @useatlas/webhook-publisher, with every existing wire format unchanged (#2016)",
+      "Multi-tenant connection isolation — workspaces sharing a datasource install now resolve their own database, SQL dialect, and audit host on every path, not just pooled deploys, fixing wrong-tenant routing and mixed-dialect query rejections (#2783, #3109)",
+      "Immediate datasource config updates — editing or uninstalling a datasource tears down its connection pool right away instead of waiting for a cache TTL to expire (#3109)",
+      "Usage-page cache visibility — the usage page now shows the prompt-cache read/write split and billed-vs-effective token counts from the accounting added in v0.0.5 (#3106)",
+      "Reliability — accurate backup verify/restore error reporting (#2989), per-tick scheduler traces (#2987), dormant-workspace BYOT catalog-refresh gating (#2377), chat installs capped before the Slack OAuth redirect (#3108), and an admin OAuth-consent fix (#3122)",
+    ],
+  },
+  {
     version: "v0.0.5",
     title: "Gateway Caching & Billing Accuracy",
     date: "2026-06-02",

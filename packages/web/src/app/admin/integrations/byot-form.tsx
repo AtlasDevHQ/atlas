@@ -26,17 +26,21 @@ import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 // ---------------------------------------------------------------------------
 
 /**
- * The three chat slugs that today expose a BYOT path in addition to OAuth.
- * Telegram is intentionally NOT in this list — Telegram installs through
- * the dedicated `/admin/integrations/telegram` POST endpoint with its own
- * field shape.
+ * The chat slugs that today expose a BYOT path in addition to OAuth.
  *
- * TODO(#2748): drop this list once Telegram (and the other static-bot
- * chat slugs) routes through `/api/v1/integrations/:slug/install-form` —
- * FormInstallModal will own the rendering and BYOT_FIELDS becomes dead
- * code.
+ * Only Slack and Discord remain. Telegram, Teams, Google Chat, and
+ * WhatsApp are static-bot platforms whose legacy credential-only connect
+ * routes were removed in #2994 — they bypassed the chat-integration cap
+ * (#2953) and never produced a runtime-routable install. Until the
+ * unified ADR-0007 static-bot install (routing-identifier capture +
+ * cap-gated `workspace_plugins` write) is wired, those cards render the
+ * "not yet shipped" disabled Connect state, so they must NOT appear here.
+ *
+ * TODO(#2748): drop this list once the static-bot chat slugs route through
+ * `/api/v1/integrations/:slug/install-form` — FormInstallModal will own the
+ * rendering and BYOT_FIELDS becomes dead code.
  */
-const BYOT_SLUGS = ["slack", "teams", "discord"] as const;
+const BYOT_SLUGS = ["slack", "discord"] as const;
 export type ByotEligibleSlug = (typeof BYOT_SLUGS)[number];
 
 export function isByotEligibleSlug(slug: string): slug is ByotEligibleSlug {
@@ -84,34 +88,6 @@ const BYOT_FIELDS: Record<ByotEligibleSlug, readonly ByotField[]> = {
           and copy the Bot User OAuth Token.
         </>
       ),
-    },
-  ],
-  teams: [
-    {
-      key: "appId",
-      label: "App ID",
-      type: "text",
-      placeholder: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-      helper: (
-        <>
-          Create an{" "}
-          <a
-            href="https://dev.botframework.com/bots/new"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-2"
-          >
-            Azure Bot
-          </a>{" "}
-          and copy the App ID (client_id).
-        </>
-      ),
-    },
-    {
-      key: "appPassword",
-      label: "App password",
-      type: "password",
-      placeholder: "App password (client_secret)",
     },
   ],
   discord: [

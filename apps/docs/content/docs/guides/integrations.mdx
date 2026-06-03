@@ -451,13 +451,9 @@ The admin `status` endpoint is still consumed by the integrations page header fo
 |--------|------|-------------|
 | `GET` | `/api/v1/admin/integrations/status` | Aggregated status for every integration on the current workspace. |
 | `POST` | `/api/v1/admin/integrations/slack/byot` | Connect Slack via bot token (validates via `auth.test`). |
-| `POST` | `/api/v1/admin/integrations/teams/byot` | Connect Teams via app credentials (validates via Azure AD client credentials). |
 | `POST` | `/api/v1/admin/integrations/discord/byot` | Connect Discord via bot credentials (validates via Discord API). |
-| `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token). |
-| `POST` | `/api/v1/admin/integrations/gchat` | Connect Google Chat (validates service account JSON). |
 | `POST` | `/api/v1/admin/integrations/github` | Connect GitHub (validates PAT via GitHub API). |
 | `POST` | `/api/v1/admin/integrations/linear` | Connect Linear (validates API key). |
-| `POST` | `/api/v1/admin/integrations/whatsapp` | Connect WhatsApp (validates Cloud API credentials). |
 | `POST` | `/api/v1/admin/integrations/email` | Connect email provider (SMTP, SendGrid, Postmark, SES). |
 | `POST` | `/api/v1/admin/integrations/email/test` | Send test email using saved config. |
 | `DELETE` | `/api/v1/admin/integrations/slack` | Legacy Slack disconnect. Prefer `DELETE /api/v1/integrations/slack` (above) for new clients. |
@@ -471,6 +467,10 @@ The admin `status` endpoint is still consumed by the integrations page header fo
 | `DELETE` | `/api/v1/admin/integrations/email` | Legacy email-provider disconnect. |
 
 The legacy admin router exposes explicit per-platform DELETE routes (no wildcard `/:slug` handler) — list above is exhaustive. For Slack / Salesforce / Jira prefer the canonical `DELETE /api/v1/integrations/:platform` (above) — it owns the dual-store teardown order.
+
+<Callout type="warn">
+**Telegram / Microsoft Teams / Google Chat / WhatsApp connect routes are removed ([#2994](https://github.com/AtlasDevHQ/atlas/issues/2994)).** Their legacy connect endpoints (`POST /telegram`, `POST /teams/byot`, `POST /gchat`, `POST /whatsapp`) wrote only a per-platform credential store and **no `workspace_plugins` row**, so they bypassed the per-tier chat-integration cap ([#2953](https://github.com/AtlasDevHQ/atlas/issues/2953)) and never produced a runtime-routable install (the chat runtime routes purely off `workspace_plugins.config`). These four static-bot platforms are not installable until the unified ADR-0007 static-bot install (routing-identifier capture + cap-gated `workspace_plugins` write, like Discord) is wired — tracked in the [#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) sub-issues. The `DELETE` disconnect routes remain so existing tenants can clean up.
+</Callout>
 
 ---
 

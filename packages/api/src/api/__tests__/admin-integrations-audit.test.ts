@@ -224,30 +224,6 @@ describe("admin-integrations BYOT / connect — F-46 hasSecret marker", () => {
     });
   });
 
-  it("POST /teams/byot emits integration.enable with hasSecret: true", async () => {
-    // Teams uses Microsoft OAuth — returns an access_token on success
-    setFetchJson({
-      access_token: "teams-test-token",
-      expires_in: 3600,
-    });
-
-    const res = await app.fetch(
-      adminRequest("POST", "/api/v1/admin/integrations/teams/byot", {
-        appId: "00000000-0000-0000-0000-000000000001",
-        appPassword: "test-app-password",
-      }),
-    );
-
-    expect(res.status).toBe(200);
-    const entry = lastAuditCall();
-    expect(entry.actionType).toBe("integration.enable");
-    expect(entry.metadata).toMatchObject({
-      platform: "teams",
-      mode: "byot",
-      hasSecret: true,
-    });
-  });
-
   it("POST /discord/byot emits integration.enable with hasSecret: true", async () => {
     setFetchJson({ id: "bot-id", username: "TestBot" });
 
@@ -265,47 +241,6 @@ describe("admin-integrations BYOT / connect — F-46 hasSecret marker", () => {
     expect(entry.metadata).toMatchObject({
       platform: "discord",
       mode: "byot",
-      hasSecret: true,
-    });
-  });
-
-  it("POST /telegram emits integration.enable with hasSecret: true", async () => {
-    setFetchJson({
-      ok: true,
-      result: { id: 123, username: "test_bot", first_name: "Test" },
-    });
-
-    const res = await app.fetch(
-      adminRequest("POST", "/api/v1/admin/integrations/telegram", {
-        botToken: "telegram-bot-token",
-      }),
-    );
-
-    expect(res.status).toBe(200);
-    const entry = lastAuditCall();
-    expect(entry.actionType).toBe("integration.enable");
-    expect(entry.metadata).toMatchObject({
-      platform: "telegram",
-      hasSecret: true,
-    });
-  });
-
-  it("POST /gchat emits integration.enable with hasSecret: true", async () => {
-    const res = await app.fetch(
-      adminRequest("POST", "/api/v1/admin/integrations/gchat", {
-        credentialsJson: JSON.stringify({
-          client_email: "sa@proj.iam.gserviceaccount.com",
-          private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
-          project_id: "gcp-proj",
-        }),
-      }),
-    );
-
-    expect(res.status).toBe(200);
-    const entry = lastAuditCall();
-    expect(entry.actionType).toBe("integration.enable");
-    expect(entry.metadata).toMatchObject({
-      platform: "gchat",
       hasSecret: true,
     });
   });
@@ -350,25 +285,6 @@ describe("admin-integrations BYOT / connect — F-46 hasSecret marker", () => {
     expect(entry.actionType).toBe("integration.enable");
     expect(entry.metadata).toMatchObject({
       platform: "linear",
-      hasSecret: true,
-    });
-  });
-
-  it("POST /whatsapp emits integration.enable with hasSecret: true", async () => {
-    setFetchJson({ id: "phone-id", display_phone_number: "+1-555-test" });
-
-    const res = await app.fetch(
-      adminRequest("POST", "/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "1234567890",
-        accessToken: "wa-access-token",
-      }),
-    );
-
-    expect(res.status).toBe(200);
-    const entry = lastAuditCall();
-    expect(entry.actionType).toBe("integration.enable");
-    expect(entry.metadata).toMatchObject({
-      platform: "whatsapp",
       hasSecret: true,
     });
   });

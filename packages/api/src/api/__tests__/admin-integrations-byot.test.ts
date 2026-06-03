@@ -1,10 +1,14 @@
 /**
  * Tests for BYOT (Bring Your Own Token) admin integration routes.
  *
- * Tests: POST /integrations/telegram, POST /integrations/slack/byot,
- *        POST /integrations/teams/byot, POST /integrations/discord/byot,
+ * Tests: POST /integrations/slack/byot, POST /integrations/discord/byot,
  *        POST /integrations/linear, DELETE /integrations/linear,
- *        POST /integrations/whatsapp, DELETE /integrations/whatsapp.
+ *        DELETE /integrations/whatsapp, POST /integrations/email.
+ *
+ * The legacy Telegram / Teams-BYOT / Google Chat / WhatsApp *connect*
+ * routes were removed in #2994 (chat-cap bypass + non-functional installs
+ * pending ADR-0007 wiring); their disabled state is locked by the
+ * "disabled chat install routes" suite below. Disconnect routes remain.
  */
 
 import {
@@ -482,145 +486,33 @@ describe("BYOT routes", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  // POST /telegram
+  // Disabled legacy chat install routes (#2994)
+  //
+  // Telegram / Teams-BYOT / Google Chat / WhatsApp installed via legacy
+  // credential-store-only routes that wrote no `workspace_plugins` row,
+  // so they bypassed the per-tier chat-integration cap (#2953) — and they
+  // never produced a runtime-routable install either (the chat runtime
+  // routes purely off `workspace_plugins.config`). The connect routes are
+  // removed pending the unified ADR-0007 install wiring; the install path
+  // must stay closed so the cap has no bypass. Disconnect routes remain so
+  // existing tenants can clean up. A re-added POST handler fails here.
   // ═══════════════════════════════════════════════════════════════════
 
-  describe("POST /integrations/telegram", () => {
-    it("returns 401 without auth", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: false,
-          error: "Invalid or expired token",
-          status: 401,
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
+  describe("disabled chat install routes (#2994)", () => {
+    it.each([
+      "/api/v1/admin/integrations/telegram",
+      "/api/v1/admin/integrations/teams/byot",
+      "/api/v1/admin/integrations/gchat",
+      "/api/v1/admin/integrations/whatsapp",
+    ])("POST %s is removed (404 — no install bypass)", async (path) => {
+      const res = await jsonPost(path, {
+        botToken: "x",
+        appId: "x",
+        appPassword: "x",
+        credentialsJson: "x",
+        phoneNumberId: "1",
+        accessToken: "x",
       });
-      expect(res.status).toBe(401);
-    });
-
-    it("returns 400 without org context", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: true,
-          mode: "simple-key",
-          user: {
-            id: "admin-1",
-            mode: "simple-key",
-            label: "Admin",
-            role: "admin",
-            activeOrganizationId: null,
-          },
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 422 with missing botToken", async () => {
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {});
-      expect(res.status).toBe(422);
-    });
-
-    it("returns 400 with invalid bot token (HTTP error)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(JSON.stringify({ ok: false, description: "Unauthorized" }), {
-            status: 401,
-          }),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "invalid-token",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_token");
-    });
-
-    it("returns 400 with invalid bot token (body ok:false)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(JSON.stringify({ ok: false }), { status: 200 }),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "invalid-token",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_token");
-    });
-
-    it("returns 400 when fetch throws (network error)", async () => {
-      mockFetchImpl.mockImplementation(() => {
-        throw new Error("ECONNREFUSED");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_token");
-    });
-
-    it("saves installation on success", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ ok: true, result: { id: 777, username: "atlas_bot" } }),
-            { status: 200 },
-          ),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
-      });
-      expect(res.status).toBe(200);
-
-      const data = (await res.json()) as { message: string; botUsername: string };
-      expect(data.message).toContain("connected");
-      expect(data.botUsername).toBe("atlas_bot");
-      expect(mockSaveTelegramInstallation).toHaveBeenCalledTimes(1);
-      expect(mockSaveTelegramInstallation).toHaveBeenCalledWith("777", {
-        orgId: "org-1",
-        botUsername: "atlas_bot",
-        botToken: "123:ABC",
-      });
-    });
-
-    it("returns 500 when store save throws (org hijack)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ ok: true, result: { id: 777, username: "atlas_bot" } }),
-            { status: 200 },
-          ),
-        ),
-      );
-      mockSaveTelegramInstallation.mockImplementation(() => {
-        throw new Error("Bot 777 is already bound to a different organization.");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
-      });
-      expect(res.status).toBe(500);
-    });
-
-    it("returns 404 when no internal DB", async () => {
-      mockHasInternalDB = false;
-      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
-        botToken: "123:ABC",
-      });
-      // requireOrgContext middleware returns 404 when no internal DB
       expect(res.status).toBe(404);
     });
   });
@@ -743,135 +635,6 @@ describe("BYOT routes", () => {
 
       const res = await jsonPost("/api/v1/admin/integrations/slack/byot", {
         botToken: "xoxb-test-token",
-      });
-      expect(res.status).toBe(500);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
-  // POST /teams/byot
-  // ═══════════════════════════════════════════════════════════════════
-
-  describe("POST /integrations/teams/byot", () => {
-    it("returns 401 without auth", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: false,
-          error: "Invalid or expired token",
-          status: 401,
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "secret",
-      });
-      expect(res.status).toBe(401);
-    });
-
-    it("returns 400 without org context", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: true,
-          mode: "simple-key",
-          user: {
-            id: "admin-1",
-            mode: "simple-key",
-            label: "Admin",
-            role: "admin",
-            activeOrganizationId: null,
-          },
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "secret",
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 422 with missing fields", async () => {
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        // missing appPassword
-      });
-      expect(res.status).toBe(422);
-    });
-
-    it("returns 400 when Azure AD token fails", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ error: "invalid_client", error_description: "Bad credentials" }),
-            { status: 400 },
-          ),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "bad-secret",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_credentials");
-    });
-
-    it("returns 400 when fetch throws (network error)", async () => {
-      mockFetchImpl.mockImplementation(() => {
-        throw new Error("ECONNREFUSED");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "bad-secret",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_credentials");
-    });
-
-    it("saves installation on success", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ access_token: "eyJ0eXAiOiJKV1QiLCJhbGci..." }),
-            { status: 200 },
-          ),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "good-secret",
-      });
-      expect(res.status).toBe(200);
-
-      const data = (await res.json()) as { message: string; appId: string };
-      expect(data.message).toContain("connected");
-      expect(data.appId).toBe("app-123");
-      expect(mockSaveTeamsInstallation).toHaveBeenCalledTimes(1);
-      expect(mockSaveTeamsInstallation).toHaveBeenCalledWith("app-123", {
-        orgId: "org-1",
-        appPassword: "good-secret",
-      });
-    });
-
-    it("returns 500 when store save throws (org hijack)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ access_token: "eyJ0eXAiOiJKV1QiLCJhbGci..." }),
-            { status: 200 },
-          ),
-        ),
-      );
-      mockSaveTeamsInstallation.mockImplementation(() => {
-        throw new Error("Tenant app-123 is already bound to a different organization.");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
-        appId: "app-123",
-        appPassword: "good-secret",
       });
       expect(res.status).toBe(500);
     });
@@ -1209,172 +972,6 @@ describe("BYOT routes", () => {
 
       const res = await request("/api/v1/admin/integrations/linear", {
         method: "DELETE",
-      });
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
-  // POST /whatsapp
-  // ═══════════════════════════════════════════════════════════════════
-
-  describe("POST /integrations/whatsapp", () => {
-    it("returns 401 without auth", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: false,
-          error: "Invalid or expired token",
-          status: 401,
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(401);
-    });
-
-    it("returns 400 without org context", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: true,
-          mode: "simple-key",
-          user: {
-            id: "admin-1",
-            mode: "simple-key",
-            label: "Admin",
-            role: "admin",
-            activeOrganizationId: null,
-          },
-        }),
-      );
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 422 with missing fields", async () => {
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {});
-      expect(res.status).toBe(422);
-    });
-
-    it("returns 422 with non-numeric phoneNumberId", async () => {
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "abc-not-numeric",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(422);
-    });
-
-    it("returns 400 when Meta API returns HTTP error", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ error: { message: "Invalid OAuth access token" } }),
-            { status: 401 },
-          ),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAinvalid",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_credentials");
-    });
-
-    it("returns 400 when fetch throws (network error)", async () => {
-      mockFetchImpl.mockImplementation(() => {
-        throw new Error("ECONNREFUSED");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(400);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("invalid_credentials");
-    });
-
-    it("saves installation on success", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
-            { status: 200 },
-          ),
-        ),
-      );
-
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(200);
-
-      const data = (await res.json()) as { message: string; displayPhone: string };
-      expect(data.message).toContain("connected");
-      expect(data.displayPhone).toBe("+1 555-0100");
-      expect(mockSaveWhatsAppInstallation).toHaveBeenCalledTimes(1);
-      expect(mockSaveWhatsAppInstallation).toHaveBeenCalledWith("12345", {
-        orgId: "org-1",
-        displayPhone: "+1 555-0100",
-        accessToken: "EAAtest",
-      });
-    });
-
-    it("returns 409 when store save throws (org hijack)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
-            { status: 200 },
-          ),
-        ),
-      );
-      mockSaveWhatsAppInstallation.mockImplementation(() => {
-        throw new Error("WhatsApp phone number 12345 is already bound to a different organization.");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(409);
-      const data = (await res.json()) as { error: string };
-      expect(data.error).toBe("conflict");
-    });
-
-    it("returns 500 when store save throws (non-hijack DB error)", async () => {
-      mockFetchImpl.mockImplementation(() =>
-        Promise.resolve(
-          new Response(
-            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
-            { status: 200 },
-          ),
-        ),
-      );
-      mockSaveWhatsAppInstallation.mockImplementation(() => {
-        throw new Error("connection terminated unexpectedly");
-      });
-
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
-      });
-      expect(res.status).toBe(500);
-    });
-
-    it("returns 404 when no internal DB", async () => {
-      mockHasInternalDB = false;
-      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
-        phoneNumberId: "12345",
-        accessToken: "EAAtest",
       });
       expect(res.status).toBe(404);
     });

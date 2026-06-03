@@ -137,5 +137,8 @@
     "snowflake-sdk": "^2.4.3",
     "tailwindcss": "^4.3.0",
     "zustand": "^5.0.14"
+  },
+  "overrides": {
+    "kysely": "0.28.17"
   }
 }

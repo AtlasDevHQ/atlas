@@ -33,7 +33,7 @@ import {
   getDashboard,
   CardLayoutSchema,
 } from "@atlas/api/lib/dashboards";
-import type { DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
+import type { DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
 import {
   screenshotDashboard,
@@ -308,6 +308,20 @@ export function createBoundDashboardTools(
           return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, layout, position." };
         }
 
+        // #3138: a text / section-block card has no chart. Reject a chartConfig
+        // change on one rather than mutate the draft into a state publish would
+        // silently discard (text-card equality ignores chartConfig). Title /
+        // layout / position edits remain valid for text cards.
+        if (updates.chartConfig !== undefined) {
+          const current = await readCurrentCard(cardId);
+          if (current.ok && current.kind === "text") {
+            return {
+              kind: "err" as const,
+              error: `Card ${cardId} is a text / section card — it has no chart to configure.`,
+            };
+          }
+        }
+
         const routed = await maybeApplyToDraft(ctx, {
           kind: "updateCard",
           cardId,
@@ -532,7 +546,7 @@ export function createBoundDashboardTools(
    * accept.
    */
   async function readCurrentCard(cardId: string): Promise<
-    | { ok: true; title: string; sql: string }
+    | { ok: true; title: string; sql: string; kind: DashboardCardKind }
     | { ok: false; error: string }
   > {
     if (isDashboardDraftsEnabled() && ctx.userId) {
@@ -543,7 +557,8 @@ export function createBoundDashboardTools(
       const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
       if (draftRow) {
         const sc = draftRow.snapshot.cards.find((c) => c.id === cardId);
-        if (sc) return { ok: true, title: sc.title, sql: sc.sql };
+        // #3138: snapshot cards have no stored `kind` — derive it from content.
+        if (sc) return { ok: true, title: sc.title, sql: sc.sql, kind: sc.content != null ? "text" : "chart" };
         return { ok: false, error: `Card ${cardId} not found on this dashboard.` };
       }
     }
@@ -551,7 +566,7 @@ export function createBoundDashboardTools(
     if (!card.ok) {
       return { ok: false, error: `Could not read card ${cardId}: ${card.reason}` };
     }
-    return { ok: true, title: card.data.title, sql: card.data.sql };
+    return { ok: true, title: card.data.title, sql: card.data.sql, kind: card.data.kind };
   }
 
   const removeCardTool = tool({
@@ -637,6 +652,16 @@ The tool validates the new SQL against the analytics datasource before staging; 
         const current = await readCurrentCard(cardId);
         if (!current.ok) {
           return { kind: "err" as const, error: current.error };
+        }
+        // #3138: a text / section-block card has no SQL. Reject rather than
+        // stage an edit_sql change that publish would silently discard (a text
+        // card's draft↔baseline equality ignores sql). To change a header, edit
+        // its markdown / remove + re-add.
+        if (current.kind === "text") {
+          return {
+            kind: "err" as const,
+            error: `Card ${cardId} is a text / section card — it has no SQL to edit.`,
+          };
         }
         const result = await stageChange({
           dashboardId,

@@ -393,7 +393,9 @@ function TextTile({ card, editing, onDelete }: DashboardTileProps) {
       )}
 
       <div className="dash-text-tile-body min-h-0 flex-1 overflow-auto px-4 py-3 text-sm leading-relaxed">
-        <Markdown content={card.content ?? ""} />
+        {/* disallowImages: a section header has no need for images, and blocking
+            them closes the same tracking-pixel vector as the shared view. */}
+        <Markdown content={card.content ?? ""} disallowImages />
       </div>
     </div>
   );

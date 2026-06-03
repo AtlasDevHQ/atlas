@@ -498,8 +498,11 @@ export default function DashboardViewPage() {
     setParamLoading(true);
     setParamError(null);
     try {
+      type RenderEntry =
+        | { cardId: string; ok: true; columns: string[]; rows: Record<string, unknown>[] }
+        | { cardId: string; ok: false; error: string };
       const entries = await Promise.all(
-        cards.map(async (card) => {
+        cards.map(async (card): Promise<RenderEntry> => {
           try {
             const res = await fetch(
               `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render`,
@@ -520,18 +523,19 @@ export default function DashboardViewPage() {
               } catch {
                 // non-JSON body — keep the status-based message
               }
-              return { cardId: card.id, error: message } as const;
+              return { cardId: card.id, ok: false, error: message };
             }
             const json = (await res.json()) as {
               columns: string[];
               rows: Record<string, unknown>[];
             };
-            return { cardId: card.id, data: { columns: json.columns, rows: json.rows } } as const;
+            return { cardId: card.id, ok: true, columns: json.columns, rows: json.rows };
           } catch (err) {
             return {
               cardId: card.id,
+              ok: false,
               error: err instanceof Error ? err.message : String(err),
-            } as const;
+            };
           }
         }),
       );
@@ -540,7 +544,7 @@ export default function DashboardViewPage() {
       const next: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {};
       const errors: string[] = [];
       for (const entry of entries) {
-        if ("data" in entry) next[entry.cardId] = entry.data;
+        if (entry.ok) next[entry.cardId] = { columns: entry.columns, rows: entry.rows };
         else errors.push(entry.error);
       }
       setParamResults(next);

@@ -206,6 +206,9 @@ interface SandboxInstance {
     exitCode: number;
   }>;
   stop(): Promise<void>;
+  // v2: `Sandbox.create()` returns `Sandbox & AsyncDisposable`, so the instance
+  // is disposable (the disposer calls stop()). Lets us use `await using`.
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 interface SandboxConstructor {
@@ -249,73 +252,80 @@ async function createVercelExploreBackend(
     );
   }
 
+  // v2: stop the sandbox if the setup below throws; on success we `disposer.move()`
+  // to disarm so the returned backend's close() owns it. Replaces the hand-rolled
+  // try/catch + stop(). The disposer swallows stop() errors so the original setup
+  // error is the one that surfaces.
+  await using disposer = new AsyncDisposableStack();
+  disposer.adopt(sandbox, async (s) => {
+    try {
+      await s.stop();
+    } catch {
+      // best-effort cleanup — the original setup error is what surfaces
+    }
+  });
+
+  // 3. Collect semantic layer files
+  let files: { path: string; content: Buffer }[];
   try {
-    // 3. Collect semantic layer files
-    let files: { path: string; content: Buffer }[];
+    files = collectSemanticFiles(semanticRoot, SANDBOX_SEMANTIC_REL, log);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Cannot read semantic layer at ${semanticRoot}: ${detail}. ` +
+        "Ensure the semantic/ directory exists and is readable.",
+      { cause: err },
+    );
+  }
+
+  if (files.length === 0) {
+    throw new Error(
+      "No semantic layer files found. " +
+        "Run 'bun run atlas -- init' to generate a semantic layer, then redeploy.",
+    );
+  }
+
+  // 4. Create directories and upload files
+  const dirs = new Set<string>();
+  for (const f of files) {
+    let dir = path.posix.dirname(f.path);
+    while (dir !== "/" && dir !== ".") {
+      dirs.add(dir);
+      dir = path.posix.dirname(dir);
+    }
+  }
+
+  for (const dir of [...dirs].sort()) {
     try {
-      files = collectSemanticFiles(semanticRoot, SANDBOX_SEMANTIC_REL, log);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Cannot read semantic layer at ${semanticRoot}: ${detail}. ` +
-          "Ensure the semantic/ directory exists and is readable.",
-        { cause: err },
-      );
-    }
-
-    if (files.length === 0) {
-      throw new Error(
-        "No semantic layer files found. " +
-          "Run 'bun run atlas -- init' to generate a semantic layer, then redeploy.",
-      );
-    }
-
-    // 4. Create directories and upload files
-    const dirs = new Set<string>();
-    for (const f of files) {
-      let dir = path.posix.dirname(f.path);
-      while (dir !== "/" && dir !== ".") {
-        dirs.add(dir);
-        dir = path.posix.dirname(dir);
-      }
-    }
-
-    for (const dir of [...dirs].sort()) {
-      try {
-        await sandbox.mkDir(dir);
-      } catch (err) {
-        const detail = sandboxErrorDetail(err);
-        const safeDetail = SENSITIVE_PATTERNS.test(detail)
-          ? "sandbox API error (details in server logs)"
-          : detail;
-        throw new Error(
-          `Failed to create directory "${dir}" in sandbox: ${safeDetail}.`,
-          { cause: err },
-        );
-      }
-    }
-
-    try {
-      await sandbox.writeFiles(files);
+      await sandbox.mkDir(dir);
     } catch (err) {
       const detail = sandboxErrorDetail(err);
       const safeDetail = SENSITIVE_PATTERNS.test(detail)
         ? "sandbox API error (details in server logs)"
         : detail;
       throw new Error(
-        `Failed to upload ${files.length} semantic files to sandbox: ${safeDetail}.`,
+        `Failed to create directory "${dir}" in sandbox: ${safeDetail}.`,
         { cause: err },
       );
     }
-  } catch (err) {
-    // Clean up the sandbox before re-throwing
-    try {
-      await sandbox.stop();
-    } catch {
-      // Ignore cleanup errors
-    }
-    throw err;
   }
+
+  try {
+    await sandbox.writeFiles(files);
+  } catch (err) {
+    const detail = sandboxErrorDetail(err);
+    const safeDetail = SENSITIVE_PATTERNS.test(detail)
+      ? "sandbox API error (details in server logs)"
+      : detail;
+    throw new Error(
+      `Failed to upload ${files.length} semantic files to sandbox: ${safeDetail}.`,
+      { cause: err },
+    );
+  }
+
+  // Setup succeeded — disarm the disposer so the sandbox survives in the
+  // returned backend (close() owns its lifecycle from here).
+  disposer.move();
 
   return {
     exec: async (command: string): Promise<PluginExecResult> => {
@@ -391,7 +401,6 @@ export function buildVercelSandboxPlugin(
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       const TIMEOUT = 30_000;
-      let sandbox: SandboxInstance | null = null;
       let timer: ReturnType<typeof setTimeout>;
       try {
         const result = await Promise.race([
@@ -409,15 +418,18 @@ export function buildVercelSandboxPlugin(
               createOpts.teamId = config.teamId;
             }
 
-            sandbox = await Sandbox.create(createOpts);
+            // v2: create-and-dispose-in-one-scope. `await using` stops the
+            // sandbox when this scope exits (success, command failure, or
+            // throw), replacing the manual stop() that every branch needed.
+            // If the outer race times out first, disposal still runs once this
+            // scope settles, so the sandbox is never leaked.
+            await using sandbox = await Sandbox.create(createOpts);
             const res = await sandbox.runCommand({
               cmd: "sh",
               args: ["-c", "echo vercel-ok"],
               cwd: "/tmp",
             });
             const stdout = await res.stdout();
-            await sandbox.stop();
-            sandbox = null;
 
             if (res.exitCode === 0 && stdout.includes("vercel-ok")) {
               return { healthy: true as const };
@@ -434,21 +446,10 @@ export function buildVercelSandboxPlugin(
 
         const latencyMs = Math.round(performance.now() - start);
         if (result === "timeout") {
-          // Best-effort cleanup — sandbox may still be creating if create() is what's slow.
-          // Cast needed: TS narrows sandbox to null (IIFE ends with sandbox=null) but the
-          // timeout race means the IIFE may not have finished yet.
-          const sb = sandbox as SandboxInstance | null;
-          if (sb) {
-            try { await sb.stop(); } catch { /* best-effort */ }
-          }
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
-        const sb = sandbox as SandboxInstance | null;
-        if (sb) {
-          try { await sb.stop(); } catch { /* best-effort */ }
-        }
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

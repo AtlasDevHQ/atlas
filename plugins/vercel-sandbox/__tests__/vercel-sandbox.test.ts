@@ -20,6 +20,10 @@ const mockSandboxInstance = {
   stop: mockStop,
   mkDir: mockMkDir,
   writeFiles: mockWriteFiles,
+  // v2: the create return is `Sandbox & AsyncDisposable`. `await using` /
+  // AsyncDisposableStack call this on scope exit; route it through mockStop so
+  // disposal counts as a stop() for the assertions below.
+  [Symbol.asyncDispose]: () => mockStop(),
 };
 
 const mockCreate = mock((_opts?: Record<string, unknown>) => Promise.resolve(mockSandboxInstance));

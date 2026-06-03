@@ -362,6 +362,7 @@ describe("migrateAuthTables", () => {
             { name: "0114_token_usage_cache_tokens.sql" },
             { name: "0115_org_last_active_at.sql" },
             { name: "0116_dashboard_parameters.sql" },
+            { name: "0117_dashboard_text_cards.sql" },
           ],
         };
       }

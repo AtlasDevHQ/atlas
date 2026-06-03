@@ -5,8 +5,10 @@ import { describeFieldChange, diffDashboards } from "../dashboard-diff";
 const BASE_CARD: Omit<DashboardCard, "id" | "position"> = {
   dashboardId: "d1",
   title: "Card",
+  kind: "chart",
   sql: "SELECT 1",
   chartConfig: null,
+  content: null,
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,

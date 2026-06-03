@@ -135,7 +135,8 @@ describe("runMigrations", () => {
     //   Plus 0114 (token_usage.cache_read_tokens/cache_write_tokens, #3099) = 115.
     //   Plus 0115 (organization.last_active_at for BYOT dormancy gate, #2377) = 116.
     //   Plus 0116 (dashboards.parameters for dashboard parameters, #2267) = 117.
-    expect(count).toBe(117);
+    //   Plus 0117 (dashboard_cards.content for text/section cards, #3138) = 118.
+    expect(count).toBe(118);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -281,6 +282,7 @@ describe("runMigrations", () => {
         "0114_token_usage_cache_tokens.sql",
         "0115_org_last_active_at.sql",
         "0116_dashboard_parameters.sql",
+        "0117_dashboard_text_cards.sql",
       ],
     });
 

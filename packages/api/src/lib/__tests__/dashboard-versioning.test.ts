@@ -91,8 +91,10 @@ function dashboardWithCards(
       dashboardId: "dash-1",
       position: c.position,
       title: c.title,
+      kind: (c.content != null ? "text" : "chart") as DashboardCard["kind"],
       sql: c.sql,
       chartConfig: c.chartConfig,
+      content: c.content ?? null,
       cachedColumns: null,
       cachedRows: null,
       cachedAt: null,
@@ -338,6 +340,33 @@ describe("publishDraftMerge", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
     expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draft.snapshot.cards[0] }]);
+  });
+
+  // #3138 — `cardEquals` is gated on card kind (derived from `content`).
+  it("an unchanged text card produces no ops (content-equality gating)", () => {
+    const base = snapshot([card("t1", { content: "## A", sql: "", chartConfig: null })]);
+    const result = publishDraftMerge(base, base, base);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toHaveLength(0);
+  });
+
+  it("an edited text card's markdown → updateCard op", () => {
+    const baseline = snapshot([card("t1", { content: "## A", sql: "", chartConfig: null })]);
+    const draftCard = card("t1", { content: "## B", sql: "", chartConfig: null });
+    const result = publishDraftMerge(snapshot([draftCard]), baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "t1", card: draftCard }]);
+  });
+
+  it("flipping a chart card to a text card is a change (kind discriminates)", () => {
+    const baseline = snapshot([card("c1", { content: null })]); // chart
+    const draftCard = card("c1", { content: "## Now a header", sql: "", chartConfig: null });
+    const result = publishDraftMerge(snapshot([draftCard]), baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draftCard }]);
   });
 
   it("title change → updateMeta op", () => {
@@ -589,8 +618,10 @@ describe("materializeDraftView", () => {
       dashboardId: "dash-1",
       position: baseCard.position,
       title: baseCard.title,
+      kind: "chart",
       sql: baseCard.sql,
       chartConfig: baseCard.chartConfig,
+      content: null,
       cachedColumns: ["a", "b"],
       cachedRows: [{ a: 1, b: 2 }],
       cachedAt: "2026-05-01T00:00:00.000Z",

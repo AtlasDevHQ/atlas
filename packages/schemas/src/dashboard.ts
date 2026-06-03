@@ -131,3 +131,48 @@ export const renderCardRequestSchema = z.object({
     .optional(),
 });
 export type RenderCardRequestWire = z.infer<typeof renderCardRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// Text / section cards (#3138 — text blocks slice)
+//
+// A dashboard card is one of two kinds: a SQL-backed `chart` card or a markdown
+// `text` / section block. The enum is the runtime mirror of the
+// `DashboardCardKind` union in `@useatlas/types` — it lives here (not in types)
+// for the same reason as `dashboardParameterTypeSchema`: `@useatlas/schemas` is
+// source-bundled into the scaffold while `@useatlas/types` is registry-installed,
+// so a new value export in types would trip the publish-symbol gate before the
+// npm release.
+//
+// SECURITY: `content` is markdown rendered SANITIZED on the client (react-markdown
+// with no `rehype-raw`) — raw HTML is never evaluated. A text card never touches
+// the SQL validation/execution pipeline.
+// ---------------------------------------------------------------------------
+
+/** Card kind discriminator. Mirrors `DashboardCardKind`. */
+export const dashboardCardKindSchema = z.enum(["chart", "text"]);
+export type DashboardCardKindWire = z.infer<typeof dashboardCardKindSchema>;
+
+/** Upper bound on a text card's markdown — a section header/explainer, not an
+ *  essay. Keeps a single oversized block from bloating the draft JSONB. */
+export const DASHBOARD_TEXT_CARD_CONTENT_MAX = 5_000;
+
+/**
+ * Markdown body of a `text` card. Non-empty (an empty section block is
+ * meaningless) and length-bounded. The agent `createDashboard` surface and the
+ * persisted card both validate against this.
+ */
+export const dashboardTextCardContentSchema = z
+  .string()
+  .min(1, "Text card content cannot be empty.")
+  .max(DASHBOARD_TEXT_CARD_CONTENT_MAX);
+
+/**
+ * Discriminated wire shape of a `text` card — the `kind` + `content` pair a
+ * chart card never carries. Used for round-trip validation; the full persisted
+ * `DashboardCard` (with id/layout/timestamps) is typed in `@useatlas/types`.
+ */
+export const dashboardTextCardSchema = z.object({
+  kind: z.literal("text"),
+  content: dashboardTextCardContentSchema,
+});
+export type DashboardTextCardWire = z.infer<typeof dashboardTextCardSchema>;

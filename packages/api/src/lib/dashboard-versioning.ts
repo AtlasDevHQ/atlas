@@ -113,6 +113,17 @@ export interface DashboardSnapshotCard {
   title: string;
   sql: string;
   chartConfig: DashboardChartConfig | null;
+  /**
+   * Markdown body of a `text` / section-block card (#3138). Present (non-null)
+   * exactly when the card is a text card — a chart card has `null`/absent here.
+   * The card kind is derived from this field's presence everywhere it matters
+   * (`cardEquals`, the read path), so there is no separate `kind` field. A text
+   * card carries `sql: ""` and `chartConfig: null`.
+   *
+   * Optional so drafts persisted before #3138 (their JSONB has no `content`
+   * key) deserialize as chart cards without a migration.
+   */
+  content?: string | null;
   connectionGroupId: string | null;
   layout: DashboardCardLayout | null;
 }
@@ -136,6 +147,7 @@ export function toSnapshot(dash: DashboardWithCards): DashboardSnapshot {
       title: c.title,
       sql: c.sql,
       chartConfig: c.chartConfig,
+      content: c.content,
       connectionGroupId: c.connectionGroupId,
       layout: c.layout,
     })),
@@ -449,11 +461,23 @@ export function publishDraftMerge(
 
 function cardEquals(a: DashboardSnapshotCard, b: DashboardSnapshotCard): boolean {
   if (a.title !== b.title) return false;
-  if (a.sql !== b.sql) return false;
   if (a.position !== b.position) return false;
   if (a.connectionGroupId !== b.connectionGroupId) return false;
-  if (!jsonEquals(a.chartConfig, b.chartConfig)) return false;
   if (!jsonEquals(a.layout, b.layout)) return false;
+
+  // Kind is derived from `content` presence (#3138). A chart↔text flip is never
+  // equal; otherwise compare only the fields that kind owns — a text card's
+  // identity is its markdown, a chart card's is its sql + viz config. (`!= null`
+  // also catches `undefined` on pre-#3138 draft JSONB → chart.)
+  const aText = a.content != null;
+  const bText = b.content != null;
+  if (aText !== bText) return false;
+  if (aText) {
+    if (a.content !== b.content) return false;
+  } else {
+    if (a.sql !== b.sql) return false;
+    if (!jsonEquals(a.chartConfig, b.chartConfig)) return false;
+  }
   return true;
 }
 
@@ -869,16 +893,20 @@ export async function publishDraft(opts: {
           // so subsequent updates in the same publish still resolve.
           await client.query(
             `INSERT INTO dashboard_cards
-               (id, dashboard_id, position, title, sql, chart_config, connection_group_id, layout)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               (id, dashboard_id, position, title, sql, chart_config, content, connection_group_id, layout)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (id) DO NOTHING`,
             [
               op.card.id,
               opts.dashboardId,
               op.card.position,
               op.card.title,
-              op.card.sql,
+              // A text card carries sql = "" (no query); `sql` is NOT NULL, so
+              // fall back to "" rather than letting an absent value violate it.
+              op.card.sql ?? "",
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
+              // #3138: NULL for a chart card; markdown for a text card.
+              op.card.content ?? null,
               op.card.connectionGroupId,
               op.card.layout ? JSON.stringify(op.card.layout) : null,
             ],
@@ -891,13 +919,18 @@ export async function publishDraft(opts: {
             `UPDATE dashboard_cards
                 SET title = $1,
                     chart_config = $2,
-                    layout = $3,
-                    position = $4,
+                    content = $3,
+                    layout = $4,
+                    position = $5,
                     updated_at = now()
-              WHERE id = $5 AND dashboard_id = $6`,
+              WHERE id = $6 AND dashboard_id = $7`,
             [
               op.card.title,
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
+              // #3138: keep content in sync on edit (e.g. a text card's markdown
+              // changed). NULL for a chart card; the SQL itself is intentionally
+              // not updatable here (see #2365).
+              op.card.content ?? null,
               op.card.layout ? JSON.stringify(op.card.layout) : null,
               op.card.position,
               op.cardId,
@@ -1078,6 +1111,8 @@ function snapshotCardToDashboardCard(
     title: c.title,
     sql: c.sql,
     chart_config: c.chartConfig,
+    // #3138: drives `rowToCard`'s kind derivation for the draft overlay.
+    content: c.content ?? null,
     cached_columns: publishedCard?.cachedColumns ?? null,
     cached_rows: publishedCard?.cachedRows ?? null,
     cached_at: publishedCard?.cachedAt ?? null,

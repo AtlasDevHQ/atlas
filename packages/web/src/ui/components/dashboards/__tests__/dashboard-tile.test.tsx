@@ -33,8 +33,10 @@ const baseCard: DashboardCard = {
   dashboardId: "dash-1",
   position: 0,
   title: "Pipeline by stage",
+  kind: "chart",
   sql: "SELECT 1",
   chartConfig: { type: "bar", categoryColumn: "stage", valueColumns: ["amount"] },
+  content: null,
   cachedColumns: ["stage", "amount"],
   cachedRows: [
     { stage: "Discovery", amount: 1240000 },
@@ -127,5 +129,55 @@ describe("DashboardTile", () => {
     rerender(<DashboardTile {...baseProps} editing={true} />);
     expect(container.querySelector(".dash-drag-handle")).toBeTruthy();
     restore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Text / section cards (#3138)
+// ---------------------------------------------------------------------------
+
+const textCard: DashboardCard = {
+  id: "card-text",
+  dashboardId: "dash-1",
+  position: 0,
+  title: "Top of funnel",
+  kind: "text",
+  sql: "",
+  chartConfig: null,
+  content: "## Top of funnel\n\nLeads entering the pipeline this quarter.",
+  cachedColumns: null,
+  cachedRows: null,
+  cachedAt: null,
+  connectionGroupId: null,
+  layout: { x: 0, y: 0, w: 24, h: 4 },
+  createdAt: "2026-04-25T12:00:00Z",
+  updatedAt: "2026-04-25T12:00:00Z",
+};
+
+describe("DashboardTile — text cards", () => {
+  afterEach(cleanup);
+
+  test("renders the card's markdown content (heading + body), no chart", () => {
+    const { container } = render(<DashboardTile {...baseProps} card={textCard} />);
+    const heading = container.querySelector("h2");
+    expect(heading?.textContent).toBe("Top of funnel");
+    expect(container.textContent).toContain("Leads entering the pipeline this quarter.");
+    // No chart, no data fetch — the chart slot never mounts for a text card.
+    expect(screen.queryByTestId("result-chart")).toBeNull();
+  });
+
+  test("omits chart chrome — no refresh / fullscreen / view toggle", () => {
+    render(<DashboardTile {...baseProps} card={textCard} />);
+    expect(screen.queryByRole("button", { name: "Refresh tile" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fullscreen" })).toBeNull();
+  });
+
+  test("exposes a drag handle only when editing", () => {
+    const { rerender, container } = render(
+      <DashboardTile {...baseProps} card={textCard} editing={false} />,
+    );
+    expect(container.querySelector(".dash-drag-handle")).toBeNull();
+    rerender(<DashboardTile {...baseProps} card={textCard} editing={true} />);
+    expect(container.querySelector(".dash-drag-handle")).toBeTruthy();
   });
 });

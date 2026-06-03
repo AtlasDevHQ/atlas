@@ -1744,6 +1744,13 @@ authed.openapi(refreshCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // #3138: a text / section-block card has no SQL — there's nothing to
+    // refresh. Return it unchanged rather than running it through the query
+    // pipeline (which would reject an empty query).
+    if (cardResult.data.kind === "text") {
+      return c.json(cardResult.data, 200);
+    }
+
     // Resolve group-scoped execution. A card pointing at a group with
     // zero members must NOT silently fall back to the workspace
     // default — return a typed 500 with requestId so the admin can
@@ -1847,6 +1854,13 @@ authed.openapi(renderCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // #3138: a text card has no query — render returns an empty result set
+    // (no parameters bind, no SQL runs). The tile renders its markdown, not
+    // this payload.
+    if (cardResult.data.kind === "text") {
+      return c.json({ columns: [], rows: [], truncated: false, rowCount: 0, executionMs: 0 }, 200);
+    }
+
     // Resolve + coerce the viewer's values against the declared parameters.
     // Bad values (wrong type, unparseable default) fail closed with a 400 —
     // they never reach SQL.
@@ -1948,6 +1962,9 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     // the full pipeline (validation + approval + RLS + audit) — the bulk
     // entry point is not a license to skip per-query governance.
     for (const card of cards) {
+      // #3138: text / section-block cards have no SQL — skip them (counted in
+      // `total` but never refreshed/failed).
+      if (card.kind === "text") continue;
       // Resolve group → primary member per card. A "no members" group
       // counts as a per-card failure with `reason: "group_no_members"`
       // so the bulk loop keeps draining instead of failing the whole

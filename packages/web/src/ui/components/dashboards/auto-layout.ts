@@ -1,10 +1,14 @@
 import type { DashboardCard, DashboardCardLayout } from "@/ui/lib/types";
-import { COLS, DEFAULT_TILE_H, DEFAULT_TILE_W } from "./grid-constants";
+import { COLS, DEFAULT_TEXT_TILE_H, DEFAULT_TILE_H, DEFAULT_TILE_W } from "./grid-constants";
 
 /**
  * Cards with a stored layout keep it. The rest waterfall into a 2-col grid
  * below every already-placed tile (left/right halves share a row), never
  * overlapping a stored layout.
+ *
+ * #3138: an unplaced text / section-block card lays out as a full-width band
+ * on its own row — a header spanning the charts grouped beneath it — and
+ * breaks the 2-col pairing so the next chart starts a fresh pair below it.
  */
 export function withAutoLayout(cards: DashboardCard[]): Array<DashboardCard & { resolvedLayout: DashboardCardLayout }> {
   const sorted = cards.toSorted((a, b) => a.position - b.position);
@@ -13,6 +17,11 @@ export function withAutoLayout(cards: DashboardCard[]): Array<DashboardCard & { 
   let pairStartY = 0;
   let unplacedInRun = 0;
 
+  const nextFreeY = () => {
+    const taken = placed.map((p) => p.resolvedLayout);
+    return taken.length === 0 ? 0 : Math.max(...taken.map((l) => l.y + l.h));
+  };
+
   for (const card of sorted) {
     if (card.layout) {
       placed.push({ ...card, resolvedLayout: card.layout });
@@ -20,10 +29,20 @@ export function withAutoLayout(cards: DashboardCard[]): Array<DashboardCard & { 
       continue;
     }
 
+    if (card.kind === "text") {
+      placed.push({
+        ...card,
+        resolvedLayout: { x: 0, y: nextFreeY(), w: COLS, h: DEFAULT_TEXT_TILE_H },
+      });
+      // A full-width band ends the current chart pair — the next unplaced
+      // chart starts a new left/right row beneath it.
+      unplacedInRun = 0;
+      continue;
+    }
+
     let resolvedLayout: DashboardCardLayout;
     if (unplacedInRun % 2 === 0) {
-      const taken = placed.map((p) => p.resolvedLayout);
-      pairStartY = taken.length === 0 ? 0 : Math.max(...taken.map((l) => l.y + l.h));
+      pairStartY = nextFreeY();
       resolvedLayout = { x: 0, y: pairStartY, w: half, h: DEFAULT_TILE_H };
     } else {
       resolvedLayout = { x: half, y: pairStartY, w: half, h: DEFAULT_TILE_H };

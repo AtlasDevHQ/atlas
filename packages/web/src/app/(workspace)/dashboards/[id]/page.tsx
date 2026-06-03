@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
@@ -26,6 +26,7 @@ import { friendlyError } from "@/ui/lib/fetch-error";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
+import { DashboardParameterBar, type ParameterValues } from "@/ui/components/dashboards/dashboard-parameter-bar";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
@@ -152,6 +153,13 @@ export default function DashboardViewPage() {
   // of that pattern cascaded into React #185 once refetches started landing
   // fast enough during multi-drag sessions.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
+
+  // #2267 — parameter bar state. `paramResults` holds ephemeral, per-viewer
+  // rendered rows keyed by cardId (NOT persisted to the card cache); when set,
+  // they overlay the cached snapshot on the grid. Empty override map → show the
+  // cached snapshot (rendered server-side with the parameters' defaults).
+  const [paramResults, setParamResults] = useState<Record<string, { columns: string[]; rows: Record<string, unknown>[] }>>({});
+  const [paramLoading, setParamLoading] = useState(false);
 
   // #2369 — creation-to-bound continuity. The chat-side
   // `createDashboard` tool surfaces a "Continue editing" link that
@@ -439,10 +447,19 @@ export default function DashboardViewPage() {
   const diff: DashboardDiff | null =
     dashboard && draftView ? diffDashboards(dashboard, draftView) : null;
 
+  // #2267 — overlay ephemeral parameter-rendered rows onto each card's cached
+  // fields. The tile reads `cachedColumns`/`cachedRows`, so swapping them in
+  // here renders the parameterized result with no tile-level changes. Cards
+  // with no rendered result (or when no overrides are active) fall back to the
+  // persisted cached snapshot.
   const cardsForGrid: DashboardCard[] = dashboard
-    ? dashboard.cards.map((c) =>
-        optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c,
-      )
+    ? dashboard.cards.map((c) => {
+        const withLayout = optimisticLayouts[c.id] ? { ...c, layout: optimisticLayouts[c.id] } : c;
+        const rendered = paramResults[c.id];
+        return rendered
+          ? { ...withLayout, cachedColumns: rendered.columns, cachedRows: rendered.rows }
+          : withLayout;
+      })
     : [];
 
   // The stage handler fires when the user clicks Accept / Discard in the
@@ -452,6 +469,62 @@ export default function DashboardViewPage() {
   function handleStagesChanged() {
     refetch();
     refetchStages();
+  }
+
+  // #2267 — re-render every card when the parameter bar commits a change.
+  // Renders are ephemeral (not persisted): we POST each card's /render with the
+  // override values and overlay the returned rows on the grid. A sequence guard
+  // drops stale batches so a slower earlier change can't clobber a newer one.
+  const paramReqSeq = useRef(0);
+  async function handleParamsChange(overrides: ParameterValues) {
+    if (!dashboard) return;
+    // No overrides → show the cached snapshot (server-rendered with defaults).
+    if (Object.keys(overrides).length === 0) {
+      setParamResults({});
+      setParamLoading(false);
+      return;
+    }
+    const cards = dashboard.cards;
+    const seq = ++paramReqSeq.current;
+    setParamLoading(true);
+    try {
+      const entries = await Promise.all(
+        cards.map(async (card) => {
+          try {
+            const res = await fetch(
+              `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render`,
+              {
+                method: "POST",
+                credentials: isCrossOrigin ? "include" : "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ parameters: overrides }),
+              },
+            );
+            if (!res.ok) return null;
+            const json = (await res.json()) as {
+              columns: string[];
+              rows: Record<string, unknown>[];
+            };
+            return [card.id, { columns: json.columns, rows: json.rows }] as const;
+          } catch (err) {
+            console.debug(
+              "[dashboard] card render failed:",
+              err instanceof Error ? err.message : String(err),
+            );
+            return null;
+          }
+        }),
+      );
+      // A newer change superseded this batch — discard its results.
+      if (seq !== paramReqSeq.current) return;
+      const next: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {};
+      for (const entry of entries) {
+        if (entry) next[entry[0]] = entry[1];
+      }
+      setParamResults(next);
+    } finally {
+      if (seq === paramReqSeq.current) setParamLoading(false);
+    }
   }
 
   return (
@@ -526,6 +599,14 @@ export default function DashboardViewPage() {
               error={draftError}
               onDismissError={clearDraftError}
             />
+
+            {dashboard.parameters.length > 0 && (
+              <DashboardParameterBar
+                parameters={dashboard.parameters}
+                onChange={handleParamsChange}
+                loading={paramLoading}
+              />
+            )}
 
             {mutationError && (
               <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 sm:mx-6">

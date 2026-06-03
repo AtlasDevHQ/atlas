@@ -110,6 +110,7 @@ const mockDashboardData = {
   shareExpiresAt: null,
   shareMode: "public",
   refreshSchedule: null,
+  parameters: [],
   cardCount: 0,
   createdAt: "2026-04-04T00:00:00.000Z",
   updatedAt: "2026-04-04T00:00:00.000Z",
@@ -321,7 +322,7 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
 }));
 
 type UserQueryOutcomeMock = import("@atlas/api/lib/tools/sql").UserQueryOutcome;
-const mockRunUserQueryPipeline: Mock<(opts: { sql: string; connectionId?: string; explanation: string }) => Promise<UserQueryOutcomeMock>> = mock(
+const mockRunUserQueryPipeline: Mock<(opts: { sql: string; connectionId?: string; explanation: string; parameters?: Record<string, string | number | null> }) => Promise<UserQueryOutcomeMock>> = mock(
   async () =>
     ({
       kind: "ok" as const,
@@ -927,6 +928,91 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(404);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/dashboards/:id/cards/:cardId/render — parameter-aware render
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/dashboards/:id/cards/:cardId/render", () => {
+    const paramDashboard = {
+      ...mockDashboardData,
+      parameters: [
+        { key: "date_from", type: "date", default: "now - 30 days", label: "From" },
+        { key: "q", type: "text", default: null, label: "Search" },
+      ],
+      cards: [],
+    };
+    const paramCard = {
+      ...mockCardData,
+      sql: "SELECT * FROM orders WHERE created_at >= :date_from AND note = :q",
+    };
+
+    it("forwards supplied parameter values to the pipeline (bound, never interpolated)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+      // An injection-shaped value for a free-text parameter.
+      const malicious = "x'; DROP TABLE orders; --";
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01", q: malicious } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      // The card SQL passed to the pipeline keeps its :placeholders — the value
+      // is NOT spliced into the query text.
+      expect(callArgs.sql).toContain(":date_from");
+      expect(callArgs.sql).toContain(":q");
+      expect(callArgs.sql).not.toContain("DROP TABLE");
+      // The malicious value travels only via the parameters map (→ bind array).
+      expect(callArgs.parameters).toMatchObject({ date_from: "2026-01-01", q: malicious });
+    });
+
+    it("falls back to defaults for omitted parameters", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { q: "paid" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      // date_from defaulted (a resolved ISO date), q supplied.
+      expect(callArgs.parameters?.q).toBe("paid");
+      expect(callArgs.parameters?.date_from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it("rejects an invalid parameter value with 400 (never reaches the pipeline)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "not-a-date" } }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_parameters");
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
     });
   });
 

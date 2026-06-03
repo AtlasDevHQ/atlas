@@ -27,6 +27,12 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSourceSlot } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
+import {
+  extractPlaceholderNames,
+  bindDashboardParameters,
+  isBindableDbType,
+  DashboardParameterError,
+} from "@atlas/api/lib/dashboard-parameters";
 import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
@@ -970,6 +976,9 @@ function executeAndAuditEffect(opts: {
   cacheKey: string | null;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
+  /** Positional bind values for parameterized queries (#2267) — forwarded to
+   *  the driver's bind protocol, never interpolated into `querySql`. */
+  bindParams?: readonly unknown[];
   /** Parent audit row id when this execution is one leg of a fanout. */
   parentAuditId?: string;
   /** Routing mode for the parent `executeSQL` call. Stamped on the OTel span. */
@@ -982,7 +991,7 @@ function executeAndAuditEffect(opts: {
   const {
     db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
     rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
-    parentAuditId, routingMode, connectionGroupId, routingReason,
+    bindParams, parentAuditId, routingMode, connectionGroupId, routingReason,
   } = opts;
   // Pool metrics key off the served pool; SLA + masking stay on `orgId`.
   const metricsOrgId = poolOrgId ?? orgId;
@@ -1005,7 +1014,7 @@ function executeAndAuditEffect(opts: {
       withSpan(
         "atlas.sql.execute",
         spanAttrs,
-        () => db.query(querySql, queryTimeout),
+        () => db.query(querySql, queryTimeout, bindParams),
         (r) => ({ "atlas.row_count": r.rows.length, "atlas.column_count": r.columns.length }),
       ),
     catch: (err) => {
@@ -1242,6 +1251,15 @@ export interface RunUserQueryOpts {
   readonly connectionId?: string;
   /** Audit + approval surface description (e.g. "Dashboard preview: Weekly signups"). */
   readonly explanation: string;
+  /**
+   * Resolved dashboard parameter values keyed by parameter key (#2267). When
+   * `sql` carries `:<key>` placeholders, each name is rewritten to a positional
+   * bind and its value is pulled from here — values reach the DB ONLY through
+   * the driver's bind protocol, never string interpolation. Produced by
+   * `resolveDashboardParameterValues`. Required (per-placeholder) whenever the
+   * SQL has placeholders: a missing value is rejected, not interpolated.
+   */
+  readonly parameters?: Record<string, string | number | null>;
 }
 
 /**
@@ -1264,7 +1282,37 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
 
     const targetHost = connections.getTargetHost(connId, authOrgId);
     const customValidator = connections.getValidator(connId, authOrgId);
-    const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+    let normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
+
+    // Dashboard parameters (#2267): rewrite `:<key>` placeholders to the
+    // dialect's positional binds and resolve the aligned value array. The
+    // bound SQL (positional placeholders) is what gets validated, RLS-injected,
+    // and executed; the values reach the DB ONLY through the driver bind
+    // protocol. Any SQL carrying placeholders MUST arrive with resolved values
+    // — a missing value or a non-bindable dialect is rejected (fail closed),
+    // never sent to the DB with a raw `:name` or interpolated.
+    let bindParams: readonly unknown[] | undefined;
+    if (extractPlaceholderNames(normalizedSql).length > 0) {
+      if (!isBindableDbType(dbType)) {
+        return {
+          kind: "validation_failed" as const,
+          message: "Parameterized queries are supported on PostgreSQL and MySQL datasources only.",
+        };
+      }
+      try {
+        const bound = bindDashboardParameters(normalizedSql, opts.parameters ?? {}, dbType);
+        normalizedSql = bound.sql;
+        bindParams = bound.values;
+      } catch (err) {
+        return {
+          kind: "validation_failed" as const,
+          message:
+            err instanceof DashboardParameterError
+              ? err.message
+              : "Failed to bind query parameters.",
+        };
+      }
+    }
 
     const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator, authOrgId);
     if (!initial.ok) {
@@ -1379,7 +1427,11 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
           },
         });
         const hookMetadata: Record<string, unknown> = {};
-        const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
+        // Use the bound SQL (positional placeholders) so the beforeQuery hook,
+        // re-validation, RLS, and execution all operate on the same string the
+        // bind array aligns to (#2267). Plugins that rewrite SQL must preserve
+        // placeholder order for parameterized cards.
+        const hookCtx = { sql: normalizedSql, connectionId: connId, metadata: hookMetadata };
         const mutatedSql = yield* Effect.tryPromise({
           try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
           catch: (err) => {
@@ -1428,7 +1480,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
         const result = yield* executeAndAuditEffect({
           db, dbType, connId, orgId, poolOrgId, targetHost, querySql, queryTimeout,
           rowLimit, explanation, classification, cacheKey: null,
-          hookMetadata, dispatchHook,
+          hookMetadata, dispatchHook, bindParams,
         });
         return {
           kind: "ok" as const,

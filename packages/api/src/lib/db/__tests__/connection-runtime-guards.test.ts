@@ -51,7 +51,9 @@ describe("runtime guards — PostgreSQL driver (anchored to executable call)", (
     // anchor above is the primary defense — this test is the secondary pin).
     const tIdx = connSrc.indexOf("await client.query(`SET statement_timeout");
     const roIdx = connSrc.indexOf('await client.query("SET default_transaction_read_only');
-    const userQueryIdx = connSrc.indexOf("const result = await client.query(sql);");
+    // The user query runs through the bind-aware ternary (#2267) — anchor on
+    // the parameterized branch, which sits after both SET guards.
+    const userQueryIdx = connSrc.indexOf("? await client.query(sql, params as unknown[])");
     expect(tIdx).toBeGreaterThan(-1);
     expect(roIdx).toBeGreaterThan(-1);
     expect(userQueryIdx).toBeGreaterThan(-1);
@@ -75,6 +77,26 @@ describe("runtime guards — MySQL driver (anchored to executable call)", () => 
     // moving it elsewhere (e.g. at the boundary of the driver call) still
     // counts as intact.
     expect(connSrc).toMatch(/Math\.floor\(timeoutMs\)/);
+  });
+});
+
+describe("runtime guards — parameter binding (#2267)", () => {
+  // The security property: dashboard parameter values reach the database ONLY
+  // through the driver's bind protocol (a separate `params` array), never
+  // concatenated into the SQL string. These anchor on the executable call so a
+  // refactor that drops the params arg — reverting to interpolation — fails.
+  it("PostgreSQL forwards bind values as client.query's params array", () => {
+    expect(connSrc).toMatch(/await client\.query\(sql, params as unknown\[\]\)/);
+  });
+
+  it("MySQL forwards bind values as conn.execute's params array", () => {
+    expect(connSrc).toMatch(/await conn\.execute\(sql, params as unknown\[\]\)/);
+  });
+
+  it("never string-concatenates the params array into the query text", () => {
+    // A defense against the obvious regression: building `sql + params...`.
+    expect(connSrc).not.toMatch(/query\(\s*sql\s*\+/);
+    expect(connSrc).not.toMatch(/execute\(\s*sql\s*\+/);
   });
 });
 

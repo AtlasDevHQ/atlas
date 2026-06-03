@@ -83,7 +83,16 @@ export interface QueryResult {
 export type { PoolStats, OrgPoolMetrics } from "@useatlas/types";
 
 export interface DBConnection {
-  query(sql: string, timeoutMs?: number): Promise<QueryResult>;
+  /**
+   * Execute a read-only query. `params` carries positional bind values for
+   * parameterized queries (`$1`/`$2` on PostgreSQL, `?` on MySQL) — used by
+   * the dashboard-parameters path (#2267) so viewer-supplied values reach the
+   * database via the driver's bind protocol, never string interpolation.
+   * Parameter binding is supported on the core PostgreSQL/MySQL adapters only;
+   * plugin connections ignore `params` (the pipeline rejects parameterized
+   * execution on non-core dialects before it gets here).
+   */
+  query(sql: string, timeoutMs?: number, params?: readonly unknown[]): Promise<QueryResult>;
   close(): Promise<void>;
   /** Return real-time pool counters, or null if not available. Postgres returns live stats; MySQL and plugin connections return null. */
   getPoolStats?(): import("@useatlas/types").PoolStats | null;
@@ -237,7 +246,7 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
   let schemaCheckPromise: Promise<void> | null = null;
 
   return {
-    async query(sql: string, timeoutMs = 30000) {
+    async query(sql: string, timeoutMs = 30000, params?: readonly unknown[]) {
       const client = await pool.connect();
       try {
         // Verify the schema exists (once, shared across concurrent callers).
@@ -285,7 +294,12 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
 
         await client.query(`SET statement_timeout = ${timeoutMs}`);
         await client.query("SET default_transaction_read_only = on");
-        const result = await client.query(sql);
+        // Positional bind values (e.g. dashboard parameters) go through pg's
+        // parameterized form — never interpolated into `sql`.
+        const result =
+          params && params.length > 0
+            ? await client.query(sql, params as unknown[])
+            : await client.query(sql);
         const columns = result.fields.map(
           (f: { name: string }) => f.name
         );
@@ -321,7 +335,7 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
   });
 
   return {
-    async query(sql: string, timeoutMs = 30000) {
+    async query(sql: string, timeoutMs = 30000, params?: readonly unknown[]) {
       const conn = await pool.getConnection();
       try {
         // Defense-in-depth: read-only session prevents DML even if validation has a bug
@@ -329,7 +343,12 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
         // Per-query timeout via session variable (works for all query shapes including CTEs)
         const safeTimeout = Number.isFinite(timeoutMs) ? Math.max(0, Math.floor(timeoutMs)) : 30000;
         await conn.execute(`SET SESSION MAX_EXECUTION_TIME = ${safeTimeout}`);
-        const [rows, fields] = await conn.execute(sql);
+        // Positional bind values (e.g. dashboard parameters) go through the
+        // prepared-statement (`?`) form — never interpolated into `sql`.
+        const [rows, fields] =
+          params && params.length > 0
+            ? await conn.execute(sql, params as unknown[])
+            : await conn.execute(sql);
         const columns = (fields as { name: string }[]).map((f) => f.name);
         return { columns, rows: rows as Record<string, unknown>[] };
       } finally {

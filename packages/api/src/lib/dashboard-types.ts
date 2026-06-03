@@ -12,6 +12,8 @@ export type {
   DashboardCard,
   DashboardWithCards,
   DashboardSuggestion,
+  DashboardParameter,
+  DashboardParameterType,
 } from "@useatlas/types";
 
 export { CHART_TYPES } from "@useatlas/types";

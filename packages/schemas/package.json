@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/schemas",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Shared Zod schemas for Atlas wire format — single source of truth for API route validation and web response parsing",
   "type": "module",
   "private": true,
@@ -19,6 +19,7 @@
     "./common": "./src/common.ts",
     "./connection": "./src/connection.ts",
     "./custom-domain": "./src/custom-domain.ts",
+    "./dashboard": "./src/dashboard.ts",
     "./integrations": "./src/integrations.ts",
     "./mcp-prompts": "./src/mcp-prompts.ts",
     "./mcp-usage": "./src/mcp-usage.ts",

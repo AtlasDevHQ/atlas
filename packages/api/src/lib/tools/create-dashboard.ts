@@ -44,9 +44,11 @@ import * as crypto from "crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import { CHART_TYPES } from "@useatlas/types";
+import { dashboardParametersSchema } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
+import { extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
 import { CardLayoutSchema } from "@atlas/api/lib/dashboards";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/dashboard-versioning";
@@ -106,7 +108,9 @@ A typical flow:
 
 Layout is optional — the dashboard auto-arranges cards if you omit it. Grid is 24 columns wide; common widths are 12 (half) and 24 (full); common heights are 8 (chart) and 4 (KPI / small table). chartConfig.type is one of: ${CHART_TYPES.join(", ")}.
 
-If any card has invalid SQL the whole call is rejected — no dashboard row is created. Fix the failing card and call again.`,
+PARAMETERS (date ranges + filters): pass a \`parameters\` array to give the dashboard a top-level filter bar that every card binds to. Each parameter is { key, type, default, label } where type is "date" | "text" | "number". In card SQL, reference a parameter as \`:<key>\` (e.g. \`:date_from\`, \`:date_to\`, \`:region\`). For ANY "last N days" / "this quarter" / "year to date" query, declare \`date_from\` + \`date_to\` parameters and write \`WHERE created_at >= :date_from AND created_at < :date_to\` instead of hardcoding the dates — that keeps the dashboard useful for months instead of ageing in days. Date defaults accept ISO dates or relative expressions like "now - 30 days" / "now - 1 month" / "now". Every \`:placeholder\` a card uses MUST be declared in \`parameters\` (values are bound server-side as real query parameters, never interpolated).
+
+If any card has invalid SQL or references an undeclared parameter, the whole call is rejected — no dashboard row is created. Fix the failing card and call again.`,
 
   inputSchema: z.object({
     title: z.string().min(1).max(200).describe("Dashboard title"),
@@ -115,10 +119,15 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
       .max(2000)
       .optional()
       .describe("Optional one-line description of what the dashboard shows"),
+    parameters: dashboardParametersSchema
+      .optional()
+      .describe(
+        'Top-level dashboard parameters cards bind to via :<key> placeholders. Each is { key, type: "date"|"text"|"number", default, label }. Use :date_from / :date_to for any relative time range instead of hardcoding dates.',
+      ),
     cards: z.array(CardSchema).min(1).max(12).describe("Cards to create"),
   }),
 
-  execute: async ({ title, description, cards }): Promise<CreateDashboardResult> => {
+  execute: async ({ title, description, parameters, cards }): Promise<CreateDashboardResult> => {
     // ---- guard rails (resolve owner / org before opening a transaction) ----
     if (!hasInternalDB()) {
       // Same sanitized envelope as every other failure — agent gets a
@@ -191,6 +200,39 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
         };
       }
 
+      // ---- placeholder declaration check ----
+      // Every `:placeholder` a card references must be declared in
+      // `parameters` — values bind server-side, so an undeclared placeholder
+      // would fail at render time. Reject up front with an actionable message
+      // (#2267).
+      const declaredKeys = new Set((parameters ?? []).map((p) => p.key));
+      const placeholderErrors: CreateDashboardCardValidationError[] = [];
+      for (let idx = 0; idx < cards.length; idx++) {
+        const card = cards[idx];
+        const undeclared = extractPlaceholderNames(card.sql).filter((name) => !declaredKeys.has(name));
+        if (undeclared.length > 0) {
+          placeholderErrors.push({
+            cardIndex: idx,
+            cardTitle: card.title,
+            error: `references undeclared parameter(s): ${undeclared.map((n) => `:${n}`).join(", ")}. Add them to the dashboard's parameters.`,
+          });
+        }
+      }
+      if (placeholderErrors.length > 0) {
+        log.warn(
+          { invalid: placeholderErrors, title },
+          "createDashboard rejecting — card references undeclared parameters",
+        );
+        return {
+          kind: "err",
+          error:
+            placeholderErrors.length === 1
+              ? `Card "${placeholderErrors[0].cardTitle}" ${placeholderErrors[0].error}`
+              : `${placeholderErrors.length} cards reference undeclared parameters. Declare them and call createDashboard again.`,
+          validationErrors: placeholderErrors,
+        };
+      }
+
       // ---- transactional persist ----
       // The transaction wraps: (1) INSERT dashboards (returning id), and
       // (2) INSERT dashboard_user_drafts (the staged card snapshot).
@@ -203,10 +245,10 @@ If any card has invalid SQL the whole call is rejected — no dashboard row is c
         await client.query("BEGIN");
 
         const dashRows = await client.query(
-          `INSERT INTO dashboards (owner_id, org_id, title, description)
-           VALUES ($1, $2, $3, $4)
+          `INSERT INTO dashboards (owner_id, org_id, title, description, parameters)
+           VALUES ($1, $2, $3, $4, $5::jsonb)
            RETURNING id, title, description, updated_at`,
-          [ownerId, orgId, title, description ?? null],
+          [ownerId, orgId, title, description ?? null, JSON.stringify(parameters ?? [])],
         );
         if (dashRows.rows.length === 0) {
           throw new Error("dashboards INSERT returned no rows");

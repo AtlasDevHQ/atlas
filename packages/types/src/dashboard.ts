@@ -13,6 +13,23 @@ export interface DashboardChartConfig {
   valueColumns: string[];
 }
 
+/**
+ * Card discriminator (#3138 — text / section blocks).
+ *
+ * `chart` is the original SQL-backed card (a query + a {@link DashboardChartConfig});
+ * `text` is a markdown section block — a header or explainer with **no SQL, no
+ * chart, and no data fetch** — used to group a wall of charts under section
+ * headers. The discriminator is its own field rather than an entry in
+ * {@link CHART_TYPES} because a text card has no `sql`/`chartConfig` to overload.
+ *
+ * Derived server-side from the presence of `content` (a text card always carries
+ * markdown; a chart card never does), so there is no `kind` column on
+ * `dashboard_cards` — see the read path in `@atlas/api/lib/dashboards`
+ * (`rowToCard`). The runtime Zod mirror is `dashboardCardKindSchema` in
+ * `@useatlas/schemas`.
+ */
+export type DashboardCardKind = "chart" | "text";
+
 // ---------------------------------------------------------------------------
 // Dashboard parameters (#2267 — parameters slice)
 //
@@ -86,8 +103,26 @@ export interface DashboardCard {
   dashboardId: string;
   position: number;
   title: string;
+  /**
+   * Discriminates a SQL-backed `chart` card from a markdown `text` /
+   * section-block card (#3138). Derived server-side from `content` presence;
+   * always populated on the wire so the renderer can branch without inspecting
+   * `sql`/`chartConfig`.
+   */
+  kind: DashboardCardKind;
+  /**
+   * SQL query for a `chart` card. A `text` card has no query — it carries the
+   * empty string here (`content` holds its markdown instead) and never reaches
+   * the SQL validation/execution pipeline.
+   */
   sql: string;
   chartConfig: DashboardChartConfig | null;
+  /**
+   * Markdown body for a `text` card (#3138), rendered SANITIZED (no raw HTML).
+   * `null` for a `chart` card. A text card renders with no data fetch and no
+   * SQL-guard involvement.
+   */
+  content: string | null;
   cachedColumns: string[] | null;
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;

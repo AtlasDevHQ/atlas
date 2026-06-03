@@ -5,8 +5,10 @@ import { describeFieldChange, diffDashboards } from "../dashboard-diff";
 const BASE_CARD: Omit<DashboardCard, "id" | "position"> = {
   dashboardId: "d1",
   title: "Card",
+  kind: "chart",
   sql: "SELECT 1",
   chartConfig: null,
+  content: null,
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,
@@ -142,6 +144,25 @@ describe("diffDashboards", () => {
     const diff = diffDashboards(p, d);
     expect(diff.changed[0].changes[0].field).toBe("connectionGroup");
   });
+
+  // #3138 — a text card's only substantive field is its markdown `content`.
+  // sql ("") and chartType (null) never move, so without the content arm a
+  // content-only edit would be invisible and the Publish gate would block it.
+  test("a text card's content edit surfaces as a change (not empty)", () => {
+    const textCard = { kind: "text" as const, sql: "", chartConfig: null };
+    const p = dashboard([card({ id: "t", ...textCard, content: "## Top of funnel" })]);
+    const d = dashboard([card({ id: "t", ...textCard, content: "## Top of funnel (rev)" })]);
+    const diff = diffDashboards(p, d);
+    expect(diff.empty).toBe(false);
+    expect(diff.changed).toHaveLength(1);
+    expect(diff.changed[0].changes.map((c) => c.field)).toEqual(["content"]);
+  });
+
+  test("an unchanged text card produces no diff", () => {
+    const textCard = { kind: "text" as const, sql: "", chartConfig: null, content: "## Same" };
+    const diff = diffDashboards(dashboard([card({ id: "t", ...textCard })]), dashboard([card({ id: "t", ...textCard })]));
+    expect(diff.empty).toBe(true);
+  });
 });
 
 describe("describeFieldChange", () => {
@@ -183,5 +204,11 @@ describe("describeFieldChange", () => {
         after: '{"x":6,"y":0,"w":6,"h":4}',
       }),
     ).toBe("Moved or resized");
+  });
+
+  test("text content change is a generic label", () => {
+    expect(
+      describeFieldChange({ field: "content", before: "## A", after: "## B" }),
+    ).toBe("Section text updated");
   });
 });

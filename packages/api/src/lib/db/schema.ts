@@ -1702,6 +1702,11 @@ export const dashboardCards = pgTable(
     title: text("title").notNull(),
     sql: text("sql").notNull(),
     chartConfig: jsonb("chart_config"),
+    // 0117: markdown body of a `text` / section-block card (#3138). NULL for a
+    // chart card; the card kind is DERIVED from this column's presence in
+    // `rowToCard` (no `kind` column). A text card stores sql = '' and
+    // chart_config = NULL and never reaches the SQL pipeline.
+    content: text("content"),
     cachedColumns: jsonb("cached_columns"),
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),

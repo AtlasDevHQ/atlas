@@ -25,6 +25,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { DataTable } from "@/ui/components/chat/data-table";
+import { Markdown } from "@/ui/components/chat/markdown";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
@@ -62,7 +63,17 @@ interface DashboardTileProps {
   onUpdateTitle: (cardId: string, title: string) => void;
 }
 
-export function DashboardTile({
+/**
+ * Tile dispatcher (#3138). A `text` / section-block card renders markdown with
+ * no chart, data fetch, or refresh chrome; everything else is a SQL-backed
+ * chart tile. Kept hook-free so each concrete tile owns a stable hook order.
+ */
+export function DashboardTile(props: DashboardTileProps) {
+  if (props.card.kind === "text") return <TextTile {...props} />;
+  return <ChartTile {...props} />;
+}
+
+function ChartTile({
   card,
   editing,
   fullscreen,
@@ -337,6 +348,53 @@ export function DashboardTile({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * #3138 — a text / section-block tile. Renders the card's markdown SANITIZED
+ * via the shared chat `<Markdown>` (react-markdown, no `rehype-raw`, so raw
+ * HTML is never evaluated). No data fetch, no chart, no refresh/fullscreen
+ * chrome — just a drag handle + remove/duplicate in edit mode. Participates in
+ * the same 24-col grid as every other tile.
+ */
+function TextTile({ card, editing, onDelete }: DashboardTileProps) {
+  return (
+    <div
+      data-card-kind="text"
+      className={cn(
+        "dash-tile dash-text-tile group/text relative flex h-full w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-zinc-900 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100",
+        "hover:border-zinc-300 dark:hover:border-zinc-700",
+      )}
+    >
+      {editing && (
+        // Section blocks support drag-to-reorder + remove in edit mode. They
+        // intentionally omit Duplicate: copying a card POSTs to the chart-only
+        // REST `addCard` endpoint (sql + chartConfig), which a text card has
+        // neither of — text-card duplication is a separate follow-up.
+        <div className="dash-drag-handle flex shrink-0 cursor-grab items-center gap-2 border-b border-zinc-100 px-3 py-1.5 active:cursor-grabbing dark:border-zinc-800/80">
+          <span aria-hidden className="flex items-center text-zinc-400 dark:text-zinc-500">
+            <GripVertical className="size-3.5" />
+          </span>
+          <span className="flex-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+            Text
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 text-zinc-500 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400"
+            onClick={() => onDelete(card)}
+            aria-label="Remove tile"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
+      )}
+
+      <div className="dash-text-tile-body min-h-0 flex-1 overflow-auto px-4 py-3 text-sm leading-relaxed">
+        <Markdown content={card.content ?? ""} />
+      </div>
     </div>
   );
 }

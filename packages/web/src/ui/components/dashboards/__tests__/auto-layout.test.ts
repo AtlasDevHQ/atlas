@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { DashboardCard } from "@/ui/lib/types";
 import { nextTileLayout, withAutoLayout } from "../auto-layout";
+import { COLS, DEFAULT_TEXT_TILE_H, DEFAULT_TILE_H } from "../grid-constants";
 
 const DEFAULT_CARD: Omit<DashboardCard, "id" | "position" | "layout"> = {
   dashboardId: "d1",
   title: "Untitled",
+  kind: "chart",
   sql: "SELECT 1",
   chartConfig: null,
+  content: null,
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,
@@ -17,6 +20,10 @@ const DEFAULT_CARD: Omit<DashboardCard, "id" | "position" | "layout"> = {
 
 function card(overrides: Partial<DashboardCard> & { id: string; position: number }): DashboardCard {
   return { ...DEFAULT_CARD, layout: null, ...overrides };
+}
+
+function textCard(overrides: Partial<DashboardCard> & { id: string; position: number }): DashboardCard {
+  return card({ kind: "text", sql: "", content: "## Section", ...overrides });
 }
 
 describe("withAutoLayout", () => {
@@ -55,6 +62,39 @@ describe("withAutoLayout", () => {
       card({ id: "first", position: 1 }),
     ]);
     expect(result.map((r) => r.id)).toEqual(["first", "second"]);
+  });
+
+  // #3138 — text / section-block bands.
+  test("an unplaced text card lays out full-width", () => {
+    const [placed] = withAutoLayout([textCard({ id: "t1", position: 0 })]);
+    expect(placed.resolvedLayout).toEqual({ x: 0, y: 0, w: COLS, h: DEFAULT_TEXT_TILE_H });
+  });
+
+  test("a text card breaks the 2-col chart pairing into a fresh row beneath it", () => {
+    const placed = withAutoLayout([
+      card({ id: "c1", position: 0 }),
+      card({ id: "c2", position: 1 }),
+      textCard({ id: "t1", position: 2 }),
+      card({ id: "c3", position: 3 }),
+      card({ id: "c4", position: 4 }),
+    ]);
+    const byId = Object.fromEntries(placed.map((p) => [p.id, p.resolvedLayout]));
+
+    // First two charts share the top row (left/right halves).
+    expect(byId.c1).toMatchObject({ x: 0, y: 0 });
+    expect(byId.c2).toMatchObject({ x: 12, y: 0 });
+    // Full-width band on its own row below them.
+    expect(byId.t1).toEqual({ x: 0, y: DEFAULT_TILE_H, w: COLS, h: DEFAULT_TEXT_TILE_H });
+    // Next chart starts a NEW left-half pair below the band.
+    expect(byId.c3.x).toBe(0);
+    expect(byId.c3.y).toBe(DEFAULT_TILE_H + DEFAULT_TEXT_TILE_H);
+    expect(byId.c4).toMatchObject({ x: 12, y: byId.c3.y });
+  });
+
+  test("a text card with a stored layout keeps it", () => {
+    const stored = { x: 2, y: 5, w: 10, h: 6 };
+    const [placed] = withAutoLayout([textCard({ id: "t1", position: 0, layout: stored })]);
+    expect(placed.resolvedLayout).toEqual(stored);
   });
 });
 

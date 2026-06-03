@@ -90,4 +90,17 @@ describe("Markdown", () => {
     expect(container.textContent).toContain("Col A");
     expect(container.textContent).toContain("Col B");
   });
+
+  // No `rehype-raw` is configured, so raw HTML in markdown is rendered as inert
+  // text rather than live DOM. This is the sanitization guarantee dashboard
+  // text/section cards (#3138) rely on — they render untrusted-ish markdown.
+  test("does NOT evaluate raw HTML (sanitization)", () => {
+    const { container } = render(
+      <Markdown content={'<script>alert("xss")</script><img src=x onerror="alert(1)">'} />,
+    );
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    // The tags survive as visible text, proving they were escaped, not executed.
+    expect(container.textContent).toContain("<script>");
+  });
 });

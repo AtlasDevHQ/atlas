@@ -17,6 +17,7 @@ import {
 import type {
   Dashboard,
   DashboardCard,
+  DashboardCardKind,
   DashboardCardLayout,
   DashboardWithCards,
   DashboardChartConfig,
@@ -146,13 +147,25 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     }
   }
 
+  // #3138: a card's kind is DERIVED from `content` presence — a text /
+  // section-block card always carries NON-EMPTY markdown (the persist schema
+  // enforces `.min(1)`), a chart card never does. No `kind` column; this is the
+  // single point where the discriminator is read, so it defends its own
+  // invariant: an empty / whitespace-only `content` degrades to a chart card
+  // rather than a silently-blank text tile.
+  const rawContent = typeof r.content === "string" ? r.content : null;
+  const content = rawContent && rawContent.trim().length > 0 ? rawContent : null;
+  const kind: DashboardCardKind = content != null ? "text" : "chart";
+
   return {
     id: r.id as string,
     dashboardId: r.dashboard_id as string,
     position: typeof r.position === "number" ? r.position : 0,
     title: r.title as string,
+    kind,
     sql: r.sql as string,
     chartConfig,
+    content,
     cachedColumns,
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
@@ -915,6 +928,10 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
   let failed = 0;
 
   for (const card of cards) {
+    // #3138: a text / section-block card has no SQL — skip it entirely
+    // (no validation, no execution, no cache write). It stays counted in
+    // `total` but never in refreshed/failed.
+    if (card.kind === "text") continue;
     try {
       // Resolve group → primary member before validation so the
       // connectionId-keyed whitelist lookup runs against the right

@@ -43,7 +43,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   runUserQueryPipeline: undefined as never,
 }));
 
-const { createDashboard } = await import("@atlas/api/lib/tools/create-dashboard");
+const { createDashboard, deriveTextCardTitle } = await import("@atlas/api/lib/tools/create-dashboard");
 
 // ---------------------------------------------------------------------------
 // Mock Postgres pool — distinguishes pool.query() from client.query() so the
@@ -352,6 +352,112 @@ describe("createDashboard tool", () => {
     expect(validateSQLMock).toHaveBeenCalledTimes(2);
     expect(validateSQLMock.mock.calls[0]).toEqual(["SELECT 1", undefined]);
     expect(validateSQLMock.mock.calls[1]).toEqual(["SELECT 2", "analytics-replica"]);
+  });
+
+  // -------------------------------------------------------------------
+  // Text / section cards (#3138)
+  // -------------------------------------------------------------------
+
+  it("stages a text card with no SQL — content set, sql empty, chartConfig null, no validation", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-tx", title: "Funnel", description: null, updated_at: "2026-06-03" }] },
+      { rows: [] }, // draft
+      { rows: [] }, // COMMIT
+    );
+
+    const result = await run({
+      title: "Funnel",
+      cards: [
+        { kind: "text", content: "## Top of funnel" },
+        {
+          title: "Signups by week",
+          sql: "SELECT week, COUNT(*) AS n FROM signups GROUP BY week",
+          chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["n"] },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    if (result.kind === "ok") expect(result.cardCount).toBe(2);
+
+    // Only the chart card was SQL-validated — the text card skipped validation.
+    expect(validateSQLMock).toHaveBeenCalledTimes(1);
+    expect(validateSQLMock.mock.calls[0][0]).toBe(
+      "SELECT week, COUNT(*) AS n FROM signups GROUP BY week",
+    );
+
+    const draftParams = clientQueryCalls[2].params!;
+    const snapshot = JSON.parse(draftParams[2] as string);
+    expect(snapshot.cards).toHaveLength(2);
+
+    const textCard = snapshot.cards[0];
+    expect(textCard.content).toBe("## Top of funnel");
+    expect(textCard.sql).toBe("");
+    expect(textCard.chartConfig).toBeNull();
+    // Title derived from the markdown heading (the agent omitted `title`).
+    expect(textCard.title).toBe("Top of funnel");
+    expect(textCard.connectionGroupId).toBeNull();
+    expect(textCard.position).toBe(0);
+
+    const chartCard = snapshot.cards[1];
+    expect(chartCard.content).toBeNull();
+    expect(chartCard.sql).toBe("SELECT week, COUNT(*) AS n FROM signups GROUP BY week");
+    expect(chartCard.position).toBe(1);
+  });
+
+  it("a text card never triggers SQL validation or the undeclared-parameter check", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] },
+      { rows: [{ id: "d-only-text", title: "Notes", description: null, updated_at: "2026-06-03" }] },
+      { rows: [] },
+      { rows: [] },
+    );
+    // A ':token' inside markdown must NOT be treated as a SQL placeholder.
+    const result = await run({
+      title: "Notes",
+      cards: [{ kind: "text", content: "See cohort :not_a_param notes" }],
+    });
+    expect(result.kind).toBe("ok");
+    expect(validateSQLMock).toHaveBeenCalledTimes(0);
+  });
+
+  it("rejects a mixed payload — a text card carrying sql/chartConfig fails the input schema", () => {
+    // Strict schemas: a text card must not smuggle chart fields past the
+    // SQL validation it skips. The agent boundary validates against inputSchema
+    // (a Zod schema at runtime; the AI SDK types it as FlexibleSchema, so cast).
+    const schema = createDashboard.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const mixed = schema.safeParse({
+      title: "Bad",
+      cards: [{ kind: "text", content: "## Hi", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] } }],
+    });
+    expect(mixed.success).toBe(false);
+    // A clean text card and a clean chart card both still parse.
+    expect(
+      schema.safeParse({ title: "Ok", cards: [{ kind: "text", content: "## Hi" }] }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({
+        title: "Ok",
+        cards: [{ title: "C", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] } }],
+      }).success,
+    ).toBe(true);
+  });
+
+  describe("deriveTextCardTitle", () => {
+    it("strips a leading markdown heading marker", () => {
+      expect(deriveTextCardTitle("## Top of funnel")).toBe("Top of funnel");
+    });
+    it("uses the first non-empty line", () => {
+      expect(deriveTextCardTitle("\n\n- A bullet\nmore")).toBe("A bullet");
+    });
+    it("falls back to 'Section' for blank content", () => {
+      expect(deriveTextCardTitle("   \n  ")).toBe("Section");
+    });
   });
 
   // -------------------------------------------------------------------

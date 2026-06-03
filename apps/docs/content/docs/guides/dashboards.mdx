@@ -5,7 +5,7 @@ description: Save query results as persistent cards, build visual layouts, share
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Dashboards let you pin query results from chat and organize them into persistent, shareable layouts. Each card stores its SQL, chart configuration, and cached results — and can be refreshed on demand or on a schedule.
+Dashboards let you pin query results from chat and organize them into persistent, shareable layouts. **Chart cards** store a SQL query, chart configuration, and cached results — refreshable on demand or on a schedule; **text cards** store markdown for [section headers](#section-headers-text-cards) and explainers (no SQL, no data).
 
 <Callout title="Prerequisites">
 - An [internal database](/deployment/authentication#managed-auth) configured (`DATABASE_URL`)
@@ -34,7 +34,7 @@ Navigate to `/dashboards` to see all dashboards. Click **New Dashboard** to crea
 
 ## Managing Cards
 
-Each dashboard card shows:
+A dashboard holds two kinds of card: **chart cards** (a SQL query + a visualization) and **text cards** (markdown [section headers](#section-headers-text-cards)). Each chart card shows:
 
 - **Title** — click to edit inline
 - **Chart visualization** — rendered from cached data (if chart type is not "table")
@@ -55,6 +55,20 @@ Single-environment workspaces don't see the picker — cards run against the wor
 | **Refresh** | Click the refresh icon on a single card |
 | **Edit title** | Click the pencil icon |
 | **Remove** | Click the trash icon (removes the card, not the underlying query) |
+
+### Section headers (text cards)
+
+Not every card is a chart. A **text card** is a markdown section block — a header or a one-line explainer — that you drop into the grid to organize a wall of charts: "Top of funnel", "Conversion", "Cohorts". It has **no SQL, no chart, and fetches no data**; it just renders sanitized markdown and lays out in the same 24-column grid as every other tile (full-width by default, so it reads as a banner above the charts grouped beneath it).
+
+Ask the agent for them in chat:
+
+> "Build a growth dashboard and group the cards under section headers."
+
+The `createDashboard` tool emits a text card as `{ kind: "text", content: "## Top of funnel", layout }` — for any dashboard with 4+ cards it adds a full-width header above each cluster of related charts. Because a text card carries no query, it never touches the SQL validation/execution pipeline, and **Refresh** skips it.
+
+<Callout type="info" title="Markdown is sanitized">
+Text-card content is rendered with the same markdown renderer as chat — headings, lists, tables, bold/italic, links, and code. Raw HTML is **not** evaluated (no `rehype-raw`), so a text card can't inject scripts or markup into the page.
+</Callout>
 
 ---
 

@@ -91,8 +91,10 @@ function dashboardWithCards(
       dashboardId: "dash-1",
       position: c.position,
       title: c.title,
+      kind: (c.content != null ? "text" : "chart") as DashboardCard["kind"],
       sql: c.sql,
       chartConfig: c.chartConfig,
+      content: c.content ?? null,
       cachedColumns: null,
       cachedRows: null,
       cachedAt: null,
@@ -338,6 +340,33 @@ describe("publishDraftMerge", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
     expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draft.snapshot.cards[0] }]);
+  });
+
+  // #3138 — `cardEquals` is gated on card kind (derived from `content`).
+  it("an unchanged text card produces no ops (content-equality gating)", () => {
+    const base = snapshot([card("t1", { content: "## A", sql: "", chartConfig: null })]);
+    const result = publishDraftMerge(base, base, base);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toHaveLength(0);
+  });
+
+  it("an edited text card's markdown → updateCard op", () => {
+    const baseline = snapshot([card("t1", { content: "## A", sql: "", chartConfig: null })]);
+    const draftCard = card("t1", { content: "## B", sql: "", chartConfig: null });
+    const result = publishDraftMerge(snapshot([draftCard]), baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "t1", card: draftCard }]);
+  });
+
+  it("flipping a chart card to a text card is a change (kind discriminates)", () => {
+    const baseline = snapshot([card("c1", { content: null })]); // chart
+    const draftCard = card("c1", { content: "## Now a header", sql: "", chartConfig: null });
+    const result = publishDraftMerge(snapshot([draftCard]), baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draftCard }]);
   });
 
   it("title change → updateMeta op", () => {
@@ -589,8 +618,10 @@ describe("materializeDraftView", () => {
       dashboardId: "dash-1",
       position: baseCard.position,
       title: baseCard.title,
+      kind: "chart",
       sql: baseCard.sql,
       chartConfig: baseCard.chartConfig,
+      content: null,
       cachedColumns: ["a", "b"],
       cachedRows: [{ a: 1, b: 2 }],
       cachedAt: "2026-05-01T00:00:00.000Z",
@@ -997,6 +1028,49 @@ describe("dashboard-versioning DB helpers", () => {
       expect(sqls).toContain("DELETE FROM dashboard_user_drafts");
       // Pool client returned exactly once.
       expect(releaseCalls).toBe(1);
+    });
+
+    // Regression: an accepted `editSql` stage rewrites the draft card's SQL,
+    // which surfaces as an updateCard op — the publish UPDATE must persist it
+    // (it previously wrote every field EXCEPT sql, silently dropping the edit).
+    it("persists an edited card's SQL in the publish updateCard path", async () => {
+      enableInternalDB();
+      const baseline = snapshot([card("c1")]);
+      const draftEdit = applyChangeToDraft(baseline, {
+        kind: "editSql",
+        cardId: "c1",
+        newSql: "SELECT 2 AS edited",
+      });
+      expect(draftEdit.ok).toBe(true);
+      if (!draftEdit.ok) return;
+
+      setResults({ rows: [draftRow({ draft: draftEdit.snapshot, baseline })] });
+      setClientResults(
+        { rows: [] }, // BEGIN
+        { rows: [{ updated_at: "2026-05-17T00:00:00.000Z" }] }, // SELECT FOR UPDATE
+        { rows: [] }, // UPDATE dashboard_cards
+        { rows: [] }, // UPDATE dashboards touch
+        { rows: [] }, // DELETE draft
+        { rows: [] }, // COMMIT
+      );
+
+      const published = dashboardWithCards([card("c1")], {
+        updatedAt: "2026-05-17T00:00:00.000Z",
+      });
+      const result = await publishDraft({
+        userId: "u1",
+        dashboardId: "dash-1",
+        orgId: "org-1",
+        loadDashboardForOrg: async () => published,
+      });
+      expect(result.ok).toBe(true);
+
+      const updateCall = clientCalls.find(
+        (c) => /UPDATE dashboard_cards/.test(c.sql) && /\bsql =/.test(c.sql),
+      );
+      expect(updateCall).toBeDefined();
+      // The new SQL is bound, not dropped.
+      expect(updateCall!.params).toContain("SELECT 2 AS edited");
     });
 
     it("rolls back on transaction error and returns error", async () => {

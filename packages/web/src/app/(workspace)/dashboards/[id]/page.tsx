@@ -494,7 +494,11 @@ export default function DashboardViewPage() {
       setParamLoading(false);
       return;
     }
-    const cards = dashboard.cards;
+    // #3138: text / section-block cards have no SQL — the /render endpoint
+    // short-circuits them to an empty result, and the tile ignores cached
+    // data, so skip them client-side rather than firing a redundant request
+    // per text card on every parameter change.
+    const cards = dashboard.cards.filter((c) => c.kind !== "text");
     setParamLoading(true);
     setParamError(null);
     try {

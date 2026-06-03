@@ -10,7 +10,7 @@
  *     populated when the user has accepted a `removeCard` stage (#2365)
  *     that the apply path dropped from the draft snapshot
  *   - changed: cards present in both, with at least one field differing
- *     (title / sql / chartConfig / connectionGroupId / layout)
+ *     (title / sql / chartConfig / content / connectionGroupId / layout)
  *   - meta: title / description diff (independent of card-level diff)
  *
  * Card identity is by `id` — the bound editor tools mint UUIDs on insert
@@ -25,6 +25,8 @@ export type CardFieldChange =
   | { field: "title"; before: string; after: string }
   | { field: "sql"; before: string; after: string }
   | { field: "chartType"; before: string | null; after: string | null }
+  // #3138 — a text / section-block card's markdown body.
+  | { field: "content"; before: string; after: string }
   | { field: "connectionGroup"; before: string | null; after: string | null }
   | { field: "layout"; before: string; after: string };
 
@@ -115,6 +117,13 @@ function diffCard(before: DashboardCard, after: DashboardCard): CardFieldChange[
   if (beforeType !== afterType) {
     changes.push({ field: "chartType", before: beforeType, after: afterType });
   }
+  // #3138 — a text card's only substantive field is its markdown. Without this
+  // arm a content-only edit produces zero changes, so the Publish gate would
+  // mark the draft `empty` and block a section-header edit that the server's
+  // `cardEquals` (in dashboard-versioning.ts) does treat as a change.
+  if ((before.content ?? "") !== (after.content ?? "")) {
+    changes.push({ field: "content", before: before.content ?? "", after: after.content ?? "" });
+  }
   if ((before.connectionGroupId ?? null) !== (after.connectionGroupId ?? null)) {
     changes.push({
       field: "connectionGroup",
@@ -142,6 +151,8 @@ export function describeFieldChange(change: CardFieldChange): string {
       return "SQL query updated";
     case "chartType":
       return `Chart type: ${change.before ?? "none"} → ${change.after ?? "none"}`;
+    case "content":
+      return "Section text updated";
     case "connectionGroup":
       return change.after
         ? `Connection group changed`

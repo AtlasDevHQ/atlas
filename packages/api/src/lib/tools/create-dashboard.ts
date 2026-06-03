@@ -44,7 +44,7 @@ import * as crypto from "crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import { CHART_TYPES } from "@useatlas/types";
-import { dashboardParametersSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, dashboardTextCardContentSchema } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
@@ -61,17 +61,67 @@ const ChartConfigSchema = z.object({
   valueColumns: z.array(z.string().min(1)).min(1),
 });
 
-const CardSchema = z.object({
-  title: z.string().min(1).max(200),
-  sql: z.string().min(1),
-  chartConfig: ChartConfigSchema,
-  layout: CardLayoutSchema.optional(),
-  connectionId: z
-    .string()
-    .min(1)
-    .optional()
-    .describe("Source connection — omit for the default datasource."),
-});
+/** A SQL-backed chart/table card (the original kind). `kind` is optional and
+ *  defaults to a chart so the long-standing `{ title, sql, chartConfig }` shape
+ *  keeps working — only a text card has to name its kind. */
+const ChartCardSchema = z
+  .object({
+    kind: z.literal("chart").optional(),
+    title: z.string().min(1).max(200),
+    sql: z.string().min(1),
+    chartConfig: ChartConfigSchema,
+    layout: CardLayoutSchema.optional(),
+    connectionId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Source connection — omit for the default datasource."),
+  })
+  // Strict so a text card's `content` (or any stray key) can't ride along on a
+  // chart card and be silently dropped — fail fast instead.
+  .strict();
+
+/**
+ * A markdown text / section-block card (#3138). No SQL, no chart — just a
+ * header/explainer that groups the charts below it. `title` is optional (the
+ * header usually lives in `content`); when omitted we derive a short row title
+ * from the markdown for list/diff surfaces.
+ */
+const TextCardSchema = z
+  .object({
+    kind: z.literal("text"),
+    title: z.string().min(1).max(200).optional(),
+    content: dashboardTextCardContentSchema.describe(
+      'Markdown section header / explainer, e.g. "## Top of funnel". Rendered sanitized — no raw HTML.',
+    ),
+    layout: CardLayoutSchema.optional(),
+  })
+  // Strict so a text card can't smuggle a `sql`/`chartConfig` past the
+  // validation it skips — a mixed payload is a caller bug, reject it.
+  .strict();
+
+/**
+ * A card is either a chart or a text block. We use a plain union (not a
+ * discriminated one) because a chart card may omit `kind` entirely — a card
+ * with `content` and no `sql` is a text card, everything else is a chart.
+ */
+const CardSchema = z.union([ChartCardSchema, TextCardSchema]);
+
+type ChartCardInput = z.infer<typeof ChartCardSchema>;
+
+/**
+ * Derive a short row title for a text card whose `title` the agent left blank.
+ * Takes the first non-empty line, strips a leading markdown block marker
+ * (heading, list bullet, or blockquote), and caps the length. Used only for
+ * list/diff surfaces — the tile renders the full markdown, not this label.
+ */
+export function deriveTextCardTitle(content: string): string {
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|>\s+)/, "").trim();
+    if (line.length > 0) return line.slice(0, 120);
+  }
+  return "Section";
+}
 
 export type CreateDashboardCardValidationError = {
   cardIndex: number;
@@ -108,6 +158,8 @@ A typical flow:
 
 Layout is optional — the dashboard auto-arranges cards if you omit it. Grid is 24 columns wide; common widths are 12 (half) and 24 (full); common heights are 8 (chart) and 4 (KPI / small table). chartConfig.type is one of: ${CHART_TYPES.join(", ")}.
 
+SECTION HEADERS (text cards): a card can be a markdown text block instead of a chart — pass { kind: "text", content: "## Top of funnel", layout: { x: 0, y: <row>, w: 24, h: 4 } }. A text card has NO sql/chartConfig and fetches no data; it just renders a sanitized-markdown header or explainer to organize the grid. For ANY dashboard with 4+ cards, group them under section headers — emit a full-width text card (w: 24) above each cluster of related charts ("Top of funnel", "Conversion", "Cohorts"). Keep content short — a heading and at most a sentence.
+
 PARAMETERS (date ranges + filters): pass a \`parameters\` array to give the dashboard a top-level filter bar that every card binds to. Each parameter is { key, type, default, label } where type is "date" | "text" | "number". In card SQL, reference a parameter as \`:<key>\` (e.g. \`:date_from\`, \`:date_to\`, \`:region\`). For ANY "last N days" / "this quarter" / "year to date" query, declare \`date_from\` + \`date_to\` parameters and write \`WHERE created_at >= :date_from AND created_at < :date_to\` instead of hardcoding the dates — that keeps the dashboard useful for months instead of ageing in days. Date defaults accept ISO dates or relative expressions like "now - 30 days" / "now - 1 month" / "now". Every \`:placeholder\` a card uses MUST be declared in \`parameters\` (values are bound server-side as real query parameters, never interpolated).
 
 If any card has invalid SQL or references an undeclared parameter, the whole call is rejected — no dashboard row is created. Fix the failing card and call again.`,
@@ -124,7 +176,13 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
       .describe(
         'Top-level dashboard parameters cards bind to via :<key> placeholders. Each is { key, type: "date"|"text"|"number", default, label }. Use :date_from / :date_to for any relative time range instead of hardcoding dates.',
       ),
-    cards: z.array(CardSchema).min(1).max(12).describe("Cards to create"),
+    cards: z
+      .array(CardSchema)
+      .min(1)
+      .max(12)
+      .describe(
+        'Cards to create. A chart card is { title, sql, chartConfig }; a section header is { kind: "text", content: "## ...", layout }. Group 4+ cards under full-width text headers.',
+      ),
   }),
 
   execute: async ({ title, description, parameters, cards }): Promise<CreateDashboardResult> => {
@@ -167,8 +225,19 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
       // bound editor's `addCard` accepts cards one at a time; here we
       // validate the full batch up front so the agent can fix the
       // failing card and retry the whole proposal.
+      //
+      // Only chart cards carry SQL — text / section blocks (#3138) have no
+      // query, so they skip validation + the placeholder check entirely. We
+      // keep each chart card's ORIGINAL index so error envelopes still point
+      // at the right card position in a mixed list.
+      const chartCards = cards
+        .map((card, idx) => ({ card, idx }))
+        .filter(
+          (c): c is { card: ChartCardInput; idx: number } => c.card.kind !== "text",
+        );
+
       const validations = await Promise.all(
-        cards.map(async (card, idx) => {
+        chartCards.map(async ({ card, idx }) => {
           const validation = await validateSQL(card.sql, card.connectionId);
           return { card, idx, validation };
         }),
@@ -207,8 +276,7 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
       // (#2267).
       const declaredKeys = new Set((parameters ?? []).map((p) => p.key));
       const placeholderErrors: CreateDashboardCardValidationError[] = [];
-      for (let idx = 0; idx < cards.length; idx++) {
-        const card = cards[idx];
+      for (const { card, idx } of chartCards) {
         const undeclared = extractPlaceholderNames(card.sql).filter((name) => !declaredKeys.has(name));
         if (undeclared.length > 0) {
           placeholderErrors.push({
@@ -260,15 +328,35 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
         // a UUID up front so subsequent bound `updateCard` / `addCard`
         // calls in the same session resolve. Position is assigned in
         // call order — the agent ordered the cards intentionally.
-        const snapshotCards: DashboardSnapshotCard[] = validations.map((v, position) => ({
-          id: crypto.randomUUID(),
-          position,
-          title: v.card.title,
-          sql: v.card.sql,
-          chartConfig: v.card.chartConfig,
-          connectionGroupId: conversationGroupId,
-          layout: v.card.layout ?? null,
-        }));
+        //
+        // #3138: a text / section block has no SQL or chart — it stores
+        // `sql: ""`, `chartConfig: null`, and its markdown in `content`. It
+        // carries no connection group (it never queries). Chart cards keep
+        // the conversation's environment scope.
+        const snapshotCards: DashboardSnapshotCard[] = cards.map((card, position) => {
+          if (card.kind === "text") {
+            return {
+              id: crypto.randomUUID(),
+              position,
+              title: card.title?.trim() || deriveTextCardTitle(card.content),
+              sql: "",
+              chartConfig: null,
+              content: card.content,
+              connectionGroupId: null,
+              layout: card.layout ?? null,
+            };
+          }
+          return {
+            id: crypto.randomUUID(),
+            position,
+            title: card.title,
+            sql: card.sql,
+            chartConfig: card.chartConfig,
+            content: null,
+            connectionGroupId: conversationGroupId,
+            layout: card.layout ?? null,
+          };
+        });
 
         const snapshot: DashboardSnapshot = {
           dashboardId,

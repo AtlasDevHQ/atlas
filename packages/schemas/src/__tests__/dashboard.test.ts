@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   dashboardParameterSchema,
   dashboardParametersSchema,
+  dashboardCardKindSchema,
+  dashboardTextCardContentSchema,
+  dashboardTextCardSchema,
+  DASHBOARD_TEXT_CARD_CONTENT_MAX,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -55,5 +59,45 @@ describe("dashboardParametersSchema", () => {
       { key: "date_from", type: "date", default: "now", label: "B" },
     ]);
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Text / section cards (#3138)
+// ---------------------------------------------------------------------------
+
+describe("dashboardCardKindSchema", () => {
+  test("accepts the two card kinds and rejects anything else", () => {
+    expect(dashboardCardKindSchema.safeParse("chart").success).toBe(true);
+    expect(dashboardCardKindSchema.safeParse("text").success).toBe(true);
+    expect(dashboardCardKindSchema.safeParse("kpi").success).toBe(false);
+  });
+});
+
+describe("dashboardTextCardSchema", () => {
+  test("round-trips a well-formed text card", () => {
+    const card = { kind: "text" as const, content: "## Top of funnel\n\nLeads → MQLs → SQLs." };
+    const parsed = dashboardTextCardSchema.parse(card);
+    // Parse is a no-op transform — the validated value equals the input.
+    expect(parsed).toEqual(card);
+  });
+
+  test("rejects empty content", () => {
+    expect(dashboardTextCardContentSchema.safeParse("").success).toBe(false);
+    expect(dashboardTextCardSchema.safeParse({ kind: "text", content: "" }).success).toBe(false);
+  });
+
+  test("rejects whitespace-only content (would render as a blank band)", () => {
+    expect(dashboardTextCardContentSchema.safeParse("   ").success).toBe(false);
+    expect(dashboardTextCardContentSchema.safeParse("\n\n\t").success).toBe(false);
+  });
+
+  test("rejects content past the length cap", () => {
+    const tooLong = "a".repeat(DASHBOARD_TEXT_CARD_CONTENT_MAX + 1);
+    expect(dashboardTextCardContentSchema.safeParse(tooLong).success).toBe(false);
+  });
+
+  test("rejects the wrong kind literal", () => {
+    expect(dashboardTextCardSchema.safeParse({ kind: "chart", content: "x" }).success).toBe(false);
   });
 });

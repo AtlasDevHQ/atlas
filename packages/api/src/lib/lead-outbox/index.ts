@@ -8,25 +8,38 @@ export {
   enqueue,
   recoverInFlight,
   flushBatch,
-  getTickIntervalMs,
+  getBackstopSweepIntervalMs,
   isFlusherEnabled,
   computeRetryAfterTimestamp,
+  computeRetryDelayMs,
   FLUSH_BATCH_LIMIT,
   STARTUP_RECOVERY_STALE_MS,
   SHUTDOWN_RECOVERY_STALE_MS,
-  MIN_TICK_SECONDS,
-  MAX_TICK_SECONDS,
-  DEFAULT_TICK_SECONDS,
+  MIN_BACKSTOP_SWEEP_SECONDS,
+  MAX_BACKSTOP_SWEEP_SECONDS,
+  DEFAULT_BACKSTOP_SWEEP_SECONDS,
   type OutboxDB,
   type EnqueueInput,
   type ClaimedOutboxRow,
   type OutboxPersistHelpers,
   type DispatchOutcome,
   type OutboxDispatcher,
+  type OutboxRetryScheduler,
   type OutboxStatus,
   type FlushResult,
   type RecoveryResult,
 } from "./outbox";
+
+export {
+  FlusherSignal,
+  setActiveFlusherSignal,
+  getActiveFlusherSignal,
+  kickActiveFlusher,
+  clampRetryDelay,
+  MAX_RETRY_TIMER_MS,
+  type SignalTimers,
+  type WaitReason,
+} from "./signal";
 
 export {
   nextDelayMs,
@@ -50,8 +63,11 @@ export {
 
 export {
   runOutboxTick,
+  observeOutboxDepth,
   type OutboxTickDeps,
+  type OutboxObserveDeps,
   type OutboxTickResult,
+  type OutboxObserveResult,
   type GaugeRecorder,
   type OutboxTickLogger,
 } from "./tick";

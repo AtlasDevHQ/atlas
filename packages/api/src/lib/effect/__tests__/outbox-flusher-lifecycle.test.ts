@@ -65,6 +65,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { makeSchedulerLive } = await import("../layers");
 const { SaasCrm, NoopEnterpriseDefaultsLayer } = await import("../services");
+const { setActiveFlusherSignal } = await import("@atlas/api/lib/lead-outbox");
 
 // ── Test layer: SaasCrm with available=true + stub dispatcher ───────
 
@@ -84,6 +85,11 @@ beforeEach(() => {
 
 afterEach(() => {
   internalDbAvailable = true;
+  // Defensive: every mounted flusher de-registers its doorbell in its
+  // scope finalizer, but clear here too so a test that throws before
+  // dispose can't leak the process-global into the next test's
+  // registry assertions (#2874).
+  setActiveFlusherSignal(null);
 });
 
 describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
@@ -156,52 +162,67 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // moment the gen returns. Result: zero ticks from boot, indefinitely.
     // `Effect.forkScoped` binds to the Layer scope instead.
     //
-    // This test asserts the fiber actually runs by checking that the
-    // tick's queryDepthSnapshot SELECT fires within a window slightly
-    // longer than the tick interval. Without forkScoped this test would
-    // see zero depth-snapshot queries — proving the regression canary.
-    process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS = "1";
-    try {
-      const config = {} as Parameters<typeof makeSchedulerLive>[0];
-      const baseLayer = makeSchedulerLive(config);
-      const deps = Layer.mergeAll(
-        NoopEnterpriseDefaultsLayer,
-        makeAvailableSaasCrmLayer(),
-      );
-      const layer = baseLayer.pipe(Layer.provide(deps));
+    // Post-#2874 the fiber is edge-triggered, but the FIRST tick after
+    // boot still runs immediately (trigger `boot`, a full tick) — so the
+    // queryDepthSnapshot SELECT remains the canary that the fiber survived
+    // the gen returning. Without forkScoped this test sees zero
+    // depth-snapshot queries.
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const baseLayer = makeSchedulerLive(config);
+    const deps = Layer.mergeAll(
+      NoopEnterpriseDefaultsLayer,
+      makeAvailableSaasCrmLayer(),
+    );
+    const layer = baseLayer.pipe(Layer.provide(deps));
 
-      const rt = ManagedRuntime.make(layer);
-      await Effect.runPromise(rt.runtimeEffect);
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
 
-      // Wait > 2× tick interval (1s minimum-clamped) so the first
-      // scheduled iteration of `Effect.repeat(Schedule.spaced)` has
-      // comfortable slack on contended CI runners. The depth snapshot
-      // SELECT is the tick's first observable side effect.
-      await new Promise((r) => setTimeout(r, 2_500));
-      await rt.dispose();
+    // The boot tick fires ~immediately on fork; a short window covers
+    // scheduler latency on contended CI runners. The depth snapshot SELECT
+    // is the boot tick's first observable side effect.
+    await new Promise((r) => setTimeout(r, 500));
+    await rt.dispose();
 
-      // queryDepthSnapshot reads from crm_outbox without an in_flight
-      // filter — distinguishes it from the recovery sweep queries.
-      const depthSnapshotCalls = sqlLog.filter(
-        (q) =>
-          /FROM crm_outbox/i.test(q.sql) && !/WHERE status = 'in_flight'/i.test(q.sql),
-      );
-      expect(depthSnapshotCalls.length).toBeGreaterThan(0);
-    } finally {
-      delete process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS;
-    }
+    // queryDepthSnapshot reads from crm_outbox without an in_flight
+    // filter — distinguishes it from the recovery sweep queries.
+    const depthSnapshotCalls = sqlLog.filter(
+      (q) =>
+        /FROM crm_outbox/i.test(q.sql) && !/WHERE status = 'in_flight'/i.test(q.sql),
+    );
+    expect(depthSnapshotCalls.length).toBeGreaterThan(0);
+  });
+
+  test("registers the edge-trigger doorbell on mount, clears it on shutdown (#2874)", async () => {
+    // The process-global doorbell is how the request-path `enqueue`
+    // reaches the live flusher. Mount must register it; the scope
+    // finalizer must clear it so a post-shutdown kick is inert (and a
+    // re-mount on the next boot starts from a clean registry).
+    const { getActiveFlusherSignal } = await import("@atlas/api/lib/lead-outbox");
+    expect(getActiveFlusherSignal()).toBeNull();
+
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const layer = makeSchedulerLive(config).pipe(
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+    );
+    const rt = ManagedRuntime.make(layer);
+    await Effect.runPromise(rt.runtimeEffect);
+    expect(getActiveFlusherSignal()).not.toBeNull();
+
+    await rt.dispose();
+    expect(getActiveFlusherSignal()).toBeNull();
   });
 
   test("ATLAS_CRM_OUTBOX_FLUSHER_ENABLED=false skips the tick fork but keeps recovery sweeps", async () => {
     // Region-gate path (#2890): EU/APAC API pods set this to `false`
     // because the lead-capture pipeline only writes to US's internal
-    // Postgres. The flusher polling loop is skipped, but the boot +
+    // Postgres. The edge-triggered flusher loop (boot tick + kick +
+    // backstop) is skipped entirely, AND the doorbell is NOT registered
+    // (so an enqueue kick in this region is inert), but the boot +
     // shutdown recovery sweeps must still run so a future flip-back-on
-    // inherits clean state.
+    // inherits clean state (#2874 AC).
     process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED = "false";
-    // Short tick so a regression (gate not honored) would surface
-    // ticks quickly inside the wait window.
-    process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS = "1";
+    const { getActiveFlusherSignal } = await import("@atlas/api/lib/lead-outbox");
     try {
       const config = {} as Parameters<typeof makeSchedulerLive>[0];
       const baseLayer = makeSchedulerLive(config);
@@ -213,9 +234,11 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
 
       const rt = ManagedRuntime.make(layer);
       await Effect.runPromise(rt.runtimeEffect);
-      // Window > 2× tick interval — if the fork ran we'd see depth
-      // snapshot queries pile up here. With the gate honored we see zero.
-      await new Promise((r) => setTimeout(r, 2_500));
+      // The boot tick would fire ~immediately if the gate were ignored;
+      // a short window catches a regression. With the gate honored we see
+      // zero tick queries AND no registered doorbell.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(getActiveFlusherSignal()).toBeNull();
       await rt.dispose();
 
       // queryDepthSnapshot from the tick reads `FROM crm_outbox` WITHOUT
@@ -237,7 +260,6 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
       expect(recoveryCalls.length).toBe(4);
     } finally {
       delete process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED;
-      delete process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS;
     }
   });
 

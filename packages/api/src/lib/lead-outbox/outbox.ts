@@ -32,7 +32,8 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { CLAIM_DELAY_SQL, DEAD_AFTER_ATTEMPTS } from "./backoff";
+import { CLAIM_DELAY_SQL, DEAD_AFTER_ATTEMPTS, nextDelayMs } from "./backoff";
+import { kickActiveFlusher } from "./signal";
 
 /**
  * Narrow DB surface the outbox needs. Matches the `query` method on
@@ -166,6 +167,20 @@ export interface FlushResult {
   readonly ok: number;
   readonly transient: number;
   readonly permanent: number;
+}
+
+/**
+ * Per-row retry scheduler (#2874). `flushBatch` calls `scheduleRetry`
+ * after marking a row transiently-failed so the flusher fiber wakes
+ * exactly when the row comes due, instead of waiting for the next
+ * backstop sweep. The production implementation is `FlusherSignal`
+ * (`signal.ts`); tests pass a stub. Structural — `flushBatch` depends on
+ * this narrow surface, not the concrete signal, so the queue mechanics
+ * stay decoupled from the Layer-owned doorbell.
+ */
+export interface OutboxRetryScheduler {
+  /** Wake the flusher in `delayMs` to re-attempt `rowId` (best-effort). */
+  scheduleRetry(rowId: string, delayMs: number): void;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -306,7 +321,7 @@ const CLAIM_SQL = `
     )
     SELECT id FROM deduped ORDER BY created_at, id LIMIT $1
   )
-  RETURNING id, event_type, payload, attempts, workspace_id, twenty_person_id, twenty_note_id
+  RETURNING id, event_type, payload, attempts, workspace_id, created_at, twenty_person_id, twenty_note_id
 `;
 
 const PERSIST_PERSON_ID_SQL = `
@@ -478,6 +493,14 @@ export async function enqueue(
     // violation — fail loud rather than silently drop the enqueue.
     throw new Error("crm_outbox enqueue returned no row");
   }
+  // Edge-trigger the flusher (#2874): ring the in-process doorbell so a
+  // mounted flusher dispatches this row within ms instead of waiting up
+  // to a full backstop interval. Fire-and-forget and never-throwing — the
+  // row is already durably persisted, so a missing/faulty doorbell
+  // (self-hosted, region-gated-off region, or a backfill-script process
+  // with no flusher) only defers dispatch to the backstop sweep or next
+  // boot, it never loses the lead.
+  kickActiveFlusher();
   return id;
 }
 
@@ -558,6 +581,7 @@ export async function flushBatch(
   db: OutboxDB,
   dispatcher: OutboxDispatcher,
   batchLimit: number,
+  scheduler?: OutboxRetryScheduler,
 ): Promise<FlushResult> {
   if (batchLimit <= 0) return { claimed: 0, ok: 0, transient: 0, permanent: 0 };
 
@@ -567,6 +591,10 @@ export async function flushBatch(
     payload: unknown;
     attempts: number;
     workspace_id: string;
+    // `created_at` rides along (added to CLAIM RETURNING in #2874) so a
+    // transient failure can schedule its retry timer at the exact tier
+    // due-time `created_at + nextDelayMs(attempts)` without a re-query.
+    created_at: Date | string;
     twenty_person_id: string | null;
     twenty_note_id: string | null;
   };
@@ -680,6 +708,18 @@ export async function flushBatch(
       row.id,
       "pending",
     );
+    // Edge-trigger the next attempt (#2874): wake the flusher exactly when
+    // this row comes due (upstream Retry-After, else the tier delay from
+    // `created_at`) rather than waiting for the backstop sweep to notice.
+    // Best-effort and in-memory — a timer lost to a restart is re-caught
+    // by the backstop. The DB write above is the source of truth for the
+    // due-time; this only schedules a wakeup, it does not move the gate.
+    if (scheduler) {
+      scheduler.scheduleRetry(
+        row.id,
+        computeRetryDelayMs(raw.created_at, row.attempts, outcome.retryAfterMs),
+      );
+    }
     log.warn(
       {
         rowId: row.id,
@@ -708,6 +748,42 @@ export function computeRetryAfterTimestamp(retryAfterMs: number | undefined): Da
   if (retryAfterMs == null) return null;
   if (!Number.isFinite(retryAfterMs) || retryAfterMs < 0) return null;
   return new Date(Date.now() + retryAfterMs);
+}
+
+/**
+ * Compute the delay (ms from `nowMs`) until a transiently-failed row's
+ * next attempt is due, for scheduling the in-memory retry timer (#2874).
+ * Mirrors the SQL claim gate `COALESCE(retry_after, created_at + tier)`:
+ *
+ *  - An upstream `Retry-After` (`retryAfterMs`) wins — the row's DB
+ *    `retry_after` was stamped to `now + retryAfterMs`, so the timer
+ *    fires after the same delay.
+ *  - Otherwise the row is due at `created_at + nextDelayMs(attempts)`;
+ *    the delay is the remaining time until then, floored at 0 (a row
+ *    already past its tier due-time fires on the next tick).
+ *
+ * An unparseable `created_at` falls back to the tier delay measured from
+ * now — marginally over-delays a back-dated row, but the backstop sweep
+ * still guarantees eventual claim, so it never strands the lead. Pure;
+ * unit-tested. Not part of the dispatcher contract.
+ */
+export function computeRetryDelayMs(
+  createdAt: Date | string,
+  attempts: number,
+  retryAfterMs: number | undefined,
+  nowMs: number = Date.now(),
+): number {
+  if (retryAfterMs != null && Number.isFinite(retryAfterMs) && retryAfterMs >= 0) {
+    return retryAfterMs;
+  }
+  const createdMs = toEpochMs(createdAt);
+  if (createdMs == null) return nextDelayMs(attempts);
+  return Math.max(0, createdMs + nextDelayMs(attempts) - nowMs);
+}
+
+function toEpochMs(v: Date | string): number | null {
+  const t = v instanceof Date ? v.getTime() : new Date(v).getTime();
+  return Number.isNaN(t) ? null : t;
 }
 
 /**
@@ -752,41 +828,52 @@ async function markStatusWithRetry(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Tick interval. Default 5s per the issue; configurable via
- * `ATLAS_CRM_OUTBOX_TICK_SECONDS` for operators who want to dial it
- * down (e.g. SaaS-region traffic spike) without redeploying.
+ * Backstop sweep interval (#2874). The flusher is edge-triggered — it
+ * wakes on the inline kick from `enqueue` and on per-row retry timers —
+ * so this is NOT a poll cadence. It is the low-frequency safety net that
+ * runs the claim once per interval to catch the cases an in-memory
+ * doorbell can't: a retry timer lost to a pod restart, a crash-recovered
+ * `in_flight` row, or a kick dropped in the window between enqueue and
+ * fork. Default 300s (5 min) — an idle pod then issues ~288 claims/day
+ * instead of the old ~17,280 polls/day.
  *
- * Clamped to `[1, 3600]` seconds (1s … 1h). The upper bound avoids a
- * Bun timer overflow at >~2^31 ms — without the clamp, a typo'd
- * `ATLAS_CRM_OUTBOX_TICK_SECONDS=3600000` (operator meant ms) would
- * overflow to a 1ms tick and DDoS Postgres + Twenty (Codex P2,
- * 2026-05-25). The lower bound prevents an accidental 0.x-second
- * tick from doing the same. Out-of-range inputs warn-and-clamp
- * rather than silently default — the operator's intent (faster /
- * slower) is preserved at the boundary value.
+ * Configurable via `ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS`, clamped to
+ * `[1, 86400]` seconds (1s … 24h). The upper bound keeps the timer well
+ * under the 2^31-1 ms `setTimeout` ceiling; the lower bound prevents an
+ * accidental tight loop. Out-of-range inputs warn-and-clamp rather than
+ * silently defaulting — the operator's intent is preserved at the
+ * boundary value (same discipline as `getWarnThreshold`).
  */
-export const MIN_TICK_SECONDS = 1;
-export const MAX_TICK_SECONDS = 3600;
-export const DEFAULT_TICK_SECONDS = 5;
+export const MIN_BACKSTOP_SWEEP_SECONDS = 1;
+export const MAX_BACKSTOP_SWEEP_SECONDS = 86_400;
+export const DEFAULT_BACKSTOP_SWEEP_SECONDS = 300;
 
-export function getTickIntervalMs(): number {
-  const raw = process.env.ATLAS_CRM_OUTBOX_TICK_SECONDS;
-  if (!raw) return DEFAULT_TICK_SECONDS * 1_000;
+export function getBackstopSweepIntervalMs(): number {
+  const raw = process.env.ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS;
+  if (!raw) return DEFAULT_BACKSTOP_SWEEP_SECONDS * 1_000;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TICK_SECONDS * 1_000;
-  if (parsed < MIN_TICK_SECONDS) {
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_BACKSTOP_SWEEP_SECONDS * 1_000;
+  if (parsed < MIN_BACKSTOP_SWEEP_SECONDS) {
     log.warn(
-      { requested: parsed, clamped: MIN_TICK_SECONDS, event: "lead_outbox.tick_clamped" },
-      `ATLAS_CRM_OUTBOX_TICK_SECONDS=${parsed} is below ${MIN_TICK_SECONDS}s minimum — clamping`,
+      {
+        requested: parsed,
+        clamped: MIN_BACKSTOP_SWEEP_SECONDS,
+        event: "lead_outbox.backstop_clamped",
+      },
+      `ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS=${parsed} is below ${MIN_BACKSTOP_SWEEP_SECONDS}s minimum — clamping`,
     );
-    return MIN_TICK_SECONDS * 1_000;
+    return MIN_BACKSTOP_SWEEP_SECONDS * 1_000;
   }
-  if (parsed > MAX_TICK_SECONDS) {
+  if (parsed > MAX_BACKSTOP_SWEEP_SECONDS) {
     log.warn(
-      { requested: parsed, clamped: MAX_TICK_SECONDS, event: "lead_outbox.tick_clamped" },
-      `ATLAS_CRM_OUTBOX_TICK_SECONDS=${parsed} exceeds ${MAX_TICK_SECONDS}s maximum — clamping`,
+      {
+        requested: parsed,
+        clamped: MAX_BACKSTOP_SWEEP_SECONDS,
+        event: "lead_outbox.backstop_clamped",
+      },
+      `ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS=${parsed} exceeds ${MAX_BACKSTOP_SWEEP_SECONDS}s maximum — clamping`,
     );
-    return MAX_TICK_SECONDS * 1_000;
+    return MAX_BACKSTOP_SWEEP_SECONDS * 1_000;
   }
   return parsed * 1_000;
 }
@@ -816,9 +903,12 @@ export const FLUSH_BATCH_LIMIT = 50;
  * from a previous deploy's crash. So flipping the env on a region that
  * previously had the flusher running is safe.
  *
- * Future direction (eventize): replace the always-on poll loop with
- * edge-triggered enqueue-kick + per-row retry_after timer + 5min
- * backstop sweep. Until then this env is the cheapest dial.
+ * Post-#2874 the flusher is edge-triggered (enqueue kick + per-row retry
+ * timer + low-frequency backstop sweep) rather than a 5s poll, so a US
+ * pod idles near-silent without this gate. The gate still earns its keep
+ * on EU/APAC: it skips the kick + backstop entirely (recovery only),
+ * avoiding even the ~288 backstop claims/day against a permanently-empty
+ * regional table.
  */
 export function isFlusherEnabled(): boolean {
   const raw = process.env.ATLAS_CRM_OUTBOX_FLUSHER_ENABLED;

@@ -1097,6 +1097,128 @@ describe("dashboard routes", () => {
       });
       expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
     });
+
+    // #3137 — a KPI card with a comparisonSql runs a SECOND query through the
+    // same pipeline (bound, same params) and returns it as `comparison`.
+    const kpiCard = {
+      ...mockCardData,
+      sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from",
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "label",
+        valueColumns: ["total"],
+        kpi: {
+          valueFormat: "currency",
+          comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from",
+          comparisonLabel: "vs. prior period",
+        },
+      },
+    };
+
+    it("runs comparisonSql as a second bound query and returns it as `comparison`", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      // Dispatch on the SQL so the two parallel pipeline calls get distinct rows.
+      mockRunUserQueryPipeline.mockImplementation(async (opts) => {
+        const total = opts.sql.includes("< :date_from") ? 1000000 : 1200000;
+        return {
+          kind: "ok" as const,
+          columns: ["label", "total"],
+          rows: [{ label: "Revenue", total }],
+          rowCount: 1,
+          executionMs: 4,
+          truncated: false,
+          maskingApplied: false,
+        };
+      });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: kpiCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        rows: { total: number }[];
+        comparison: { columns: string[]; rows: { total: number }[] } | null;
+      };
+      // Primary value.
+      expect(body.rows[0].total).toBe(1200000);
+      // Comparison block carries the prior-period query result.
+      expect(body.comparison).not.toBeNull();
+      expect(body.comparison?.rows[0].total).toBe(1000000);
+      // Both queries ran; the comparison bound the SAME parameter value.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(2);
+      const comparisonCall = mockRunUserQueryPipeline.mock.calls.find((c) =>
+        c[0].sql.includes("< :date_from"),
+      );
+      expect(comparisonCall?.[0].sql).toContain("< :date_from");
+      expect(comparisonCall?.[0].parameters).toMatchObject({ date_from: "2026-01-01" });
+    });
+
+    it("omits `comparison` for a KPI card with no comparisonSql", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      const noComparison = {
+        ...kpiCard,
+        chartConfig: { type: "kpi", categoryColumn: "label", valueColumns: ["total"], kpi: { valueFormat: "currency" } },
+      };
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: noComparison });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect("comparison" in body).toBe(false);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+    });
+
+    it("degrades `comparison` to null (primary still rendered) when the comparison query fails", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      mockRunUserQueryPipeline.mockImplementation(async (opts) => {
+        if (opts.sql.includes("< :date_from")) {
+          return { kind: "validation_failed" as const, message: "comparison blew up" };
+        }
+        return {
+          kind: "ok" as const,
+          columns: ["label", "total"],
+          rows: [{ label: "Revenue", total: 1200000 }],
+          rowCount: 1,
+          executionMs: 4,
+          truncated: false,
+          maskingApplied: false,
+        };
+      });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: kpiCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01" } }),
+        }),
+      );
+
+      // Primary succeeded → 200 with rows; comparison degraded to null.
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        rows: { total: number }[];
+        comparison: unknown;
+      };
+      expect(body.rows[0].total).toBe(1200000);
+      expect(body.comparison).toBeNull();
+    });
   });
 
   // -------------------------------------------------------------------------

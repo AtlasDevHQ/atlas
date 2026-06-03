@@ -6,6 +6,9 @@ import {
   dashboardTextCardContentSchema,
   dashboardTextCardSchema,
   DASHBOARD_TEXT_CARD_CONTENT_MAX,
+  dashboardChartTypeSchema,
+  dashboardKpiConfigSchema,
+  dashboardChartConfigSchema,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -99,5 +102,85 @@ describe("dashboardTextCardSchema", () => {
 
   test("rejects the wrong kind literal", () => {
     expect(dashboardTextCardSchema.safeParse({ kind: "chart", content: "x" }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KPI / scorecard cards (#3137)
+// ---------------------------------------------------------------------------
+
+describe("dashboardChartTypeSchema", () => {
+  test("accepts every chart type including the new kpi type", () => {
+    for (const t of ["bar", "line", "pie", "area", "scatter", "table", "kpi"]) {
+      expect(dashboardChartTypeSchema.safeParse(t).success).toBe(true);
+    }
+  });
+
+  test("rejects an unknown chart type", () => {
+    expect(dashboardChartTypeSchema.safeParse("gauge").success).toBe(false);
+  });
+});
+
+describe("dashboardKpiConfigSchema", () => {
+  test("round-trips a full kpi config (valueFormat + comparison)", () => {
+    const kpi = {
+      valueFormat: "currency" as const,
+      comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from",
+      comparisonLabel: "vs. prior period",
+    };
+    const parsed = dashboardKpiConfigSchema.parse(kpi);
+    expect(parsed).toEqual(kpi);
+  });
+
+  test("accepts an empty kpi config (every field optional)", () => {
+    expect(dashboardKpiConfigSchema.safeParse({}).success).toBe(true);
+  });
+
+  test("accepts each valueFormat option", () => {
+    for (const valueFormat of ["currency", "number", "percent", "duration"]) {
+      expect(dashboardKpiConfigSchema.safeParse({ valueFormat }).success).toBe(true);
+    }
+  });
+
+  test("rejects an unknown valueFormat", () => {
+    expect(dashboardKpiConfigSchema.safeParse({ valueFormat: "scientific" }).success).toBe(false);
+  });
+
+  test("rejects an empty comparisonSql (would run an empty query through the guard)", () => {
+    expect(dashboardKpiConfigSchema.safeParse({ comparisonSql: "" }).success).toBe(false);
+  });
+
+  test("rejects unknown keys (strict — no stray config rides along)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({ comparisonSql: "SELECT 1 AS n", trend: true }).success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardChartConfigSchema", () => {
+  test("round-trips a kpi chart config with a comparison query", () => {
+    const config = {
+      type: "kpi" as const,
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: {
+        valueFormat: "currency" as const,
+        comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from",
+        comparisonLabel: "Last month",
+      },
+    };
+    const parsed = dashboardChartConfigSchema.parse(config);
+    expect(parsed).toEqual(config);
+  });
+
+  test("accepts a plain (non-kpi) chart config without a kpi block", () => {
+    const config = { type: "bar" as const, categoryColumn: "stage", valueColumns: ["amount"] };
+    expect(dashboardChartConfigSchema.parse(config)).toEqual(config);
+  });
+
+  test("rejects a config missing valueColumns", () => {
+    expect(
+      dashboardChartConfigSchema.safeParse({ type: "kpi", categoryColumn: "label", valueColumns: [] }).success,
+    ).toBe(false);
   });
 });

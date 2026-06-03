@@ -6529,7 +6529,8 @@
                           "pie",
                           "area",
                           "scatter",
-                          "table"
+                          "table",
+                          "kpi"
                         ]
                       },
                       "categoryColumn": {
@@ -6538,9 +6539,35 @@
                       "valueColumns": {
                         "type": "array",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 1
                         },
                         "minItems": 1
+                      },
+                      "kpi": {
+                        "type": "object",
+                        "properties": {
+                          "valueFormat": {
+                            "type": "string",
+                            "enum": [
+                              "currency",
+                              "number",
+                              "percent",
+                              "duration"
+                            ]
+                          },
+                          "comparisonSql": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 10000
+                          },
+                          "comparisonLabel": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -6812,7 +6839,8 @@
                           "pie",
                           "area",
                           "scatter",
-                          "table"
+                          "table",
+                          "kpi"
                         ]
                       },
                       "categoryColumn": {
@@ -6821,9 +6849,35 @@
                       "valueColumns": {
                         "type": "array",
                         "items": {
-                          "type": "string"
+                          "type": "string",
+                          "minLength": 1
                         },
                         "minItems": 1
+                      },
+                      "kpi": {
+                        "type": "object",
+                        "properties": {
+                          "valueFormat": {
+                            "type": "string",
+                            "enum": [
+                              "currency",
+                              "number",
+                              "percent",
+                              "duration"
+                            ]
+                          },
+                          "comparisonSql": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 10000
+                          },
+                          "comparisonLabel": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 120
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
                     "required": [

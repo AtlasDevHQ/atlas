@@ -57,7 +57,7 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, dashboardChartConfigSchema } from "@useatlas/schemas";
 import { resolveDashboardParameterValues, extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -78,11 +78,9 @@ const log = createLogger("dashboard-routes");
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-const ChartConfigSchema = z.object({
-  type: z.enum(CHART_TYPES),
-  categoryColumn: z.string(),
-  valueColumns: z.array(z.string()).min(1),
-});
+/** Shared chart/table/KPI config (#3137) — carries the optional `kpi` block so
+ *  add/update-card round-trip the comparison query instead of stripping it. */
+const ChartConfigSchema = dashboardChartConfigSchema;
 
 const CreateDashboardSchema = z.object({
   title: z.string().min(1).max(200),
@@ -1901,17 +1899,54 @@ authed.openapi(renderCardRoute, async (c) => {
       throw err;
     }
 
+    // #3137 — a KPI card's optional `comparisonSql` runs as a SECOND query
+    // through the SAME pipeline (validation + auto-LIMIT + statement timeout +
+    // RLS + audit), binding the SAME parameter values. Both queries run in
+    // parallel — no waterfall. The comparison is NEVER string-interpolated;
+    // the UI computes the delta from the two numbers.
+    const chartConfig = cardResult.data.chartConfig;
+    const comparisonSql =
+      chartConfig?.type === "kpi" ? chartConfig.kpi?.comparisonSql : undefined;
+
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
-    const outcome = yield* Effect.promise(() =>
-      runUserQueryPipeline({
-        sql: cardResult.data.sql,
-        ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
-        explanation: `Dashboard card render: ${cardResult.data.title}`,
-        parameters: paramValues,
-      }),
+    const [outcome, comparisonOutcome] = yield* Effect.promise(() =>
+      Promise.all([
+        runUserQueryPipeline({
+          sql: cardResult.data.sql,
+          ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
+          explanation: `Dashboard card render: ${cardResult.data.title}`,
+          parameters: paramValues,
+        }),
+        comparisonSql
+          ? runUserQueryPipeline({
+              sql: comparisonSql,
+              ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
+              explanation: `Dashboard KPI comparison: ${cardResult.data.title}`,
+              parameters: paramValues,
+            })
+          : Promise.resolve(null),
+      ]),
     );
 
     const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
+    // Attach the comparison only when the primary succeeded AND a comparisonSql
+    // is configured. A failed comparison degrades to `null` (the delta chip is
+    // dropped) rather than failing the whole KPI render — but it's logged, never
+    // silently swallowed.
+    if (outcome.kind === "ok" && comparisonSql) {
+      if (comparisonOutcome && comparisonOutcome.kind === "ok") {
+        (body as Record<string, unknown>).comparison = {
+          columns: comparisonOutcome.columns,
+          rows: comparisonOutcome.rows,
+        };
+      } else {
+        (body as Record<string, unknown>).comparison = null;
+        log.warn(
+          { cardId, requestId, comparisonKind: comparisonOutcome?.kind },
+          "KPI comparison query did not succeed — delta chip omitted",
+        );
+      }
+    }
     return c.json(body as never, status);
   }), { label: "render card" });
 });

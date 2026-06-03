@@ -26,10 +26,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { Markdown } from "@/ui/components/chat/markdown";
+import { KpiCard } from "./kpi-card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
-import type { DashboardCard, StagedChange } from "@/ui/lib/types";
+import type { DashboardCard, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
   () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -56,6 +57,12 @@ interface DashboardTileProps {
    * the tile — the tile just signals "this is what's about to happen".
    */
   stage?: StagedChange | null;
+  /**
+   * #3137 — KPI comparison query result for a `kpi` card, fetched view-time via
+   * the `/render` endpoint. `null`/undefined → the delta chip is omitted.
+   * Ignored by non-KPI tiles.
+   */
+  comparison?: KpiComparisonResult | null;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -79,6 +86,7 @@ function ChartTile({
   fullscreen,
   isRefreshing,
   stage,
+  comparison,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -89,7 +97,10 @@ function ChartTile({
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState(card.title);
 
-  const hasChartConfig = !!card.chartConfig && card.chartConfig.type !== "table";
+  // #3137 — a KPI card renders the compact <KpiCard> body instead of a
+  // chart/table; it has no Chart/Table toggle (the big number IS the view).
+  const isKpi = card.chartConfig?.type === "kpi";
+  const hasChartConfig = !!card.chartConfig && card.chartConfig.type !== "table" && !isKpi;
   const [viewMode, setViewMode] = useState<ViewMode>(hasChartConfig ? "chart" : "table");
 
   const columns = card.cachedColumns ?? [];
@@ -269,7 +280,9 @@ function ChartTile({
 
       <div className="dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5">
         {hasData ? (
-          viewMode === "chart" && hasChartConfig ? (
+          isKpi ? (
+            <KpiCard card={card} comparison={comparison} />
+          ) : viewMode === "chart" && hasChartConfig ? (
             <ChartSlot
               cardId={card.id}
               columns={columns}
@@ -293,7 +306,7 @@ function ChartTile({
           <Clock className="size-2.5" />
           {timeAgo(card.cachedAt)}
         </span>
-        {hasData && <span className="tabular-nums">{rows.length} rows</span>}
+        {hasData && !isKpi && <span className="tabular-nums">{rows.length} rows</span>}
       </div>
 
       {/* #2365 — remove_card ghost overlay: tinted scrim + banner. */}

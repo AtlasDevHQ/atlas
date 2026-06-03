@@ -461,6 +461,112 @@ describe("createDashboard tool", () => {
   });
 
   // -------------------------------------------------------------------
+  // KPI / scorecard cards (#3137)
+  // -------------------------------------------------------------------
+
+  it("accepts a kpi card and persists its kpi config; validates BOTH queries", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-kpi", title: "KPIs", description: null, updated_at: "2026-06-03" }] },
+      { rows: [] }, // draft
+      { rows: [] }, // COMMIT
+    );
+
+    const result = await run({
+      title: "KPIs",
+      parameters: [{ key: "date_from", type: "date", default: "now - 30 days", label: "From" }],
+      cards: [
+        {
+          title: "Revenue",
+          sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "label",
+            valueColumns: ["total"],
+            kpi: {
+              valueFormat: "currency",
+              comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from",
+              comparisonLabel: "vs. prior period",
+            },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    // BOTH the primary query and the comparison query were validated.
+    expect(validateSQLMock).toHaveBeenCalledTimes(2);
+
+    const snapshot = JSON.parse(clientQueryCalls[2].params![2] as string);
+    expect(snapshot.cards[0].chartConfig).toEqual({
+      type: "kpi",
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: {
+        valueFormat: "currency",
+        comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from",
+        comparisonLabel: "vs. prior period",
+      },
+    });
+  });
+
+  it("rejects a kpi card whose comparisonSql fails SQL validation (no transaction)", async () => {
+    enableInternalDB();
+
+    const result = await run({
+      title: "KPIs",
+      cards: [
+        {
+          title: "Revenue",
+          sql: "SELECT SUM(amount) AS total FROM orders",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "total",
+            valueColumns: ["total"],
+            // A mutation — the comparison query must hit the same SELECT-only guard.
+            kpi: { comparisonSql: "DROP TABLE orders" },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("err");
+    if (result.kind === "err") {
+      expect(result.validationErrors?.[0].error).toMatch(/comparison/i);
+    }
+    // Rejected before any transaction opened.
+    expect(connectCalls).toBe(0);
+  });
+
+  it("rejects a kpi card whose comparisonSql references an undeclared parameter", async () => {
+    enableInternalDB();
+
+    const result = await run({
+      title: "KPIs",
+      // No parameters declared, but comparisonSql references :date_from.
+      cards: [
+        {
+          title: "Revenue",
+          sql: "SELECT SUM(amount) AS total FROM orders",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "total",
+            valueColumns: ["total"],
+            kpi: { comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at < :date_from" },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("err");
+    if (result.kind === "err") {
+      expect(result.validationErrors?.[0].error).toContain(":date_from");
+    }
+    expect(connectCalls).toBe(0);
+  });
+
+  // -------------------------------------------------------------------
   // Validation-fail rejects the whole call (no transaction)
   // -------------------------------------------------------------------
 

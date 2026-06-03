@@ -21,7 +21,7 @@
 import * as crypto from "crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { CHART_TYPES } from "@useatlas/types";
+import { dashboardChartConfigSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
@@ -51,11 +51,9 @@ import { stageChange } from "@atlas/api/lib/stage-tracker";
 
 const log = createLogger("tool:bound-dashboard");
 
-const ChartConfigSchema = z.object({
-  type: z.enum(CHART_TYPES),
-  categoryColumn: z.string().min(1),
-  valueColumns: z.array(z.string().min(1)).min(1),
-});
+/** Shared chart/table/KPI config (#3137) — carries the optional `kpi` block so
+ *  the bound editor's addCard doesn't strip it on the way to the draft. */
+const ChartConfigSchema = dashboardChartConfigSchema;
 
 export interface BoundDashboardToolContext {
   dashboardId: string;

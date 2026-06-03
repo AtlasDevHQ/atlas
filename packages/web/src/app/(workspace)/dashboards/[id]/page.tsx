@@ -520,8 +520,14 @@ export default function DashboardViewPage() {
               try {
                 const body = (await res.json()) as { message?: string; error?: string };
                 message = body.message ?? body.error ?? message;
-              } catch {
-                // non-JSON body — keep the status-based message
+              } catch (parseError) {
+                // Non-JSON error body — keep the status-based message, but
+                // surface the parse failure for debugging rather than dropping it.
+                console.debug("[dashboard] failed to parse render error body", {
+                  cardId: card.id,
+                  status: res.status,
+                  parseError: parseError instanceof Error ? parseError.message : String(parseError),
+                });
               }
               return { cardId: card.id, ok: false, error: message };
             }

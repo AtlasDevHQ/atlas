@@ -2206,9 +2206,14 @@ export function makeSchedulerLive(
           }
 
           // Park on the doorbell until the next kick or backstop deadline.
-          // A failed tick re-arms a short retry (Codex P2) instead of
-          // sleeping the full backstop.
-          const waitMs = outcome.ok ? backstopSweepMs : OUTBOX_FAILED_RETRY_MS;
+          // Re-arm a SHORT retry instead of sleeping the full backstop when
+          // there's known work to resume: a failed tick (Codex P2), OR a
+          // capped drain that already proved more due rows remain
+          // (CodeRabbit follow-up). Both keep an already-awake fiber from
+          // idling 300s on top of a backlog it knows about; a successful,
+          // fully-drained tick parks for the full backstop.
+          const needsFastFollowup = !outcome.ok || outcome.result.drainCapped;
+          const waitMs = needsFastFollowup ? OUTBOX_FAILED_RETRY_MS : backstopSweepMs;
           const reason = yield* waitForOutboxWake(waitMs);
           outboxNextTrigger = reason === "kick" ? "kick" : "backstop";
         });

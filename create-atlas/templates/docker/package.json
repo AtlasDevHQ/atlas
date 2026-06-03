@@ -85,7 +85,7 @@
     "zustand": "^5.0.14"
   },
   "optionalDependencies": {
-    "@vercel/sandbox": "^1"
+    "@vercel/sandbox": "^2"
   },
   "devDependencies": {
     "@clack/prompts": "^1.5.0",

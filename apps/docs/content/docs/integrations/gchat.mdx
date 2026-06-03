@@ -19,6 +19,17 @@ OAuth dance. Google Chat's bot model is operator-shared because
 Google Chat apps are published once to the Workspace Marketplace and
 installed per-Workspace under a single application registration.
 
+<Callout type="warn" title="Per-workspace install not available yet">
+The per-workspace install flow described below is **not currently available**
+in the Atlas admin UI. Its legacy connect route was removed in
+[#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) because it bypassed the
+chat-integration cap and produced a non-routable install. The cap-gated
+static-bot install (routing-identifier capture, like Discord) is tracked in
+[#3143](https://github.com/AtlasDevHQ/atlas/issues/3143); until it ships the
+Google Chat card shows **"Coming soon."** The operator setup below remains valid
+groundwork.
+</Callout>
+
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to a Google Cloud project + Workspace

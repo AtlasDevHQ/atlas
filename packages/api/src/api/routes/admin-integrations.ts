@@ -21,7 +21,6 @@ import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallationByOrg, saveInstallation, deleteInstallationByOrg } from "@atlas/api/lib/slack/store";
 import {
   getTeamsInstallationByOrg,
-  saveTeamsInstallation,
   deleteTeamsInstallationByOrg,
 } from "@atlas/api/lib/teams/store";
 import {
@@ -31,12 +30,10 @@ import {
 } from "@atlas/api/lib/discord/store";
 import {
   getTelegramInstallationByOrg,
-  saveTelegramInstallation,
   deleteTelegramInstallationByOrg,
 } from "@atlas/api/lib/telegram/store";
 import {
   getGChatInstallationByOrg,
-  saveGChatInstallation,
   deleteGChatInstallationByOrg,
 } from "@atlas/api/lib/gchat/store";
 import {
@@ -51,7 +48,6 @@ import {
 } from "@atlas/api/lib/linear/store";
 import {
   getWhatsAppInstallationByOrg,
-  saveWhatsAppInstallation,
   deleteWhatsAppInstallationByOrg,
 } from "@atlas/api/lib/whatsapp/store";
 import {
@@ -316,8 +312,12 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: slackConfigurable,
       };
 
-      // Teams status
-      const teamsConfigurable = !!process.env.TEAMS_APP_ID;
+      // Teams status — #2994 disabled the catalog/admin-UI install (the
+      // BYOT connect route was removed; the static-bot card is coming_soon),
+      // so it is no longer configurable from this surface. The orphaned
+      // `/api/v1/teams/install` OAuth module is a separate residual tracked
+      // in #3142 / #3145.
+      const teamsConfigurable = false;
       const teams = {
         connected: teamsInstall !== null,
         tenantId: teamsInstall?.tenant_id ?? null,
@@ -336,8 +336,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: discordConfigurable,
       };
 
-      // Telegram status — configurable in SaaS mode or when internal DB is available (BYOT)
-      const telegramConfigurable = deployMode === "saas" || hasInternalDB();
+      // Telegram status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3141).
+      const telegramConfigurable = false;
       const telegram = {
         connected: telegramInstall !== null,
         botId: telegramInstall?.bot_id ?? null,
@@ -346,9 +348,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: telegramConfigurable,
       };
 
-      // Google Chat status — BYOT-only, configurable when internal DB is available.
-      // SaaS always has internal DB, so hasInternalDB() alone suffices (no deployMode check needed).
-      const gchatConfigurable = hasInternalDB();
+      // Google Chat status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3143).
+      const gchatConfigurable = false;
       const gchat = {
         connected: gchatInstall !== null,
         projectId: gchatInstall?.project_id ?? null,
@@ -376,8 +379,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: linearConfigurable,
       };
 
-      // WhatsApp status — BYOT-only, configurable when internal DB is available.
-      const whatsappConfigurable = hasInternalDB();
+      // WhatsApp status — #2994 removed the only install route (cap bypass +
+      // non-functional); not configurable until the cap-gated static-bot
+      // install ships (#3144).
+      const whatsappConfigurable = false;
       const whatsapp = {
         connected: whatsappInstall !== null,
         phoneNumberId: whatsappInstall?.phone_number_id ?? null,
@@ -779,163 +784,6 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
   );
 });
 
-// POST /teams/byot — connect Teams via app credentials (no platform OAuth needed)
-const connectTeamsByotRoute = createRoute({
-  method: "post",
-  path: "/teams/byot",
-  tags: ["Admin — Integrations"],
-  summary: "Connect Teams via app credentials (BYOT)",
-  description:
-    "Validates Azure Bot app credentials via client credentials token acquisition " +
-    "and saves the installation for the current workspace.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: z.object({
-            appId: z.string().min(1).openapi({ description: "Azure Bot App ID (client_id)" }),
-            appPassword: z.string().min(1).openapi({ description: "Azure Bot App Password (client_secret)" }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Teams connected via BYOT",
-      content: {
-        "application/json": {
-          schema: z.object({
-            message: z.string(),
-            appId: z.string(),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid credentials, no active organization, or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      if (!hasInternalDB()) {
-        return c.json(
-          { error: "not_configured", message: "Teams BYOT requires an internal database. Configure DATABASE_URL." },
-          400,
-        );
-      }
-
-      const { appId, appPassword } = c.req.valid("json");
-
-      // Validate credentials by requesting a client credentials token from Azure AD.
-      // Inner catches log the original error for debugging but return sanitized user-facing messages.
-      const tokenResult = yield* Effect.tryPromise({
-        try: async () => {
-          let res: Response;
-          try {
-            res = await fetch(
-              "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                body: new URLSearchParams({
-                  grant_type: "client_credentials",
-                  client_id: appId,
-                  client_secret: appPassword,
-                  scope: "https://api.botframework.com/.default",
-                }),
-              },
-            );
-          } catch (err) {
-            log.warn({ err: errorMessage(err) }, "Azure AD token fetch failed");
-            return { ok: false as const, error: "Could not reach Azure AD. Please try again." };
-          }
-          let data: { access_token?: string; error?: string; error_description?: string };
-          try {
-            data = (await res.json()) as typeof data;
-          } catch (err) {
-            log.warn({ err: errorMessage(err) }, "Azure AD token response parse failed");
-            return { ok: false as const, error: "Azure AD returned an invalid response" };
-          }
-          if (!data.access_token) {
-            return { ok: false as const, error: data.error_description ?? data.error ?? "Invalid credentials" };
-          }
-          return { ok: true as const };
-        },
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!tokenResult.ok) {
-        return c.json(
-          { error: "invalid_credentials", message: `Invalid Teams credentials: ${tokenResult.error}` },
-          400,
-        );
-      }
-
-      // BYOT has no tenant context — use appId as the primary key (tenant_id column)
-      yield* Effect.tryPromise({
-        try: () =>
-          saveTeamsInstallation(appId, {
-            orgId,
-            appPassword,
-          }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(
-        Effect.tapError((err) =>
-          Effect.sync(() =>
-            logAdminAction({
-              actionType: ADMIN_ACTIONS.integration.enable,
-              targetType: "integration",
-              targetId: orgId,
-              status: "failure",
-              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-              metadata: { platform: "teams", mode: "byot", hasSecret: true, error: err.message },
-            }),
-          ),
-        ),
-      );
-
-      log.info({ orgId, appId }, "Teams BYOT installation saved by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.enable,
-        targetType: "integration",
-        targetId: orgId,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "teams", mode: "byot", hasSecret: true },
-      });
-
-      return c.json(
-        { message: "Teams connected successfully.", appId },
-        200,
-      );
-    }),
-    { label: "connect teams byot" },
-  );
-});
-
 // POST /discord/byot — connect Discord via bot credentials (no platform OAuth needed)
 const connectDiscordByotRoute = createRoute({
   method: "post",
@@ -1098,153 +946,6 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
   );
 });
 
-// POST /telegram — connect Telegram for current org (bot token submission)
-const connectTelegramRoute = createRoute({
-  method: "post",
-  path: "/telegram",
-  tags: ["Admin — Integrations"],
-  summary: "Connect Telegram",
-  description:
-    "Validates a Telegram bot token via the Telegram Bot API and saves the installation " +
-    "for the current workspace.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: z.object({
-            botToken: z.string().min(1).openapi({ description: "Telegram bot token from @BotFather" }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Telegram connected",
-      content: {
-        "application/json": {
-          schema: z.object({
-            message: z.string(),
-            botUsername: z.string().nullable(),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid bot token or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(connectTelegramRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      // Check internal DB availability before making the external API call
-      if (!hasInternalDB()) {
-        return c.json(
-          { error: "not_configured", message: "Telegram integration requires an internal database. Contact your platform administrator." },
-          400,
-        );
-      }
-
-      const { botToken } = c.req.valid("json");
-
-      // Validate token by calling Telegram's getMe API.
-      // Wrap in a sanitized try/catch to prevent the bot token from leaking
-      // into error messages (the token is embedded in the URL path).
-      const getMeResult = yield* Effect.tryPromise({
-        try: async () => {
-          let res: Response;
-          try {
-            res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
-          } catch {
-            return { ok: false as const, error: "Could not reach Telegram API. Please try again." };
-          }
-          if (!res.ok) {
-            return { ok: false as const, error: `Telegram API returned ${res.status}` };
-          }
-          let data: { ok: boolean; result?: { id: number; username?: string } };
-          try {
-            data = (await res.json()) as typeof data;
-          } catch {
-            return { ok: false as const, error: "Telegram API returned an invalid response" };
-          }
-          if (!data.ok || !data.result) {
-            return { ok: false as const, error: "Invalid bot token" };
-          }
-          return { ok: true as const, botId: String(data.result.id), botUsername: data.result.username ?? null };
-        },
-        catch: () => new Error("Telegram token validation failed"),
-      });
-
-      if (!getMeResult.ok) {
-        return c.json(
-          { error: "invalid_token", message: `Invalid Telegram bot token: ${getMeResult.error}` },
-          400,
-        );
-      }
-
-      yield* Effect.tryPromise({
-        try: () =>
-          saveTelegramInstallation(getMeResult.botId, {
-            orgId,
-            botUsername: getMeResult.botUsername ?? undefined,
-            botToken,
-          }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(
-        Effect.tapError((err) =>
-          Effect.sync(() =>
-            logAdminAction({
-              actionType: ADMIN_ACTIONS.integration.enable,
-              targetType: "integration",
-              targetId: orgId,
-              status: "failure",
-              ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-              metadata: { platform: "telegram", hasSecret: true, error: err.message },
-            }),
-          ),
-        ),
-      );
-
-      log.info({ orgId, botId: getMeResult.botId, botUsername: getMeResult.botUsername }, "Telegram installation saved by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.enable,
-        targetType: "integration",
-        targetId: orgId,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "telegram", hasSecret: true },
-      });
-
-      return c.json(
-        { message: "Telegram connected successfully.", botUsername: getMeResult.botUsername },
-        200,
-      );
-    }),
-    { label: "connect telegram" },
-  );
-});
-
 // DELETE /telegram — disconnect Telegram for current org
 const disconnectTelegramRoute = createRoute({
   method: "delete",
@@ -1326,168 +1027,6 @@ adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
 // ---------------------------------------------------------------------------
 // Google Chat routes (BYOT-only — no platform OAuth variant)
 // ---------------------------------------------------------------------------
-
-const connectGChatRoute = createRoute({
-  method: "post",
-  path: "/gchat",
-  tags: ["Admin — Integrations"],
-  summary: "Connect Google Chat via service account",
-  description:
-    "Parses a Google Chat service account JSON key, validates required fields " +
-    "(client_email, private_key), and saves the installation for the current workspace. " +
-    "Structural validation only — does not call the Google API.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: z.object({
-            credentialsJson: z
-              .string()
-              .min(1)
-              .openapi({ description: "Google Cloud service account JSON key" }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Google Chat connected",
-      content: {
-        "application/json": {
-          schema: z.object({
-            message: z.string(),
-            projectId: z.string().nullable(),
-            serviceAccountEmail: z.string().nullable(),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid credentials, no active organization, or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    409: {
-      description: "Service account already bound to a different organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(connectGChatRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      if (!hasInternalDB()) {
-        return c.json(
-          { error: "not_configured", message: "Google Chat integration requires an internal database. Configure DATABASE_URL." },
-          400,
-        );
-      }
-
-      const { credentialsJson } = c.req.valid("json");
-
-      // Parse and validate the service account JSON
-      let parsed: { client_email?: string; private_key?: string; project_id?: string };
-      try {
-        parsed = JSON.parse(credentialsJson) as typeof parsed;
-      } catch (err) {
-        log.warn({ err: errorMessage(err) }, "Google Chat credentials JSON parse failed");
-        return c.json(
-          { error: "invalid_credentials", message: "Invalid JSON. Paste the full service account key file contents." },
-          400,
-        );
-      }
-
-      if (!parsed.client_email || typeof parsed.client_email !== "string") {
-        return c.json(
-          { error: "invalid_credentials", message: "Service account JSON is missing the 'client_email' field." },
-          400,
-        );
-      }
-
-      if (!parsed.private_key || typeof parsed.private_key !== "string") {
-        return c.json(
-          { error: "invalid_credentials", message: "Service account JSON is missing the 'private_key' field." },
-          400,
-        );
-      }
-
-      if (!parsed.private_key.startsWith("-----BEGIN")) {
-        return c.json(
-          { error: "invalid_credentials", message: "Service account JSON has an invalid 'private_key'. Ensure you pasted the full key file." },
-          400,
-        );
-      }
-
-      const clientEmail = parsed.client_email;
-      const projectId = typeof parsed.project_id === "string" && parsed.project_id
-        ? parsed.project_id
-        : clientEmail.split("@")[1]?.replace(".iam.gserviceaccount.com", "") ?? `gchat-${orgId}`;
-
-      const saveResult = yield* Effect.tryPromise({
-        try: () =>
-          saveGChatInstallation(projectId, {
-            orgId,
-            serviceAccountEmail: clientEmail,
-            credentialsJson,
-          }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(
-        Effect.map(() => ({ ok: true as const })),
-        Effect.catchAll((err) => Effect.succeed({ ok: false as const, message: err.message })),
-      );
-
-      if (!saveResult.ok) {
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.integration.enable,
-          targetType: "integration",
-          targetId: orgId,
-          status: "failure",
-          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-          metadata: { platform: "gchat", hasSecret: true, error: saveResult.message },
-        });
-        return c.json(
-          { error: "conflict", message: saveResult.message },
-          409,
-        );
-      }
-
-      log.info({ orgId, projectId, serviceAccountEmail: clientEmail }, "Google Chat installation saved by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.enable,
-        targetType: "integration",
-        targetId: orgId,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "gchat", hasSecret: true },
-      });
-
-      return c.json(
-        { message: "Google Chat connected successfully.", projectId, serviceAccountEmail: clientEmail },
-        200,
-      );
-    }),
-    { label: "connect gchat" },
-  );
-});
 
 const disconnectGChatRoute = createRoute({
   method: "delete",
@@ -2088,183 +1627,6 @@ adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
 // ---------------------------------------------------------------------------
 // WhatsApp routes (BYOT-only — Cloud API credentials)
 // ---------------------------------------------------------------------------
-
-const connectWhatsAppRoute = createRoute({
-  method: "post",
-  path: "/whatsapp",
-  tags: ["Admin — Integrations"],
-  summary: "Connect WhatsApp via Cloud API credentials",
-  description:
-    "Validates WhatsApp Cloud API credentials via the Meta Graph API and saves the installation " +
-    "for the current workspace.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: z.object({
-            phoneNumberId: z
-              .string()
-              .min(1)
-              .regex(/^\d+$/, "Phone number ID must be numeric")
-              .openapi({ description: "WhatsApp phone number ID from Meta Business Suite" }),
-            accessToken: z
-              .string()
-              .min(1)
-              .openapi({ description: "Permanent access token from Meta" }),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "WhatsApp connected",
-      content: {
-        "application/json": {
-          schema: z.object({
-            message: z.string(),
-            displayPhone: z.string().nullable(),
-          }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid credentials, no active organization, or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    409: {
-      description: "Phone number already bound to a different organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      if (!hasInternalDB()) {
-        return c.json(
-          { error: "not_configured", message: "WhatsApp integration requires an internal database. Configure DATABASE_URL." },
-          400,
-        );
-      }
-
-      const { phoneNumberId, accessToken } = c.req.valid("json");
-
-      // Validate credentials by calling Meta's Graph API.
-      const phoneResult = yield* Effect.tryPromise({
-        try: async () => {
-          let res: Response;
-          try {
-            res = await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(phoneNumberId)}`, {
-              headers: { Authorization: `Bearer ${accessToken}` },
-              signal: AbortSignal.timeout(10_000),
-            });
-          } catch (err) {
-            log.warn({ err: errorMessage(err) }, "WhatsApp Graph API fetch failed");
-            return { ok: false as const, error: "Could not reach Meta API. Please try again." };
-          }
-          if (!res.ok) {
-            let detail = `status ${res.status}`;
-            try {
-              const errBody = (await res.json()) as { error?: { message?: string } };
-              if (errBody.error?.message) detail = errBody.error.message;
-            } catch {
-              // intentionally ignored: response body may not be JSON
-            }
-            return { ok: false as const, error: `Meta API error: ${detail}` };
-          }
-          let data: { id?: string; display_phone_number?: string };
-          try {
-            data = (await res.json()) as typeof data;
-          } catch (err) {
-            log.warn({ err: errorMessage(err) }, "WhatsApp Graph API response parse failed");
-            return { ok: false as const, error: "Meta API returned an invalid response" };
-          }
-          if (!data.id) {
-            return { ok: false as const, error: "Invalid phone number ID or access token" };
-          }
-          return { ok: true as const, displayPhone: data.display_phone_number ?? null };
-        },
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!phoneResult.ok) {
-        return c.json(
-          { error: "invalid_credentials", message: `Invalid WhatsApp credentials: ${phoneResult.error}` },
-          400,
-        );
-      }
-
-      const saveResult = yield* Effect.tryPromise({
-        try: () =>
-          saveWhatsAppInstallation(phoneNumberId, {
-            orgId,
-            displayPhone: phoneResult.displayPhone ?? undefined,
-            accessToken,
-          }),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(
-        Effect.map(() => ({ ok: true as const })),
-        Effect.catchAll((err) => {
-          if (err.message.includes("already bound to a different organization")) {
-            return Effect.succeed({ ok: false as const, message: err.message });
-          }
-          return Effect.fail(err);
-        }),
-      );
-
-      if (!saveResult.ok) {
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.integration.enable,
-          targetType: "integration",
-          targetId: orgId,
-          status: "failure",
-          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-          metadata: { platform: "whatsapp", hasSecret: true, error: saveResult.message },
-        });
-        return c.json(
-          { error: "conflict", message: saveResult.message },
-          409,
-        );
-      }
-
-      log.info({ orgId, phoneNumberId, displayPhone: phoneResult.displayPhone }, "WhatsApp installation saved by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.enable,
-        targetType: "integration",
-        targetId: orgId,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "whatsapp", hasSecret: true },
-      });
-
-      return c.json(
-        { message: "WhatsApp connected successfully.", displayPhone: phoneResult.displayPhone },
-        200,
-      );
-    }),
-    { label: "connect whatsapp" },
-  );
-});
 
 const disconnectWhatsAppRoute = createRoute({
   method: "delete",

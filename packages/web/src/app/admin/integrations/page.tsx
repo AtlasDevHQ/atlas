@@ -279,7 +279,9 @@ function computeLiveStats(s: IntegrationStatus | null): LiveStats {
   const hasDB = s.hasInternalDB;
   const rows: ReadonlyArray<{ connected: boolean; usable: boolean }> = [
     { connected: s.slack.connected, usable: s.slack.configurable || hasDB },
-    { connected: s.teams.connected, usable: s.teams.configurable || hasDB },
+    // #2994: Teams BYOT install was removed; `configurable` is now authoritative
+    // (drop the `|| hasDB` fallback that assumed a hasInternalDB BYOT path).
+    { connected: s.teams.connected, usable: s.teams.configurable },
     { connected: s.discord.connected, usable: s.discord.configurable || hasDB },
     { connected: s.telegram.connected, usable: s.telegram.configurable },
     { connected: s.gchat.connected, usable: s.gchat.configurable },

@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.8",
+    title: "Dashboard Parameters & Text Blocks",
+    date: "2026-06-03",
+    summary:
+      "Dashboards gain two building blocks. Date-range and filter parameters let a dashboard's viewers narrow every tile to a time window or a shared filter value without touching the underlying queries, and new text / section-block cards let authors add headings, notes, and narrative between charts to structure a dashboard into readable sections. Alongside the dashboard work, this release hardens internals: the CRM lead-capture pipeline moves to an event-driven flusher with edge-triggered delivery, retry timers, and a periodic backstop; the isolated explore sandbox adopts the cleaner v2 runtime ergonomics with no change to its isolation guarantees; and several incomplete legacy chat install paths are disabled until their flows are production-ready.",
+    highlights: [
+      "Dashboard parameters — date-range and filter parameters scope every tile on a dashboard to a chosen time window or filter value, with no query edits (#3136)",
+      "Text & section-block cards — add headings, notes, and narrative blocks between charts to organize a dashboard into readable sections (#3138)",
+      "Event-driven CRM lead capture — the lead-capture outbox now flushes on an edge-triggered kick with retry timers and a periodic backstop, replacing fixed-interval polling (#3134)",
+      "Sandbox runtime ergonomics — the isolated explore sandbox adopts the @vercel/sandbox v2 API (resource-scoped cleanup + filesystem API) with no change to its deny-all network policy or tool isolation (#3135)",
+      "Chat install hardening — incomplete legacy install routes for Telegram, Microsoft Teams, Google Chat, and WhatsApp are disabled until their flows are production-ready (#2994)",
+    ],
+  },
+  {
     version: "v0.0.7",
     title: "Dependency Refresh",
     date: "2026-06-03",

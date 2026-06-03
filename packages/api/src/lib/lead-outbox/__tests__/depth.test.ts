@@ -8,9 +8,10 @@
  *      empty result).
  *   2. `OutboxWarnRateLimiter` — emit-then-suppress within the 60s
  *      window, re-emit just past it, and never emit below threshold.
- *   3. `runOutboxTick` — proves the orchestrator records both gauges
- *      and emits exactly one log.warn for a sustained 101+ pending
- *      depth across two within-window ticks.
+ *   3. `drainOutbox` — proves the orchestrator drains in batches, records
+ *      both gauges (post-drain, #2874), keeps claiming while a batch comes
+ *      back full, and emits exactly one log.warn for a sustained 101+
+ *      pending depth across two within-window drains.
  *
  * No `mock.module` — every test wires deps explicitly so the slice's
  * contract is enforced at the type level (not at the module-mock
@@ -29,7 +30,7 @@ import {
   queryDepthSnapshot,
   type OutboxDepthSnapshot,
 } from "../depth";
-import { runOutboxTick, type GaugeRecorder, type OutboxTickLogger } from "../tick";
+import { drainOutbox, type GaugeRecorder, type OutboxTickLogger } from "../tick";
 import type { OutboxDB, OutboxDispatcher } from "../outbox";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -352,23 +353,23 @@ describe("getWarnThreshold (env-var parser)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-//  runOutboxTick
+//  drainOutbox
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOutboxTick", () => {
-  test("records both gauges from the snapshot, before claiming rows", async () => {
+describe("drainOutbox", () => {
+  test("records both gauges from the snapshot, AFTER claiming rows (#2874 order flip)", async () => {
     const oldest = new Date("2026-05-26T10:00:00.000Z");
     const db = makeStubDB({
       snapshotRows: [
         { pending_count: "50", dead_count: "5", oldest_pending_at: oldest },
       ],
-      claimRows: [], // idle queue post-snapshot
+      claimRows: [], // idle queue — one empty claim, then observe
     });
     const pendingGauge = makeGauge();
     const deadGauge = makeGauge();
     const logger = makeLogger();
 
-    const result = await runOutboxTick({
+    const result = await drainOutbox({
       db,
       dispatcher: NEVER_DISPATCH,
       batchLimit: 50,
@@ -376,24 +377,80 @@ describe("runOutboxTick", () => {
       pendingGauge,
       deadGauge,
       logger,
+      observe: "always",
     });
 
     expect(pendingGauge.values).toEqual([50]);
     expect(deadGauge.values).toEqual([5]);
-    expect(result.snapshot.pending).toBe(50);
+    expect(result.snapshot?.pending).toBe(50);
     expect(result.warned).toBe(false);
+    expect(result.batches).toBe(1);
     expect(logger.warnCalls).toEqual([]);
 
-    // Order check: snapshot SELECT precedes any UPDATE attempt.
+    // Order check (#2874): the CLAIM now precedes the depth snapshot, so
+    // pending_count converges to the POST-drain residual.
     const snapshotIdx = db.calls.findIndex((c) =>
       /FROM crm_outbox\s+WHERE status IN/i.test(c.sql),
     );
     const claimIdx = db.calls.findIndex((c) => /RETURNING id, event_type/i.test(c.sql));
-    expect(snapshotIdx).toBeGreaterThanOrEqual(0);
-    expect(claimIdx).toBeGreaterThan(snapshotIdx);
+    expect(claimIdx).toBeGreaterThanOrEqual(0);
+    expect(snapshotIdx).toBeGreaterThan(claimIdx);
   });
 
-  test("101 pending across two within-window ticks emits exactly one warn", async () => {
+  test("keeps draining while a batch comes back full (#2874 Codex P1)", async () => {
+    // claimRows returns a FULL batch (batchLimit=2) every call, so the
+    // drain must loop until maxBatches rather than parking after one batch.
+    const fullBatch = [
+      { id: "a", event_type: "demo", payload: {}, attempts: 0, created_at: new Date(), twenty_person_id: null, twenty_note_id: null },
+      { id: "b", event_type: "demo", payload: {}, attempts: 0, created_at: new Date(), twenty_person_id: null, twenty_note_id: null },
+    ];
+    const db = makeStubDB({
+      snapshotRows: [{ pending_count: "0", dead_count: "0", oldest_pending_at: null }],
+      claimRows: fullBatch,
+    });
+    const result = await drainOutbox({
+      db,
+      dispatcher: async () => ({ kind: "ok" as const }),
+      batchLimit: 2,
+      limiter: new OutboxWarnRateLimiter(100),
+      pendingGauge: makeGauge(),
+      deadGauge: makeGauge(),
+      logger: makeLogger(),
+      observe: "always",
+      maxBatches: 3, // cap so the always-full stub terminates
+    });
+    expect(result.batches).toBe(3);
+    expect(result.drainCapped).toBe(true);
+    expect(result.flush.claimed).toBe(6); // 3 batches × 2 rows
+  });
+
+  test("when-claimed skips the snapshot on an idle sweep (~1 statement)", async () => {
+    const db = makeStubDB({
+      snapshotRows: [{ pending_count: "0", dead_count: "0", oldest_pending_at: null }],
+      claimRows: [], // idle backstop
+    });
+    const pendingGauge = makeGauge();
+    const result = await drainOutbox({
+      db,
+      dispatcher: NEVER_DISPATCH,
+      batchLimit: 50,
+      limiter: new OutboxWarnRateLimiter(100),
+      pendingGauge,
+      deadGauge: makeGauge(),
+      logger: makeLogger(),
+      observe: "when-claimed",
+    });
+    expect(result.snapshot).toBeNull();
+    expect(pendingGauge.values).toEqual([]); // no observe → gauge untouched
+    // Exactly one statement issued: the CLAIM. No snapshot SELECT.
+    const snapshotCalls = db.calls.filter((c) =>
+      /FROM crm_outbox\s+WHERE status IN/i.test(c.sql),
+    );
+    expect(snapshotCalls).toHaveLength(0);
+    expect(db.calls).toHaveLength(1);
+  });
+
+  test("101 pending across two within-window drains emits exactly one warn", async () => {
     const tickTime = 1_700_000_000_000;
     // `oldest` precedes `tickTime` by 5 min so `oldestPendingAgeMs` is
     // a positive duration (300_000 ms), not the clock-skew clamp.
@@ -408,8 +465,8 @@ describe("runOutboxTick", () => {
     const logger = makeLogger();
     const limiter = new OutboxWarnRateLimiter(100);
 
-    // Tick 1: depth 101, should warn.
-    const r1 = await runOutboxTick({
+    // Drain 1: depth 101, should warn.
+    const r1 = await drainOutbox({
       db,
       dispatcher: NEVER_DISPATCH,
       batchLimit: 50,
@@ -417,6 +474,7 @@ describe("runOutboxTick", () => {
       pendingGauge,
       deadGauge,
       logger,
+      observe: "always",
       now: () => tickTime,
     });
     expect(r1.warned).toBe(true);
@@ -428,14 +486,14 @@ describe("runOutboxTick", () => {
     // AC #2 requires "depth + oldest pending row's age" — humans read
     // age faster than ISO timestamps, dashboards plot age. Lock the
     // payload field so a destructure-and-forget refactor in
-    // `tick.ts:84-94` can't silently drop it.
+    // `observeOutboxDepth` can't silently drop it.
     expect(typeof logger.warnCalls[0]!.obj.oldestPendingAgeMs).toBe("number");
     expect(logger.warnCalls[0]!.obj.oldestPendingAgeMs).toBe(
       tickTime - oldest.getTime(),
     );
 
-    // Tick 2: still 101, 5s later — still inside the 60s window.
-    const r2 = await runOutboxTick({
+    // Drain 2: still 101, 5s later — still inside the 60s window.
+    const r2 = await drainOutbox({
       db,
       dispatcher: NEVER_DISPATCH,
       batchLimit: 50,
@@ -443,12 +501,13 @@ describe("runOutboxTick", () => {
       pendingGauge,
       deadGauge,
       logger,
+      observe: "always",
       now: () => tickTime + 5_000,
     });
     expect(r2.warned).toBe(false);
     expect(logger.warnCalls).toHaveLength(1);
 
-    // Both ticks still recorded the gauge — observability never blinks.
+    // Both drains still recorded the gauge — observability never blinks.
     expect(pendingGauge.values).toEqual([101, 101]);
     expect(deadGauge.values).toEqual([0, 0]);
   });
@@ -460,6 +519,7 @@ describe("runOutboxTick", () => {
       event_type: "demo",
       payload: {},
       attempts: 0,
+      created_at: new Date(),
       twenty_person_id: null,
       twenty_note_id: null,
     };
@@ -467,7 +527,7 @@ describe("runOutboxTick", () => {
       snapshotRows: [{ pending_count: "1", dead_count: "0", oldest_pending_at: null }],
       claimRows: [claimRow],
     });
-    const result = await runOutboxTick({
+    const result = await drainOutbox({
       db,
       dispatcher: dispatchSpy,
       batchLimit: 50,
@@ -475,25 +535,26 @@ describe("runOutboxTick", () => {
       pendingGauge: makeGauge(),
       deadGauge: makeGauge(),
       logger: makeLogger(),
+      observe: "always",
     });
     expect(result.flush.claimed).toBe(1);
     expect(result.flush.ok).toBe(1);
     expect(dispatchSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("propagates snapshot errors so the caller's Effect.tryPromise records tick_failed", async () => {
-    // Contract from `tick.ts:74`: exceptions from `queryDepthSnapshot`
-    // (or `flushBatch`) propagate so the outer `Effect.catchAll` in
-    // `layers.ts` logs `lead_outbox.tick_failed`. A future "let's be
-    // resilient" refactor that wraps the snapshot in try/catch and
-    // returns zeros would silence the transient-DB alert path.
+  test("propagates DB errors so the caller's Effect.tryPromise records tick_failed", async () => {
+    // Contract: exceptions from `flushBatch` (claim) or `queryDepthSnapshot`
+    // propagate so the outer `Effect.catchAll` in `layers.ts` logs
+    // `lead_outbox.tick_failed` (and re-arms the short retry). A future
+    // "let's be resilient" refactor that swallows them would silence the
+    // transient-DB alert path.
     const db: OutboxDB = {
       query: async () => {
         throw new Error("connection terminated unexpectedly");
       },
     };
     await expect(
-      runOutboxTick({
+      drainOutbox({
         db,
         dispatcher: NEVER_DISPATCH,
         batchLimit: 50,
@@ -501,6 +562,7 @@ describe("runOutboxTick", () => {
         pendingGauge: makeGauge(),
         deadGauge: makeGauge(),
         logger: makeLogger(),
+        observe: "always",
       }),
     ).rejects.toThrow("connection terminated unexpectedly");
   });
@@ -510,7 +572,7 @@ describe("runOutboxTick", () => {
       snapshotRows: [{ pending_count: "100", dead_count: "0", oldest_pending_at: null }],
     });
     const logger = makeLogger();
-    const result = await runOutboxTick({
+    const result = await drainOutbox({
       db,
       dispatcher: NEVER_DISPATCH,
       batchLimit: 50,
@@ -518,6 +580,7 @@ describe("runOutboxTick", () => {
       pendingGauge: makeGauge(),
       deadGauge: makeGauge(),
       logger,
+      observe: "always",
     });
     expect(result.warned).toBe(false);
     expect(logger.warnCalls).toEqual([]);

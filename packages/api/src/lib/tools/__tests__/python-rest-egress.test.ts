@@ -47,22 +47,18 @@ function setupSandboxMock() {
   mock.module("@vercel/sandbox", () => ({
     Sandbox: {
       create: async () => ({
-        runCommand: async (params: { cmd: string; env?: Record<string, string> }) => {
-          if (params.cmd === "pip") {
-            return { exitCode: 0, stdout: async () => "", stderr: async () => "" };
-          }
-          const marker = params.env?.ATLAS_RESULT_MARKER ?? "";
-          return {
-            exitCode: 0,
-            stdout: async () => `${marker}{"success":true}\n`,
-            stderr: async () => "",
-          };
+        runCommand: async (_params: { cmd: string; env?: Record<string, string> }) => {
+          // The wrapper writes its result to the sandbox FS, not stdout.
+          return { exitCode: 0, stdout: async () => "", stderr: async () => "" };
         },
         writeFiles: async () => {},
         mkDir: async () => {},
         updateNetworkPolicy: async (policy: unknown) => {
           mockUpdateNetworkPolicyCalls.push(policy);
         },
+        // v2 FS surface: backend reads the structured result off the FS.
+        fs: { readdir: async () => [] as string[] },
+        readFileToBuffer: async () => Buffer.from('{"success":true}'),
         stop: async () => {},
       }),
     },

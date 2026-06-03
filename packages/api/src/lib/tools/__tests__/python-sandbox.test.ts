@@ -41,15 +41,22 @@ interface MockSandboxOverrides {
   mkDirThrows?: string;
   writeFilesThrows?: string;
   runCommandThrows?: string;
+  /** Command result for the crash path (used when no result file is written). */
   runCommandResult?: {
     exitCode: number;
-    stdout: string;
     stderr: string;
   };
-  /** If true, dynamically inject the result marker into stdout */
-  injectMarker?: boolean;
-  /** Custom stdout builder given the marker */
-  stdoutForMarker?: (marker: string) => string;
+  /**
+   * Contents the wrapper "wrote" to ATLAS_RESULT_FILE, read back by the backend
+   * via readFileToBuffer. `null` simulates no result file (the process crashed /
+   * was signalled before writing one). Defaults to a success result.
+   */
+  resultFile?: string | Buffer | null;
+  /**
+   * Chart PNGs left in the chart dir: filename -> bytes. `fs.readdir` returns
+   * the names and `readFileToBuffer` returns the bytes. Defaults to no charts.
+   */
+  chartFiles?: Record<string, Buffer>;
 }
 
 let mockCreateCalls: unknown[] = [];
@@ -84,25 +91,12 @@ function setupSandboxMock(overrides: MockSandboxOverrides = {}) {
             }
             mockRunCommandCalls.push(params);
             if (overrides.runCommandThrows) throw new Error(overrides.runCommandThrows);
-
-            const marker = params.env?.ATLAS_RESULT_MARKER ?? "";
-            if (overrides.stdoutForMarker) {
-              return {
-                exitCode: overrides.runCommandResult?.exitCode ?? 0,
-                stdout: async () => overrides.stdoutForMarker!(marker),
-                stderr: async () => overrides.runCommandResult?.stderr ?? "",
-              };
-            }
-            if (overrides.injectMarker !== false && !overrides.runCommandResult) {
-              return {
-                exitCode: 0,
-                stdout: async () => `${marker}{"success":true}\n`,
-                stderr: async () => "",
-              };
-            }
+            // The wrapper writes its result to the FS (not stdout), so the
+            // command itself produces no stdout — only exit code + stderr matter
+            // for the crash path.
             return {
               exitCode: overrides.runCommandResult?.exitCode ?? 0,
-              stdout: async () => overrides.runCommandResult?.stdout ?? "",
+              stdout: async () => "",
               stderr: async () => overrides.runCommandResult?.stderr ?? "",
             };
           },
@@ -117,6 +111,19 @@ function setupSandboxMock(overrides: MockSandboxOverrides = {}) {
           updateNetworkPolicy: async (policy: unknown) => {
             mockUpdateNetworkPolicyCalls.push(policy);
             if (overrides.updateNetworkPolicyThrows) throw new Error(overrides.updateNetworkPolicyThrows);
+          },
+          // v2 FS surface — the backend reads the structured result + chart PNGs
+          // off the sandbox FS instead of parsing a stdout result marker.
+          fs: {
+            readdir: async (_path: string) => Object.keys(overrides.chartFiles ?? {}),
+          },
+          readFileToBuffer: async ({ path }: { path: string }) => {
+            const name = path.split("/").pop() ?? "";
+            const charts = overrides.chartFiles ?? {};
+            if (name in charts) return charts[name];
+            if (overrides.resultFile === null) return null;
+            const rf = overrides.resultFile ?? '{"success":true}';
+            return typeof rf === "string" ? Buffer.from(rf) : rf;
           },
           stop: async () => { mockStopCalls++; },
         };
@@ -150,7 +157,7 @@ describe("createPythonSandboxBackend", () => {
 
   it("creates sandbox with python3.13 runtime, installs packages, then locks to deny-all", async () => {
     setupSandboxMock({
-      stdoutForMarker: (m) => `${m}{"success":true,"output":"hello"}\n`,
+      resultFile: '{"success":true,"output":"hello"}',
     });
 
     const backend = await freshBackend();
@@ -168,6 +175,39 @@ describe("createPythonSandboxBackend", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.output).toBe("hello");
+    }
+  });
+
+  it("collects chart PNGs off the sandbox FS (readdir + readFileToBuffer) and base64-encodes them", async () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    setupSandboxMock({
+      resultFile: '{"success":true,"output":"chart made"}',
+      chartFiles: { "chart_0.png": png },
+    });
+    const backend = await freshBackend();
+    const result = await backend.exec("plt.savefig(chart_path())");
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.charts).toHaveLength(1);
+      expect(result.charts?.[0].mimeType).toBe("image/png");
+      expect(result.charts?.[0].base64).toBe(png.toString("base64"));
+    }
+  });
+
+  it("rejects when the result plus chart artifacts together exceed 1 MB", async () => {
+    // A ~1 MB PNG base64-encodes to ~1.37 MB, pushing the total over MAX_OUTPUT.
+    const bigChart = Buffer.alloc(1024 * 1024);
+    setupSandboxMock({
+      resultFile: '{"success":true}',
+      chartFiles: { "chart_0.png": bigChart },
+    });
+    const backend = await freshBackend();
+    const result = await backend.exec("plt.savefig(chart_path())");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toContain("exceeded 1 MB");
     }
   });
 
@@ -234,7 +274,8 @@ describe("createPythonSandboxBackend", () => {
 
     expect(params.cmd).toBe("python3");
     expect(params.env?.MPLBACKEND).toBe("Agg");
-    expect(params.env?.ATLAS_RESULT_MARKER).toBeDefined();
+    expect(params.env?.ATLAS_RESULT_FILE).toBeDefined();
+    expect(params.env?.ATLAS_RESULT_FILE).toContain("result.json");
     expect(params.env?.ATLAS_CHART_DIR).toContain("charts");
 
     // No secrets
@@ -333,9 +374,10 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("handles SIGKILL exit code", async () => {
+    // No result file (process killed before writing one) — crash path.
     setupSandboxMock({
-      injectMarker: false,
-      runCommandResult: { exitCode: 137, stdout: "", stderr: "" },
+      resultFile: null,
+      runCommandResult: { exitCode: 137, stderr: "" },
     });
     const backend = await freshBackend();
     const result = await backend.exec("while True: pass");
@@ -348,8 +390,8 @@ describe("createPythonSandboxBackend", () => {
 
   it("handles SIGSEGV exit code with stderr", async () => {
     setupSandboxMock({
-      injectMarker: false,
-      runCommandResult: { exitCode: 139, stdout: "", stderr: "Segfault in numpy" },
+      resultFile: null,
+      runCommandResult: { exitCode: 139, stderr: "Segfault in numpy" },
     });
     const backend = await freshBackend();
     const result = await backend.exec("bad code");
@@ -361,10 +403,10 @@ describe("createPythonSandboxBackend", () => {
     }
   });
 
-  it("returns stderr as error when no result marker and non-zero exit", async () => {
+  it("returns stderr as error when no result file and non-zero exit", async () => {
     setupSandboxMock({
-      injectMarker: false,
-      runCommandResult: { exitCode: 1, stdout: "some output", stderr: "NameError: name 'foo' is not defined" },
+      resultFile: null,
+      runCommandResult: { exitCode: 1, stderr: "NameError: name 'foo' is not defined" },
     });
     const backend = await freshBackend();
     const result = await backend.exec("print(foo)");
@@ -376,11 +418,9 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("rejects output exceeding 1 MB", async () => {
-    const bigOutput = "x".repeat(1024 * 1024 + 1);
-    setupSandboxMock({
-      injectMarker: false,
-      runCommandResult: { exitCode: 0, stdout: bigOutput, stderr: "" },
-    });
+    // The structured result the wrapper wrote is over the 1 MB cap.
+    const bigResult = "x".repeat(1024 * 1024 + 1);
+    setupSandboxMock({ resultFile: bigResult });
     const backend = await freshBackend();
     const result = await backend.exec("print('a' * 10000000)");
 
@@ -424,10 +464,8 @@ describe("createPythonSandboxBackend", () => {
   // creation (not a fixed deny-all), scoped to exactly the request that created
   // the backend — and that the policy carries no credential transformer.
 
-  const okMarker = (m: string) => `${m}{"success":true}\n`;
-
   it("locks down to the provided per-request host allowlist instead of deny-all", async () => {
-    setupSandboxMock({ stdoutForMarker: okMarker });
+    setupSandboxMock();
     const mod = await import("@atlas/api/lib/tools/python-sandbox");
     const policy = { allow: { "crm.tenant-a.example": [] } };
     const backend = mod.createPythonSandboxBackend({ networkPolicy: policy });
@@ -439,7 +477,7 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("SECURITY (per-request): separate backends lock down to their OWN policy — no shared state", async () => {
-    setupSandboxMock({ stdoutForMarker: okMarker });
+    setupSandboxMock();
     const mod = await import("@atlas/api/lib/tools/python-sandbox");
 
     const a = mod.createPythonSandboxBackend({ networkPolicy: { allow: { "a.example": [] } } });
@@ -455,7 +493,7 @@ describe("createPythonSandboxBackend", () => {
   });
 
   it("defaults to deny-all when no options are given (back-compat — SQL-only workloads)", async () => {
-    setupSandboxMock({ stdoutForMarker: okMarker });
+    setupSandboxMock();
     const backend = await freshBackend();
     await backend.exec("print('x')");
 

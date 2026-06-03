@@ -37,11 +37,15 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const {
   computeRetryAfterTimestamp,
+  computeRetryDelayMs,
+  getBackstopSweepIntervalMs,
   enqueue,
   flushBatch,
   isFlusherEnabled,
   recoverInFlight,
 } = await import("../outbox");
+const { FlusherSignal, setActiveFlusherSignal } = await import("../signal");
+type OutboxRetryScheduler = import("../outbox").OutboxRetryScheduler;
 type ClaimedOutboxRow = import("../outbox").ClaimedOutboxRow;
 type DispatchOutcome = import("../outbox").DispatchOutcome;
 type OutboxDB = import("../outbox").OutboxDB;
@@ -212,6 +216,9 @@ class FakeOutboxDB implements OutboxDB {
         payload: r.payload,
         attempts: r.attempts,
         workspace_id: r.workspace_id,
+        // `created_at` added to CLAIM RETURNING in #2874 so a transient
+        // failure can schedule its retry timer at the tier due-time.
+        created_at: r.created_at,
         twenty_person_id: r.twenty_person_id,
         twenty_note_id: r.twenty_note_id,
       })) as unknown as T[];
@@ -310,6 +317,9 @@ beforeEach(() => {
   db = new FakeOutboxDB();
   loggerCalls.warn.length = 0;
   loggerCalls.error.length = 0;
+  // No flusher doorbell registered by default — `enqueue`'s inline kick
+  // is then a no-op, matching a process with no mounted flusher (#2874).
+  setActiveFlusherSignal(null);
 });
 
 describe("enqueue", () => {
@@ -399,6 +409,36 @@ describe("enqueue", () => {
     ).rejects.toThrow(/workspaceId must be non-empty/);
     expect(db.rows).toHaveLength(0);
   });
+
+  test("rings the registered flusher doorbell after a successful insert (#2874)", async () => {
+    const signal = new FlusherSignal();
+    setActiveFlusherSignal(signal);
+    try {
+      let woke = false;
+      // Park a waiter; a successful enqueue must wake it via the inline
+      // kick — this is the < 100ms p99 enqueue→dispatch path (AC #1).
+      signal.wait(60_000, () => {
+        woke = true;
+      });
+      await enq(db, { eventType: "demo", payload: { source: "demo", email: "kick@y.test" } });
+      expect(woke).toBe(true);
+    } finally {
+      setActiveFlusherSignal(null);
+      signal.close();
+    }
+  });
+
+  test("a missing doorbell never blocks the enqueue (region-gated / self-hosted)", async () => {
+    // No flusher mounted → no registered doorbell. The row must still
+    // persist; the backstop sweep or next boot dispatches it.
+    setActiveFlusherSignal(null);
+    const id = await enq(db, {
+      eventType: "demo",
+      payload: { source: "demo", email: "nodoor@y.test" },
+    });
+    expect(id).toBe("row-1");
+    expect(db.rows[0].status).toBe("pending");
+  });
 });
 
 describe("flushBatch — claim & dispatch", () => {
@@ -450,6 +490,73 @@ describe("flushBatch — claim & dispatch", () => {
     expect(result).toMatchObject({ claimed: 1, transient: 1 });
     expect(db.rows[0].status).toBe("pending");
     expect(db.rows[0].last_error).toContain("dispatcher bug");
+  });
+});
+
+describe("flushBatch — per-row retry scheduling (#2874)", () => {
+  function recordingScheduler(): {
+    calls: Array<{ rowId: string; delayMs: number }>;
+    scheduler: OutboxRetryScheduler;
+  } {
+    const calls: Array<{ rowId: string; delayMs: number }> = [];
+    return {
+      calls,
+      scheduler: { scheduleRetry: (rowId, delayMs) => calls.push({ rowId, delayMs }) },
+    };
+  }
+
+  test("transient WITH Retry-After schedules the next attempt at the header delay", async () => {
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "ra@y.test" } });
+    const { calls, scheduler } = recordingScheduler();
+    const dispatcher: OutboxDispatcher = async () => ({
+      kind: "transient",
+      message: "429 slow down",
+      retryAfterMs: 45_000,
+    });
+    const result = await flushBatch(db, dispatcher, 10, scheduler);
+    expect(result.transient).toBe(1);
+    // AC #2: reschedule at retry_after without waiting for the backstop.
+    expect(calls).toEqual([{ rowId: "row-1", delayMs: 45_000 }]);
+  });
+
+  test("transient WITHOUT Retry-After still schedules a retry (off the tier due-time)", async () => {
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "tier@y.test" } });
+    const { calls, scheduler } = recordingScheduler();
+    const dispatcher: OutboxDispatcher = async () => ({ kind: "transient", message: "503" });
+    await flushBatch(db, dispatcher, 10, scheduler);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.rowId).toBe("row-1");
+    // The fake's `created_at` is a small monotonic counter (effectively
+    // ancient vs. wall-clock now), so the row is already past its tier
+    // due-time → fire on the next tick. The exact math is pinned in the
+    // `computeRetryDelayMs` suite below.
+    expect(calls[0]!.delayMs).toBe(0);
+  });
+
+  test("ok / permanent / exhausted outcomes never schedule a retry", async () => {
+    const { calls, scheduler } = recordingScheduler();
+
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "ok@y.test" } });
+    await flushBatch(db, async () => ({ kind: "ok" }), 10, scheduler);
+    expect(calls).toHaveLength(0);
+
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "perm@y.test" } });
+    await flushBatch(db, async () => ({ kind: "permanent", message: "400" }), 10, scheduler);
+    expect(calls).toHaveLength(0);
+
+    // Exhausted: a transient on the 6th attempt dead-letters (no retry).
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "exh@y.test" } });
+    db.rows[2]!.attempts = 5; // next claim bumps to 6 → dead on transient
+    await flushBatch(db, async () => ({ kind: "transient", message: "still 503" }), 10, scheduler);
+    expect(db.rows[2]!.status).toBe("dead");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("scheduler is optional — without one, transient still marks pending (backstop re-claims)", async () => {
+    await enq(db, { eventType: "demo", payload: { source: "demo", email: "nosched@y.test" } });
+    const result = await flushBatch(db, async () => ({ kind: "transient", message: "503" }), 10);
+    expect(result.transient).toBe(1);
+    expect(db.rows[0].status).toBe("pending");
   });
 });
 
@@ -1013,6 +1120,47 @@ describe("Retry-After plumbing", () => {
   });
 });
 
+// ── #2874 — retry-timer delay math (mirrors the SQL claim gate) ───────
+describe("computeRetryDelayMs", () => {
+  const NOW = 1_700_000_000_000;
+
+  test("upstream Retry-After wins over the tier delay", () => {
+    // created 1h ago, attempts=1 (tier 30s) — but the header says 60s.
+    expect(computeRetryDelayMs(new Date(NOW - 3_600_000), 1, 60_000, NOW)).toBe(60_000);
+  });
+
+  test("no Retry-After → remaining time until created_at + tier", () => {
+    // created 10s ago, attempts=1 → tier 30s → 20s remain.
+    expect(computeRetryDelayMs(new Date(NOW - 10_000), 1, undefined, NOW)).toBe(20_000);
+  });
+
+  test("a row already past its tier due-time fires immediately (floored at 0)", () => {
+    // created 60s ago, attempts=1 (tier 30s) → already due.
+    expect(computeRetryDelayMs(new Date(NOW - 60_000), 1, undefined, NOW)).toBe(0);
+  });
+
+  test("accepts a string created_at (raw pg row shape)", () => {
+    expect(
+      computeRetryDelayMs(new Date(NOW - 10_000).toISOString(), 1, undefined, NOW),
+    ).toBe(20_000);
+  });
+
+  test("unparseable created_at falls back to the full tier delay (still bounded)", () => {
+    // attempts=2 → tier 3m. Over-delays a back-dated row marginally, but
+    // never strands it — the backstop sweep guarantees eventual claim.
+    expect(computeRetryDelayMs("not-a-date", 2, undefined, NOW)).toBe(180_000);
+  });
+
+  test("invalid Retry-After (negative / NaN) is ignored; tier applies", () => {
+    expect(computeRetryDelayMs(new Date(NOW - 10_000), 1, -5, NOW)).toBe(20_000);
+    expect(computeRetryDelayMs(new Date(NOW - 10_000), 1, NaN, NOW)).toBe(20_000);
+  });
+
+  test("ceiling tier (attempts=5) schedules ~12h out", () => {
+    expect(computeRetryDelayMs(new Date(NOW), 5, undefined, NOW)).toBe(43_200_000);
+  });
+});
+
 // ── AC #3 — structured log on dead-letter ────────────────────────────
 
 describe("dead-letter logging (AC #3)", () => {
@@ -1179,6 +1327,48 @@ describe("isFlusherEnabled — region gate", () => {
       process.env[KEY] = v;
       expect(isFlusherEnabled()).toBe(true);
     }
+    restore();
+  });
+});
+
+describe("getBackstopSweepIntervalMs — #2874", () => {
+  const KEY = "ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS";
+  let original: string | undefined;
+  beforeEach(() => {
+    original = process.env[KEY];
+    delete process.env[KEY];
+  });
+  const restore = () => {
+    if (original === undefined) delete process.env[KEY];
+    else process.env[KEY] = original;
+  };
+
+  test("defaults to 300s (5 min) when unset", () => {
+    expect(getBackstopSweepIntervalMs()).toBe(300_000);
+    restore();
+  });
+
+  test("parses a valid override", () => {
+    process.env[KEY] = "60";
+    expect(getBackstopSweepIntervalMs()).toBe(60_000);
+    restore();
+  });
+
+  test("non-positive values default to 300s; values above 24h clamp to the maximum", () => {
+    // Non-positive parses hit the `parsed <= 0` guard and return the
+    // DEFAULT (the MIN=1 clamp branch is unreachable for integers > 0).
+    process.env[KEY] = "0";
+    expect(getBackstopSweepIntervalMs()).toBe(300_000);
+    process.env[KEY] = "-5";
+    expect(getBackstopSweepIntervalMs()).toBe(300_000);
+    process.env[KEY] = "999999"; // > 86400s → clamps to the 24h maximum
+    expect(getBackstopSweepIntervalMs()).toBe(86_400_000);
+    restore();
+  });
+
+  test("non-numeric input falls back to the default", () => {
+    process.env[KEY] = "five-minutes";
+    expect(getBackstopSweepIntervalMs()).toBe(300_000);
     restore();
   });
 });

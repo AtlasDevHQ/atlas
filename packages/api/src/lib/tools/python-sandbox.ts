@@ -8,7 +8,8 @@
  * - Installs data science packages, then locks down to deny-all
  * - Writes wrapper + user code to the sandbox filesystem
  * - Injects data via a JSON file (runCommand does not support stdin piping)
- * - Collects charts and structured output via result marker
+ * - Reads the structured result + chart PNGs back off the sandbox FS via the
+ *   v2 sandbox.fs API (readFileToBuffer / readdir), not a stdout result marker
  * - Unlike explore-sandbox.ts, the sandbox is created lazily and reused
  *   across calls (no explicit close/stop lifecycle — invalidation stops
  *   the old sandbox and creates a fresh one on next call)
@@ -25,7 +26,7 @@
 import { Effect, Data, Duration, Schedule } from "effect";
 import type { PythonBackend, PythonResult } from "./python";
 import type { SandboxNetworkPolicy } from "./backends/network-allowlist";
-import { PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT } from "./python-wrapper";
+import { PYTHON_SECURITY_AND_SETUP } from "./python-wrapper";
 import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
 import { randomUUID } from "crypto";
@@ -65,18 +66,27 @@ const DATA_SCIENCE_PACKAGES = [
 ];
 
 /**
- * Non-streaming Python wrapper for Vercel Sandbox. Composes shared fragments
- * (PYTHON_SECURITY_AND_SETUP, PYTHON_EXEC_AND_COLLECT) with file-based
- * data injection (argv[2]) since runCommand does not support stdin piping.
+ * Non-streaming Python wrapper for Vercel Sandbox. Composes the shared security
+ * fragment (PYTHON_SECURITY_AND_SETUP) with file-based data injection (argv[2],
+ * since runCommand does not support stdin piping).
+ *
+ * Result transport diverges from the shared PYTHON_EXEC_AND_COLLECT fragment
+ * (used by the nsjail/sidecar backends): instead of smuggling the structured
+ * result back through a `__ATLAS_RESULT_<id>__` stdout marker, this wrapper
+ * writes the result JSON to ATLAS_RESULT_FILE and leaves chart PNGs as files in
+ * _chart_dir. The host reads both off the sandbox FS via the v2 sandbox.fs API
+ * (readdir + readFileToBuffer). Charts are NOT base64-embedded here — they are
+ * read as raw artifacts host-side.
  */
 const PYTHON_WRAPPER = `
-import sys, json, io, base64, glob, os, ast
+import sys, json, io, os, ast
 
-_marker = os.environ["ATLAS_RESULT_MARKER"]
 _chart_dir = os.environ.get("ATLAS_CHART_DIR", "/tmp/charts")
+_result_file = os.environ["ATLAS_RESULT_FILE"]
 
 def _report_error(msg):
-    print(_marker + json.dumps({"success": False, "error": msg}))
+    with open(_result_file, "w") as _rf:
+        _rf.write(json.dumps({"success": False, "error": msg}))
     sys.exit(0)
 
 ${PYTHON_SECURITY_AND_SETUP}
@@ -101,11 +111,47 @@ if _atlas_data:
     except ImportError:
         data = _atlas_data
 
-${PYTHON_EXEC_AND_COLLECT}
+# --- Execute user code in isolated namespace ---
+_old_stdout = sys.stdout
+sys.stdout = _captured = io.StringIO()
+
+_user_ns = {"chart_path": chart_path, "data": data, "df": df}
+_atlas_error = None
+try:
+    exec(_user_code, _user_ns)
+except Exception as e:
+    _atlas_error = f"{type(e).__name__}: {e}"
+
+_output = _captured.getvalue()
+sys.stdout = _old_stdout
+
+# --- Build structured result (charts stay as PNG files, read host-side) ---
+_result = {"success": _atlas_error is None}
+if _output.strip():
+    _result["output"] = _output.strip()
+if _atlas_error:
+    _result["error"] = _atlas_error
+
+if "_atlas_table" in _user_ns:
+    _result["table"] = _user_ns["_atlas_table"]
+
+if "_atlas_chart" in _user_ns:
+    _ac = _user_ns["_atlas_chart"]
+    if isinstance(_ac, dict):
+        _result["rechartsCharts"] = [_ac]
+    elif isinstance(_ac, list):
+        _result["rechartsCharts"] = _ac
+
+with open(_result_file, "w") as _rf:
+    _rf.write(json.dumps(_result))
 `;
 
 // Sandbox base dir for relative paths
 const SANDBOX_BASE = "/vercel/sandbox";
+
+/** Shared 1 MB output-guard message (matches nsjail's MAX_OUTPUT rejection). */
+const OUTPUT_TOO_LARGE_ERROR =
+  "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.";
 
 // ── Local tagged errors ──────────────────────────────────────────────
 // Module-internal errors for Effect control flow. Not part of the global
@@ -320,12 +366,14 @@ export function createPythonSandboxBackend(
       }
 
       const execId = randomUUID();
-      const resultMarker = `__ATLAS_RESULT_${execId}__`;
       const execDir = `exec-${execId}`;
       const chartDir = `${execDir}/charts`;
       const wrapperPath = `${execDir}/wrapper.py`;
       const codePath = `${execDir}/user_code.py`;
       const dataPath = `${execDir}/data.json`;
+      const resultPath = `${execDir}/result.json`;
+      const chartDirAbs = `${SANDBOX_BASE}/${chartDir}`;
+      const resultPathAbs = `${SANDBOX_BASE}/${resultPath}`;
 
       const timeout =
         parseInt(
@@ -402,8 +450,8 @@ export function createPythonSandboxBackend(
               args: pythonArgs,
               cwd: `${SANDBOX_BASE}/${execDir}`,
               env: {
-                ATLAS_RESULT_MARKER: resultMarker,
-                ATLAS_CHART_DIR: `${SANDBOX_BASE}/${chartDir}`,
+                ATLAS_RESULT_FILE: resultPathAbs,
+                ATLAS_CHART_DIR: chartDirAbs,
                 MPLBACKEND: "Agg",
                 HOME: "/tmp",
                 LANG: "C.UTF-8",
@@ -429,52 +477,107 @@ export function createPythonSandboxBackend(
           }),
         );
 
-        // 5. Read stdout/stderr
-        const [stdout, stderr] = yield* Effect.tryPromise({
-          try: () => Promise.all([cmdResult.stdout(), cmdResult.stderr()]),
+        // 5. Read stderr — used only when the wrapper produced no result file
+        // (the process crashed / was signalled before it could write one).
+        const stderr = yield* Effect.tryPromise({
+          try: () => cmdResult.stderr(),
           catch: (err) => {
             const detail = sandboxErrorDetail(err);
-            log.error({ err: detail, execId }, "Failed to read stdout/stderr from sandbox");
+            log.error({ err: detail, execId }, "Failed to read stderr from sandbox");
             return new SandboxInfraError({
               message: `Failed to read execution output: ${safeError(detail)}`,
             });
           },
         });
 
-        // 6. Output size guard (matches nsjail's 1 MB limit)
-        if (stdout.length > MAX_OUTPUT) {
-          return {
-            success: false as const,
-            error: "Python output exceeded 1 MB limit — reduce print() output or use _atlas_table for large results.",
-          };
-        }
+        // 6. Read the structured result the wrapper wrote to the sandbox FS
+        // (v2 readFileToBuffer) — replaces the stdout result-marker parse.
+        const resultBuffer = yield* Effect.tryPromise({
+          try: () => sandbox.readFileToBuffer({ path: resultPathAbs }),
+          catch: (err) => {
+            const detail = sandboxErrorDetail(err);
+            log.error({ err: detail, execId }, "Failed to read result file from sandbox");
+            return new SandboxInfraError({
+              message: `Failed to read execution output: ${safeError(detail)}`,
+            });
+          },
+        });
 
-        log.debug(
-          { execId, exitCode: cmdResult.exitCode, stdoutLen: stdout.length },
-          "python sandbox execution finished",
-        );
+        if (resultBuffer) {
+          // 7. Output size guard (matches nsjail's 1 MB limit). Bound the
+          // structured-result buffer first, then result + charts combined
+          // (step 8) so the total payload returned to the agent stays bounded —
+          // the same cap the stdout marker enforced before #3126.
+          if (resultBuffer.length > MAX_OUTPUT) {
+            return { success: false as const, error: OUTPUT_TOO_LARGE_ERROR };
+          }
 
-        // 7. Extract structured result from the last marker line
-        const lines = stdout.split("\n");
-        const resultLine = lines.findLast((l) => l.startsWith(resultMarker));
-
-        if (resultLine) {
+          let parsed: PythonResult;
           try {
-            return JSON.parse(resultLine.slice(resultMarker.length)) as PythonResult;
+            parsed = JSON.parse(resultBuffer.toString()) as PythonResult;
           } catch (parseErr) {
             log.warn(
-              { execId, resultLine: resultLine.slice(0, 500), parseError: String(parseErr) },
+              { execId, parseError: String(parseErr) },
               "failed to parse Python result JSON",
             );
-            const userOutput = stdout.split(resultMarker)[0].trim();
             return {
               success: false as const,
-              error: `Python produced unparseable output.${userOutput ? ` Output: ${userOutput.slice(0, 500)}` : ""} stderr: ${stderr.trim().slice(0, 500)}`,
+              error: `Python produced unparseable output.${stderr.trim() ? ` stderr: ${stderr.trim().slice(0, 500)}` : ""}`,
             };
           }
+
+          // 8. Collect chart artifacts directly off the sandbox FS (readdir +
+          // readFileToBuffer), base64-encoding host-side. The wrapper leaves
+          // chart PNGs as files rather than embedding them in the result.
+          const chartBuffers = yield* Effect.tryPromise({
+            try: async () => {
+              const names = await sandbox.fs.readdir(chartDirAbs);
+              const pngs = names.filter((n) => /^chart_.*\.png$/.test(n)).sort();
+              // Reads are independent — fan out rather than awaiting serially.
+              const bufs = await Promise.all(
+                pngs.map((name) =>
+                  sandbox.readFileToBuffer({ path: `${chartDirAbs}/${name}` }),
+                ),
+              );
+              return bufs.filter((buf): buf is Buffer => buf !== null);
+            },
+            catch: (err) => {
+              const detail = sandboxErrorDetail(err);
+              log.error({ err: detail, execId }, "Failed to read chart artifacts from sandbox");
+              return new SandboxInfraError({
+                message: `Failed to read chart artifacts: ${safeError(detail)}`,
+              });
+            },
+          });
+
+          const chartsB64 = chartBuffers.map((b) => b.toString("base64"));
+          const totalBytes =
+            resultBuffer.length + chartsB64.reduce((n, s) => n + s.length, 0);
+          if (totalBytes > MAX_OUTPUT) {
+            return { success: false as const, error: OUTPUT_TOO_LARGE_ERROR };
+          }
+
+          log.debug(
+            {
+              execId,
+              exitCode: cmdResult.exitCode,
+              resultLen: resultBuffer.length,
+              charts: chartsB64.length,
+            },
+            "python sandbox execution finished",
+          );
+
+          if (parsed.success && chartsB64.length > 0) {
+            parsed.charts = chartsB64.map((b64) => ({
+              base64: b64,
+              mimeType: "image/png" as const,
+            }));
+          }
+          return parsed;
         }
 
-        // 8. No structured result — process errored before the wrapper could emit one
+        // 9. No result file — the process crashed / was signalled before the
+        // wrapper could write one.
         if (cmdResult.exitCode > 128) {
           const signal = cmdResult.exitCode - 128;
           const signalNames: Record<number, string> = {

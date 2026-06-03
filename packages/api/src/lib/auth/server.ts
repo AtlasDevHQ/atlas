@@ -57,6 +57,7 @@ import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
+import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { getConfig } from "@atlas/api/lib/config";
 import { SaasCrm } from "@atlas/api/lib/effect/services";
@@ -1684,7 +1685,7 @@ export function buildPlugins() {
       );
     } else {
       try {
-        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY);
+        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
         plugins.push(
           stripePlugin({

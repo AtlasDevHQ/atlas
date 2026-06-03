@@ -353,8 +353,12 @@ async function createVercelExploreBackend(
     close: async () => {
       try {
         await sandbox.stop();
-      } catch {
-        // Ignore close errors
+      } catch (err) {
+        log?.warn(
+          `[vercel-sandbox] Failed to stop sandbox on close: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
     },
   };

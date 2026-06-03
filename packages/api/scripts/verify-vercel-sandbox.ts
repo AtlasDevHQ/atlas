@@ -59,10 +59,13 @@ console.log(
     : "[verify] using VERCEL_OIDC_TOKEN from .env.local (Vercel-platform path)",
 );
 
+// v2 persists (snapshots) by default — force ephemeral so this verification
+// run matches the runtime backends and leaves no snapshot behind.
 const createOpts = hasAccessTokenPath
   ? {
       runtime: "node24" as const,
       networkPolicy: "deny-all" as const,
+      persistent: false,
       teamId: teamId!,
       projectId: projectId!,
       token: token!,
@@ -70,6 +73,7 @@ const createOpts = hasAccessTokenPath
   : {
       runtime: "node24" as const,
       networkPolicy: "deny-all" as const,
+      persistent: false,
     };
 
 const t0 = Date.now();

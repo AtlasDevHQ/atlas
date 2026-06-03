@@ -187,6 +187,10 @@ export function createPythonSandboxBackend(
           Sandbox.create({
             runtime: "python3.13",
             networkPolicy: "allow-all",
+            // v2 persists (snapshots) by default — force ephemeral so
+            // per-request code/data/chart files never land in Vercel
+            // snapshot storage after the sandbox is stopped.
+            persistent: false,
             ...(explicitAccess ?? {}),
           }),
         catch: (err) => {

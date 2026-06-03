@@ -154,21 +154,31 @@ const SANDBOX_SEMANTIC_CWD = "/vercel/sandbox/semantic";
 // ---------------------------------------------------------------------------
 
 /**
- * Lazily import @vercel/sandbox using require() so the peer dependency is
- * optional at install time.
+ * Lazily load @vercel/sandbox via dynamic `import()` so the peer dependency
+ * stays optional at install time.
+ *
+ * v2 is ESM-first (`"type": "module"` with a dual `import`/`require` exports
+ * map). Dynamic `import()` resolves the ESM entry — matching how the core
+ * explore/python sandbox backends load it (`tools/explore-sandbox.ts`,
+ * `tools/python-sandbox.ts`). The previous `require()` resolved the *separate*
+ * CJS build; under v2's dual-package layout that no longer shares a module
+ * record with the test's `mock.module("@vercel/sandbox")` (which resolves the
+ * ESM condition), so the mock could not intercept it. The peer's own types are
+ * intentionally not imported — the local structural `SandboxConstructor` stays
+ * the contract.
  */
-function loadSandboxModule(): { Sandbox: SandboxConstructor } {
-  let mod: { Sandbox: SandboxConstructor };
+async function loadSandboxModule(): Promise<{ Sandbox: SandboxConstructor }> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    mod = require("@vercel/sandbox");
+    return (await import("@vercel/sandbox")) as unknown as {
+      Sandbox: SandboxConstructor;
+    };
   } catch (err) {
-    const isNotFound =
-      err != null &&
-      typeof err === "object" &&
-      "code" in err &&
-      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
-    if (isNotFound) {
+    const code =
+      err != null && typeof err === "object" && "code" in err
+        ? (err as NodeJS.ErrnoException).code
+        : undefined;
+    // `require()` threw MODULE_NOT_FOUND; dynamic import() throws ERR_MODULE_NOT_FOUND.
+    if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") {
       throw new Error(
         "Vercel Sandbox requires the @vercel/sandbox package. " +
           "Install it with: bun add @vercel/sandbox",
@@ -179,7 +189,6 @@ function loadSandboxModule(): { Sandbox: SandboxConstructor } {
       { cause: err },
     );
   }
-  return mod;
 }
 
 // Minimal structural type for the Sandbox class from @vercel/sandbox.
@@ -213,12 +222,15 @@ async function createVercelExploreBackend(
   log?: { warn(msg: string): void },
 ): Promise<PluginExploreBackend> {
   // 1. Load the optional dependency
-  const { Sandbox } = loadSandboxModule();
+  const { Sandbox } = await loadSandboxModule();
 
   // 2. Create the sandbox
   const createOpts: Record<string, unknown> = {
     runtime: "node24",
     networkPolicy: "deny-all",
+    // v2 persists (snapshots) by default — force ephemeral so semantic files
+    // never linger in Vercel snapshot storage after stop().
+    persistent: false,
   };
   if (config.accessToken) {
     createOpts.accessToken = config.accessToken;
@@ -384,11 +396,13 @@ export function buildVercelSandboxPlugin(
       try {
         const result = await Promise.race([
           (async () => {
-            const { Sandbox } = loadSandboxModule();
+            const { Sandbox } = await loadSandboxModule();
 
             const createOpts: Record<string, unknown> = {
               runtime: "node24",
               networkPolicy: "deny-all",
+              // v2 persists by default — keep the health-check sandbox ephemeral.
+              persistent: false,
             };
             if (config.accessToken) {
               createOpts.accessToken = config.accessToken;

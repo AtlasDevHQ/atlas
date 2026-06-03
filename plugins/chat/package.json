@@ -68,8 +68,8 @@
     "@useatlas/types": ">=0.1.6"
   },
   "devDependencies": {
-    "hono": "^4.12.9",
-    "zod": "^4.3.6",
+    "hono": "^4.12.23",
+    "zod": "^4.4.3",
     "@useatlas/plugin-sdk": "workspace:*",
     "@useatlas/types": "workspace:*"
   }

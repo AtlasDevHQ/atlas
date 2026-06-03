@@ -20,6 +20,20 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.7",
+    title: "Dependency Refresh",
+    date: "2026-06-03",
+    summary:
+      "A maintenance release that brings Atlas's dependencies up to date across the monorepo — no user-facing feature or behavior changes. A within-major sweep keeps every package current on its latest patch and minor release, and several libraries move up a full major version: the sandbox runtime that isolates the explore tool, the Stripe billing SDK, and a handful of UI and utility libraries. Upstream majors that needed more soak time were deliberately held back. Staying current keeps Atlas on supported, security-patched releases and reduces upgrade debt heading toward launch.",
+    highlights: [
+      "Within-major sweep — every dependency moved up to its latest patch and minor across the workspace (#3123)",
+      "Sandbox runtime v2 — the isolated explore sandbox runtime upgraded a major version with no change to its deny-all network policy or tool isolation (#3125)",
+      "Stripe SDK v22 — the billing SDK moved up a major version with the API version pinned explicitly, so the billing and webhook schema stays fixed regardless of the SDK's default (#3129)",
+      "Library majors — just-bash 3, react-day-picker 10, and diff 9, plus safe shadcn/@duckdb/esbuild bumps (#3128, #3130, #3131, #3133)",
+      "Held for soak — the fumadocs-mdx and syncpack majors were deferred for additional soak time (#3132)",
+    ],
+  },
+  {
     version: "v0.0.6",
     title: "Webhook Delivery & Multi-Tenant Hardening",
     date: "2026-06-02",

@@ -45,7 +45,7 @@ Any moved major = a Group B leak; remove it (restore that range) and re-run.
 
 **Step 5: Reconcile coupled bumps + code.** See the **Coupled constraints** table below. Then make any code edits the bumps force — e.g. an `@ts-expect-error` that a fixed upstream type now makes *unused* (tsgo errors on an unused directive, so it must be deleted). Find them via the type-check.
 
-**Step 6: Gate.** The gate is the **full `/ci`** — not a subset. A dep sweep changes `package.json` + templates, so the drift checks `/ci` runs (template-drift, **published-symbols**, security-headers, railway-watch, schema-drift, oauth-helper, test-discipline) and `lint` are exactly the ones that catch sweep mistakes. Run `/ci` (lint, type, **full test**, syncpack, all drift checks), **plus** the two things `/ci` does NOT cover:
+**Step 6: Gate.** The gate is the **full `/ci`** — not a hand-picked subset; see [`ci.md`](ci.md) for its current check set (the source of truth — don't re-enumerate it here, it drifts). A dep sweep changes `package.json` + templates, so the drift/parity checks `/ci` runs — template-drift and the `@useatlas/*` **published-symbols** check especially — are the ones most likely to catch a sweep mistake. Run the full `/ci`, **plus** the two things it does NOT cover:
 ```bash
 # 1. frozen-lockfile parity (CI-only failure #1) — must say "no changes"
 bun install --frozen-lockfile

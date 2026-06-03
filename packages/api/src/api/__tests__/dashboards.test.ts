@@ -132,6 +132,20 @@ const mockCardData = {
   updatedAt: "2026-04-04T00:00:00.000Z",
 };
 
+// #3138 — a text / section-block card: no SQL, no chart, markdown `content`.
+const mockTextCardData = {
+  ...mockCardData,
+  id: "00000000-0000-0000-0000-0000000000aa",
+  title: "Top of funnel",
+  kind: "text",
+  sql: "",
+  chartConfig: null,
+  content: "## Top of funnel",
+  cachedColumns: null,
+  cachedRows: null,
+  cachedAt: null,
+};
+
 const mockCreateDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: mockDashboardData }),
 );
@@ -962,6 +976,21 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(404);
     });
+
+    // #3138 — a text card has no SQL; refresh returns it unchanged.
+    it("returns a text card unchanged without touching the query pipeline", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockTextCardData });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/refresh`, {
+          method: "POST",
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json() as { kind: string }).kind).toBe("text");
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+      expect(mockRefreshCard).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1047,6 +1076,27 @@ describe("dashboard routes", () => {
       expect(body.error).toBe("invalid_parameters");
       expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
     });
+
+    // #3138 — a text card has no query; render returns an empty result set
+    // and never reaches the SQL pipeline (an empty `sql` would otherwise be
+    // rejected by the validator).
+    it("returns an empty result set for a text card, never reaching SQL", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockTextCardData });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        columns: [], rows: [], truncated: false, rowCount: 0, executionMs: 0,
+      });
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1072,6 +1122,29 @@ describe("dashboard routes", () => {
       expect(body.refreshed).toBe(1);
       expect(body.failed).toBe(0);
       expect(body.errors).toEqual([]);
+    });
+
+    // #3138 — a text card is counted in `total` but is never refreshed or
+    // failed (it has no SQL to run).
+    it("skips text cards in the bulk refresh — counted in total, never refreshed/failed", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({
+        ok: true,
+        data: { ...mockDashboardData, cards: [mockCardData, mockTextCardData] },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/refresh`, { method: "POST" }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        refreshed: number; failed: number; total: number; errors: unknown[];
+      };
+      expect(body.total).toBe(2);
+      expect(body.refreshed).toBe(1);
+      expect(body.failed).toBe(0);
+      expect(body.errors).toEqual([]);
+      // Only the chart card hit the pipeline.
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
     });
 
     it("surfaces per-card errors in the response payload when a card fails", async () => {

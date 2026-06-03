@@ -901,8 +901,9 @@ export async function publishDraft(opts: {
               opts.dashboardId,
               op.card.position,
               op.card.title,
-              // A text card carries sql = "" (no query); `sql` is NOT NULL, so
-              // fall back to "" rather than letting an absent value violate it.
+              // A text card carries sql = "" (no query). `sql` is typed non-null,
+              // but coerce defensively so a hand-edited / legacy draft JSONB that
+              // omits the key can't violate the column's NOT NULL on insert.
               op.card.sql ?? "",
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
               // #3138: NULL for a chart card; markdown for a text card.

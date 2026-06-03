@@ -359,7 +359,7 @@ function ChartTile({
  * chrome — just a drag handle + remove/duplicate in edit mode. Participates in
  * the same 24-col grid as every other tile.
  */
-function TextTile({ card, editing, onDuplicate, onDelete }: DashboardTileProps) {
+function TextTile({ card, editing, onDelete }: DashboardTileProps) {
   return (
     <div
       data-card-kind="text"
@@ -369,6 +369,10 @@ function TextTile({ card, editing, onDuplicate, onDelete }: DashboardTileProps) 
       )}
     >
       {editing && (
+        // Section blocks support drag-to-reorder + remove in edit mode. They
+        // intentionally omit Duplicate: copying a card POSTs to the chart-only
+        // REST `addCard` endpoint (sql + chartConfig), which a text card has
+        // neither of — text-card duplication is a separate follow-up.
         <div className="dash-drag-handle flex shrink-0 cursor-grab items-center gap-2 border-b border-zinc-100 px-3 py-1.5 active:cursor-grabbing dark:border-zinc-800/80">
           <span aria-hidden className="flex items-center text-zinc-400 dark:text-zinc-500">
             <GripVertical className="size-3.5" />
@@ -376,27 +380,15 @@ function TextTile({ card, editing, onDuplicate, onDelete }: DashboardTileProps) 
           <span className="flex-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
             Text
           </span>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-6" aria-label="Tile actions">
-                <MoreHorizontal className="size-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="text-xs">
-              <DropdownMenuItem onSelect={() => onDuplicate(card.id)}>
-                <Copy className="mr-2 size-3.5" />
-                Duplicate
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onSelect={() => onDelete(card)}
-                className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
-              >
-                <Trash2 className="mr-2 size-3.5" />
-                Remove
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-6 text-zinc-500 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400"
+            onClick={() => onDelete(card)}
+            aria-label="Remove tile"
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
         </div>
       )}
 

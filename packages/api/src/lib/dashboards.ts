@@ -148,9 +148,13 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
   }
 
   // #3138: a card's kind is DERIVED from `content` presence — a text /
-  // section-block card always carries markdown, a chart card never does. No
-  // `kind` column; this is the single point where the discriminator is read.
-  const content = typeof r.content === "string" ? r.content : null;
+  // section-block card always carries NON-EMPTY markdown (the persist schema
+  // enforces `.min(1)`), a chart card never does. No `kind` column; this is the
+  // single point where the discriminator is read, so it defends its own
+  // invariant: an empty / whitespace-only `content` degrades to a chart card
+  // rather than a silently-blank text tile.
+  const rawContent = typeof r.content === "string" ? r.content : null;
+  const content = rawContent && rawContent.trim().length > 0 ? rawContent : null;
   const kind: DashboardCardKind = content != null ? "text" : "chart";
 
   return {

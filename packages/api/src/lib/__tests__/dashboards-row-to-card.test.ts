@@ -58,6 +58,32 @@ describe("rowToCard layout parsing", () => {
   });
 });
 
+describe("rowToCard kind / content derivation (#3138)", () => {
+  test("derives kind=text and surfaces content when content is a non-empty string", () => {
+    const card = rowToCard({ ...baseRow, content: "## Top of funnel", sql: "" });
+    expect(card.kind).toBe("text");
+    expect(card.content).toBe("## Top of funnel");
+  });
+
+  test("derives kind=chart when content is null", () => {
+    const card = rowToCard({ ...baseRow, content: null });
+    expect(card.kind).toBe("chart");
+    expect(card.content).toBeNull();
+  });
+
+  test("treats absent content (pre-#3138 row) as a chart card", () => {
+    const card = rowToCard({ ...baseRow });
+    expect(card.kind).toBe("chart");
+    expect(card.content).toBeNull();
+  });
+
+  test("degrades an empty / whitespace-only content to a chart card (no blank text tile)", () => {
+    expect(rowToCard({ ...baseRow, content: "" }).kind).toBe("chart");
+    expect(rowToCard({ ...baseRow, content: "   \n  " }).kind).toBe("chart");
+    expect(rowToCard({ ...baseRow, content: "" }).content).toBeNull();
+  });
+});
+
 describe("CardLayoutSchema bounds", () => {
   test("accepts a typical layout", () => {
     expect(CardLayoutSchema.safeParse({ x: 0, y: 0, w: 12, h: 10 }).success).toBe(true);

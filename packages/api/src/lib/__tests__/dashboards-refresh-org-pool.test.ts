@@ -172,4 +172,25 @@ describe("refreshDashboardCards org-scoped pool selection", () => {
     expect(mockGet).not.toHaveBeenCalled();
     expect(mockGetDefault).not.toHaveBeenCalled();
   });
+
+  // #3138 — the scheduled-refresh path skips text / section-block cards (they
+  // have no SQL): no validation, no datasource query, but still counted in
+  // `total`. Same guard as the route-level bulk refresh.
+  it("skips a text / section-block card — no validation, no query, still in total", async () => {
+    const textCardRow = { ...cardRow(null), id: "card-text", position: 0, title: "Header", sql: "", content: "## Section" };
+    setResults(
+      { rows: [dashboardRow("org-1")] },
+      { rows: [textCardRow, { ...cardRow(null), position: 1 }] },
+      { rows: [{ id: "card-1" }] }, // refreshCard RETURNING (chart card only)
+      { rows: [] }, // touch parent dashboard
+    );
+
+    const result = await refreshDashboardCards("dash-1");
+
+    expect(result).toEqual({ refreshed: 1, failed: 0, total: 2 });
+    // Only the chart card was validated + executed; the text card was skipped.
+    expect(mockValidateSQL).toHaveBeenCalledTimes(1);
+    expect(mockValidateSQL).toHaveBeenCalledWith("SELECT 1 AS total", undefined, "org-1");
+    expect(mockOrgQuery).toHaveBeenCalledTimes(1);
+  });
 });

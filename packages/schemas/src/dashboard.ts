@@ -167,9 +167,11 @@ export const dashboardTextCardContentSchema = z
   .max(DASHBOARD_TEXT_CARD_CONTENT_MAX);
 
 /**
- * Discriminated wire shape of a `text` card — the `kind` + `content` pair a
- * chart card never carries. Used for round-trip validation; the full persisted
- * `DashboardCard` (with id/layout/timestamps) is typed in `@useatlas/types`.
+ * Standalone wire shape of a `text` card's discriminant fields — the
+ * `kind` + `content` pair a chart card never carries. Available for any caller
+ * that needs to validate a `{ kind, content }` pair; currently exercised by the
+ * unit tests. The full persisted `DashboardCard` (with id/layout/timestamps) is
+ * typed in `@useatlas/types`.
  */
 export const dashboardTextCardSchema = z.object({
   kind: z.literal("text"),

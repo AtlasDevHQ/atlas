@@ -103,9 +103,9 @@ type ChartCardInput = z.infer<typeof ChartCardSchema>;
 
 /**
  * Derive a short row title for a text card whose `title` the agent left blank.
- * Takes the first non-empty line, strips a leading markdown heading/list
- * marker, and caps the length. Used only for list/diff surfaces — the tile
- * renders the full markdown, not this label.
+ * Takes the first non-empty line, strips a leading markdown block marker
+ * (heading, list bullet, or blockquote), and caps the length. Used only for
+ * list/diff surfaces — the tile renders the full markdown, not this label.
  */
 export function deriveTextCardTitle(content: string): string {
   for (const rawLine of content.split("\n")) {

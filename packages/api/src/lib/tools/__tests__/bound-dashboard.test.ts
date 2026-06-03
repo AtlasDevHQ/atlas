@@ -501,6 +501,49 @@ describe("createBoundDashboardTools", () => {
       expect(invalidateScreenshotMock).toHaveBeenCalledWith("dash-1");
     });
 
+    // #3138 — a text / section-block card has no SQL or chart. The bound editor
+    // tools must reject those edits rather than mutate the draft into a state
+    // publish would silently discard (text-card equality ignores sql/chart).
+    const textCardRow = { ...cardRow, sql: "", content: "## Top of funnel" };
+
+    it("updateCardSql rejects a text / section card", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+      enableInternalDB();
+      setResults({ rows: [textCardRow] }); // readCurrentCard → getCard → text
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCardSql, {
+        cardId: "card-1",
+        newSql: "SELECT 2",
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/text \/ section card/i);
+    });
+
+    it("updateCard rejects a chartConfig change on a text / section card", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+      enableInternalDB();
+      setResults({ rows: [textCardRow] }); // readCurrentCard → getCard → text
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string; error?: string }>(tools.updateCard, {
+        cardId: "card-1",
+        chartConfig: { type: "bar", categoryColumn: "x", valueColumns: ["y"] },
+      });
+      expect(result.kind).toBe("err");
+      expect(result.error).toMatch(/no chart|text \/ section card/i);
+    });
+
+    it("updateCard still allows renaming a text card (title-only)", async () => {
+      process.env.ATLAS_DASHBOARD_DRAFTS_ENABLED = "false";
+      enableInternalDB();
+      setResults({ rows: [{ id: "card-1" }] }); // UPDATE … RETURNING (no kind check for title)
+      const tools = createBoundDashboardTools(ctxWithUser);
+      const result = await runTool<{ kind: string }>(tools.updateCard, {
+        cardId: "card-1",
+        title: "Conversion",
+      });
+      expect(result.kind).toBe("ok");
+    });
+
     it("emits a multimodal image-data part via toModelOutput", async () => {
       const tools = createBoundDashboardTools(ctxWithUser);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

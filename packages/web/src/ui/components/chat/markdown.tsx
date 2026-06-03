@@ -109,11 +109,26 @@ const mdComponents = {
   pre: ({ children }: { children?: ReactNode }) => <>{children}</>,
 };
 
-export const Markdown = memo(function Markdown({ content }: { content: string }) {
+export const Markdown = memo(function Markdown({
+  content,
+  disallowImages = false,
+}: {
+  content: string;
+  /**
+   * Strip markdown images (`![alt](url)`). react-markdown renders these as
+   * `<img>` even with raw HTML disabled, so an `![x](https://attacker/track)`
+   * fires a network request from every viewer's browser. Set this on
+   * untrusted / publicly-shared surfaces (e.g. shared-dashboard text cards,
+   * #3138) to close the IP/referrer-tracking vector.
+   */
+  disallowImages?: boolean;
+}) {
   const dark = useDarkMode();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
+      disallowedElements={disallowImages ? ["img"] : undefined}
+      unwrapDisallowed={disallowImages}
       components={{
         ...mdComponents,
         code({ className, children, ...props }) {

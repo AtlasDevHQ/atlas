@@ -40,13 +40,19 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
   // #3138 — a text / section-block card renders sanitized markdown (no data, no
   // chart, no cached-at footer) so a shared-link viewer sees the same headers
   // the owner authored — not the empty-data placeholder.
+  //   - Full-width (`md:col-span-2`) regardless of the inherited `spanClass`:
+  //     the shared view doesn't run `withAutoLayout`, so a text card with
+  //     `layout: null` would otherwise inherit the default half-width span and
+  //     stop reading as a banner over the charts beneath it.
+  //   - `disallowImages`: this is an unauthenticated surface, so block markdown
+  //     image fetches (tracking-pixel / IP-leak vector — see Markdown docs).
   if (card.kind === "text") {
     return (
       <Card
-        className={`${spanClass} overflow-hidden px-4 py-3 text-sm leading-relaxed print:col-span-2 print:break-inside-avoid print:border-zinc-300 print:shadow-none`}
+        className="md:col-span-2 overflow-hidden px-4 py-3 text-sm leading-relaxed print:col-span-2 print:break-inside-avoid print:border-zinc-300 print:shadow-none"
         data-card-kind="text"
       >
-        <Markdown content={card.content ?? ""} />
+        <Markdown content={card.content ?? ""} disallowImages />
       </Card>
     );
   }

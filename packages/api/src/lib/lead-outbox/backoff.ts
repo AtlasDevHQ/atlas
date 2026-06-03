@@ -14,12 +14,17 @@
  * N+1 is allowed. The flusher's claim WHERE clause is
  * `COALESCE(retry_after, created_at + delay) <= now()` — when the
  * upstream surfaced a `Retry-After` header the absolute `retry_after`
- * wins; otherwise the tier-based delay applies. With the per-tier
- * values below the inter-attempt gaps grow roughly 3–4× per tier
- * (30s → 1m30s → 6m → 22m → 1h30m). A row whose attempts dispatch
- * unusually slowly may see attempt N+1 fire immediately after attempt
- * N, which is acceptable: the next attempt's failure pushes the row
- * into the next tier, and the gap grows from there.
+ * wins; otherwise the tier-based delay applies. The per-tier values
+ * below grow geometrically (~6× per tier) to a ~12h ceiling
+ * (30s → 3m → 20m → 2h → 12h). The extended ceiling (#2874) lets a
+ * lead survive a multi-hour upstream outage (e.g. a Twenty maintenance
+ * window) within the fixed `DEAD_AFTER_ATTEMPTS` budget instead of
+ * dead-lettering at 2h; the low-frequency backstop sweep gates the
+ * eventual retry when an in-memory retry timer is lost to a restart.
+ * A row whose attempts dispatch unusually slowly may see attempt N+1
+ * fire immediately after attempt N, which is acceptable: the next
+ * attempt's failure pushes the row into the next tier, and the gap
+ * grows from there.
  */
 
 /**
@@ -41,10 +46,10 @@ export const DEAD_AFTER_ATTEMPTS = 6;
 const DELAYS_MS: ReadonlyArray<number> = [
   0,
   30_000,       // 30s
-  120_000,      // 2m
-  480_000,      // 8m
-  1_800_000,    // 30m
+  180_000,      // 3m
+  1_200_000,    // 20m
   7_200_000,    // 2h
+  43_200_000,   // 12h — long-tail ceiling (#2874)
 ];
 
 /**
@@ -70,10 +75,10 @@ export const CLAIM_DELAY_SQL = `
   CASE attempts
     WHEN 0 THEN INTERVAL '0'
     WHEN 1 THEN INTERVAL '30 seconds'
-    WHEN 2 THEN INTERVAL '2 minutes'
-    WHEN 3 THEN INTERVAL '8 minutes'
-    WHEN 4 THEN INTERVAL '30 minutes'
-    WHEN 5 THEN INTERVAL '2 hours'
-    ELSE INTERVAL '2 hours'
+    WHEN 2 THEN INTERVAL '3 minutes'
+    WHEN 3 THEN INTERVAL '20 minutes'
+    WHEN 4 THEN INTERVAL '2 hours'
+    WHEN 5 THEN INTERVAL '12 hours'
+    ELSE INTERVAL '12 hours'
   END
 `;

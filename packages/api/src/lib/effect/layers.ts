@@ -61,11 +61,13 @@ import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import { AuditPurgeScheduler, SaasCrm } from "./services";
 import {
   recoverInFlight as recoverOutboxInFlight,
-  runOutboxTick,
-  getTickIntervalMs as getOutboxTickIntervalMs,
+  drainOutbox as drainOutboxQueue,
+  getBackstopSweepIntervalMs as getOutboxBackstopSweepIntervalMs,
   getWarnThreshold as getOutboxWarnThreshold,
   isFlusherEnabled as isOutboxFlusherEnabled,
   OutboxWarnRateLimiter,
+  FlusherSignal as OutboxFlusherSignal,
+  setActiveFlusherSignal as setActiveOutboxFlusherSignal,
   FLUSH_BATCH_LIMIT as OUTBOX_FLUSH_BATCH_LIMIT,
   STARTUP_RECOVERY_STALE_MS as OUTBOX_STARTUP_STALE_MS,
   SHUTDOWN_RECOVERY_STALE_MS as OUTBOX_SHUTDOWN_STALE_MS,
@@ -90,6 +92,7 @@ import { sendEmail, assertStagingMailRegion } from "@atlas/api/lib/email/deliver
 import {
   crmOutboxPendingCount,
   crmOutboxDeadCount,
+  crmOutboxFlusherWakes,
   emailOutboxPendingCount,
   emailOutboxDeadCount,
 } from "@atlas/api/lib/metrics";
@@ -2032,118 +2035,189 @@ export function makeSchedulerLive(
         }
 
         if (flusherEnabled) {
-        const outboxTickIntervalMs = getOutboxTickIntervalMs();
+        const backstopSweepMs = getOutboxBackstopSweepIntervalMs();
         // One rate limiter per Layer scope — `lastWarnAt` lives on the
         // instance, so a sustained 101+ pending depth fires exactly
         // one log.warn per minute regardless of how many ticks elapse.
         const outboxWarnLimiter = new OutboxWarnRateLimiter(getOutboxWarnThreshold());
 
+        // Edge-trigger doorbell (#2874). `enqueue` rings it inline the
+        // instant a row lands; per-row retry timers ring it at each
+        // transient row's due-time; the loop below WAITS on it (or the
+        // backstop) instead of polling every 5s. Registered process-
+        // globally so the request-path `enqueue` (EE dispatcher,
+        // backfill) reaches the live doorbell, and de-registered +
+        // closed in a finalizer so a post-shutdown kick is inert.
+        const outboxSignal = new OutboxFlusherSignal();
+        setActiveOutboxFlusherSignal(outboxSignal);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            setActiveOutboxFlusherSignal(null);
+            outboxSignal.close();
+          }),
+        );
+
         // Fiber-liveness state. The flusher silently stalled in prod
         // after a permanent dead-letter (1.6.0 #DharmaIncident — 25
         // minutes of zero ticks despite a claimable pending row); the
-        // existing logs only fire when `claimed > 0` or on raised error,
-        // making "alive idle" and "dead fiber" indistinguishable. These
-        // two values + the heartbeat tap below + the stall watchdog
-        // below close that gap so the next incident is observable
-        // BEFORE someone notices in the platform UI.
+        // claim/heartbeat logs alone couldn't tell "alive idle" from
+        // "dead fiber". `outboxLastTickAt` + the watchdog below keep
+        // that gap closed — now sized off the backstop interval, since
+        // an idle edge-triggered fiber legitimately sleeps a full
+        // backstop between ticks.
         let outboxTickCount = 0;
         let outboxLastTickAt = Date.now();
-        // Heartbeat cadence: log once a minute when the queue is idle.
-        // 5s tick × 12 = 60s. With OUTBOX_TICK_INTERVAL_MS overridden,
-        // the cadence stretches/shrinks proportionally.
-        const OUTBOX_HEARTBEAT_EVERY_N_TICKS = Math.max(
-          1,
-          Math.round(60_000 / Math.max(1, outboxTickIntervalMs)),
-        );
-        // Watchdog gate: only complain when we're >2× the interval past
-        // the last tick. Single-stuck-tick lag (network blip) shouldn't
-        // trip the alarm; a fiber that's actually dead will breeze past.
-        const OUTBOX_STALL_THRESHOLD_MS = Math.max(
-          15_000,
-          outboxTickIntervalMs * 2,
-        );
+        // Trigger for the NEXT tick. First tick after boot is `boot`;
+        // thereafter it's whatever woke the wait — a `kick` (inline
+        // enqueue or retry timer) or a `backstop` timeout.
+        let outboxNextTrigger: "boot" | "kick" | "backstop" = "boot";
 
-        const outboxTick = Effect.sync(() => {
-          // Update liveness AT TICK START so a legitimately long tick
-          // (sequential dispatch of up to OUTBOX_FLUSH_BATCH_LIMIT rows
-          // with per-row network calls; can exceed the 15s stall
-          // threshold under real backlogs) doesn't trip the watchdog.
-          // The watchdog asks "did the fiber wake up recently", not
-          // "did a tick complete recently". (Codex P1, 2026-05-26.)
+        // Watchdog gate: a healthy idle fiber wakes once per backstop, so
+        // flag a stall only after it misses ~2 backstops (60s floor so a
+        // sub-minute backstop still leaves slack). Pure in-memory — no SQL,
+        // zero statements.
+        const OUTBOX_STALL_THRESHOLD_MS = Math.max(60_000, backstopSweepMs * 2);
+        // Poll the watchdog often enough to bound detection lag without
+        // burning CPU: at most every 30s, faster if the backstop is short.
+        const OUTBOX_WATCHDOG_POLL_MS = Math.min(30_000, backstopSweepMs);
+
+        // A failed tick (boot racing migrations, a brief PG blip) re-arms
+        // a SHORT retry instead of waiting a full backstop, so a queue with
+        // pending rows recovers in seconds once the DB is back rather than
+        // sitting idle up to 300s (Codex P2). Capped by the backstop so a
+        // sub-5s backstop never lengthens on failure.
+        const OUTBOX_FAILED_RETRY_MS = Math.min(5_000, backstopSweepMs);
+
+        // One tick cycle. `drainOutbox` claims all currently-due rows in
+        // batches (so a burst/backlog drains in one wake instead of one
+        // batch per backstop — Codex P1), then refreshes the depth gauges.
+        // `observe` policy differs by trigger: `boot`/`kick` always refresh
+        // (so an event wake leaves a fresh `pending_count`, even draining
+        // 1→0 — Codex P2); an idle `backstop` skips the snapshot to stay at
+        // ~1 statement/sweep (idle US pod ~288 statements/day). `outboxSignal`
+        // is threaded in as the retry scheduler so a transient failure
+        // re-arms its own wakeup.
+        const runOutboxCycle = (trigger: "boot" | "kick" | "backstop") =>
+          drainOutboxQueue({
+            db: outboxDb,
+            dispatcher: outboxDispatcher,
+            batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
+            limiter: outboxWarnLimiter,
+            pendingGauge: crmOutboxPendingCount,
+            deadGauge: crmOutboxDeadCount,
+            logger: log,
+            retryScheduler: outboxSignal,
+            observe: trigger === "backstop" ? "when-claimed" : "always",
+          });
+
+        // Park until a kick or the backstop deadline. `Effect.async` so a
+        // scope-finalize interrupt cancels the parked waiter cleanly (the
+        // returned Effect runs `cancel()` on interruption); `outboxSignal`
+        // is `close()`d by the finalizer above as a belt-and-suspenders.
+        const waitForOutboxWake = (
+          timeoutMs: number,
+        ): Effect.Effect<"kick" | "timeout"> =>
+          Effect.async<"kick" | "timeout">((resume) => {
+            const cancel = outboxSignal.wait(timeoutMs, (reason) =>
+              resume(Effect.succeed(reason)),
+            );
+            return Effect.sync(cancel);
+          });
+
+        const outboxLoopBody = Effect.gen(function* () {
+          // Stamp liveness AT TICK START (not completion) so a long
+          // backlog-draining tick doesn't trip the watchdog. The watchdog
+          // asks "did the fiber wake recently", not "did a tick finish".
+          // (Codex P1, 2026-05-26.)
           outboxLastTickAt = Date.now();
-        }).pipe(
-          Effect.flatMap(() =>
-            Effect.tryPromise({
-              try: () =>
-                runOutboxTick({
-                  db: outboxDb,
-                  dispatcher: outboxDispatcher,
-                  batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
-                  limiter: outboxWarnLimiter,
-                  pendingGauge: crmOutboxPendingCount,
-                  deadGauge: crmOutboxDeadCount,
-                  logger: log,
-                }),
-              catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-            }),
-          ),
-          Effect.tap(({ flush: result, snapshot }) =>
-            Effect.sync(() => {
-              outboxTickCount += 1;
-              if (result.claimed > 0) {
-                // Active tick — fires the existing structured log so
-                // grep'ing for `tick_complete` still matches every claim
-                // cycle exactly as before.
-                log.info(
-                  {
-                    tickCount: outboxTickCount,
-                    claimed: result.claimed,
-                    ok: result.ok,
-                    transient: result.transient,
-                    permanent: result.permanent,
-                    event: "lead_outbox.tick_complete",
-                  },
-                  `Outbox tick: ${result.claimed} claimed (ok=${result.ok}, transient=${result.transient}, dead=${result.permanent})`,
-                );
-                return;
-              }
-              // Idle tick — heartbeat only every N ticks so the log
-              // doesn't drown in `claimed=0`s, but a steady cadence still
-              // proves the fiber is alive. Snapshot depth rides along so
-              // operators see "fiber running, queue idle" vs "fiber
-              // running, queue building up but rows aren't claimable
-              // (backoff)" at a glance.
-              if (outboxTickCount % OUTBOX_HEARTBEAT_EVERY_N_TICKS === 0) {
-                log.info(
-                  {
-                    tickCount: outboxTickCount,
-                    pending: snapshot.pending,
-                    dead: snapshot.dead,
-                    event: "lead_outbox.heartbeat",
-                  },
-                  `Outbox heartbeat tick=${outboxTickCount} (queue idle: pending=${snapshot.pending}, dead=${snapshot.dead})`,
-                );
-              }
-            }),
-          ),
-          Effect.catchAll((err) =>
-            Effect.sync(() => {
-              // Bump the tick counter on failure too. Liveness was
-              // already stamped at tick start, so the watchdog stays
-              // quiet — a tick that erred out is still a "fiber awake"
-              // signal.
-              outboxTickCount += 1;
+          const trigger = outboxNextTrigger;
+
+          const outcome = yield* Effect.tryPromise({
+            try: () => runOutboxCycle(trigger),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          }).pipe(
+            Effect.map((result) => ({ ok: true as const, result })),
+            Effect.catchAll((err) => Effect.succeed({ ok: false as const, err })),
+          );
+
+          outboxTickCount += 1;
+          crmOutboxFlusherWakes.add(1, { trigger });
+
+          if (!outcome.ok) {
+            // Liveness was already stamped at tick start, so the watchdog
+            // stays quiet — a tick that erred out is still "fiber awake".
+            log.warn(
+              {
+                tickCount: outboxTickCount,
+                trigger,
+                err: errorMessage(outcome.err),
+                event: "lead_outbox.tick_failed",
+              },
+              "Outbox flush tick failed — re-arming a short retry",
+            );
+          } else if (outcome.result.flush.claimed > 0) {
+            // Active tick — same structured event as the poll design so
+            // `tick_complete` greps still match every claim cycle. `claimed`
+            // is now the total across all drained batches; `batches` and
+            // `drainCapped` surface a multi-batch drain.
+            const r = outcome.result;
+            log.info(
+              {
+                tickCount: outboxTickCount,
+                trigger,
+                claimed: r.flush.claimed,
+                ok: r.flush.ok,
+                transient: r.flush.transient,
+                permanent: r.flush.permanent,
+                batches: r.batches,
+                drainCapped: r.drainCapped,
+                event: "lead_outbox.tick_complete",
+              },
+              `Outbox tick (${trigger}): ${r.flush.claimed} claimed across ${r.batches} batch(es) (ok=${r.flush.ok}, transient=${r.flush.transient}, dead=${r.flush.permanent})`,
+            );
+            if (r.drainCapped) {
+              // No silent truncation: a capped drain left more due rows for
+              // the next backstop. Surface it so a sustained backlog that
+              // can't drain in one wake is observable.
               log.warn(
                 {
                   tickCount: outboxTickCount,
-                  err: errorMessage(err),
-                  event: "lead_outbox.tick_failed",
+                  trigger,
+                  maxBatches: r.batches,
+                  event: "lead_outbox.drain_capped",
                 },
-                "Outbox flush tick failed — will retry on next interval",
+                `Outbox drain hit the per-wake batch cap (${r.batches}) with rows still due — remainder rolls to the next backstop sweep`,
               );
-            }),
-          ),
-        );
+            }
+          } else {
+            // Idle tick — heartbeat proves the fiber is alive. Now
+            // backstop-spaced (≈ once per interval), so it fires every
+            // idle tick rather than every Nth; depth is omitted because an
+            // idle backstop deliberately skips the snapshot (see
+            // runOutboxCycle).
+            log.info(
+              {
+                tickCount: outboxTickCount,
+                trigger,
+                event: "lead_outbox.heartbeat",
+              },
+              `Outbox heartbeat tick=${outboxTickCount} (${trigger}, queue idle)`,
+            );
+          }
+
+          // Park on the doorbell until the next kick or backstop deadline.
+          // Re-arm a SHORT retry instead of sleeping the full backstop when
+          // there's known work to resume: a failed tick (Codex P2), OR a
+          // capped drain that already proved more due rows remain
+          // (CodeRabbit follow-up). Both keep an already-awake fiber from
+          // idling 300s on top of a backlog it knows about; a successful,
+          // fully-drained tick parks for the full backstop.
+          const needsFastFollowup = !outcome.ok || outcome.result.drainCapped;
+          const waitMs = needsFastFollowup ? OUTBOX_FAILED_RETRY_MS : backstopSweepMs;
+          const reason = yield* waitForOutboxWake(waitMs);
+          outboxNextTrigger = reason === "kick" ? "kick" : "backstop";
+        });
+
         // forkScoped, not fork — see SettingsLive for rationale.
         // The recovery sweep finalizer is registered ABOVE this fork
         // (not below) so LIFO finalizer order interrupts this fiber
@@ -2151,7 +2225,7 @@ export function makeSchedulerLive(
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "lead_outbox_flusher",
-            outboxTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs)))),
+            outboxLoopBody.pipe(Effect.forever),
           ),
         );
 
@@ -2182,29 +2256,23 @@ export function makeSchedulerLive(
             `Outbox flusher fiber appears stalled — no tick in ${Math.round(sinceMs / 1000)}s (threshold ${Math.round(OUTBOX_STALL_THRESHOLD_MS / 1000)}s). Redeploy to restart; investigate the prior tick_complete / tick_failed line for the trigger.`,
           );
         });
-        // Poll the watchdog at the tick cadence (not the stall
-        // threshold). With a 5s tick and a 15s threshold, a stall that
-        // begins just after a watchdog check would otherwise wait
-        // another ~15s before being detected — making the "no tick in
-        // > 2× interval" guarantee soft. Polling at tick cadence bounds
-        // detection lag to ~one tick interval. (Codex P2, 2026-05-26.)
         // forkScoped, not fork — see SettingsLive for rationale.
         yield* Effect.forkScoped(
           withFiberDeathLog(
             "lead_outbox_watchdog",
             outboxWatchdog.pipe(
-              Effect.repeat(Schedule.spaced(Duration.millis(outboxTickIntervalMs))),
+              Effect.repeat(Schedule.spaced(Duration.millis(OUTBOX_WATCHDOG_POLL_MS))),
             ),
           ),
         );
         log.info(
           {
-            intervalMs: outboxTickIntervalMs,
+            backstopSweepMs,
             batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
-            heartbeatEveryNTicks: OUTBOX_HEARTBEAT_EVERY_N_TICKS,
+            watchdogPollMs: OUTBOX_WATCHDOG_POLL_MS,
             stallThresholdMs: OUTBOX_STALL_THRESHOLD_MS,
           },
-          "CRM outbox flusher started — heartbeat=lead_outbox.heartbeat (every ~60s when idle); stall watchdog=lead_outbox.tick_stall (fires when no tick observed in > 2× interval)",
+          "CRM outbox flusher started (edge-triggered, #2874) — kick on enqueue + per-row retry timer + backstop sweep; heartbeat=lead_outbox.heartbeat (per backstop when idle); stall watchdog=lead_outbox.tick_stall",
         );
         } // close `if (flusherEnabled)`
       } else {

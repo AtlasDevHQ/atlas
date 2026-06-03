@@ -16,9 +16,9 @@
  *     the scope finalizes.
  *
  * Threshold default is 100; `ATLAS_CRM_OUTBOX_WARN_THRESHOLD` overrides
- * with the same clamp-and-warn discipline as `getTickIntervalMs` — an
- * out-of-range value lands at the boundary rather than silently
- * defaulting, so the operator's intent is preserved.
+ * with the same clamp-and-warn discipline as `getBackstopSweepIntervalMs`
+ * (`outbox.ts`) — an out-of-range value lands at the boundary rather than
+ * silently defaulting, so the operator's intent is preserved.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

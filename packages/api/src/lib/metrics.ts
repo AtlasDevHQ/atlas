@@ -233,6 +233,28 @@ export const crmOutboxDeadCount: Gauge = meter.createGauge(
 );
 
 /**
+ * `atlas.crm_outbox.flusher_wakes` — count of flusher tick cycles by what
+ * triggered them (#2874). After eventizing the flusher, this is the
+ * primary health signal: a healthy idle pod shows almost all `backstop`
+ * wakes (≈1 per `ATLAS_CRM_OUTBOX_BACKSTOP_SWEEP_SECONDS`), while real
+ * lead traffic shows `kick` wakes. A spike in `backstop` with no `kick`
+ * under load means the inline enqueue kick isn't reaching the fiber;
+ * `kick` wakes far above the lead rate means a retry storm.
+ *
+ * Attributes:
+ *   - `trigger` — `boot` (first tick after recovery), `kick` (inline
+ *     enqueue kick or a per-row retry timer), or `backstop` (the
+ *     low-frequency safety-net sweep).
+ */
+export const crmOutboxFlusherWakes: Counter = meter.createCounter(
+  "atlas.crm_outbox.flusher_wakes",
+  {
+    description:
+      "CRM outbox flusher tick cycles by trigger (boot / kick / backstop) (#2874)",
+  },
+);
+
+/**
  * `atlas.email_outbox.pending_count` — current `email_outbox` rows in
  * `pending` status. Updated by the transactional-email outbox flusher
  * (#2942) on every tick, BEFORE dispatch, so the value reflects the

@@ -235,7 +235,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const db = dbFor();
       // Insert a row that's been partially-completed across both
       // sub-steps. Back-date created_at so the attempts=2 backoff
-      // (~2 minutes) doesn't gate the immediate claim.
+      // (~3 minutes) doesn't gate the immediate claim.
       await pool.query(
         `INSERT INTO crm_outbox (event_type, payload, status, attempts, twenty_person_id, twenty_note_id, created_at)
          VALUES ('sales-form', $1::jsonb, 'pending', 2, 'person-X', 'note-Y', now() - INTERVAL '3 hours')`,
@@ -298,7 +298,7 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       await truncateOutbox();
       const db = dbFor();
       // Insert a row whose attempts=2 and was created just now. The
-      // tier delay for attempts=2 is 2 minutes — the claim WHERE
+      // tier delay for attempts=2 is 3 minutes — the claim WHERE
       // should filter it out.
       await pool.query(
         `INSERT INTO crm_outbox (event_type, payload, status, attempts, created_at)
@@ -473,10 +473,11 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       await truncateOutbox();
       const db = dbFor();
       // Insert at attempts=5 with a back-dated created_at so the next
-      // claim picks it up immediately.
+      // claim picks it up immediately. The attempts=5 tier is now 12h
+      // (#2874 long-tail ceiling), so back-date past that.
       await pool.query(
         `INSERT INTO crm_outbox (event_type, payload, status, attempts, created_at)
-         VALUES ('demo', $1::jsonb, 'pending', 5, now() - INTERVAL '3 hours')`,
+         VALUES ('demo', $1::jsonb, 'pending', 5, now() - INTERVAL '13 hours')`,
         [JSON.stringify({ source: "demo", email: "budget-real@test" })],
       );
 
@@ -503,10 +504,10 @@ describeIfPg("lead-outbox (real Postgres)", () => {
       const expected = [
         { attempts: 0, seconds: 0 },
         { attempts: 1, seconds: 30 },
-        { attempts: 2, seconds: 120 },
-        { attempts: 3, seconds: 480 },
-        { attempts: 4, seconds: 1800 },
-        { attempts: 5, seconds: 7200 },
+        { attempts: 2, seconds: 180 },
+        { attempts: 3, seconds: 1200 },
+        { attempts: 4, seconds: 7200 },
+        { attempts: 5, seconds: 43200 },
       ];
       for (const { attempts, seconds } of expected) {
         const result = await pool.query<{ s: string }>(
@@ -514,11 +515,11 @@ describeIfPg("lead-outbox (real Postgres)", () => {
              CASE $1::int
                WHEN 0 THEN INTERVAL '0'
                WHEN 1 THEN INTERVAL '30 seconds'
-               WHEN 2 THEN INTERVAL '2 minutes'
-               WHEN 3 THEN INTERVAL '8 minutes'
-               WHEN 4 THEN INTERVAL '30 minutes'
-               WHEN 5 THEN INTERVAL '2 hours'
-               ELSE INTERVAL '2 hours'
+               WHEN 2 THEN INTERVAL '3 minutes'
+               WHEN 3 THEN INTERVAL '20 minutes'
+               WHEN 4 THEN INTERVAL '2 hours'
+               WHEN 5 THEN INTERVAL '12 hours'
+               ELSE INTERVAL '12 hours'
              END
            ))::text AS s`,
           [attempts],

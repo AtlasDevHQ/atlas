@@ -13,6 +13,13 @@
  * crash mid-run) never creates duplicate Persons. We never need to
  * stamp anything on `demo_leads` to track "already-backfilled".
  *
+ * Dispatch timing (#2874): this script bulk-INSERTs directly and runs in
+ * its own process with no flusher mounted, so it does NOT ring the
+ * edge-trigger doorbell that the runtime `enqueue` uses. The backfilled
+ * rows are picked up by the running API pod's backstop sweep (default
+ * 5 min) rather than dispatching inline — acceptable for a one-time
+ * back-catalog bridge that has no latency requirement.
+ *
  * Invocation:
  *   bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size N] [--source demo]
  *

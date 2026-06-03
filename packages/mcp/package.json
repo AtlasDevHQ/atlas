@@ -23,18 +23,18 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/ee": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@useatlas/mcp": "workspace:*",
     "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
-    "better-auth": "^1.6.9",
-    "effect": "^3.21.0",
-    "hono": "^4.12.9",
-    "js-yaml": "^4.1.1"
+    "better-auth": "^1.6.13",
+    "effect": "^3.21.2",
+    "hono": "^4.12.23",
+    "js-yaml": "^4.2.0"
   },
   "devDependencies": {
-    "@better-auth/oauth-provider": "^1.6.9",
+    "@better-auth/oauth-provider": "^1.6.13",
     "@types/js-yaml": "^4.0.9",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   }
 }

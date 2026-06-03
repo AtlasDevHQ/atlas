@@ -63,7 +63,6 @@ function getBaseURL(): string {
 const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [
-    // @ts-expect-error — TS6 strictness breaks apiKeyClient plugin type; runtime types are correct
     apiKeyClient(),
     adminClient({
       ac: adminAccessControl,

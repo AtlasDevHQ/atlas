@@ -946,11 +946,19 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
       let execSql = card.sql;
       let bindValues: unknown[] | undefined;
       if (extractPlaceholderNames(card.sql).length > 0) {
-        let dbType: string;
+        let dbType: string | null = null;
         try {
           dbType = connections.getDBType(resolvedConnectionId ?? "default", dashboardOrgId ?? undefined);
-        } catch {
-          dbType = "";
+        } catch (dbTypeErr) {
+          // Surface the real failure — never silently coerce to "" and emit a
+          // misleading "non-PostgreSQL/MySQL" warning (CLAUDE.md "never
+          // silently swallow errors").
+          log.warn(
+            { cardId: card.id, connectionId: resolvedConnectionId ?? "default", err: errorMessage(dbTypeErr) },
+            "Auto-refresh: could not resolve datasource type for a parameterized card — skipping",
+          );
+          failed++;
+          continue;
         }
         if (!isBindableDbType(dbType)) {
           log.warn(

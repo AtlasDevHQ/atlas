@@ -58,7 +58,7 @@ import {
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
 import { dashboardParametersSchema, renderCardRequestSchema } from "@useatlas/schemas";
-import { resolveDashboardParameterValues } from "@atlas/api/lib/dashboard-parameters";
+import { resolveDashboardParameterValues, extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import { validationHook } from "./validation-hook";
@@ -1457,6 +1457,36 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
+
+      // Reject a parameter replacement that orphans a placeholder still
+      // referenced by an existing card (#2267, CodeRabbit). Otherwise the
+      // PATCH saves cleanly but the next render/refresh fails with an
+      // undeclared-parameter error. Validate against the published cards —
+      // the set that render/refresh actually execute.
+      if (parsed.parameters !== undefined) {
+        const existing = yield* Effect.promise(() => getDashboard(id, { orgId }));
+        if (existing.ok) {
+          const declared = new Set(parsed.parameters.map((p) => p.key));
+          const orphaned = new Set<string>();
+          for (const card of existing.data.cards) {
+            for (const name of extractPlaceholderNames(card.sql)) {
+              if (!declared.has(name)) orphaned.add(name);
+            }
+          }
+          if (orphaned.size > 0) {
+            return c.json(
+              {
+                error: "invalid_parameters",
+                message: `Cannot remove parameter(s) still referenced by cards: ${[...orphaned]
+                  .map((n) => `:${n}`)
+                  .join(", ")}. Update or remove those cards first.`,
+                requestId,
+              },
+              400,
+            );
+          }
+        }
+      }
 
       // Handle refreshSchedule separately (needs cron validation + next_refresh_at)
       if (parsed.refreshSchedule !== undefined) {

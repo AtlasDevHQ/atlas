@@ -68,7 +68,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
   _resetCache: () => {},
 }));
 
-const { runUserQueryPipeline } = await import("@atlas/api/lib/tools/sql");
+const { runUserQueryPipeline, validateSQL } = await import("@atlas/api/lib/tools/sql");
 
 const mockPool: InternalPool = {
   query: async () => ({ rows: [] }),
@@ -78,6 +78,34 @@ const mockPool: InternalPool = {
   end: async () => {},
   on: () => {},
 };
+
+// Regression guard for the create-dashboard + scheduler paths (#2267).
+// Those validate the card's RAW `:name` SQL *before* binding, relying on
+// node-sql-parser tolerating named placeholders. If a parser bump ever starts
+// rejecting `:name`, parameterized dashboards would silently stop validating —
+// this test fails loudly instead.
+describe("validateSQL accepts :name placeholders (raw, pre-bind)", () => {
+  const origDatasource = process.env.ATLAS_DATASOURCE_URL;
+  beforeEach(() => {
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
+  });
+  afterEach(() => {
+    if (origDatasource) process.env.ATLAS_DATASOURCE_URL = origDatasource;
+    else delete process.env.ATLAS_DATASOURCE_URL;
+  });
+
+  it("validates a card that references :date_from / :date_to", async () => {
+    const r = await validateSQL(
+      "SELECT day FROM signups WHERE created_at >= :date_from AND created_at < :date_to",
+    );
+    expect(r.valid).toBe(true);
+  });
+
+  it("validates a placeholder used with a ::cast", async () => {
+    const r = await validateSQL("SELECT day FROM signups WHERE created_at >= :date_from::timestamptz");
+    expect(r.valid).toBe(true);
+  });
+});
 
 describe("runUserQueryPipeline — dashboard parameter binding", () => {
   const origDbUrl = process.env.DATABASE_URL;

@@ -160,6 +160,11 @@ export default function DashboardViewPage() {
   // cached snapshot (rendered server-side with the parameters' defaults).
   const [paramResults, setParamResults] = useState<Record<string, { columns: string[]; rows: Record<string, unknown>[] }>>({});
   const [paramLoading, setParamLoading] = useState(false);
+  // Surfaced when one or more cards fail to render with the chosen parameters
+  // (e.g. 409 approval_required, 503 connection unavailable) — otherwise the
+  // grid would silently fall back to the cached snapshot and the filter would
+  // appear to do nothing.
+  const [paramError, setParamError] = useState<string | null>(null);
 
   // #2369 — creation-to-bound continuity. The chat-side
   // `createDashboard` tool surfaces a "Continue editing" link that
@@ -478,15 +483,20 @@ export default function DashboardViewPage() {
   const paramReqSeq = useRef(0);
   async function handleParamsChange(overrides: ParameterValues) {
     if (!dashboard) return;
+    // Advance the sequence on EVERY change — including Reset — so an older
+    // in-flight render batch can never repopulate `paramResults` after the
+    // user has cleared or changed the parameters.
+    const seq = ++paramReqSeq.current;
     // No overrides → show the cached snapshot (server-rendered with defaults).
     if (Object.keys(overrides).length === 0) {
       setParamResults({});
+      setParamError(null);
       setParamLoading(false);
       return;
     }
     const cards = dashboard.cards;
-    const seq = ++paramReqSeq.current;
     setParamLoading(true);
+    setParamError(null);
     try {
       const entries = await Promise.all(
         cards.map(async (card) => {
@@ -500,28 +510,49 @@ export default function DashboardViewPage() {
                 body: JSON.stringify({ parameters: overrides }),
               },
             );
-            if (!res.ok) return null;
+            if (!res.ok) {
+              // Surface the backend reason (approval required, connection
+              // unavailable, invalid parameters, …) instead of dropping it.
+              let message = `Request failed (${res.status})`;
+              try {
+                const body = (await res.json()) as { message?: string; error?: string };
+                message = body.message ?? body.error ?? message;
+              } catch {
+                // non-JSON body — keep the status-based message
+              }
+              return { cardId: card.id, error: message } as const;
+            }
             const json = (await res.json()) as {
               columns: string[];
               rows: Record<string, unknown>[];
             };
-            return [card.id, { columns: json.columns, rows: json.rows }] as const;
+            return { cardId: card.id, data: { columns: json.columns, rows: json.rows } } as const;
           } catch (err) {
-            console.debug(
-              "[dashboard] card render failed:",
-              err instanceof Error ? err.message : String(err),
-            );
-            return null;
+            return {
+              cardId: card.id,
+              error: err instanceof Error ? err.message : String(err),
+            } as const;
           }
         }),
       );
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
       const next: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {};
+      const errors: string[] = [];
       for (const entry of entries) {
-        if (entry) next[entry[0]] = entry[1];
+        if ("data" in entry) next[entry.cardId] = entry.data;
+        else errors.push(entry.error);
       }
       setParamResults(next);
+      if (errors.length > 0) {
+        const distinct = [...new Set(errors)];
+        const shown = distinct.slice(0, 2).join("; ");
+        setParamError(
+          `${errors.length} card${errors.length > 1 ? "s" : ""} couldn't be updated with these parameters: ${shown}${distinct.length > 2 ? "…" : ""}`,
+        );
+      } else {
+        setParamError(null);
+      }
     } finally {
       if (seq === paramReqSeq.current) setParamLoading(false);
     }
@@ -606,6 +637,20 @@ export default function DashboardViewPage() {
                 onChange={handleParamsChange}
                 loading={paramLoading}
               />
+            )}
+
+            {paramError && (
+              <div className="mx-4 mt-3 flex items-start justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:mx-6 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
+                <span>{paramError}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 text-xs"
+                  onClick={() => setParamError(null)}
+                >
+                  Dismiss
+                </Button>
+              </div>
             )}
 
             {mutationError && (

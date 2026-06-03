@@ -39,17 +39,62 @@ export const dashboardParameterKeySchema = z
   );
 
 /**
- * A single parameter definition. `default` is intentionally a loose union —
- * `date` defaults may be ISO (`YYYY-MM-DD`) or a relative expression
- * (`now - 30 days`) resolved server-side; `text`/`number` defaults are
- * literals; `null` means "no default".
+ * Accepted shapes for a `date` default — an ISO date / datetime, or a relative
+ * expression resolved server-side. Kept in sync with `resolveDateExpression`
+ * in `@atlas/api/lib/dashboard-parameters` (the runtime resolver); this regex
+ * is the persist-time gate so a malformed default is rejected on save instead
+ * of failing later at render/refresh.
  */
-export const dashboardParameterSchema = z.object({
-  key: dashboardParameterKeySchema,
-  type: dashboardParameterTypeSchema,
-  default: z.union([z.string().max(200), z.number(), z.null()]).default(null),
-  label: z.string().min(1).max(120),
-});
+const DATE_DEFAULT_RE =
+  /^(\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?.*)?|now\(?\)?|today|now\(?\)?\s*[+-]\s*\d+\s*(days?|weeks?|months?|years?))$/i;
+
+/**
+ * A single parameter definition. `default` is a loose union at the field level,
+ * then refined to match `type`: a `number` parameter takes a numeric default, a
+ * `date` parameter takes an ISO/relative string, `text` takes a string. `null`
+ * means "no default". Rejecting cross-type defaults at parse time stops an
+ * invalid definition (e.g. `{ type: "number", default: "abc" }`) from
+ * persisting cleanly and then failing later when defaults are resolved.
+ */
+export const dashboardParameterSchema = z
+  .object({
+    key: dashboardParameterKeySchema,
+    type: dashboardParameterTypeSchema,
+    default: z.union([z.string().max(200), z.number(), z.null()]).default(null),
+    label: z.string().min(1).max(120),
+  })
+  .superRefine((param, ctx) => {
+    if (param.default === null) return;
+    switch (param.type) {
+      case "number":
+        if (typeof param.default !== "number") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Parameter "${param.key}" is a number — its default must be a number.`,
+            path: ["default"],
+          });
+        }
+        break;
+      case "date":
+        if (typeof param.default !== "string" || !DATE_DEFAULT_RE.test(param.default.trim())) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Parameter "${param.key}" is a date — its default must be an ISO date (YYYY-MM-DD) or a relative expression like "now - 30 days".`,
+            path: ["default"],
+          });
+        }
+        break;
+      case "text":
+        if (typeof param.default !== "string") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Parameter "${param.key}" is text — its default must be a string.`,
+            path: ["default"],
+          });
+        }
+        break;
+    }
+  });
 export type DashboardParameterWire = z.infer<typeof dashboardParameterSchema>;
 
 /**

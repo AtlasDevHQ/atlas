@@ -587,6 +587,39 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(404);
     });
+
+    it("rejects a parameter update that orphans a card's placeholder (#2267)", async () => {
+      const cardWithParam = { ...mockCardData, sql: "SELECT * FROM orders WHERE created_at >= :date_from" };
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [cardWithParam] } });
+      mockUpdateDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: [] }), // removes :date_from
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_parameters");
+      expect(body.message).toContain(":date_from");
+      expect(mockUpdateDashboard).not.toHaveBeenCalled();
+    });
+
+    it("allows a parameter update that still declares all card placeholders", async () => {
+      const cardWithParam = { ...mockCardData, sql: "SELECT * FROM orders WHERE created_at >= :date_from" };
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [cardWithParam] } });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            parameters: [{ key: "date_from", type: "date", default: "now - 30 days", label: "From" }],
+          }),
+        }),
+      );
+      expect(response.status).toBe(200);
+    });
   });
 
   // -------------------------------------------------------------------------

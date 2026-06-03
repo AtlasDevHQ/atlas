@@ -389,7 +389,7 @@
     },
     "packages/schemas": {
       "name": "@useatlas/schemas",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@useatlas/types": "workspace:*",
         "zod": "^4.4.3",
@@ -407,7 +407,7 @@
     },
     "packages/types": {
       "name": "@useatlas/types",
-      "version": "0.1.11",
+      "version": "0.1.12",
     },
     "packages/web": {
       "name": "@atlas/web",

@@ -8,8 +8,19 @@
  * adopted version is a deliberate, reviewed decision rather than a side effect of a
  * dependency bump (see #3129).
  *
- * This is typed against the SDK's `LatestApiVersion` at each `new Stripe(...)` call
- * site, so a future SDK bump that changes the default surfaces here as a compile error —
- * forcing a conscious re-validation before the new version reaches prod billing.
+ * The constant is typed as the SDK's `LatestApiVersion`, so a future SDK bump that
+ * changes the default surfaces here as a compile error — forcing a conscious
+ * re-validation before the new version reaches prod billing.
  */
-export const STRIPE_API_VERSION = "2026-05-27.dahlia";
+import Stripe from "stripe";
+
+/**
+ * The SDK's pinned-version literal type. Derived from the `new Stripe(...)` config
+ * parameter (the SDK doesn't re-export `LatestApiVersion` by name), so it tracks
+ * whatever the installed SDK accepts.
+ */
+type StripeApiVersion = NonNullable<
+  NonNullable<ConstructorParameters<typeof Stripe>[1]>["apiVersion"]
+>;
+
+export const STRIPE_API_VERSION: StripeApiVersion = "2026-05-27.dahlia";

@@ -61,9 +61,7 @@ import { EnterpriseLayer, type EnterpriseSubsystem } from "./enterprise-layer";
 import { AuditPurgeScheduler, SaasCrm } from "./services";
 import {
   recoverInFlight as recoverOutboxInFlight,
-  runOutboxTick,
-  observeOutboxDepth,
-  flushBatch as flushOutboxBatch,
+  drainOutbox as drainOutboxQueue,
   getBackstopSweepIntervalMs as getOutboxBackstopSweepIntervalMs,
   getWarnThreshold as getOutboxWarnThreshold,
   isFlusherEnabled as isOutboxFlusherEnabled,
@@ -2083,36 +2081,24 @@ export function makeSchedulerLive(
         // burning CPU: at most every 30s, faster if the backstop is short.
         const OUTBOX_WATCHDOG_POLL_MS = Math.min(30_000, backstopSweepMs);
 
-        // One tick cycle. `boot` / `kick` run a FULL tick (depth snapshot
-        // → gauges → warn → dispatch). A `backstop` runs the LEAN sweep:
-        // one CLAIM, and a depth snapshot ONLY when it actually drained
-        // rows (a draining backstop means a retry timer was lost and the
-        // queue warrants observing). An idle backstop therefore stays at
-        // ~1 statement — what drops an idle US pod from ~17,280 to ~288
-        // statements/day. The `outboxSignal` is threaded in as the retry
-        // scheduler so a transient failure re-arms its own wakeup.
-        const runOutboxCycle = (trigger: "boot" | "kick" | "backstop") => {
-          if (trigger === "backstop") {
-            return (async () => {
-              const flush = await flushOutboxBatch(
-                outboxDb,
-                outboxDispatcher,
-                OUTBOX_FLUSH_BATCH_LIMIT,
-                outboxSignal,
-              );
-              if (flush.claimed > 0) {
-                await observeOutboxDepth({
-                  db: outboxDb,
-                  limiter: outboxWarnLimiter,
-                  pendingGauge: crmOutboxPendingCount,
-                  deadGauge: crmOutboxDeadCount,
-                  logger: log,
-                });
-              }
-              return flush;
-            })();
-          }
-          return runOutboxTick({
+        // A failed tick (boot racing migrations, a brief PG blip) re-arms
+        // a SHORT retry instead of waiting a full backstop, so a queue with
+        // pending rows recovers in seconds once the DB is back rather than
+        // sitting idle up to 300s (Codex P2). Capped by the backstop so a
+        // sub-5s backstop never lengthens on failure.
+        const OUTBOX_FAILED_RETRY_MS = Math.min(5_000, backstopSweepMs);
+
+        // One tick cycle. `drainOutbox` claims all currently-due rows in
+        // batches (so a burst/backlog drains in one wake instead of one
+        // batch per backstop — Codex P1), then refreshes the depth gauges.
+        // `observe` policy differs by trigger: `boot`/`kick` always refresh
+        // (so an event wake leaves a fresh `pending_count`, even draining
+        // 1→0 — Codex P2); an idle `backstop` skips the snapshot to stay at
+        // ~1 statement/sweep (idle US pod ~288 statements/day). `outboxSignal`
+        // is threaded in as the retry scheduler so a transient failure
+        // re-arms its own wakeup.
+        const runOutboxCycle = (trigger: "boot" | "kick" | "backstop") =>
+          drainOutboxQueue({
             db: outboxDb,
             dispatcher: outboxDispatcher,
             batchLimit: OUTBOX_FLUSH_BATCH_LIMIT,
@@ -2121,8 +2107,8 @@ export function makeSchedulerLive(
             deadGauge: crmOutboxDeadCount,
             logger: log,
             retryScheduler: outboxSignal,
-          }).then((r) => r.flush);
-        };
+            observe: trigger === "backstop" ? "when-claimed" : "always",
+          });
 
         // Park until a kick or the backstop deadline. `Effect.async` so a
         // scope-finalize interrupt cancels the parked waiter cleanly (the
@@ -2150,7 +2136,7 @@ export function makeSchedulerLive(
             try: () => runOutboxCycle(trigger),
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           }).pipe(
-            Effect.map((flush) => ({ ok: true as const, flush })),
+            Effect.map((result) => ({ ok: true as const, result })),
             Effect.catchAll((err) => Effect.succeed({ ok: false as const, err })),
           );
 
@@ -2167,23 +2153,42 @@ export function makeSchedulerLive(
                 err: errorMessage(outcome.err),
                 event: "lead_outbox.tick_failed",
               },
-              "Outbox flush tick failed — will retry on next kick / backstop",
+              "Outbox flush tick failed — re-arming a short retry",
             );
-          } else if (outcome.flush.claimed > 0) {
+          } else if (outcome.result.flush.claimed > 0) {
             // Active tick — same structured event as the poll design so
-            // `tick_complete` greps still match every claim cycle.
+            // `tick_complete` greps still match every claim cycle. `claimed`
+            // is now the total across all drained batches; `batches` and
+            // `drainCapped` surface a multi-batch drain.
+            const r = outcome.result;
             log.info(
               {
                 tickCount: outboxTickCount,
                 trigger,
-                claimed: outcome.flush.claimed,
-                ok: outcome.flush.ok,
-                transient: outcome.flush.transient,
-                permanent: outcome.flush.permanent,
+                claimed: r.flush.claimed,
+                ok: r.flush.ok,
+                transient: r.flush.transient,
+                permanent: r.flush.permanent,
+                batches: r.batches,
+                drainCapped: r.drainCapped,
                 event: "lead_outbox.tick_complete",
               },
-              `Outbox tick (${trigger}): ${outcome.flush.claimed} claimed (ok=${outcome.flush.ok}, transient=${outcome.flush.transient}, dead=${outcome.flush.permanent})`,
+              `Outbox tick (${trigger}): ${r.flush.claimed} claimed across ${r.batches} batch(es) (ok=${r.flush.ok}, transient=${r.flush.transient}, dead=${r.flush.permanent})`,
             );
+            if (r.drainCapped) {
+              // No silent truncation: a capped drain left more due rows for
+              // the next backstop. Surface it so a sustained backlog that
+              // can't drain in one wake is observable.
+              log.warn(
+                {
+                  tickCount: outboxTickCount,
+                  trigger,
+                  maxBatches: r.batches,
+                  event: "lead_outbox.drain_capped",
+                },
+                `Outbox drain hit the per-wake batch cap (${r.batches}) with rows still due — remainder rolls to the next backstop sweep`,
+              );
+            }
           } else {
             // Idle tick — heartbeat proves the fiber is alive. Now
             // backstop-spaced (≈ once per interval), so it fires every
@@ -2201,7 +2206,10 @@ export function makeSchedulerLive(
           }
 
           // Park on the doorbell until the next kick or backstop deadline.
-          const reason = yield* waitForOutboxWake(backstopSweepMs);
+          // A failed tick re-arms a short retry (Codex P2) instead of
+          // sleeping the full backstop.
+          const waitMs = outcome.ok ? backstopSweepMs : OUTBOX_FAILED_RETRY_MS;
+          const reason = yield* waitForOutboxWake(waitMs);
           outboxNextTrigger = reason === "kick" ? "kick" : "backstop";
         });
 

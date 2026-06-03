@@ -1354,13 +1354,14 @@ describe("getBackstopSweepIntervalMs — #2874", () => {
     restore();
   });
 
-  test("clamps below the 1s minimum and above the 24h maximum", () => {
+  test("non-positive values default to 300s; values above 24h clamp to the maximum", () => {
+    // Non-positive parses hit the `parsed <= 0` guard and return the
+    // DEFAULT (the MIN=1 clamp branch is unreachable for integers > 0).
     process.env[KEY] = "0";
-    // 0 is non-positive → treated as unset → default (not the 1s floor).
     expect(getBackstopSweepIntervalMs()).toBe(300_000);
     process.env[KEY] = "-5";
     expect(getBackstopSweepIntervalMs()).toBe(300_000);
-    process.env[KEY] = "999999"; // > 86400s
+    process.env[KEY] = "999999"; // > 86400s → clamps to the 24h maximum
     expect(getBackstopSweepIntervalMs()).toBe(86_400_000);
     restore();
   });

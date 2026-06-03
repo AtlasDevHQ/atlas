@@ -62,11 +62,13 @@ export {
 } from "./depth";
 
 export {
-  runOutboxTick,
+  drainOutbox,
   observeOutboxDepth,
+  MAX_DRAIN_BATCHES,
   type OutboxTickDeps,
   type OutboxObserveDeps,
-  type OutboxTickResult,
+  type OutboxObservePolicy,
+  type OutboxDrainResult,
   type OutboxObserveResult,
   type GaugeRecorder,
   type OutboxTickLogger,

@@ -387,7 +387,7 @@ export function UsersPage({ scope }: UsersPageProps) {
         if (cancelled) return;
         if (result.error) {
           setInvitations([]);
-          setInvitationsError(result.error.message);
+          setInvitationsError(result.error.message ?? "Failed to load invitations.");
           return;
         }
         setInvitations(
@@ -405,7 +405,7 @@ export function UsersPage({ scope }: UsersPageProps) {
       } catch (err) {
         if (!cancelled) {
           setInvitations([]);
-          setInvitationsError(err instanceof Error ? err.message : "Failed to load invitations");
+          setInvitationsError(err instanceof Error ? err.message : "Failed to load invitations.");
         }
       } finally {
         if (!cancelled) setInvitationsLoading(false);

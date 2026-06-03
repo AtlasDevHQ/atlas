@@ -125,10 +125,12 @@ export type OrgResult<T> = {
 // switches on it.
 export type { InvitationStatus } from "better-auth/plugins/organization";
 
-// Better Auth's exported `Invitation` carries `Date` for timestamps; over
-// JSON those serialize as ISO strings. Keep the shape aligned with BA but
-// widen date fields to `string` to match what the client actually
-// receives.
+// Better Auth types these timestamps as `Date`, but over JSON the client
+// actually receives ISO strings. Accept `string | Date` so both BA's
+// declared type (which newer TS toolchains surface straight through the
+// `as OrgClient` overrides) and the runtime value type-check; render sites
+// treat the runtime value as an ISO string (`RelativeTimestamp`, `new
+// Date(...)`).
 export interface OrgInvitation {
   id: string;
   organizationId: string;
@@ -136,8 +138,8 @@ export interface OrgInvitation {
   role: string;
   status: InvitationStatus;
   inviterId: string;
-  expiresAt: string;
-  createdAt: string;
+  expiresAt: string | Date;
+  createdAt: string | Date;
 }
 
 // `getInvitation` returns the row plus inviter / organization metadata so
@@ -229,9 +231,11 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
   };
 
   // oauthProviderClient — `oauth2.consent` resolves the consent screen.
+  // Better Auth returns `{ redirect, url }` on success (the post-consent
+  // redirect target is `url`, not the older `redirectURI`).
   oauth2?: {
     consent: (opts: { accept: boolean; scope?: string }) => Promise<{
-      data?: { redirectURI?: string };
+      data?: { redirect: boolean; url: string };
       error?: { message?: string };
     } | undefined>;
   };

@@ -30,6 +30,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { authClient } from "@/lib/auth/client";
 import { getApiUrl } from "@/lib/api-url";
+import { resolveConsentOutcome } from "./resolve-consent-outcome";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -165,18 +166,12 @@ export default function ConsentPage() {
         return;
       }
       const res = (await consent({ accept })) ?? undefined;
-      if (res?.error) {
-        setError(res.error.message ?? "Consent failed.");
+      const outcome = resolveConsentOutcome(res);
+      if (outcome.kind === "error") {
+        setError(outcome.message);
         return;
       }
-      const redirectURI = res?.data?.redirectURI;
-      if (!redirectURI) {
-        setError(
-          "Consent succeeded but no redirect was returned. Reopen the OAuth flow from your client.",
-        );
-        return;
-      }
-      window.location.href = redirectURI;
+      window.location.href = outcome.url;
     } catch (err) {
       if (err instanceof TypeError) {
         setError(

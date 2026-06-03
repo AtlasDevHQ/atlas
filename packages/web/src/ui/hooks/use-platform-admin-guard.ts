@@ -27,7 +27,9 @@ export function useUserRole(): string | undefined {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
   const user = session.data?.user;
-  return user?.effectiveRole ?? user?.role;
+  // `effectiveRole`/`role` are both `string | null`; collapse a null role
+  // to `undefined` so the "no role" case is a single value for callers.
+  return user?.effectiveRole ?? user?.role ?? undefined;
 }
 
 /**

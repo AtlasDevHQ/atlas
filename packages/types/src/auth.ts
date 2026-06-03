@@ -77,7 +77,12 @@ export interface AtlasAuthClient {
     data?: {
       user?: {
         email?: string;
-        role?: string;
+        // The underlying `user.role` column is nullable (no role assigned
+        // yet). Better Auth's admin plugin types it `string | undefined`, but
+        // the DB column and the server's `customSession` merge can surface a
+        // `null`; mirror `| null` so consumers narrow instead of assuming a
+        // string. `effectiveRole` below is `string | null` for the same reason.
+        role?: string | null;
         /**
          * Org-merged effective role — `max(user.role, active-org member.role)`.
          * Stamped by the server's `customSession` plugin so an org admin
@@ -88,8 +93,13 @@ export interface AtlasAuthClient {
         effectiveRole?: string | null;
         /** Display name — present at runtime, not always populated. */
         name?: string;
-        /** True when TOTP is enrolled — surfaced by the two-factor plugin. */
-        twoFactorEnabled?: boolean;
+        /**
+         * True when TOTP is enrolled — surfaced by the two-factor plugin.
+         * Better Auth's plugin type is `boolean`, but the underlying column
+         * is nullable (`required: false`), so the runtime value can be `null`
+         * before enrollment; mirror `| null`. Consumers compare `=== true`.
+         */
+        twoFactorEnabled?: boolean | null;
       };
       session?: {
         /** Session row id — used to identify "this session" in revoke flows. */

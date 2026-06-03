@@ -40,4 +40,23 @@ describe("SharedTile — text cards (#3138)", () => {
     expect(container.textContent).not.toContain("No data available");
     expect(screen.queryByTestId("result-chart")).toBeNull();
   });
+
+  test("spans full-width regardless of the inherited (half-width) spanClass", () => {
+    // The shared view passes a half-width span for a layout-less tile; a text
+    // band must override it so it reads as a banner over the charts below.
+    const { container } = render(
+      <SharedTile card={textCard} spanClass="md:col-span-1" cachedLabel={null} cachedIso={undefined} />,
+    );
+    const tile = container.querySelector('[data-card-kind="text"]');
+    expect(tile?.className).toContain("md:col-span-2");
+    expect(tile?.className).not.toContain("md:col-span-1");
+  });
+
+  test("strips markdown images on the public surface (no tracking-pixel fetch)", () => {
+    const card = { ...textCard, content: "## Header\n\n![x](https://attacker.example/track.png)" };
+    const { container } = render(
+      <SharedTile card={card} spanClass="col-span-2" cachedLabel={null} cachedIso={undefined} />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+  });
 });

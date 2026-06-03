@@ -103,4 +103,20 @@ describe("Markdown", () => {
     // The tags survive as visible text, proving they were escaped, not executed.
     expect(container.textContent).toContain("<script>");
   });
+
+  // Markdown image syntax `![]()` still renders an <img> even with raw HTML off,
+  // which fires a network request — a tracking/IP-leak vector on public surfaces.
+  test("renders a markdown image by default", () => {
+    const { container } = render(<Markdown content={"![pixel](https://example.com/p.png)"} />);
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
+  test("disallowImages strips markdown images (no network fetch)", () => {
+    const { container } = render(
+      <Markdown content={"![pixel](https://attacker.example/track.png)\n\nVisible text"} disallowImages />,
+    );
+    expect(container.querySelector("img")).toBeNull();
+    // Surrounding content still renders.
+    expect(container.textContent).toContain("Visible text");
+  });
 });

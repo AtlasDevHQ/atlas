@@ -228,6 +228,9 @@ async function createVercelExploreBackend(
   const createOpts: Record<string, unknown> = {
     runtime: "node24",
     networkPolicy: "deny-all",
+    // v2 persists (snapshots) by default — force ephemeral so semantic files
+    // never linger in Vercel snapshot storage after stop().
+    persistent: false,
   };
   if (config.accessToken) {
     createOpts.accessToken = config.accessToken;
@@ -398,6 +401,8 @@ export function buildVercelSandboxPlugin(
             const createOpts: Record<string, unknown> = {
               runtime: "node24",
               networkPolicy: "deny-all",
+              // v2 persists by default — keep the health-check sandbox ephemeral.
+              persistent: false,
             };
             if (config.accessToken) {
               createOpts.accessToken = config.accessToken;

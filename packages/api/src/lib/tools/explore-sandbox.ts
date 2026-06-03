@@ -116,6 +116,9 @@ export async function createSandboxBackend(
     sandbox = await Sandbox.create({
       runtime: "node24",
       networkPolicy: "deny-all",
+      // v2 persists (snapshots) by default — force ephemeral so semantic
+      // files never linger in Vercel snapshot storage after stop().
+      persistent: false,
       ...(explicitAccess ?? {}),
     });
   } catch (err) {

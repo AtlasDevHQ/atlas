@@ -31,6 +31,14 @@ declare module "@vercel/sandbox" {
      * Actual SDK also accepts an object form for fine-grained rules.
      */
     networkPolicy?: "deny-all" | "allow-all" | (string & {});
+    /**
+     * v2 sandboxes are **persistent by default** (they snapshot their
+     * filesystem on stop and can resume). Atlas MUST pass `persistent: false`
+     * for every per-request backend so generated tenant data + semantic files
+     * never land in Vercel snapshot storage — the "ephemeral filesystem"
+     * guarantee. (v1 had no persistence; this field did not exist.)
+     */
+    persistent?: boolean;
     ports?: number[];
     timeout?: number;
   }

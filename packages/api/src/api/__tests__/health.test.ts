@@ -180,6 +180,9 @@ mock.module("@atlas/api/lib/plugins/registry", () => ({
   plugins: {
     describe: () => pluginDescribeImpl(),
     healthCheckAll: () => pluginHealthCheckAllImpl(),
+    // #3201 — the route calls the cached variant; drive it from the same
+    // per-scenario impl so existing health tests exercise the real code path.
+    healthCheckAllCached: () => pluginHealthCheckAllImpl(),
     getAll: () => [],
     getAllHealthy: () => [],
     getByType: () => [],

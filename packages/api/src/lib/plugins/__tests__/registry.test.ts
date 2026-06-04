@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 
 // Capture spans recorded by the registry (#1979) without spinning up an
 // in-memory exporter. Must be registered before importing PluginRegistry
@@ -17,7 +17,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
   withEffectSpan: <T>(_n: string, _a: unknown, e: T) => e,
 }));
 
-const { PluginRegistry } = await import("../registry");
+const { PluginRegistry, getPluginHealthCacheTtlMs } = await import("../registry");
 type PluginRegistryT = InstanceType<typeof PluginRegistry>;
 import type { PluginLike, PluginContextLike } from "../registry";
 
@@ -242,6 +242,181 @@ describe("PluginRegistry", () => {
 
       await registry.healthCheckAll();
       expect(registry.getStatus("test-plugin")).toBe("unhealthy");
+    });
+  });
+
+  // --- healthCheckAllCached (#3201) ---
+
+  describe("healthCheckAllCached", () => {
+    // Build a plugin whose healthCheck increments a shared counter so tests
+    // can assert how many times the upstream probe actually ran.
+    function countingPlugin(
+      counter: { calls: number },
+      result: () => Promise<{ healthy: boolean; message?: string }> = async () => ({
+        healthy: true,
+      }),
+    ): PluginLike {
+      return makePlugin({
+        healthCheck: async () => {
+          counter.calls++;
+          return result();
+        },
+      });
+    }
+
+    test("repeated calls within the TTL probe upstream at most once", async () => {
+      const counter = { calls: 0 };
+      registry.register(countingPlugin(counter));
+      await registry.initializeAll(minimalCtx);
+
+      // Large TTL — the second sequential call must hit the cache.
+      const a = await registry.healthCheckAllCached(60_000);
+      const b = await registry.healthCheckAllCached(60_000);
+
+      expect(counter.calls).toBe(1);
+      expect(b.get("test-plugin")?.healthy).toBe(true);
+      // Same snapshot object returned from the cache.
+      expect(b).toBe(a);
+    });
+
+    test("re-probes once the TTL has elapsed", async () => {
+      const counter = { calls: 0 };
+      registry.register(countingPlugin(counter));
+      await registry.initializeAll(minimalCtx);
+
+      // ttl=0 → every sequential call is considered stale and re-probes.
+      await registry.healthCheckAllCached(0);
+      await registry.healthCheckAllCached(0);
+
+      expect(counter.calls).toBe(2);
+    });
+
+    test("coalesces concurrent callers onto a single in-flight probe", async () => {
+      const counter = { calls: 0 };
+      registry.register(
+        countingPlugin(
+          counter,
+          () =>
+            // Defer resolution a tick so both callers observe the in-flight probe.
+            new Promise((resolve) =>
+              setTimeout(() => resolve({ healthy: true }), 5),
+            ),
+        ),
+      );
+      await registry.initializeAll(minimalCtx);
+
+      const [a, b] = await Promise.all([
+        registry.healthCheckAllCached(60_000),
+        registry.healthCheckAllCached(60_000),
+      ]);
+
+      expect(counter.calls).toBe(1);
+      expect(a).toBe(b);
+    });
+
+    test("caches an unhealthy result verbatim — the cache never masks it", async () => {
+      const counter = { calls: 0 };
+      registry.register(
+        countingPlugin(counter, async () => ({
+          healthy: false,
+          message: "upstream down",
+        })),
+      );
+      await registry.initializeAll(minimalCtx);
+
+      const first = await registry.healthCheckAllCached(60_000);
+      const second = await registry.healthCheckAllCached(60_000);
+
+      expect(counter.calls).toBe(1);
+      for (const snapshot of [first, second]) {
+        const entry = snapshot.get("test-plugin");
+        expect(entry?.healthy).toBe(false);
+        expect(entry?.status).toBe("unhealthy");
+        expect(entry?.message).toBe("upstream down");
+      }
+    });
+
+    test("does not cache a rejected probe — the next call re-probes", async () => {
+      const counter = { calls: 0 };
+      registry.register(countingPlugin(counter)); // always healthy
+      await registry.initializeAll(minimalCtx);
+
+      // healthCheckAll catches per-plugin failures, so it never rejects from a
+      // plugin probe. The rejection path is a registry-level failure (module
+      // load, iterator bug). Force it to reject once, then delegate to the
+      // real implementation.
+      const realHealthCheckAll = registry.healthCheckAll.bind(registry);
+      let threw = false;
+      registry.healthCheckAll = async () => {
+        if (!threw) {
+          threw = true;
+          throw new Error("registry-level failure");
+        }
+        return realHealthCheckAll();
+      };
+
+      await expect(registry.healthCheckAllCached(60_000)).rejects.toThrow(
+        "registry-level failure",
+      );
+      // Rejection was not cached: the retry probes live and resolves healthy.
+      const retry = await registry.healthCheckAllCached(60_000);
+      expect(retry.get("test-plugin")?.healthy).toBe(true);
+      expect(counter.calls).toBe(1); // probe ran once, on the successful retry
+    });
+
+    test("_reset clears the cached snapshot", async () => {
+      const counter = { calls: 0 };
+      registry.register(countingPlugin(counter));
+      await registry.initializeAll(minimalCtx);
+
+      await registry.healthCheckAllCached(60_000);
+      expect(counter.calls).toBe(1);
+
+      registry._reset();
+      // After reset there are no plugins; re-register and probe again.
+      registry.register(countingPlugin(counter));
+      await registry.initializeAll(minimalCtx);
+      await registry.healthCheckAllCached(60_000);
+
+      // A fresh probe ran post-reset (cache did not survive the reset).
+      expect(counter.calls).toBe(2);
+    });
+  });
+
+  // --- getPluginHealthCacheTtlMs (#3201) ---
+
+  describe("getPluginHealthCacheTtlMs", () => {
+    const ENV = "ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS";
+    const orig = process.env[ENV];
+
+    afterEach(() => {
+      if (orig === undefined) delete process.env[ENV];
+      else process.env[ENV] = orig;
+    });
+
+    test("defaults to 15000ms when unset", () => {
+      delete process.env[ENV];
+      expect(getPluginHealthCacheTtlMs()).toBe(15_000);
+    });
+
+    test("honours a valid override", () => {
+      process.env[ENV] = "30000";
+      expect(getPluginHealthCacheTtlMs()).toBe(30_000);
+    });
+
+    test("allows 0 to disable caching", () => {
+      process.env[ENV] = "0";
+      expect(getPluginHealthCacheTtlMs()).toBe(0);
+    });
+
+    test("falls back to the default on a non-numeric value", () => {
+      process.env[ENV] = "not-a-number";
+      expect(getPluginHealthCacheTtlMs()).toBe(15_000);
+    });
+
+    test("falls back to the default on a negative value", () => {
+      process.env[ENV] = "-1";
+      expect(getPluginHealthCacheTtlMs()).toBe(15_000);
     });
   });
 

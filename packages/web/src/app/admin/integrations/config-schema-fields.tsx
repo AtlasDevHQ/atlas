@@ -78,7 +78,19 @@ export function ConfigSchemaFields({ fields, control }: ConfigSchemaFieldsProps)
                       field.secret ? "password" : field.type === "number" ? "number" : "text"
                     }
                     value={(rhf.value as string | number | undefined) ?? ""}
-                    onChange={(e) => rhf.onChange(e.target.value)}
+                    // For number fields, map a blank input to `undefined` rather
+                    // than `""` — Zod 4's `z.coerce.number().parse("")` returns
+                    // `0`, so a blank optional number would silently submit 0 and
+                    // a blank required number would pass instead of failing.
+                    onChange={(e) =>
+                      rhf.onChange(
+                        field.type === "number"
+                          ? e.target.value === "" || Number.isNaN(e.target.valueAsNumber)
+                            ? undefined
+                            : e.target.valueAsNumber
+                          : e.target.value,
+                      )
+                    }
                     autoComplete={field.secret ? "off" : undefined}
                   />
                 )}

@@ -955,6 +955,45 @@ describe("WorkspaceInstaller.uninstall", () => {
     );
     expect(deleteSqlIdx).toBeGreaterThanOrEqual(0);
   });
+
+  it("deletes plugin-owned scheduled_tasks scoped by (plugin_id, org_id) after workspace_plugins (#3180)", async () => {
+    // Symmetry with the marketplace DELETE path: WorkspaceInstaller disconnect
+    // must clean plugin-owned scheduled_tasks so the scheduler stops firing
+    // them, scoped by (plugin_id = catalog_id, org_id = workspace_id).
+    queueCatalogLookup("email", { pillar: "action", install_model: "form" });
+    queueInstallLookup(WSID, "catalog:email", {
+      id: "install-email",
+      install_id: "install-email",
+      team_id: null,
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM workspace_plugins"),
+      rows: [],
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM scheduled_tasks"),
+      rows: [],
+    });
+
+    const installer = await getLiveService();
+    await runEffect(installer.uninstall(WSID, "email"));
+
+    const taskDelete = internalQueryCalls.find((c) =>
+      c.sql.includes("DELETE FROM scheduled_tasks"),
+    );
+    expect(taskDelete).toBeDefined();
+    expect(taskDelete?.params).toEqual(["catalog:email", WSID]);
+
+    // Runs AFTER the workspace_plugins DELETE (mirrors the marketplace order).
+    const wpIdx = internalQueryCalls.findIndex((c) =>
+      c.sql.includes("DELETE FROM workspace_plugins"),
+    );
+    const stIdx = internalQueryCalls.findIndex((c) =>
+      c.sql.includes("DELETE FROM scheduled_tasks"),
+    );
+    expect(wpIdx).toBeGreaterThanOrEqual(0);
+    expect(stIdx).toBeGreaterThan(wpIdx);
+  });
 });
 
 // ---------------------------------------------------------------------------

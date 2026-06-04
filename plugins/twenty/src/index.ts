@@ -30,6 +30,7 @@ import { tool } from "ai";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
 import {
+  probeTwentyHealth,
   stampStripeCustomerId,
   upsertPerson,
   type TwentyClientConfig,
@@ -44,8 +45,10 @@ export {
   stampStripeCustomerId,
   getPersonMetadata,
   getPersonRestSchema,
+  probeTwentyHealth,
   createNote,
   TwentyClientError,
+  type TwentyHealthResult,
   type TwentyOperation,
   type TwentyClientConfig,
   type UpsertPersonInput,
@@ -229,6 +232,15 @@ export const twentyPlugin = createPlugin<
         ctx.logger.info(
           `Twenty plugin initialized (baseUrl: ${clientConfig.baseUrl})`,
         );
+      },
+
+      // Periodic liveness probe (#3179). Without it, PluginRegistry falls back
+      // to the last post-init status and reports `healthy` forever — so a
+      // revoked/expired Twenty key (which backs Atlas's lead-capture pipeline)
+      // never surfaces as unhealthy. Reuses the client's `/rest/open-api/core`
+      // probe; a 401/403 from a dead key resolves to `{ healthy: false }`.
+      async healthCheck() {
+        return probeTwentyHealth(clientConfig);
       },
     };
   },

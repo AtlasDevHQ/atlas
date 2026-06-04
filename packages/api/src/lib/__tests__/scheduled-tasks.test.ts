@@ -622,6 +622,22 @@ describe("scheduled-tasks module", () => {
       expect(queryCalls[0].sql).toContain("next_run_at <= now()");
     });
 
+    it("excludes orphaned plugin tasks via a workspace_plugins guard (#3180)", async () => {
+      // An orphaned plugin task (plugin_id set, no live install row) must
+      // never be dispatched. The guard lives in SQL — assert the query joins
+      // against workspace_plugins on the (catalog_id = plugin_id,
+      // workspace_id = org_id) pair, and that NULL-plugin (non-plugin) tasks
+      // stay eligible.
+      enableInternalDB();
+      setResults({ rows: [makeTaskRow()] });
+      await getTasksDueForExecution();
+      const sql = queryCalls[0].sql;
+      expect(sql).toContain("workspace_plugins");
+      expect(sql).toContain("plugin_id IS NULL");
+      expect(sql).toContain("wp.catalog_id = st.plugin_id");
+      expect(sql).toContain("wp.workspace_id = st.org_id");
+    });
+
     it("returns empty when no DB", async () => {
       expect(await getTasksDueForExecution()).toEqual([]);
     });
@@ -655,6 +671,24 @@ describe("scheduled-tasks module", () => {
       expect(queryCalls[1].sql).toContain("UPDATE scheduled_tasks");
       expect(queryCalls[1].sql).toContain("last_run_at = now()");
       expect(queryCalls[1].sql).toContain("next_run_at IS NOT NULL");
+    });
+
+    it("re-checks plugin ownership atomically in the lock UPDATE (#3180 TOCTOU guard)", async () => {
+      // The orphan guard must also fire at lock time, not only at SELECT time:
+      // an uninstall between getTasksDueForExecution and this lock must not let
+      // an already-selected orphan acquire the lock and run once.
+      enableInternalDB();
+      setResults(
+        { rows: [makeTaskRow()] },
+        { rows: [{ id: "task-123" }] },
+      );
+      await lockTaskForExecution("task-123");
+      const updateSql = queryCalls[1].sql;
+      expect(updateSql).toContain("UPDATE scheduled_tasks");
+      expect(updateSql).toContain("workspace_plugins");
+      expect(updateSql).toContain("plugin_id IS NULL");
+      expect(updateSql).toContain("wp.catalog_id = scheduled_tasks.plugin_id");
+      expect(updateSql).toContain("wp.workspace_id = scheduled_tasks.org_id");
     });
 
     it("returns false when task not found", async () => {

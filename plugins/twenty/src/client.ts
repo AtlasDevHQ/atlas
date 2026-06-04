@@ -863,6 +863,98 @@ export async function getPersonRestSchema(
   return { fields: new Set(Object.keys(properties)) };
 }
 
+/** Result of a {@link probeTwentyHealth} liveness check. */
+export interface TwentyHealthResult {
+  readonly healthy: boolean;
+  /** Sanitized reason on failure (status + upstream message). Never the API key. */
+  readonly message?: string;
+  /** Round-trip latency in ms (always set, even on failure). */
+  readonly latencyMs: number;
+}
+
+/**
+ * Lightweight liveness probe for a Twenty credential. Issues a single
+ * authenticated GET against `/rest/open-api/core` — the same endpoint the
+ * boot schema probe ({@link getPersonRestSchema}) uses — and reports whether
+ * the bearer token is still accepted. A revoked or expired API key surfaces
+ * as a 401/403 (`healthy: false`) instead of silently failing later at
+ * dispatch time, which matters because Twenty backs Atlas's own production
+ * lead-capture pipeline (`ee/src/saas-crm/`).
+ *
+ * Two correctness guards (#3196 review):
+ *  - Failure messages are STATUS-ONLY (`HTTP <status>`) and never echo the
+ *    upstream Twenty body. `PluginRegistry.healthCheckAll` surfaces this
+ *    message on the PUBLIC, unauthenticated `/health` route (scrubbed only by
+ *    a best-effort `SENSITIVE_PATTERNS` regex), so a fronting proxy that
+ *    embedded a token/request-context in its error body must not leak through.
+ *    Mirrors the jira/salesforce probes, which are also status-only.
+ *  - A 2xx alone is NOT proof the bearer was accepted — a SPA catch-all or a
+ *    reverse-proxy login page can return 200 for any path. We confirm the body
+ *    is actually Twenty's OpenAPI document (top-level `openapi` / `components`)
+ *    before reporting healthy, so a misconfigured base URL surfaces as
+ *    unhealthy instead of false-healthy.
+ *
+ * Never throws: transport failures (DNS, timeout, network) and non-2xx
+ * responses both resolve to `{ healthy: false }`, so the plugin health surface
+ * always gets a definite signal. The API key is never included in the message.
+ */
+export async function probeTwentyHealth(
+  config: TwentyClientConfig,
+): Promise<TwentyHealthResult> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildOpenApiUrl(config.baseUrl);
+  const start = performance.now();
+  try {
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: buildAuthHeaders(config.apiKey),
+      signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (!response.ok) {
+      // Status-only — never echo the upstream-controlled body to /health.
+      return {
+        healthy: false,
+        message: `Twenty health probe returned HTTP ${response.status}`,
+        latencyMs,
+      };
+    }
+    // Verify the 2xx is genuinely the Twenty OpenAPI document, not a SPA
+    // catch-all / login page that 200s for any path.
+    let body: { openapi?: unknown; components?: unknown };
+    try {
+      body = (await response.json()) as typeof body;
+    } catch {
+      return {
+        healthy: false,
+        message: "Twenty health probe got a non-JSON 2xx (base URL may not point at the Twenty REST API)",
+        latencyMs,
+      };
+    }
+    const looksLikeOpenApi =
+      !!body &&
+      typeof body === "object" &&
+      (typeof body.openapi === "string" ||
+        (typeof body.components === "object" && body.components !== null));
+    if (!looksLikeOpenApi) {
+      return {
+        healthy: false,
+        message: "Twenty health probe got a 2xx that is not the expected OpenAPI document (base URL may be misconfigured)",
+        latencyMs,
+      };
+    }
+    return { healthy: true, latencyMs };
+  } catch (err) {
+    // Transport-level error message (ECONNREFUSED / timeout / DNS) — locally
+    // generated, not upstream-controlled, so safe to surface.
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+
 // Read-only helpers — return the full upstream record shape with no
 // field subsetting. Custom Atlas fields (`atlasFirstSource`, `atlasIp`,
 // etc.) flow through automatically; any future workspace column appears

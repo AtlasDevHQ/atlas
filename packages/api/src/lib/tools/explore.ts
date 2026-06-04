@@ -454,9 +454,24 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
       // --- Default priority chain ---
 
       // Priority 1: Vercel Sandbox (Firecracker VM)
+      // Init failures fall through to the next backend in the chain, mirroring
+      // `tryCreateBackend` (the config-priority path). Without this local
+      // try/catch the throw escapes to the outer IIFE `.catch` below, which
+      // only invalidates the cache and rethrows — it does NOT degrade to
+      // nsjail/sidecar/just-bash that are sitting right there in the chain.
+      // SaaS is unaffected: it pins `sandbox.priority: ["vercel-sandbox"]` and
+      // takes the config-priority path above, which fails closed by design.
       if (useVercelSandbox()) {
-        const { createSandboxBackend } = await import("./explore-sandbox");
-        return createSandboxBackend(semanticRoot);
+        try {
+          const { createSandboxBackend } = await import("./explore-sandbox");
+          return await createSandboxBackend(semanticRoot);
+        } catch (err) {
+          const detail = errorMessage(err);
+          log.warn(
+            { error: detail },
+            "vercel-sandbox backend failed to initialize — falling through to next backend in default priority",
+          );
+        }
       }
 
       // Priority 2: nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail if init fails
@@ -482,9 +497,29 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
       // Priority 3: Sidecar service (HTTP-isolated microservice)
       // When ATLAS_SANDBOX_URL is set, sidecar is the intended backend (Railway).
       // Skips nsjail auto-detection entirely — no noisy namespace warnings.
+      // Same fall-through fix as the Vercel branch above: an init failure
+      // (e.g. malformed ATLAS_SANDBOX_URL) logs and degrades to the next
+      // backend instead of hard-failing the explore tool. We deliberately do
+      // NOT set the process-global `_sidecarFailed` flag here (#3196 review):
+      // that flag is for a *deliberate, permanent* mark (the startup health
+      // probe via markSidecarFailed). A transient init failure on this path
+      // should be retried on the next backend-cache resolution — the resolved
+      // backend is cached per semantic root, so a down sidecar isn't re-probed
+      // every request, and recovery happens when the cache is invalidated
+      // (invalidateExploreBackend). Pinning the flag here would strand the
+      // deployment on the weaker fallback until process restart even after the
+      // sidecar recovers.
       if (useSidecar()) {
-        const { createSidecarBackend } = await import("./explore-sidecar");
-        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
+        try {
+          const { createSidecarBackend } = await import("./explore-sidecar");
+          return await createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
+        } catch (err) {
+          const detail = errorMessage(err);
+          log.warn(
+            { error: detail },
+            "sidecar backend failed to initialize — falling through to next backend in default priority (retried on the next backend-cache resolution)",
+          );
+        }
       }
 
       // Priority 4: nsjail auto-detect (binary on PATH, graceful fallback)

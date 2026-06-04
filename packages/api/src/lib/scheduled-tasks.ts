@@ -567,10 +567,26 @@ export async function listTaskRuns(
 export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
   if (!hasInternalDB()) return [];
   try {
+    // Orphan guard (#3180): a plugin-owned task whose owning install row is
+    // gone must never be dispatched — otherwise it consumes a tick, a
+    // task_run row, and tokens before failing downstream. Exclude any task
+    // with a non-null plugin_id that has NO live workspace_plugins row
+    // matching on (catalog_id = plugin_id, workspace_id = org_id) — the exact
+    // pair the uninstall cleanup and orphan-reconcile sweep scope by (see
+    // lib/scheduler/orphan-task-reconcile.ts). Non-plugin tasks
+    // (plugin_id IS NULL) are always eligible.
     const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM scheduled_tasks
-       WHERE enabled = true AND next_run_at <= now()
-       ORDER BY next_run_at ASC`,
+      `SELECT st.* FROM scheduled_tasks st
+       WHERE st.enabled = true AND st.next_run_at <= now()
+         AND (
+           st.plugin_id IS NULL
+           OR EXISTS (
+             SELECT 1 FROM workspace_plugins wp
+             WHERE wp.catalog_id = st.plugin_id
+               AND wp.workspace_id = st.org_id
+           )
+         )
+       ORDER BY st.next_run_at ASC`,
     );
     return rows.map(rowToScheduledTask);
   } catch (err) {
@@ -603,13 +619,30 @@ export async function lockTaskForExecution(taskId: string): Promise<boolean> {
     const nextRun = computeNextRun(taskResult.data.cronExpression);
 
     // Atomic UPDATE: only succeeds if enabled AND next_run_at IS NOT NULL
-    // (prevents double-execution — second process sees next_run_at already set to future)
+    // (prevents double-execution — second process sees next_run_at already set to future).
+    //
+    // Orphan guard (#3180 / #3196 review): re-check plugin ownership HERE, not
+    // just at getTasksDueForExecution time. The tick selects due tasks, then
+    // locks + dispatches each in separate statements — so an uninstall that
+    // deletes the workspace_plugins row between the SELECT and this UPDATE
+    // would otherwise let an already-selected orphan acquire the lock and run
+    // once. Re-evaluating the same (catalog_id = plugin_id, workspace_id =
+    // org_id) predicate inside the lock UPDATE closes that TOCTOU window
+    // atomically: a task orphaned mid-tick fails to lock and is never dispatched.
     const rows = await internalQuery<{ id: string }>(
       `UPDATE scheduled_tasks SET
          last_run_at = now(),
          next_run_at = $1,
          updated_at = now()
        WHERE id = $2 AND enabled = true AND next_run_at IS NOT NULL
+         AND (
+           plugin_id IS NULL
+           OR EXISTS (
+             SELECT 1 FROM workspace_plugins wp
+             WHERE wp.catalog_id = scheduled_tasks.plugin_id
+               AND wp.workspace_id = scheduled_tasks.org_id
+           )
+         )
        RETURNING id`,
       [nextRun?.toISOString() ?? null, taskId],
     );

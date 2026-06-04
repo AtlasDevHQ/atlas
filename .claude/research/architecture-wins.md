@@ -2397,7 +2397,7 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 **Date:** 2026-06-04
 **Issue:** #3164, #3166
-**PR:** #PLACEHOLDER_PR
+**PR:** #3171
 
 **Problem:** Win #82 single-sourced tenant admin-ness on `member.role`, and PR #3162 (#3158) made Atlas's three *custom* admin guards (`changeUserRoleRoute` / `removeMembershipRoute` / `deleteUserRoute`) atomic against each other via a per-workspace `pg_advisory_xact_lock` (`withWorkspaceAdminLock`). Review found the invariant still had two holes the lock didn't cover:
 - **A second, unguarded mutation surface (#3164).** Better Auth's organization plugin exposes native `POST /organization/update-member-role` and `POST /organization/remove-member` through the managed-auth catch-all, granted to tenant `admin`/`owner` by `org-permissions.ts`. Those endpoints take *no* advisory lock, so a native removal could race a locked demotion and strip a workspace of its last admin/owner — the exact TOCTOU #3158 closed, reachable by a different door.

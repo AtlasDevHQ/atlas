@@ -199,6 +199,45 @@ export async function banUserDirect(opts: {
   return { found: true, banExpires };
 }
 
+/**
+ * Create a `platform_admin` user with a password, for the dev/staging seeds
+ * (#3159). The removed admin plugin's `createUser` accepted a `role` and set it
+ * directly; without it we create via Better Auth's core `signUpEmail` (which
+ * hashes the password and runs the normal create hooks — the admin plugin's
+ * createUser fired those too) and then promote the row directly, because `role`
+ * is an `input: false` additionalField and cannot be set through the create
+ * input. The caller is a trusted boot-time seed, not request input.
+ *
+ * Takes the loose `auth.api` surface (rather than importing `getAuthInstance`)
+ * so this module stays free of a cycle with `server.ts`.
+ *
+ * @returns the created user's id.
+ */
+export async function createPlatformAdminUser(
+  authApi: Record<string, unknown>,
+  opts: { email: string; password: string; name: string },
+): Promise<string> {
+  const signUpEmail = authApi.signUpEmail as
+    | ((o: {
+        body: { email: string; password: string; name: string };
+      }) => Promise<{ user?: { id?: string } } | undefined>)
+    | undefined;
+  if (!signUpEmail) {
+    throw new Error("createPlatformAdminUser: signUpEmail API unavailable on the auth instance");
+  }
+
+  const result = await signUpEmail({
+    body: { email: opts.email, password: opts.password, name: opts.name },
+  });
+  const userId = result?.user?.id;
+  if (!userId) {
+    throw new Error("createPlatformAdminUser: signUpEmail returned no user id");
+  }
+
+  await internalQuery(`UPDATE "user" SET role = 'platform_admin' WHERE id = $1`, [userId]);
+  return userId;
+}
+
 /** Lift a user's ban (clears banned/banReason/banExpires). */
 export async function unbanUserDirect(userId: string): Promise<void> {
   await internalQuery(

@@ -36,6 +36,7 @@ const {
   revokeUserSessionsDirect,
   isEffectivelyBanned,
   enforceBanOnSessionCreate,
+  createPlatformAdminUser,
 } = await import("@atlas/api/lib/auth/admin-user-ops");
 
 beforeEach(() => {
@@ -181,6 +182,46 @@ describe("removeUserDirect", () => {
   it("reports deleted:false when the user id does not exist", async () => {
     queryImpl = async () => []; // user delete matches zero rows
     expect(await removeUserDirect("ghost")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createPlatformAdminUser — core signUpEmail + direct role promotion (#3159)
+// ---------------------------------------------------------------------------
+
+describe("createPlatformAdminUser", () => {
+  it("creates via signUpEmail and promotes the row to platform_admin", async () => {
+    const signUpBodies: unknown[] = [];
+    const api = {
+      signUpEmail: async (o: { body: unknown }) => {
+        signUpBodies.push(o.body);
+        return { user: { id: "new-admin" } };
+      },
+    };
+    const id = await createPlatformAdminUser(api, {
+      email: "a@x.dev",
+      password: "pw-1234567890",
+      name: "Admin",
+    });
+    expect(id).toBe("new-admin");
+    // role is input:false → set by a direct UPDATE, not via the create body.
+    expect(signUpBodies[0]).toEqual({ email: "a@x.dev", password: "pw-1234567890", name: "Admin" });
+    const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
+    expect(update!.sql).toContain("role = 'platform_admin'");
+    expect(update!.params?.[0]).toBe("new-admin");
+  });
+
+  it("throws when signUpEmail is unavailable on the auth api", async () => {
+    await expect(createPlatformAdminUser({}, { email: "a@x.dev", password: "pw", name: "A" })).rejects.toThrow(
+      /signUpEmail API unavailable/,
+    );
+  });
+
+  it("throws when signUpEmail returns no user id", async () => {
+    const api = { signUpEmail: async () => ({ user: {} }) };
+    await expect(
+      createPlatformAdminUser(api, { email: "a@x.dev", password: "pw", name: "A" }),
+    ).rejects.toThrow(/no user id/);
   });
 });
 

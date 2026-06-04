@@ -50,6 +50,7 @@ import { Context, Data, Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 
 const log = createLogger("staging-seed");
 
@@ -239,32 +240,18 @@ async function createAdminUser(): Promise<string> {
   }
 
   const auth = await getAuth();
-  // Better Auth's typed `api` surface doesn't expose the admin/organization
-  // plugin endpoints, so reach them through the same loose cast the dev seed
-  // uses (`lib/auth/migrate.ts`).
+  // Better Auth's typed `api` surface doesn't expose the organization plugin's
+  // endpoints, so reach them through the same loose cast the dev seed uses
+  // (`lib/auth/migrate.ts`).
   const api = auth.api as Record<string, unknown>;
-  const createUser = api.createUser as
-    | ((opts: {
-        body: { email: string; password: string; name: string; role: string };
-      }) => Promise<{ user?: { id: string } } | undefined>)
-    | undefined;
-  if (!createUser) {
-    throw new Error("Staging seed: admin createUser API unavailable on the auth instance");
-  }
-
-  const result = await createUser({
-    body: {
-      email: STAGING_ADMIN_EMAIL,
-      password,
-      name: "Staging Admin",
-      role: "platform_admin",
-    },
+  // #3159 — the admin plugin's `createUser` (which accepted a `role`) was
+  // removed; `createPlatformAdminUser` creates via core signUpEmail + promotes
+  // the row to `platform_admin` directly (role is an input:false additionalField).
+  return createPlatformAdminUser(api, {
+    email: STAGING_ADMIN_EMAIL,
+    password,
+    name: "Staging Admin",
   });
-  const userId = result?.user?.id;
-  if (!userId) {
-    throw new Error("Staging seed: createUser returned no user id");
-  }
-  return userId;
 }
 
 /**

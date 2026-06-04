@@ -8,6 +8,7 @@
 
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
@@ -206,22 +207,19 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
     if (parseInt(String(userCount[0]?.count ?? "0"), 10) > 0) return;
 
     // ── 1. Create user ──────────────────────────────────────────────
-    const createUser = auth.api.createUser as (opts: {
-      body: { email: string; password: string; name: string; role: string };
-    }) => Promise<{ user?: { id: string } } | undefined>;
-
-    const result = await createUser({
-      body: {
+    // #3159 — the admin plugin's `createUser` (which accepted a `role`) was
+    // removed; create via core signUpEmail + promote to platform_admin directly
+    // (`role` is an input:false additionalField). The dev seed only runs when no
+    // users exist (idempotency check above).
+    let userId: string;
+    try {
+      userId = await createPlatformAdminUser(auth.api as Record<string, unknown>, {
         email: adminEmail,
         password: "atlas-dev",
         name: "Atlas Admin",
-        role: "platform_admin",
-      },
-    });
-
-    const userId = result?.user?.id;
-    if (!userId) {
-      log.warn("Dev seed: createUser succeeded but returned no user id");
+      });
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Dev seed: failed to create the dev admin user");
       return;
     }
 

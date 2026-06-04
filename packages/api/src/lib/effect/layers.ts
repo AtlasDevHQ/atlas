@@ -174,9 +174,9 @@ function withFiberDeathLog<A, E, R>(
 // fiber that raises an error log when no tick is observed in > 2× the
 // interval. A per-tick span would be redundant with that, so #2987 leaves
 // them on heartbeat + watchdog. Self-spanning module fibers
-// (`byot_catalog_refresh`, `openapi_install_rediscover`, the scheduler engine
-// `tick`/`task.run`) define their span inside their own module and so never
-// appear in either record here.
+// (`byot_catalog_refresh`, `openapi_install_rediscover`, `openapi_spec_refresh`,
+// the scheduler engine `tick`/`task.run`) define their span inside their own
+// module and so never appear in either record here.
 //
 // Span names follow the existing `atlas.<area>.<op>` dotted convention
 // (cf. `atlas.sql.execute`, `atlas.scheduler.task.run`, and the

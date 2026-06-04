@@ -342,6 +342,16 @@ export function createApiTestMocks(
         query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
       }) => Promise<unknown>,
     ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
+    // Multi-workspace variant (#3166) — same passthrough: the callback runs with
+    // a `tx.query` delegating to `mockInternalQuery`, so SQL-string-matching
+    // mocks drive the per-workspace count/role-read/delete queries. Real
+    // multi-lock serialization is covered by the real-Postgres test.
+    withWorkspaceAdminLocks: (
+      _orgIds: readonly string[],
+      fn: (tx: {
+        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+      }) => Promise<unknown>,
+    ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
     internalExecute: mockInternalExecute,
     getInternalDB: mock(() => ({})),
     closeInternalDB: mock(async () => {}),

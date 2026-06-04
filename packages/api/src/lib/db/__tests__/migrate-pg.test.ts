@@ -1549,6 +1549,307 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(rows[0]?.pillar).toBe("action");
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0120 — static-bot routing-id partial unique index (#3167)
+  //
+  // Closes the concurrent-install race: two DIFFERENT workspaces binding
+  // the SAME routing id (Telegram chat_id / Discord guild_id / Teams
+  // tenant_id / WhatsApp phone_number_id / gchat workspace_id) can no longer
+  // both persist. The losing writer hits a 23505 on
+  // `workspace_plugins_chat_routing_id_unique`, which the handlers map to the
+  // actionable "already connected elsewhere" error
+  // (`isRoutingIdUniqueViolation` keys on that exact index name).
+  //
+  // Carve-outs proved here mirror the migration's intent:
+  //   - gchat `my_customer` self-install alias is exempt (NULLIF → NULL,
+  //     DISTINCT in the index);
+  //   - the SAME routing value under two different platforms does NOT collide
+  //     (the leading `catalog_id` column scopes per platform);
+  //   - a disabled install frees its routing id for reuse (partial WHERE
+  //     enabled = true);
+  //   - a same-workspace reconnect UPSERT is idempotent (lands on its own
+  //     singleton row, routing value unchanged).
+  // ─────────────────────────────────────────────────────────────────────
+  describe("0120 static-bot routing-id uniqueness (#3167)", () => {
+    // Chat catalog rows aren't seeded by migrations (catalog-seeder runs at
+    // boot, not here), so seed every static-bot platform these tests exercise.
+    // ON CONFLICT DO NOTHING keeps it idempotent across this schema.
+    beforeAll(async () => {
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES
+           ('catalog:telegram', 'Telegram',    'telegram', 'chat', 'chat', 'static-bot'),
+           ('catalog:discord',  'Discord',     'discord',  'chat', 'chat', 'static-bot'),
+           ('catalog:teams',    'Microsoft Teams', 'teams', 'chat', 'chat', 'static-bot'),
+           ('catalog:whatsapp', 'WhatsApp',    'whatsapp', 'chat', 'chat', 'static-bot'),
+           ('catalog:gchat',    'Google Chat', 'gchat',    'chat', 'chat', 'static-bot')
+         ON CONFLICT (id) DO NOTHING`,
+      );
+    });
+
+    // One entry per static-bot CASE arm in the migration. Driving the
+    // rejection test off this list proves all five arms end-to-end against
+    // real Postgres — a wrong JSONB key in any arm (the CASE is the single
+    // source of the per-platform routing-key contract) would fail here. The
+    // `sample` values are deliberately NOT `my_customer` so gchat exercises
+    // the constrained (non-NULLIF) path; the alias carve-out is a separate test.
+    const PLATFORM_ROUTING_KEYS: ReadonlyArray<{
+      platform: string;
+      catalogId: string;
+      key: string;
+      sample: (stamp: string) => string;
+    }> = [
+      { platform: "Telegram", catalogId: "catalog:telegram", key: "chat_id", sample: (s) => `-1001${s.slice(0, 9)}` },
+      { platform: "Discord", catalogId: "catalog:discord", key: "guild_id", sample: (s) => `12${s.slice(0, 16)}` },
+      { platform: "Teams", catalogId: "catalog:teams", key: "tenant_id", sample: (s) => `tenant-${s}` },
+      { platform: "WhatsApp", catalogId: "catalog:whatsapp", key: "phone_number_id", sample: (s) => `10${s.slice(0, 12)}` },
+      { platform: "gchat", catalogId: "catalog:gchat", key: "workspace_id", sample: (s) => `C0${s.slice(0, 7)}` },
+    ];
+
+    /** Insert one chat install row. Throws on a routing-id unique violation. */
+    async function installChat(opts: {
+      id: string;
+      workspaceId: string;
+      catalogId: string;
+      config: Record<string, string>;
+      enabled?: boolean;
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, $5, NOW())`,
+        [
+          opts.id,
+          opts.workspaceId,
+          opts.catalogId,
+          JSON.stringify(opts.config),
+          opts.enabled ?? true,
+        ],
+      );
+    }
+
+    // One rejection test per platform — exercises every CASE arm end-to-end.
+    // (A loop, not it.each, so the assertion runs against real Postgres for
+    // each arm with the platform name in the test title.)
+    for (const p of PLATFORM_ROUTING_KEYS) {
+      it(`rejects a second workspace binding the same ${p.platform} ${p.key} with 23505 on the routing index (#3167)`, async () => {
+        const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+        const routingId = p.sample(stamp);
+        await installChat({
+          id: `wp-a-${p.platform}-${stamp}`,
+          workspaceId: `wsA-${p.platform}-${stamp}`,
+          catalogId: p.catalogId,
+          config: { [p.key]: routingId },
+        });
+
+        let err: { code?: string; constraint?: string } | null = null;
+        try {
+          await installChat({
+            id: `wp-b-${p.platform}-${stamp}`,
+            workspaceId: `wsB-${p.platform}-${stamp}`,
+            catalogId: p.catalogId,
+            config: { [p.key]: routingId },
+          });
+        } catch (e) {
+          err = e as { code?: string; constraint?: string };
+        }
+        expect(err?.code).toBe("23505");
+        // The handlers' `isRoutingIdUniqueViolation` keys on this exact name —
+        // a rename here without updating the helper would silently regress the
+        // error mapping back to a raw 500.
+        expect(err?.constraint).toBe("workspace_plugins_chat_routing_id_unique");
+      }, PG_TEST_TIMEOUT_MS);
+    }
+
+    it("allows a same-workspace reconnect UPSERT of its own chat_id — idempotent, no conflict (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const ws = `wsRecon-${stamp}`;
+      const chatId = `-100555${stamp.replace(/\D/g, "").slice(0, 6)}`;
+      await installChat({
+        id: `wp-r1-${stamp}`,
+        workspaceId: ws,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+      });
+      // Mirror the handler UPSERT exactly: ON CONFLICT on the singleton index
+      // lands on the existing row; the routing value is unchanged, so the
+      // routing index sees no NEW conflicting entry against another row.
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, 'catalog:telegram', $1, 'chat', $3::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
+         DO UPDATE SET config = EXCLUDED.config, enabled = true`,
+        [`wp-r2-${stamp}`, ws, JSON.stringify({ chat_id: chatId, display_name: "renamed" })],
+      );
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE workspace_id = $1 AND catalog_id = 'catalog:telegram'`,
+        [ws],
+      );
+      expect(rows[0]?.c).toBe(1);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("exempts the gchat 'my_customer' self-install alias — two workspaces store it without conflict (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      await installChat({
+        id: `wp-mc-a-${stamp}`,
+        workspaceId: `wsMcA-${stamp}`,
+        catalogId: "catalog:gchat",
+        config: { workspace_id: "my_customer" },
+      });
+      // NULLIF(config->>'workspace_id', 'my_customer') => NULL, which is
+      // DISTINCT in the index, so a second self-install must NOT conflict.
+      await installChat({
+        id: `wp-mc-b-${stamp}`,
+        workspaceId: `wsMcB-${stamp}`,
+        catalogId: "catalog:gchat",
+        config: { workspace_id: "my_customer" },
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE catalog_id = 'catalog:gchat'
+            AND config->>'workspace_id' = 'my_customer'
+            AND id LIKE $1`,
+        [`wp-mc-%-${stamp}`],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    // (The gchat arm of the rejection loop above already proves a REAL
+    // customer id — i.e. not `my_customer` — is constrained, the positive
+    // counterpart to the `my_customer` exemption test below.)
+
+    it("does NOT collide the same routing value across two different platforms (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const shared = `1234567${stamp.replace(/\D/g, "").slice(0, 8)}`;
+      await installChat({
+        id: `wp-tg-${stamp}`,
+        workspaceId: `wsTg-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: shared },
+      });
+      // Discord guild_id with the identical string — different catalog_id, so
+      // (catalog_id, value) differs and there is no conflict. The leading
+      // catalog_id column is what keeps routing values namespaced per platform.
+      await installChat({
+        id: `wp-dc-${stamp}`,
+        workspaceId: `wsDc-${stamp}`,
+        catalogId: "catalog:discord",
+        config: { guild_id: shared },
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins WHERE id IN ($1, $2)`,
+        [`wp-tg-${stamp}`, `wp-dc-${stamp}`],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("a disabled install frees its routing id — another workspace may then claim it (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const chatId = `-100777${stamp.replace(/\D/g, "").slice(0, 6)}`;
+      // Disabled row sits OUTSIDE the partial index (WHERE enabled = true).
+      await installChat({
+        id: `wp-dis-${stamp}`,
+        workspaceId: `wsDis-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+        enabled: false,
+      });
+      // Enabled install in a different workspace with the same chat_id — no
+      // conflict, because the disabled row isn't in the index.
+      await installChat({
+        id: `wp-en-${stamp}`,
+        workspaceId: `wsEn-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+        enabled: true,
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE catalog_id = 'catalog:telegram' AND config->>'chat_id' = $1`,
+        [chatId],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("scopes the index to pillar = 'chat' — an action-pillar row with a routing-key-shaped config does NOT collide (#3167)", async () => {
+      // Isolates the `pillar = 'chat'` half of the partial predicate (the
+      // disabled test above covers the `enabled = true` half). A row on the
+      // SAME catalog whose CASE arm matches (so it's only the pillar clause
+      // keeping it out of the index) must not conflict with an enabled chat
+      // row sharing the routing value. The denormalized `pillar = 'action'`
+      // on a telegram catalog row can't arise from the real install path, but
+      // it's the minimal way to exercise the pillar clause in isolation — if
+      // the migration dropped `pillar = 'chat'`, this would 23505.
+      const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+      const chatId = `-100888${stamp.slice(0, 6)}`;
+      await installChat({
+        id: `wp-chat-${stamp}`,
+        workspaceId: `wsChat-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+      });
+      // Raw insert with pillar = 'action' (installChat hardcodes 'chat').
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, 'catalog:telegram', $1, 'action', $3::jsonb, true, NOW())`,
+        [`wp-action-${stamp}`, `wsAction-${stamp}`, JSON.stringify({ chat_id: chatId })],
+      );
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE catalog_id = 'catalog:telegram' AND config->>'chat_id' = $1`,
+        [chatId],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("exempts a chat install whose routing key is absent — CASE yields NULL, which is DISTINCT (#3167)", async () => {
+      // Same NULL-distinctness mechanism the `my_customer` carve-out relies on:
+      // a telegram row with no `chat_id` produces a NULL index key, so two such
+      // rows never conflict. Documents this as intentional (not an accident).
+      const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+      await installChat({
+        id: `wp-nokey-a-${stamp}`,
+        workspaceId: `wsNoKeyA-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { display_name: "no-routing-key-a" },
+      });
+      await installChat({
+        id: `wp-nokey-b-${stamp}`,
+        workspaceId: `wsNoKeyB-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { display_name: "no-routing-key-b" },
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins WHERE id LIKE $1`,
+        [`wp-nokey-%-${stamp}`],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("creates the partial unique index with the expected predicate + CASE definition — drift guard (#3167)", async () => {
+      const { rows } = await pool.query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = current_schema() AND tablename = 'workspace_plugins'
+          ORDER BY indexname`,
+      );
+      const idx = rows.find((r) => r.indexname === "workspace_plugins_chat_routing_id_unique");
+      expect(idx).toBeDefined();
+      const def = idx?.indexdef ?? "";
+      // Pin the load-bearing pieces so a migration edit that drops the partial
+      // predicate, the NULLIF carve-out, or a platform's routing key fails here
+      // even when no behavioral test happens to exercise that exact arm.
+      expect(def).toMatch(/UNIQUE INDEX/i);
+      expect(def).toMatch(/WHERE .*enabled.*AND.*pillar = 'chat'/is);
+      expect(def).toMatch(/NULLIF/i);
+      for (const key of ["chat_id", "guild_id", "tenant_id", "phone_number_id", "workspace_id"]) {
+        expect(def).toContain(key);
+      }
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

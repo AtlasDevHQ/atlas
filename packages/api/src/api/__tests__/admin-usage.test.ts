@@ -109,6 +109,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     _orgId: string,
     fn: (tx: { query: (sql: string, params?: unknown[]) => Promise<unknown[]> }) => Promise<unknown>,
   ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQueryUsage(sql, params) }),
+  withWorkspaceAdminLocks: (
+    _orgIds: readonly string[],
+    fn: (tx: { query: (sql: string, params?: unknown[]) => Promise<unknown[]> }) => Promise<unknown>,
+  ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQueryUsage(sql, params) }),
   queryEffect: makeQueryEffectMock(mockInternalQueryUsage),
   internalExecute: mock(() => {}),
   getInternalDB: mock(() => ({})),

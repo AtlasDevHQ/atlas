@@ -169,4 +169,44 @@ describe("Auth catch-all route (/api/auth/*)", () => {
       expect(res.status).toBe(503);
     });
   });
+
+  // ----- #3164/#3166: native admin remove-user endpoint is blocked -----
+
+  describe("native admin remove-user endpoint (Codex P1 on #3171)", () => {
+    beforeEach(() => {
+      mockAuthMode = "managed";
+    });
+
+    it("refuses POST /api/auth/admin/remove-user with 403 + does NOT reach Better Auth", async () => {
+      let handlerCalled = false;
+      mockHandler = () => {
+        handlerCalled = true;
+        return Response.json({ ok: true }, { status: 200 });
+      };
+
+      const res = await app.fetch(makeRequest("POST", "/api/auth/admin/remove-user"));
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("forbidden");
+      expect(body.code).toBe("ATLAS_USE_ADMIN_API");
+      expect(String(body.message)).toContain("/api/v1/admin/users/{id}");
+      // The native delete must never reach Better Auth — that's the bypass.
+      expect(handlerCalled).toBe(false);
+    });
+
+    it("does NOT block a GET to the same path (only the mutating POST is the bypass)", async () => {
+      mockHandler = () => Response.json({ ok: true }, { status: 200 });
+      const res = await app.fetch(makeRequest("GET", "/api/auth/admin/remove-user"));
+      // GET isn't the delete verb — it falls through to Better Auth (which will
+      // 404/405 it). We only assert we didn't 403-block it ourselves.
+      expect(res.status).not.toBe(403);
+    });
+
+    it("still delegates other admin endpoints (e.g. list-users) to Better Auth", async () => {
+      mockHandler = () => Response.json({ users: [] }, { status: 200 });
+      const res = await app.fetch(makeRequest("POST", "/api/auth/admin/list-users"));
+      expect(res.status).toBe(200);
+    });
+  });
 });

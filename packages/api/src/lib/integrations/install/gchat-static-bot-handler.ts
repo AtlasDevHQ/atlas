@@ -76,6 +76,7 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.gchat");
 
@@ -92,25 +93,42 @@ export const GCHAT_SLUG: CatalogId = "gchat";
 export const GCHAT_CATALOG_ID = "catalog:gchat";
 
 /**
- * Cross-workspace ownership guard (#3154). The Pub/Sub round-trip proves the
- * customer-supplied service account can publish, but the Google Workspace
- * customer id (`workspace_id`) is a non-secret routing identifier — it rides
- * in every inbound Google Chat event envelope. Reject a `workspace_id` already
- * bound to a *different* Atlas workspace before persisting, otherwise a second
- * workspace can claim it and the read-side resolver in `executeQuery.ts`
+ * Surfaced when a Google Workspace customer id is already bound to a different
+ * workspace — by the pre-check below AND by `confirmInstall`'s catch when the
+ * migration-0120 partial unique index rejects a concurrent claim. Single
+ * source so both paths return identical, actionable text (#3167).
+ */
+const GCHAT_ROUTING_CONFLICT_MESSAGE =
+  "This Google Workspace is already connected to a different Atlas workspace. Each Google Workspace customer id can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.";
+
+/**
+ * Cross-workspace ownership guard (#3154 / #3167). The Pub/Sub round-trip
+ * proves the customer-supplied service account can publish, but the Google
+ * Workspace customer id (`workspace_id`) is a non-secret routing identifier —
+ * it rides in every inbound Google Chat event envelope. Reject a `workspace_id`
+ * already bound to a *different* Atlas workspace before persisting, otherwise a
+ * second workspace can claim it and the read-side resolver in `executeQuery.ts`
  * fail-closes on `rows.length > 1`, disabling BOTH workspaces. The
  * `workspace_id <> $3` filter (the installing Atlas workspace) excludes a
- * reconnect of the same workspace. Read-only pre-check — narrows the
- * cross-tenant window without being transactionally fused to the cap-gate
- * INSERT (first writer wins; the loser's fail-closed is recoverable).
+ * reconnect of the same workspace.
  *
- * The literal `my_customer` self-install alias is exempt: it is a
- * caller-relative reference (each Google Workspace admin's "my own tenant"),
- * NOT a globally unique customer id, so comparing it across workspaces would
- * falsely block every later self-install. Two different tenants legitimately
- * storing `my_customer` is a separate (pre-existing) non-routability concern —
- * the inbound resolver matches the *real* customer id from the event envelope,
- * never the literal alias — and is out of scope for this guard.
+ * This read-only pre-check catches the common case cheaply. The
+ * simultaneous-race case (two workspaces binding a never-before-seen customer
+ * id at the same instant) is now closed by the partial unique index from
+ * migration 0120 (#3167): the losing writer's UPSERT fails with a 23505 that
+ * `confirmInstall`'s catch maps back to {@link GCHAT_ROUTING_CONFLICT_MESSAGE},
+ * so both paths return the same error.
+ *
+ * The literal `my_customer` self-install alias is exempt — in BOTH layers. It
+ * is a caller-relative reference (each Google Workspace admin's "my own
+ * tenant"), NOT a globally unique customer id, so comparing it across
+ * workspaces would falsely block every later self-install. The pre-check
+ * short-circuits it below; the migration-0120 index excludes it via
+ * `NULLIF(config->>'workspace_id', 'my_customer')` (NULL keys are DISTINCT, so
+ * never conflict). Two different tenants legitimately storing `my_customer` is
+ * a separate (pre-existing) non-routability concern — the inbound resolver
+ * matches the *real* customer id from the event envelope, never the literal
+ * alias — and is out of scope for this guard.
  */
 async function assertWorkspaceIdUnboundElsewhere(
   gchatWorkspaceId: string,
@@ -133,8 +151,7 @@ async function assertWorkspaceIdUnboundElsewhere(
       "Google Chat install rejected — workspace_id already bound to a different workspace",
     );
     throw new GchatWorkspaceIdInvalidError({
-      message:
-        "This Google Workspace is already connected to a different Atlas workspace. Each Google Workspace customer id can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+      message: GCHAT_ROUTING_CONFLICT_MESSAGE,
     });
   }
 }
@@ -433,13 +450,15 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // The Pub/Sub round-trip proves the SA can publish, NOT that THIS
     // workspace owns the customer id (which is non-secret). Reject a
     // workspace_id already bound to a *different* workspace so a second
     // workspace can't claim it and collapse the read-side resolver onto a
     // `rows.length > 1` fail-closed. A reconnect is excluded by `workspace_id
-    // <> $3`.
+    // <> $3`. The simultaneous-race residual is closed by the migration-0120
+    // partial unique index, whose 23505 the cap-gate catch below maps to the
+    // same error (#3167).
     await assertWorkspaceIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3143, #3001) ──────────
@@ -476,6 +495,19 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
         },
       );
     } catch (err) {
+      if (isRoutingIdUniqueViolation(err)) {
+        // Another workspace claimed this customer id between our pre-check and
+        // our UPSERT; the migration-0120 partial unique index rejected us
+        // (#3167). Surface the same actionable error the pre-check returns
+        // rather than a raw 500 — first writer wins, we lost the race.
+        log.warn(
+          { workspaceId },
+          "Google Chat install rejected — workspace_id claimed by another workspace concurrently (unique index)",
+        );
+        throw new GchatWorkspaceIdInvalidError({
+          message: GCHAT_ROUTING_CONFLICT_MESSAGE,
+        });
+      }
       log.error(
         {
           workspaceId,

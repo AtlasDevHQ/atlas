@@ -405,6 +405,15 @@ function registerSalesforceOAuthHandler(): void {
  *
  * When the catalog has telegram disabled (or omitted), the env-unset
  * branch stays at `info` — operator intentionally hasn't opted in.
+ *
+ * `TELEGRAM_WEBHOOK_SECRET` is required by the AdapterRegistry (the chat
+ * adapter verifies it against the `x-telegram-bot-api-secret-token` header
+ * on every inbound update — mandatory since #3154 GAP 3) but is NOT required
+ * here — the install handler itself doesn't verify webhooks. An operator who
+ * wires `TELEGRAM_BOT_TOKEN` but forgets the webhook secret gets a working
+ * install flow + a non-functional (forgery-safe) webhook receive path; the
+ * AdapterRegistry's missing-env log is the signal for that gap. This mirrors
+ * Discord's `DISCORD_PUBLIC_KEY` split below.
  */
 function registerTelegramStaticBotHandler(): void {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;

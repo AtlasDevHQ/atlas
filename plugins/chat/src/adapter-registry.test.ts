@@ -161,11 +161,14 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
     expect(debugs.some((l) => l.msg.includes("install model has no event-loop adapter"))).toBe(true);
   });
 
-  it("registers Telegram when catalog has telegram static-bot + enabled AND TELEGRAM_BOT_TOKEN is set (1.5.3 #2748)", () => {
+  it("registers Telegram when catalog has telegram static-bot + enabled AND both TELEGRAM_BOT_TOKEN + TELEGRAM_WEBHOOK_SECRET are set (1.5.3 #2748; secret mandatory #3154)", () => {
     const { logger, infos } = makeLogger();
     const result = buildChatAdapterRegistry({
       catalog: [entry({ slug: "telegram", install_model: "static-bot", enabled: true })],
-      env: { TELEGRAM_BOT_TOKEN: "1234:fake-telegram-token-for-test" },
+      env: {
+        TELEGRAM_BOT_TOKEN: "1234:fake-telegram-token-for-test",
+        TELEGRAM_WEBHOOK_SECRET: "fake-webhook-secret-for-test",
+      },
       logger,
     });
     expect(result.adapters.telegram).toBeDefined();
@@ -178,12 +181,30 @@ describe("buildChatAdapterRegistry — catalog filters", () => {
     const { logger, errors } = makeLogger();
     const result = buildChatAdapterRegistry({
       catalog: [entry({ slug: "telegram", install_model: "static-bot", enabled: true })],
-      env: {},
+      env: { TELEGRAM_WEBHOOK_SECRET: "fake-webhook-secret-for-test" },
       logger,
     });
     expect(result.adapters.telegram).toBeUndefined();
     expect(result.diagnostics.missingCredSlugs).toEqual(["telegram"]);
     expect(errors.some((l) => l.msg.includes("required env vars missing"))).toBe(true);
+  });
+
+  it("skips Telegram + logs error when TELEGRAM_WEBHOOK_SECRET is missing — the webhook secret is mandatory (#3154 GAP 3)", () => {
+    // Telegram's update envelope is unsigned and chat_ids are non-secret, so
+    // without the secret-token the webhook is forgeable. The builder fails
+    // closed (returns null) rather than registering a forgery-exposed adapter
+    // — mirroring Discord's mandatory DISCORD_PUBLIC_KEY gate.
+    const { logger, errors } = makeLogger();
+    const result = buildChatAdapterRegistry({
+      catalog: [entry({ slug: "telegram", install_model: "static-bot", enabled: true })],
+      env: { TELEGRAM_BOT_TOKEN: "1234:fake-telegram-token-for-test" },
+      logger,
+    });
+    expect(result.adapters.telegram).toBeUndefined();
+    expect(result.diagnostics.missingCredSlugs).toEqual(["telegram"]);
+    const missingErr = errors.find((l) => l.msg.includes("required env vars missing"));
+    expect(missingErr).toBeDefined();
+    expect((missingErr?.payload.requiredEnv as string[]).includes("TELEGRAM_WEBHOOK_SECRET")).toBe(true);
   });
 
   it("registers Discord when DISCORD_BOT_TOKEN + DISCORD_CLIENT_ID + DISCORD_PUBLIC_KEY are present (Phase D — #2749)", () => {

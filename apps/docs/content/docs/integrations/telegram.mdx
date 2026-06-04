@@ -33,18 +33,27 @@ a username (the username must end in `bot`). BotFather replies with a
 Treat the bot token as a secret. Anyone with the token can send and
 receive messages as your bot.
 
-### 2. Set the bot token env var
+### 2. Set the env vars
 
-Set `TELEGRAM_BOT_TOKEN` on every Atlas API service in your deploy.
+Set **both** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` on every
+Atlas API service in your deploy.
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmnOPQ
+TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 32)   # any random string, 1–256 chars
 ```
 
-Optionally also set `TELEGRAM_WEBHOOK_SECRET` to a random string. When
-present, Atlas verifies the `x-telegram-bot-api-secret-token` header
-on every incoming webhook, rejecting any request that doesn't match.
-You'll pass the same value to Telegram's `setWebhook` call in step 4.
+`TELEGRAM_WEBHOOK_SECRET` is **required**, not optional. Atlas verifies the
+`x-telegram-bot-api-secret-token` header on every incoming webhook against
+this value and rejects any request that doesn't match. Telegram's update
+envelope is unsigned and a `chat_id` is non-secret (it appears in every
+message), so without the secret anyone who learns a connected `chat_id` could
+POST a forged update to your public webhook URL and trigger an agent run. To
+fail closed, Atlas does **not** register the Telegram adapter at all when the
+secret is unset — inbound Telegram traffic is ignored until you set it (the
+boot log emits an AdapterRegistry missing-env warning). This matches Discord's
+mandatory Ed25519 signature check and WhatsApp / Google Chat's mandatory inbound
+auth. You'll pass the same value to Telegram's `setWebhook` call in step 4.
 
 ### 3. Enable the catalog row
 
@@ -64,7 +73,7 @@ custom configs, mirror the shape:
 }
 ```
 
-Once the env var is set and the catalog row is enabled, the boot log
+Once both env vars are set and the catalog row is enabled, the boot log
 should include:
 
 ```
@@ -82,7 +91,7 @@ events by calling its `setWebhook` API once:
 ```bash
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -d "url=https://api.your-atlas-deploy.example.com/api/plugins/chat-interaction/webhooks/telegram" \
-  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"  # only if set in step 2
+  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"  # required — must match the env var from step 2
 ```
 
 Verify with:

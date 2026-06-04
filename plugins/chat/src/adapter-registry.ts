@@ -182,12 +182,22 @@ const SLACK_BUILDER: ChatAdapterBuilder<SlackAdapter> = {
 
 /**
  * Telegram — first static-bot Platform to ship a real adapter (1.5.3
- * #2748 — keystone of Phase D). Single required env var: the operator-
- * shared bot token from @BotFather. Optional `TELEGRAM_WEBHOOK_SECRET`
- * adds `x-telegram-bot-api-secret-token` verification on the webhook
- * receive path; we don't gate the adapter on it (Telegram's webhook
- * envelope already includes the bot id, and dropping the secret is
- * Telegram's documented "I don't need extra verification" posture).
+ * #2748 — keystone of Phase D). Two required env vars:
+ *   - `TELEGRAM_BOT_TOKEN` — the operator-shared bot token from @BotFather.
+ *   - `TELEGRAM_WEBHOOK_SECRET` — the shared secret Telegram echoes back in
+ *     the `x-telegram-bot-api-secret-token` header on every update, verified
+ *     by the adapter on the webhook receive path.
+ *
+ * The webhook secret is **mandatory** (#3154 GAP 3). Telegram's update
+ * envelope is unsigned and a `chat_id` is non-secret (it leaks in every
+ * message), so without secret-token verification anyone who knows a bound
+ * `chat_id` can POST a forged update to the public webhook URL and trigger an
+ * agent run. Treating the secret as optional made Telegram the outlier in the
+ * static-bot family — Discord (Ed25519 `DISCORD_PUBLIC_KEY`) and Google
+ * Chat / WhatsApp (Pub/Sub / HMAC) all require mandatory inbound auth. Gating
+ * the builder on the secret (returns `null` without it, mirroring Discord's
+ * public-key gate) makes a forgery-exposed deploy fail closed: the adapter
+ * isn't built, so no inbound Telegram traffic is processed at all.
  *
  * Per-Workspace `chat_id` routing lives in `workspace_plugins.config`
  * (written by `TelegramStaticBotInstallHandler`); the adapter itself
@@ -197,13 +207,17 @@ const SLACK_BUILDER: ChatAdapterBuilder<SlackAdapter> = {
 const TELEGRAM_BUILDER: ChatAdapterBuilder<Adapter> = {
   slug: "telegram",
   platform: "telegram",
-  requiredEnv: ["TELEGRAM_BOT_TOKEN"],
+  requiredEnv: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_SECRET"],
   build(env) {
     const botToken = env.TELEGRAM_BOT_TOKEN;
-    if (!botToken) return null;
+    const secretToken = env.TELEGRAM_WEBHOOK_SECRET;
+    // Both are mandatory — a missing secret leaves the webhook forgeable, so
+    // fail closed by not building the adapter (the AdapterRegistry's
+    // missing-env diagnostic logs the gap). See #3154 GAP 3.
+    if (!botToken || !secretToken) return null;
     const config: TelegramAdapterConfig = {
       botToken,
-      ...(env.TELEGRAM_WEBHOOK_SECRET ? { secretToken: env.TELEGRAM_WEBHOOK_SECRET } : {}),
+      secretToken,
     };
     return createTelegramAdapter(config);
   },

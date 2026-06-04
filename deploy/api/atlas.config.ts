@@ -257,10 +257,14 @@ export default defineConfig({
     },
     // Telegram — first static-bot Platform to ship a real install
     // handler (1.5.3 #2748 — keystone slice for Phase D). The operator
-    // wires a single shared `TELEGRAM_BOT_TOKEN` (from @BotFather);
-    // each customer admin supplies the numeric `chat_id` of the chat
-    // they want Atlas to listen on. `TelegramStaticBotInstallHandler`
-    // verifies reachability via `getChat` before persisting.
+    // wires a shared `TELEGRAM_BOT_TOKEN` (from @BotFather) PLUS a
+    // mandatory `TELEGRAM_WEBHOOK_SECRET` (#3154 GAP 3 — the chat adapter
+    // verifies it against the `x-telegram-bot-api-secret-token` header and
+    // is NOT registered without it, so a missing secret fails closed rather
+    // than leaving the unsigned webhook forgeable). Each customer admin
+    // supplies the numeric `chat_id` of the chat they want Atlas to listen
+    // on. `TelegramStaticBotInstallHandler` verifies reachability via
+    // `getChat` before persisting.
     //
     // `chat_id` is NOT marked `secret: true` — Telegram chat ids are
     // routing identifiers (signed integers) that the Bot API leaks

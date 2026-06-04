@@ -15,7 +15,7 @@ The platform admin console provides operators with a unified view across all wor
 
 ## Platform Admin Role
 
-The `platform_admin` role is a user-level role distinct from workspace admin. It uses Better Auth's admin plugin `user.role` field — the same mechanism as the existing `admin` role but with elevated privileges.
+The `platform_admin` role is a user-level role distinct from workspace admin. It is the only value stored in Better Auth's admin plugin `user.role` field; tenant admin-ness (`member` / `admin` / `owner`) lives in `member.role` per workspace (#2890).
 
 | Role | Scope | Purpose |
 |------|-------|---------|

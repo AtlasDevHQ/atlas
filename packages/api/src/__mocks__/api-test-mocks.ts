@@ -331,6 +331,17 @@ export function createApiTestMocks(
         try: () => mockInternalQuery(sql, params),
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }),
+    // The real helper opens a transaction + advisory lock on a dedicated pool
+    // connection (untestable with a mock pool). Here it just runs the callback
+    // with a `tx.query` that delegates to `mockInternalQuery`, so the SAME
+    // SQL-string-matching mocks drive the guard's count/role-read/mutation
+    // queries. Real serialization is covered by the real-Postgres test.
+    withWorkspaceAdminLock: (
+      _orgId: string,
+      fn: (tx: {
+        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+      }) => Promise<unknown>,
+    ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
     internalExecute: mockInternalExecute,
     getInternalDB: mock(() => ({})),
     closeInternalDB: mock(async () => {}),

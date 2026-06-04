@@ -213,9 +213,20 @@ describe("Org-scoped user write operations (#983)", () => {
     it("platform admin can change role for a user in their active workspace", async () => {
       // #2890: role changes write member.role, so even a platform admin acts
       // within an active workspace (verifyOrgMembership still bypasses the
-      // membership check, but the write is org-scoped).
+      // membership check, but the write is org-scoped). #3157: when the target
+      // is a member of the active workspace, resolution uses it — assert the
+      // UPDATE targets org-1, not some other resolved org.
       setPlatformAdmin("org-1");
-      mockMembershipFor("user-in-any-org");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        if (/update member/i.test(sql)) {
+          expect(params).toEqual(["member", "user-in-any-org", "org-1"]);
+          return [{ userId: "user-in-any-org" }];
+        }
+        if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
+          return params?.[0] === "user-in-any-org" ? [{ userId: "user-in-any-org" }] : [];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
@@ -224,15 +235,119 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(memberRoleUpdateCount()).toBeGreaterThan(0);
     });
 
-    it("requires an active workspace — platform admin with no active org gets 400", async () => {
-      setPlatformAdmin();
+    // #3157 — a platform admin on /platform/users targets users cross-tenant,
+    // so the role write must resolve the TARGET's workspace, not the caller's
+    // active one. Before #3157 a platform admin with no active org got a 400
+    // ("select an active workspace"); now the target's membership is resolved.
+    it("platform admin with no active org auto-resolves a single-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) {
+          // The write targets the RESOLVED workspace (org-7), not the absent
+          // active one.
+          expect(params).toEqual(["admin", "user-x", "org-7"]);
+          return [{ userId: "user-x" }];
+        }
+        // Membership resolution — exactly one workspace.
+        if (s.includes("left join organization")) return [{ organizationId: "org-7", name: "Org 7" }];
+        if (s.includes("count(*)")) return [{ count: "2" }]; // promotion, not a demotion
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-x", role: "member" }];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
+        adminRequest("PATCH", "/api/v1/admin/users/user-x/role", { role: "admin" }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("platform admin gets 404 for a target that belongs to no workspace (#3157)", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.toLowerCase().includes("left join organization")) return []; // no memberships
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/ghost/role", { role: "member" }),
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("not_found");
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("platform admin gets 400 workspace_ambiguous with candidates for a multi-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org → cannot shortcut to the active workspace
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.toLowerCase().includes("left join organization")) {
+          return [
+            { organizationId: "org-a", name: "Acme" },
+            { organizationId: "org-b", name: "Globex" },
+          ];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", { role: "admin" }),
       );
       expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        workspaces: Array<{ id: string; name: string | null }>;
+      };
+      expect(body.error).toBe("workspace_ambiguous");
+      expect(body.workspaces).toEqual([
+        { id: "org-a", name: "Acme" },
+        { id: "org-b", name: "Globex" },
+      ]);
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("platform admin honors an explicit organizationId for a multi-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org; the page passes the picked workspace
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) {
+          // The write is scoped to the EXPLICIT workspace, not the caller's.
+          expect(params).toEqual(["admin", "multi", "org-b"]);
+          return [{ userId: "multi" }];
+        }
+        if (s.includes("count(*)")) return [{ count: "2" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "multi", role: "member" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", {
+          role: "admin",
+          organizationId: "org-b",
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("platform admin gets 404 for an explicit workspace the target isn't a member of (#3157)", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async () => []); // not a member anywhere
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", {
+          role: "admin",
+          organizationId: "org-z",
+        }),
+      );
+      expect(res.status).toBe(404);
       const body = await res.json() as { error: string };
-      expect(body.error).toBe("invalid_request");
+      expect(body.error).toBe("not_found");
       expect(memberRoleUpdateCount()).toBe(0);
     });
 
@@ -514,6 +629,43 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
     });
 
+    // Owner-rank guard (mirrors changeUserRoleRoute): a workspace admin must not
+    // be able to remove the owner's membership, even when a co-admin remains.
+    it("workspace admin cannot remove the workspace owner (rank guard)", async () => {
+      setWorkspaceAdmin("org-1");
+      let deleteCalled = false;
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "owner" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "3" }]; // co-admins remain
+        if (sql.includes("DELETE FROM member")) { deleteCalled = true; return [{ id: "mem-1" }]; }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/the-owner/membership"),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("forbidden");
+      expect(body.message).toMatch(/owner/);
+      expect(deleteCalled).toBe(false);
+    });
+
+    it("workspace owner can remove another owner when a co-admin remains", async () => {
+      setWorkspaceOwner("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "owner" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "1" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/co-owner/membership"),
+      );
+      expect(res.status).toBe(200);
+    });
+
     it("emits logAdminAction with user.remove_from_workspace action type", async () => {
       setWorkspaceAdmin("org-1");
       mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
@@ -606,6 +758,30 @@ describe("Org-scoped user write operations (#983)", () => {
       const body = await res.json() as { message: string };
       expect(body.message).toMatch(/last admin/);
       expect(mockRemoveUser).not.toHaveBeenCalled();
+    });
+
+    // #3158 — the guard-passing delete: target is an admin/owner of the active
+    // workspace but a co-admin remains (count > 1), so the guard passes and the
+    // global account delete (removeUser) MUST run. The guard removes the user
+    // from the active workspace under the lock, then removeUser runs after the
+    // lock releases. Guards against a regression that returns "ok"/403 without
+    // actually deleting the account.
+    it("deletes an admin when a co-admin remains, invoking removeUser", async () => {
+      setPlatformAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (s.includes("count(*)")) return [{ count: "2" }]; // co-admin remains
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-x", role: "admin" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/user-x"),
+      );
+      expect(res.status).toBe(200);
+      expect(mockRemoveUser).toHaveBeenCalledTimes(1);
     });
   });
 

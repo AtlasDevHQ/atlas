@@ -1841,6 +1841,91 @@ export async function setWorkspaceRegion(
 }
 
 /**
+ * Numeric namespace for the per-workspace last-admin advisory lock — the
+ * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Postgres
+ * keeps the single-arg `pg_advisory_lock(bigint)` and two-arg `(int4, int4)`
+ * lock spaces fully disjoint, so this can never collide with any single-arg
+ * user. The only two-arg peers are the chat-install gate (`3001`) and
+ * `lead-outbox` (`2870`); `3158 ≠ 3001 ≠ 2870` keeps all three disjoint. Value
+ * is this guard's issue number (#3158).
+ */
+const LAST_ADMIN_LOCK_NAMESPACE = 3158;
+
+/** Query bound to the {@link withWorkspaceAdminLock} transaction connection. */
+export interface WorkspaceAdminLockTx {
+  query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+}
+
+/**
+ * Run `fn` inside a transaction holding a per-workspace advisory lock, so every
+ * "last admin/owner" guard for the same workspace serializes. Without it, two
+ * concurrent demotions — or a demote racing a membership removal / user delete —
+ * each read the OTHER admin as still present in their own uncommitted snapshot
+ * and both succeed, stripping the workspace of its last admin/owner (#3158).
+ *
+ * A plain `UPDATE ... WHERE EXISTS (another admin)` does NOT close this window
+ * under READ COMMITTED: the EXISTS subquery takes no row lock, so two demotions
+ * of DIFFERENT admins never conflict. The count (the decision) and the mutation
+ * must both run while a shared lock is held.
+ *
+ * Advisory lock — not `SELECT ... FOR UPDATE` on the admin rows — because the
+ * user-delete guard mutates through Better Auth's `removeUser` on a SEPARATE
+ * connection; row locks this transaction held on the rows `removeUser` deletes
+ * would deadlock. The advisory lock serializes the *decision* across all three
+ * guarded paths (role change / membership removal / user delete) without
+ * locking the member rows themselves. Mirrors the chat-install gate (#3001).
+ *
+ * The callback's count + role re-read MUST go through `tx.query` (the locked
+ * connection) to be transaction-consistent — a stray `internalQuery` would land
+ * on a different pooled connection, outside the lock. Throwing from the callback
+ * rolls back and re-throws so the caller surfaces a 5xx. Always uses the raw
+ * pool (a dedicated transaction connection), not the shared `_sqlClient` — the
+ * same manual BEGIN/COMMIT/ROLLBACK + destroy-on-failed-rollback mechanics as
+ * the raw-pool fallback in {@link cascadeWorkspaceDelete} and the chat-install
+ * gate.
+ */
+export async function withWorkspaceAdminLock<T>(
+  orgId: string,
+  fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
+): Promise<T> {
+  const client = await getInternalDB().connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't poison
+  // the next borrower (matches cascadeWorkspaceDelete).
+  let rollbackErr: Error | null = null;
+  const tx: WorkspaceAdminLockTx = {
+    query: async <R extends Record<string, unknown>>(sql: string, params?: unknown[]) => {
+      const res = await client.query(sql, params);
+      return res.rows as R[];
+    },
+  };
+  try {
+    await client.query("BEGIN");
+    // Transaction-scoped advisory lock keyed on the workspace; released
+    // automatically on COMMIT/ROLLBACK. hashtext maps the text org id to the
+    // int4 the lock takes — a cross-workspace hash collision only costs extra
+    // serialization, never correctness.
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      LAST_ADMIN_LOCK_NAMESPACE,
+      orgId,
+    ]);
+    const result = await fn(tx);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { orgId, err: rollbackErr.message },
+        "ROLLBACK failed during withWorkspaceAdminLock — client will be destroyed",
+      );
+    });
+    throw err;
+  } finally {
+    client.release(rollbackErr ?? undefined);
+  }
+}
+
+/**
  * Cascading soft-delete cleanup for a workspace (transactional):
  * - Soft-deletes conversations (sets deleted_at)
  * - Hard-deletes org-scoped semantic entities, learned patterns, and query suggestions

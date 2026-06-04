@@ -62449,7 +62449,7 @@
           "Admin — Users"
         ],
         "summary": "Change user role",
-        "description": "Changes a user's role. Cannot change own role or demote the last admin.",
+        "description": "Changes a user's role (writes the org plugin's `member.role`). Cannot change own role or demote the workspace's last admin/owner. A `platform_admin` caller targeting a user from `/platform/users` may pass an optional `organizationId` to pick the workspace; a single-workspace target resolves automatically, a multi-workspace target returns 400 `workspace_ambiguous` with the candidate workspaces (#3157).",
         "parameters": [
           {
             "schema": {
@@ -62482,7 +62482,7 @@
             }
           },
           "400": {
-            "description": "Invalid role",
+            "description": "Invalid role or ambiguous target workspace",
             "content": {
               "application/json": {
                 "schema": {
@@ -62496,6 +62496,27 @@
                     },
                     "requestId": {
                       "type": "string"
+                    },
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name"
+                        ]
+                      }
                     }
                   },
                   "required": [

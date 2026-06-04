@@ -105,6 +105,10 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     makeMockInternalDBShimLayer(mockInternalQueryUsage, { available: mockHasInternalDB }),
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQueryUsage,
+  withWorkspaceAdminLock: (
+    _orgId: string,
+    fn: (tx: { query: (sql: string, params?: unknown[]) => Promise<unknown[]> }) => Promise<unknown>,
+  ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQueryUsage(sql, params) }),
   queryEffect: makeQueryEffectMock(mockInternalQueryUsage),
   internalExecute: mock(() => {}),
   getInternalDB: mock(() => ({})),

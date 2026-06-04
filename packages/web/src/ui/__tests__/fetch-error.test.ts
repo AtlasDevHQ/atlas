@@ -119,6 +119,48 @@ describe("extractFetchError", () => {
     const err = await extractFetchError(res);
     expect(err.enrollmentUrl).toBeUndefined();
   });
+
+  // #3157 — `workspace_ambiguous` 400 carries the candidate workspaces the
+  // /platform/users picker is built from.
+  test("extracts workspaces alongside workspace_ambiguous code", async () => {
+    const res = mockResponse(400, {
+      error: "workspace_ambiguous",
+      message: "This user belongs to 2 workspaces.",
+      requestId: "req-1",
+      workspaces: [
+        { id: "org-a", name: "Acme" },
+        { id: "org-b", name: null },
+      ],
+    });
+    const err = await extractFetchError(res);
+    expect(err.code).toBe("workspace_ambiguous");
+    expect(err.workspaces).toEqual([
+      { id: "org-a", name: "Acme" },
+      { id: "org-b", name: null },
+    ]);
+  });
+
+  test("drops malformed workspace entries (missing/invalid id or name)", async () => {
+    const res = mockResponse(400, {
+      error: "workspace_ambiguous",
+      message: "x",
+      workspaces: [
+        { id: "org-a", name: "Acme" }, // valid
+        { id: 42, name: "bad-id" }, // non-string id → dropped
+        { name: "no-id" }, // missing id → dropped
+        { id: "org-c", name: 7 }, // non-string/non-null name → dropped
+        "not-an-object", // → dropped
+      ],
+    });
+    const err = await extractFetchError(res);
+    expect(err.workspaces).toEqual([{ id: "org-a", name: "Acme" }]);
+  });
+
+  test("omits workspaces when the field is absent", async () => {
+    const res = mockResponse(400, { error: "invalid_request", message: "Invalid role." });
+    const err = await extractFetchError(res);
+    expect(err.workspaces).toBeUndefined();
+  });
 });
 
 describe("friendlyError", () => {

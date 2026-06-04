@@ -307,6 +307,23 @@ export const resolveRegionDatabaseUrl = (
       return null;
     }
 
+    // `databaseUrl` is now optional on `RegionConfig` (#3176) so that an
+    // unset/empty NON-claimed region URL can't abort boot fleet-wide. If a
+    // workspace is keyed to a region whose URL isn't configured on THIS api
+    // instance, we genuinely can't resolve its residency DB here — return null
+    // (same contract as the "region no longer configured" branch above) so the
+    // caller falls through rather than handing an empty connection string to a
+    // pool. The instance that actually claims `region` boots with a valid URL
+    // (enforced by `RegionGuardLive`), so this only fires for cross-region
+    // lookups on a box that doesn't serve that region.
+    if (!regionConfig.databaseUrl) {
+      log.error(
+        { workspaceId, region, configuredRegions: Object.keys(config.residency.regions) },
+        "Workspace assigned to a region whose databaseUrl is not configured on this API instance — cannot resolve residency routing; falling through",
+      );
+      return null;
+    }
+
     return {
       databaseUrl: regionConfig.databaseUrl,
       datasourceUrl: regionConfig.datasourceUrl,

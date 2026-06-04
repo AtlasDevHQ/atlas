@@ -713,10 +713,14 @@ describe("buildAppLayer", () => {
   test("buildAppLayer wires InternalDbGuardLive — missing DATABASE_URL fails the layer in SaaS", async () => {
     const savedDb = process.env.DATABASE_URL;
     const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    const savedProvider = process.env.ATLAS_PROVIDER;
     delete process.env.DATABASE_URL;
     // Provide a valid encryption key so EncryptionKeyGuardLive doesn't
     // also fail and hide the InternalDbGuardLive failure.
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    // Satisfy ProviderKeyGuardLive (#3178) with a keyless provider so its
+    // failure doesn't mix into the cause this test asserts on.
+    process.env.ATLAS_PROVIDER = "ollama";
 
     try {
       const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
@@ -736,6 +740,8 @@ describe("buildAppLayer", () => {
       if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
       if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
+      if (savedProvider !== undefined) process.env.ATLAS_PROVIDER = savedProvider;
+      else delete process.env.ATLAS_PROVIDER;
     }
   });
 
@@ -749,11 +755,13 @@ describe("buildAppLayer", () => {
     const savedDb = process.env.DATABASE_URL;
     const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
     const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+    const savedProvider = process.env.ATLAS_PROVIDER;
     // Satisfy the other SaaS guards so the failure cause carries
-    // exclusively the rate-limit error — not the encryption-key or
-    // internal-DB error from a sibling guard firing first.
+    // exclusively the rate-limit error — not the encryption-key,
+    // internal-DB, or provider-key error from a sibling guard firing first.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    process.env.ATLAS_PROVIDER = "ollama"; // keyless provider — satisfies ProviderKeyGuardLive
     delete process.env.ATLAS_RATE_LIMIT_RPM;
 
     try {
@@ -774,6 +782,53 @@ describe("buildAppLayer", () => {
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
       if (savedRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = savedRpm;
       else delete process.env.ATLAS_RATE_LIMIT_RPM;
+      if (savedProvider !== undefined) process.env.ATLAS_PROVIDER = savedProvider;
+      else delete process.env.ATLAS_PROVIDER;
+    }
+  });
+
+  // #3178 — same canary shape as the two guards above. Without this end-to-end
+  // assertion a future merge that drops `providerKeyGuardLayer` from
+  // `Layer.mergeAll(...)` would still pass the unit tests in saas-guards.test.ts
+  // (which provide the guard Layer directly). Boot the full app layer in SaaS
+  // with a configured provider whose key is absent and assert the tagged error
+  // reaches the boot Layer's failure channel.
+  test("buildAppLayer wires ProviderKeyGuardLive — missing provider key fails the layer in SaaS", async () => {
+    const savedDb = process.env.DATABASE_URL;
+    const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+    const savedProvider = process.env.ATLAS_PROVIDER;
+    const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    // Satisfy the sibling guards so the cause carries exclusively the
+    // provider-key error.
+    process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    process.env.ATLAS_RATE_LIMIT_RPM = "300";
+    process.env.ATLAS_PROVIDER = "anthropic";
+    delete process.env.ANTHROPIC_API_KEY;
+
+    try {
+      const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("ProviderKeyMissingError");
+    } finally {
+      if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
+      else delete process.env.DATABASE_URL;
+      if (savedKeys !== undefined) process.env.ATLAS_ENCRYPTION_KEYS = savedKeys;
+      else delete process.env.ATLAS_ENCRYPTION_KEYS;
+      if (savedRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = savedRpm;
+      else delete process.env.ATLAS_RATE_LIMIT_RPM;
+      if (savedProvider !== undefined) process.env.ATLAS_PROVIDER = savedProvider;
+      else delete process.env.ATLAS_PROVIDER;
+      if (savedAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = savedAnthropic;
+      else delete process.env.ANTHROPIC_API_KEY;
     }
   });
 

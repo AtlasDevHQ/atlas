@@ -45,6 +45,8 @@ describe("SAAS_ENV_KEYS", () => {
       ATLAS_ENCRYPTION_KEY: undefined,
       BETTER_AUTH_SECRET: undefined,
       ATLAS_RATE_LIMIT_RPM: undefined,
+      ATLAS_PROVIDER: undefined,
+      AI_GATEWAY_API_KEY: undefined,
       ATLAS_API_REGION: undefined,
       ATLAS_REGION_US_DB_URL: undefined,
       ATLAS_REGION_EU_DB_URL: undefined,
@@ -99,6 +101,10 @@ describe("makeBootSmokeFixture", () => {
     expect(fixture.BETTER_AUTH_SECRET?.length ?? 0).toBeGreaterThanOrEqual(32);
     expect(fixture.ATLAS_API_REGION).toBe("us");
     expect(fixture.RESEND_API_KEY).toBeTruthy();
+    // ProviderKeyGuardLive (#3178): ATLAS_PROVIDER unset → gateway default, so
+    // the gateway key must be present for boot-smoke to pass.
+    expect(fixture.ATLAS_PROVIDER).toBeUndefined();
+    expect(fixture.AI_GATEWAY_API_KEY).toBeTruthy();
   });
 
   test("databaseUrl override flows to internal + datasource + every region", () => {

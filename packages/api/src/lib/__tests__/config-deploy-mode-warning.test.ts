@@ -85,7 +85,7 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
       `export default { deployMode: "saas" };`,
     );
 
-    await loadConfig(dir);
+    const resolved = await loadConfig(dir);
 
     const errorLogs = logCalls.filter((c) => c.level === "error");
     // The "CRITICAL" + "#1978" pair is the operator-grep signal.
@@ -93,6 +93,12 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     expect(critical).toBeDefined();
     expect((critical!.payload as Record<string, unknown>).source).toBe("atlas.config.ts");
     expect((critical!.payload as Record<string, unknown>).requested).toBe("saas");
+
+    // #3184 — the downgrade is also threaded onto the resolved config so
+    // /health can surface a degraded flag + reason beyond the log line.
+    expect(resolved.deployModeDowngraded).toBeDefined();
+    expect(resolved.deployModeDowngraded!.reason).toContain("#1978");
+    expect(resolved.deployModeDowngraded!.reason).toContain("downgraded");
   });
 
   // Negative cases — must NOT log so the warning stays meaningful.
@@ -133,9 +139,11 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     const dir = ensureTmpDir(`auto-${testCounter}`);
     writeFileSync(resolve(dir, "atlas.config.ts"), `export default {};`);
 
-    await loadConfig(dir);
+    const resolved = await loadConfig(dir);
 
     const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
     expect(errorLogs).toHaveLength(0);
+    // #3184 — no downgrade, so the health-facing flag stays unset.
+    expect(resolved.deployModeDowngraded).toBeUndefined();
   });
 });

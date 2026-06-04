@@ -1552,3 +1552,48 @@ describe("RegionConfigSchema apiUrl", () => {
     expect(() => validateAndResolve(config)).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3176 — region databaseUrl is no longer fleet-wide-validated at parse time.
+// The shared SaaS deploy config declares every region but each api service
+// only populates the env var for the region it claims; a non-claimed region's
+// URL resolving to "" / undefined (the Railway shared-scope hazard) must NOT
+// abort config parse on the other regions' services. The hard postgres://
+// check moved to RegionGuardLive (scoped to the claimed region) — see
+// saas-guards.test.ts.
+// ---------------------------------------------------------------------------
+
+describe("RegionConfigSchema databaseUrl scoping (#3176)", () => {
+  it("accepts a non-claimed region whose databaseUrl is an empty string (no fleet-wide abort)", () => {
+    const config = defineConfig({
+      residency: {
+        regions: {
+          // Claimed region on this (US) service — has its real URL.
+          "us": { label: "US", databaseUrl: "postgresql://us/atlas" },
+          // Non-claimed region — its env var is unset on this service, so the
+          // shared config passes through an empty string. Previously this
+          // tripped `.min(1)` and aborted boot fleet-wide.
+          "eu": { label: "EU", databaseUrl: "" },
+        },
+        defaultRegion: "us",
+      },
+    });
+    const resolved = validateAndResolve(config);
+    expect(resolved.residency!.regions["us"].databaseUrl).toBe("postgresql://us/atlas");
+    expect(resolved.residency!.regions["eu"].databaseUrl).toBe("");
+  });
+
+  it("accepts a region config that omits databaseUrl entirely", () => {
+    const config = defineConfig({
+      residency: {
+        regions: {
+          "us": { label: "US", databaseUrl: "postgresql://us/atlas" },
+          "apac": { label: "APAC" },
+        },
+        defaultRegion: "us",
+      },
+    });
+    const resolved = validateAndResolve(config);
+    expect(resolved.residency!.regions["apac"].databaseUrl).toBeUndefined();
+  });
+});

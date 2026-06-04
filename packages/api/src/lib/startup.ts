@@ -10,7 +10,7 @@ import * as path from "path";
 import { matchError } from "@useatlas/types";
 import { detectDBType, resolveDatasourceUrl } from "./db/connection";
 import { maskConnectionUrl } from "./security";
-import { getDefaultProvider } from "./providers";
+import { getDefaultProvider, PROVIDER_KEY_MAP } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { resolvePasskeyRpId } from "./auth/rpid";
 import { getWebOrigin } from "./web-origin";
@@ -34,13 +34,9 @@ export interface DiagnosticError {
   message: string;
 }
 
-const PROVIDER_KEY_MAP: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  bedrock: "AWS_ACCESS_KEY_ID",
-  ollama: "", // Ollama runs locally, no API key required
-  gateway: "AI_GATEWAY_API_KEY",
-};
+// PROVIDER_KEY_MAP moved to ./providers (#3178) so the SaaS boot guard
+// (`ProviderKeyGuardLive`) can share it without importing this module's
+// heavy request-path graph. Imported above.
 
 const PROVIDER_SIGNUP_URL: Record<string, string> = {
   anthropic: "https://console.anthropic.com/settings/keys",

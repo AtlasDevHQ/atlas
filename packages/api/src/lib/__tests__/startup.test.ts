@@ -22,6 +22,15 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
+  // PROVIDER_KEY_MAP moved here from startup.ts (#3178). startup.ts
+  // imports it, so mock.module must provide it (mock-all-exports).
+  PROVIDER_KEY_MAP: {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    bedrock: "AWS_ACCESS_KEY_ID",
+    ollama: "",
+    gateway: "AI_GATEWAY_API_KEY",
+  },
 }));
 
 // Mock explore-nsjail — controllable sandbox capability check

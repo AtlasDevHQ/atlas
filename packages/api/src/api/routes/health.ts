@@ -91,6 +91,11 @@ export const HealthResponseSchema = z.object({
   region: z.string().optional(),
   misroutedRequests: z.number().int().nonnegative().optional(),
   warnings: z.array(z.string()).optional(),
+  // #3184 — present only when atlas.config.ts requested SaaS mode but
+  // enterprise wasn't enabled, so the deploy mode silently downgraded to
+  // self-hosted (all SaaS contracts skipped). Surfaces the downgrade beyond
+  // the CRITICAL boot log; promotes overall status to at least `degraded`.
+  deployModeDowngraded: z.object({ reason: z.string() }).optional(),
   brandColor: z.string().optional(),
   components: z.object({
     datasource: ComponentHealthSchema,
@@ -415,6 +420,15 @@ health.openapi(healthRoute, async (c) => {
     // unchanged (still 200) — only the dashboard label shifts.
     if (pluginAggregateDegraded && status === "ok") status = "degraded";
 
+    // #3184 — config-file SaaS→self-hosted downgrade. When atlas.config.ts
+    // requested saas but enterprise wasn't enabled, applyDeployMode() stamps
+    // a reason onto the resolved config. Surface it on /health and promote
+    // ok → degraded so a headless box shows the silent downgrade beyond the
+    // CRITICAL log. Never escalates to error (the box still serves traffic as
+    // self-hosted), so the HTTP status stays 200.
+    const deployModeDowngraded = getConfig()?.deployModeDowngraded;
+    if (deployModeDowngraded && status === "ok") status = "degraded";
+
     const components = {
       datasource: {
         status: dsNotConfigured
@@ -473,6 +487,7 @@ health.openapi(healthRoute, async (c) => {
       ...(region && { region }),
       ...(misroutedRequests > 0 && { misroutedRequests }),
       ...(warnings.length > 0 && { warnings }),
+      ...(deployModeDowngraded && { deployModeDowngraded }),
       ...(brandColor && { brandColor }),
       components,
       checks: {

@@ -12,6 +12,7 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
+import { isEffectivelyBanned } from "@atlas/api/lib/auth/admin-user-ops";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -43,6 +44,26 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // admin plugin) for unit tests that mock auth.api.getSession without
   // routing through the customSession callback.
   const sessionUser = session.user as Record<string, unknown>;
+
+  // #3159 — per-request ban enforcement. The removed Better Auth admin plugin
+  // rejected banned users only at session-CREATE (its `session.create.before`
+  // hook) and on ban also deleted live sessions. We reproduce the create-time
+  // guard in server.ts AND add this read-side check so a user banned mid-session
+  // is rejected on their next validated request — the literal "ban enforcement
+  // at session-validation time" the plugin never had. `role`/`banned`/`banExpires`
+  // ride along on the getSession user via `additionalFields`. An expired ban
+  // (banExpires in the past) is treated as lifted, matching the auto-unban path.
+  if (
+    isEffectivelyBanned(
+      sessionUser?.banned as boolean | null | undefined,
+      sessionUser?.banExpires as string | Date | null | undefined,
+      Date.now(),
+    )
+  ) {
+    log.info({ userId }, "Rejecting session — user is banned");
+    return { authenticated: false, mode: "managed", status: 401, error: "Account is banned" };
+  }
+
   const stampedRole = sessionUser?.effectiveRole ?? sessionUser?.role;
   // Better Auth can store roles as comma-separated strings; Atlas uses only the first.
   const rawRole = typeof stampedRole === "string" ? stampedRole.split(",")[0].trim() : stampedRole;

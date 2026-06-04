@@ -95,6 +95,12 @@ jobs:
       - name: Adversarial fixtures for the Twenty-resolver-imports gate (#2850)
         run: bash scripts/__tests__/check-twenty-resolver-imports.test.sh
 
+      - name: Check the Better Auth admin plugin stays removed (#3159)
+        run: bash scripts/check-no-admin-plugin.sh
+
+      - name: Adversarial fixtures for the admin-plugin-removal gate (#3159)
+        run: bash scripts/__tests__/check-no-admin-plugin.test.sh
+
       - name: Check no legacy `connections` / `connection_groups` SQL outside migrations (#2744)
         run: bash scripts/check-no-legacy-connections-sql.sh
 

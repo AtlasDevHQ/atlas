@@ -44,19 +44,18 @@ const SIGNUP_EMAIL_PATH = "/api/auth/sign-up/email";
 const CLIENT_IP_HEADER = "x-atlas-client-ip";
 
 /**
- * Better Auth admin-plugin endpoint that deletes a user GLOBALLY (cascading
- * every `member` row across all workspaces). It is exposed through this
- * catch-all and authorized by the admin-plugin ACL, which grants a platform
- * admin full statements (`lib/auth/admin-permissions.ts`). Reached directly, it
- * would bypass the multi-workspace last-admin guard in
- * `DELETE /api/v1/admin/users/{id}` (#3166) — the same unguarded-native-path
- * class #3164 closed for the org-plugin member endpoints (Codex P1 on #3171).
+ * Historically Better Auth's admin() plugin exposed `POST /api/auth/admin/remove-user`
+ * through this catch-all — a GLOBAL user delete (cascading `member` rows across
+ * all workspaces) that, reached directly, bypassed the multi-workspace
+ * last-admin guard in `DELETE /api/v1/admin/users/{id}` (#3164/#3166).
  *
- * We refuse the HTTP path here rather than via a Better Auth `hooks.before`:
- * hooks run for `auth.api.*` server calls too, so a hook would also break
- * Atlas's own guarded `deleteUserRoute`, which legitimately calls
- * `adminApi.removeUser(...)` AFTER its advisory-lock guard. Blocking only the
- * external HTTP path leaves that internal server-side call untouched.
+ * #3159 removed the admin plugin entirely, so Better Auth no longer registers
+ * this endpoint. This guard STAYS as permanent defense-in-depth: it keeps the
+ * historically-dangerous path refused at the HTTP layer so the last-admin
+ * invariant can only ever be reached through Atlas's guarded route — even if the
+ * plugin (or any other source of `/api/auth/admin/*`) were reintroduced. A
+ * Better Auth `hooks.before` would be the wrong layer: it also fires for
+ * `auth.api.*` server calls, so it could break Atlas's own guarded delete path.
  */
 const NATIVE_ADMIN_REMOVE_USER_PATH = "/api/auth/admin/remove-user";
 

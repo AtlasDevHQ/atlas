@@ -15,14 +15,19 @@ import { normalizeSignupResponseBody } from "../signup-response";
  */
 
 describe("normalizeSignupResponseBody", () => {
-  it("fills user.image: null on a real-path body that omits image", () => {
+  it("fills image / banExpires / banReason: null on a real-path body that omits them", () => {
     const body = {
       user: { id: "u1", email: "a@example.com", name: "A", emailVerified: false },
     };
     const result = normalizeSignupResponseBody(body) as {
       user: Record<string, unknown>;
     };
+    // #1792 (image) + #3159 (banExpires/banReason moved to additionalFields):
+    // every key the synthetic existing-email envelope materializes must be
+    // present on the real path too, or key-presence leaks account existence.
     expect(result.user.image).toBeNull();
+    expect(result.user.banExpires).toBeNull();
+    expect(result.user.banReason).toBeNull();
     // Every pre-existing field must survive untouched.
     expect(result.user.id).toBe("u1");
     expect(result.user.email).toBe("a@example.com");
@@ -39,16 +44,24 @@ describe("normalizeSignupResponseBody", () => {
     expect(result.token).toBe("verify-abc");
   });
 
-  it("returns the same reference when image is already present (fast path)", () => {
-    // Synthetic existing-email branch always emits `image: null`, and
-    // some clients pass an image in the signup body. Either way, we
-    // must skip re-allocation so the Hono wrapper's `===` fast-path
-    // check avoids a pointless Response rebuild.
-    const withNull = { user: { id: "u1", email: "a@example.com", image: null } };
+  it("returns the same reference when every parity key is already present (fast path)", () => {
+    // The synthetic existing-email branch always materializes all parity keys
+    // (`image`/`banExpires`/`banReason`), so on that branch — and on an
+    // already-normalized body — we must skip re-allocation so the Hono
+    // wrapper's `===` fast-path avoids a pointless Response rebuild.
+    const withNull = {
+      user: { id: "u1", email: "a@example.com", image: null, banExpires: null, banReason: null },
+    };
     expect(normalizeSignupResponseBody(withNull)).toBe(withNull);
 
     const withUrl = {
-      user: { id: "u1", email: "a@example.com", image: "https://cdn/x.png" },
+      user: {
+        id: "u1",
+        email: "a@example.com",
+        image: "https://cdn/x.png",
+        banExpires: null,
+        banReason: null,
+      },
     };
     expect(normalizeSignupResponseBody(withUrl)).toBe(withUrl);
   });

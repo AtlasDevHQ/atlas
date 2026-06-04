@@ -133,6 +133,19 @@ mock.module("@atlas/api/lib/auth/server", () => ({
   deleteUser: mock(async () => {}),
 }));
 
+// #3159 — ban/delete/revoke are direct internal-DB ops now, not admin-plugin
+// calls. Assert the real SQL each issues (the `getAuthInstance().api.*` mocks
+// above are dead wiring kept only so the assignRole path's server import
+// resolves). `ranSql` scans every `internalQuery` / under-lock `tx.query` call.
+function ranSql(pattern: RegExp): boolean {
+  return mocks.mockInternalQuery.mock.calls.some(
+    (call) => typeof call[0] === "string" && pattern.test(call[0] as string),
+  );
+}
+const ranUserUpdate = () => ranSql(/UPDATE\s+"user"/i);
+const ranUserDelete = () => ranSql(/DELETE FROM "user"/i);
+const ranSessionDelete = () => ranSql(/DELETE FROM session/i);
+
 // EE roles — admin-roles.ts assignRoleRoute path. Default to a successful
 // assignment; the F-57 guard runs BEFORE assignRole so the block path
 // must surface 409 without assignRole ever being invoked.
@@ -366,7 +379,7 @@ describe("F-57 — POST /admin/users/:id/ban (banUser)", () => {
     );
 
     expect(res.status).toBe(409);
-    expect(mockBanUser).not.toHaveBeenCalled();
+    expect(ranUserUpdate()).toBe(false);
   });
 
   it("guard runs cross-provider — orgId is undefined regardless of the actor's active org", async () => {
@@ -400,7 +413,7 @@ describe("F-57 — POST /admin/users/:id/ban (banUser)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockBanUser).toHaveBeenCalled();
+    expect(ranUserUpdate()).toBe(true);
     const auditCall = mockLogAdminAction.mock.calls.find(
       (call) => (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
     );
@@ -469,7 +482,7 @@ describe("F-57 — DELETE /admin/users/:id (deleteUser)", () => {
     );
 
     expect(res.status).toBe(409);
-    expect(mockRemoveUser).not.toHaveBeenCalled();
+    expect(ranUserDelete()).toBe(false);
   });
 
   it("guard runs cross-provider — orgId is undefined to match the global delete blast-radius", async () => {
@@ -494,7 +507,7 @@ describe("F-57 — DELETE /admin/users/:id (deleteUser)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockRemoveUser).toHaveBeenCalled();
+    expect(ranUserDelete()).toBe(true);
     const auditCall = mockLogAdminAction.mock.calls.find(
       (call) => (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
     );
@@ -524,7 +537,7 @@ describe("F-57 — POST /admin/users/:id/revoke (revokeUserSessions)", () => {
     );
 
     expect(res.status).toBe(409);
-    expect(mockRevokeSessions).not.toHaveBeenCalled();
+    expect(ranSessionDelete()).toBe(false);
   });
 
   it("override policy → revoke proceeds + audit metadata.scim_override = true", async () => {
@@ -535,7 +548,7 @@ describe("F-57 — POST /admin/users/:id/revoke (revokeUserSessions)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockRevokeSessions).toHaveBeenCalled();
+    expect(ranSessionDelete()).toBe(true);
     const auditCall = mockLogAdminAction.mock.calls.find(
       (call) => (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
     );
@@ -549,7 +562,10 @@ describe("F-57 — POST /admin/users/:id/revoke (revokeUserSessions)", () => {
     // to reconstruct that the failed override was even attempted on a
     // SCIM-managed user. Lock both branches.
     mockEvaluateSCIMGuardAsync.mockImplementationOnce(async () => ({ kind: "override" }));
-    mockRevokeSessions.mockImplementationOnce(() => Promise.reject(new Error("upstream gone")));
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (/delete from session/i.test(sql)) throw new Error("upstream gone");
+      return [];
+    });
 
     const res = await app.fetch(
       adminRequest("/api/v1/admin/users/user-scim-1/revoke", "POST"),

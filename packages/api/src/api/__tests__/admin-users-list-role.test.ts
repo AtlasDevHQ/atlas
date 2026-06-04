@@ -6,9 +6,13 @@
  * promotion — skipping the demotion-confirm dialog.
  *
  * Covers the pure `highestMemberRole` summarizer and the enriched list route.
+ *
+ * #3159 — the global user list is now a direct `SELECT … FROM "user"` query
+ * (`listPlatformUsers`) rather than the Better Auth admin plugin's `listUsers`,
+ * so the rows are seeded through `mockInternalQuery` instead of a plugin mock.
  */
 
-import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import { highestMemberRole } from "../routes/admin";
 
@@ -21,23 +25,6 @@ const mocks = createApiTestMocks({
   },
   authMode: "managed",
 });
-
-const mockListUsers: Mock<(opts: unknown) => Promise<unknown>> = mock(() =>
-  Promise.resolve({ users: [], total: 0 }),
-);
-
-mock.module("@atlas/api/lib/auth/server", () => ({
-  getAuthInstance: () => ({
-    api: {
-      listUsers: mockListUsers,
-      setRole: mock(() => Promise.resolve({})),
-      banUser: mock(() => Promise.resolve({})),
-      unbanUser: mock(() => Promise.resolve({})),
-      removeUser: mock(() => Promise.resolve({})),
-      revokeSessions: mock(() => Promise.resolve({})),
-    },
-  }),
-}));
 
 const { app } = await import("../index");
 
@@ -61,6 +48,48 @@ function setPlatformAdmin(): void {
       role: "platform_admin",
       claims: { twoFactorEnabled: true },
     },
+  });
+}
+
+interface UserRow {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  createdAt: string;
+}
+
+/**
+ * Route the two queries `listPlatformUsers` issues (the paged `SELECT … FROM
+ * "user"` and its `COUNT(*)`) plus the `#3165` member-enrichment lookup through
+ * one `mockInternalQuery` implementation. `memberRows === null` makes the
+ * member lookup throw (the fail-closed path).
+ */
+function seedUsersAndMembers(
+  users: UserRow[],
+  memberRows: Array<{ userId: string; role: string }> | null,
+): void {
+  mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+    if (/count\(\*\)/i.test(sql) && /from "user"/i.test(sql)) {
+      return [{ count: String(users.length) }];
+    }
+    if (/from "user"/i.test(sql)) {
+      return users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        banned: false,
+        banReason: null,
+        banExpires: null,
+        createdAt: u.createdAt,
+      }));
+    }
+    if (/from member where "userid" = any/i.test(sql)) {
+      if (memberRows === null) throw new Error("DB down");
+      return memberRows;
+    }
+    return [];
   });
 }
 
@@ -88,34 +117,27 @@ describe("GET /api/v1/admin/users — effective workspace role (#3165)", () => {
     mocks.mockAuthenticateRequest.mockReset();
     mocks.mockInternalQuery.mockReset();
     mocks.mockInternalQuery.mockResolvedValue([]);
-    mockListUsers.mockReset();
     mocks.hasInternalDB = true;
     setPlatformAdmin();
   });
 
   it("surfaces each user's highest member.role; platform_admin stays as-is", async () => {
-    mockListUsers.mockResolvedValue({
-      users: [
-        // Better Auth returns the raw user-level role: owners/admins look like
-        // plain members here (only platform_admin survives on user.role).
+    seedUsersAndMembers(
+      [
+        // The user-level role: owners/admins look like plain members here
+        // (only platform_admin survives on user.role post-#2890).
         { id: "u-owner", email: "owner@x.dev", name: "O", role: "member", createdAt: "2026-01-01" },
         { id: "u-multi", email: "multi@x.dev", name: "M", role: "member", createdAt: "2026-01-02" },
         { id: "u-pa", email: "pa@x.dev", name: "P", role: "platform_admin", createdAt: "2026-01-03" },
         { id: "u-none", email: "none@x.dev", name: "N", role: "member", createdAt: "2026-01-04" },
       ],
-      total: 4,
-    });
-    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (/from member where "userid" = any/i.test(sql)) {
-        return [
-          { userId: "u-owner", role: "owner" },
-          { userId: "u-multi", role: "member" },
-          { userId: "u-multi", role: "admin" },
-          { userId: "u-pa", role: "owner" }, // ignored — u-pa is platform_admin
-        ];
-      }
-      return [];
-    });
+      [
+        { userId: "u-owner", role: "owner" },
+        { userId: "u-multi", role: "member" },
+        { userId: "u-multi", role: "admin" },
+        { userId: "u-pa", role: "owner" }, // ignored — u-pa is platform_admin
+      ],
+    );
 
     const res = await app.fetch(adminRequest("GET", "/api/v1/admin/users"));
     expect(res.status).toBe(200);
@@ -132,17 +154,13 @@ describe("GET /api/v1/admin/users — effective workspace role (#3165)", () => {
     // Falling back to user.role would render an owner as "member" and silently
     // skip the demotion confirm (the very #3165 bug). The unknown sentinel makes
     // the web's isDemotion fail-closed (always confirm) while the lookup is broken.
-    mockListUsers.mockResolvedValue({
-      users: [
+    seedUsersAndMembers(
+      [
         { id: "u-1", email: "a@x.dev", name: "A", role: "member", createdAt: "2026-01-01" },
         { id: "u-pa", email: "pa@x.dev", name: "P", role: "platform_admin", createdAt: "2026-01-02" },
       ],
-      total: 2,
-    });
-    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
-      if (/from member where "userid" = any/i.test(sql)) throw new Error("DB down");
-      return [];
-    });
+      null, // member lookup throws
+    );
 
     const res = await app.fetch(adminRequest("GET", "/api/v1/admin/users"));
     expect(res.status).toBe(200);

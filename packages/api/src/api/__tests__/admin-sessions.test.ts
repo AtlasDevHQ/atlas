@@ -36,34 +36,12 @@ const mocks = createApiTestMocks({
   authMode: "managed",
 });
 
-// ---------------------------------------------------------------------------
-// Better Auth admin API mock — the admin.ts `revokeUserSessionsRoute` calls
-// `getAdminApi()` which reads from `getAuthInstance().api`. The default
-// mock in api-test-mocks returns `null`, which would cause the route to
-// 404 before emitting any audit. Replace it here with a real mock surface.
-// ---------------------------------------------------------------------------
-
-const mockRevokeSessions: Mock<(opts: unknown) => Promise<unknown>> = mock(
-  () => Promise.resolve({}),
-);
-
-mock.module("@atlas/api/lib/auth/server", () => ({
-  getAuthInstance: () => ({
-    api: {
-      listUsers: mock(() => Promise.resolve({ users: [], total: 0 })),
-      setRole: mock(() => Promise.resolve({})),
-      banUser: mock(() => Promise.resolve({})),
-      unbanUser: mock(() => Promise.resolve({})),
-      removeUser: mock(() => Promise.resolve({})),
-      revokeSessions: mockRevokeSessions,
-    },
-  }),
-  listAllUsers: mock(() => Promise.resolve([])),
-  setUserRole: mock(async () => {}),
-  setBanStatus: mock(async () => {}),
-  setPasswordChangeRequired: mock(async () => {}),
-  deleteUser: mock(async () => {}),
-}));
+// #3159 — `revokeUserSessionsRoute` no longer goes through the Better Auth
+// admin plugin (`getAdminApi().api.revokeSessions`); it issues a direct
+// `DELETE FROM session` via `revokeUserSessionsDirect`. So there is nothing to
+// stub on `getAuthInstance().api` — the route's only I/O is `internalQuery`,
+// which `createApiTestMocks` already mocks. The default server mock
+// (`getAuthInstance: () => null`) is left in place.
 
 // ---------------------------------------------------------------------------
 // Audit mock — capture `logAdminAction` calls but pass through the real
@@ -180,8 +158,6 @@ beforeEach(() => {
   mockLogAdminAction.mockClear();
   mocks.mockInternalQuery.mockReset();
   mocks.mockInternalQuery.mockResolvedValue([]);
-  mockRevokeSessions.mockReset();
-  mockRevokeSessions.mockResolvedValue({});
 });
 
 // ---------------------------------------------------------------------------
@@ -487,9 +463,10 @@ describe("admin users — POST /users/:id/revoke", () => {
   });
 
   it("emits user.session_revoke_all with pre-counted session count on success", async () => {
-    // The route doesn't learn the count from better-auth's revokeSessions,
-    // so it pre-queries session COUNT(*). The pre-count hits the internal DB
-    // *after* membership verification and before the revoke.
+    // The route pre-queries session COUNT(*) for the audit row (the direct
+    // `DELETE FROM session` revoke runs after, but its RETURNING count isn't
+    // surfaced — the audit keeps the pre-count contract). The pre-count hits
+    // the internal DB *after* membership verification and before the revoke.
     mocks.mockInternalQuery.mockImplementation(
       async (sql: string, params?: unknown[]) => {
         if (
@@ -513,7 +490,12 @@ describe("admin users — POST /users/:id/revoke", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockRevokeSessions).toHaveBeenCalledTimes(1);
+    // The revoke is now a direct DELETE rather than a plugin call.
+    expect(
+      mocks.mockInternalQuery.mock.calls.some((call) =>
+        call[0].includes("DELETE FROM session"),
+      ),
+    ).toBe(true);
     expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
 
     const entry = lastAuditCall();
@@ -553,7 +535,6 @@ describe("admin users — POST /users/:id/revoke", () => {
     // The revoke itself must still succeed — a count lookup failure cannot
     // block the forced logout, only degrade the audit row.
     expect(res.status).toBe(200);
-    expect(mockRevokeSessions).toHaveBeenCalledTimes(1);
 
     const entry = lastAuditCall();
     expect(entry.status ?? "success").toBe("success");
@@ -582,10 +563,24 @@ describe("admin users — POST /users/:id/revoke", () => {
     });
   });
 
-  it("emits status: failure when adminApi.revokeSessions throws", async () => {
-    mockMembershipFor("user_target");
-    mockRevokeSessions.mockImplementation(() =>
-      Promise.reject(new Error("better-auth revoke failed")),
+  it("emits status: failure when the session delete throws", async () => {
+    mocks.mockInternalQuery.mockImplementation(
+      async (sql: string, params?: unknown[]) => {
+        if (
+          sql.includes("member") &&
+          sql.includes("userId") &&
+          sql.includes("organizationId")
+        ) {
+          return params?.[0] === "user_target" ? [{ userId: "user_target" }] : [];
+        }
+        if (sql.includes("COUNT(*)") && sql.includes("session")) {
+          return [{ count: "1" }];
+        }
+        if (sql.includes("DELETE FROM session")) {
+          throw new Error("session delete failed");
+        }
+        return [];
+      },
     );
 
     const res = await app.fetch(
@@ -600,7 +595,7 @@ describe("admin users — POST /users/:id/revoke", () => {
     expect(entry.status).toBe("failure");
     expect(entry.metadata).toMatchObject({
       targetUserId: "user_target",
-      error: "better-auth revoke failed",
+      error: "session delete failed",
     });
   });
 

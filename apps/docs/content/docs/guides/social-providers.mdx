@@ -337,13 +337,13 @@ After successful authentication, the user is redirected back to your app with an
 
 ### User lands on wrong role after social login
 
-**Symptom:** A user signs in via social provider but gets `analyst` instead of `admin`.
+**Symptom:** A user signs in via social provider but gets the default `member` role instead of `admin`.
 
 **Explanation:** Social login goes through the same bootstrap logic as email/password:
 - If `ATLAS_ADMIN_EMAIL` matches the social account's email → `admin`
 - If no admin exists yet → first signup gets `admin`
 - If a pending invitation matches the email → invited role is assigned
-- Otherwise → `analyst` (the `defaultRole` from the admin plugin)
+- Otherwise → the default `member` role (the `role` field's `defaultValue`)
 
 Check that `ATLAS_ADMIN_EMAIL` matches the email the provider returns (case-insensitive).
 

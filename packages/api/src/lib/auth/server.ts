@@ -12,7 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
-import { bearer, admin, organization, jwt, customSession } from "better-auth/plugins";
+import { bearer, organization, jwt, customSession } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
 // @better-auth/* plugins must match the better-auth core version line.
@@ -56,7 +56,7 @@ import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/api/lib/auth/org-member-guards";
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
-import { adminAccessControl, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
+import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
@@ -1315,17 +1315,15 @@ export function buildPlugins() {
   const plugins: any[] = [
     bearer(),
     apiKey(),
-    admin({
-      // The admin-plugin ACL is single-valued now (#2890): `platform_admin`
-      // is the only cross-tenant user.role. `defaultRole: "member"` keeps new
-      // signups out of that ACL (a "member" caller has no admin-plugin
-      // permission); tenant admin-ness lives in the org plugin's member.role.
-      defaultRole: "member",
-      ac: adminAccessControl,
-      roles: {
-        platform_admin: platformAdminRole,
-      },
-    }),
+    // #3159 — the Better Auth `admin()` plugin was removed. It authorized the
+    // caller by the raw `user.role` column (via `hasPermission`), which after
+    // #2890 (single-role, platform-only) was a contained-but-live footgun: any
+    // new admin-plugin route reachable by a workspace admin would silently
+    // break the same way removeUser/revokeSessions/SCIM did. Its consumers are
+    // now direct internal-DB ops in `lib/auth/admin-user-ops.ts`; ban
+    // enforcement is reproduced via the `session.create.before` hook below
+    // (+ a per-request check in managed.ts); `user.role`/`banned`/`banReason`/
+    // `banExpires` survive as `user.additionalFields` in the options block.
     organization({
       ac,
       roles: { owner: ownerRole, admin: adminRole, member: memberRole },
@@ -2315,6 +2313,31 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(deps.env) },
     },
+    // #3159 — these `user` columns were contributed by the removed admin()
+    // plugin's schema. Re-declared here as `additionalFields` with the IDENTICAL
+    // shape (role: string/input:false; banned: boolean/default false/input:false;
+    // banReason: string/input:false; banExpires: date/input:false) so Better
+    // Auth still SELECTs them into every getSession — the `customSession`
+    // callback reads `role`, the session-create ban guard + per-request check
+    // read `banned`/`banExpires`, and the platform user list surfaces all four.
+    // Matching the plugin schema exactly means the migration generator sees no
+    // change (zero drift). `input: false` preserves the invariant that a signup
+    // payload cannot self-assign `role: "platform_admin"`.
+    user: {
+      additionalFields: {
+        // `defaultValue: "member"` reproduces the removed admin plugin's
+        // `defaultRole: "member"` (a user-level role, distinct from member.role
+        // where tenant admin-ness lives). It is applied on the real create AND
+        // materialized into Better Auth's synthetic existing-email signup
+        // envelope, so both signup branches carry the same `role` value — without
+        // it, the real path (role "member") and the synthetic path (role null)
+        // would diverge and reopen the enumeration oracle (#1792 class).
+        role: { type: "string", required: false, input: false, defaultValue: "member" },
+        banned: { type: "boolean", required: false, input: false, defaultValue: false },
+        banReason: { type: "string", required: false, input: false },
+        banExpires: { type: "date", required: false, input: false },
+      },
+    },
     plugins: deps.plugins,
     trustedOrigins: deps.trustedOrigins,
     // F-06 — explicit rate limits on /api/auth/*. Built-in defaults are
@@ -2334,6 +2357,14 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
           // Naming the org extension explicitly keeps `.activeOrganizationId`
           // typed where other fields go through `unknown`.
           before: async (session: Session & { activeOrganizationId?: string | null } & Record<string, unknown>) => {
+            // #3159 — reproduce the admin plugin's ban guard: block new-session
+            // creation for a banned user (auto-unbanning when `banExpires` has
+            // passed). Runs OUTSIDE the try/catch below so its BANNED_USER
+            // APIError propagates and aborts session creation — swallowing it
+            // would make ban inert. Throws only for an active ban; a read
+            // failure fails open (the per-request check in managed.ts backstops).
+            await enforceBanOnSessionCreate(session.userId);
+
             // Auto-set the active org on login when the user has exactly one
             // org and the session doesn't already have one. Uses the `before`
             // hook so Better Auth writes the activeOrganizationId directly
@@ -2430,6 +2461,12 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
                 );
                 return { data: { ...user, role: decision.role } };
               }
+
+              // Non-promoted signups fall through: the `role` additionalField's
+              // `defaultValue: "member"` (#3159) supplies the default, so the
+              // hook only needs to act on the promote case. Setting it here too
+              // would diverge from the synthetic existing-email envelope (which
+              // can't run this hook) and reopen the enumeration oracle.
 
             } catch (err) {
               // Include the full env state in the log so operators who expected

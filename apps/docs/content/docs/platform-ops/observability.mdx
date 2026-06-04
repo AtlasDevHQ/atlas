@@ -78,7 +78,11 @@ Atlas also publishes a small set of OTel metrics through the `@atlas/api` Meter 
 | `atlas.mcp.tool.latency` | Histogram (`ms`) | Same as `atlas.mcp.tool.calls` | Raw per-dispatch latency observations — derive p50/p95/p99 in your collector. Bucket boundaries stay defaulted so dashboards aren't pinned to one set of cutoffs |
 | `atlas.mcp.activations` | Counter | `workspace.id`, `transport`, `deploy.mode` | Fires once per workspace per MCP process on the first observed tool call. Process-local dedup only — restarts and SSE replicas re-fire for the same workspace. For a true "unique workspaces" view, configure your collector to group by `workspace.id` × first-seen day |
 
-Counters and gauges use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` registers one automatically — the same SDK init that wires trace export also attaches a `PeriodicExportingMetricReader` (60s) pointed at `{endpoint}/v1/metrics`, so these series feed your collector with no extra configuration. When the endpoint is unset they stay no-ops, exactly like spans.
+Counters and gauges use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered. In the **API server process**, setting `OTEL_EXPORTER_OTLP_ENDPOINT` registers one automatically — the same SDK init that wires trace export also attaches a `PeriodicExportingMetricReader` (60s) pointed at `{endpoint}/v1/metrics`, so these series export with no extra configuration. When the endpoint is unset they stay no-ops, exactly like spans.
+
+<Callout title="Standalone MCP server is a separate process">
+The `atlas.mcp.*` instruments (and the `atlas.mcp.tool.run` span) export automatically only where the OTel SDK is initialized — the **API server process**, which also serves the hosted/SaaS MCP in-process. The **standalone** MCP server (`packages/mcp`, run over stdio or its own SSE transport) is a separate process that does **not** currently initialize the SDK, so its MCP instruments stay no-ops there regardless of `OTEL_EXPORTER_OTLP_ENDPOINT`. Wiring the SDK into the standalone MCP entry point is tracked in [#3199](https://github.com/AtlasDevHQ/atlas/issues/3199).
+</Callout>
 
 ### Collector Setup
 
@@ -143,7 +147,9 @@ To turn on traces + metrics in a hosted deployment:
 
    ```bash
    OTEL_EXPORTER_OTLP_ENDPOINT=https://your-collector:4318
-   OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>"   # whatever your collector requires
+   # OTEL_EXPORTER_OTLP_HEADERS follows the W3C Baggage format — percent-encode
+   # spaces in the value (the space between "Bearer" and the token → %20):
+   OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer%20<token>"   # whatever your collector requires
    ```
 
 <Callout type="warn" title="Set the endpoint on every regional service">

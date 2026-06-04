@@ -629,6 +629,43 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
     });
 
+    // Owner-rank guard (mirrors changeUserRoleRoute): a workspace admin must not
+    // be able to remove the owner's membership, even when a co-admin remains.
+    it("workspace admin cannot remove the workspace owner (rank guard)", async () => {
+      setWorkspaceAdmin("org-1");
+      let deleteCalled = false;
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "owner" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "3" }]; // co-admins remain
+        if (sql.includes("DELETE FROM member")) { deleteCalled = true; return [{ id: "mem-1" }]; }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/the-owner/membership"),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string; message: string };
+      expect(body.error).toBe("forbidden");
+      expect(body.message).toMatch(/owner/);
+      expect(deleteCalled).toBe(false);
+    });
+
+    it("workspace owner can remove another owner when a co-admin remains", async () => {
+      setWorkspaceOwner("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("SELECT role FROM member")) return [{ role: "owner" }];
+        if (sql.includes("SELECT COUNT(*) as count FROM member")) return [{ count: "1" }];
+        if (sql.includes("DELETE FROM member")) return [{ id: "mem-1" }];
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/co-owner/membership"),
+      );
+      expect(res.status).toBe(200);
+    });
+
     it("emits logAdminAction with user.remove_from_workspace action type", async () => {
       setWorkspaceAdmin("org-1");
       mocks.mockInternalQuery.mockImplementation(async (sql: string) => {

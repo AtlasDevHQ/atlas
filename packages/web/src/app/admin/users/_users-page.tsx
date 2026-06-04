@@ -490,7 +490,10 @@ export function UsersPage({ scope }: UsersPageProps) {
       const candidates = result.error.workspaces;
       adminAction.clearErrorFor(userId);
       setConfirmAction(null);
-      setPickedOrgId(candidates[0]?.id);
+      // Require a deliberate choice — leave the picker unselected so the confirm
+      // button stays disabled until the operator picks a workspace (no
+      // accidental Enter/click changing the first candidate's role).
+      setPickedOrgId(undefined);
       setWorkspacePick({ userId, newRole, workspaces: candidates });
     }
     return result.ok;

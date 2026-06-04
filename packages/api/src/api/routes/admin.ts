@@ -3021,8 +3021,15 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
   // lock is held. The `organizationId` filter on the DELETE is what keeps this
   // workspace-admin-safe (no cross-tenant state change). A throw here is mapped
   // to 500 by the enclosing runHandler.
+  // Rank guard: only an owner (or platform_admin) may remove an owner — mirrors
+  // changeUserRoleRoute's owner-rank guard so a workspace `admin` can't strip
+  // the owner's membership (even when a co-admin remains). Evaluated inside the
+  // lock alongside the role read.
+  const actorCanManageOwner =
+    authResult.user?.role === "platform_admin" || authResult.user?.role === "owner";
   type RemoveOutcome =
     | { kind: "ok"; previousRole: string | undefined }
+    | { kind: "forbidden_owner" }
     | { kind: "last_admin" }
     | { kind: "not_found" };
   const outcome = await withWorkspaceAdminLock<RemoveOutcome>(orgId, async (tx) => {
@@ -3031,6 +3038,9 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
       [userId, orgId],
     );
     const targetRole = targetMembership[0]?.role;
+    if (!actorCanManageOwner && targetRole === "owner") {
+      return { kind: "forbidden_owner" };
+    }
     if (targetRole === "admin" || targetRole === "owner") {
       const remainingAdmins = await tx.query<{ count: string }>(
         `SELECT COUNT(*) as count FROM member
@@ -3049,6 +3059,16 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     return { kind: "ok", previousRole: targetRole };
   });
 
+  if (outcome.kind === "forbidden_owner") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Only a workspace owner can remove the owner from the workspace.",
+        requestId,
+      },
+      403,
+    );
+  }
   if (outcome.kind === "last_admin") {
     return c.json(
       {

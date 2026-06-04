@@ -51,13 +51,11 @@ mock.module("@atlas/api/lib/audit", async () => {
 // Mock the installation stores used by each BYOT / connect path. Defaults
 // resolve to success — per-test overrides can drive failure branches.
 const mockSaveSlackInstallation = mock(async () => {});
-const mockSaveTeamsInstallation = mock(async () => {});
 const mockSaveDiscordInstallation = mock(async () => {});
-const mockSaveTelegramInstallation = mock(async () => {});
-const mockSaveGChatInstallation = mock(async () => {});
 const mockSaveGitHubInstallation = mock(async () => {});
 const mockSaveLinearInstallation = mock(async () => {});
-const mockSaveWhatsAppInstallation = mock(async () => {});
+// teams/telegram/gchat/whatsapp stores were deleted with their tables in #3161
+// — those platforms have no BYOT connect route, so nothing to mock here.
 // Nullable union — per-test `mockImplementationOnce(() => null)` needs the
 // nullable on the signature, which `mock(async () => ({...}))` doesn't infer.
 type EmailInstallShape = import("@atlas/api/lib/email/store").EmailInstallationWithSecret | null;
@@ -75,25 +73,10 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   deleteInstallationByOrg: mock(async () => true),
   getInstallationByOrg: mock(async () => null),
 }));
-mock.module("@atlas/api/lib/teams/store", () => ({
-  saveTeamsInstallation: mockSaveTeamsInstallation,
-  deleteTeamsInstallationByOrg: mock(async () => true),
-  getTeamsInstallationByOrg: mock(async () => null),
-}));
 mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mockSaveDiscordInstallation,
   deleteDiscordInstallationByOrg: mock(async () => true),
   getDiscordInstallationByOrg: mock(async () => null),
-}));
-mock.module("@atlas/api/lib/telegram/store", () => ({
-  saveTelegramInstallation: mockSaveTelegramInstallation,
-  deleteTelegramInstallationByOrg: mock(async () => true),
-  getTelegramInstallationByOrg: mock(async () => null),
-}));
-mock.module("@atlas/api/lib/gchat/store", () => ({
-  saveGChatInstallation: mockSaveGChatInstallation,
-  deleteGChatInstallationByOrg: mock(async () => true),
-  getGChatInstallationByOrg: mock(async () => null),
 }));
 mock.module("@atlas/api/lib/github/store", () => ({
   saveGitHubInstallation: mockSaveGitHubInstallation,
@@ -104,11 +87,6 @@ mock.module("@atlas/api/lib/linear/store", () => ({
   saveLinearInstallation: mockSaveLinearInstallation,
   deleteLinearInstallationByOrg: mock(async () => true),
   getLinearInstallationByOrg: mock(async () => null),
-}));
-mock.module("@atlas/api/lib/whatsapp/store", () => ({
-  saveWhatsAppInstallation: mockSaveWhatsAppInstallation,
-  deleteWhatsAppInstallationByOrg: mock(async () => true),
-  getWhatsAppInstallationByOrg: mock(async () => null),
 }));
 // EMAIL_PROVIDERS feeds the Zod enum at module load — omitting it makes
 // the router fail to register and every integrations route 404s.
@@ -190,13 +168,9 @@ beforeEach(() => {
     ),
   );
   mockSaveSlackInstallation.mockClear();
-  mockSaveTeamsInstallation.mockClear();
   mockSaveDiscordInstallation.mockClear();
-  mockSaveTelegramInstallation.mockClear();
-  mockSaveGChatInstallation.mockClear();
   mockSaveGitHubInstallation.mockClear();
   mockSaveLinearInstallation.mockClear();
-  mockSaveWhatsAppInstallation.mockClear();
 });
 
 // ---------------------------------------------------------------------------

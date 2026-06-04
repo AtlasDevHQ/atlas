@@ -41,15 +41,8 @@ mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   _resetInstallHandlerRegistries: mock(() => {}),
 }));
 
-// admin-integrations.ts imports teams/store (legacy disconnect path); keep all
-// exports mocked so unrelated routes still load.
-mock.module("@atlas/api/lib/teams/store", () => ({
-  saveTeamsInstallation: mock(() => Promise.resolve()),
-  getTeamsInstallation: mock(() => Promise.resolve(null)),
-  getTeamsInstallationByOrg: mock(() => Promise.resolve(null)),
-  deleteTeamsInstallation: mock(() => Promise.resolve()),
-  deleteTeamsInstallationByOrg: mock(() => Promise.resolve(false)),
-}));
+// `@atlas/api/lib/teams/store` was deleted in #3161 — admin-integrations.ts no
+// longer imports it (the legacy disconnect path was removed), so no mock needed.
 
 // Mutable auth so tests can swap admin / unauth.
 let authResultForTests: {

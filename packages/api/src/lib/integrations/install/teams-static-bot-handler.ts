@@ -58,6 +58,7 @@ import {
   TeamsTenantIdInvalidError,
 } from "@atlas/api/lib/effect/errors";
 import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -78,6 +79,45 @@ export const TEAMS_SLUG: CatalogId = "teams";
  * would produce FK violations at first install.
  */
 export const TEAMS_CATALOG_ID = "catalog:teams";
+
+/**
+ * Cross-workspace ownership guard (#3154). Teams captures its tenant_id through
+ * the Azure AD admin-consent callback, so the id is ownership-proven for the
+ * consenting admin — but the tenant GUID is non-secret (it rides in every Bot
+ * Framework activity envelope's `channelData.tenant.id`), and two distinct
+ * Atlas workspaces controlled from the same Microsoft tenant could both
+ * legitimately consent it. Binding the same tenant_id to two workspaces
+ * collapses the read-side resolver in `executeQuery.ts` onto a
+ * `rows.length > 1` fail-closed, disabling BOTH. So this is a
+ * uniqueness/availability guard (first binder wins): reject a tenant_id already
+ * bound to a *different* workspace. The `workspace_id <> $3` filter excludes a
+ * reconnect of the same workspace.
+ */
+async function assertTenantIdUnboundElsewhere(
+  tenantId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'tenant_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [TEAMS_CATALOG_ID, tenantId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "Teams install rejected — tenant_id already bound to a different workspace",
+    );
+    throw new TeamsTenantIdInvalidError({
+      message:
+        "This Microsoft Teams tenant is already connected to a different Atlas workspace. Each tenant can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Microsoft Entra ID tenant ids are GUIDs in the canonical 8-4-4-4-12
@@ -211,6 +251,15 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
     // write, so a failed verification never leaves a half-installed
     // row behind.
     await this.verifyReachability(normalizedTenantId);
+
+    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // Even though admin-consent proves tenant ownership, the tenant GUID is
+    // non-secret and two Atlas workspaces in the same Microsoft tenant could
+    // both consent it — binding it twice collapses the read-side resolver onto
+    // a `rows.length > 1` fail-closed (disabling both). Reject a tenant_id
+    // already bound to a *different* workspace; a reconnect is excluded by
+    // `workspace_id <> $3`.
+    await assertTenantIdUnboundElsewhere(normalizedTenantId, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
     // Mirrors the discord-static-bot-handler pattern: candidate id on

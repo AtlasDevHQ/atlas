@@ -115,6 +115,25 @@ mock.module("@atlas/api/lib/integrations/twenty/store", () => ({
   getTwentyIntegrationWithSecret: mock(() => Promise.resolve(null)),
 }));
 
+// Discord store — `discord_installations` BYOT bot-token teardown (#3163).
+// A static-bot Discord install has no row here (no-op), but a dual install
+// (BYOT + static-bot) must drop the credential on unified disconnect.
+const discordDeleteByOrgCalls: string[] = [];
+const mockDeleteDiscordInstallationByOrg: Mock<(orgId: string) => Promise<boolean>> = mock(
+  async (orgId: string) => {
+    discordDeleteByOrgCalls.push(orgId);
+    return true;
+  },
+);
+
+mock.module("@atlas/api/lib/discord/store", () => ({
+  getDiscordInstallation: mock(() => Promise.resolve(null)),
+  getDiscordInstallationByOrg: mock(() => Promise.resolve(null)),
+  saveDiscordInstallation: mock(() => Promise.resolve()),
+  deleteDiscordInstallation: mock(() => Promise.resolve()),
+  deleteDiscordInstallationByOrg: mockDeleteDiscordInstallationByOrg,
+}));
+
 // Install handler dispatch — let tests inject per-slug handlers.
 type DispatchHandler =
   | {
@@ -903,6 +922,38 @@ describe("WorkspaceInstaller.uninstall", () => {
     // credential branch already returned — twentyDeleteCalls populated
     // before this DELETE got pushed onto internalQueryCalls. The
     // assertion above on twentyDeleteCalls confirms it ran.
+  });
+
+  it("clears discord_installations (BYOT) on unified Discord disconnect, before workspace_plugins (#3163)", async () => {
+    // A static-bot Discord install lives only in workspace_plugins, but a
+    // dual-mode workspace also has a BYOT row in discord_installations. The
+    // unified disconnect must drop the BYOT credential too (deleteDiscordInstallationByOrg
+    // is a no-op when there's no BYOT row), so the admin doesn't have to
+    // disconnect twice.
+    queueCatalogLookup("discord", { pillar: "chat", install_model: "static-bot" });
+    queueInstallLookup(WSID, "catalog:discord", {
+      id: "install-discord",
+      install_id: "install-discord",
+      team_id: null,
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM workspace_plugins"),
+      rows: [],
+    });
+
+    const installer = await getLiveService();
+    await runEffect(installer.uninstall(WSID, "discord"));
+
+    expect(discordDeleteByOrgCalls).toEqual([WSID]);
+    expect(mockDeleteDiscordInstallationByOrg).toHaveBeenCalledTimes(1);
+    // The chat_cache (Slack) and integration_credentials stores are untouched.
+    expect(mockDeleteSlackInstallation).not.toHaveBeenCalled();
+    expect(mockDeleteCredentialBundle).not.toHaveBeenCalled();
+    // workspace_plugins DELETE still ran (after the credential drop).
+    const deleteSqlIdx = internalQueryCalls.findIndex((c) =>
+      c.sql.includes("DELETE FROM workspace_plugins"),
+    );
+    expect(deleteSqlIdx).toBeGreaterThanOrEqual(0);
   });
 });
 

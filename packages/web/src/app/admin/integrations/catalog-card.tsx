@@ -306,14 +306,19 @@ export interface CatalogCardProps {
  * scheduled-task activity managed on `/admin/scheduled-tasks`, not a
  * disconnectable connection. Rendering Disconnect on a webhook card would
  * 404 against `/admin/integrations/webhook` (which doesn't exist).
+ *
+ * teams / telegram / gchat / whatsapp were removed from this set in #3161:
+ * their legacy `DELETE /admin/integrations/:slug` endpoints (and the backing
+ * `*_installations` tables) were dropped. Those static-bot installs live in
+ * `workspace_plugins`, so `entry.installed` is true and
+ * {@link resolveDisconnectRoute} routes them through the unified catalog DELETE
+ * (#3154 GAP 1) — the legacy branch is never the right answer for them.
+ * `discord` stays because its `discord_installations` BYOT path still has a
+ * legacy endpoint for the credential-only (no `workspace_plugins` row) install.
  */
 const LEGACY_DISCONNECT_SLUGS: ReadonlySet<string> = new Set([
   "slack",
-  "teams",
   "discord",
-  "telegram",
-  "gchat",
-  "whatsapp",
   "github",
   "linear",
   "email",

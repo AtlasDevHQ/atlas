@@ -405,6 +405,20 @@ function registerSalesforceOAuthHandler(): void {
  *
  * When the catalog has telegram disabled (or omitted), the env-unset
  * branch stays at `info` — operator intentionally hasn't opted in.
+ *
+ * `TELEGRAM_WEBHOOK_SECRET` is required by the AdapterRegistry (the chat
+ * adapter verifies it against the `x-telegram-bot-api-secret-token` header
+ * on every inbound update — mandatory since #3154 GAP 3) but is NOT required
+ * for the install handler itself — the install handler doesn't verify webhooks.
+ * An operator who wires `TELEGRAM_BOT_TOKEN` but forgets the webhook secret
+ * still gets a working install flow, but the AdapterRegistry won't build the
+ * Telegram adapter, so no Telegram receive path is registered (inbound updates
+ * are ignored — forgery-safe). That gap is end-user-invisible (the admin card
+ * reports `connected: true` off the `workspace_plugins` row), so we escalate it
+ * to an `error` boot line here — at the install-registration point the operator
+ * is already watching — in addition to the AdapterRegistry's own missing-env
+ * log. Mirrors the #2673 silent-degradation precedent + Discord's
+ * `DISCORD_PUBLIC_KEY` split below.
  */
 function registerTelegramStaticBotHandler(): void {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -420,6 +434,18 @@ function registerTelegramStaticBotHandler(): void {
       );
     }
     return;
+  }
+  // Webhook-secret heads-up (#3154 GAP 3): the install handler works without
+  // it, but the adapter won't build, so installs succeed while inbound traffic
+  // is silently dropped. Surface it at `error` when the operator has opted in
+  // (catalog enabled) so the deploy-time signal isn't only in the
+  // AdapterRegistry log. Forgery-safe, but the admin card will look connected.
+  const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if ((!webhookSecret || webhookSecret.length === 0) && isCatalogSlugEnabled("telegram")) {
+    log.error(
+      { slug: "telegram", requiredEnv: ["TELEGRAM_WEBHOOK_SECRET"] },
+      "Telegram install handler registered, but TELEGRAM_WEBHOOK_SECRET is unset — the AdapterRegistry will NOT build the Telegram adapter, so installs will succeed yet inbound updates are dropped (forgery-safe). Set TELEGRAM_WEBHOOK_SECRET per-service to make Telegram routable. See #3154 GAP 3.",
+    );
   }
   registerStaticBotHandler(
     TELEGRAM_SLUG,

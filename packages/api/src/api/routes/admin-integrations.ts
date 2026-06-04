@@ -19,23 +19,15 @@ import {
 import type { WorkspaceId } from "@useatlas/types";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallationByOrg, saveInstallation, deleteInstallationByOrg } from "@atlas/api/lib/slack/store";
-import {
-  getTeamsInstallationByOrg,
-  deleteTeamsInstallationByOrg,
-} from "@atlas/api/lib/teams/store";
+// teams/telegram/gchat/whatsapp stores were deleted with their tables in #3161.
+// Those static-bot platforms' connection status is now read from
+// `workspace_plugins` (see the status handler below), and their disconnect
+// flows through the unified `DELETE /api/v1/integrations/:slug` (#3154 GAP 1).
 import {
   getDiscordInstallationByOrg,
   saveDiscordInstallation,
   deleteDiscordInstallationByOrg,
 } from "@atlas/api/lib/discord/store";
-import {
-  getTelegramInstallationByOrg,
-  deleteTelegramInstallationByOrg,
-} from "@atlas/api/lib/telegram/store";
-import {
-  getGChatInstallationByOrg,
-  deleteGChatInstallationByOrg,
-} from "@atlas/api/lib/gchat/store";
 import {
   getGitHubInstallationByOrg,
   saveGitHubInstallation,
@@ -46,10 +38,6 @@ import {
   saveLinearInstallation,
   deleteLinearInstallationByOrg,
 } from "@atlas/api/lib/linear/store";
-import {
-  getWhatsAppInstallationByOrg,
-  deleteWhatsAppInstallationByOrg,
-} from "@atlas/api/lib/whatsapp/store";
 import {
   getEmailInstallationByOrg,
   saveEmailInstallation,
@@ -139,41 +127,11 @@ const disconnectSlackRoute = createRoute({
   },
 });
 
-const disconnectTeamsRoute = createRoute({
-  method: "delete",
-  path: "/teams",
-  tags: ["Admin — Integrations"],
-  summary: "Disconnect Teams",
-  description:
-    "Removes the Teams installation for the current workspace. " +
-    "Any Teams bot functionality will stop working until reconnected.",
-  responses: {
-    200: {
-      description: "Teams disconnected",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "No Teams installation found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
+// Note: the legacy per-platform disconnect routes for teams / telegram /
+// gchat / whatsapp were removed in #3161 — those static-bot installs now
+// disconnect through the unified `DELETE /api/v1/integrations/:slug`
+// (#3154 GAP 1). Slack and Discord keep their dedicated disconnect routes
+// (Slack two-store teardown; Discord BYOT `discord_installations`).
 
 // ---------------------------------------------------------------------------
 // Router
@@ -208,7 +166,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       // predate slice 5 — the UI then degrades to "Connected on <chat_cache
       // installed_at>" without the "by X" part. Cheap (one PK lookup
       // on the unique workspace_id + catalog_id index).
-      const [slackInstall, slackInstallMeta, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, emailInstall, webhookActiveCount] =
+      const [slackInstall, slackInstallMeta, staticBotInstalls, discordInstall, githubInstall, linearInstall, emailInstall, webhookActiveCount] =
         yield* Effect.all(
           [
             Effect.tryPromise({
@@ -233,20 +191,43 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
               },
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
+            // Teams / Telegram / Google Chat / WhatsApp connection status. Their
+            // per-platform `*_installations` tables were dropped in #3161; the
+            // static-bot install record now lives in `workspace_plugins` keyed
+            // by `catalog:<slug>` with the routing identifier in `config`. One
+            // query covers all four; `enabled = true` matches the inbound
+            // routing resolvers in `lib/chat-plugin/executeQuery.ts` so
+            // "connected" means "actually routable".
             Effect.tryPromise({
-              try: () => getTeamsInstallationByOrg(orgId),
+              try: async (): Promise<
+                ReadonlyMap<string, { installedAt: string | null; config: Record<string, unknown> }>
+              > => {
+                if (!hasInternalDB()) return new Map();
+                const rows = await internalQuery<{
+                  catalog_id: string;
+                  installed_at: string | null;
+                  config: Record<string, unknown> | null;
+                }>(
+                  `SELECT catalog_id,
+                          to_char(installed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS installed_at,
+                          config
+                     FROM workspace_plugins
+                    WHERE workspace_id = $1
+                      AND pillar = 'chat'
+                      AND enabled = true
+                      AND catalog_id = ANY($2::text[])`,
+                  [orgId, ["catalog:teams", "catalog:telegram", "catalog:gchat", "catalog:whatsapp"]],
+                );
+                const map = new Map<string, { installedAt: string | null; config: Record<string, unknown> }>();
+                for (const r of rows) {
+                  map.set(r.catalog_id, { installedAt: r.installed_at, config: r.config ?? {} });
+                }
+                return map;
+              },
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
               try: () => getDiscordInstallationByOrg(orgId),
-              catch: (err) => err instanceof Error ? err : new Error(String(err)),
-            }),
-            Effect.tryPromise({
-              try: () => getTelegramInstallationByOrg(orgId),
-              catch: (err) => err instanceof Error ? err : new Error(String(err)),
-            }),
-            Effect.tryPromise({
-              try: () => getGChatInstallationByOrg(orgId),
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -255,10 +236,6 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
             }),
             Effect.tryPromise({
               try: () => getLinearInstallationByOrg(orgId),
-              catch: (err) => err instanceof Error ? err : new Error(String(err)),
-            }),
-            Effect.tryPromise({
-              try: () => getWhatsAppInstallationByOrg(orgId),
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -312,17 +289,30 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: slackConfigurable,
       };
 
-      // Teams status — #2994 disabled the catalog/admin-UI install (the
-      // BYOT connect route was removed; the static-bot card is coming_soon),
-      // so it is no longer configurable from this surface. The orphaned
-      // `/api/v1/teams/install` OAuth module is a separate residual tracked
-      // in #3142 / #3145.
+      // Read a non-empty string field out of a static-bot install's
+      // `workspace_plugins.config` JSONB, or null. The routing identifiers
+      // (tenant_id, phone_number_id, …) are non-secret, so they're stored in
+      // plaintext and need no decryption here.
+      const cfgString = (
+        install: { config: Record<string, unknown> } | undefined,
+        key: string,
+      ): string | null => {
+        const v = install?.config[key];
+        return typeof v === "string" && v.length > 0 ? v : null;
+      };
+
+      // Teams status — install state now reads from `workspace_plugins`
+      // (#3161 dropped `teams_installations`). The bot is operator-shared and
+      // the install surface is the catalog card, so this legacy endpoint stays
+      // non-configurable. The `tenant_id` / `tenant_name` config fields carry
+      // through; the old credential-specific fields no longer exist.
+      const teamsInstall = staticBotInstalls.get("catalog:teams");
       const teamsConfigurable = false;
       const teams = {
-        connected: teamsInstall !== null,
-        tenantId: teamsInstall?.tenant_id ?? null,
-        tenantName: teamsInstall?.tenant_name ?? null,
-        installedAt: teamsInstall?.installed_at ?? null,
+        connected: teamsInstall !== undefined,
+        tenantId: cfgString(teamsInstall, "tenant_id"),
+        tenantName: cfgString(teamsInstall, "tenant_name"),
+        installedAt: teamsInstall?.installedAt ?? null,
         configurable: teamsConfigurable,
       };
 
@@ -336,27 +326,31 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: discordConfigurable,
       };
 
-      // Telegram status — #2994 removed the only install route (cap bypass +
-      // non-functional); not configurable until the cap-gated static-bot
-      // install ships (#3141).
+      // Telegram status — reads from `workspace_plugins` (#3161 dropped
+      // `telegram_installations`). The bot is operator-shared, so there is no
+      // per-workspace bot id / username (the config carries `chat_id` /
+      // `display_name`); those credential-specific fields are now always null.
+      const telegramInstall = staticBotInstalls.get("catalog:telegram");
       const telegramConfigurable = false;
       const telegram = {
-        connected: telegramInstall !== null,
-        botId: telegramInstall?.bot_id ?? null,
-        botUsername: telegramInstall?.bot_username ?? null,
-        installedAt: telegramInstall?.installed_at ?? null,
+        connected: telegramInstall !== undefined,
+        botId: null,
+        botUsername: null,
+        installedAt: telegramInstall?.installedAt ?? null,
         configurable: telegramConfigurable,
       };
 
-      // Google Chat status — #2994 removed the only install route (cap bypass +
-      // non-functional); not configurable until the cap-gated static-bot
-      // install ships (#3143).
+      // Google Chat status — reads from `workspace_plugins` (#3161 dropped
+      // `gchat_installations`). The service account is operator-shared, so the
+      // per-workspace project id / SA email are no longer tracked here (the
+      // config carries the routing `workspace_id`); those fields are now null.
+      const gchatInstall = staticBotInstalls.get("catalog:gchat");
       const gchatConfigurable = false;
       const gchat = {
-        connected: gchatInstall !== null,
-        projectId: gchatInstall?.project_id ?? null,
-        serviceAccountEmail: gchatInstall?.service_account_email ?? null,
-        installedAt: gchatInstall?.installed_at ?? null,
+        connected: gchatInstall !== undefined,
+        projectId: null,
+        serviceAccountEmail: null,
+        installedAt: gchatInstall?.installedAt ?? null,
         configurable: gchatConfigurable,
       };
 
@@ -379,15 +373,17 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: linearConfigurable,
       };
 
-      // WhatsApp status — #2994 removed the only install route (cap bypass +
-      // non-functional); not configurable until the cap-gated static-bot
-      // install ships (#3144).
+      // WhatsApp status — reads from `workspace_plugins` (#3161 dropped
+      // `whatsapp_installations`). The `phone_number_id` / `display_phone`
+      // config fields carry through; the install is via the catalog card so
+      // this legacy endpoint stays non-configurable.
+      const whatsappInstall = staticBotInstalls.get("catalog:whatsapp");
       const whatsappConfigurable = false;
       const whatsapp = {
-        connected: whatsappInstall !== null,
-        phoneNumberId: whatsappInstall?.phone_number_id ?? null,
-        displayPhone: whatsappInstall?.display_phone ?? null,
-        installedAt: whatsappInstall?.installed_at ?? null,
+        connected: whatsappInstall !== undefined,
+        phoneNumberId: cfgString(whatsappInstall, "phone_number_id"),
+        displayPhone: cfgString(whatsappInstall, "display_phone"),
+        installedAt: whatsappInstall?.installedAt ?? null,
         configurable: whatsappConfigurable,
       };
 
@@ -508,47 +504,7 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
   );
 });
 
-// DELETE /teams — disconnect Teams for current org
-adminIntegrations.openapi(disconnectTeamsRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      const deleted = yield* Effect.tryPromise({
-        try: () => deleteTeamsInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!deleted) {
-        return c.json(
-          { error: "not_found", message: "No Teams installation found for this workspace." },
-          404,
-        );
-      }
-
-      log.info({ orgId }, "Teams installation disconnected by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.disable,
-        targetType: "integration",
-        targetId: orgId!,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "teams" },
-      });
-
-      return c.json({ message: "Teams disconnected successfully." }, 200);
-    }),
-    { label: "disconnect teams" },
-  );
-});
+// (Legacy `DELETE /teams` removed in #3161 — unified disconnect, #3154 GAP 1.)
 
 // DELETE /discord — disconnect Discord for current org
 const disconnectDiscordRoute = createRoute({
@@ -946,164 +902,10 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
   );
 });
 
-// DELETE /telegram — disconnect Telegram for current org
-const disconnectTelegramRoute = createRoute({
-  method: "delete",
-  path: "/telegram",
-  tags: ["Admin — Integrations"],
-  summary: "Disconnect Telegram",
-  description:
-    "Removes the Telegram installation for the current workspace. " +
-    "Any Telegram bot functionality will stop working until reconnected.",
-  responses: {
-    200: {
-      description: "Telegram disconnected",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "No Telegram installation found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      const deleted = yield* Effect.tryPromise({
-        try: () => deleteTelegramInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!deleted) {
-        return c.json(
-          { error: "not_found", message: "No Telegram installation found for this workspace." },
-          404,
-        );
-      }
-
-      log.info({ orgId }, "Telegram installation disconnected by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.disable,
-        targetType: "integration",
-        targetId: orgId!,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "telegram" },
-      });
-
-      return c.json({ message: "Telegram disconnected successfully." }, 200);
-    }),
-    { label: "disconnect telegram" },
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Google Chat routes (BYOT-only — no platform OAuth variant)
-// ---------------------------------------------------------------------------
-
-const disconnectGChatRoute = createRoute({
-  method: "delete",
-  path: "/gchat",
-  tags: ["Admin — Integrations"],
-  summary: "Disconnect Google Chat",
-  description:
-    "Removes the Google Chat installation for the current workspace. " +
-    "Any Google Chat bot functionality will stop working until reconnected.",
-  responses: {
-    200: {
-      description: "Google Chat disconnected",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "No Google Chat installation found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(disconnectGChatRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      const deleted = yield* Effect.tryPromise({
-        try: () => deleteGChatInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!deleted) {
-        return c.json(
-          { error: "not_found", message: "No Google Chat installation found for this workspace." },
-          404,
-        );
-      }
-
-      log.info({ orgId }, "Google Chat installation disconnected by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.disable,
-        targetType: "integration",
-        targetId: orgId!,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "gchat" },
-      });
-
-      return c.json({ message: "Google Chat disconnected successfully." }, 200);
-    }),
-    { label: "disconnect gchat" },
-  );
-});
+// (Legacy `DELETE /telegram` and `DELETE /gchat` removed in #3161 — those
+// static-bot installs now disconnect through the unified
+// `DELETE /api/v1/integrations/:slug` (#3154 GAP 1). Neither platform had a
+// BYOT connect route on this surface; #2994 removed the only install routes.)
 
 // ---------------------------------------------------------------------------
 // GitHub routes (BYOT-only — no platform OAuth variant)
@@ -1624,86 +1426,9 @@ adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
   );
 });
 
-// ---------------------------------------------------------------------------
-// WhatsApp routes (BYOT-only — Cloud API credentials)
-// ---------------------------------------------------------------------------
-
-const disconnectWhatsAppRoute = createRoute({
-  method: "delete",
-  path: "/whatsapp",
-  tags: ["Admin — Integrations"],
-  summary: "Disconnect WhatsApp",
-  description:
-    "Removes the WhatsApp installation for the current workspace. " +
-    "Any WhatsApp messaging functionality will stop working until reconnected.",
-  responses: {
-    200: {
-      description: "WhatsApp disconnected",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "No WhatsApp installation found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
-  return runEffect(
-    c,
-    Effect.gen(function* () {
-      const { orgId } = yield* AuthContext;
-
-      if (!orgId) {
-        return c.json(
-          { error: "bad_request", message: "No active organization." },
-          400,
-        );
-      }
-
-      const deleted = yield* Effect.tryPromise({
-        try: () => deleteWhatsAppInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-
-      if (!deleted) {
-        return c.json(
-          { error: "not_found", message: "No WhatsApp installation found for this workspace." },
-          404,
-        );
-      }
-
-      log.info({ orgId }, "WhatsApp installation disconnected by admin");
-
-      logAdminAction({
-        actionType: ADMIN_ACTIONS.integration.disable,
-        targetType: "integration",
-        targetId: orgId!,
-        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-        metadata: { platform: "whatsapp" },
-      });
-
-      return c.json({ message: "WhatsApp disconnected successfully." }, 200);
-    }),
-    { label: "disconnect whatsapp" },
-  );
-});
+// (Legacy `DELETE /whatsapp` removed in #3161 — the static-bot WhatsApp install
+// now disconnects through the unified `DELETE /api/v1/integrations/:slug`
+// (#3154 GAP 1). #2994 removed the only WhatsApp install route on this surface.)
 
 // ---------------------------------------------------------------------------
 // Email routes (BYOT — SMTP, SendGrid, Postmark, SES, Resend)

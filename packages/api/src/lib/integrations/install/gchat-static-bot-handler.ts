@@ -69,6 +69,7 @@ import {
   GchatWorkspaceIdInvalidError,
 } from "@atlas/api/lib/effect/errors";
 import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -89,6 +90,54 @@ export const GCHAT_SLUG: CatalogId = "gchat";
  * string would produce FK violations at first install.
  */
 export const GCHAT_CATALOG_ID = "catalog:gchat";
+
+/**
+ * Cross-workspace ownership guard (#3154). The Pub/Sub round-trip proves the
+ * customer-supplied service account can publish, but the Google Workspace
+ * customer id (`workspace_id`) is a non-secret routing identifier — it rides
+ * in every inbound Google Chat event envelope. Reject a `workspace_id` already
+ * bound to a *different* Atlas workspace before persisting, otherwise a second
+ * workspace can claim it and the read-side resolver in `executeQuery.ts`
+ * fail-closes on `rows.length > 1`, disabling BOTH workspaces. The
+ * `workspace_id <> $3` filter (the installing Atlas workspace) excludes a
+ * reconnect of the same workspace. Read-only pre-check — narrows the
+ * cross-tenant window without being transactionally fused to the cap-gate
+ * INSERT (first writer wins; the loser's fail-closed is recoverable).
+ *
+ * The literal `my_customer` self-install alias is exempt: it is a
+ * caller-relative reference (each Google Workspace admin's "my own tenant"),
+ * NOT a globally unique customer id, so comparing it across workspaces would
+ * falsely block every later self-install. Two different tenants legitimately
+ * storing `my_customer` is a separate (pre-existing) non-routability concern —
+ * the inbound resolver matches the *real* customer id from the event envelope,
+ * never the literal alias — and is out of scope for this guard.
+ */
+async function assertWorkspaceIdUnboundElsewhere(
+  gchatWorkspaceId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  if (gchatWorkspaceId === "my_customer") return;
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'workspace_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [GCHAT_CATALOG_ID, gchatWorkspaceId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "Google Chat install rejected — workspace_id already bound to a different workspace",
+    );
+    throw new GchatWorkspaceIdInvalidError({
+      message:
+        "This Google Workspace is already connected to a different Atlas workspace. Each Google Workspace customer id can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Google Workspace customer ids are documented as the string `my_customer`
@@ -383,6 +432,15 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
     // Throws on token-endpoint / Pub/Sub failures *before* any DB write,
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
+
+    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // The Pub/Sub round-trip proves the SA can publish, NOT that THIS
+    // workspace owns the customer id (which is non-secret). Reject a
+    // workspace_id already bound to a *different* workspace so a second
+    // workspace can't claim it and collapse the read-side resolver onto a
+    // `rows.length > 1` fail-closed. A reconnect is excluded by `workspace_id
+    // <> $3`.
+    await assertWorkspaceIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3143, #3001) ──────────
     // Enforce the chat-integration cap and persist the workspace_plugins row

@@ -1868,8 +1868,27 @@ async function deleteCredentialStoreForSlug(
     await deleteTwentyIntegration(workspaceId);
     return;
   }
-  // Form-based: no separate credential store; the DELETE on
-  // workspace_plugins (step 2) is the credential teardown. No-op here.
+  if (slug === "discord") {
+    // Discord is dual-store: the static-bot install writes only
+    // `workspace_plugins` (routing), but a self-hosted BYOT install also
+    // persists a bot token to `discord_installations` (#3161 keeps that
+    // table). When a workspace has both, a unified disconnect must clear the
+    // BYOT credential too — otherwise `discord_installations.bot_token_encrypted`
+    // is stranded and the admin has to disconnect a second time through the
+    // legacy endpoint (Codex #3163). `deleteDiscordInstallationByOrg` is a no-op
+    // (returns false) for a static-bot-only install with no BYOT row, so this
+    // is safe in both cases. Lazy `require` mirrors the Slack/Twenty branches —
+    // keeps the discord store off the static graph of partial-mock test files.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { deleteDiscordInstallationByOrg } = require("@atlas/api/lib/discord/store") as {
+      deleteDiscordInstallationByOrg: (orgId: string) => Promise<boolean>;
+    };
+    await deleteDiscordInstallationByOrg(workspaceId);
+    return;
+  }
+  // Form-based / static-bot (telegram/gchat/whatsapp/teams): no separate
+  // credential store; the DELETE on workspace_plugins (step 2) is the
+  // credential teardown. No-op here.
 }
 
 // ---------------------------------------------------------------------------

@@ -19,8 +19,8 @@ each region.
 
 | Surface | Tables | Invariant |
 | --- | --- | --- |
-| F-41 integration credentials | `slack_installations`, `telegram_installations`, `gchat_installations`, `github_installations`, `linear_installations`, `whatsapp_installations`, `email_installations`, `sandbox_credentials` | `<col>_encrypted IS NOT NULL` AND value matches `enc:v\d+:` |
-| F-41 nullable-by-design | `teams_installations`, `discord_installations` | NULL allowed (admin-consent / OAuth-only); when present, must match `enc:v\d+:` |
+| F-41 integration credentials | `github_installations`, `linear_installations`, `email_installations`, `sandbox_credentials`, `sub_processor_subscriptions`, `integration_credentials`, `twenty_integrations` | `<col>_encrypted IS NOT NULL` AND value matches `enc:v\d+:` |
+| F-41 nullable-by-design | `discord_installations` | NULL allowed (OAuth-only); when present, must match `enc:v\d+:` |
 | F-42 platform plugin config | `plugin_settings.config` | every catalog `secret: true` field must match `enc:v\d+:` |
 | F-42 workspace plugin config | `workspace_plugins.config` | every catalog `secret: true` field must match `enc:v\d+:` |
 

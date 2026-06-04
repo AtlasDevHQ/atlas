@@ -1299,28 +1299,12 @@ export const slaThresholds = pgTable("sla_thresholds", {
 });
 
 // ---------------------------------------------------------------------------
-// Teams integration (0001_teams_installations.sql)
-// ---------------------------------------------------------------------------
-
-export const teamsInstallations = pgTable(
-  "teams_installations",
-  {
-    tenantId: text("tenant_id").primaryKey(),
-    orgId: text("org_id"),
-    tenantName: text("tenant_name"),
-    // Stays nullable — admin-consent installs persist no password.
-    appPasswordEncrypted: text("app_password_encrypted"),
-    // F-47 key version for `app_password_encrypted`.
-    appPasswordKeyVersion: integer("app_password_key_version").notNull().default(1),
-    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
-  },
-  (t) => [
-    index("idx_teams_installations_org").on(t.orgId),
-  ],
-);
-
-// ---------------------------------------------------------------------------
 // Discord integration (0002_discord_installations.sql)
+//
+// Note: the sibling teams/telegram/gchat/whatsapp_installations tables were
+// dropped by migration 0119 (#3161) — static-bot installs now live entirely in
+// `workspace_plugins`. `discord_installations` is retained because it still
+// backs the self-hosted Discord BYOT bot-token path.
 // ---------------------------------------------------------------------------
 
 export const discordInstallations = pgTable(
@@ -1339,46 +1323,6 @@ export const discordInstallations = pgTable(
   },
   (t) => [
     index("idx_discord_installations_org").on(t.orgId),
-  ],
-);
-
-// ---------------------------------------------------------------------------
-// Telegram integration (0003_telegram_installations.sql)
-// ---------------------------------------------------------------------------
-
-export const telegramInstallations = pgTable(
-  "telegram_installations",
-  {
-    botId: text("bot_id").primaryKey(),
-    botTokenEncrypted: text("bot_token_encrypted").notNull(),
-    // F-47 key version for `bot_token_encrypted`.
-    botTokenKeyVersion: integer("bot_token_key_version").notNull().default(1),
-    botUsername: text("bot_username"),
-    orgId: text("org_id"),
-    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
-  },
-  (t) => [
-    index("idx_telegram_installations_org").on(t.orgId),
-  ],
-);
-
-// ---------------------------------------------------------------------------
-// Google Chat integration (0007_gchat_installations.sql)
-// ---------------------------------------------------------------------------
-
-export const gchatInstallations = pgTable(
-  "gchat_installations",
-  {
-    projectId: text("project_id").primaryKey(),
-    serviceAccountEmail: text("service_account_email").notNull(),
-    credentialsJsonEncrypted: text("credentials_json_encrypted").notNull(),
-    // F-47 key version for `credentials_json_encrypted`.
-    credentialsJsonKeyVersion: integer("credentials_json_key_version").notNull().default(1),
-    orgId: text("org_id"),
-    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
-  },
-  (t) => [
-    index("idx_gchat_installations_org").on(t.orgId),
   ],
 );
 
@@ -1420,26 +1364,6 @@ export const linearInstallations = pgTable(
   },
   (t) => [
     index("idx_linear_installations_org").on(t.orgId),
-  ],
-);
-
-// ---------------------------------------------------------------------------
-// WhatsApp integration (0010_whatsapp_installations.sql)
-// ---------------------------------------------------------------------------
-
-export const whatsappInstallations = pgTable(
-  "whatsapp_installations",
-  {
-    phoneNumberId: text("phone_number_id").primaryKey(),
-    accessTokenEncrypted: text("access_token_encrypted").notNull(),
-    // F-47 key version for `access_token_encrypted`.
-    accessTokenKeyVersion: integer("access_token_key_version").notNull().default(1),
-    displayPhone: text("display_phone"),
-    orgId: text("org_id"),
-    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
-  },
-  (t) => [
-    index("idx_whatsapp_installations_org").on(t.orgId),
   ],
 );
 

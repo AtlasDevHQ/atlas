@@ -49,8 +49,8 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
   }'
 ```
 
-<Callout type="info">
-The `secret_token` is optional but recommended. When set, Telegram includes it in the `x-telegram-bot-api-secret-token` header on every webhook request. The Chat SDK adapter verifies this automatically.
+<Callout type="warn">
+Set `secret_token` to the same value as the `TELEGRAM_WEBHOOK_SECRET` env var. When set, Telegram includes it in the `x-telegram-bot-api-secret-token` header on every webhook request, and the Chat SDK adapter verifies it automatically. On Atlas this secret is **required** — the AdapterRegistry refuses to build the Telegram adapter without `TELEGRAM_WEBHOOK_SECRET`, so an unsigned (forgeable) webhook can't reach the agent. See the [Telegram integration guide](/integrations/telegram#2-set-the-env-vars).
 </Callout>
 
 ### 4. Add the Bot to a Group (Optional)
@@ -146,7 +146,7 @@ When a response includes approval buttons (e.g., for pending actions), button cl
 | Variable | Description |
 |----------|-------------|
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook secret token verified against the `x-telegram-bot-api-secret-token` header. **Required on Atlas** — the adapter isn't built without it (#3154). |
 
 ## Troubleshooting
 

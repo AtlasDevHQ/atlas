@@ -14,7 +14,8 @@
  * What changed under umbrella #2994: the callback used to write the
  * legacy `teams_installations` table via `saveTeamsInstallation` — an
  * **uncapped** install that bypassed the chat-integration plan cap and
- * produced a non-routable binding (the #2994 defect). It now dispatches
+ * produced a non-routable binding (the #2994 defect). That table and its
+ * store were dropped entirely in #3161. It now dispatches
  * the verified tenant into `TeamsStaticBotInstallHandler.confirmInstall`,
  * which enforces the cap via the advisory-locked
  * `checkChatIntegrationLimitAndInstall` and persists a `workspace_plugins`

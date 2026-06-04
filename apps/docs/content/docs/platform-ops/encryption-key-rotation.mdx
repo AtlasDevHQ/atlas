@@ -121,21 +121,9 @@ silently destroys every encrypted credential. Set a dedicated
           COUNT(*) FILTER (WHERE api_key_key_version < 2) AS below_active
      FROM workspace_model_config
    UNION ALL
-   SELECT 'teams_installations.app_password_encrypted',
-          COUNT(*) FILTER (WHERE app_password_key_version < 2)
-     FROM teams_installations
-   UNION ALL
    SELECT 'discord_installations.bot_token_encrypted',
           COUNT(*) FILTER (WHERE bot_token_key_version < 2)
      FROM discord_installations
-   UNION ALL
-   SELECT 'telegram_installations.bot_token_encrypted',
-          COUNT(*) FILTER (WHERE bot_token_key_version < 2)
-     FROM telegram_installations
-   UNION ALL
-   SELECT 'gchat_installations.credentials_json_encrypted',
-          COUNT(*) FILTER (WHERE credentials_json_key_version < 2)
-     FROM gchat_installations
    UNION ALL
    SELECT 'github_installations.access_token_encrypted',
           COUNT(*) FILTER (WHERE access_token_key_version < 2)
@@ -144,10 +132,6 @@ silently destroys every encrypted credential. Set a dedicated
    SELECT 'linear_installations.api_key_encrypted',
           COUNT(*) FILTER (WHERE api_key_key_version < 2)
      FROM linear_installations
-   UNION ALL
-   SELECT 'whatsapp_installations.access_token_encrypted',
-          COUNT(*) FILTER (WHERE access_token_key_version < 2)
-     FROM whatsapp_installations
    UNION ALL
    SELECT 'email_installations.config_encrypted',
           COUNT(*) FILTER (WHERE config_key_version < 2)

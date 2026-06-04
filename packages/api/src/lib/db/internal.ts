@@ -2149,14 +2149,11 @@ export interface HardDeleteResult {
   dashboardCards: number;
   dashboards: number;
   oauthState: number;
-  // Integration tables (org_id)
-  teamsInstallations: number;
+  // Integration tables (org_id). teams/telegram/gchat/whatsapp_installations
+  // were dropped by migration 0119 (#3161); discord_installations stays (BYOT).
   discordInstallations: number;
-  telegramInstallations: number;
-  gchatInstallations: number;
   githubInstallations: number;
   linearInstallations: number;
-  whatsappInstallations: number;
   emailInstallations: number;
   // Tables keyed by workspace_id
   usageEvents: number;
@@ -2304,14 +2301,12 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const dashboards = await del(`DELETE FROM dashboards WHERE org_id = $1`);
     const oauthState = await del(`DELETE FROM oauth_state WHERE org_id = $1`);
 
-    // Integration tables (org_id)
-    const teamsInstallations = await del(`DELETE FROM teams_installations WHERE org_id = $1`);
+    // Integration tables (org_id). teams/telegram/gchat/whatsapp_installations
+    // were dropped by migration 0119 (#3161) — those static-bot installs live
+    // in `workspace_plugins` (cleared below). discord_installations stays (BYOT).
     const discordInstallations = await del(`DELETE FROM discord_installations WHERE org_id = $1`);
-    const telegramInstallations = await del(`DELETE FROM telegram_installations WHERE org_id = $1`);
-    const gchatInstallations = await del(`DELETE FROM gchat_installations WHERE org_id = $1`);
     const githubInstallations = await del(`DELETE FROM github_installations WHERE org_id = $1`);
     const linearInstallations = await del(`DELETE FROM linear_installations WHERE org_id = $1`);
-    const whatsappInstallations = await del(`DELETE FROM whatsapp_installations WHERE org_id = $1`);
     const emailInstallations = await del(`DELETE FROM email_installations WHERE org_id = $1`);
 
     // ── Phase 3: Tables keyed by workspace_id (same value as orgId) ──
@@ -2413,13 +2408,9 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       dashboardCards,
       dashboards,
       oauthState,
-      teamsInstallations,
       discordInstallations,
-      telegramInstallations,
-      gchatInstallations,
       githubInstallations,
       linearInstallations,
-      whatsappInstallations,
       emailInstallations,
       usageEvents,
       usageSummaries,

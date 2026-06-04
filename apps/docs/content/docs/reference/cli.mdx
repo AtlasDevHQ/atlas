@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, completions, and operator subcommands (proactive / seed / ops).
+description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, eval, canonical-eval, smoke, plugin, benchmark, completions, and operator subcommands (proactive / seed / ops).
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -301,7 +301,7 @@ bun run atlas -- canonical-eval [options]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--schema <name>` | `ecommerce` | Canonical-eval schema (only `ecommerce` ships today; stays open-ended for future seeds) |
-| `--questions <path>` | `eval/canonical-questions/questions.json` | Path to the canonical questions fixture |
+| `--questions <path>` | `eval/canonical-questions/questions.yml` | Path to the canonical questions fixture |
 | `--llm` | — | Run the full agent loop and assert on the snapshot SQL. Mutually exclusive with `--mcp-llm` |
 | `--mcp-llm` | — | Dispatch through the real MCP route via an LLM. Mutually exclusive with `--llm` |
 | `--baseline <path>` | `eval/canonical-questions/mcp-llm-baseline.json` | Per-question latency baseline file for `--mcp-llm` mode |

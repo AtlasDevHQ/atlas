@@ -104,7 +104,7 @@ Pending and hidden rows never leave the admin boundary. Draft rows — edits que
 
 ## API
 
-The admin UI is a thin layer over four endpoints. Each requires `role = 'admin'`.
+The admin UI is a thin layer over four endpoints. Each requires a workspace admin role — the effective `member.role` of `admin` or `owner` (platform admins also pass). Tenant admin-ness is single-sourced on `member.role`, not the raw Better Auth `user.role` (#2890).
 
 | Endpoint                                               | Effect                                                                              |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------- |

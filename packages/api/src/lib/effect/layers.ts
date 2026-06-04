@@ -253,10 +253,9 @@ export const TelemetryLive: Layer.Layer<Telemetry> = Layer.scoped(
     if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
       const result = yield* Effect.tryPromise({
         try: async () => {
-          const { shutdownTelemetry } = await import(
-            "@atlas/api/lib/telemetry"
-          );
-          return shutdownTelemetry;
+          const { initTelemetry } = await import("@atlas/api/lib/telemetry");
+          // Defaults service.name to "atlas-api" (or OTEL_SERVICE_NAME).
+          return await initTelemetry();
         },
         catch: (err) => (err instanceof Error ? err.message : String(err)),
       }).pipe(

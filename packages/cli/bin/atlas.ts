@@ -169,6 +169,24 @@ export {
 // Re-export handleActionApproval from extracted query module
 export { handleActionApproval } from "../src/commands/query";
 
+/**
+ * Flush + tear down OTel on graceful shutdown of the `atlas mcp` server.
+ * Best-effort — a telemetry shutdown failure must not block process exit.
+ * No-op when telemetry was never started (`shutdown` is null). (#3199)
+ */
+async function shutdownMcpTelemetry(
+  shutdown: (() => Promise<void>) | null,
+): Promise<void> {
+  if (!shutdown) return;
+  try {
+    await shutdown();
+  } catch (err) {
+    console.error(
+      `[atlas] Error shutting down OpenTelemetry: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -281,6 +299,14 @@ async function main() {
     }
 
     try {
+      // #3199 — the CLI `atlas mcp` command is a standalone MCP process too;
+      // initialize OTel (no-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set) so
+      // its atlas.mcp.* signals export, mirroring packages/mcp's bin/serve.ts.
+      const { startMcpTelemetry } = await import(
+        "@atlas/mcp/telemetry-bootstrap"
+      );
+      const shutdownTelemetry = await startMcpTelemetry();
+
       const { createAtlasMcpServer } = await import(
         "@atlas/mcp/server"
       );
@@ -306,6 +332,7 @@ async function main() {
               `[atlas] Error closing SSE server: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
+          await shutdownMcpTelemetry(shutdownTelemetry);
           process.exit(0);
         };
         process.on("SIGINT", shutdown);
@@ -316,6 +343,24 @@ async function main() {
           "@modelcontextprotocol/sdk/server/stdio.js"
         );
         await server.connect(new StdioServerTransport());
+
+        let shuttingDown = false;
+        const shutdown = async () => {
+          if (shuttingDown) return;
+          shuttingDown = true;
+          try {
+            await server.close();
+          } catch (err) {
+            console.error(
+              `[atlas] Error closing server: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          await shutdownMcpTelemetry(shutdownTelemetry);
+          process.exit(0);
+        };
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+
         console.error("[atlas] MCP server running on stdio");
       }
     } catch (err) {

@@ -12,6 +12,50 @@ import { withSpan } from "@atlas/api/lib/tracing";
 const log = createLogger("plugins");
 
 // ---------------------------------------------------------------------------
+// Cached-liveness TTL for /health (#3201)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default TTL (ms) for the cached plugin-liveness snapshot served to `/health`.
+ *
+ * `/health` is public + unauthenticated and probes every credential-backed
+ * plugin on each request (jira → /myself, salesforce connection probe, email
+ * → Resend /domains, twenty → /rest/open-api/core). A monitor poll loop or a
+ * request burst would otherwise amplify into N live upstream calls per request.
+ * A short TTL collapses repeats onto a single probe while staying fresh enough
+ * to surface a newly-unhealthy plugin within ~15s.
+ */
+const DEFAULT_PLUGIN_HEALTH_CACHE_TTL_MS = 15_000;
+
+/** Upper bound — caps accidental over-staleness from a fat-fingered env value. */
+const MAX_PLUGIN_HEALTH_CACHE_TTL_MS = 300_000;
+
+let lastWarnedHealthTtl: string | undefined;
+
+/**
+ * Resolve the plugin-liveness cache TTL (ms) from
+ * `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS`. Falls back to the 15s default on an
+ * absent / unparseable / out-of-range value. `0` is valid and disables
+ * caching (every call re-probes upstream).
+ */
+export function getPluginHealthCacheTtlMs(): number {
+  const raw = process.env.ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS;
+  if (raw === undefined || raw === "") return DEFAULT_PLUGIN_HEALTH_CACHE_TTL_MS;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0 || n > MAX_PLUGIN_HEALTH_CACHE_TTL_MS) {
+    if (raw !== lastWarnedHealthTtl) {
+      log.warn(
+        { value: raw },
+        `Invalid ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS; using default ${DEFAULT_PLUGIN_HEALTH_CACHE_TTL_MS}ms`,
+      );
+      lastWarnedHealthTtl = raw;
+    }
+    return DEFAULT_PLUGIN_HEALTH_CACHE_TTL_MS;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
 // Structural interfaces (no import from @useatlas/plugin-sdk)
 // ---------------------------------------------------------------------------
 
@@ -23,6 +67,12 @@ export interface PluginHealthResult {
 
 export type PluginType = "datasource" | "context" | "interaction" | "action" | "sandbox";
 export type PluginStatus = "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
+
+/** Per-plugin liveness keyed by plugin id — the shape `healthCheckAll` returns. */
+export type PluginHealthSnapshot = Map<
+  string,
+  PluginHealthResult & { status: PluginStatus }
+>;
 
 /**
  * Serializable config field description for admin UI form generation.
@@ -95,6 +145,17 @@ export class PluginRegistry {
   private idSet = new Set<string>();
   private initialized = false;
 
+  // ── Cached plugin liveness for /health (#3201) ─────────────────────────
+  // The public, unauthenticated `/health` route calls `healthCheckAllCached`
+  // (not `healthCheckAll`) so a monitor poll loop / request burst collapses
+  // onto a single upstream probe per TTL window instead of fanning out N
+  // external calls per request. The route's cheap in-process checks (DB
+  // SELECT 1, etc.) stay live — only the credential-backed plugin probes are
+  // cached here.
+  private healthSnapshot: { at: number; result: PluginHealthSnapshot } | null =
+    null;
+  private healthSnapshotInFlight: Promise<PluginHealthSnapshot> | null = null;
+
   // `register` is intentionally not span-wrapped: synchronous, sub-millisecond
   // array push. A span here would dwarf its own measurement and clutter every
   // plugin boot trace. `init` / `teardown` / `healthCheckAll` are wrapped
@@ -165,13 +226,17 @@ export class PluginRegistry {
   /**
    * Run health checks on all registered plugins. Returns a map of plugin id
    * to health result with current status. Catches exceptions from probes.
+   *
+   * Always probes live — every credential-backed plugin's upstream is hit.
+   * The unauthenticated `/health` route must call `healthCheckAllCached`
+   * instead so repeated polls don't amplify into N external calls per request.
    */
-  async healthCheckAll(): Promise<Map<string, PluginHealthResult & { status: PluginStatus }>> {
+  async healthCheckAll(): Promise<PluginHealthSnapshot> {
     return withSpan(
       "atlas.plugin.healthCheckAll",
       { "atlas.plugin_count": this.entries.length },
       async () => {
-        const results = new Map<string, PluginHealthResult & { status: PluginStatus }>();
+        const results: PluginHealthSnapshot = new Map();
 
         for (const entry of this.entries) {
           if (!entry.plugin.healthCheck) {
@@ -195,6 +260,46 @@ export class PluginRegistry {
         return results;
       },
     );
+  }
+
+  /**
+   * Like {@link healthCheckAll}, but serves a cached snapshot while the
+   * previous probe is younger than `ttlMs` (default
+   * `ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS`, 15s). Built for the public,
+   * unauthenticated `/health` route: it bounds upstream fan-out so a monitor
+   * poll loop or request burst triggers each credential-backed plugin probe
+   * at most once per TTL window.
+   *
+   * - Concurrent callers during an in-flight probe share that probe rather
+   *   than each spawning their own (request coalescing).
+   * - Unhealthy results are cached verbatim — caching never converts a failing
+   *   probe into a healthy one, so an unhealthy plugin still surfaces.
+   * - A probe that rejects is NOT cached: the rejection propagates (so the
+   *   caller can surface `degraded`) and the next call re-probes. Any prior
+   *   snapshot is left untouched rather than being clobbered by the failure.
+   * - `ttlMs === 0` disables caching (every call re-probes).
+   */
+  async healthCheckAllCached(
+    ttlMs: number = getPluginHealthCacheTtlMs(),
+  ): Promise<PluginHealthSnapshot> {
+    const snapshot = this.healthSnapshot;
+    if (snapshot && Date.now() - snapshot.at < ttlMs) {
+      return snapshot.result;
+    }
+    if (this.healthSnapshotInFlight) {
+      return this.healthSnapshotInFlight;
+    }
+
+    const inFlight = this.healthCheckAll()
+      .then((result) => {
+        this.healthSnapshot = { at: Date.now(), result };
+        return result;
+      })
+      .finally(() => {
+        this.healthSnapshotInFlight = null;
+      });
+    this.healthSnapshotInFlight = inFlight;
+    return inFlight;
   }
 
   /**
@@ -311,6 +416,8 @@ export class PluginRegistry {
     this.entries = [];
     this.idSet.clear();
     this.initialized = false;
+    this.healthSnapshot = null;
+    this.healthSnapshotInFlight = null;
   }
 }
 

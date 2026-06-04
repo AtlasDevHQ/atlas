@@ -361,7 +361,14 @@ health.openapi(healthRoute, async (c) => {
       const { plugins } = await import("@atlas/api/lib/plugins/registry");
       const registered = plugins.describe();
       if (registered.length > 0) {
-        const probe = await plugins.healthCheckAll();
+        // #3201 — `/health` is public + unauthenticated, so a monitor poll
+        // loop / request burst would otherwise fan out one live upstream
+        // probe per credential-backed plugin on every request. The *Cached
+        // variant serves a short-TTL liveness snapshot (configurable via
+        // ATLAS_HEALTH_PLUGIN_CACHE_TTL_MS) so repeated hits probe each
+        // upstream at most once per window. An unhealthy plugin still
+        // surfaces — failing results are cached verbatim, not masked.
+        const probe = await plugins.healthCheckAllCached();
         const items = registered.map((p) => {
           const result = probe.get(p.id);
           // /health is public, no auth (file header) — every operator-facing
@@ -396,16 +403,19 @@ health.openapi(healthRoute, async (c) => {
         };
       }
     } catch (err) {
-      // healthCheckAll() at the registry level throwing is operator-significant
-      // — the per-plugin try/catch in PluginRegistry.healthCheckAll already
-      // catches individual probe failures, so reaching this branch implies
-      // module load failure, registry corruption, or an iterator bug. log.error
-      // (not warn) so the structured-log scraper paged on errors picks it up.
-      // /health still returns — the dashboard is most needed when things are
-      // broken. The hardcoded message is safe (no plugin-supplied content).
+      // healthCheckAllCached() at the registry level throwing is
+      // operator-significant — the per-plugin try/catch in
+      // PluginRegistry.healthCheckAll already catches individual probe
+      // failures, so reaching this branch implies module load failure,
+      // registry corruption, or an iterator bug. A rejected probe is not
+      // cached, so the next request re-probes rather than serving a stale
+      // failure. log.error (not warn) so the structured-log scraper paged on
+      // errors picks it up. /health still returns — the dashboard is most
+      // needed when things are broken. The hardcoded message is safe (no
+      // plugin-supplied content).
       log.error(
         { err: err instanceof Error ? err : new Error(String(err)) },
-        "Plugin healthCheckAll() failed at the registry level — surfacing plugins component as degraded",
+        "Plugin healthCheckAllCached() failed at the registry level — surfacing plugins component as degraded",
       );
       pluginAggregateDegraded = true;
       pluginsComponent = {

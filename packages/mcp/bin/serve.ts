@@ -29,6 +29,7 @@
 
 import { createAtlasMcpServer } from "../src/server.js";
 import { resolveMcpActor } from "../src/actor.js";
+import { startMcpTelemetry } from "../src/telemetry-bootstrap.js";
 import { initializeConfig } from "@atlas/api/lib/config";
 
 function parseArgs(argv: string[]) {
@@ -66,6 +67,11 @@ function parseArgs(argv: string[]) {
 async function main() {
   const { transport, port, corsOrigin } = parseArgs(process.argv);
 
+  // #3199 — initialize OTel in the standalone MCP process so atlas.mcp.*
+  // traces/metrics actually export. No-op (returns null) unless
+  // OTEL_EXPORTER_OTLP_ENDPOINT is set; covers both stdio and sse transports.
+  const shutdownTelemetry = await startMcpTelemetry();
+
   if (transport === "sse") {
     // #1858: resolve the actor once at boot and share it across all SSE
     // sessions. The doc contract says "fails loud at boot if mis-configured"
@@ -90,6 +96,7 @@ async function main() {
       } catch (err) {
         console.error(`[atlas-mcp] Error closing SSE server: ${err instanceof Error ? err.message : String(err)}`);
       }
+      await shutdownMcpTelemetry(shutdownTelemetry);
       process.exit(0);
     };
 
@@ -117,6 +124,7 @@ async function main() {
     } catch (err) {
       console.error(`[atlas-mcp] Error closing server: ${err instanceof Error ? err.message : String(err)}`);
     }
+    await shutdownMcpTelemetry(shutdownTelemetry);
     process.exit(0);
   };
 
@@ -125,6 +133,24 @@ async function main() {
 
   // Log to stderr so it doesn't interfere with JSON-RPC on stdout
   console.error("[atlas-mcp] Server running on stdio");
+}
+
+/**
+ * Flush + tear down OTel on graceful shutdown. Best-effort: a telemetry
+ * shutdown failure must not block process exit. No-op when telemetry was
+ * never started (`shutdown` is null).
+ */
+async function shutdownMcpTelemetry(
+  shutdown: (() => Promise<void>) | null,
+): Promise<void> {
+  if (!shutdown) return;
+  try {
+    await shutdown();
+  } catch (err) {
+    console.error(
+      `[atlas-mcp] Error shutting down OpenTelemetry: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 main().catch((err) => {

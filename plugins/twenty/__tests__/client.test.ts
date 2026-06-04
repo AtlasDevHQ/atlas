@@ -1939,15 +1939,35 @@ describe("probeTwentyHealth", () => {
     expect(calls[0].headers.Authorization).toBe("Bearer twenty_test_apikey_xyz");
   });
 
-  test("reports unhealthy when the API key is revoked (401)", async () => {
+  test("reports unhealthy when the API key is revoked (401), status-only — no upstream body", async () => {
     const { fetch } = makeScriptedFetch([
-      { status: 401, body: { messages: ["Unauthorized"] } },
+      { status: 401, body: { messages: ["Unauthorized — token sk-LEAKME"] } },
     ]);
     const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
     expect(result.healthy).toBe(false);
     expect(result.message).toContain("401");
-    expect(result.message).toContain("Unauthorized");
+    // Status-only: the upstream-controlled body must NOT reach the public
+    // /health route (#3196 review — defense in depth over SENSITIVE_PATTERNS).
+    expect(result.message).not.toContain("Unauthorized");
+    expect(result.message).not.toContain("sk-LEAKME");
     expect(typeof result.latencyMs).toBe("number");
+  });
+
+  test("reports unhealthy on a 2xx that is not the OpenAPI document (SPA / login-page catch-all)", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { login: true, redirect: "/auth" } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not the expected OpenAPI document");
+  });
+
+  test("reports healthy when the body carries a top-level openapi version", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 200, body: { openapi: "3.1.1", info: { title: "Twenty" } } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(true);
   });
 
   test("reports unhealthy on a 403 (key valid but lacking access)", async () => {

@@ -673,6 +673,24 @@ describe("scheduled-tasks module", () => {
       expect(queryCalls[1].sql).toContain("next_run_at IS NOT NULL");
     });
 
+    it("re-checks plugin ownership atomically in the lock UPDATE (#3180 TOCTOU guard)", async () => {
+      // The orphan guard must also fire at lock time, not only at SELECT time:
+      // an uninstall between getTasksDueForExecution and this lock must not let
+      // an already-selected orphan acquire the lock and run once.
+      enableInternalDB();
+      setResults(
+        { rows: [makeTaskRow()] },
+        { rows: [{ id: "task-123" }] },
+      );
+      await lockTaskForExecution("task-123");
+      const updateSql = queryCalls[1].sql;
+      expect(updateSql).toContain("UPDATE scheduled_tasks");
+      expect(updateSql).toContain("workspace_plugins");
+      expect(updateSql).toContain("plugin_id IS NULL");
+      expect(updateSql).toContain("wp.catalog_id = scheduled_tasks.plugin_id");
+      expect(updateSql).toContain("wp.workspace_id = scheduled_tasks.org_id");
+    });
+
     it("returns false when task not found", async () => {
       enableInternalDB();
       // getScheduledTask returns empty

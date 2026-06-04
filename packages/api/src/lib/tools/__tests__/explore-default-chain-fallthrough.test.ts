@@ -96,8 +96,11 @@ describe("explore default-chain fall-through (#3177)", () => {
     expect(typeof result).toBe("string");
     expect(result).toContain(MARKER);
     expect(result).not.toContain("Explore tool is unavailable");
-    // Health reporting agrees the sidecar is down after the init failure.
-    expect(mod.getExploreBackendType()).toBe("just-bash");
+    // The sidecar is NOT permanently marked failed on a transient init error
+    // (#3196 review): the reporter still shows the configured backend, and the
+    // sidecar is retried on the next cache resolution rather than pinned to the
+    // weaker fallback until restart.
+    expect(mod.getExploreBackendType()).toBe("sidecar");
 
     spy.mockRestore();
   });

@@ -499,19 +499,25 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
       // Skips nsjail auto-detection entirely — no noisy namespace warnings.
       // Same fall-through fix as the Vercel branch above: an init failure
       // (e.g. malformed ATLAS_SANDBOX_URL) logs and degrades to the next
-      // backend instead of hard-failing the explore tool. `_sidecarFailed`
-      // is set so health reporting (`getExploreBackendType`) and subsequent
-      // resolutions agree the sidecar is down, matching `tryCreateBackend`.
-      if (useSidecar() && !_sidecarFailed) {
+      // backend instead of hard-failing the explore tool. We deliberately do
+      // NOT set the process-global `_sidecarFailed` flag here (#3196 review):
+      // that flag is for a *deliberate, permanent* mark (the startup health
+      // probe via markSidecarFailed). A transient init failure on this path
+      // should be retried on the next backend-cache resolution — the resolved
+      // backend is cached per semantic root, so a down sidecar isn't re-probed
+      // every request, and recovery happens when the cache is invalidated
+      // (invalidateExploreBackend). Pinning the flag here would strand the
+      // deployment on the weaker fallback until process restart even after the
+      // sidecar recovers.
+      if (useSidecar()) {
         try {
           const { createSidecarBackend } = await import("./explore-sidecar");
           return await createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
         } catch (err) {
-          _sidecarFailed = true;
           const detail = errorMessage(err);
           log.warn(
             { error: detail },
-            "sidecar backend failed to initialize — falling through to next backend in default priority",
+            "sidecar backend failed to initialize — falling through to next backend in default priority (retried on the next backend-cache resolution)",
           );
         }
       }

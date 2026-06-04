@@ -35,23 +35,50 @@ export const CHAT_ROUTING_ID_UNIQUE_INDEX = "workspace_plugins_chat_routing_id_u
 const PG_UNIQUE_VIOLATION = "23505";
 
 /**
- * Shape of the fields we read off a `pg` `DatabaseError`. `code` carries
- * the SQLSTATE; `constraint` carries the violated index/constraint name on
- * a unique violation. Both are optional because the value reaching a
- * `catch` is `unknown` — a network/driver error won't have them.
+ * Max `.cause` links to follow. The pg error is at most a couple of links
+ * deep (`SqlError.cause` → pg `DatabaseError`); the cap is a backstop against
+ * a cyclic `cause` chain rather than a real depth requirement.
+ */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * Shape of the fields we read off an error link. `code` carries the SQLSTATE;
+ * `constraint` carries the violated index/constraint name on a unique
+ * violation; `cause` is the next link to inspect. All optional because the
+ * value reaching a `catch` is `unknown` — a network/driver error won't have
+ * them.
  */
 interface PgErrorLike {
   readonly code?: unknown;
   readonly constraint?: unknown;
+  readonly cause?: unknown;
 }
 
 /**
- * True iff `err` is a Postgres unique-violation raised by the static-bot
- * routing-id index ({@link CHAT_ROUTING_ID_UNIQUE_INDEX}) — i.e. a second
- * workspace lost the concurrent-install race for the same routing id.
+ * True iff `err` (or any link in its `.cause` chain) is a Postgres
+ * unique-violation raised by the static-bot routing-id index
+ * ({@link CHAT_ROUTING_ID_UNIQUE_INDEX}) — i.e. a second workspace lost the
+ * concurrent-install race for the same routing id.
+ *
+ * The chain walk matters: the pg `DatabaseError` surfaces with top-level
+ * `code`/`constraint` on the raw-pool transaction path (the common with-org
+ * install via `getInternalDB().connect()`), but the no-org direct-insert path
+ * and the generic marketplace config UPDATE both go through `@effect/sql`
+ * (`internalQuery` / `queryEffect` → `_sqlClient.unsafe`), which wraps the pg
+ * error inside a `SqlError.cause` with NO top-level `code`. Inspecting each
+ * link catches the 23505 regardless of how deeply the driver/Effect layer
+ * wrapped it.
  */
 export function isRoutingIdUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as PgErrorLike;
-  return e.code === PG_UNIQUE_VIOLATION && e.constraint === CHAT_ROUTING_ID_UNIQUE_INDEX;
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (typeof current !== "object" || current === null) return false;
+    const e = current as PgErrorLike;
+    if (e.code === PG_UNIQUE_VIOLATION && e.constraint === CHAT_ROUTING_ID_UNIQUE_INDEX) {
+      return true;
+    }
+    if (e.cause === current) return false; // self-referential guard
+    current = e.cause;
+  }
+  return false;
 }

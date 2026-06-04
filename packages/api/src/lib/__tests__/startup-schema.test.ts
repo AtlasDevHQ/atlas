@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { mockIsSupportedProvider, mockGetMissingProviderConfig } from "./provider-config-mock";
 
 // ---------------------------------------------------------------------------
 // Control variables for mocks
@@ -41,8 +42,11 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
-  // PROVIDER_KEY_MAP moved here from startup.ts (#3178). startup.ts
-  // imports it, so mock.module must provide it (mock-all-exports).
+  // Required-config SSOT (#3200) — startup.ts's checkProviderApiKey consumes the
+  // set-based check; shared fixture mirrors real providers.ts semantics.
+  isSupportedProvider: mockIsSupportedProvider,
+  getMissingProviderConfig: mockGetMissingProviderConfig,
+  // PROVIDER_KEY_MAP retained for the display/signup-URL mirror (#3178).
   PROVIDER_KEY_MAP: {
     anthropic: "ANTHROPIC_API_KEY",
     openai: "OPENAI_API_KEY",

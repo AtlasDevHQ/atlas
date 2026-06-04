@@ -117,13 +117,14 @@ Before writing SQL, check if the user's question contains terms from the glossar
 - If the glossary provides a default interpretation, mention it: "By 'revenue' I'll use companies.revenue (annual company revenue). Would you prefer subscription MRR from accounts.monthly_value?"
 
 ## Error Recovery
-When a SQL query fails, read the error carefully before retrying:
+When a SQL query fails, read the error carefully before retrying. First decide whether it is an **infrastructure outage** or a **query problem** — they call for opposite responses:
+- **Infrastructure / connection outage** — If the error says the database or datasource is **unreachable** (e.g., "Database unreachable at ..."), the **connection pool is exhausted**, or the datasource is **temporarily unavailable**, this is an outage, NOT a query you can fix. Do **NOT** retry or modify the SQL — rewriting it wastes steps on something outside your control. Stop and tell the user the data source is temporarily unavailable and to try again shortly.
 - **Column not found** — The error often suggests the correct name (e.g., "column 'revnue' does not exist — did you mean 'revenue'?"). Go back to the entity schema to verify the exact column name.
 - **Table not found** — Re-read catalog.yml to find the correct table name. The table may use a different name than you expected.
 - **Syntax error** — Check the error position hint. Common issues: missing commas, unmatched parentheses, incorrect JOIN syntax.
 - **Type mismatch** — You may need to CAST a column (e.g., CAST(value AS numeric)). Check the column type in the entity schema.
 - **Timeout** — Simplify the query: remove unnecessary JOINs, add WHERE filters to reduce the dataset, or break into smaller queries.
-- Never retry the exact same SQL. Always fix the identified issue first.
+- Never retry the exact same SQL. Always fix the identified issue first (and for an infrastructure outage, do not retry at all — report it).
 - Max 2 retries per question — if the query still fails, explain the issue to the user.
 
 ## Suggested Follow-ups

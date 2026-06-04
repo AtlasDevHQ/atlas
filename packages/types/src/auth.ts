@@ -34,8 +34,11 @@ export type PlatformRole = (typeof PLATFORM_ROLES)[number];
 /**
  * All Atlas role values — union of ORG_ROLES ∪ PLATFORM_ROLES. Derived so
  * that adding a new role forces a conscious bucket choice (org-assignable
- * vs platform-only). The user.role column may legitimately hold any of
- * these values.
+ * vs platform-only). This union spans both role surfaces: as of #2890 the
+ * admin-plugin `user.role` column only ever holds `platform_admin` (or a
+ * non-admin default), while `owner`/`admin`/`member` live on the org
+ * plugin's `member.role`. An effective role (the merge of the two) may be
+ * any value in this tuple.
  */
 export const ATLAS_ROLES = [...ORG_ROLES, ...PLATFORM_ROLES] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];

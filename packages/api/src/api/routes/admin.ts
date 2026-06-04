@@ -2649,6 +2649,26 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return c.json({ error: "internal_error", message: "Failed to read current role." , requestId}, 500);
   }
 
+  // Rank guard: writing member.role directly bypasses Better Auth's org-plugin
+  // update-member-role gate, which only lets an `owner` grant or modify the
+  // `owner` role. Re-assert it here so a workspace `admin` cannot escalate
+  // someone to `owner` (above their own rank) or demote/replace the workspace
+  // `owner`. Platform admins and owners are unrestricted; `admin` actors may
+  // only manage `member`/`admin`. (`authResult.user.role` is the effective
+  // role — the caller's org member.role, or platform_admin.)
+  const actorRole = authResult.user?.role;
+  const actorCanManageOwner = actorRole === "platform_admin" || actorRole === "owner";
+  if (!actorCanManageOwner && (newRole === "owner" || previousRole === "owner")) {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Only a workspace owner can assign or change the owner role.",
+        requestId,
+      },
+      403,
+    );
+  }
+
   // Last-admin guard: don't strip a workspace of its final owner/admin by
   // demoting the last one to member.
   if (newRole === "member" && (previousRole === "admin" || previousRole === "owner")) {
@@ -2888,12 +2908,30 @@ admin.openapi(deleteUserRoute, async (c) => {
 
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
+  // #2890 / F-14: deleteUser removes the account globally (Better Auth deletes
+  // the user + account rows across every workspace), so — like banUser/unbanUser
+  // — it is restricted to platform admins. Workspace admins scope removal to
+  // their own org via DELETE /api/v1/admin/users/{id}/membership. This also
+  // closes the authorization gap from dropping the admin-plugin `admin` role:
+  // a workspace admin's raw user.role no longer authorizes Better Auth's
+  // admin-plugin `removeUser`.
+  if (authResult.user?.role !== "platform_admin") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Deleting a user account is a global action restricted to platform admins. To remove a user from your workspace only, use DELETE /api/v1/admin/users/{id}/membership.",
+        requestId,
+      },
+      403,
+    );
+  }
+
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  // Org-scoping: workspace admins can only delete users in their own org
+  // Org-scoping (platform admins bypass): retained as defense-in-depth.
   if (!(await verifyOrgMembership(authResult, userId))) {
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
@@ -2973,12 +3011,29 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
 
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
+  // #2890 / F-14: revoking a user's sessions is global (Better Auth invalidates
+  // every session the user holds, across all workspaces), so — like
+  // banUser/unbanUser/deleteUser — it is restricted to platform admins. This
+  // also closes the authorization gap from dropping the admin-plugin `admin`
+  // role: a workspace admin's raw user.role no longer authorizes Better Auth's
+  // admin-plugin `revokeSessions`.
+  if (authResult.user?.role !== "platform_admin") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Revoking a user's sessions is a global action restricted to platform admins.",
+        requestId,
+      },
+      403,
+    );
+  }
+
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  // Org-scoping: workspace admins can only revoke sessions for users in their own org
+  // Org-scoping (platform admins bypass): retained as defense-in-depth.
   if (!(await verifyOrgMembership(authResult, userId))) {
     return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }

@@ -13,7 +13,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 import { resolveEffectiveRole } from "../effective-role";
-import { buildCustomSessionPayload } from "../server";
+import { buildCustomSessionPayload, canGenerateSCIMToken } from "../server";
 
 describe("resolveEffectiveRole()", () => {
   // #2890 model: effectiveRole = user.role === "platform_admin"
@@ -156,5 +156,52 @@ describe("buildCustomSessionPayload()", () => {
       session: { id: "sess_1", userId: "usr_1", activeOrganizationId: "org_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("admin");
+  });
+});
+
+describe("canGenerateSCIMToken()", () => {
+  // #2890: the SCIM-token hook only sees the raw user.role (now only ever
+  // platform_admin), so authorization must resolve the effective grant from
+  // member.role. Tenant admins/owners must still be able to mint.
+  beforeEach(() => {
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
+  });
+  afterEach(() => {
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
+  });
+
+  it("platform_admin is authorized without a member lookup", async () => {
+    let queried = false;
+    mockHasInternalDB = true;
+    mockInternalQuery = () => { queried = true; return Promise.resolve([]); };
+    expect(await canGenerateSCIMToken("platform_admin", "usr_1")).toBe(true);
+    expect(queried).toBe(false);
+  });
+
+  it("an org admin/owner (member.role) is authorized even though raw role is not admin", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([{ ok: 1 }]);
+    // raw role is the post-#2890 signup default — admin-ness comes from member.role
+    expect(await canGenerateSCIMToken("member", "usr_owner")).toBe(true);
+  });
+
+  it("a plain member (no admin/owner member row) is denied", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([]);
+    expect(await canGenerateSCIMToken("member", "usr_plain")).toBe(false);
+  });
+
+  it("fails closed when the member lookup errors", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.reject(new Error("db down"));
+    expect(await canGenerateSCIMToken("member", "usr_1")).toBe(false);
+  });
+
+  it("without an internal DB falls back to the raw-role predicate", async () => {
+    mockHasInternalDB = false;
+    expect(await canGenerateSCIMToken("admin", "usr_1")).toBe(true);
+    expect(await canGenerateSCIMToken("member", "usr_1")).toBe(false);
   });
 });

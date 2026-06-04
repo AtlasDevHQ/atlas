@@ -42,8 +42,14 @@ const PG_TEST_TIMEOUT_MS = 30_000;
  *
  *   - `user.id` — FK target for 0048's `trusted_device.user_id`
  *   - `user.emailVerified` — UPDATEd by 0050 backfill
+ *   - `user.role` — cleared by 0118 (`SET role = NULL WHERE role = 'admin'`)
  *   - `session.userId` — read by 0050 to scope the backfill
  *   - `organization.id` — ALTERed by 0027 / 0042 / 0090
+ *   - `member.role` — backfilled by 0118 from `user.role='admin'`
+ *
+ * `user.role` + `member` mirror Better Auth's admin/organization plugin
+ * schema (Atlas doesn't create them) — present here only because 0118
+ * reads/writes both.
  *
  * IF NOT EXISTS so re-running in a long-lived schema (e.g. shared CI
  * Postgres across shards) is idempotent. PG_TEST_TIMEOUT_MS budget is
@@ -55,6 +61,7 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     email TEXT,
     "emailVerified" BOOLEAN NOT NULL DEFAULT false,
     name TEXT,
+    role TEXT,
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -70,6 +77,14 @@ const BETTER_AUTH_BOOTSTRAP_SQL = `
     id TEXT PRIMARY KEY,
     name TEXT,
     slug TEXT,
+    "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE IF NOT EXISTS member (
+    id TEXT PRIMARY KEY,
+    "userId" TEXT NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+    "organizationId" TEXT NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member',
     "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 `;
@@ -106,6 +121,26 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
       options: `-c search_path="${schemaName}",public`,
     });
     await pool.query(BETTER_AUTH_BOOTSTRAP_SQL);
+
+    // Pre-seed rows for the 0118 backfill round-trip (asserted below). These
+    // exist BEFORE the migrations run (in the first `it`), so 0118 transforms
+    // them. `u-0118-promote` has its admin grant only in user.role='admin'
+    // with a below-admin member row → must be promoted to member.role='admin'
+    // before the column is cleared. `u-0118-owner` is already an owner → must
+    // be left untouched.
+    await pool.query(
+      `INSERT INTO organization (id, name, slug) VALUES ('org-0118', 'Org 0118', 'org-0118')`,
+    );
+    await pool.query(
+      `INSERT INTO "user" (id, email, role) VALUES
+         ('u-0118-promote', 'promote@0118.test', 'admin'),
+         ('u-0118-owner', 'owner@0118.test', 'admin')`,
+    );
+    await pool.query(
+      `INSERT INTO member (id, "userId", "organizationId", role) VALUES
+         ('m-0118-promote', 'u-0118-promote', 'org-0118', 'member'),
+         ('m-0118-owner', 'u-0118-owner', 'org-0118', 'owner')`,
+    );
   });
 
   afterAll(async () => {
@@ -133,6 +168,33 @@ describeIfPg("migrate-pg-with-auth (real Postgres, Better Auth tables present)",
     async () => {
       const count = await runMigrations(pool);
       expect(count).toBe(0);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // ── 0118 backfill round-trip (#2890) ──
+  //
+  // The load-bearing, lossless part of the migration: any user whose admin
+  // grant lived only in user.role='admin' gets mirrored into member.role
+  // before the column is cleared, so no admin is silently demoted. Seeded in
+  // beforeAll (pre-migration); asserted here post-migration.
+  it(
+    "0118: backfills member.role from user.role='admin', leaves owners, then clears user.role",
+    async () => {
+      const members = await pool.query<{ userId: string; role: string }>(
+        `SELECT "userId", role FROM member WHERE "organizationId" = 'org-0118'`,
+      );
+      const byUser = Object.fromEntries(members.rows.map((r) => [r.userId, r.role]));
+      // below-admin member promoted to admin (mirror of the dropped user.role='admin')
+      expect(byUser["u-0118-promote"]).toBe("admin");
+      // owner untouched (NOT IN ('admin','owner') guard)
+      expect(byUser["u-0118-owner"]).toBe("owner");
+
+      // user.role='admin' cleared on both
+      const users = await pool.query<{ id: string; role: string | null }>(
+        `SELECT id, role FROM "user" WHERE id IN ('u-0118-promote', 'u-0118-owner')`,
+      );
+      expect(users.rows.every((r) => r.role === null)).toBe(true);
     },
     PG_TEST_TIMEOUT_MS,
   );

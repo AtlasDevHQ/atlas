@@ -35,20 +35,33 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 1. Lossless backfill: for any user whose admin grant lives only in
---    `user.role = 'admin'`, mirror it into `member.role = 'admin'` for every
---    org they belong to where they currently rank below admin. Org owners are
---    skipped (already >= admin). Under the retired model `user.role = 'admin'`
---    meant "effective admin in every org" (max merge), so promoting these
---    member rows to `admin` preserves — not widens — their access.
+-- Better Auth's admin plugin can store comma-separated multi-role strings
+-- (e.g. `admin,user`); Atlas only ever writes single values, and the
+-- pre-migration audit found none — but we match `admin` as a comma-list
+-- SEGMENT so a multi-role row can't survive. `(',' || role || ',')` wraps the
+-- value so a segment match is `LIKE '%,admin,%'`, which never matches
+-- `platform_admin` (',platform_admin,' has no ',admin,' substring).
+
+-- 1. Lossless backfill: for any user whose role-list carries an `admin`
+--    segment, mirror it into `member.role = 'admin'` for every org they belong
+--    to where they currently rank below admin. Org owners are skipped (already
+--    >= admin). Under the retired model an `admin` user.role meant "effective
+--    admin in every org" (max merge), so promoting these member rows to
+--    `admin` preserves — not widens — their access.
 UPDATE member m
 SET role = 'admin'
 FROM "user" u
 WHERE m."userId" = u.id
-  AND u.role = 'admin'
+  AND (',' || u.role || ',') LIKE '%,admin,%'
   AND m.role NOT IN ('admin', 'owner');
 
--- 2. Clear the now-redundant user-level value. `platform_admin` is untouched
---    (the only remaining admin-plugin user.role); all other values are left
---    as-is — only the dropped `admin` literal is retired.
-UPDATE "user" SET role = NULL WHERE role = 'admin';
+-- 2. Retire the `admin` segment from the user-level value: strip it from the
+--    comma list, leaving any other segments intact, and NULL the column when
+--    nothing remains. `platform_admin` and every non-admin value are left
+--    untouched (the WHERE only matches rows carrying an `admin` segment).
+UPDATE "user"
+SET role = NULLIF(
+  trim(BOTH ',' FROM replace(',' || role || ',', ',admin,', ',')),
+  ''
+)
+WHERE (',' || role || ',') LIKE '%,admin,%';

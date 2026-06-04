@@ -445,6 +445,11 @@ describe("F-57 — DELETE /admin/users/:id/membership (removeMembership)", () =>
 // ---------------------------------------------------------------------------
 
 describe("F-57 — DELETE /admin/users/:id (deleteUser)", () => {
+  // #2890: deleteUser is now platform_admin only (global blast radius).
+  beforeEach(() => {
+    mocks.setPlatformAdmin("org-scim");
+  });
+
   it("strict policy → 409 SCIM_MANAGED + no Better Auth removeUser", async () => {
     mockEvaluateSCIMGuardAsync.mockImplementationOnce(async ({ requestId }) => ({
       kind: "block",
@@ -495,6 +500,11 @@ describe("F-57 — DELETE /admin/users/:id (deleteUser)", () => {
 // ---------------------------------------------------------------------------
 
 describe("F-57 — POST /admin/users/:id/revoke (revokeUserSessions)", () => {
+  // #2890: revokeUserSessions is now platform_admin only (global blast radius).
+  beforeEach(() => {
+    mocks.setPlatformAdmin("org-scim");
+  });
+
   it("strict policy → 409 SCIM_MANAGED + no Better Auth revokeSessions", async () => {
     mockEvaluateSCIMGuardAsync.mockImplementationOnce(async ({ requestId }) => ({
       kind: "block",

@@ -23,9 +23,11 @@
  *      the client (`useUserRole`) can hide/show admin chrome consistently.
  *
  * Returns the resolved role on success, `undefined` only when neither side
- * yields one. Fails open to `userRole` on a member-table lookup error — a
- * transient DB blip shouldn't lock a platform admin or org admin out of the
- * console mid-session.
+ * yields one. On a member-table lookup error it falls back to `userRole` —
+ * the SAFE (fail-closed) direction: post-#2890 a non-platform user's
+ * `userRole` is a non-admin default, so a transient DB blip down-privileges an
+ * org admin (bounces them from the console) rather than over-granting.
+ * Platform admins are unaffected — they short-circuit before the lookup.
  */
 
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -56,9 +58,11 @@ export async function resolveEffectiveRole(
     // member.role is the single source of truth for tenant admin-ness.
     return parseRole(rows[0].role) ?? userRole;
   } catch (err) {
-    log.warn(
+    // log.error (not warn): a member-table read failure on the hot auth path
+    // is a real production signal, and it down-privileges an org admin.
+    log.error(
       { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },
-      "Failed to look up org member role — falling back to user-level role",
+      "Failed to look up org member role — falling back to user-level role (org admins fail closed)",
     );
     return userRole;
   }

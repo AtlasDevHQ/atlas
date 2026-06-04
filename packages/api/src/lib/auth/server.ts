@@ -125,6 +125,40 @@ export function canMintSCIMToken(role: unknown): boolean {
   return role === "admin" || role === "owner" || role === "platform_admin";
 }
 
+/**
+ * Effective authorization for SCIM token generation (#2890).
+ *
+ * The `beforeSCIMTokenGenerated` hook only receives the user object, whose
+ * raw `user.role` post-#2890 only ever carries `platform_admin` — tenant
+ * admin-ness now lives in `member.role`. A raw-role check ({@link
+ * canMintSCIMToken}) alone would therefore deny every org owner/admin, who
+ * are exactly the people that set up SCIM. Resolve the effective grant:
+ * `platform_admin` via user.role, OR an `admin`/`owner` member row in any of
+ * the user's orgs (the same intent the `ADMIN_ROLES` triple encodes).
+ *
+ * Fails CLOSED on a member-table lookup error — minting an IdP provisioning
+ * token is high-privilege, so a transient DB blip denies rather than grants.
+ * Without an internal DB (single-tenant self-hosted with no member table)
+ * falls back to the raw-role predicate.
+ */
+export async function canGenerateSCIMToken(role: unknown, userId: string | undefined): Promise<boolean> {
+  if (role === "platform_admin") return true;
+  if (!userId || !hasInternalDB()) return canMintSCIMToken(role);
+  try {
+    const rows = await internalQuery<{ ok: number }>(
+      `SELECT 1 AS ok FROM member WHERE "userId" = $1 AND role IN ('admin', 'owner') LIMIT 1`,
+      [userId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.warn(
+      { err: errorMessage(err), userId },
+      "SCIM token authorization member lookup failed — denying (fail closed)",
+    );
+    return false;
+  }
+}
+
 // #2890 removed `promoteOrgOwnerToAdmin`. The org plugin already inserts the
 // creator as a member with `member.role='owner'` (Better Auth `creatorRole`
 // default), which is the single source of truth for tenant admin-ness —
@@ -1624,7 +1658,10 @@ export function buildPlugins() {
           // object but the SCIM plugin's hook type only includes base
           // user fields.
           const user = data.user as Record<string, unknown> | undefined;
-          if (!canMintSCIMToken(user?.role)) {
+          // #2890: resolve the EFFECTIVE grant (user.role only holds
+          // platform_admin now; org admins/owners live in member.role).
+          const userId = typeof user?.id === "string" ? user.id : undefined;
+          if (!(await canGenerateSCIMToken(user?.role, userId))) {
             throw new Error("Only admin, owner, or platform-admin users can generate SCIM tokens.");
           }
         },

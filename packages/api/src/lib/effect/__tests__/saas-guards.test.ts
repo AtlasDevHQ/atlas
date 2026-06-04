@@ -46,6 +46,7 @@ import type {
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
   ProviderKeyMissingError as TProviderKeyMissingError,
+  ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
   ChatAdapterEnvMissingError as TChatAdapterEnvMissingError,
 } from "../saas-guards";
@@ -62,6 +63,7 @@ const {
   RateLimitRequiredError,
   ProviderKeyGuardLive,
   ProviderKeyMissingError,
+  ProviderUnsupportedError,
   RegionGuardLive,
   RegionMisconfiguredError,
   ChatAdapterEnvGuardLive,
@@ -610,7 +612,7 @@ describe("ProviderKeyGuardLive", () => {
     });
   }
 
-  function runGuard(): Promise<Exit.Exit<void, TProviderKeyMissingError>> {
+  function runGuard(): Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>> {
     return Effect.runPromiseExit(
       Effect.void.pipe(
         Effect.provide(
@@ -619,7 +621,7 @@ describe("ProviderKeyGuardLive", () => {
           ),
         ),
       ),
-    ) as Promise<Exit.Exit<void, TProviderKeyMissingError>>;
+    ) as Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>>;
   }
 
   // The gateway default is the SaaS prod path: ATLAS_PROVIDER unset →
@@ -687,12 +689,31 @@ describe("ProviderKeyGuardLive", () => {
   });
 
   // openai-compatible authenticates via a base URL, not a fixed key var, so
-  // PROVIDER_KEY_MAP has no entry — the guard skips rather than failing boot.
-  test("succeeds in SaaS for a provider with no mapped key (openai-compatible)", async () => {
+  // PROVIDER_KEY_MAP has no entry — but it IS a supported provider, so the guard
+  // skips the key check rather than treating it as unknown.
+  test("succeeds in SaaS for a valid keyless provider (openai-compatible)", async () => {
     await withCleanEnv(async () => {
       process.env.ATLAS_PROVIDER = "openai-compatible";
       const exit = await runGuard();
       expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // #3198 Codex (round 4) — a typo / unsupported ATLAS_PROVIDER would make
+  // resolveSelection() throw on every chat at first I/O while boot/health stay
+  // green. Fail boot with the distinct ProviderUnsupportedError instead of
+  // skipping (an unknown provider also yields PROVIDER_KEY_MAP[x] === undefined,
+  // so it must be distinguished from a valid keyless provider).
+  test("fails boot in SaaS when ATLAS_PROVIDER is an unsupported value (#3198)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PROVIDER = "anthrop"; // typo
+      const exit = await runGuard();
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ProviderUnsupportedError);
+      expect((failure as TProviderUnsupportedError)._tag).toBe("ProviderUnsupportedError");
+      expect((failure as TProviderUnsupportedError).provider).toBe("anthrop");
+      expect((failure as TProviderUnsupportedError).message).toContain("#3178");
     });
   });
 

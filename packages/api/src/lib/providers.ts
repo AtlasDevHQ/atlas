@@ -38,6 +38,16 @@ const VALID_PROVIDERS: ReadonlySet<ConfigProvider> = new Set([
   "gateway",
 ]);
 
+/**
+ * Whether `value` is a supported `ATLAS_PROVIDER`. Exposed so boot guards can
+ * distinguish a genuinely-unknown provider (a typo — `resolveSelection()` would
+ * throw on every chat) from a valid-but-keyless one (`ollama`,
+ * `openai-compatible`). Mirrors the membership `resolveSelection()` enforces.
+ */
+export function isSupportedProvider(value: string): boolean {
+  return VALID_PROVIDERS.has(value as ConfigProvider);
+}
+
 const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-4o",

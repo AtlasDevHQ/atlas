@@ -1429,11 +1429,17 @@ async function applyDeployMode(
     !envSetRecognizedMode &&
     configFileValue === "saas"
   ) {
+    // Cause-agnostic wording (#3198 Codex round 4): the downgrade can be caused
+    // by missing enterprise OR an invalid ATLAS_DEPLOY_MODE (treated as auto) OR
+    // auto-resolution without an internal DB even when enterprise IS enabled.
+    // Don't assert a single cause — list the candidates so the prescribed
+    // remediation can actually fix the resolved state.
     const reason =
-      `atlas.config.ts requested deployMode "saas" but enterprise is not enabled — ` +
-      `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
-      `guards are NOT running. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
-      `or remove the deployMode override from atlas.config.ts. See #1978.`;
+      `atlas.config.ts requested deployMode "saas" but it resolved to "${resolved.deployMode}" — ` +
+      `the SaaS contracts (DPA, encryption, internal-DB guards) are NOT running. Likely causes: ` +
+      `@atlas/ee not installed or ATLAS_ENTERPRISE_ENABLED unset; an invalid ATLAS_DEPLOY_MODE value ` +
+      `(treated as "auto"); or auto-resolution without DATABASE_URL. Fix the underlying cause, or ` +
+      `remove the deployMode override from atlas.config.ts. See #1978.`;
     log.error(
       {
         requested: "saas",

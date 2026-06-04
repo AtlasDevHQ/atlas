@@ -98,7 +98,7 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     // /health can surface a degraded flag + reason beyond the log line.
     expect(resolved.deployModeDowngraded).toBeDefined();
     expect(resolved.deployModeDowngraded!.reason).toContain("#1978");
-    expect(resolved.deployModeDowngraded!.reason).toContain("downgraded");
+    expect(resolved.deployModeDowngraded!.reason).toContain("SaaS contracts");
   });
 
   // Negative cases — must NOT log so the warning stays meaningful.

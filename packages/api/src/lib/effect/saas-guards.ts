@@ -184,6 +184,20 @@ export class ProviderKeyMissingError extends Data.TaggedError("ProviderKeyMissin
 }> {}
 
 /**
+ * SaaS region booted with `ATLAS_PROVIDER` set to a value that isn't a
+ * supported provider (a typo / unsupported vendor). `resolveSelection()` in
+ * `lib/providers.ts` throws `Unknown provider "<x>"` at model init, so the api
+ * boots green and then 503s every chat — the same boot-green-then-broken class
+ * `ProviderKeyMissingError` catches, but for the provider *name* rather than its
+ * key. Distinct error so the operator log names "unsupported provider" (not a
+ * missing key). Self-hosted keeps the per-request throw (#3198).
+ */
+export class ProviderUnsupportedError extends Data.TaggedError("ProviderUnsupportedError")<{
+  readonly message: string;
+  readonly provider: string;
+}> {}
+
+/**
  * SaaS region claims a residency region (`ATLAS_API_REGION` env var or
  * `residency.defaultRegion` in `atlas.config.ts`) that does not have a
  * matching entry in `config.residency.regions`, or whose entry has a
@@ -555,12 +569,14 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
  * The required key is looked up via the shared `PROVIDER_KEY_MAP` (SSOT in
  * `lib/providers.ts`):
  *
- *   - `undefined` → unknown / unmapped provider (e.g. `openai-compatible`,
- *     which authenticates via a base URL): skip. `providers.ts` throws a
- *     descriptive error at model init for a genuinely-unknown provider, so the
- *     guard doesn't duplicate that. (Fuller per-provider required-config
- *     validation — Bedrock secret/region, openai-compatible base URL — is
- *     tracked in #3200.)
+ *   - provider not in the supported set → a typo / unsupported vendor: fail boot
+ *     with {@link ProviderUnsupportedError} (in SaaS, `resolveSelection()` would
+ *     otherwise throw on every chat — boot-green-then-broken). `isSupportedProvider`
+ *     distinguishes this from a valid-but-keyless provider below.
+ *   - valid provider, `PROVIDER_KEY_MAP[provider] === undefined` → keyless
+ *     (e.g. `openai-compatible`, which authenticates via a base URL): skip the
+ *     key check. (Fuller per-provider required-config validation — Bedrock
+ *     secret/region, openai-compatible base URL — is tracked in #3200.)
  *   - `""` → `ollama`: skip (runs locally, no key).
  *   - otherwise → read the key straight from `process.env` (dynamic key, same
  *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty.
@@ -578,12 +594,12 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
  * anyway, and a silent skip would reintroduce the boot-green-then-503 hole
  * this guard closes.
  */
-export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, Config> = Layer.effectDiscard(
+export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError | ProviderUnsupportedError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
 
-    const { getDefaultProvider, PROVIDER_KEY_MAP } = yield* Effect.tryPromise({
+    const { getDefaultProvider, PROVIDER_KEY_MAP, isSupportedProvider } = yield* Effect.tryPromise({
       try: () => import("@atlas/api/lib/providers"),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(Effect.orDie);
@@ -592,10 +608,29 @@ export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, C
     // (the path chat.ts/runAgent actually uses); getDefaultProvider() supplies
     // the SaaS gateway default when ATLAS_PROVIDER is unset.
     const provider = readSaasEnv().ATLAS_PROVIDER ?? getDefaultProvider();
+
+    // Unsupported provider (typo / unknown vendor): `resolveSelection()` would
+    // throw on every chat in SaaS, so fail boot instead of skipping. Checked
+    // BEFORE the key lookup so a typo isn't mistaken for a valid keyless
+    // provider (both give `PROVIDER_KEY_MAP[provider] === undefined`).
+    if (!isSupportedProvider(provider)) {
+      return yield* Effect.fail(
+        new ProviderUnsupportedError({
+          provider,
+          message:
+            `SaaS region booted with ATLAS_PROVIDER="${provider}", which is not a supported provider — ` +
+            `model initialization (resolveSelection) would throw on every chat/query at first I/O while ` +
+            `boot and /health stay green. Set ATLAS_PROVIDER to one of: anthropic, openai, bedrock, ollama, ` +
+            `openai-compatible, gateway (or unset it to use the SaaS gateway default). See ${PROVIDER_KEY_ISSUE_REF}.`,
+        }),
+      );
+    }
+
     const requiredKey = PROVIDER_KEY_MAP[provider];
 
-    // `undefined` → unknown/unmapped provider (skip; model init reports it).
-    // `""` → ollama (skip; no key needed). `!requiredKey` covers both.
+    // Valid provider with no mapped key → keyless (`ollama` → `""`,
+    // `openai-compatible` → `undefined`): skip the key check. (#3200 tracks
+    // openai-compatible's base-URL validation.)
     if (!requiredKey) return;
 
     const value = process.env[requiredKey];

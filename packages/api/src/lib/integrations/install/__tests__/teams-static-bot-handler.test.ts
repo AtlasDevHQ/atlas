@@ -44,8 +44,14 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
+// The handler's cross-workspace ownership guard (#3154) reads
+// `workspace_plugins` via `internalQuery` before the cap gate. Default returns
+// [] (no conflict); the guard test overrides it to a matching row.
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
+  () => Promise.resolve([]),
+);
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mock(() => Promise.resolve([])),
+  internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
@@ -162,6 +168,8 @@ beforeEach(() => {
   mockCheckChatLimitAndInstall.mockImplementation(() =>
     Promise.resolve({ allowed: true as const, rows: [{ id: "install-teams-row-1" }] }),
   );
+  mockInternalQuery.mockClear();
+  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -291,6 +299,57 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
     expect(configJson).toBeDefined();
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
     expect(parsed.tenant_id).toBe(SAMPLE_TENANT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-workspace ownership guard (#3154 GAP 2)
+// ---------------------------------------------------------------------------
+
+describe("TeamsStaticBotInstallHandler.confirmInstall — cross-workspace guard", () => {
+  it("rejects a tenant_id already bound to a different workspace, and never reaches the cap gate", async () => {
+    // Admin-consent proves tenant ownership, but two Atlas workspaces in the
+    // same Microsoft tenant could both consent it — binding it twice would
+    // collapse the read-side resolver. The guard SELECT finds an existing bind
+    // in another workspace and refuses before the cap gate runs (first binder
+    // wins).
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-victim" }]),
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+    // The guard scopes its lookup to (catalog:teams, enabled, the normalized
+    // tenant_id, workspace_id <> self) so a reconnect by the same workspace is
+    // never caught.
+    const [sql, params] = mockInternalQuery.mock.calls[0];
+    expect(String(sql)).toMatch(/config->>'tenant_id'/);
+    expect(String(sql)).toMatch(/workspace_id\s*<>\s*\$3/);
+    expect(params).toEqual([TEAMS_CATALOG_ID, SAMPLE_TENANT, wsid]);
+  });
+
+  it("normalizes the tenant_id to lowercase before the cross-workspace lookup", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-victim" }]),
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT.toUpperCase())).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+    // The guard queries with the lowercased GUID so an uppercase paste still
+    // collides with an existing lowercase-stored bind.
+    const [, params] = mockInternalQuery.mock.calls[0];
+    expect(params).toEqual([TEAMS_CATALOG_ID, SAMPLE_TENANT, wsid]);
+  });
+
+  it("allows the install when the tenant_id is bound only to the installing workspace (reconnect)", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_TENANT);
+    expect(result.installRecord.catalogId).toBe(TEAMS_SLUG);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 });
 

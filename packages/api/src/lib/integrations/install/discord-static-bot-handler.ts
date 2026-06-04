@@ -41,6 +41,7 @@ import {
   DiscordReachabilityError,
 } from "@atlas/api/lib/effect/errors";
 import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -61,6 +62,47 @@ export const DISCORD_SLUG: CatalogId = "discord";
  * would produce FK violations at first install.
  */
 export const DISCORD_CATALOG_ID = "catalog:discord";
+
+/**
+ * Cross-workspace ownership guard (#3154). The OAuth bot-install redirect
+ * proves an admin of the guild authorized the operator bot, but a guild id is
+ * non-secret (it leaks in every Discord message envelope and is copyable by
+ * any member via Developer Mode). So reject a guild_id already bound to a
+ * *different* workspace before persisting — otherwise a second workspace can
+ * claim the same guild and the read-side resolver in `executeQuery.ts`
+ * fail-closes on `rows.length > 1`, disabling BOTH workspaces (a
+ * griefing / availability vector). The `workspace_id <> $3` filter excludes
+ * the installing workspace so a reconnect (same workspace re-binding its own
+ * guild) is never blocked. Read-only pre-check: it narrows the cross-tenant
+ * window but isn't transactionally fused with the cap gate's INSERT, so the
+ * simultaneous-race case remains (acceptable — first writer wins, the loser's
+ * read-side fail-closed is recoverable by disconnecting one side).
+ */
+async function assertGuildIdUnboundElsewhere(
+  guildId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'guild_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [DISCORD_CATALOG_ID, guildId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "Discord install rejected — guild_id already bound to a different workspace",
+    );
+    throw new DiscordGuildIdInvalidError({
+      message:
+        "This Discord server is already connected to a different Atlas workspace. Each server can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Discord guild ids are unsigned 64-bit snowflakes — currently rendered
@@ -229,7 +271,16 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // a failed verification never leaves a half-installed row behind.
     const apiGuildName = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Plan cap + install row — atomic (#2953, #3001) ─────────
+    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // Reachability proves the operator bot is in the guild, NOT that THIS
+    // workspace owns it — guild ids are non-secret. Reject a guild_id already
+    // bound to a *different* workspace so a second workspace can't claim it and
+    // collapse the read-side resolver onto a `rows.length > 1` fail-closed
+    // (which would disable both). A reconnect by the same workspace is excluded
+    // by the `workspace_id <> $3` filter.
+    await assertGuildIdUnboundElsewhere(routingIdentifier, workspaceId);
+
+    // ── 2c. Plan cap + install row — atomic (#2953, #3001) ─────────
     // Enforce the chat-integration cap and persist the workspace_plugins row
     // in ONE transaction guarded by a per-workspace advisory lock, so two
     // *distinct* net-new platforms installing concurrently can't both slip

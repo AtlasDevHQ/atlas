@@ -46,7 +46,7 @@ This prevents findings from being lost between sessions.
 
 **Step 4: Output session prompts**
 
-The user runs up to 3 Claude Code sessions in parallel (separate checkouts).
+The user runs up to 3 Claude Code sessions in parallel — each in its own **git worktree**. The orchestrator creates the worktree + branch and removes it after merge; the prompts you emit run *inside* those worktrees. So every prompt must be worktree-safe: never instruct a session to `/reset`, `git checkout main`, or otherwise switch/reset branches (a worktree agent that does so breaks the run). Bake the **Worktree isolation** block below into every emitted prompt.
 
 **Independent prompts** — If tasks touch different files with no merge conflicts:
 ```
@@ -109,6 +109,11 @@ IMPORTANT — Docs impact:
   - READMEs: plugin READMEs in `plugins/*/README.md`, SDK README in `packages/plugin-sdk/README.md`
 - Include docs updates in the same PR as the code change — don't leave them for a follow-up
 - If a code change has large docs impact (new feature page, restructured sections), note it in the PR description
+
+IMPORTANT — Worktree isolation (you are running in a dedicated git worktree):
+- Stay in your worktree on your own branch. Do NOT run `/reset`, `git checkout main`, or switch/reset branches. The orchestrator owns worktree + branch lifecycle and removes the worktree after merge — a worktree agent that checks out `main` breaks the run (git refuses to check out a branch already checked out elsewhere, or strands the worktree).
+- Commit only your explicit paths: `git commit -o <file1> <file2> -m ...`. NEVER `git add -A` / `git add .` / `git commit -a` — the index/HEAD can be shared with a parallel session.
+- After your PR merges, do nothing branch-wise (no reset, no checkout). The orchestrator removes the worktree; just report done.
 ]
 ```
 

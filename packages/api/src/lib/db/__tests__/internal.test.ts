@@ -899,6 +899,56 @@ describe("hardDeleteWorkspace()", () => {
     expect(calls.lastReleaseArg).toBeInstanceOf(Error);
     expect((calls.lastReleaseArg as Error).message).toContain("ROLLBACK failed");
   });
+
+  it("purges per-workspace credential stores (integration_credentials + twenty_integrations)", async () => {
+    // GDPR completeness: both encrypted-secret tables are matched on the
+    // workspace_id column and must be cleared + counted, else credentials
+    // persist at rest after a "full" hard delete (#3168).
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        // Orphaned-user lookup — no orphans, keeps the user-delete path skipped.
+        if (sql.includes("FROM member m")) return { rows: [] };
+        // Distinct row counts let us assert the count wiring per table.
+        if (sql.includes("DELETE FROM integration_credentials")) {
+          return { rows: [{ ok: 1 }, { ok: 1 }] }; // 2 rows
+        }
+        if (sql.includes("DELETE FROM twenty_integrations")) {
+          return { rows: [{ ok: 1 }, { ok: 1 }, { ok: 1 }] }; // 3 rows
+        }
+        // Every other DELETE ... RETURNING 1 → one affected row.
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const pool = {
+      ...basePool,
+      async connect() {
+        return client;
+      },
+    };
+    _resetPool(pool);
+
+    const result = await hardDeleteWorkspace("org-1");
+
+    // Both per-workspace credential stores are DELETEd by workspace_id.
+    expect(
+      queries.some((q) => /DELETE FROM integration_credentials WHERE workspace_id = \$1/.test(q)),
+    ).toBe(true);
+    expect(
+      queries.some((q) => /DELETE FROM twenty_integrations WHERE workspace_id = \$1/.test(q)),
+    ).toBe(true);
+    // …and the counts are surfaced in HardDeleteResult.
+    expect(result.integrationCredentials).toBe(2);
+    expect(result.twentyIntegrations).toBe(3);
+  });
 });
 
 describe("connection URL encryption", () => {

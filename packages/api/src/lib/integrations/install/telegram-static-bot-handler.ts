@@ -57,6 +57,7 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.telegram");
 
@@ -75,15 +76,29 @@ export const TELEGRAM_SLUG: CatalogId = "telegram";
 export const TELEGRAM_CATALOG_ID = "catalog:telegram";
 
 /**
- * Cross-workspace ownership guard (#3141 / Codex #3153). `getChat` proves the
- * operator bot is a member of the chat, not that the installing workspace owns
- * it — and chat_ids are non-secret (they leak in every message envelope). So
- * reject a chat_id already bound to a *different* workspace before persisting.
- * The `workspace_id <> $3` filter excludes the installing workspace, so a
- * reconnect (same workspace re-binding its own chat) is never blocked.
- * Read-only pre-check: it narrows the cross-tenant window but isn't
- * transactionally fused with the cap gate's INSERT, so the simultaneous-race
- * case remains — tracked, with the full ownership-proof flow, in #3154.
+ * Surfaced when a chat_id is already bound to a different workspace — by the
+ * pre-check below AND by `confirmInstall`'s catch when the migration-0120
+ * partial unique index rejects a concurrent claim. Single source so both paths
+ * return identical, actionable text (#3167).
+ */
+const TELEGRAM_ROUTING_CONFLICT_MESSAGE =
+  "This Telegram chat is already connected to a different Atlas workspace. Each chat can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.";
+
+/**
+ * Cross-workspace ownership guard (#3141 / Codex #3153 / #3167). `getChat`
+ * proves the operator bot is a member of the chat, not that the installing
+ * workspace owns it — and chat_ids are non-secret (they leak in every message
+ * envelope). So reject a chat_id already bound to a *different* workspace
+ * before persisting. The `workspace_id <> $3` filter excludes the installing
+ * workspace, so a reconnect (same workspace re-binding its own chat) is never
+ * blocked.
+ *
+ * This read-only pre-check catches the common case cheaply. The
+ * simultaneous-race case (two workspaces binding a never-before-seen chat_id
+ * at the same instant) is now closed by the partial unique index from
+ * migration 0120 (#3167): the losing writer's UPSERT fails with a 23505 that
+ * `confirmInstall`'s catch maps back to {@link TELEGRAM_ROUTING_CONFLICT_MESSAGE},
+ * so both paths return the same error.
  */
 async function assertChatIdUnboundElsewhere(
   chatId: string,
@@ -105,8 +120,7 @@ async function assertChatIdUnboundElsewhere(
       "Telegram install rejected — chat_id already bound to a different workspace",
     );
     throw new TelegramChatIdInvalidError({
-      message:
-        "This Telegram chat is already connected to a different Atlas workspace. Each chat can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+      message: TELEGRAM_ROUTING_CONFLICT_MESSAGE,
     });
   }
 }
@@ -210,15 +224,17 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153) ────
+    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153 / #3167) ─
     // `getChat` proves the operator bot is a member of the chat, NOT that
     // THIS workspace owns it — and chat_ids leak in every message envelope.
     // Reject a chat_id already bound to a *different* workspace so a member
     // of the chat can't bind it to their own workspace and intercept the
     // chat's messages (a reconnect by the same workspace is excluded by the
-    // `workspace_id <> $3` filter). This narrows the cross-tenant window; the
-    // residual (two workspaces racing a never-before-bound id) is tracked,
-    // with the full ownership-proof flow, in #3154.
+    // `workspace_id <> $3` filter). This pre-check catches the common case
+    // cheaply; the simultaneous-race residual (two workspaces racing a
+    // never-before-bound id) is closed by the migration-0120 partial unique
+    // index, whose 23505 the cap-gate catch below maps to the same error
+    // (#3167).
     await assertChatIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3141, #3001) ──────────
@@ -254,6 +270,19 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
         },
       );
     } catch (err) {
+      if (isRoutingIdUniqueViolation(err)) {
+        // Another workspace claimed this chat_id between our pre-check and
+        // our UPSERT; the migration-0120 partial unique index rejected us
+        // (#3167). Surface the same actionable error the pre-check returns
+        // rather than a raw 500 — first writer wins, we lost the race.
+        log.warn(
+          { workspaceId },
+          "Telegram install rejected — chat_id claimed by another workspace concurrently (unique index)",
+        );
+        throw new TelegramChatIdInvalidError({
+          message: TELEGRAM_ROUTING_CONFLICT_MESSAGE,
+        });
+      }
       log.error(
         {
           workspaceId,

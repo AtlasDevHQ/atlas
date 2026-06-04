@@ -56727,6 +56727,31 @@
               }
             }
           },
+          "409": {
+            "description": "A routing identifier in the config (static-bot chat_id / guild_id / tenant_id / phone_number_id / gchat workspace_id) is already connected to a different workspace (#3167)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "422": {
             "description": "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)",
             "content": {

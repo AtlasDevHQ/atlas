@@ -30,6 +30,7 @@ import {
   isPlanEligible as planRankEligible,
   parsePlanTier,
 } from "@atlas/api/lib/integrations/install/plan-rank";
+import { isRoutingIdUniqueViolation } from "@atlas/api/lib/integrations/install/routing-id-conflict";
 import {
   ErrorSchema,
   AuthErrorSchema,
@@ -677,6 +678,7 @@ const updateConfigRoute = createRoute({
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Installation not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "A routing identifier in the config (static-bot chat_id / guild_id / tenant_id / phone_number_id / gchat workspace_id) is already connected to a different workspace (#3167)", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Strict-mode plugin secrets check rejected the write (catalog schema corrupt or per-key secret/passthrough drift)", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -1235,29 +1237,53 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       const sanitizedConfig = restoreMaskedSecrets(body.config, originalConfig, schema);
       const encryptedForPersist = encryptSecretFields(sanitizedConfig, schema);
 
-      const rows = yield* queryEffect<WorkspacePluginRow>(
-        `UPDATE workspace_plugins SET config = $1
-         WHERE id = $2 AND workspace_id = $3
-         RETURNING *, (SELECT name FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS name,
-                     (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
-                     (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
-                     (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
-        [JSON.stringify(encryptedForPersist), id, orgId],
-      ).pipe(Effect.tapError((err) => Effect.sync(() => {
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.plugin.configUpdate,
-          targetType: "plugin",
-          targetId: id,
-          scope: "workspace",
-          status: "failure",
-          metadata: {
-            pluginId: id,
-            orgId,
-            keysChanged,
-            error: err instanceof Error ? err.message : String(err),
-          },
-        });
-      })));
+      // `try/catch` around `yield* queryEffect(...)` so a routing-id unique
+      // violation (#3167) maps to the same actionable conflict the install
+      // handlers surface, instead of a generic 500. A static-bot install's
+      // routing field (chat_id / guild_id / tenant_id / phone_number_id /
+      // gchat workspace_id) lives in `config`, so this generic PUT can repoint
+      // it onto an id already claimed by another workspace — the migration-0120
+      // partial unique index then raises 23505 (wrapped by @effect/sql, which
+      // is why the cross-workspace check walks the `.cause` chain). The
+      // `tapError` failure audit fires before the throw; any non-routing error
+      // is re-thrown to the existing 500 path. (try/catch is the failure-branch
+      // pattern that works under both real Effect and the route test shim.)
+      let rows: WorkspacePluginRow[];
+      try {
+        rows = yield* queryEffect<WorkspacePluginRow>(
+          `UPDATE workspace_plugins SET config = $1
+           WHERE id = $2 AND workspace_id = $3
+           RETURNING *, (SELECT name FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS name,
+                       (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
+                       (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
+                       (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
+          [JSON.stringify(encryptedForPersist), id, orgId],
+        ).pipe(Effect.tapError((err) => Effect.sync(() => {
+          logAdminAction({
+            actionType: ADMIN_ACTIONS.plugin.configUpdate,
+            targetType: "plugin",
+            targetId: id,
+            scope: "workspace",
+            status: "failure",
+            metadata: {
+              pluginId: id,
+              orgId,
+              keysChanged,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        })));
+      } catch (err) {
+        if (isRoutingIdUniqueViolation(err)) {
+          return c.json({
+            error: "routing_conflict",
+            message:
+              "This routing identifier is already connected to a different Atlas workspace. Each one can be linked to only one workspace — disconnect it there first.",
+            requestId,
+          }, 409);
+        }
+        throw err;
+      }
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Installation "${id}" not found in this workspace.`, requestId }, 404);

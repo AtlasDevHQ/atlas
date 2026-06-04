@@ -2393,7 +2393,27 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 ---
 
-## 83. Last-admin invariant on one seam — block the native endpoints, generalize the lock to N workspaces (#3164 + #3166)
+## 83. Static-bot routing-id uniqueness moves from a racy pre-check to a DB-enforced invariant + one conflict-recognition seam (#3167)
+
+**Date:** 2026-06-04
+**Issue:** #3167
+**PR:** #3170
+
+**Problem:** #3154/#3163 (win #81's spine) gave each of the five static-bot install handlers a cross-workspace ownership PRE-CHECK — a read-only `SELECT … WHERE config->>'<routing_id>' = $1 AND workspace_id <> $2` (`assert*UnboundElsewhere`). But that check was **not transactionally fused** with the cap-gate UPSERT: `checkChatIntegrationLimitAndInstall`'s advisory lock is keyed by `workspace_id`, and `workspace_plugins_singleton` is unique only on `(workspace_id, catalog_id)`. So two *different* workspaces installing the *same* routing id concurrently could both observe no row and both UPSERT — collapsing the inbound resolvers in `executeQuery.ts` onto their `rows.length > 1` fail-closed for **both**, an availability/griefing outage. The "uniqueness" invariant lived only as a best-effort read in five places, with no authority that actually held it under concurrency.
+
+**Solution:** Make the database the authority. Migration `0120` adds a partial UNIQUE index on the per-platform routing key — a single `CASE` keyed on `catalog_id` (`chat_id`/`guild_id`/`tenant_id`/`phone_number_id`/`workspace_id`), scoped `WHERE enabled = true AND pillar = 'chat'`, with a leading `catalog_id` column that namespaces the value per platform. The carve-outs are expressed in the index itself, not in scattered conditionals: `NULLIF(config->>'workspace_id', 'my_customer')` plus the CASE falling through to `NULL` for Slack/unmapped catalogs means "exempt" == "the expression is NULL" (DISTINCT in a unique index), one mechanism for all three carve-outs (alias, Slack, disabled-via-partial-WHERE). The losing concurrent writer now hits a `23505`, recognized by **one** shared seam — `isRoutingIdUniqueViolation(err)` in `routing-id-conflict.ts`, a tight predicate keyed on SQLSTATE + the exact index name — which each handler maps back to the *same* actionable "already connected elsewhere" error its pre-check returns (extracted into a per-handler `*_ROUTING_CONFLICT_MESSAGE` constant so both paths are identical).
+
+**Impact:**
+- **The uniqueness invariant has a single authority that holds under concurrency** (the index), instead of five racy reads that could all pass simultaneously. The pre-checks remain as a cheap fast-path with a friendly pre-write error, but correctness no longer depends on them winning the race.
+- **One conflict-recognition seam, not five ad-hoc casts** — `isRoutingIdUniqueViolation` is the only place that inspects a pg error's `code`/`constraint` for this concern; a 23505 on any *other* index re-throws untouched, so a real 500 is never relabelled as a cross-workspace conflict.
+- **Carve-outs are declarative** — `my_customer`, Slack, and disabled installs are all "NULL in the index" rather than three separate special cases in code; adding a platform is one CASE arm in the migration + its schema.ts mirror (kept in lockstep, drift-guarded by the indexdef assertion in `migrate-pg.test.ts`).
+- **No new lock contention** — the fix is a DB constraint, not a wider/longer advisory lock, so it adds zero coordination cost to the install hot path.
+
+**Category:** Invariant-relocation / seam-cleaning — a correctness property that lived as a best-effort read in five handlers is moved to the one place that can actually enforce it (a partial unique index), with a single shared predicate translating the DB's enforcement back into the domain's existing error vocabulary.
+
+---
+
+## 84. Last-admin invariant on one seam — block the native endpoints, generalize the lock to N workspaces (#3164 + #3166)
 
 **Date:** 2026-06-04
 **Issue:** #3164, #3166
@@ -2414,3 +2434,4 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 - **Proven under real concurrency.** `admin-last-admin-pg.test.ts` gains five `withWorkspaceAdminLocks` cases (sole-admin-of-B-from-active-A refused; multi-workspace atomic refuse; delete-vs-demote serialize; delete-locks-a-member-only-workspace-vs-promotion serialize → ≥1 admin always remains) alongside the existing #3158 races. The lock's sort+dedupe is pinned deterministically in `workspace-admin-locks.test.ts` (capture-based, so a dropped `.sort()` fails). The blocks are unit-tested in `org-member-guards.test.ts` (both org hooks 403) and `auth.test.ts` (native admin remove-user 403, other admin endpoints still delegate).
 
 **Category:** Seam-cleaning / completion pass — finish enforcing a single invariant (≥1 admin/owner per workspace) across *every* mutation path: close three unguarded native doors (two by org-plugin hooks, one by an HTTP-path block in the auth catch-all — coordinating was provably unsound for all of them), and lift the per-workspace lock to a deterministic multi-workspace lock that enumerates by membership so even concurrent promotions serialize. Builds directly on win #82 (the single-source role model) and the #3158 advisory lock.
+

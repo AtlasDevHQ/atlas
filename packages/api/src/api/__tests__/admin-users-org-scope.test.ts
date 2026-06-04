@@ -205,6 +205,9 @@ function mockDeleteGuard(
     if (s.includes('select "organizationid" from member where "userid" = $1')) {
       return orgIds.map((id) => ({ organizationId: id }));
     }
+    // removeUserDirect's final user delete RETURNs id — a row means "found", so
+    // the route reports 200 rather than the not-found 404.
+    if (/delete from "user"/i.test(sql)) return [{ id: "deleted" }];
     return [];
   });
 }
@@ -564,6 +567,10 @@ describe("Org-scoped user write operations (#983)", () => {
 
     it("platform admin can ban any user", async () => {
       setPlatformAdmin();
+      // banUserDirect's UPDATE RETURNs id — a row means the user existed (200).
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /UPDATE\s+"user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
@@ -574,6 +581,9 @@ describe("Org-scoped user write operations (#983)", () => {
 
     it("platform admin ban emits logAdminAction with user.ban", async () => {
       setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /UPDATE\s+"user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
@@ -583,6 +593,34 @@ describe("Org-scoped user write operations (#983)", () => {
       const entry = mockLogAdminAction.mock.calls[0]![0] as { actionType: string; targetId: string };
       expect(entry.actionType).toBe("user.ban");
       expect(entry.targetId).toBe("user-in-any-org");
+    });
+
+    // The removed plugin's banUser rejected a missing id with NOT_FOUND;
+    // preserve that (the UPDATE matches zero rows → found:false → 404), so a
+    // typo'd id doesn't yield a false-success audit.
+    it("returns 404 (no audit) when the ban target does not exist", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockResolvedValue([]); // UPDATE "user" matches nothing
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/ghost/ban", {}),
+      );
+      expect(res.status).toBe(404);
+      expect((await res.json() as { error: string }).error).toBe("not_found");
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    // The body no longer rides Better Auth's schema — a non-numeric expiresIn
+    // must 400, not silently coerce to a permanent ban.
+    it("rejects a non-numeric expiresIn with 400 (no DB write)", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", { expiresIn: "soon" }),
+      );
+      expect(res.status).toBe(400);
+      expect((await res.json() as { error: string }).error).toBe("invalid_request");
+      expect(ranUserUpdate()).toBe(false);
     });
   });
 
@@ -767,6 +805,11 @@ describe("Org-scoped user write operations (#983)", () => {
 
     it("platform admin can delete any user (full session+account+user cascade)", async () => {
       setPlatformAdmin();
+      // removeUserDirect's user delete RETURNs id — a row means "found" (200).
+      // The membership enumeration returns [] (no workspaces to guard).
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /DELETE FROM "user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-in-any-org"),
@@ -854,6 +897,19 @@ describe("Org-scoped user write operations (#983)", () => {
       );
       expect(res.status).toBe(200);
       expect(ranUserDelete()).toBe(true);
+    });
+
+    // The user delete RETURNs zero rows for a stale id → 404 (matching the
+    // removed plugin's NOT_FOUND), not a false-success audit.
+    it("returns 404 when the delete target does not exist", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockResolvedValue([]); // no memberships, user delete matches nothing
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/ghost"),
+      );
+      expect(res.status).toBe(404);
+      expect((await res.json() as { error: string }).error).toBe("not_found");
     });
   });
 

@@ -276,6 +276,10 @@ beforeEach(() => {
     }
     if (s.includes("count(*)")) return [{ count: "0" }];
     if (s.includes("delete from member")) return [{ id: "membership-1" }];
+    // banUserDirect's UPDATE and removeUserDirect's user delete both RETURN id;
+    // a row means the target existed, so the override path proceeds (#3159).
+    if (/update\s+"user"/i.test(sql)) return [{ id: "user-scim-1" }];
+    if (/delete from "user"/i.test(sql)) return [{ id: "user-scim-1" }];
     return [];
   });
 });

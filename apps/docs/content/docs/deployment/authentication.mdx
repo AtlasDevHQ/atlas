@@ -295,7 +295,7 @@ Atlas has three roles with increasing privileges:
 
 Default roles by auth mode:
 - **Simple Key**: `analyst` (override with `ATLAS_API_KEY_ROLE`)
-- **Managed**: `analyst` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
+- **Managed**: `member` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
 - **BYOT**: Extracted from JWT claim (defaults to `viewer` if missing)
 
 ## Rate Limiting

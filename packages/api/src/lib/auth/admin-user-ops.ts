@@ -128,9 +128,15 @@ export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
     // Ban has expired — clear it so the column reflects reality, then allow
     // (matches the plugin's auto-unban path). Best-effort: if the clear fails,
     // still allow the session (the ban is expired regardless).
+    //
+    // The WHERE re-asserts the row is STILL an expired ban
+    // (`"banExpires" < NOW()`), so a concurrent admin re-ban (which sets a
+    // future/NULL `banExpires`) is not clobbered by this stale auto-unban —
+    // the UPDATE then matches zero rows and the fresh ban stands (CodeRabbit).
     try {
       await internalQuery(
-        `UPDATE "user" SET banned = false, "banReason" = NULL, "banExpires" = NULL WHERE id = $1`,
+        `UPDATE "user" SET banned = false, "banReason" = NULL, "banExpires" = NULL
+          WHERE id = $1 AND banned = true AND "banExpires" IS NOT NULL AND "banExpires" < NOW()`,
         [userId],
       );
     } catch (err) {
@@ -146,35 +152,51 @@ export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
 }
 
 /**
+ * Default ban reason when the caller omits one. Mirrors the Better Auth admin
+ * plugin's `"No reason"` fallback (`routes.mjs:461`) so the user list keeps a
+ * non-null explanation for UI-triggered bans (the web UI sends no reason).
+ */
+export const DEFAULT_BAN_REASON = "No reason";
+
+/**
  * Ban a user globally and kill their live sessions.
  *
- * @returns the resolved `banExpires` Date, or `null` for a permanent ban.
+ * Reports whether the target existed (the removed plugin's `banUser` did a
+ * `findUserById` and rejected a missing id with NOT_FOUND — preserve that so a
+ * platform admin banning a stale/typo'd id gets a 404, not a false-success
+ * audit). When the user is absent the UPDATE matches zero rows and we skip the
+ * session delete.
+ *
+ * @returns `{ found, banExpires }` — `found: false` for an unknown user;
+ *   `banExpires` is the resolved expiry Date, or `null` for a permanent ban.
  */
 export async function banUserDirect(opts: {
   userId: string;
   reason?: string;
   expiresInSec?: number;
-}): Promise<Date | null> {
+}): Promise<{ found: boolean; banExpires: Date | null }> {
   const banExpires =
     opts.expiresInSec && opts.expiresInSec > 0
       ? new Date(Date.now() + opts.expiresInSec * 1000)
       : null;
 
-  await internalQuery(
+  const updated = await internalQuery<{ id: string }>(
     `UPDATE "user"
         SET banned = true,
             "banReason" = $2,
             "banExpires" = $3,
             "updatedAt" = NOW()
-      WHERE id = $1`,
-    [opts.userId, opts.reason ?? null, banExpires],
+      WHERE id = $1
+      RETURNING id`,
+    [opts.userId, opts.reason ?? DEFAULT_BAN_REASON, banExpires],
   );
+  if (updated.length === 0) return { found: false, banExpires: null };
 
   // Match the plugin: deleteUserSessions on ban so live sessions are revoked
   // immediately rather than lingering until cookie-cache expiry.
   await internalQuery(`DELETE FROM session WHERE "userId" = $1`, [opts.userId]);
 
-  return banExpires;
+  return { found: true, banExpires };
 }
 
 /** Lift a user's ban (clears banned/banReason/banExpires). */
@@ -216,11 +238,20 @@ export async function revokeUserSessionsDirect(userId: string): Promise<number> 
  *
  * Deletes session/account before the user so the explicit child deletes don't
  * race the cascade; the user delete then sweeps anything left via the FK.
+ *
+ * @returns `true` if a `user` row was actually deleted, `false` if the id did
+ *   not exist — the route reports 404 in that case (the removed plugin's
+ *   `removeUser` rejected missing ids, so a no-op delete must not report
+ *   success + write a misleading audit row).
  */
-export async function removeUserDirect(userId: string): Promise<void> {
+export async function removeUserDirect(userId: string): Promise<boolean> {
   await internalQuery(`DELETE FROM session WHERE "userId" = $1`, [userId]);
   await internalQuery(`DELETE FROM account WHERE "userId" = $1`, [userId]);
-  await internalQuery(`DELETE FROM "user" WHERE id = $1`, [userId]);
+  const deleted = await internalQuery<{ id: string }>(
+    `DELETE FROM "user" WHERE id = $1 RETURNING id`,
+    [userId],
+  );
+  return deleted.length > 0;
 }
 
 /**

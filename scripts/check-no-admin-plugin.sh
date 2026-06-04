@@ -57,13 +57,28 @@ scan() {
   done <<<"$candidates"
 }
 
-# 1. The server admin plugin: `admin` imported from "better-auth/plugins".
-#    Match the named import on the import line (the import is single-line in
-#    Atlas). `[{,]\s*admin\s*[,}]` keeps `customSession`/`adminClient` clear.
-scan "$API_DIR" 'from "better-auth/plugins".*[{,][[:space:]]*admin[[:space:]]*[,}]' \
-  'imports the admin() plugin from "better-auth/plugins"'
-scan "$API_DIR" '[{,][[:space:]]*admin[[:space:]]*[,}].*from "better-auth/plugins"' \
-  'imports the admin() plugin from "better-auth/plugins"'
+# 1. The server admin plugin: `admin` as a named import from
+#    "better-auth/plugins". Matched MULTILINE (perl slurp) so the
+#    formatter-friendly form — `import {\n  admin,\n  bearer\n} from
+#    "better-auth/plugins"` — is caught even though `admin` and the module
+#    specifier land on different lines. `\badmin\b` inside the brace group keeps
+#    `customSession`/`adminClient`/`adminAuth` clear; comments are stripped first.
+scan_admin_plugin_import() {
+  local candidates
+  candidates=$(grep -rlE 'better-auth/plugins' "$API_DIR" \
+    --include='*.ts' --include='*.tsx' \
+    --exclude='*.test.ts' --exclude='*.test.tsx' \
+    --exclude-dir=__mocks__ --exclude-dir=__tests__ --exclude-dir=__test-utils__ \
+    || true)
+  [ -z "$candidates" ] && return 0
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if eval "$STRIP_COMMENTS \"\$f\"" | perl -0777 -ne 'exit(/import\s*\{[^}]*\badmin\b[^}]*\}\s*from\s*["'\'']better-auth\/plugins["'\'']/s ? 0 : 1)'; then
+      OFFENDERS="${OFFENDERS}${f}  — imports the admin() plugin from \"better-auth/plugins\""$'\n'
+    fi
+  done <<<"$candidates"
+}
+scan_admin_plugin_import
 
 # 2. The client mirror: `adminClient` from "better-auth/client/plugins".
 scan "$WEB_DIR" 'adminClient' 'reintroduces the adminClient() Better Auth client plugin'

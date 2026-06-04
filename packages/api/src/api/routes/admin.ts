@@ -1348,9 +1348,10 @@ const banUserRoute = createRoute({
       description: "User banned",
       content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
     },
+    400: { description: "Invalid request — malformed `reason`/`expiresIn`", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — platform_admin role required", content: { "application/json": { schema: ErrorSchema } } },
-    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "User not found, or not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
     409: SCIMManagedResponse,
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
@@ -3004,18 +3005,34 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     return {};
   });
 
-  await banUserDirect({
+  // Runtime-validate the body — the route no longer goes through Better Auth's
+  // schema (#3159). Reject a non-string `reason` or a non-positive/non-finite
+  // `expiresIn` rather than silently coercing (e.g. `{"expiresIn":"x"}` must NOT
+  // quietly become a permanent ban). Both are optional.
+  const reason = body.reason;
+  const expiresIn = body.expiresIn;
+  if (reason !== undefined && typeof reason !== "string") {
+    return c.json({ error: "invalid_request", message: "`reason` must be a string.", requestId }, 400);
+  }
+  if (expiresIn !== undefined && (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0)) {
+    return c.json({ error: "invalid_request", message: "`expiresIn` must be a positive number of seconds.", requestId }, 400);
+  }
+
+  const banResult = await banUserDirect({
     userId,
-    ...(body.reason ? { reason: body.reason } : {}),
-    ...(body.expiresIn ? { expiresInSec: body.expiresIn } : {}),
+    ...(reason ? { reason } : {}),
+    ...(expiresIn ? { expiresInSec: expiresIn } : {}),
   });
-  log.info({ requestId, targetUserId: userId, reason: body.reason, actorId: authResult.user?.id }, "User banned");
+  if (!banResult.found) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+  log.info({ requestId, targetUserId: userId, reason, actorId: authResult.user?.id }, "User banned");
 
   logAdminAction({
     actionType: ADMIN_ACTIONS.user.ban,
     targetType: "user",
     targetId: userId,
-    metadata: { reason: body.reason, expiresIn: body.expiresIn, ...(scimOverride && { scim_override: true }) },
+    metadata: { reason, expiresIn, ...(scimOverride && { scim_override: true }) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -3344,11 +3361,17 @@ admin.openapi(deleteUserRoute, async (c) => {
   // Reproduces the admin plugin's `removeUser`: delete session, account, then
   // user (#3159). `member` rows for every workspace were already deleted under
   // the lock above, so none are orphaned by the user delete.
+  let deleted: boolean;
   try {
-    await removeUserDirect(userId);
+    deleted = await removeUserDirect(userId);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
     return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
+  }
+  if (!deleted) {
+    // No `user` row matched — a stale/typo'd id. Report 404 (matching the
+    // removed plugin's NOT_FOUND) rather than a false-success audit row.
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");

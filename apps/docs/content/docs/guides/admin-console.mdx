@@ -550,7 +550,7 @@ Each entry shows:
 **Route:** `/admin/users`
 
 <Callout type="info">
-Requires managed auth mode (the internal `user`/`session` tables). User-management operations (list, ban/unban, delete, revoke sessions) are platform-admin-gated server-side. Not available in simple-key, BYOT, or no-auth modes.
+Requires managed auth mode (the internal `user`/`session` tables). Global user-management actions (ban/unban, delete, revoke sessions) are platform-admin-gated server-side; user listing is org-scoped for workspace admins. Not available in simple-key, BYOT, or no-auth modes.
 </Callout>
 
 Full user management with stats and controls:

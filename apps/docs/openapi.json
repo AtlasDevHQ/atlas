@@ -62263,6 +62263,31 @@
               }
             }
           },
+          "400": {
+            "description": "Invalid request — malformed `reason`/`expiresIn`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication required",
             "content": {
@@ -62300,7 +62325,7 @@
             }
           },
           "404": {
-            "description": "Not available — requires managed auth",
+            "description": "User not found, or not available — requires managed auth",
             "content": {
               "application/json": {
                 "schema": {

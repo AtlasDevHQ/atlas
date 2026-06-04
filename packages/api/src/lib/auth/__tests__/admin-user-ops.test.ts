@@ -86,21 +86,29 @@ describe("isEffectivelyBanned", () => {
 // ---------------------------------------------------------------------------
 
 describe("banUserDirect", () => {
-  it("sets banned/reason/expiry and deletes the target's sessions", async () => {
-    const expiresAt = await banUserDirect({ userId: "u1", reason: "spam", expiresInSec: 3600 });
+  // The UPDATE now RETURNs id so the op can report whether the user existed —
+  // make the mock return a row for the found-path tests.
+  const banUpdateReturnsRow = async (sql: string) =>
+    sql.includes("UPDATE") && sql.includes('"user"') ? [{ id: "u" }] : [];
+
+  it("sets banned/reason/expiry, deletes sessions, and reports found", async () => {
+    queryImpl = banUpdateReturnsRow;
+    const result = await banUserDirect({ userId: "u1", reason: "spam", expiresInSec: 3600 });
 
     const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
     expect(update).toBeDefined();
     expect(update!.sql).toContain("banned");
     expect(update!.sql).toContain('"banReason"');
     expect(update!.sql).toContain('"banExpires"');
+    expect(update!.sql).toContain("RETURNING id");
     expect(update!.params?.[0]).toBe("u1");
     expect(update!.params?.[1]).toBe("spam");
     // expiry param is a Date roughly 1h out
     const exp = update!.params?.[2] as Date;
     expect(exp).toBeInstanceOf(Date);
     expect(exp.getTime()).toBeGreaterThan(Date.now() + 3_500_000);
-    expect(expiresAt).toBeInstanceOf(Date);
+    expect(result.found).toBe(true);
+    expect(result.banExpires).toBeInstanceOf(Date);
 
     const del = find((s) => s.includes("DELETE FROM session"));
     expect(del).toBeDefined();
@@ -108,11 +116,27 @@ describe("banUserDirect", () => {
   });
 
   it("permanent ban (no expiry) writes NULL banExpires and still deletes sessions", async () => {
-    const expiresAt = await banUserDirect({ userId: "u2" });
-    expect(expiresAt).toBeNull();
+    queryImpl = banUpdateReturnsRow;
+    const result = await banUserDirect({ userId: "u2" });
+    expect(result.found).toBe(true);
+    expect(result.banExpires).toBeNull();
     const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
     expect(update!.params?.[2]).toBeNull();
     expect(find((s) => s.includes("DELETE FROM session"))?.params?.[0]).toBe("u2");
+  });
+
+  it("defaults banReason to 'No reason' when omitted (matches the plugin)", async () => {
+    queryImpl = banUpdateReturnsRow;
+    await banUserDirect({ userId: "u2b" });
+    const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
+    expect(update!.params?.[1]).toBe("No reason");
+  });
+
+  it("reports found:false and skips the session delete for an unknown user", async () => {
+    queryImpl = async () => []; // UPDATE matches zero rows
+    const result = await banUserDirect({ userId: "ghost" });
+    expect(result.found).toBe(false);
+    expect(find((s) => s.includes("DELETE FROM session"))).toBeUndefined();
   });
 });
 
@@ -139,8 +163,10 @@ describe("revokeUserSessionsDirect", () => {
 });
 
 describe("removeUserDirect", () => {
-  it("deletes session, account, then user — in that order", async () => {
-    await removeUserDirect("u5");
+  it("deletes session, account, then user — in that order — and reports deleted", async () => {
+    queryImpl = async (sql) => (sql.includes('DELETE FROM "user"') ? [{ id: "u5" }] : []);
+    const deleted = await removeUserDirect("u5");
+    expect(deleted).toBe(true);
     const order = queries.map((q) => q.sql);
     const sessIdx = order.findIndex((s) => s.includes("DELETE FROM session"));
     const acctIdx = order.findIndex((s) => s.includes("DELETE FROM account"));
@@ -148,7 +174,13 @@ describe("removeUserDirect", () => {
     expect(sessIdx).toBeGreaterThanOrEqual(0);
     expect(acctIdx).toBeGreaterThan(sessIdx);
     expect(userIdx).toBeGreaterThan(acctIdx);
+    expect(order[userIdx]).toContain("RETURNING id");
     for (const q of queries) expect(q.params?.[0]).toBe("u5");
+  });
+
+  it("reports deleted:false when the user id does not exist", async () => {
+    queryImpl = async () => []; // user delete matches zero rows
+    expect(await removeUserDirect("ghost")).toBe(false);
   });
 });
 

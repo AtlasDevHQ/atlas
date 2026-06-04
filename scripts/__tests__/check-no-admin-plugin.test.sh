@@ -68,6 +68,19 @@ run_fixture fail "admin imported from better-auth/plugins (leading)" \
   'import { admin, bearer } from "better-auth/plugins";' "$CLEAN_WEB"
 run_fixture fail "admin imported from better-auth/plugins (trailing)" \
   'import { bearer, admin } from "better-auth/plugins";' "$CLEAN_WEB"
+run_fixture fail "admin imported from better-auth/plugins (multiline, formatter-friendly)" \
+  'import {
+  bearer,
+  admin,
+  organization,
+} from "better-auth/plugins";' "$CLEAN_WEB"
+# customSession across multiple lines must NOT trip (no bare `admin`).
+run_fixture pass "multiline import without admin is clean" \
+  'import {
+  bearer,
+  customSession,
+  organization,
+} from "better-auth/plugins";' "$CLEAN_WEB"
 run_fixture fail "adminClient reintroduced in web" \
   "$CLEAN_API" 'import { adminClient } from "better-auth/client/plugins";'
 run_fixture fail "getAdminApi reintroduced in api" \

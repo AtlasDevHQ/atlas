@@ -76,7 +76,7 @@ The `ChatErrorCode` catalog above is scoped to the chat-stream endpoint — the 
 |------|-------------|---------|-----|-----------|
 | `demo_readonly` | 403 | Write against the `__demo__` connection while in published mode | Switch to developer mode to manage demo content. See [Developer Mode](/guides/developer-mode) | No |
 | `workspace_migrating` | 409 | Write attempted while the workspace's data is being moved to a new region | Transient — retry once the migration completes (typically minutes). See [Data Residency](/platform-ops/data-residency) | Yes |
-| `misdirected_request` | 421 | Request reached a regional API that doesn't hold this workspace's data | Use the `correctApiUrl` field in the response body to retarget. The SDK can be initialized with the correct regional URL once and cached. See [Regional API](/platform-ops/regional-api) | No |
+| `misdirected_request` | 421 | Request reached a regional API that doesn't hold this workspace's data | Use the `correctApiUrl` field in the response body to retarget. The SDK can be initialized with the correct regional URL once and cached. See [Regional API routing](/platform-ops/data-residency#misrouting-detection) | No |
 
 ### Starter-prompt favorites
 
@@ -158,7 +158,7 @@ The scheduler runs proactive prompts and report deliveries on workspace cron sch
 
 ### Governance & Enterprise
 
-These cover the always-403 governance gates and the 503 fallback raised when an enterprise feature is enabled but its EE Layer failed to bind. See [Enterprise & SaaS Gating](/platform-ops/enterprise) for the broader feature-flag model.
+These cover the always-403 governance gates and the 503 fallback raised when an enterprise feature is enabled but its EE Layer failed to bind. See [Enterprise & SaaS Gating](/architecture/enterprise) for the broader feature-flag model.
 
 | Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
 |------|--------|-------------|---------|-----|-----------|

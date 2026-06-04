@@ -1013,4 +1013,58 @@ describe("CatalogCard — static-bot form install (#3140)", () => {
     expect(await screen.findByText("Install Telegram")).toBeDefined();
     expect(await screen.findByText("Chat ID")).toBeDefined();
   });
+
+  test("submitting the routing id POSTs to /install-form and fires onInstalled on success", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalls.push({
+        url: typeof input === "string" ? input : input.toString(),
+        method: init?.method ?? "GET",
+      });
+      return Promise.resolve(
+        new Response(JSON.stringify({ installed: true, platform: "telegram", installId: "i-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    let installed = 0;
+    try {
+      const { container } = render(
+        <CatalogCard entry={telegramEntry()} status={null} onChange={() => { installed += 1; }} />,
+      );
+      await act(async () => {
+        fireEvent.click(
+          container.querySelector('[data-testid="catalog-card-telegram-install"]') as HTMLButtonElement,
+        );
+      });
+      // Fill the routing identifier (first input in the portaled dialog = chat_id).
+      const chatInput = (await screen.findAllByRole("textbox"))[0] as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(chatInput, { target: { value: "-1001234567890" } });
+      });
+      // The dialog's submit button is labelled "Install" (FormDialog submitLabel).
+      const submit = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+        (b) => b.textContent?.trim() === "Install" && b.getAttribute("type") === "submit",
+      );
+      expect(submit).toBeDefined();
+      await act(async () => {
+        fireEvent.click(submit!);
+      });
+
+      await waitFor(() => {
+        expect(
+          fetchCalls.some(
+            (c) => c.method === "POST" && c.url.includes("/api/v1/integrations/telegram/install-form"),
+          ),
+        ).toBe(true);
+      });
+      // Success wiring: onInstalled → onChange refetch fired.
+      await waitFor(() => expect(installed).toBeGreaterThan(0));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

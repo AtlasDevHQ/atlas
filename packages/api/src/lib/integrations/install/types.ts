@@ -321,18 +321,30 @@ export interface StaticBotInstallHandler {
   readonly kind: "static-bot";
 
   /**
-   * Operator-side application id, when the Platform's bot-install flow
-   * is OAuth-shaped (Discord) and the route needs to build the
-   * authorize URL. `undefined` for Platforms whose install captures the
-   * routing identifier directly without an OAuth redirect (Telegram —
-   * the admin pastes the `chat_id` into a form).
-   *
-   * Typed on the interface so the route's narrow (`if (!handler.applicationId)`)
-   * is a type-checked contract rather than a `"applicationId" in handler`
-   * runtime duck-type. A future static-bot Platform that uses an OAuth
-   * shape must populate this; one that doesn't can omit it.
+   * Operator-side application id. OAuth-shaped platforms (Discord) use it to
+   * build the bot-install authorize URL; some form-shaped platforms also
+   * populate it for their own URLs — Teams exposes the Microsoft App ID for
+   * the manifest/AppSource deep link, WhatsApp exposes the Meta App ID for
+   * parity. It is therefore **NOT** a reliable "is this OAuth-shaped?"
+   * discriminator (it is truthy for Discord, Teams, and WhatsApp alike) —
+   * use {@link oauthShaped} for that decision.
    */
   readonly applicationId?: string;
+
+  /**
+   * `true` when the Platform captures its routing identifier through an OAuth
+   * bot-install redirect (Discord) rather than a typed form. The redirect is
+   * the platform's *ownership proof* — completing it requires admin rights on
+   * the target server — so the form-based `/install-form` route refuses
+   * OAuth-shaped static-bots (a directly-typed routing id would skip that
+   * proof; `confirmInstall` verifies reachability, not caller ownership) and
+   * directs them to the dedicated OAuth endpoint. Omit / `false` for the
+   * form-shaped platforms (Telegram / Teams / Google Chat / WhatsApp), whose
+   * routing identifier is non-secret and typed directly. Distinct from
+   * {@link applicationId} precisely because some form-shaped platforms expose
+   * an application id without being OAuth-shaped.
+   */
+  readonly oauthShaped?: boolean;
 
   confirmInstall(
     workspaceId: WorkspaceId,

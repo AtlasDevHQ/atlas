@@ -307,8 +307,13 @@ const installFormRoute = createRoute({
       },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
+    // #3140 — static-bot whose slice hasn't shipped yet (`coming_soon`).
+    409: { description: "Static-bot platform not available for install yet (`platform_not_available`)", content: { "application/json": { schema: ErrorSchema } } },
     // #3140 — static-bot install at the workspace's chat-integration cap
-    // (`plan_limit_exceeded`, body carries `limit`), or rate limited.
+    // (`plan_limit_exceeded`, body carries `limit`), or rate limited. Raised by
+    // `confirmInstall`'s cap gate — live once a platform's handler is migrated
+    // onto `checkChatIntegrationLimitAndInstall` (#3141–#3144); Discord/Slack
+    // already do.
     429: {
       description:
         "Chat-integration cap reached for a static-bot install " +
@@ -324,7 +329,8 @@ const installFormRoute = createRoute({
     // (`upstream_error`): the bot couldn't confirm the routing identifier.
     502: { description: "Static-bot upstream verification unreachable (`upstream_error`)", content: { "application/json": { schema: ErrorSchema } } },
     // #3140 — the chat-integration count couldn't be determined (transient DB
-    // fault), so the cap check failed closed: `billing_check_failed` "try again".
+    // fault), so the cap check failed closed: `billing_check_failed` "try again"
+    // (raised by `confirmInstall`'s cap gate, same migration note as 429).
     503: { description: "Billing/plan-limit check unavailable for a static-bot install: `billing_check_failed`", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -448,6 +454,15 @@ interface CatalogRowFromDb extends Record<string, unknown> {
    * declare no schema; the OAuth + form branches ignore it.
    */
   readonly config_schema?: unknown;
+  /**
+   * `implementation_status` — `'available'` once a platform's slice has
+   * shipped, `'coming_soon'` until then. The static-bot branch refuses
+   * `coming_soon` rows (#3140): the four form-shaped platforms stay
+   * `coming_soon` until their slices (#3141–#3144) flip them on *and* migrate
+   * their `confirmInstall` onto the cap gate, so gating here keeps the spine
+   * from ever reaching a not-yet-cap-gated handler.
+   */
+  readonly implementation_status?: string;
 }
 
 /**
@@ -518,9 +533,10 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   install_model: CatalogInstallModel;
   min_plan: string;
   config_schema: unknown;
+  implementation_status: string | null;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled, min_plan, config_schema
+    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status
        FROM plugin_catalog
       WHERE slug = $1 AND enabled = true
       LIMIT 1`,
@@ -542,6 +558,7 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     install_model: row.install_model as CatalogInstallModel,
     min_plan: row.min_plan,
     config_schema: row.config_schema ?? null,
+    implementation_status: row.implementation_status ?? null,
   };
 }
 
@@ -1019,14 +1036,39 @@ integrations.openapi(installFormRoute, async (c) =>
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
-    // OAuth-shaped static-bots (Discord — `applicationId` populated) capture
-    // their routing identifier through an OAuth bot-install redirect that
-    // proves the admin's workspace controls the target server. Accepting a
-    // directly-typed routing id here would skip that ownership proof
-    // (`confirmInstall` verifies the bot is reachable, not that the caller
-    // owns it), so refuse and point at the dedicated OAuth endpoint. The
-    // `applicationId` discriminator is the typed contract for exactly this.
-    if (handler.applicationId) {
+    // Spine gate: only install static-bots a slice has marked `available`.
+    // The four form-shaped platforms stay `coming_soon` until #3141–#3144 ship
+    // them — and those slices are what migrate each handler's `confirmInstall`
+    // onto the cap gate (`checkChatIntegrationLimitAndInstall`). Refusing
+    // `coming_soon` here keeps this generic route from ever reaching a handler
+    // that persists its install WITHOUT the cap gate (Telegram/Teams/gchat/
+    // WhatsApp `confirmInstall` is a bare UPSERT today — only Discord and Slack
+    // run the gate). So the spine is intentionally dormant for real platforms;
+    // a registered fixture proves the path end-to-end in tests.
+    if (row.implementation_status === "coming_soon") {
+      log.info(
+        { platform },
+        "Refused static-bot install: platform is coming_soon (slice not shipped — see #3141–#3144)",
+      );
+      return c.json(
+        {
+          error: "platform_not_available",
+          message: `Platform "${platform}" is not available for install yet.`,
+          requestId,
+        },
+        409,
+      );
+    }
+
+    // OAuth-shaped static-bots (Discord) capture their routing identifier
+    // through an OAuth bot-install redirect that proves the admin's workspace
+    // controls the target server. Accepting a directly-typed routing id here
+    // would skip that ownership proof (`confirmInstall` verifies the bot is
+    // reachable, not that the caller owns it), so refuse and point at the
+    // dedicated OAuth endpoint. Keyed on the explicit `oauthShaped` flag, NOT
+    // on `applicationId` — Teams/WhatsApp populate `applicationId` for their
+    // manifest/parity URLs while remaining form-shaped (#3140 review).
+    if (handler.oauthShaped) {
       log.warn(
         { platform },
         "Refused static-bot form install: platform is OAuth-shaped (use its OAuth install endpoint)",
@@ -1076,14 +1118,21 @@ integrations.openapi(installFormRoute, async (c) =>
     const extras: Record<string, unknown> = { ...formData };
     delete extras[routingKey];
 
-    // `confirmInstall` runs the chat-integration cap gate
-    // (`checkChatIntegrationLimitAndInstall`) under a per-workspace advisory
-    // lock and upserts the workspace_plugins(pillar='chat') row. Its tagged
-    // failures all map through `runHandler`'s `classifyError`, so no explicit
-    // catch is needed: routing-id-invalid / reachability → 400, upstream
-    // unreachable → 502, at-cap → 429 `plan_limit_exceeded`, count-check
-    // failed → 503 `billing_check_failed`. Reconnect is grandfathered inside
-    // the gate (the platform's own row is excluded from the cap count).
+    // `confirmInstall` validates the routing id, round-trips the platform for
+    // reachability, and upserts the workspace_plugins(pillar='chat') row. Its
+    // tagged failures all map through `runHandler`'s `classifyError`, so no
+    // explicit catch is needed — routing-id-invalid / reachability → 400,
+    // upstream unreachable → 502, and (once a handler is migrated onto
+    // `checkChatIntegrationLimitAndInstall`) at-cap → 429 `plan_limit_exceeded`
+    // / count-check-failed → 503 `billing_check_failed`, with reconnect
+    // grandfathered inside the gate.
+    //
+    // The cap gate lives INSIDE `confirmInstall` (the single advisory-locked
+    // insert path), not here: Discord and Slack run it today; the four
+    // form-shaped static-bots adopt it in #3141–#3144. The `coming_soon` gate
+    // above guarantees this route only reaches a handler once its slice has
+    // shipped that migration, so the 429/503 paths are live exactly when the
+    // platform is installable.
     const { installRecord } = await handler.confirmInstall(workspaceId, routingIdentifier, undefined, extras);
     log.info({ workspaceId, platform, installId: installRecord.id }, "Static-bot install completed");
     return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);

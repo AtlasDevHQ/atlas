@@ -146,20 +146,34 @@ that route's entire scaffold — admin-auth preamble, F-04 SaaS-mode=none guard,
 tagged-error→HTTP mapping. The route resolves the routing-identifier field from
 the catalog `config_schema` (the first `required` string field) and forwards its
 value to `confirmInstall` positionally, passing the remaining submitted fields as
-`extras`; the cap gate stays on the **single advisory-locked insert path** inside
+`extras`. The cap gate stays on the **single advisory-locked insert path** inside
 `confirmInstall` (`checkChatIntegrationLimitAndInstall`) — the route adds no
-second write path. A dedicated route was rejected: it would duplicate ~150 lines
-of that preamble/gate scaffold for no behavioural difference.
+second write path — though only Discord and Slack run that gate today; the four
+form-shaped static-bots adopt it in their slices (see the dormancy gate below). A
+dedicated route was rejected: it would duplicate ~150 lines of that preamble/gate
+scaffold for no behavioural difference.
 
-**OAuth-shaped static-bots are refused on this route.** A handler whose optional
-`applicationId` is populated (Discord) captures its routing identifier through an
-OAuth bot-install redirect, which *proves the admin's workspace controls the
-target*. Accepting a directly-typed `guild_id` here would skip that ownership
+**Dormancy gate — refuse `coming_soon`.** To keep the generic route from ever
+reaching a handler whose `confirmInstall` predates that cap-gate migration, the
+static-bot branch refuses `implementation_status = "coming_soon"` rows (409
+`platform_not_available`). The four form-shaped platforms stay `coming_soon` until
+their slices both flip them `available` *and* migrate `confirmInstall` onto the
+gate, so "available" is the single signal that a static-bot is fully wired
+(route + handler cap gate + runtime). The spine is therefore deliberately dormant
+for real platforms in this issue — a registered fixture handler proves the
+route → `confirmInstall` → cap-error-mapping path end-to-end in tests.
+
+**OAuth-shaped static-bots are refused on this route.** A handler that captures
+its routing identifier through an OAuth bot-install redirect (Discord) relies on
+that redirect as its *ownership proof* — completing it requires admin rights on
+the target server. Accepting a directly-typed `guild_id` here would skip that
 proof (`confirmInstall`'s reachability check confirms the bot is a member, not
 that the caller owns the guild), so the route returns 400 `oauth_shaped_static_bot`
-and points the caller at the platform's install endpoint. The `applicationId`
-discriminator on `StaticBotInstallHandler` is exactly the typed contract for this
-narrow.
+and points the caller at the platform's install endpoint. This is keyed on an
+explicit `oauthShaped` flag on `StaticBotInstallHandler` — **not** on
+`applicationId`, because Teams and WhatsApp populate `applicationId` (for their
+manifest / parity URLs) while remaining form-shaped, so it is not a reliable
+OAuth-shaped discriminator.
 
 This issue (#3140) wires the **generic spine only** — route + admin form + the
 cap-gate seam. Per-platform enablement (flipping `implementation_status` off

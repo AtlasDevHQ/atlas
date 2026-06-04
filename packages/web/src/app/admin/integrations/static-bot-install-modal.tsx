@@ -11,14 +11,14 @@
  * The form is driven by the catalog row's `configSchema` JSONB — identical to
  * {@link FormInstallModal} — so a new static-bot platform needs no UI change,
  * only a catalog row + a registered handler. The routing identifier is the
- * first `required` field; the server resolves which field that is and runs the
- * chat-integration cap gate inside `confirmInstall`. Submits through
- * {@link useAdminMutation} (never a hand-rolled fetch) to
- * `POST /api/v1/integrations/:slug/install-form`, which the API route accepts
- * for `install_model: "static-bot"`.
+ * first `required` field; the server resolves which field that is and forwards
+ * it to the handler's `confirmInstall`. Submits through {@link useAdminMutation}
+ * (never a hand-rolled fetch) to `POST /api/v1/integrations/:slug/install-form`,
+ * which the API route accepts for `install_model: "static-bot"`.
  *
- * Server-side validation is the source of truth: a malformed routing id, an
- * over-cap workspace (429), or an unreachable platform (502) surfaces as the
+ * Server-side validation is the source of truth: a malformed routing id (400)
+ * or an unreachable platform (502) — and, once the platform's handler is
+ * cap-gated (#3141–#3144), an over-cap workspace (429) — surfaces as the
  * mutation error, rendered as the dialog's root error banner.
  */
 
@@ -88,8 +88,9 @@ export function StaticBotInstallModal({
       if (!result.ok) {
         // Surface the structured FetchError as the dialog's root error
         // (FormDialog's onSubmit wrapper catches the throw). `friendlyError`
-        // already folds the cap (429), upgrade (403), and upstream (502)
-        // messages into actionable copy with the requestId tail.
+        // renders the server-authored message (the cap / upstream / not-yet-
+        // available responses all carry actionable server copy) with the
+        // requestId tail appended for support correlation.
         throw new Error(friendlyError(result.error));
       }
       onInstalled();

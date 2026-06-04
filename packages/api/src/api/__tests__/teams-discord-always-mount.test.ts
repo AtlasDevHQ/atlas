@@ -76,9 +76,12 @@ describe("/api/v1/{teams,discord} always-mount contract", () => {
       process.env.DISCORD_CLIENT_SECRET = savedDiscordClientSecret;
   });
 
-  it("/api/v1/teams/install returns 501 (not 404) when TEAMS_APP_ID unset at import", async () => {
+  it("/api/v1/teams/install returns 410 (not 404) — route stays mounted after #3142 retirement", async () => {
+    // The legacy OAuth install was retired in #3142 (uncapped install path).
+    // The route stays mounted and returns 410 Gone regardless of env, so a
+    // stale Azure redirect lands on an explicit "moved" signal, not a 404.
     const resp = await app.request("/api/v1/teams/install", { method: "GET" });
-    expect(resp.status).toBe(501);
+    expect(resp.status).toBe(410);
   });
 
   it("/api/v1/discord/install returns 501 (not 404) when DISCORD_CLIENT_ID unset at import", async () => {

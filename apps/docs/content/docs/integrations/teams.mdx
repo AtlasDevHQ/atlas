@@ -21,17 +21,6 @@ tenant is the install, and the bot uses a single operator-owned set
 of credentials to communicate with every tenant it's been installed
 into.
 
-<Callout type="warn" title="Per-workspace install not available yet">
-The per-workspace install flow described below is **not currently available**
-in the Atlas admin UI. Its legacy connect route was removed in
-[#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) because it bypassed the
-chat-integration cap and produced a non-routable install. The cap-gated
-static-bot install (routing-identifier capture, like Discord) is tracked in
-[#3142](https://github.com/AtlasDevHQ/atlas/issues/3142); until it ships the
-Microsoft Teams card shows **"Coming soon."** The operator setup below remains
-valid groundwork.
-</Callout>
-
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to an Azure Bot registration. Self-hosted

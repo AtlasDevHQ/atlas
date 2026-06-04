@@ -34,10 +34,12 @@ import { createTelegramAdapter } from "./adapters/telegram";
 import { createDiscordAdapter } from "./adapters/discord";
 import { createWhatsAppAdapter } from "./adapters/whatsapp";
 import { createGoogleChatAdapter } from "./adapters/gchat";
+import { createTeamsAdapter } from "./adapters/teams";
 import type {
   DiscordAdapterConfig,
   GoogleChatAdapterConfig,
   SlackAdapterConfig,
+  TeamsAdapterConfig,
   TelegramAdapterConfig,
   WhatsAppAdapterConfig,
 } from "./config";
@@ -96,7 +98,9 @@ type ChatAdapterInstance<K extends ChatAdapterName> = K extends "slack"
         ? Adapter
         : K extends "gchat"
           ? Adapter
-          : { readonly name: K };
+          : K extends "teams"
+            ? Adapter
+            : { readonly name: K };
 
 /**
  * Returned alongside `ChatAdapterSet` so `healthCheck` and admin
@@ -374,12 +378,37 @@ const GCHAT_BUILDER: ChatAdapterBuilder<Adapter> = {
   },
 };
 
+/**
+ * Microsoft Teams (#3142 — fifth static-bot adapter, completing the
+ * Phase D family under umbrella #2994). The operator wires one Microsoft
+ * Entra ID app registration (`TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`)
+ * operating in MultiTenant mode — `appTenantId` is intentionally omitted
+ * so a single app serves every customer tenant; per-Workspace routing by
+ * the tenant GUID lives downstream in executeQuery's Teams branch. The
+ * `@chat-adapter/teams` adapter verifies the Bot Framework JWT on every
+ * inbound activity internally, so there's no separate webhook-secret env
+ * var (unlike Telegram).
+ */
+const TEAMS_BUILDER: ChatAdapterBuilder<Adapter> = {
+  slug: "teams",
+  platform: "teams",
+  requiredEnv: ["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"],
+  build(env) {
+    const appId = env.TEAMS_APP_ID;
+    const appPassword = env.TEAMS_APP_PASSWORD;
+    if (!appId || !appPassword) return null;
+    const config: TeamsAdapterConfig = { appId, appPassword };
+    return createTeamsAdapter(config);
+  },
+};
+
 const BUILDERS_BY_SLUG: Readonly<Record<string, ChatAdapterBuilder<unknown>>> = {
   slack: SLACK_BUILDER,
   telegram: TELEGRAM_BUILDER,
   discord: DISCORD_BUILDER,
   whatsapp: WHATSAPP_BUILDER,
   gchat: GCHAT_BUILDER,
+  teams: TEAMS_BUILDER,
 };
 
 /**
@@ -533,6 +562,12 @@ export function buildChatAdapterRegistry(
       );
     } else if (entry.slug === "gchat") {
       adapters.gchat = adapter as Adapter;
+      logger.info(
+        { slug: entry.slug, platform: builder.platform },
+        "AdapterRegistry: chat adapter registered",
+      );
+    } else if (entry.slug === "teams") {
+      adapters.teams = adapter as Adapter;
       logger.info(
         { slug: entry.slug, platform: builder.platform },
         "AdapterRegistry: chat adapter registered",

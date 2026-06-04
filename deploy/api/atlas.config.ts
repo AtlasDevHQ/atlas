@@ -123,9 +123,15 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #2994: legacy connect route removed (cap bypass + non-functional);
-      // back to coming_soon until the cap-gated static-bot install ships (#3142).
-      implementation_status: "coming_soon",
+      // #3142 (umbrella #2994) shipped the cap-gated static-bot install +
+      // the full Teams runtime branch: the generic `/install-form` route
+      // captures the tenant_id and `TeamsStaticBotInstallHandler.confirmInstall`
+      // persists through `checkChatIntegrationLimitAndInstall` (over-cap → 429,
+      // reconnect grandfathered); the `@chat-adapter/teams` builder + the
+      // /webhooks/teams receive route + the executeQuery Teams branch all land
+      // in #3142. teams is added to the chatPlugin catalog below so its adapter
+      // instantiates + the webhook mounts.
+      implementation_status: "available",
       name: "Microsoft Teams",
       description:
         "Chat with Atlas inside Microsoft Teams. The operator wires a shared Azure Bot (TEAMS_APP_ID + TEAMS_APP_PASSWORD); customer admins upload the Atlas Teams manifest to their tenant (or install from AppSource), then point Atlas at their Microsoft Entra ID tenant GUID.",
@@ -766,6 +772,19 @@ export default defineConfig({
         // `GchatStaticBotInstallHandler`).
         {
           slug: "gchat",
+          type: "chat",
+          install_model: "static-bot",
+          enabled: true,
+          saas_eligible: true,
+        },
+        // Microsoft Teams — #3142 (completing Phase D under umbrella #2994).
+        // The plugin-local catalog drives AdapterRegistry instantiation +
+        // webhook-route mount; teams was previously absent (so the adapter
+        // never built and /webhooks/teams never mounted — a non-routable
+        // install, the #2994 defect). Adding it here mounts the adapter +
+        // webhook once TEAMS_APP_ID / TEAMS_APP_PASSWORD are wired.
+        {
+          slug: "teams",
           type: "chat",
           install_model: "static-bot",
           enabled: true,

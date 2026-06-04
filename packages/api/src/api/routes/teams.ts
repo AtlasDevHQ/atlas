@@ -1,65 +1,66 @@
 /**
- * Teams integration OAuth routes.
+ * Teams legacy OAuth install routes — RETIRED (#3142, umbrella #2994).
  *
- * - GET /api/v1/teams/install   — Redirect to Azure AD admin consent
- * - GET /api/v1/teams/callback  — Handle admin consent callback
+ * - GET /api/v1/teams/install   — 410 Gone (was: Azure AD admin consent redirect)
+ * - GET /api/v1/teams/callback  — 410 Gone (was: admin-consent callback)
  *
- * Unlike Slack, Teams uses Azure AD admin consent. The app credentials
- * (TEAMS_APP_ID, TEAMS_APP_PASSWORD) are platform-level env vars.
- * What changes per-org is the tenant authorization — proof that a
- * workspace admin consented to the bot in their tenant.
+ * The Azure AD admin-consent dance that used to live here bound a tenant
+ * by writing the legacy `teams_installations` table via
+ * `saveTeamsInstallation` — an **uncapped** install that bypassed the
+ * chat-integration plan cap and produced a non-routable binding (the
+ * #2994 defect). Teams now installs through the unified cap-gated
+ * static-bot path: a workspace admin uploads the Atlas Teams manifest to
+ * their tenant (or installs from AppSource), then pastes their Microsoft
+ * Entra ID tenant GUID into **Admin → Integrations → Microsoft Teams**,
+ * which routes to `POST /api/v1/integrations/teams/install-form` →
+ * `TeamsStaticBotInstallHandler.confirmInstall` (cap-gated, persists via
+ * the advisory-locked `checkChatIntegrationLimitAndInstall`, writes
+ * `workspace_plugins`).
+ *
+ * Both routes are kept mounted (not deleted) so any stale bookmark or
+ * in-flight Azure redirect lands on an explicit **410 Gone** pointing at
+ * the new flow rather than a 404 that reads like an outage. The legacy
+ * `teams_installations` table + `lib/teams/store.ts` writer are dropped
+ * in #3145; the read-side `deleteTeamsInstallationByOrg` used by the
+ * legacy disconnect path is retired alongside the family-wide disconnect
+ * rework (#3154).
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { saveTeamsInstallation } from "@atlas/api/lib/teams/store";
-import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
-import { adminAuthPreamble } from "./admin-auth";
-import { getConfig } from "@atlas/api/lib/config";
-import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("teams");
 
 const teams = new OpenAPIHono({ defaultHook: validationHook });
 
+/**
+ * Shared 410 body — the route's install moved to the cap-gated static-bot
+ * flow. Kept as one constant so both handlers return identical wording.
+ */
+const RETIRED_MESSAGE =
+  "The Teams OAuth install flow has been retired. Install Microsoft Teams from " +
+  "Admin → Integrations → Microsoft Teams: upload the Atlas Teams manifest to your " +
+  "tenant (or install from AppSource), then enter your Microsoft Entra ID tenant GUID. " +
+  "The new flow is plan-cap-aware and routes inbound messages correctly.";
+
 // ---------------------------------------------------------------------------
-// Route definitions
+// Route definitions — both retired to 410 Gone
 // ---------------------------------------------------------------------------
 
 const installRoute = createRoute({
   method: "get",
   path: "/install",
   tags: ["Teams"],
-  summary: "Teams OAuth install redirect",
+  summary: "Teams OAuth install redirect (retired)",
   description:
-    "Redirects to the Azure AD admin consent page. Requires TEAMS_APP_ID to be configured. " +
-    "Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting " +
-    "tenant authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
+    "Retired in #3142 — Teams now installs via the cap-gated static-bot flow at " +
+    "Admin → Integrations. Returns 410 Gone pointing at the new path.",
   responses: {
-    302: {
-      description: "Redirect to Azure AD admin consent page",
-    },
-    401: {
-      description: "Not authenticated",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Caller is not an admin/owner of the workspace",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    429: {
-      description: "Rate limited",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Failed to save OAuth state",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    501: {
-      description: "Teams not configured",
+    410: {
+      description: "Endpoint retired — install via Admin → Integrations",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -69,192 +70,44 @@ const callbackRoute = createRoute({
   method: "get",
   path: "/callback",
   tags: ["Teams"],
-  summary: "Teams OAuth callback",
+  summary: "Teams OAuth callback (retired)",
   description:
-    "Handles the admin consent callback from Azure AD. Saves the tenant authorization " +
-    "and returns HTML on success or failure.",
+    "Retired in #3142 — the admin-consent callback no longer binds a tenant (that path " +
+    "wrote an uncapped install). Returns 410 Gone.",
   request: {
     query: z.object({
-      state: z.string().openapi({ description: "CSRF state parameter" }),
-      tenant: z.string().optional().openapi({ description: "Azure AD tenant ID (absent on denial)" }),
-      admin_consent: z.string().optional().openapi({ description: "Whether admin consent was granted" }),
-      error: z.string().optional().openapi({ description: "Error code from Azure AD on denial" }),
-      error_description: z.string().optional().openapi({ description: "Human-readable error from Azure AD" }),
+      state: z.string().optional().openapi({ description: "Legacy CSRF state (ignored)" }),
+      tenant: z.string().optional().openapi({ description: "Legacy Azure AD tenant id (ignored)" }),
     }),
   },
   responses: {
-    200: {
-      description: "Installation successful (HTML response, when no web origin is configured)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    302: {
-      description: "Installation successful (redirect to /admin/integrations on the web app)",
-    },
-    400: {
-      description: "Invalid or expired state, or consent not granted",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Installation failed (HTML response)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    501: {
-      description: "Teams not configured",
+    410: {
+      description: "Endpoint retired — install via Admin → Integrations",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// Handlers
+// Handlers — inert; no OAuth state, no install write
 // ---------------------------------------------------------------------------
 
-// --- GET /api/v1/teams/install ---
-
-teams.openapi(installRoute, async (c) => {
-  const appId = process.env.TEAMS_APP_ID;
-  if (!appId) {
-    return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
-  }
-
-  // F-04 (security): require authenticated admin so the OAuth state binds the
-  // resulting tenant authorization to a real org. Anonymous /install was an
-  // install-hijack vector — an attacker could trigger admin consent and have
-  // the tenant bound to org_id = NULL, then later be claimed by another tenant.
+teams.openapi(installRoute, (c) => {
   const requestId = crypto.randomUUID();
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers);
-  }
-  const orgId = preamble.authResult.user?.activeOrganizationId ?? undefined;
-
-  const nonce = crypto.randomUUID();
-  try {
-    await saveOAuthState(nonce, { orgId, provider: "teams" });
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to save OAuth state for Teams install",
-    );
-    return c.json(
-      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
-      500,
-    );
-  }
-
-  const origin = new URL(c.req.url).origin;
-  const redirectUri = `${origin}/api/v1/teams/callback`;
-  const url =
-    `https://login.microsoftonline.com/common/adminconsent` +
-    `?client_id=${encodeURIComponent(appId)}` +
-    `&state=${encodeURIComponent(nonce)}` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}`;
-  return c.redirect(url);
+  log.info(
+    { requestId },
+    "Teams legacy /install hit after retirement — redirecting caller to the static-bot install flow",
+  );
+  return c.json({ error: "endpoint_retired", message: RETIRED_MESSAGE, requestId }, 410);
 });
 
-// --- GET /api/v1/teams/callback ---
-
-teams.openapi(callbackRoute, async (c) => {
-  const appId = process.env.TEAMS_APP_ID;
-  if (!appId) {
-    return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
-  }
-
+teams.openapi(callbackRoute, (c) => {
   const requestId = crypto.randomUUID();
-
-  const nonce = c.req.query("state");
-  if (!nonce) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter." }, 400);
-  }
-
-  let oauthState: Awaited<ReturnType<typeof consumeOAuthState>>;
-  try {
-    oauthState = await consumeOAuthState(nonce);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), requestId },
-      "Failed to validate OAuth state — internal database may be unavailable",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Could not validate the authorization. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  if (!oauthState) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter. Please start the installation again." }, 400);
-  }
-
-  if (oauthState.provider !== "teams") {
-    log.warn({ expected: "teams", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
-    return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
-  }
-
-  // F-04 (security): in SaaS mode, every install must bind to an org. A
-  // missing orgId here means /install was reached without a valid admin
-  // session (or the row was tampered with) — refuse to bind the tenant.
-  // Self-hosted is allowed to keep platform-wide installs (orgId may be
-  // undefined when there is no internal DB / no org concept).
-  if (oauthState.orgId === undefined && getConfig()?.deployMode === "saas") {
-    log.warn({ requestId }, "Rejecting Teams install: SaaS mode requires orgId on OAuth state");
-    return c.json(
-      { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin." },
-      400,
-    );
-  }
-
-  // Azure AD returns error/error_description when consent is denied
-  const errorCode = c.req.query("error");
-  if (errorCode) {
-    const errorDesc = c.req.query("error_description") ?? "Admin consent was not granted";
-    log.info({ errorCode, errorDesc }, "Teams admin consent denied");
-    return c.json(
-      { error: "consent_denied", message: errorDesc },
-      400,
-    );
-  }
-
-  const tenantId = c.req.query("tenant");
-  if (!tenantId) {
-    return c.json({ error: "missing_tenant", message: "Missing tenant parameter" }, 400);
-  }
-
-  // Azure AD tenant IDs are UUIDs — reject malformed values
-  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidPattern.test(tenantId)) {
-    return c.json({ error: "invalid_tenant", message: "Invalid tenant ID format" }, 400);
-  }
-
-  const adminConsent = c.req.query("admin_consent");
-  if (adminConsent !== "True") {
-    return c.json(
-      { error: "consent_denied", message: "Admin consent was not granted" },
-      400,
-    );
-  }
-
-  try {
-    const orgId = oauthState.orgId;
-    await saveTeamsInstallation(tenantId, { orgId });
-    log.info({ tenantId, orgId }, "Teams installation saved");
-  } catch (saveErr) {
-    log.error(
-      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), tenantId, requestId },
-      "Failed to save Teams installation",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  const webOrigin = getWebOrigin();
-  if (webOrigin) {
-    return c.redirect(`${webOrigin}/admin/integrations?installed=teams`);
-  }
-  return c.html(
-    "<html><body><h1>Atlas installed!</h1><p>You can now use Atlas in your Teams workspace.</p></body></html>",
+  log.info(
+    { requestId },
+    "Teams legacy /callback hit after retirement — no tenant bound (uncapped install path removed)",
   );
+  return c.json({ error: "endpoint_retired", message: RETIRED_MESSAGE, requestId }, 410);
 });
 
 export { teams };

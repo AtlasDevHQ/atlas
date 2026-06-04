@@ -366,13 +366,14 @@ describe("chat-plugin executeQuery host helper", () => {
   it("refuses unknown platforms cleanly without invoking the agent", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
-    // Teams stays on the placeholder branch in 1.5.3 — its install
-    // handler hasn't shipped yet. (Discord moved off this branch in
-    // #2749 — see the discord-specific tests below.)
+    // `github` is an action-pillar chat-adapter name with no chat-query
+    // executeQuery branch — the dispatcher's `unsupported platform` arm
+    // refuses it before the agent runs. (Teams moved off this branch in
+    // #3142 — see the Teams-specific tests below.)
     await expect(
       runExecuteQuery("q", {
-        threadId: "teams:abc",
-        adapter: { name: "teams" },
+        threadId: "github:abc",
+        adapter: { name: "github" } as unknown as { name: "slack" },
         rawMessage: { team_id: "T0" },
       }),
     ).rejects.toThrow(/not yet supported/);
@@ -1101,6 +1102,196 @@ describe("chat-plugin executeQuery host helper", () => {
         rawMessage: {
           eventType: "MESSAGE",
           space: { name: "spaces/BAD", customer: "acme.com'; DROP TABLE--" },
+        },
+      }),
+    ).rejects.toThrow(/missing tenant context/i);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Microsoft Teams branch — #3142 (umbrella #2994)
+  //
+  // Teams routes per-tenant by the Microsoft Entra ID tenant GUID, which
+  // the Bot Framework stamps on every activity envelope at
+  // `channelData.tenant.id` (canonical) with `conversation.tenantId` as a
+  // fallback. The static-bot install row persists the tenant GUID
+  // (lowercased) into `workspace_plugins.config->>'tenant_id'`.
+  // -------------------------------------------------------------------------
+
+  const TEAMS_TENANT = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+
+  it("Teams happy path: resolves tenant_id → workspace + binds teams actor + stamps approvalSurface='teams'", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-teams-tenant" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    const result = await runExecuteQuery("show me users", {
+      threadId: "teams:19:meeting_abc",
+      adapter: { name: "teams" },
+      rawMessage: {
+        channelData: { tenant: { id: TEAMS_TENANT } },
+        conversation: { id: "19:meeting_abc@thread.v2" },
+        from: { id: "29:1abc", aadObjectId: "aad-obj-1", name: "Test User" },
+      },
+    });
+
+    expect(result.answer).toBe("42 active users");
+    expect(capturedAgentCalls).toHaveLength(1);
+    const call = capturedAgentCalls[0]!;
+    // externalId is the tenant GUID; externalUserId prefers the AAD object id.
+    expect(call.options?.actor?.id).toBe(`teams-bot:${TEAMS_TENANT}:aad-obj-1`);
+    expect(call.options?.actor?.activeOrganizationId).toBe("org-teams-tenant");
+    expect(call.options?.approvalSurface).toBe("teams");
+    // Rate-limit key shape is `teams:${tenantId}` (per-tenant bucket).
+    expect(observedRateLimitKeys).toContain(`teams:${TEAMS_TENANT}`);
+    // DB lookup against the catalog row's stable id with config->>'tenant_id'.
+    const installQueryCalls = mockInternalQuery.mock.calls.filter(([sql]) =>
+      String(sql).includes("workspace_plugins"),
+    );
+    expect(installQueryCalls).toHaveLength(1);
+    const [sql, params] = installQueryCalls[0];
+    expect(String(sql)).toMatch(/config->>'tenant_id'/);
+    expect(params).toEqual(["catalog:teams", TEAMS_TENANT]);
+  });
+
+  it("Teams falls back to conversation.tenantId when channelData.tenant.id is absent", async () => {
+    let observedParam: unknown;
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("workspace_plugins")) {
+        observedParam = params?.[1];
+        return Promise.resolve([{ workspace_id: "org-teams-fallback" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "teams:conv",
+      adapter: { name: "teams" },
+      rawMessage: {
+        conversation: { id: "19:conv@thread.v2", tenantId: TEAMS_TENANT },
+        from: { id: "29:1abc" },
+      },
+    });
+
+    expect(observedParam).toBe(TEAMS_TENANT);
+    expect(capturedAgentCalls).toHaveLength(1);
+  });
+
+  it("Teams lowercases an uppercase tenant GUID before the resolver lookup (install row stores lowercase)", async () => {
+    let observedParam: unknown;
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("workspace_plugins")) {
+        observedParam = params?.[1];
+        return Promise.resolve([{ workspace_id: "org-teams-upper" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await runExecuteQuery("q", {
+      threadId: "teams:upper",
+      adapter: { name: "teams" },
+      rawMessage: {
+        channelData: { tenant: { id: TEAMS_TENANT.toUpperCase() } },
+        conversation: { id: "19:upper@thread.v2" },
+        from: { id: "29:1abc" },
+      },
+    });
+
+    // Azure portal links paste tenant GUIDs uppercase; the install handler
+    // lowercases on write, so the resolver must lowercase on read or the
+    // lookup misses the row.
+    expect(observedParam).toBe(TEAMS_TENANT);
+  });
+
+  it("Teams fail-closes on unknown tenant_id (no install row) — never invokes the agent", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:unk",
+        adapter: { name: "teams" },
+        rawMessage: {
+          channelData: { tenant: { id: TEAMS_TENANT } },
+          conversation: { id: "19:unk@thread.v2" },
+          from: { id: "29:1abc" },
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Teams fail-closes on DB outage during workspace resolution — user-safe error, never invokes the agent", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.reject(new Error("ECONNREFUSED postgres://internal-db:5432")),
+    );
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:dbdown",
+        adapter: { name: "teams" },
+        rawMessage: {
+          channelData: { tenant: { id: TEAMS_TENANT } },
+          conversation: { id: "19:dbdown@thread.v2" },
+          from: { id: "29:1abc" },
+        },
+      }),
+    ).rejects.toThrow(/could not resolve the Teams workspace/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+  });
+
+  it("Teams fail-closes when the same tenant_id maps to multiple workspaces — cross-tenant misroute defense", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("workspace_plugins")) {
+        return Promise.resolve([{ workspace_id: "org-a" }, { workspace_id: "org-b" }]);
+      }
+      return Promise.resolve([]);
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:dup",
+        adapter: { name: "teams" },
+        rawMessage: {
+          channelData: { tenant: { id: TEAMS_TENANT } },
+          conversation: { id: "19:dup@thread.v2" },
+          from: { id: "29:1abc" },
+        },
+      }),
+    ).rejects.toThrow(/not connected to Atlas/i);
+    expect(capturedAgentCalls).toHaveLength(0);
+    // The lookup must stay scoped to (catalog:teams, enabled, tenant_id).
+    const installQueryCalls = mockInternalQuery.mock.calls.filter(([sql]) =>
+      String(sql).includes("workspace_plugins"),
+    );
+    const [sql, params] = installQueryCalls[0];
+    expect(String(sql)).toMatch(/config->>'tenant_id'/);
+    expect(params).toEqual(["catalog:teams", TEAMS_TENANT]);
+  });
+
+  it("Teams rejects events whose tenant_id isn't a valid Entra GUID — defends rate-limit cache key shape", async () => {
+    mockInternalQuery.mockImplementation(() => {
+      throw new Error("internalQuery should never be reached on shape failure");
+    });
+    const { runExecuteQuery } = await import("../executeQuery");
+
+    await expect(
+      runExecuteQuery("q", {
+        threadId: "teams:bad",
+        adapter: { name: "teams" },
+        rawMessage: {
+          channelData: { tenant: { id: "not-a-guid'; DROP TABLE--" } },
+          conversation: { id: "19:bad@thread.v2" },
+          from: { id: "29:1abc" },
         },
       }),
     ).rejects.toThrow(/missing tenant context/i);

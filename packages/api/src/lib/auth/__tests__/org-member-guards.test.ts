@@ -19,13 +19,20 @@ import {
   ATLAS_USE_ADMIN_API_CODE,
 } from "@atlas/api/lib/auth/org-member-guards";
 
-async function captureThrow(fn: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await fn();
-  } catch (err) {
-    return err;
-  }
-  return undefined;
+/**
+ * Resolve to the value the guard THREW so the test can assert on the APIError
+ * shape. Uses `.then(onFulfilled, onRejected)` rather than try/catch so there's
+ * no swallowed-error branch — and it fails loudly if the guard unexpectedly
+ * resolves instead of throwing (the whole point of these hooks is that they
+ * never fall through).
+ */
+function captureThrow(fn: () => Promise<unknown>): Promise<unknown> {
+  return fn().then(
+    () => {
+      throw new Error("expected the guard to throw an APIError, but it resolved");
+    },
+    (err: unknown) => err,
+  );
 }
 
 describe("#3164 — native org member-mutation hooks block the unguarded path", () => {

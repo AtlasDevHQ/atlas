@@ -170,23 +170,29 @@ function memberRoleUpdateCount(): number {
 }
 
 /**
- * Mock the queries `deleteUserRoute`'s multi-workspace last-admin guard issues
- * (#3166), so the delete tests can target arbitrary cross-workspace admin
- * topologies without a real Postgres:
- *   - Enumeration: `SELECT "organizationId" FROM member WHERE "userId"=$1 AND
- *     role IN ('admin','owner')` → the workspaces where the target is an admin.
- *   - Per-workspace OTHER-admin count: `SELECT COUNT(*) ... AND "userId" != $2`
- *     → how many admins/owners remain in that workspace once the target is gone.
+ * Mock the queries `deleteUserRoute`'s multi-workspace last-admin guard issues,
+ * so the delete tests can target arbitrary cross-workspace topologies without a
+ * real Postgres. The guard (#3166, hardened per Codex P1 on #3171) locks EVERY
+ * workspace the target is a member of, re-reads the role per workspace under the
+ * locks, then counts the OTHER admins/owners for each admin/owner membership:
+ *   - Enumeration:  `SELECT "organizationId" FROM member WHERE "userId" = $1`
+ *     → every workspace the target belongs to.
+ *   - Role re-read: `SELECT "organizationId", role FROM member WHERE "userId"=$1
+ *     AND "organizationId" = ANY(...)` → the target's role per locked workspace.
+ *   - OTHER-admin count: `SELECT COUNT(*) ... AND "userId" != $2` → admins/owners
+ *     remaining in that workspace once the target is gone.
  *   - `DELETE FROM member ... = ANY(...)` (the under-lock removal) → no-op here.
  *
- * @param adminOrgs workspaces where the target is an admin/owner
+ * @param memberships the target's role in each workspace they belong to
+ *   (orgId → "owner" | "admin" | "member")
  * @param otherAdminCountByOrg admins/owners that remain per workspace after the
  *   target is removed (0 → that workspace would be stripped → guard blocks)
  */
 function mockDeleteGuard(
-  adminOrgs: string[],
+  memberships: Record<string, string>,
   otherAdminCountByOrg: Record<string, number>,
 ): void {
+  const orgIds = Object.keys(memberships);
   mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
     const s = sql.toLowerCase();
     // OTHER-admin count: distinguished by COUNT(*) + the "userId" != exclusion.
@@ -194,9 +200,13 @@ function mockDeleteGuard(
       const orgId = String(params?.[0]);
       return [{ count: String(otherAdminCountByOrg[orgId] ?? 0) }];
     }
-    // Enumeration of the target's admin/owner workspaces.
-    if (s.includes('"organizationid"') && s.includes("role in") && !s.includes("count(")) {
-      return adminOrgs.map((id) => ({ organizationId: id }));
+    // Role re-read under the locks: SELECT "organizationId", role ... = ANY(...).
+    if (s.includes('"organizationid", role') && s.includes("= any")) {
+      return orgIds.map((id) => ({ organizationId: id, role: memberships[id] }));
+    }
+    // Membership enumeration: SELECT "organizationId" FROM member WHERE "userId"=$1.
+    if (s.includes('select "organizationid" from member where "userid" = $1')) {
+      return orgIds.map((id) => ({ organizationId: id }));
     }
     return [];
   });
@@ -776,7 +786,7 @@ describe("Org-scoped user write operations (#983)", () => {
     it("blocks deleting the sole admin/owner of a workspace", async () => {
       setPlatformAdmin("org-1");
       // Target is the only admin/owner of org-1 (no others remain).
-      mockDeleteGuard(["org-1"], { "org-1": 0 });
+      mockDeleteGuard({ "org-1": "owner" }, { "org-1": 0 });
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-x"),
@@ -795,7 +805,7 @@ describe("Org-scoped user write operations (#983)", () => {
     // multi-workspace guard enumerates org-B and refuses.
     it("refuses to delete the sole admin of workspace B from a platform admin active in workspace A (#3166)", async () => {
       setPlatformAdmin("org-A");
-      mockDeleteGuard(["org-B"], { "org-B": 0 });
+      mockDeleteGuard({ "org-B": "admin" }, { "org-B": 0 });
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/sole-admin-of-B"),
@@ -809,7 +819,7 @@ describe("Org-scoped user write operations (#983)", () => {
     it("refuses and names the count when several workspaces would be stripped (#3166)", async () => {
       setPlatformAdmin("org-A");
       // Target is the sole admin of org-B AND org-C; org-D has a co-admin.
-      mockDeleteGuard(["org-B", "org-C", "org-D"], { "org-B": 0, "org-C": 0, "org-D": 1 });
+      mockDeleteGuard({ "org-B": "admin", "org-C": "owner", "org-D": "admin" }, { "org-B": 0, "org-C": 0, "org-D": 1 });
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/multi-sole-admin"),
@@ -827,7 +837,7 @@ describe("Org-scoped user write operations (#983)", () => {
     // without actually deleting the account.
     it("deletes when every admin workspace keeps a co-admin, invoking removeUser", async () => {
       setPlatformAdmin("org-A");
-      mockDeleteGuard(["org-B", "org-C"], { "org-B": 1, "org-C": 2 });
+      mockDeleteGuard({ "org-B": "admin", "org-C": "owner" }, { "org-B": 1, "org-C": 2 });
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-x"),
@@ -840,7 +850,7 @@ describe("Org-scoped user write operations (#983)", () => {
     // admin workspace to guard — the global delete proceeds directly.
     it("deletes a non-admin target with no admin memberships directly", async () => {
       setPlatformAdmin("org-A");
-      mockDeleteGuard([], {});
+      mockDeleteGuard({ "org-X": "member" }, {});
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/plain-member"),

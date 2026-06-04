@@ -3189,43 +3189,59 @@ admin.openapi(deleteUserRoute, async (c) => {
     type DeleteGuardOutcome = { kind: "ok" } | { kind: "last_admin"; orgIds: string[] };
     let guard: DeleteGuardOutcome;
     try {
-      // The workspaces at risk are exactly those where the target is an
-      // admin/owner. Enumerated before the lock so the lock set is known;
-      // re-counted under the lock for the actual decision.
-      const adminMemberships = await internalQuery<{ organizationId: string }>(
-        `SELECT "organizationId" FROM member WHERE "userId" = $1 AND role IN ('admin','owner')`,
+      // Lock EVERY workspace the target is a member of — not just the ones where
+      // they're currently an admin/owner (Codex P1 on PR #3171). The role read
+      // that decides "admin/owner?" happens UNDER the locks, so a concurrent
+      // guarded promotion (changeUserRoleRoute, which locks the same workspace)
+      // can't slip a workspace into admin-status between a pre-lock snapshot and
+      // the cascade: it either commits before we read (we then see the target as
+      // admin and count) or after we delete the target's row (its UPDATE matches
+      // zero rows). Enumerating by membership rather than by admin-role is what
+      // makes that workspace appear in `guardOrgIds` to be locked at all. A
+      // brand-new workspace the target is added to mid-delete always carries its
+      // creator-owner, so the target can never be its SOLE admin — outside the
+      // membership set is safe to leave unlocked.
+      const memberships = await internalQuery<{ organizationId: string }>(
+        `SELECT "organizationId" FROM member WHERE "userId" = $1`,
         [userId],
       );
-      const guardOrgIds = adminMemberships.map((m) => m.organizationId);
+      const guardOrgIds = memberships.map((m) => m.organizationId);
       if (guardOrgIds.length === 0) {
         guard = { kind: "ok" };
       } else {
         guard = await withWorkspaceAdminLocks<DeleteGuardOutcome>(guardOrgIds, async (tx) => {
-          // For each guarded workspace, count the OTHER admins/owners (excluding
-          // the target). Zero means the target is the sole admin/owner and the
-          // delete would strip the workspace — collect it. Counting "others"
-          // (rather than "all, then compare to 1") stays correct even if the
-          // target was concurrently demoted between the enumeration and the
-          // lock: a demotion of the sole admin would itself have been refused,
-          // so others==0 only ever means the target is genuinely the last one.
+          // Re-read the target's role in every locked workspace, transaction-
+          // consistent under the locks. Only admin/owner memberships can strip a
+          // workspace; for each, count the OTHER admins/owners (excluding the
+          // target). Zero means the target is the sole admin/owner and the global
+          // delete would strip it — collect it. Counting "others" (rather than
+          // "all, then compare to 1") stays correct even if the target was
+          // concurrently demoted: a demotion of the sole admin would itself have
+          // been refused, so others==0 only ever means the target is the last one.
+          const roleRows = await tx.query<{ organizationId: string; role: string }>(
+            `SELECT "organizationId", role FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
+            [userId, guardOrgIds],
+          );
           const stripped: string[] = [];
-          for (const orgId of guardOrgIds) {
+          for (const { organizationId, role } of roleRows) {
+            if (role !== "admin" && role !== "owner") continue;
             const others = await tx.query<{ count: string }>(
               `SELECT COUNT(*) as count FROM member
                WHERE "organizationId" = $1 AND role IN ('admin','owner') AND "userId" != $2`,
-              [orgId, userId],
+              [organizationId, userId],
             );
             if (parseInt(String(others[0]?.count ?? "0"), 10) === 0) {
-              stripped.push(orgId);
+              stripped.push(organizationId);
             }
           }
           if (stripped.length > 0) {
             return { kind: "last_admin", orgIds: stripped };
           }
-          // Remove the target from every guarded workspace under the locks.
+          // Remove the target from every locked workspace under the locks.
           // `removeUser` below also cascade-deletes member rows, so this is
           // idempotent with it; its purpose here is to serialize against a
-          // concurrent demote/removal in any of these workspaces.
+          // concurrent promote/demote/removal in any of these workspaces (a
+          // racing promotion's UPDATE then matches zero rows once we commit).
           await tx.query(
             `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
             [userId, guardOrgIds],

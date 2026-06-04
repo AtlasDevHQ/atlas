@@ -278,6 +278,25 @@ describe("createBoundDashboardTools", () => {
     expect(queryCalls).toHaveLength(0); // no DB queries fired
   });
 
+  // #3137 — a KPI card's comparisonSql goes through the same guard up front.
+  it("addCard refuses a KPI card whose comparisonSql fails validation", async () => {
+    enableInternalDB();
+    const tools = createBoundDashboardTools(ctx);
+    const result = await runTool<{ kind: "err"; error: string }>(tools.addCard, {
+      title: "Revenue",
+      sql: "SELECT SUM(amount) AS total FROM orders",
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "total",
+        valueColumns: ["total"],
+        kpi: { comparisonSql: "DROP TABLE orders" },
+      },
+    });
+    expect(result.kind).toBe("err");
+    expect(result.error).toMatch(/comparison/i);
+    expect(queryCalls).toHaveLength(0); // rejected before any persist
+  });
+
   // -------------------------------------------------------------------
   // updateCard
   // -------------------------------------------------------------------

@@ -209,11 +209,26 @@ export function createBoundDashboardTools(
     }),
     execute: async ({ title, sql, chartConfig, layout }) => {
       try {
-        const validation = await validateSQL(sql, undefined);
+        // #3137 — a KPI card's comparisonSql runs through the SAME guard at
+        // render time; validate it up front alongside the primary so the bound
+        // editor rejects a bad comparison query the same way createDashboard
+        // does (rather than silently degrading to a missing delta later). Both
+        // validations run together — no waterfall.
+        const comparisonSql = chartConfig.kpi?.comparisonSql;
+        const [validation, comparisonValidation] = await Promise.all([
+          validateSQL(sql, undefined),
+          comparisonSql ? validateSQL(comparisonSql, undefined) : Promise.resolve(null),
+        ]);
         if (!validation.valid) {
           return {
             kind: "err" as const,
             error: `SQL validation failed: ${validation.error}. Fix the query and retry.`,
+          };
+        }
+        if (comparisonValidation && !comparisonValidation.valid) {
+          return {
+            kind: "err" as const,
+            error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
           };
         }
         // Drafts path: when on, mint a UUID for the new card and stage
@@ -317,6 +332,18 @@ export function createBoundDashboardTools(
               kind: "err" as const,
               error: `Card ${cardId} is a text / section card — it has no chart to configure.`,
             };
+          }
+          // #3137 — validate a new/changed KPI comparisonSql through the same
+          // guard before persisting (parity with addCard / createDashboard).
+          const comparisonSql = updates.chartConfig?.kpi?.comparisonSql;
+          if (comparisonSql) {
+            const comparisonValidation = await validateSQL(comparisonSql, undefined);
+            if (!comparisonValidation.valid) {
+              return {
+                kind: "err" as const,
+                error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
+              };
+            }
           }
         }
 

@@ -159,13 +159,28 @@ describe("kpiComparisonSignature", () => {
     chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: sql } },
   });
 
-  test("includes only KPI cards with a comparison query, keyed by id + sql", () => {
-    const sig = kpiComparisonSignature([
+  test("includes only KPI cards with a comparison query", () => {
+    const withChart = kpiComparisonSignature([
       kpiWith("a", "SELECT 1 AS v"),
       { id: "b", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
       kpiWith("c", "SELECT 2 AS v"),
     ]);
-    expect(sig).toBe("a:SELECT 1 AS v|c:SELECT 2 AS v");
+    const onlyKpi = kpiComparisonSignature([kpiWith("a", "SELECT 1 AS v"), kpiWith("c", "SELECT 2 AS v")]);
+    // The non-comparison chart card contributes nothing.
+    expect(withChart).toBe(onlyKpi);
+  });
+
+  test("is order-independent (a card reorder must not refetch)", () => {
+    const a = kpiComparisonSignature([kpiWith("a", "SELECT 1 AS v"), kpiWith("c", "SELECT 2 AS v")]);
+    const reordered = kpiComparisonSignature([kpiWith("c", "SELECT 2 AS v"), kpiWith("a", "SELECT 1 AS v")]);
+    expect(reordered).toBe(a);
+  });
+
+  test("is collision-safe when SQL contains delimiter characters (:, |)", () => {
+    // A naive `id:sql` join with `|` would conflate these two distinct sets.
+    const s1 = kpiComparisonSignature([kpiWith("a", "SELECT 1"), kpiWith("b|x", "WHERE t > 0")]);
+    const s2 = kpiComparisonSignature([kpiWith("a", "SELECT 1|b|x:WHERE t > 0"), kpiWith("", "")]);
+    expect(s1).not.toBe(s2);
   });
 
   test("changes when a comparison query changes, but not on unrelated card churn", () => {

@@ -78,7 +78,7 @@ A **KPI card** is a chart card with `chartConfig.type: "kpi"` — a compact scor
 - **A delta chip** (▲/▼ + %) — the change versus a comparison value, when one is configured. Up is green, down is red.
 - **A sparkline** — drawn automatically when the query returns a trend (two or more rows) instead of a single value.
 
-The card's `sql` returns a single row: `categoryColumn` names the label column and `valueColumns[0]` the metric column. A `chartConfig.kpi` block controls the rest:
+The card's `sql` returns the headline metric — a single row for a plain scorecard, or a time-ordered multi-row trend (the last row is the headline, and the value column draws the sparkline). Either way `categoryColumn` names the label/time column and `valueColumns[0]` the metric column. A `chartConfig.kpi` block controls the rest:
 
 | Field | Description |
 |-------|-------------|
@@ -90,7 +90,7 @@ Ask the agent for them in chat:
 
 > "Lead the dashboard with KPI cards for revenue, new customers, and churn, each showing the change vs. last month."
 
-A KPI card binds [parameters](#parameters) exactly like any other card — write `:date_from` / `:date_to` in both the primary `sql` and the `comparisonSql`, and the delta tracks whatever window the parameter bar selects.
+A KPI card binds [parameters](#parameters) exactly like any other card, and the delta tracks whatever window the parameter bar selects. Every `:placeholder` — including those in `comparisonSql` — must be declared in the dashboard's `parameters`. The example below references the prior window via a `:prev_from` parameter (declared alongside `:date_from` / `:date_to`); declaring it is what lets the comparison query bind at render time.
 
 ```json
 {

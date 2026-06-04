@@ -119,20 +119,26 @@ export function hasKpiComparison(card: Pick<DashboardCard, "chartConfig">): bool
 }
 
 /**
- * Stable signature of a dashboard's KPI-comparison set — `id:comparisonSql` for
- * each KPI card that has a comparison query, joined. The dashboard page keys its
+ * Stable signature of a dashboard's KPI-comparison set — one `[id, sql]` tuple
+ * per KPI card that has a comparison query. The dashboard page keys its
  * default-comparison fetch effect on this so it re-runs ONLY when a KPI card's
  * comparison query is added, removed, or edited — an unrelated refetch (a stage
  * change, a layout save) leaves the signature unchanged and doesn't re-fire
  * every comparison query.
+ *
+ * Sorted by id and JSON-serialized so the signature is order-INDEPENDENT (a
+ * card reorder must not refetch) and collision-safe: SQL can legally contain
+ * the `:`/`|` characters a naive delimiter-join would conflate.
  */
 export function kpiComparisonSignature(
   cards: Array<Pick<DashboardCard, "id" | "chartConfig">>,
 ): string {
-  return cards
-    .filter(hasKpiComparison)
-    .map((c) => `${c.id}:${c.chartConfig?.kpi?.comparisonSql ?? ""}`)
-    .join("|");
+  return JSON.stringify(
+    cards
+      .filter(hasKpiComparison)
+      .map((c) => [c.id, c.chartConfig?.kpi?.comparisonSql ?? ""] as const)
+      .toSorted(([leftId], [rightId]) => leftId.localeCompare(rightId)),
+  );
 }
 
 /** Inline SVG sparkline — a single polyline over the series, normalized to the

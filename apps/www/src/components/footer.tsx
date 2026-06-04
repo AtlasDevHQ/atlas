@@ -24,6 +24,9 @@ export function Footer() {
           <a href="/pricing" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
             Pricing
           </a>
+          <a href="/blog" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
+            Blog
+          </a>
           <a href="https://docs.useatlas.dev" className="text-xs text-zinc-400 transition-colors hover:text-zinc-200">
             Docs
           </a>

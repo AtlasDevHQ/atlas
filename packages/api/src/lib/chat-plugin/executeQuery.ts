@@ -70,6 +70,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { DISCORD_GUILD_ID_RE } from "@atlas/api/lib/integrations/install/discord-static-bot-handler";
 import { WHATSAPP_PHONE_NUMBER_ID_RE } from "@atlas/api/lib/integrations/install/whatsapp-static-bot-handler";
 import { GCHAT_WORKSPACE_ID_RE } from "@atlas/api/lib/integrations/install/gchat-static-bot-handler";
+import { TEAMS_TENANT_ID_RE } from "@atlas/api/lib/integrations/install/teams-static-bot-handler";
 import { getConversationId, setConversationId } from "@atlas/api/lib/slack/threads";
 import {
   createConversation,
@@ -213,6 +214,28 @@ interface GchatRawEvent {
 }
 
 /**
+ * Minimum shape we read from a Microsoft Teams Bot Framework activity
+ * envelope. `@chat-adapter/teams` forwards the raw activity (after its
+ * own Bot Framework JWT verification) through the `rawMessage` slot.
+ *
+ * The per-Workspace routing identifier is the **Microsoft Entra ID tenant
+ * GUID**, which the Bot Framework stamps on every activity at
+ * `channelData.tenant.id` (canonical) — `conversation.tenantId` is the
+ * fallback some activity types use. {@link TeamsStaticBotInstallHandler}
+ * persists it (lowercased) into `workspace_plugins.config->>'tenant_id'`.
+ *
+ * `conversation.id` is the thread/channel anchor for conversation
+ * persistence (Teams 1:1, group, and channel conversations all carry one).
+ * `from.aadObjectId` is the stable per-user identity (preferred over the
+ * channel-scoped `from.id`).
+ */
+interface TeamsRawEvent {
+  channelData?: { tenant?: { id?: string } };
+  conversation?: { id?: string; tenantId?: string };
+  from?: { id?: string; aadObjectId?: string; name?: string };
+}
+
+/**
  * Normalize a Slack id field that may arrive as a bare string (events_api)
  * or as a `{ id, ... }` object (interactive `block_actions` payloads).
  */
@@ -309,6 +332,32 @@ function extractGchatWorkspaceId(raw: GchatRawEvent): string | undefined {
 }
 
 /**
+ * Extract the Microsoft Entra ID tenant GUID from a Teams activity
+ * envelope and return it lowercased. Prefers `channelData.tenant.id`
+ * (canonical) and falls back to `conversation.tenantId`. Returns
+ * undefined when neither is present OR when the value isn't a valid
+ * tenant GUID (per {@link TEAMS_TENANT_ID_RE}).
+ *
+ * Lowercasing matters: `TeamsStaticBotInstallHandler` stores the tenant
+ * GUID lowercased, so the resolver's `config->>'tenant_id' = $2` compare
+ * would miss an uppercase inbound value without this normalization.
+ * Even though `@chat-adapter/teams` verifies the Bot Framework JWT
+ * upstream, defending the shape here keeps an attacker-controllable
+ * string out of the rate-limit cache key (`teams:${tenantId}`) and the
+ * workspace-resolution log fingerprint.
+ *
+ * Reuses {@link TEAMS_TENANT_ID_RE} from the install handler — single
+ * source of truth for the tenant-id invariant across install + receive
+ * paths (mirrors the Discord / WhatsApp / gchat branches).
+ */
+function extractTeamsTenantId(raw: TeamsRawEvent): string | undefined {
+  const candidate = raw.channelData?.tenant?.id ?? raw.conversation?.tenantId;
+  if (typeof candidate !== "string" || candidate.length === 0) return undefined;
+  if (!TEAMS_TENANT_ID_RE.test(candidate)) return undefined;
+  return candidate.toLowerCase();
+}
+
+/**
  * Build the chat plugin's `executeQuery` callback.
  *
  * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
@@ -345,6 +394,9 @@ export async function runExecuteQuery(
   }
   if (adapter.name === "gchat") {
     return runGchatExecuteQuery(question, ctx, requestId);
+  }
+  if (adapter.name === "teams") {
+    return runTeamsExecuteQuery(question, ctx, requestId);
   }
 
   log.warn(
@@ -1024,6 +1076,182 @@ async function resolveGchatWorkspaceId(workspaceIdent: string): Promise<string> 
 }
 
 // ---------------------------------------------------------------------------
+// Microsoft Teams branch — #3142 (umbrella #2994)
+// ---------------------------------------------------------------------------
+
+async function runTeamsExecuteQuery(
+  question: string,
+  ctx: ChatExecuteQueryContext,
+  requestId: string,
+): Promise<ChatQueryResult> {
+  const { threadId, priorMessages, rawMessage } = ctx;
+  const raw = (rawMessage ?? {}) as TeamsRawEvent;
+
+  // 1. Resolve tenant — the Microsoft Entra ID tenant GUID is the routing
+  //    identifier persisted by `TeamsStaticBotInstallHandler` into
+  //    `workspace_plugins.config`. The Bot Framework stamps it on every
+  //    activity (`channelData.tenant.id`); a missing/invalid value should
+  //    never reach here (the adapter verifies the JWT first) but the
+  //    defensive check keeps the failure mode an actionable 4xx.
+  const tenantId = extractTeamsTenantId(raw);
+  if (!tenantId) {
+    log.warn(
+      { threadId, requestId },
+      "Chat plugin executeQuery received Teams event without a valid tenant id — refusing",
+    );
+    throw new Error(
+      "This Microsoft Teams event is missing tenant context. Please try again.",
+    );
+  }
+
+  // 2. Rate limit — keyed per-tenant (one install row == one rate-limit
+  //    bucket). Same posture as Discord's per-guild / gchat's per-Workspace key.
+  const rateCheck = checkRateLimit(`teams:${tenantId}`);
+  if (!rateCheck.allowed) {
+    log.info(
+      { tenantIdFingerprint: fingerprintTenantId(tenantId), threadId, requestId },
+      "Chat plugin executeQuery rate-limited",
+    );
+    throw new Error("Rate limit exceeded. Please wait before trying again.");
+  }
+
+  // 3. F-55 actor — resolve tenant_id → workspace_id via the install row.
+  //    Same fail-closed contract as Slack / Telegram / Discord: unknown
+  //    tenant or DB outage MUST throw before the agent runs.
+  let orgId: string;
+  try {
+    orgId = await resolveTeamsWorkspaceId(tenantId);
+  } catch (err) {
+    if (err instanceof TeamsUnknownTenantError) {
+      log.warn(
+        { tenantIdFingerprint: fingerprintTenantId(tenantId), threadId, requestId },
+        "Unknown Teams tenant_id — refusing",
+      );
+      throw new Error(
+        "This Microsoft Teams workspace is not connected to Atlas. Ask your admin to install Teams in the Atlas integrations console.",
+        { cause: err },
+      );
+    }
+    log.error(
+      {
+        tenantIdFingerprint: fingerprintTenantId(tenantId),
+        threadId,
+        requestId,
+        err,
+      },
+      "Failed to resolve Teams tenant_id → workspace — refusing query",
+    );
+    throw new Error(
+      "Atlas could not resolve the Teams workspace right now. Please try again in a moment.",
+      { cause: err },
+    );
+  }
+
+  const externalUserId =
+    typeof raw.from?.aadObjectId === "string" && raw.from.aadObjectId.length > 0
+      ? raw.from.aadObjectId
+      : typeof raw.from?.id === "string" && raw.from.id.length > 0
+        ? raw.from.id
+        : undefined;
+  const actor = botActorUser({
+    platform: "teams",
+    externalId: tenantId,
+    orgId,
+    ...(externalUserId ? { externalUserId } : {}),
+  });
+
+  // 4. Conversation persistence keyed on (tenant_id, conversation.id).
+  //    Teams `conversation.id` is the stable thread/channel anchor for
+  //    1:1, group, and channel conversations. Mirrors Discord's
+  //    (guild_id, channel_id) granularity.
+  const conversationAnchor =
+    typeof raw.conversation?.id === "string" && raw.conversation.id.length > 0
+      ? raw.conversation.id
+      : "";
+  const conversationId = await loadOrCreateConversation(
+    tenantId,
+    conversationAnchor,
+    question,
+    "teams",
+    requestId,
+  );
+
+  return runAgentAndMap({
+    question,
+    requestId,
+    actor,
+    approvalSurface: "teams",
+    conversationId,
+    priorMessages: priorMessages ?? null,
+    presentationMode: ctx.presentationMode,
+    tenantLabel: {
+      tenantIdFingerprint: fingerprintTenantId(tenantId),
+      threadId,
+    },
+  });
+}
+
+/**
+ * Log-safe tenant_id fingerprint — last 4 chars only. Mirrors the helper
+ * in `teams-static-bot-handler.ts`; kept inline here to avoid a
+ * cross-module import for one 2-line helper.
+ */
+function fingerprintTenantId(tenantId: string): string {
+  return tenantId.length <= 4 ? tenantId : `…${tenantId.slice(-4)}`;
+}
+
+/**
+ * Unknown-tenant marker for the Teams branch's fail-closed path. Same
+ * posture as {@link TelegramUnknownTenantError} — an `instanceof`
+ * sentinel caught inline and rethrown user-safe, NOT a Data.TaggedError.
+ */
+class TeamsUnknownTenantError extends Error {
+  constructor(tenantIdFingerprint: string) {
+    super(`No Atlas workspace bound to Teams tenant …${tenantIdFingerprint}`);
+    this.name = "TeamsUnknownTenantError";
+  }
+}
+
+/**
+ * Resolve a Microsoft Entra ID tenant_id → Atlas workspace_id via the
+ * static-bot install record. Reads `workspace_plugins.config->>'tenant_id'`
+ * for the catalog row `catalog:teams`. Throws {@link TeamsUnknownTenantError}
+ * on no-row, propagates DB errors verbatim for caller-side logging.
+ *
+ * Same rationale as the Telegram / Discord / gchat resolvers — the install
+ * row IS the tenant lookup (no parallel store to keep in sync). See ADR-0007.
+ */
+async function resolveTeamsWorkspaceId(tenantId: string): Promise<string> {
+  // No LIMIT — fail-closed when the same tenant_id maps to >1 workspace.
+  // Microsoft issues each tenant GUID once, so a duplicate here is operator
+  // misconfig (two workspaces both binding the same tenant); silently picking
+  // one match is a cross-tenant data exposure risk.
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'tenant_id' = $2`,
+    ["catalog:teams", tenantId],
+  );
+  if (rows.length === 0) {
+    throw new TeamsUnknownTenantError(fingerprintTenantId(tenantId));
+  }
+  if (rows.length > 1) {
+    log.error(
+      {
+        tenantIdFingerprint: fingerprintTenantId(tenantId),
+        matchCount: rows.length,
+        matchedWorkspaceIds: rows.map((r) => r.workspace_id),
+      },
+      "Teams tenant_id maps to multiple workspaces — refusing query (cross-tenant misroute risk). Operator must disconnect the duplicate install.",
+    );
+    throw new TeamsUnknownTenantError(fingerprintTenantId(tenantId));
+  }
+  return rows[0].workspace_id;
+}
+
+// ---------------------------------------------------------------------------
 // Shared conversation persistence + agent invocation
 // ---------------------------------------------------------------------------
 
@@ -1037,7 +1265,7 @@ async function loadOrCreateConversation(
   channel: string,
   threadAnchor: string,
   question: string,
-  surface: "slack" | "telegram" | "discord" | "whatsapp" | "gchat",
+  surface: "slack" | "telegram" | "discord" | "whatsapp" | "gchat" | "teams",
   requestId: string,
 ): Promise<string | null> {
   if (!channel || !threadAnchor) return null;
@@ -1475,5 +1703,6 @@ const _platformGuards: ReadonlyArray<ChatBotPlatform> = [
   "discord",
   "whatsapp",
   "gchat",
+  "teams",
 ];
 void _platformGuards;

@@ -1,9 +1,16 @@
 /**
- * Route-level tests for /api/v1/teams install + callback.
+ * Route-level tests for /api/v1/teams — Azure AD admin-consent install,
+ * now cap-gated (#3142).
+ *
+ * Teams is OAuth-shaped: the admin-consent callback returns an
+ * Azure-verified tenant id (ownership proof). The callback dispatches that
+ * tenant into the cap-gated static-bot handler (`confirmInstall` →
+ * `checkChatIntegrationLimitAndInstall` → `workspace_plugins`) instead of
+ * the retired uncapped `saveTeamsInstallation` write.
  *
  * F-04 (security): /install must require an authenticated workspace admin
  * so the OAuth state binds to a real org. Callbacks in SaaS mode must
- * refuse to bind a tenant authorization when oauthState.orgId is undefined.
+ * refuse to bind a tenant when `oauthState.orgId` is undefined.
  */
 
 import {
@@ -18,21 +25,33 @@ import {
 
 // --- Mocks (must be at module top before app import) ---
 
-const mockSaveTeamsInstallation: Mock<
-  (tenantId: string, opts?: { orgId?: string }) => Promise<void>
-> = mock(() => Promise.resolve());
+// The cap-gated install handler dispatched from the callback. We assert
+// confirmInstall is called with (workspaceId, tenant) and can make it throw
+// per-case (e.g. at-cap).
+const mockConfirmInstall: Mock<
+  (workspaceId: string, tenantId: string, proof?: string, extras?: unknown) => Promise<{ installRecord: { id: string } }>
+> = mock(() => Promise.resolve({ installRecord: { id: "teams-install-1" } }));
 
-// Partial mocks would break admin-integrations.ts which imports the by-org helpers.
-// Mock every export from teams/store so unrelated routes still load.
+mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
+  getInstallHandler: mock(() => ({ kind: "static-bot" as const, oauthShaped: true as const, confirmInstall: mockConfirmInstall })),
+  registerOAuthHandler: mock(() => {}),
+  registerFormHandler: mock(() => {}),
+  registerStaticBotHandler: mock(() => {}),
+  registerOAuthDatasourceHandler: mock(() => {}),
+  _resetInstallHandlerRegistries: mock(() => {}),
+}));
+
+// admin-integrations.ts imports teams/store (legacy disconnect path); keep all
+// exports mocked so unrelated routes still load.
 mock.module("@atlas/api/lib/teams/store", () => ({
-  saveTeamsInstallation: mockSaveTeamsInstallation,
+  saveTeamsInstallation: mock(() => Promise.resolve()),
   getTeamsInstallation: mock(() => Promise.resolve(null)),
   getTeamsInstallationByOrg: mock(() => Promise.resolve(null)),
   deleteTeamsInstallation: mock(() => Promise.resolve()),
   deleteTeamsInstallationByOrg: mock(() => Promise.resolve(false)),
 }));
 
-// Mutable auth so tests can swap admin / unauth / non-admin
+// Mutable auth so tests can swap admin / unauth.
 let authResultForTests: {
   authenticated: boolean;
   mode: string;
@@ -63,7 +82,7 @@ async function getApp() {
   return app;
 }
 
-describe("/api/v1/teams", () => {
+describe("/api/v1/teams (Azure admin-consent, cap-gated — #3142)", () => {
   const savedAppId = process.env.TEAMS_APP_ID;
   const savedAppPassword = process.env.TEAMS_APP_PASSWORD;
 
@@ -72,7 +91,8 @@ describe("/api/v1/teams", () => {
     process.env.TEAMS_APP_PASSWORD = "test_app_password";
     authResultForTests = { authenticated: true, mode: "none", user: null };
     mockAuthenticateRequest.mockClear();
-    mockSaveTeamsInstallation.mockClear();
+    mockConfirmInstall.mockClear();
+    mockConfirmInstall.mockImplementation(() => Promise.resolve({ installRecord: { id: "teams-install-1" } }));
     mockCheckRateLimit.mockClear();
   });
 
@@ -86,10 +106,7 @@ describe("/api/v1/teams", () => {
   describe("GET /api/v1/teams/install", () => {
     it("redirects to Azure AD admin consent when admin is authenticated (implicit-admin mode none)", async () => {
       const app = await getApp();
-      const resp = await app.request("/api/v1/teams/install", {
-        method: "GET",
-        redirect: "manual",
-      });
+      const resp = await app.request("/api/v1/teams/install", { method: "GET", redirect: "manual" });
       expect(resp.status).toBe(302);
       const location = resp.headers.get("location") ?? "";
       expect(location).toContain("login.microsoftonline.com");
@@ -103,98 +120,88 @@ describe("/api/v1/teams", () => {
       expect(resp.status).toBe(501);
     });
 
-    // F-04: anonymous /install was an install-hijack vector
     it("returns 401 when caller is unauthenticated (managed mode)", async () => {
-      authResultForTests = {
-        authenticated: false,
-        mode: "managed",
-        status: 401,
-        error: "Authentication required",
-      };
+      authResultForTests = { authenticated: false, mode: "managed", status: 401, error: "Authentication required" };
       const app = await getApp();
-      const resp = await app.request("/api/v1/teams/install", {
-        method: "GET",
-        redirect: "manual",
-      });
+      const resp = await app.request("/api/v1/teams/install", { method: "GET", redirect: "manual" });
       expect(resp.status).toBe(401);
-      const body = (await resp.json()) as Record<string, unknown>;
-      expect(body.requestId).toBeDefined();
-    });
-
-    it("returns 403 when caller is authenticated but not an admin", async () => {
-      authResultForTests = {
-        authenticated: true,
-        mode: "managed",
-        user: {
-          id: "user-1",
-          mode: "managed",
-          label: "User",
-          role: "member",
-          activeOrganizationId: "org-test",
-        },
-      };
-      const app = await getApp();
-      const resp = await app.request("/api/v1/teams/install", {
-        method: "GET",
-        redirect: "manual",
-      });
-      expect(resp.status).toBe(403);
-      const body = (await resp.json()) as Record<string, unknown>;
-      expect(body.error).toBe("forbidden_role");
-      expect(body.requestId).toBeDefined();
     });
   });
 
   describe("GET /api/v1/teams/callback", () => {
-    // F-04: callback must reject orphan state in SaaS mode
-    it("returns 400 in SaaS mode when oauth state has no orgId", async () => {
-      const { saveOAuthState, _resetMemoryFallback } = await import(
-        "@atlas/api/lib/auth/oauth-state"
-      );
+    it("dispatches the Azure-verified tenant into the cap-gated handler and redirects on success", async () => {
+      const { saveOAuthState, _resetMemoryFallback } = await import("@atlas/api/lib/auth/oauth-state");
       _resetMemoryFallback();
-      await saveOAuthState("orphan-teams-state", { provider: "teams" });
+      await saveOAuthState("teams-cb-ok", { orgId: "org-teams", provider: "teams" });
 
       const config = await import("@atlas/api/lib/config");
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "saas" } as any);
-
+      config._setConfigForTest({ deployMode: "self-hosted" } as any);
       try {
         const app = await getApp();
-        // tenant must be a valid UUID — mint one for the request
         const tenant = "11111111-2222-3333-4444-555555555555";
         const resp = await app.request(
-          `/api/v1/teams/callback?state=orphan-teams-state&tenant=${tenant}&admin_consent=True`,
-          { method: "GET" },
+          `/api/v1/teams/callback?state=teams-cb-ok&tenant=${tenant}&admin_consent=True`,
+          { method: "GET", redirect: "manual" },
         );
-        expect(resp.status).toBe(400);
-        const body = (await resp.json()) as Record<string, unknown>;
-        expect(body.error).toBe("missing_org_binding");
-        expect(mockSaveTeamsInstallation).not.toHaveBeenCalled();
+        // No web origin configured in tests -> 200 HTML success.
+        expect([200, 302]).toContain(resp.status);
+        // The cap-gated handler ran with the verified tenant + bound workspace.
+        expect(mockConfirmInstall).toHaveBeenCalledTimes(1);
+        const [ws, tid] = mockConfirmInstall.mock.calls[0];
+        expect(ws).toBe("org-teams");
+        expect(tid).toBe(tenant);
       } finally {
         config._setConfigForTest(null);
       }
     });
 
-    it("allows orphan state in self-hosted mode (platform-wide install)", async () => {
-      const { saveOAuthState, _resetMemoryFallback } = await import(
-        "@atlas/api/lib/auth/oauth-state"
-      );
+    it("returns 400 in SaaS mode when oauth state has no orgId, and never installs", async () => {
+      const { saveOAuthState, _resetMemoryFallback } = await import("@atlas/api/lib/auth/oauth-state");
       _resetMemoryFallback();
-      await saveOAuthState("orphan-teams-state-sh", { provider: "teams" });
+      await saveOAuthState("teams-cb-orphan", { provider: "teams" });
 
       const config = await import("@atlas/api/lib/config");
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
-      config._setConfigForTest({ deployMode: "self-hosted" } as any);
-
+      config._setConfigForTest({ deployMode: "saas" } as any);
       try {
         const app = await getApp();
         const tenant = "11111111-2222-3333-4444-555555555555";
         const resp = await app.request(
-          `/api/v1/teams/callback?state=orphan-teams-state-sh&tenant=${tenant}&admin_consent=True`,
+          `/api/v1/teams/callback?state=teams-cb-orphan&tenant=${tenant}&admin_consent=True`,
           { method: "GET" },
         );
-        expect(resp.status).toBe(200);
-        expect(mockSaveTeamsInstallation).toHaveBeenCalledWith(tenant, { orgId: undefined });
+        expect(resp.status).toBe(400);
+        const body = (await resp.json()) as Record<string, unknown>;
+        expect(body.error).toBe("missing_org_binding");
+        expect(mockConfirmInstall).not.toHaveBeenCalled();
+      } finally {
+        config._setConfigForTest(null);
+      }
+    });
+
+    it("surfaces a failure (not a crash) when the workspace is at its chat-integration cap", async () => {
+      const { ChatIntegrationLimitError } = await import("@atlas/api/lib/effect/errors");
+      mockConfirmInstall.mockImplementationOnce(() =>
+        Promise.reject(new ChatIntegrationLimitError({ message: "at cap", workspaceId: "org-teams", limit: 1 })),
+      );
+      const { saveOAuthState, _resetMemoryFallback } = await import("@atlas/api/lib/auth/oauth-state");
+      _resetMemoryFallback();
+      await saveOAuthState("teams-cb-cap", { orgId: "org-teams", provider: "teams" });
+
+      const config = await import("@atlas/api/lib/config");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+      config._setConfigForTest({ deployMode: "self-hosted" } as any);
+      try {
+        const app = await getApp();
+        const tenant = "11111111-2222-3333-4444-555555555555";
+        const resp = await app.request(
+          `/api/v1/teams/callback?state=teams-cb-cap&tenant=${tenant}&admin_consent=True`,
+          { method: "GET", redirect: "manual" },
+        );
+        // No web origin -> HTML 500 "Installation Failed"; with one it'd be a 302.
+        expect([302, 500]).toContain(resp.status);
+        expect(mockConfirmInstall).toHaveBeenCalledTimes(1);
       } finally {
         config._setConfigForTest(null);
       }

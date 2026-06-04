@@ -29,10 +29,12 @@
  *     persistence so lookups by tenant_id stay consistent regardless
  *     of paste source.
  *
- * `mock.module()` stubs the two module dependencies the handler reaches
- * into: `lib/db/internal` (`internalQuery`) and the global `fetch` used
- * for the OIDC discovery call. Each mock exports every named export it
- * shadows (CLAUDE.md "mock all exports" rule).
+ * `mock.module()` stubs the module dependencies the handler reaches into:
+ * `lib/billing/enforcement` (`checkChatIntegrationLimitAndInstall` — the
+ * atomic cap-gate that owns the `workspace_plugins` UPSERT post-#3001, which
+ * Teams adopted in #3142) and the global `fetch` used for the OIDC discovery
+ * call. Each mock exports every named export it shadows (CLAUDE.md "mock all
+ * exports" rule).
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -42,15 +44,51 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([{ id: "install-teams-row-1" }]),
-);
-
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
+  internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
+
+// The chat-integration cap + the workspace_plugins UPSERT run atomically
+// through `checkChatIntegrationLimitAndInstall` (#3001) — the gate owns the
+// write and returns the RETURNING rows. We stub it to "allowed" with a scripted
+// row id so these handler tests stay focused on the install contract (tenant_id
+// validation, OIDC reachability, config payload) and assert the UPSERT shape via
+// the gate's `insert` arg. The cap-enforcement decision + transaction
+// sequencing live in `billing/__tests__/enforcement.test.ts`.
+type GateResult =
+  | { allowed: true; rows: Array<Record<string, unknown>> }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimitAndInstall: Mock<
+  (
+    orgId: string | undefined,
+    catalogId: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => Promise<GateResult>
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: "install-teams-row-1" }] }));
+
+// Mock every value export — a partial `mock.module()` causes a `SyntaxError`
+// in other files importing the missing exports (per CLAUDE.md "Mock all
+// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
+}));
+
+/** Pull the gate's `insert` arg from the most recent call (module-level so the
+ *  validation + persistence describes can both read the UPSERT it would run). */
+function lastGateInsert(): { sql: string; params: readonly unknown[] } {
+  const calls = mockCheckChatLimitAndInstall.mock.calls;
+  return calls[calls.length - 1][2];
+}
 
 // ---------------------------------------------------------------------------
 // Test scaffolding
@@ -120,8 +158,10 @@ function setFetchNetworkError(): void {
 }
 
 beforeEach(() => {
-  mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([{ id: "install-teams-row-1" }]));
+  mockCheckChatLimitAndInstall.mockClear();
+  mockCheckChatLimitAndInstall.mockImplementation(() =>
+    Promise.resolve({ allowed: true as const, rows: [{ id: "install-teams-row-1" }] }),
+  );
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -201,7 +241,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
   it("rejects empty tenant_id", async () => {
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await expect(handler.confirmInstall(wsid, "")).rejects.toThrow(/tenant_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     // No upstream call either — format validation happens first.
     expect(fetchCalls).toHaveLength(0);
   });
@@ -211,7 +251,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
     await expect(handler.confirmInstall(wsid, "contoso.onmicrosoft.com")).rejects.toThrow(
       /tenant_id/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(fetchCalls).toHaveLength(0);
   });
 
@@ -221,7 +261,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
       /tenant_id/,
     );
     await expect(handler.confirmInstall(wsid, "12345")).rejects.toThrow(/tenant_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("rejects malformed GUIDs (missing hyphens, wrong segment lengths)", async () => {
@@ -232,7 +272,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
     await expect(
       handler.confirmInstall(wsid, "72f988bf-86f1-41af-91ab-2d7cd011db4"),
     ).rejects.toThrow(/tenant_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("accepts a canonical lowercase tenant GUID", async () => {
@@ -244,7 +284,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — tenant_id validation",
   it("normalizes uppercase tenant GUIDs to lowercase before persist (so lookups by tenant_id stay consistent)", async () => {
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await handler.confirmInstall(wsid, SAMPLE_TENANT.toUpperCase());
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("tenant_id"),
     );
@@ -285,7 +325,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, "00000000-0000-0000-0000-000000000000"),
     ).rejects.toThrow(/AADSTS90002/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws with a clear error when Microsoft returns 401/403 (tenant restricted)", async () => {
@@ -294,7 +334,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(
       /AADSTS900561/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws when the Microsoft API call fails at the network layer (no install row)", async () => {
@@ -303,14 +343,14 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(
       /Microsoft tenant discovery unreachable/i,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("surfaces a status-only message when Microsoft returns a non-JSON error body", async () => {
     setFetchNonJson(503);
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(/HTTP 503/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("treats any 2xx as success even with an empty body — 200 is the only signal we use", async () => {
@@ -328,7 +368,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     const result = await handler.confirmInstall(wsid, SAMPLE_TENANT);
     expect(result.installRecord.catalogId).toBe(TEAMS_SLUG);
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 
   it("appends a hint when Microsoft returns a non-JSON 5xx (the actionable status-only voice)", async () => {
@@ -364,19 +404,76 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — reachability verificat
 });
 
 // ---------------------------------------------------------------------------
+// Chat-integration cap (#3142 — migrated onto the atomic gate)
+// ---------------------------------------------------------------------------
+
+describe("TeamsStaticBotInstallHandler.confirmInstall — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes no install row when at cap", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "cap_reached" as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // The gate enforced the cap (after the OIDC round-trip), keyed on the
+    // workspace + Teams catalog id, with the UPSERT it would have committed.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog, gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(wsid);
+    expect(gateCatalog).toBe(TEAMS_CATALOG_ID);
+    expect(gateInsert.sql).toMatch(/INSERT INTO workspace_plugins/);
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("grandfathers a reconnect — the gate allows an already-installed workspace and returns the existing id", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
+    );
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_TENANT);
+    expect(result.installRecord.id).toBe("existing-install-row");
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
 describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
-  it("UPSERTs workspace_plugins with the catalog id + tenant_id config payload", async () => {
+  it("UPSERTs workspace_plugins with the catalog id + tenant_id config payload via the cap gate", async () => {
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await handler.confirmInstall(wsid, SAMPLE_TENANT, undefined, {
       tenant_name: "Acme Engineering",
     });
 
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
-    const sqlText = String(sql);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const insert = lastGateInsert();
+    const sqlText = insert.sql;
     expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
     // Required NOT NULL columns post-0092 / 0096 — the INSERT must
     // name pillar + install_id explicitly, and chat-pillar installs
@@ -386,8 +483,10 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
     expect(sqlText).toMatch(/pillar/);
     expect(sqlText).toMatch(/'chat'/);
     expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
+    // The gate runs the UPSERT under the lock, so RETURNING id must be present.
+    expect(sqlText).toMatch(/RETURNING id/);
 
-    const paramsArr = params as unknown[];
+    const paramsArr = insert.params as unknown[];
     expect(paramsArr).toContain(wsid);
     expect(paramsArr).toContain(TEAMS_CATALOG_ID);
     const configJson = paramsArr.find(
@@ -406,7 +505,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
     // MS Graph for it — the field stays optional.
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await handler.confirmInstall(wsid, SAMPLE_TENANT);
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("tenant_id"),
     );
@@ -420,7 +519,7 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
     await handler.confirmInstall(wsid, SAMPLE_TENANT, undefined, {
       tenant_name: 12345 as unknown as string,
     });
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("tenant_id"),
     );
@@ -428,9 +527,9 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
     expect("tenant_name" in parsed).toBe(false);
   });
 
-  it("returns the persisted install id from RETURNING (re-install idempotency)", async () => {
-    mockInternalQuery.mockImplementation(() =>
-      Promise.resolve([{ id: "existing-install-row" }]),
+  it("returns the persisted install id from the gate's RETURNING rows (re-install idempotency)", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
     );
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     const result = await handler.confirmInstall(wsid, SAMPLE_TENANT);
@@ -439,8 +538,10 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
     expect(result.installRecord.catalogId).toBe(TEAMS_SLUG);
   });
 
-  it("throws when RETURNING comes back empty — never ships a candidate id that doesn't match the persisted row", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  it("throws when the gate's RETURNING rows are empty — never ships a candidate id that doesn't match the persisted row", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [] }),
+    );
     const handler = new TeamsStaticBotInstallHandler({
       appId: "id",
       appPassword: "pwd",
@@ -452,7 +553,8 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — persistence", () => {
   });
 
   it("surfaces DB failure rather than half-installing — no return after a throw", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB down")));
+    // The gate throws on a genuine write-path failure (after rolling back).
+    mockCheckChatLimitAndInstall.mockImplementation(() => Promise.reject(new Error("DB down")));
     const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
     await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(/DB down/);
   });

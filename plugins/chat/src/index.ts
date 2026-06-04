@@ -321,6 +321,29 @@ function catalogHasGchatStaticBot(
   );
 }
 
+/**
+ * Microsoft Teams (#3142 — fifth static-bot mount, completing Phase D
+ * under umbrella #2994) mirrors the Telegram / Discord / gchat story:
+ * declared + enabled in the catalog mounts the webhook route at
+ * `/api/plugins/chat-interaction/webhooks/teams`. Env-var presence
+ * (`TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`) — and therefore the actual
+ * adapter wiring — is checked inside `initialize()` by the
+ * `AdapterRegistry`. `@chat-adapter/teams` verifies the Bot Framework JWT
+ * on every inbound activity internally.
+ */
+function catalogHasTeamsStaticBot(
+  catalog: ReadonlyArray<ChatCatalogEntryInput> | undefined,
+): boolean {
+  if (!catalog) return false;
+  return catalog.some(
+    (e) =>
+      e.slug === "teams" &&
+      e.type === "chat" &&
+      e.install_model === "static-bot" &&
+      e.enabled === true,
+  );
+}
+
 function buildChatPlugin(
   config: ChatPluginConfig,
 ): AtlasInteractionPlugin<ChatPluginConfig> {
@@ -331,6 +354,7 @@ function buildChatPlugin(
   let discordAdapterInstance: Adapter | null = null;
   let whatsappAdapterInstance: Adapter | null = null;
   let gchatAdapterInstance: Adapter | null = null;
+  let teamsAdapterInstance: Adapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
   /**
@@ -352,6 +376,7 @@ function buildChatPlugin(
   const discordStaticBotDeclared = catalogHasDiscordStaticBot(config.catalog);
   const whatsappStaticBotDeclared = catalogHasWhatsAppStaticBot(config.catalog);
   const gchatStaticBotDeclared = catalogHasGchatStaticBot(config.catalog);
+  const teamsStaticBotDeclared = catalogHasTeamsStaticBot(config.catalog);
 
   return {
     id: "chat-interaction",
@@ -564,6 +589,53 @@ function buildChatPlugin(
         });
       }
 
+      // Microsoft Teams (#3142 — fifth static-bot webhook, completing
+      // Phase D under umbrella #2994). The Chat SDK Teams adapter verifies
+      // the Bot Framework JWT on every inbound activity internally using
+      // `TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`. Per-Workspace routing by the
+      // Microsoft Entra ID tenant GUID lives downstream in executeQuery's
+      // Teams branch (resolves `channelData.tenant.id` → workspace_id).
+      if (teamsStaticBotDeclared) {
+        app.post("/webhooks/teams", async (c) => {
+          const requestId = crypto.randomUUID();
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized", requestId }, 503);
+          }
+          const handler = bridge.webhooks.teams;
+          if (!handler) {
+            // Catalog declared teams + enabled, but the AdapterRegistry
+            // didn't wire the adapter — almost always means `TEAMS_APP_ID`
+            // and/or `TEAMS_APP_PASSWORD` is unset. Same fail-loud posture
+            // as Telegram / Discord / gchat (#2748 / #2749 review + #2673
+            // silent-degradation precedent).
+            (log ?? console).error(
+              { requestId, adapter: "teams" },
+              "Teams webhook received but adapter not configured — check TEAMS_APP_ID + TEAMS_APP_PASSWORD and AdapterRegistry boot logs",
+            );
+            return c.json({ error: "Teams adapter not configured", requestId }, 404);
+          }
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
+                    "Chat SDK Teams webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "teams" },
+              "Teams webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
+
       // WhatsApp (1.5.3 #2753 — fourth static-bot webhook). The Chat
       // SDK WhatsApp adapter verifies the HMAC-SHA256 signature on
       // every incoming webhook (`X-Hub-Signature-256`) using
@@ -679,13 +751,13 @@ function buildChatPlugin(
         slackAdapterInstance = registry.adapters.slack ?? null;
         // Telegram (1.5.3 #2748 — first static-bot adapter wired here);
         // Discord (1.5.3 #2749 — second); WhatsApp (1.5.3 #2753 —
-        // third); Google Chat (1.5.3 #2754 — fourth). (Teams #2752
-        // ships its install handler in packages/api but no chat-adapter
-        // builder here.)
+        // third); Google Chat (1.5.3 #2754 — fourth); Teams (#3142 —
+        // fifth, completing Phase D under umbrella #2994).
         telegramAdapterInstance = (registry.adapters.telegram ?? null) as Adapter | null;
         discordAdapterInstance = (registry.adapters.discord ?? null) as Adapter | null;
         whatsappAdapterInstance = (registry.adapters.whatsapp ?? null) as Adapter | null;
         gchatAdapterInstance = (registry.adapters.gchat ?? null) as Adapter | null;
+        teamsAdapterInstance = (registry.adapters.teams ?? null) as Adapter | null;
         adapterDiagnostics = registry.diagnostics;
 
         // Bridge takes pre-built instances per-platform; unwired slots
@@ -697,6 +769,7 @@ function buildChatPlugin(
           discord: discordAdapterInstance,
           whatsapp: whatsappAdapterInstance,
           gchat: gchatAdapterInstance,
+          teams: teamsAdapterInstance,
         });
       } catch (err) {
         ctx.logger.error(
@@ -718,6 +791,7 @@ function buildChatPlugin(
         discordAdapterInstance = null;
         whatsappAdapterInstance = null;
         gchatAdapterInstance = null;
+        teamsAdapterInstance = null;
         throw err;
       }
 
@@ -727,6 +801,7 @@ function buildChatPlugin(
       if (discordAdapterInstance) enabledAdapters.push("discord");
       if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
       if (gchatAdapterInstance) enabledAdapters.push("gchat");
+      if (teamsAdapterInstance) enabledAdapters.push("teams");
 
       const backend = config.state?.backend ?? "memory";
       const initFailedSilently =
@@ -776,6 +851,7 @@ function buildChatPlugin(
       if (discordAdapterInstance) enabledAdapters.push("discord");
       if (whatsappAdapterInstance) enabledAdapters.push("whatsapp");
       if (gchatAdapterInstance) enabledAdapters.push("gchat");
+      if (teamsAdapterInstance) enabledAdapters.push("teams");
 
       if (enabledAdapters.length === 0) {
         // Use the diagnostics captured at init to point operators at the
@@ -857,6 +933,7 @@ function buildChatPlugin(
       discordAdapterInstance = null;
       whatsappAdapterInstance = null;
       gchatAdapterInstance = null;
+      teamsAdapterInstance = null;
       log = null;
       initialized = false;
     },

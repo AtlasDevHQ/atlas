@@ -19,10 +19,20 @@
  * Framework token acquisition is keyed on the app credentials — NOT on
  * the customer tenant — in MultiTenant mode. The catalog `tenant_id` is
  * a routing identifier, not a secret: it shows up in every Bot
- * Framework activity envelope's `channelData.tenant.id`. This handler
- * writes `workspace_plugins.config` directly via `internalQuery`
- * (mirroring discord-static-bot-handler.ts), so `encryptSecretFields`
- * is not in the write path at all.
+ * Framework activity envelope's `channelData.tenant.id`. The
+ * `workspace_plugins.config` row is written by the chat-integration cap
+ * gate (`checkChatIntegrationLimitAndInstall`, mirroring
+ * discord-static-bot-handler.ts), which owns the advisory-locked UPSERT,
+ * so `encryptSecretFields` is not in the write path at all.
+ *
+ * Cap gate (#3142): like Discord and Slack, the install UPSERT runs
+ * through `checkChatIntegrationLimitAndInstall` so an over-cap net-new
+ * install is refused with `ChatIntegrationLimitError` (→ 429) and a
+ * reconnect is grandfathered. This replaced the original bare
+ * `internalQuery` UPSERT when Teams joined the unified install path under
+ * umbrella #2994 (which also added the Teams runtime branch in
+ * `lib/chat-plugin/executeQuery.ts` + the `@chat-adapter/teams` webhook
+ * receive route).
  *
  * Reachability verification: instead of acquiring a Bot Framework token
  * (which would only confirm the operator credentials work, not the
@@ -40,12 +50,14 @@
 
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  BillingCheckFailedError,
+  ChatIntegrationLimitError,
   TeamsApiUnavailableError,
   TeamsReachabilityError,
   TeamsTenantIdInvalidError,
 } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -126,6 +138,14 @@ export interface TeamsInstallConfig {
 
 export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
+  // Teams captures its routing identifier (Microsoft Entra ID tenant GUID)
+  // through the Azure AD **admin-consent** OAuth callback — the consent
+  // happens in the admin's own tenant and Azure returns the verified tenant
+  // id, which IS the ownership proof (analogous to Discord's bot-install
+  // redirect). So the form-based `/install-form` route refuses it (#3142);
+  // the dedicated OAuth callback in `routes/teams.ts` dispatches into
+  // `confirmInstall` instead. See {@link StaticBotInstallHandler.oauthShaped}.
+  readonly oauthShaped = true as const;
 
   private readonly appId: string;
   private readonly newId: () => string;
@@ -202,7 +222,7 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
       ...extractTenantName(extras, workspaceId),
     };
 
-    let persistedId: string;
+    let capCheck;
     try {
       // Schema notes:
       //   - `pillar` + `install_id` became NOT NULL in migration 0092
@@ -218,8 +238,15 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
       //     catalog), so `install_id` mirrors `id` — WorkspaceInstaller's
       //     datasource path uses a caller-supplied installId; static-bot
       //     chat installs don't have that surface, so we reuse the row id.
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
+      //   - The cap gate (#3142) wraps the UPSERT in a per-workspace
+      //     advisory-locked transaction so concurrent net-new installs
+      //     can't both slip past the chat-integration cap; reconnect is
+      //     grandfathered inside the gate.
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
+        workspaceId,
+        TEAMS_CATALOG_ID,
+        {
+          sql: `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
@@ -227,22 +254,9 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,
-        [candidateId, workspaceId, TEAMS_CATALOG_ID, JSON.stringify(configPayload)],
+          params: [candidateId, workspaceId, TEAMS_CATALOG_ID, JSON.stringify(configPayload)],
+        },
       );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
-        // returns the row on both insert and update. Empty here means
-        // a driver / wrapper regression — fail loudly rather than ship
-        // a stale id back to the user (on re-install the DB row has
-        // the existing id; falling back to the fresh candidateId would
-        // strand subsequent lookups). #2807 cemented this no-fallback
-        // posture across the static-bot family.
-        throw new Error(
-          `workspace_plugins UPSERT returned no id for Teams install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-        );
-      }
-      persistedId = returned;
     } catch (err) {
       log.error(
         {
@@ -253,6 +267,43 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
       );
       throw err;
     }
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Count couldn't be determined — fail closed, but as a transient
+        // 503 "try again", not a misleading 429 "upgrade your plan".
+        log.error(
+          { workspaceId },
+          "Teams install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Teams install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
+      // the row on both insert and update. Empty here means a driver /
+      // wrapper regression — fail loudly rather than ship a stale id back (on
+      // re-install the DB row has the existing id; falling back to the fresh
+      // candidateId would strand subsequent lookups). #2807 cemented this
+      // no-fallback posture across the static-bot family.
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for Teams install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
+      );
+    }
+    const persistedId: string = returned;
 
     log.info(
       {

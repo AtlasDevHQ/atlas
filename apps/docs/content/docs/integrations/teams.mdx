@@ -21,17 +21,6 @@ tenant is the install, and the bot uses a single operator-owned set
 of credentials to communicate with every tenant it's been installed
 into.
 
-<Callout type="warn" title="Per-workspace install not available yet">
-The per-workspace install flow described below is **not currently available**
-in the Atlas admin UI. Its legacy connect route was removed in
-[#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) because it bypassed the
-chat-integration cap and produced a non-routable install. The cap-gated
-static-bot install (routing-identifier capture, like Discord) is tracked in
-[#3142](https://github.com/AtlasDevHQ/atlas/issues/3142); until it ships the
-Microsoft Teams card shows **"Coming soon."** The operator setup below remains
-valid groundwork.
-</Callout>
-
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to an Azure Bot registration. Self-hosted
@@ -137,12 +126,16 @@ Teams from **Admin → Integrations** via one of two paths.
   policy.
 </Callout>
 
-### Path A: Manifest upload (self-serve)
+### Path A: Manifest upload
 
-In **Admin → Integrations → Microsoft Teams**, click **Install** and
-then **Download manifest**. You'll receive a `.zip` file containing
-the Atlas Teams app manifest, pre-populated with your deploy's
-operator-owned App ID.
+<Callout type="warn" title="Get the manifest from your operator">
+  Atlas doesn't yet generate the Teams app package in-app — there's no
+  "Download manifest" button. Your deploy's operator builds the Atlas
+  Teams app manifest `.zip` (pre-populated with their `TEAMS_APP_ID`)
+  and distributes it to workspace admins out-of-band, or publishes it to
+  AppSource (Path B). An in-app manifest download is planned. Ask your
+  operator for the `.zip` before starting the steps below.
+</Callout>
 
 #### 1. Upload to Teams
 
@@ -158,39 +151,45 @@ and click **Add**.
   request the role first.
 </Callout>
 
-#### 2. Capture the tenant_id
+#### 2. Grant admin consent in Atlas
 
-Find your tenant's GUID in the
-[Microsoft Entra admin center](https://entra.microsoft.com) under
-**Overview** → **Tenant ID**, or run:
+In **Admin → Integrations → Microsoft Teams**, click **Install**. Atlas
+redirects you to Microsoft's **admin-consent** page
+(`https://login.microsoftonline.com/common/adminconsent`). Sign in as a
+**Teams admin** or **Global admin** of the tenant you uploaded the
+manifest to, review the requested permissions, and click **Accept**.
 
-```bash
-az account show --query tenantId --output tsv
-```
+Because you consent *inside your own tenant*, Microsoft returns the
+**verified tenant id** to Atlas on the callback — Atlas never asks you
+to paste a GUID, and a workspace can only bind a tenant it actually
+administers (this is the ownership proof, analogous to Discord's
+bot-install authorize flow).
 
-Paste the GUID (format: `8-4-4-4-12` hex digits, e.g.
-`72f988bf-86f1-41af-91ab-2d7cd011db47`) into the Atlas install modal
-and click **Confirm**.
+#### 3. Atlas verifies + records the install
 
-#### 3. Atlas verifies the tenant
-
-Atlas immediately calls Microsoft's OIDC discovery endpoint
-(`https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration`)
-to confirm the tenant exists in Microsoft Entra ID. If it succeeds,
-the install row is persisted and the card flips to "Installed". If it
-fails, Microsoft's error message bubbles up verbatim — see the next
-section.
+On the callback, Atlas re-checks the tenant against Microsoft's OIDC
+discovery endpoint
+(`https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration`),
+enforces your plan's chat-integration cap, and persists the
+`workspace_plugins` row. The card flips to "Installed". If you're at
+your plan's cap you'll see an upgrade prompt; if Microsoft rejects the
+tenant, the error bubbles up — see the next section.
 
 ### Path B: AppSource Marketplace (operator-listed)
 
 If your operator has listed Atlas in the
 [Microsoft AppSource Marketplace](https://appsource.microsoft.com),
-workspace admins can install directly from there. The flow is the
-same as any AppSource app — find Atlas, click **Get it now**, choose
-the Microsoft 365 tenant, and confirm. Microsoft delivers the bot to
-the chosen tenant; Atlas receives a Microsoft Marketplace fulfilment
-webhook with the `tenant_id` and creates the `workspace_plugins` row
-automatically.
+workspace admins can install the bot directly from there. The flow is
+the same as any AppSource app — find Atlas, click **Get it now**, choose
+the Microsoft 365 tenant, and confirm. Microsoft delivers the bot to the
+chosen tenant.
+
+This replaces the manifest-upload step (Path A step 1) only — to bind the
+tenant to your Atlas workspace you still grant admin consent in Atlas
+(**Path A step 2** above), which captures the verified tenant id and
+creates the `workspace_plugins` row. (A Microsoft Marketplace fulfilment
+webhook that creates the row automatically is a planned follow-up; today
+the admin-consent step is the binding.)
 
 The AppSource listing is operator-specific — Atlas Cloud customers
 get the hosted Atlas listing; self-host operators who want this path

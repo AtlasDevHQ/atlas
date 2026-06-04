@@ -118,7 +118,7 @@ Connect Microsoft Teams to enable `@atlas` mentions and channel conversations.
 
 There are two ways to connect Teams:
 
-1. **Platform OAuth (recommended)** — Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables. The admin UI **Connect to Teams** button appears once `TEAMS_APP_ID` is detected, and initiates the admin consent flow.
+1. **Platform OAuth (recommended)** — Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables (plus `TEAMS_TENANT_ID` for a single-tenant Azure Bot). The admin UI **Connect to Teams** button appears once `TEAMS_APP_ID` is detected, and initiates the Azure AD admin-consent flow. The callback captures the Azure-verified tenant id and persists a per-workspace `workspace_plugins` row through the chat-integration cap (#3142) — over-cap installs get an upgrade prompt. See the [Microsoft Teams integration guide](/docs/integrations/teams) for the full per-workspace flow (manifest distribution + admin consent).
 
 2. **App credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create an [Azure Bot](https://dev.botframework.com/bots/new), copy the App ID and App Password, and enter them on the Integrations page. Credentials are validated via Azure AD client credentials token acquisition.
 

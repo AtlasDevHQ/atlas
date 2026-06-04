@@ -1408,9 +1408,22 @@ async function applyDeployMode(
   // create-atlas standalone scaffold would fail at build time trying to
   // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
   // walls the boot-only modules off from request-path consumers.
+  // Only a CONFIG-FILE "saas" that was the operative request counts as a
+  // silent downgrade. If the env explicitly set a concrete mode it WINS over
+  // the config file (resolveDeployMode precedence), so that's an intentional
+  // override, not a missing-enterprise downgrade:
+  //   - env "saas"        → handled by EnterpriseGuardLive (hard fail at boot)
+  //   - env "self-hosted" → explicit operator choice; must NOT be flagged
+  //     (else /health would permanently report degraded with a false
+  //     "enterprise not enabled" claim — #3198 Codex P2)
+  // "auto"/unset env leaves the config file's "saas" operative, so it can be
+  // genuinely downgraded when enterprise is missing.
+  const envRequestedConcreteMode =
+    process.env.ATLAS_DEPLOY_MODE === "saas" ||
+    process.env.ATLAS_DEPLOY_MODE === "self-hosted";
   if (
     resolved.deployMode !== "saas" &&
-    process.env.ATLAS_DEPLOY_MODE !== "saas" &&
+    !envRequestedConcreteMode &&
     configFileValue === "saas"
   ) {
     const reason =

@@ -146,4 +146,24 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     // #3184 — no downgrade, so the health-facing flag stays unset.
     expect(resolved.deployModeDowngraded).toBeUndefined();
   });
+
+  // #3198 Codex P2 — an explicit `ATLAS_DEPLOY_MODE=self-hosted` env var WINS
+  // over a config-file `deployMode: "saas"` by resolveDeployMode precedence, so
+  // it's an intentional override, NOT a silent missing-enterprise downgrade.
+  // It must neither log CRITICAL nor stamp the health-facing flag (otherwise
+  // /health would permanently report degraded with a false claim).
+  it("does NOT flag a downgrade when env explicitly overrides config saas with self-hosted", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
+    const dir = ensureTmpDir(`env-self-hosted-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
+    expect(errorLogs).toHaveLength(0);
+    expect(resolved.deployModeDowngraded).toBeUndefined();
+  });
 });

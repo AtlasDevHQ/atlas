@@ -55,18 +55,21 @@ describe("auditIntegrationTable", () => {
     ]);
   });
 
-  it("ignores missing encrypted column when enforceNotNull=false (Teams/Discord)", async () => {
+  it("ignores missing encrypted column when enforceNotNull=false (Discord)", async () => {
+    // Discord is the remaining nullable-encrypted carve-out — OAuth-only
+    // installs legitimately persist no bot token. (Teams was the other
+    // carve-out; its table was dropped in #3161.)
     const client = {
       query: async <T extends Record<string, unknown>>(): Promise<{ rows: T[] }> => ({
         rows: [
-          { id: "admin-consent", encrypted: null }, // legitimate state
+          { id: "oauth-only", encrypted: null }, // legitimate state
           { id: "byot", encrypted: "enc:v1:abc:def:ghi" },
         ] as unknown as T[],
       }),
     };
     const result = await auditIntegrationTable(
       client,
-      { table: "teams_installations", pk: "tenant_id", encrypted: "app_password_encrypted" },
+      { table: "discord_installations", pk: "guild_id", encrypted: "bot_token_encrypted" },
       false,
     );
     expect(result.findings).toEqual([]);
@@ -109,14 +112,12 @@ describe("runAudit", () => {
     // now live in `chat_cache` under the chat-adapter's own AES-GCM
     // envelope (keyed off SLACK_ENCRYPTION_KEY), outside the F-41
     // versioned-keyset rotation/audit set.
+    // teams/telegram/gchat/whatsapp_installations were dropped in #3161 and
+    // removed from INTEGRATION_TABLES, so the audit no longer scans them.
     return {
-      "FROM teams_installations": [{ id: "tn1", encrypted: "enc:v1:1:2:3" }],
       "FROM discord_installations": [{ id: "g1", encrypted: "enc:v1:1:2:3" }],
-      "FROM telegram_installations": [{ id: "b1", encrypted: "enc:v1:1:2:3" }],
-      "FROM gchat_installations": [{ id: "p1", encrypted: "enc:v1:1:2:3" }],
       "FROM github_installations": [{ id: "u1", encrypted: "enc:v1:1:2:3" }],
       "FROM linear_installations": [{ id: "u1", encrypted: "enc:v1:1:2:3" }],
-      "FROM whatsapp_installations": [{ id: "p1", encrypted: "enc:v1:1:2:3" }],
       "FROM email_installations": [{ id: "c1", encrypted: "enc:v1:1:2:3" }],
       "FROM sandbox_credentials": [{ id: "s1", encrypted: "enc:v1:1:2:3" }],
       "FROM sub_processor_subscriptions": [{ id: "sub1", encrypted: "enc:v1:1:2:3" }],
@@ -130,7 +131,7 @@ describe("runAudit", () => {
     const report = await runAudit(client);
     expect(report.ok).toBe(true);
     expect(report.findings).toEqual([]);
-    expect(report.scanned.integrationRows).toBe(10);
+    expect(report.scanned.integrationRows).toBe(6);
   });
 
   it("flags F-42 plaintext secret in workspace_plugins when schema is parsed", async () => {

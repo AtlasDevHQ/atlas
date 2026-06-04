@@ -2010,7 +2010,9 @@ describeIfPg("migrate-pg: 0115 organization dormancy gate (#2377)", () => {
 // to `installed_at::text` (the format Zod's strict .datetime() rejects).
 describe("integration stores: ISO timestamp SQL", () => {
   it("no store reintroduces installed_at::text", () => {
-    const platforms = ["discord", "email", "gchat", "github", "linear", "slack", "teams", "telegram", "whatsapp"] as const;
+    // gchat/teams/telegram/whatsapp stores were deleted in #3161 (their tables
+    // dropped by migration 0119) — only the surviving stores are checked.
+    const platforms = ["discord", "email", "github", "linear", "slack"] as const;
     for (const platform of platforms) {
       const source = readFileSync(join(import.meta.dir, "..", "..", platform, "store.ts"), "utf8");
       expect(source).not.toContain("installed_at::text");

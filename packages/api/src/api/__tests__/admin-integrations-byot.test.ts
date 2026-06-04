@@ -182,17 +182,8 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   ENV_TEAM_ID: "env",
 }));
 
-const mockSaveTeamsInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
-  async () => {},
-);
-
-mock.module("@atlas/api/lib/teams/store", () => ({
-  getTeamsInstallation: mock(async () => null),
-  getTeamsInstallationByOrg: mock(async () => null),
-  saveTeamsInstallation: mockSaveTeamsInstallation,
-  deleteTeamsInstallation: mock(async () => {}),
-  deleteTeamsInstallationByOrg: mock(async () => false),
-}));
+// teams/telegram/whatsapp stores were deleted with their tables in #3161 — the
+// admin router no longer imports them, so they're no longer mocked here.
 
 const mockSaveDiscordInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
   async () => {},
@@ -204,18 +195,6 @@ mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mockSaveDiscordInstallation,
   deleteDiscordInstallation: mock(async () => {}),
   deleteDiscordInstallationByOrg: mock(async () => false),
-}));
-
-const mockSaveTelegramInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
-  async () => {},
-);
-
-mock.module("@atlas/api/lib/telegram/store", () => ({
-  getTelegramInstallation: mock(async () => null),
-  getTelegramInstallationByOrg: mock(async () => null),
-  saveTelegramInstallation: mockSaveTelegramInstallation,
-  deleteTelegramInstallation: mock(async () => {}),
-  deleteTelegramInstallationByOrg: mock(async () => false),
 }));
 
 const mockSaveLinearInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
@@ -231,21 +210,6 @@ mock.module("@atlas/api/lib/linear/store", () => ({
   saveLinearInstallation: mockSaveLinearInstallation,
   deleteLinearInstallation: mock(async () => {}),
   deleteLinearInstallationByOrg: mockDeleteLinearInstallationByOrg,
-}));
-
-const mockSaveWhatsAppInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
-  async () => {},
-);
-const mockDeleteWhatsAppInstallationByOrg: Mock<(...args: unknown[]) => Promise<boolean>> = mock(
-  async () => true,
-);
-
-mock.module("@atlas/api/lib/whatsapp/store", () => ({
-  getWhatsAppInstallation: mock(async () => null),
-  getWhatsAppInstallationByOrg: mock(async () => null),
-  saveWhatsAppInstallation: mockSaveWhatsAppInstallation,
-  deleteWhatsAppInstallation: mock(async () => {}),
-  deleteWhatsAppInstallationByOrg: mockDeleteWhatsAppInstallationByOrg,
 }));
 
 const mockSaveEmailInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
@@ -444,20 +408,12 @@ describe("BYOT routes", () => {
     mockInternalQuery.mockClear();
     mockSaveSlackInstallation.mockReset();
     mockSaveSlackInstallation.mockImplementation(async () => {});
-    mockSaveTeamsInstallation.mockReset();
-    mockSaveTeamsInstallation.mockImplementation(async () => {});
     mockSaveDiscordInstallation.mockReset();
     mockSaveDiscordInstallation.mockImplementation(async () => {});
-    mockSaveTelegramInstallation.mockReset();
-    mockSaveTelegramInstallation.mockImplementation(async () => {});
     mockSaveLinearInstallation.mockReset();
     mockSaveLinearInstallation.mockImplementation(async () => {});
     mockDeleteLinearInstallationByOrg.mockReset();
     mockDeleteLinearInstallationByOrg.mockImplementation(async () => true);
-    mockSaveWhatsAppInstallation.mockReset();
-    mockSaveWhatsAppInstallation.mockImplementation(async () => {});
-    mockDeleteWhatsAppInstallationByOrg.mockReset();
-    mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => true);
     mockSaveEmailInstallation.mockReset();
     mockSaveEmailInstallation.mockImplementation(async () => {});
     mockGetEmailInstallationByOrg.mockReset();
@@ -978,25 +934,22 @@ describe("BYOT routes", () => {
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  // DELETE /whatsapp
+  // Legacy static-bot disconnect routes removed (#3161)
   // ═══════════════════════════════════════════════════════════════════
-
-  describe("DELETE /integrations/whatsapp", () => {
-    it("returns 200 on successful disconnect", async () => {
-      const res = await request("/api/v1/admin/integrations/whatsapp", {
-        method: "DELETE",
-      });
-      expect(res.status).toBe(200);
-      const data = (await res.json()) as { message: string };
-      expect(data.message).toContain("disconnected");
-    });
-
-    it("returns 404 when no installation found", async () => {
-      mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => false);
-
-      const res = await request("/api/v1/admin/integrations/whatsapp", {
-        method: "DELETE",
-      });
+  //
+  // teams/telegram/gchat/whatsapp now disconnect through the unified
+  // `DELETE /api/v1/integrations/:slug` (#3154 GAP 1); their per-platform
+  // legacy endpoints and backing `*_installations` tables were dropped. A
+  // re-added handler fails here. Discord keeps its legacy `DELETE /discord`
+  // (BYOT `discord_installations`), so it is NOT in this list.
+  describe("removed legacy disconnect routes (#3161)", () => {
+    it.each([
+      "/api/v1/admin/integrations/teams",
+      "/api/v1/admin/integrations/telegram",
+      "/api/v1/admin/integrations/gchat",
+      "/api/v1/admin/integrations/whatsapp",
+    ])("DELETE %s is removed (404 — unified disconnect only)", async (path) => {
+      const res = await request(path, { method: "DELETE" });
       expect(res.status).toBe(404);
     });
   });

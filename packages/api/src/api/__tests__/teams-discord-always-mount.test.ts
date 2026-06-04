@@ -24,13 +24,9 @@ import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
 
 // --- Mocks (must be at module top before app import) ---
 
-mock.module("@atlas/api/lib/teams/store", () => ({
-  saveTeamsInstallation: mock(() => Promise.resolve()),
-  getTeamsInstallation: mock(() => Promise.resolve(null)),
-  getTeamsInstallationByOrg: mock(() => Promise.resolve(null)),
-  deleteTeamsInstallation: mock(() => Promise.resolve()),
-  deleteTeamsInstallationByOrg: mock(() => Promise.resolve(false)),
-}));
+// `@atlas/api/lib/teams/store` was deleted in #3161 and is no longer in the
+// app's import graph (the legacy `routes/teams.ts` install route doesn't touch
+// it), so it no longer needs mocking here.
 
 mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mock(() => Promise.resolve()),

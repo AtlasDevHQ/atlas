@@ -46,13 +46,13 @@ export interface IntegrationTable {
  * own crypto and isn't a versioned-keyset participant.
  */
 export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
-  { table: "teams_installations",   pk: "tenant_id",       encrypted: "app_password_encrypted",      keyVersionColumn: "app_password_key_version" },
+  // teams/telegram/gchat/whatsapp_installations were dropped by migration 0119
+  // (#3161) — those static-bot installs carry no per-workspace credential (the
+  // bot is operator-shared) and live in `workspace_plugins`, so they were never
+  // real F-41 rotation participants once the unified install path shipped.
   { table: "discord_installations", pk: "guild_id",        encrypted: "bot_token_encrypted",         keyVersionColumn: "bot_token_key_version" },
-  { table: "telegram_installations", pk: "bot_id",         encrypted: "bot_token_encrypted",         keyVersionColumn: "bot_token_key_version" },
-  { table: "gchat_installations",   pk: "project_id",      encrypted: "credentials_json_encrypted",  keyVersionColumn: "credentials_json_key_version" },
   { table: "github_installations",  pk: "user_id",         encrypted: "access_token_encrypted",      keyVersionColumn: "access_token_key_version" },
   { table: "linear_installations",  pk: "user_id",         encrypted: "api_key_encrypted",           keyVersionColumn: "api_key_key_version" },
-  { table: "whatsapp_installations", pk: "phone_number_id", encrypted: "access_token_encrypted",     keyVersionColumn: "access_token_key_version" },
   { table: "email_installations",   pk: "config_id",       encrypted: "config_encrypted",            keyVersionColumn: "config_key_version" },
   { table: "sandbox_credentials",   pk: "id",              encrypted: "credentials_encrypted",       keyVersionColumn: "credentials_key_version" },
   { table: "sub_processor_subscriptions", pk: "id",        encrypted: "token_encrypted",             keyVersionColumn: "token_key_version" },
@@ -69,13 +69,16 @@ export const INTEGRATION_TABLES: ReadonlyArray<IntegrationTable> = [
 /**
  * Tables whose `<encrypted>` column is **always populated** for every
  * row post-#1832 (the migration tightened the column to NOT NULL).
- * Subset of `INTEGRATION_TABLES` — Teams + Discord stay nullable
- * because admin-consent / OAuth-only installs legitimately persist no
- * bearer credential. The audit script asserts NOT NULL for every entry
- * here; for the others it asserts only that the per-row column shape
- * is consistent (NULL plaintext-only rows would be a residue, but the
- * 0040 migration eliminated the plaintext column outright).
+ * Subset of `INTEGRATION_TABLES` — Discord stays nullable because
+ * OAuth-only installs legitimately persist no bearer credential. The
+ * audit script asserts NOT NULL for every entry here; for the others it
+ * asserts only that the per-row column shape is consistent (NULL
+ * plaintext-only rows would be a residue, but the 0040 migration
+ * eliminated the plaintext column outright).
+ *
+ * `teams_installations` was the other nullable carve-out (admin-consent
+ * installs persisted no password) — it was dropped by migration 0119.
  */
 export const NON_NULL_ENCRYPTED_TABLES: ReadonlyArray<IntegrationTable> = INTEGRATION_TABLES.filter(
-  (t) => t.table !== "teams_installations" && t.table !== "discord_installations",
+  (t) => t.table !== "discord_installations",
 );

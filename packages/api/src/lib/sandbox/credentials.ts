@@ -3,7 +3,7 @@
  *
  * Stores per-org BYOC sandbox provider credentials (Vercel, E2B, Daytona)
  * in the internal database. Follows the same pattern as
- * `packages/api/src/lib/teams/store.ts`.
+ * `packages/api/src/lib/github/store.ts`.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";

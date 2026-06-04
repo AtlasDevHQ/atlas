@@ -713,17 +713,14 @@ DISCORD_PUBLIC_KEY=your-discord-app-public-key
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TEAMS_APP_ID` | — | Microsoft Teams app ID. Enables Teams integration routes. Required for Teams connect flow |
-| `TEAMS_APP_PASSWORD` | — | Platform-shared Teams app client secret used by the platform OAuth flow. In BYOT mode the app password is stored per-tenant in the internal database instead, and this env var is unused. Source: `packages/api/src/lib/teams/store.ts` |
+| `TEAMS_APP_ID` | — | Microsoft Teams (Entra ID) app ID. Required (with `TEAMS_APP_PASSWORD`) for the Teams chat adapter |
+| `TEAMS_APP_PASSWORD` | — | Teams app client secret. The Teams chat adapter requires **both** `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` to build — `plugins/chat/src/adapter-registry.ts` lists them in `requiredEnv`, and the webhook returns "adapter not configured" if either is unset. Source: `plugins/chat/src/adapter-registry.ts` |
 
 ```bash
-# Teams integration via Azure AD admin consent
+# Teams integration via Entra ID app registration
 TEAMS_APP_ID=your-teams-app-id
-# Platform OAuth flow only — leave unset for BYOT
 TEAMS_APP_PASSWORD=your-teams-app-secret
 ```
-
-> In BYOT mode the Teams app password (client secret) is **not** read from `TEAMS_APP_PASSWORD`. Per-org credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
 
 ---
 
@@ -740,12 +737,14 @@ Static-bot install (`/api/v1/integrations/telegram/install`) plus inbound-webhoo
 
 ## WhatsApp Integration
 
-WhatsApp (Meta Business) static-bot install (`/api/v1/integrations/whatsapp/install`). Both variables gate registration — an enabled `whatsapp` catalog row with either unset returns `501` and skips the adapter. Source: `packages/api/src/lib/integrations/install/register.ts`.
+WhatsApp (Meta Business). The two `META_BUSINESS_*` variables gate the static-bot install (`/api/v1/integrations/whatsapp/install`, `register.ts`); the **chat adapter** additionally requires the two webhook secrets to activate the inbound receive path. `plugins/chat/src/adapter-registry.ts` requires **all four** — with any unset the adapter won't build, so an install can succeed while inbound webhooks never activate.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `META_BUSINESS_ACCESS_TOKEN` | — | Meta Business access token (sent as `Authorization: Bearer` to the Meta Graph API). Required (with `META_BUSINESS_APP_ID`) to register the WhatsApp static-bot install handler |
 | `META_BUSINESS_APP_ID` | — | The operator's Meta App ID, used to validate the WhatsApp phone-number id at install time. Pair with `META_BUSINESS_ACCESS_TOKEN` |
+| `WHATSAPP_APP_SECRET` | — | Meta App Secret for HMAC-SHA256 verification of inbound webhook signatures (`X-Hub-Signature-256`). Required by the chat adapter; without it inbound webhooks are dropped |
+| `WHATSAPP_VERIFY_TOKEN` | — | The random string pasted into the Meta webhook configuration; the adapter mirrors it back in the `GET` challenge handshake. Required by the chat adapter |
 
 ---
 

@@ -233,10 +233,12 @@ const installFormRoute = createRoute({
     "workspace_plugins row. 400 with field-level detail on validation failure.\n" +
     "- `install_model: \"static-bot\"` (#3140 — Telegram / Teams / Google Chat / WhatsApp): the " +
     "first `required` field in the catalog `config_schema` is the routing identifier (chat_id, " +
-    "tenant_id, …); the route forwards its value to the handler's `confirmInstall`, which runs the " +
-    "chat-integration cap gate (`checkChatIntegrationLimitAndInstall`) under a per-workspace " +
-    "advisory lock and upserts the workspace_plugins(pillar='chat') row. Over-cap → 429; reconnect " +
-    "is grandfathered.\n\n" +
+    "tenant_id, …); the route forwards its value to the handler's `confirmInstall`, which upserts the " +
+    "workspace_plugins(pillar='chat') row. The cap gate (`checkChatIntegrationLimitAndInstall`, the " +
+    "advisory-locked insert path — over-cap → 429, reconnect grandfathered) lives inside " +
+    "`confirmInstall`; Discord and Slack run it today, the four form-shaped static-bots adopt it in " +
+    "#3141–#3144. Until a platform's slice ships, its catalog row stays `coming_soon` and the route " +
+    "refuses it (409 `platform_not_available`), so this route never reaches a not-yet-cap-gated handler.\n\n" +
     "The route rejects requests pointed at OAuth-installable catalog entries with 400 " +
     "(`wrong_install_model`), and OAuth-shaped static-bots (Discord) with 400 " +
     "(`oauth_shaped_static_bot` — install those via their dedicated OAuth endpoint).",

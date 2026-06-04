@@ -167,9 +167,12 @@ bun run atlas -- seed workspace --workspace <id|slug> --group prod \
 ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
 # One-shot: enqueue every demo_leads row into crm_outbox for dispatch to Twenty:
 bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
+# Local-only E2E check of the demo→Twenty lead pipeline (below Turnstile, via the outbox):
+bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
+  [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
 ```
 
-`ops wipe` is the only destructive subcommand: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
+`ops wipe` is the only subcommand that wipes the tenant DB: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. `ops smoke-crm` is a local-only (never-in-CI) end-to-end verification of the demo→Twenty lead-capture pipeline; its optional `--wipe-twenty` phase clears the Twenty workspace and is double-gated by `ATLAS_SMOKE_WIPE_OK=1`. One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
 
 ## Architecture
 

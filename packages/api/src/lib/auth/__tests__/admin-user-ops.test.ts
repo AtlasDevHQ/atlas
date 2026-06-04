@@ -170,17 +170,19 @@ describe("listPlatformUsers", () => {
     expect(res.users[0]).toMatchObject({ id: "a", email: "a@x.com", role: "platform_admin", banned: false });
   });
 
-  it("applies an email search (ILIKE) and a role filter", async () => {
+  it("applies an email search (ILIKE) and a role filter with correctly-positioned params", async () => {
     queryImpl = async (sql) => (sql.includes("COUNT(") ? [{ count: "1" }] : []);
-    await listPlatformUsers({ limit: 25, offset: 25, search: "bob", role: "platform_admin" });
+    // Distinct limit/offset so a LIMIT↔OFFSET swap or a placeholder off-by-one
+    // (when both filters shift the index) can't hide behind equal values.
+    await listPlatformUsers({ limit: 25, offset: 50, search: "bob", role: "platform_admin" });
     const list = find((s) => s.includes("FROM") && s.includes('"user"') && !s.includes("COUNT("));
     expect(list!.sql).toContain("ILIKE");
     expect(list!.sql.toLowerCase()).toContain("role");
-    // pagination params present
-    expect(list!.params).toContain(25);
-    // search value is wrapped with %…%
-    expect(list!.params).toContain("%bob%");
-    expect(list!.params).toContain("platform_admin");
+    // Exact order: search ($1), role ($2), limit ($3), offset ($4).
+    expect(list!.params).toEqual(["%bob%", "platform_admin", 25, 50]);
+    // COUNT query gets only the filter params (no limit/offset).
+    const count = find((s) => s.includes("COUNT("));
+    expect(count!.params).toEqual(["%bob%", "platform_admin"]);
   });
 });
 
@@ -233,11 +235,20 @@ describe("enforceBanOnSessionCreate", () => {
     await enforceBanOnSessionCreate("u10");
   });
 
-  it("fails open (allows) when the ban lookup throws", async () => {
+  it("fails closed (throws BAN_CHECK_FAILED) when the ban lookup errors", async () => {
     queryImpl = async () => {
       throw new Error("pool timeout");
     };
-    // Must not throw — the per-request check is the backstop.
-    await enforceBanOnSessionCreate("u11");
+    // A ban read we can't complete must refuse sign-in, not open the door —
+    // the per-request check reads cookie-cache-stale state and can't be relied
+    // on to catch a ban the create-time read missed.
+    let thrown: unknown;
+    try {
+      await enforceBanOnSessionCreate("u11");
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(APIError);
+    expect((thrown as APIError).body?.code).toBe("BAN_CHECK_FAILED");
   });
 });

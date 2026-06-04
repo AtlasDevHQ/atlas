@@ -45,14 +45,19 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // routing through the customSession callback.
   const sessionUser = session.user as Record<string, unknown>;
 
-  // #3159 — per-request ban enforcement. The removed Better Auth admin plugin
-  // rejected banned users only at session-CREATE (its `session.create.before`
-  // hook) and on ban also deleted live sessions. We reproduce the create-time
-  // guard in server.ts AND add this read-side check so a user banned mid-session
-  // is rejected on their next validated request — the literal "ban enforcement
-  // at session-validation time" the plugin never had. `role`/`banned`/`banExpires`
-  // ride along on the getSession user via `additionalFields`. An expired ban
-  // (banExpires in the past) is treated as lifted, matching the auto-unban path.
+  // #3159 — per-request ban enforcement (defense-in-depth). The removed Better
+  // Auth admin plugin rejected banned users only at session-CREATE; we reproduce
+  // that create-time guard in server.ts and `banUserDirect` deletes the banned
+  // user's live sessions. This read-side check is the third layer: it rejects a
+  // banned user whose ban is visible on a fresh getSession read. `banned`/
+  // `banExpires` ride along on the getSession user via `additionalFields`; an
+  // expired ban (banExpires in the past) is treated as lifted.
+  //
+  // NOTE the bound: Better Auth serves the cookie-cache snapshot on a cache hit
+  // (up to `cookieCache.maxAge`, default 30s — see SESSION_COOKIE_CACHE_*), so
+  // this check reflects ban state as of the last fresh read, not strictly the
+  // current row. Primary eviction is `banUserDirect`'s session delete; this
+  // catches a banned user who still has a live session once the read refreshes.
   if (
     isEffectivelyBanned(
       sessionUser?.banned as boolean | null | undefined,

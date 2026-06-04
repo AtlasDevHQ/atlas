@@ -35,6 +35,22 @@ describe("normalizeSignupResponseBody", () => {
     expect(result.user.emailVerified).toBe(false);
   });
 
+  it("fills only the missing parity keys when some are already present (partial)", () => {
+    // Realistic case: a signup body supplied `image`, so the real-path body has
+    // `image` but still omits the null `banExpires`/`banReason` additionalFields.
+    // The `.filter(missing)` branch must fill exactly those two and return a NEW
+    // reference — a regression to the old `if ("image" in user) return body`
+    // fast-path would skip them and reopen the oracle for image-supplying clients.
+    const body = {
+      user: { id: "u1", email: "a@example.com", image: "https://cdn/x.png" },
+    };
+    const result = normalizeSignupResponseBody(body) as { user: Record<string, unknown> };
+    expect(result).not.toBe(body); // rewritten, not fast-pathed
+    expect(result.user.image).toBe("https://cdn/x.png"); // existing value preserved
+    expect(result.user.banExpires).toBeNull();
+    expect(result.user.banReason).toBeNull();
+  });
+
   it("preserves sibling keys on the envelope", () => {
     const body = {
       token: "verify-abc",

@@ -741,10 +741,10 @@ export function deriveCookieDomain(
 /**
  * Default Better Auth `session.cookieCache.maxAge`, in seconds.
  *
- * F-07 — the earlier value of 5 minutes meant `auth.api.banUser(...)` and
- * `revokeSession(...)` took up to 5 minutes to kick a compromised or
- * banned user out of authenticated routes, because the cookie cache
- * short-circuited the DB lookup that surfaces the ban/revocation. 30s
+ * F-07 — the earlier value of 5 minutes meant a ban / session revoke
+ * (`banUserDirect` / `revokeUserSessionsDirect`, #3159) took up to 5 minutes to
+ * kick a compromised or banned user out of authenticated routes, because the
+ * cookie cache short-circuited the DB lookup that surfaces the ban/revocation. 30s
  * preserves the perf win of cookie cache (one DB read per 30s per
  * session, not per request) while bounding the revocation window to
  * seconds rather than minutes.
@@ -1916,13 +1916,17 @@ export function buildPlugins() {
   // reads `user.effectiveRole` straight off the session payload, avoiding
   // a second member-table SELECT per request).
   //
-  // The native `user.role` (admin plugin, system-wide) is left untouched
-  // so Better Auth's own admin endpoints still gate on system role.
+  // `user.role` is now an `additionalFields` column (the admin plugin that
+  // owned it was removed in #3159); it only ever carries `platform_admin` or
+  // the `member` default. `effectiveRole` = max(user.role, active-org
+  // member.role) is the value gates read.
   //
-  // Per Better Auth docs, customSession bypasses cookie-cache: this
-  // callback runs on every `getSession`. The single member-table SELECT
-  // here replaces the one validateManaged used to run — net DB load is
-  // unchanged.
+  // The callback runs on every `getSession`, so `effectiveRole` is recomputed
+  // fresh per request (one member-table SELECT, replacing the one validateManaged
+  // used to run). NOTE: this does NOT bypass the cookie cache — the base
+  // `user`/`session` Better Auth returns (and thus `...user`'s `banned`/
+  // `banExpires`) is the signed-cookie snapshot on a cache hit (up to
+  // `cookieCache.maxAge`); only the custom `effectiveRole` field is re-derived.
   //
   // Inside the same `any[]` plugin array as every other plugin above —
   // adding it here means we don't need any new casts at the call site.
@@ -2304,25 +2308,28 @@ export function buildAuthOptions(deps: BuildAuthOptionsDeps): Parameters<typeof 
     },
     socialProviders: deps.socialProviders,
     // F-07 — cookieCache.maxAge bounds the revocation window. Previously
-    // 5 * 60 (5 minutes), which meant `auth.api.banUser(...)` and
-    // `revokeSession(...)` didn't take effect for up to 5 minutes because
-    // the signed cookie short-circuited the DB lookup. Default is now 30s,
-    // overridable within [5, 300] via ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC.
+    // 5 * 60 (5 minutes), which meant a ban / session revoke (`banUserDirect` /
+    // `revokeUserSessionsDirect`, #3159) didn't take effect for up to 5 minutes
+    // because the signed cookie short-circuited the DB lookup. Default is now
+    // 30s, overridable within [5, 300] via ATLAS_SESSION_COOKIE_CACHE_MAX_AGE_SEC.
     session: {
       expiresIn: 60 * 60 * 24 * 7,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: true, maxAge: resolveSessionCookieCacheMaxAge(deps.env) },
     },
     // #3159 — these `user` columns were contributed by the removed admin()
-    // plugin's schema. Re-declared here as `additionalFields` with the IDENTICAL
-    // shape (role: string/input:false; banned: boolean/default false/input:false;
-    // banReason: string/input:false; banExpires: date/input:false) so Better
-    // Auth still SELECTs them into every getSession — the `customSession`
-    // callback reads `role`, the session-create ban guard + per-request check
-    // read `banned`/`banExpires`, and the platform user list surfaces all four.
-    // Matching the plugin schema exactly means the migration generator sees no
-    // change (zero drift). `input: false` preserves the invariant that a signup
-    // payload cannot self-assign `role: "platform_admin"`.
+    // plugin's schema. Re-declared here as `additionalFields` with the same
+    // column types (role: string/input:false; banned: boolean/default false/
+    // input:false; banReason: string/input:false; banExpires: date/input:false)
+    // so Better Auth still SELECTs them into every getSession — the
+    // `customSession` callback reads `role`, the session-create ban guard +
+    // per-request check read `banned`/`banExpires`, and the platform user list
+    // surfaces all four. The migration generator sees no change (zero drift): it
+    // diffs column existence + type only, and the added `defaultValue: "member"`
+    // on `role` (the plugin had none) is applied at the application layer —
+    // Better Auth emits no DDL DEFAULT for a scalar string default. `input:
+    // false` preserves the invariant that a signup payload cannot self-assign
+    // `role: "platform_admin"`.
     user: {
       additionalFields: {
         // `defaultValue: "member"` reproduces the removed admin plugin's

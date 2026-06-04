@@ -47,6 +47,7 @@ function ranSql(pattern: RegExp): boolean {
 const ranUserUpdate = () => ranSql(/UPDATE\s+"user"/i);
 const ranUserDelete = () => ranSql(/DELETE FROM "user"/i);
 const ranSessionDelete = () => ranSql(/DELETE FROM session/i);
+const ranAccountDelete = () => ranSql(/DELETE FROM account/i);
 
 // --- Audit mock — capture logAdminAction calls to verify the compliance path ---
 const mockLogAdminAction: Mock<(entry: unknown) => void> = mock(() => {});
@@ -764,13 +765,18 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(ranUserDelete()).toBe(false);
     });
 
-    it("platform admin can delete any user", async () => {
+    it("platform admin can delete any user (full session+account+user cascade)", async () => {
       setPlatformAdmin();
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-in-any-org"),
       );
       expect(res.status).toBe(200);
+      // removeUserDirect reproduces the plugin cascade: session + account + user.
+      // Asserting only the user delete would miss a regression that drops the
+      // session/account legs and orphans a deleted user's bearer token in account.
+      expect(ranSessionDelete()).toBe(true);
+      expect(ranAccountDelete()).toBe(true);
       expect(ranUserDelete()).toBe(true);
     });
 

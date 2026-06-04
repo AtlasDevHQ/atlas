@@ -83,12 +83,20 @@ type BanFieldsRow = {
  * auto-unban (clear the columns) when the ban has expired. Wired into the
  * existing `databaseHooks.session.create.before` in `server.ts`.
  *
- * Fails OPEN (allows) when there is no internal DB, the user row is absent, or
- * the ban lookup itself errors. A missing user can't have a live ban, and a
- * single-tenant deployment with no `user` table never bans. On a read error we
- * log and allow rather than blocking *every* sign-in during a DB blip — the
- * per-request `validateManaged` ban check (which the admin plugin never had) is
- * the backstop that rejects a banned user who slips through here.
+ * Fails OPEN (allows) only when there is no internal DB or the user row is
+ * absent — a single-tenant deployment with no `user` table never bans, and a
+ * missing user can't have a live ban.
+ *
+ * Fails CLOSED on a ban-lookup error: refuse session creation rather than risk
+ * admitting a banned user. Sign-in already depends on this same internal DB
+ * (the `user`/`session` tables live there), so a failed ban read is not a
+ * "tolerate the blip" case — it is the same outage. This matches Atlas's other
+ * high-privilege auth reads (`resolvePasskeyCount`, `canGenerateSCIMToken`),
+ * which also deny on a transient failure. We deliberately do NOT lean on the
+ * per-request `validateManaged` check as a fallback: `customSession` returns the
+ * cookie-cache-stale user (Better Auth's getSession serves the signed-cookie
+ * snapshot on a cache hit, up to `cookieCache.maxAge`), so it cannot reliably
+ * catch a ban that the create-time read missed.
  */
 export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
   if (!hasInternalDB()) return;
@@ -100,11 +108,16 @@ export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
       [userId],
     );
   } catch (err) {
-    log.warn(
+    // Fail closed — see the function doc. A ban read we cannot complete must not
+    // become an open door.
+    log.error(
       { err: errorMessage(err), userId },
-      "Ban lookup failed on session create — allowing sign-in; the per-request ban check is the backstop",
+      "Ban lookup failed on session create — refusing sign-in (fail closed)",
     );
-    return;
+    throw new APIError("INTERNAL_SERVER_ERROR", {
+      code: "BAN_CHECK_FAILED",
+      message: "Unable to verify account status. Please try again.",
+    });
   }
   const user = rows[0];
   if (!user) return;
@@ -193,10 +206,16 @@ export async function revokeUserSessionsDirect(userId: string): Promise<number> 
 /**
  * Globally delete a user. Reproduces Better Auth's admin `removeUser`:
  * `deleteUserSessions` + `deleteUser` (= delete session, account, then user).
- * `member` rows are deleted by the caller's last-admin lock guard before this
- * runs, so they are not touched here.
  *
- * Deletes in child→parent order so an FK (if present) is never violated mid-way.
+ * `member` rows are not deleted here. On the normal (internal-DB) path the
+ * caller's last-admin lock guard deletes them first — but that is for TOCTOU
+ * serialization, not cleanup. The actual orphan-prevention backstop is the
+ * `member.userId → user.id` ON DELETE CASCADE (org-plugin FK default): deleting
+ * the `user` row drops any remaining `member` rows, including on the
+ * no-internal-DB path where the lock guard is skipped.
+ *
+ * Deletes session/account before the user so the explicit child deletes don't
+ * race the cascade; the user delete then sweeps anything left via the FK.
  */
 export async function removeUserDirect(userId: string): Promise<void> {
   await internalQuery(`DELETE FROM session WHERE "userId" = $1`, [userId]);

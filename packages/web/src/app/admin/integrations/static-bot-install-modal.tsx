@@ -23,18 +23,10 @@
  */
 
 import { useMemo, useState } from "react";
-import {
-  FormDialog,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormDescription,
-  FormMessage,
-} from "@/components/form-dialog";
-import { Input } from "@/components/ui/input";
+import { FormDialog } from "@/components/form-dialog";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { ConfigSchemaFields } from "./config-schema-fields";
 import {
   buildDefaultValues,
   buildZodSchema,
@@ -115,37 +107,7 @@ export function StaticBotInstallModal({
       submitLabel="Install"
       saving={saving || submitting}
     >
-      {(form) => (
-        <>
-          {fields.map((field) => (
-            <FormField
-              key={field.key}
-              control={form.control}
-              name={field.key}
-              render={({ field: rhf }) => (
-                <FormItem>
-                  <FormLabel>
-                    {field.label ?? field.key}
-                    {field.required && <span className="ml-1 text-destructive">*</span>}
-                  </FormLabel>
-                  <FormControl>
-                    <Input
-                      // Static-bot config fields are routing identifiers + labels —
-                      // all strings. Secret-marked fields (none today) still mask.
-                      type={field.secret ? "password" : "text"}
-                      value={(rhf.value as string | undefined) ?? ""}
-                      onChange={(e) => rhf.onChange(e.target.value)}
-                      autoComplete={field.secret ? "off" : undefined}
-                    />
-                  </FormControl>
-                  {field.description && <FormDescription>{field.description}</FormDescription>}
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          ))}
-        </>
-      )}
+      {(form) => <ConfigSchemaFields fields={fields} control={form.control} />}
     </FormDialog>
   );
 }

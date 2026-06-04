@@ -12,15 +12,20 @@
 	encode zstd gzip
 
 	# The HTTP edge in front of this container (Railway's router / Cloudflare)
-	# injects `Range: bytes=0-` on every upstream request. Caddy's file_server
-	# honours it and answers `206 Partial Content` with a full-body Content-Range
-	# for otherwise-complete documents, so every page — including `/` — serves as
-	# 206. Strict `== 200` uptime monitors then false-flag the site as down (#2947).
-	# The docs are a static HTML/CSS/JS/JSON export with no byte-range consumers
-	# (the Orama search client fetches /api/search whole, not via ranges), so
-	# dropping the request `Range` header is safe and makes every response a clean
-	# 200. Caddy still returns the full body either way — this only changes the
-	# status line.
+	# injects `Range: bytes=0-` on upstream requests. The docs are a static
+	# HTML/CSS/JS/JSON export with no byte-range consumers (the Orama search
+	# client fetches /api/search whole, not via ranges), so we drop the request
+	# `Range` header before file_server runs. This makes the CADDY ORIGIN answer
+	# a clean `200` with the full body instead of `206 Partial Content` (#2947).
+	#
+	# CAVEAT (#3185): this does NOT make the *public* response a 200. The Railway
+	# edge (`x-hikari-trace`) and Cloudflare in front re-wrap the full-body origin
+	# response as `206` with a whole-document `Content-Range: bytes 0-N/N+1` —
+	# verified by sending `Range: bytes=0-10`, which still returns the FULL range
+	# (the origin ignored the range; the edge synthesized the 206). That status is
+	# edge-generated and not controllable from this Caddyfile, so strict `== 200`
+	# uptime monitors for docs.useatlas.dev MUST accept `2xx` (e.g. 200, 206, 307).
+	# `-Range` is kept regardless so the origin stays clean.
 	request_header -Range
 
 	# Next.js content-hashes /_next/static URLs, so they're safe to pin immutably.

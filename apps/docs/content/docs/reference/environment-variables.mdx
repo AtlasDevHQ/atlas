@@ -62,6 +62,10 @@ Each provider requires its own API key:
 | `openai-compatible` | `OPENAI_COMPATIBLE_API_KEY` (optional) |
 | `gateway` | `AI_GATEWAY_API_KEY` |
 
+<Callout type="warn">
+Some providers need a **complete** credential set, not just one key, for chat to actually work: `bedrock` needs `AWS_ACCESS_KEY_ID` **and** `AWS_SECRET_ACCESS_KEY` (the region resolves through the standard AWS credential chain — set `AWS_REGION` unless your deploy supplies it another way); `openai-compatible` needs `OPENAI_COMPATIBLE_BASE_URL`. On **SaaS** (`ATLAS_DEPLOY_MODE=saas`), the provider-key boot guard (`ProviderKeyGuardLive`, #3178) currently fails startup only when the provider's **primary** key is missing (`AWS_ACCESS_KEY_ID` for bedrock; `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AI_GATEWAY_API_KEY` for the others). A config that satisfies the primary key but is still incomplete — bedrock without its secret, or `openai-compatible` (which the guard doesn't gate at all) without its base URL — boots green and fails on the first chat. Tightening the guard to validate the full per-provider set is tracked in #3200.
+</Callout>
+
 **Default models per provider:**
 
 | Provider | Default Model |
@@ -321,14 +325,14 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.atlas_role
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_RATE_LIMIT_RPM` | `0` (disabled) | Max requests per minute per user. `0` or unset = unlimited |
+| `ATLAS_RATE_LIMIT_RPM` | profile-based — disabled in `production` / `development`, `300` in `staging` (via [`ATLAS_DEPLOY_ENV`](#runtime)) | Max requests per minute per user. Precedence: a platform DB override, then this env var, then the deploy-env profile default. On **self-hosted**, `0` or unset = unlimited (the limiter is off — acceptable for trials and single-tenant deploys). On **SaaS** (`ATLAS_DEPLOY_MODE=saas`) it is **boot-fatal when unset, empty, or `< 1`**: `RateLimitGuardLive` fails startup with `RateLimitRequiredError` so a region can never silently run with the limiter disabled (#1983). Set a positive integer — e.g. `300` for ~5 RPS per caller. The chat and admin buckets below derive from this value |
 | `ATLAS_RATE_LIMIT_RPM_CHAT` | `max(5, ATLAS_RATE_LIMIT_RPM/4)` | F-74 separate-bucket ceiling for `/api/v1/chat`. Defaults to a quarter of `ATLAS_RATE_LIMIT_RPM` (minimum 5) so a 25-step LLM call cannot deplete the same allowance that serves cheap reads like audit-log scrolling. Disabled when `ATLAS_RATE_LIMIT_RPM` is `0` |
 | `ATLAS_RATE_LIMIT_RPM_ADMIN` | `max(60, ATLAS_RATE_LIMIT_RPM)` | F-74 admin-namespace ceiling for `/api/v1/admin/*`. Defaults to `max(60, ATLAS_RATE_LIMIT_RPM)` so admin pages that page through dense tables (audit log, sessions, organizations) don't get throttled at end-user RPMs. Invalid values fall back to the derived default with a warning. Disabled when `ATLAS_RATE_LIMIT_RPM` is `0` |
 | `ATLAS_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Real-IP` headers. Set `true` behind a reverse proxy |
 | `ATLAS_AUTH_RATE_LIMIT_ENABLED` | `true` | Toggle rate limiting on `/api/auth/*` endpoints. Setting `false` is logged as a security warning at boot — only acceptable for self-hosted single-tenant deployments |
 | `ATLAS_AUTH_RATE_LIMIT_WINDOW` | `60` | Global `/api/auth/*` rate-limit window in seconds |
 | `ATLAS_AUTH_RATE_LIMIT_MAX` | `100` | Global `/api/auth/*` rate-limit ceiling per window. Per-endpoint rules are tighter (signin ≤10/min, signup/forget ≤5/min) and are not env-overridable by design |
-| `ATLAS_CONVERSATION_STEP_CAP` | `500` | F-77 atomic per-conversation step budget (default 500 = 20 follow-ups × 25 steps). Once `total_steps` crosses this value, `/api/v1/chat` returns `429 conversation_budget_exceeded` and the UI offers to start a new conversation. Set `0` to disable |
+| `ATLAS_CONVERSATION_STEP_CAP` | `500` | F-77 atomic per-conversation step budget (default 500 = 20 follow-ups × 25 steps). Once `total_steps` crosses this value, `/api/v1/chat` returns `429 conversation_budget_exceeded` and the UI offers to start a new conversation. Set `0` to disable. **Coupled with [`ATLAS_AGENT_MAX_STEPS`](#agent):** the effective follow-up count = `ATLAS_CONVERSATION_STEP_CAP` ÷ `ATLAS_AGENT_MAX_STEPS`. The two are configured independently with no cross-validation, so raising `ATLAS_AGENT_MAX_STEPS` to its max (`100`) silently shrinks the budget to ~5 follow-ups before the cap trips — raise this cap in step if you raise the per-request step ceiling |
 
 ```bash
 # Production rate limiting behind a reverse proxy
@@ -603,6 +607,8 @@ Scheduled task execution. Can also be configured via [`atlas.config.ts`](/refere
 | `ATLAS_SCHEDULER_MAX_CONCURRENT` | `5` | Max concurrent task executions per tick |
 | `ATLAS_SCHEDULER_TIMEOUT` | `60000` | Per-task timeout in milliseconds |
 | `ATLAS_SCHEDULER_TICK_INTERVAL` | `60` | Tick interval in seconds |
+| `ATLAS_BYOT_DORMANCY_DAYS` | `30` | Workspace-inactivity window (whole days) before the BYOT model-catalog refresh cycle skips a dormant workspace. Only an explicit `0` disables the dormancy gate (falls back to the TTL-only query); any other invalid value falls back to `30`. Source: `packages/api/src/lib/scheduler/byot-catalog-refresh.ts` |
+| `ATLAS_ORPHAN_TASK_RECONCILE` | `false` | Set `=true` to enable the **destructive** orphan-task sweep — auto-deletes plugin `scheduled_tasks` left behind by a failed uninstall. Default is measure-only: the orphan count is always observed (span + `log.warn`); only the deletion is gated. Source: `packages/api/src/lib/scheduler/orphan-task-reconcile.ts` |
 
 **Scheduler backend options:**
 
@@ -654,6 +660,14 @@ See [Python Tool](/guides/python) for the full guide.
 | `ATLAS_ONBOARDING_EMAILS_ENABLED` | profile default — `true` in `production`, `false` in `staging`/`development` | Enable the automated onboarding drip campaign for new signups. When unset, the default comes from the [`ATLAS_DEPLOY_ENV`](#runtime) profile; set this explicitly to override. Also requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
 | `ATLAS_UNSUBSCRIBE_TOKEN_TTL_MS` | `2592000000` (30d) | TTL for signed unsubscribe links. Accepts `60000` (60s) to `31536000000` (1y); invalid values fall back to the default |
 
+Password-reset / signup-verification emails are sent through a durable `email_outbox` (#2942): when the in-process retry is exhausted on a sustained provider outage, the send is enqueued and a Scheduler-backed flusher re-sends it on a later tick instead of dropping it. The knobs below tune that flusher (requires `DATABASE_URL` — with no internal DB there is nothing to queue).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_EMAIL_OUTBOX_FLUSHER_ENABLED` | `true` | Whether this pod runs the polling email-outbox flusher. Default `true` on any pod with an internal DB. Set `false` / `0` / `no` / `off` to opt out (boot/shutdown recovery sweeps still run regardless, so re-enabling inherits clean state). Parallels `ATLAS_CRM_OUTBOX_FLUSHER_ENABLED`. Source: `packages/api/src/lib/email-outbox/outbox.ts` |
+| `ATLAS_EMAIL_OUTBOX_TICK_SECONDS` | `5` | Flusher poll interval in seconds. Clamped to `[1, 3600]`; out-of-range values clamp and log a warning |
+| `ATLAS_EMAIL_OUTBOX_WARN_THRESHOLD` | `50` | Pending-row depth that triggers the rate-limited backlog warning (one `log.warn`/minute with depth + oldest-pending age). Pair with the `atlas.email_outbox.pending_count` gauge. Clamped to `[1, 1000000]` |
+
 ---
 
 ## Slack Integration
@@ -678,6 +692,7 @@ See [Slack guide](/guides/slack) for the full setup.
 | `DISCORD_CLIENT_ID` | — | Discord application (client) ID. Enables the Discord install route and the admin **Connect to Discord** card. Required (with `DISCORD_BOT_TOKEN`) for the cap-gated static-bot install |
 | `DISCORD_BOT_TOKEN` | — | Discord bot token. Required (with `DISCORD_CLIENT_ID`) for the cap-gated static-bot install at `/api/v1/integrations/discord/install` and for adapter outbound calls. When unset, the install route returns `501` |
 | `DISCORD_PUBLIC_KEY` | — | Discord app public key. Required by the chat adapter to verify Ed25519 signatures on inbound Discord webhooks (the install handler itself does not need it) |
+| `DISCORD_OAUTH_PERMISSIONS` | `274877991936` | Optional override for the Discord bot OAuth permission bitmask baked into the bot-install authorize URL. Unset uses the built-in default (`274877991936`). Source: `packages/api/src/api/routes/integrations-discord.ts` |
 
 ```bash
 # Discord cap-gated static-bot install + inbound webhook verification
@@ -698,17 +713,49 @@ DISCORD_PUBLIC_KEY=your-discord-app-public-key
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TEAMS_APP_ID` | — | Microsoft Teams app ID. Enables Teams integration routes. Required for Teams connect flow |
-| `TEAMS_APP_PASSWORD` | — | Platform-shared Teams app client secret used by the platform OAuth flow. In BYOT mode the app password is stored per-tenant in the internal database instead, and this env var is unused. Source: `packages/api/src/lib/teams/store.ts` |
+| `TEAMS_APP_ID` | — | Microsoft Teams (Entra ID) app ID. Required (with `TEAMS_APP_PASSWORD`) for the Teams chat adapter |
+| `TEAMS_APP_PASSWORD` | — | Teams app client secret. The Teams chat adapter requires **both** `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` to build — `plugins/chat/src/adapter-registry.ts` lists them in `requiredEnv`, and the webhook returns "adapter not configured" if either is unset. Source: `plugins/chat/src/adapter-registry.ts` |
 
 ```bash
-# Teams integration via Azure AD admin consent
+# Teams integration via Entra ID app registration
 TEAMS_APP_ID=your-teams-app-id
-# Platform OAuth flow only — leave unset for BYOT
 TEAMS_APP_PASSWORD=your-teams-app-secret
 ```
 
-> In BYOT mode the Teams app password (client secret) is **not** read from `TEAMS_APP_PASSWORD`. Per-org credentials are stored encrypted in the internal database and configured via the admin integrations UI — see [Teams integration](/guides/integrations#microsoft-teams).
+---
+
+## Telegram Integration
+
+Static-bot install (`/api/v1/integrations/telegram/install`) plus inbound-webhook verification. Source: `packages/api/src/lib/integrations/install/register.ts`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_BOT_TOKEN` | — | Telegram Bot API token (from @BotFather). Required to register the Telegram static-bot install handler and build the chat adapter. When unset while the `telegram` catalog row is enabled, the install route returns `501` and the adapter is skipped |
+| `TELEGRAM_WEBHOOK_SECRET` | — | Secret token Telegram echoes in the `X-Telegram-Bot-Api-Secret-Token` header on every inbound update; the AdapterRegistry requires it to build the Telegram adapter. With `TELEGRAM_BOT_TOKEN` set but this unset, installs succeed yet inbound updates are dropped (forgery-safe) — set it to make Telegram routable |
+
+---
+
+## WhatsApp Integration
+
+WhatsApp (Meta Business). The two `META_BUSINESS_*` variables gate the static-bot install (`/api/v1/integrations/whatsapp/install`, `register.ts`); the **chat adapter** additionally requires the two webhook secrets to activate the inbound receive path. `plugins/chat/src/adapter-registry.ts` requires **all four** — with any unset the adapter won't build, so an install can succeed while inbound webhooks never activate.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `META_BUSINESS_ACCESS_TOKEN` | — | Meta Business access token (sent as `Authorization: Bearer` to the Meta Graph API). Required (with `META_BUSINESS_APP_ID`) to register the WhatsApp static-bot install handler |
+| `META_BUSINESS_APP_ID` | — | The operator's Meta App ID, used to validate the WhatsApp phone-number id at install time. Pair with `META_BUSINESS_ACCESS_TOKEN` |
+| `WHATSAPP_APP_SECRET` | — | Meta App Secret for HMAC-SHA256 verification of inbound webhook signatures (`X-Hub-Signature-256`). Required by the chat adapter; without it inbound webhooks are dropped |
+| `WHATSAPP_VERIFY_TOKEN` | — | The random string pasted into the Meta webhook configuration; the adapter mirrors it back in the `GET` challenge handshake. Required by the chat adapter |
+
+---
+
+## Google Chat Integration
+
+Google Chat static-bot install (`/api/v1/integrations/gchat/install`), backed by a service account and a Pub/Sub topic round-trip. Both variables gate registration — an enabled `gchat` catalog row with either unset (or a malformed `GCHAT_SERVICE_ACCOUNT_JSON`) returns `501` and skips the adapter. Source: `packages/api/src/lib/integrations/install/register.ts`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GCHAT_SERVICE_ACCOUNT_JSON` | — | Google service-account credentials JSON (parsed at boot) used for the Pub/Sub round-trip and the chat adapter. Required (with `GCHAT_PUBSUB_TOPIC`) to register the Google Chat static-bot install handler |
+| `GCHAT_PUBSUB_TOPIC` | — | Fully-qualified Pub/Sub topic name the Google Chat adapter publishes to. Pair with `GCHAT_SERVICE_ACCOUNT_JSON` |
 
 ---
 
@@ -741,6 +788,17 @@ JIRA_DEFAULT_PROJECT=PROJ
 |----------|---------|-------------|
 | `JIRA_CLIENT_ID` | — | Jira Cloud OAuth 2.0 app client ID. Required for `/api/v1/integrations/jira/install` — when unset that endpoint returns `501`. Source: `packages/api/src/lib/integrations/install/register.ts` |
 | `JIRA_CLIENT_SECRET` | — | Jira Cloud OAuth 2.0 app client secret. Pair with `JIRA_CLIENT_ID` |
+
+---
+
+## Linear Integration
+
+Per-workspace Linear OAuth 2.0 install registered under `/api/v1/integrations/linear`. The `linear-apikey` form-install path (a workspace admin pastes a personal API key) is independent and needs no env vars. Source: `packages/api/src/lib/integrations/install/register.ts`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LINEAR_CLIENT_ID` | — | Linear OAuth Application client ID. Required for `/api/v1/integrations/linear/install` — when unset that endpoint returns `501` and the handler logs "Linear OAuth handler not registered" at boot |
+| `LINEAR_CLIENT_SECRET` | — | Linear OAuth Application client secret. Pair with `LINEAR_CLIENT_ID` |
 
 ---
 
@@ -780,6 +838,7 @@ The generic [OpenAPI (REST) datasource](/plugins/datasources/openapi-generic) is
 | `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS` | `false` | SSRF egress guard opt-out. By default, spec probes and operation execution are blocked from reaching private/loopback/link-local/CGNAT IPs and internal hostnames (e.g. cloud metadata at `169.254.169.254`). Set `=true` only on **self-hosted** to connect an internal OpenAPI service — **never set on SaaS** |
 | `ATLAS_OPENAPI_SHARED_SPEC_TTL_MS` | `3600000` | Freshness window for the cross-workspace shared spec cache — within it, a fresh install of an already-cached **public** upstream (Stripe/GitHub/Notion, credential withheld at probe) skips the network entirely. Generic admin-supplied installs are never shared |
 | `ATLAS_OPENAPI_SPEC_REFRESH_INTERVAL_HOURS` | `24` | Cadence of the periodic conditional-GET refresh of the shared public-spec cache (a `304` is free for every workspace) |
+| `ATLAS_OPENAPI_REDISCOVER_INTERVAL_HOURS` | `1` | Wake cadence (hours) of the per-install auto re-discovery loop — it re-probes each installed OpenAPI datasource whose per-install `spec_refresh_interval` has elapsed and refreshes its snapshot + drift diff. This is the loop wake cadence, **not** the per-install interval; keep it at or below the smallest per-install interval you set. Source: `packages/api/src/lib/scheduler/openapi-install-rediscover.ts` |
 
 > Credentials are encrypted at rest in `workspace_plugins.config`. The slice-1 `ATLAS_OPENAPI_TWENTY*` / `ATLAS_OPENAPI_REPRESENTATION` env shortcuts have been **retired** — install, representation, and the write allowlist are all per-install config. See the [OpenAPI datasource guide](/plugins/datasources/openapi-generic).
 
@@ -875,6 +934,7 @@ SaaS only. Automated internal database backups.
 | `ATLAS_BACKUP_SCHEDULE` | `0 3 * * *` | Cron expression (5 fields) for automated backup schedule |
 | `ATLAS_BACKUP_RETENTION_DAYS` | `30` | Number of days to retain backups before automatic deletion |
 | `ATLAS_BACKUP_STORAGE_PATH` | `./backups` | Directory path for backup file storage. Must not contain `..` |
+| `ATLAS_BACKUP_VERIFY_SCRATCH_URL` | — | Postgres URL of a **disposable** scratch DB for restore-into-scratch backup verification (#2941). When set, each dump is restored into this DB and its base tables counted, so "verified" means "restorable"; unset degrades to a header-only `pg_dump` check (logs a warning — a truncated dump with a valid header would still pass). ⚠️ Wipes the scratch DB's public schema on every run — point it only at a throwaway DB, never a real/prod database. As a safety net, verification refuses to run if this resolves to the same `{host, port, db}` as `DATABASE_URL`. Source: `ee/src/backups/verify.ts` |
 
 ### Custom Domains (Railway)
 

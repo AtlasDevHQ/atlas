@@ -113,14 +113,16 @@ The workspace installer (`POST /api/v1/admin/installs`, `DELETE /api/v1/admin/in
 | `bad_request` | `InvalidInstallIdError` | 400 | Datasource install's user-facing `installId` slug failed validation. Body carries `installId` and `reason` (`"pattern"` for invalid characters, `"reserved"` for sentinel collisions like `default`) | Use `^[a-z][a-z0-9_-]*$`. The `__demo__` sentinel is the only pre-cutover exception preserved by migration 0094 | No |
 | `upstream_error` | `PlatformOAuthExchangeError` | 502 | OAuth code-for-token exchange failed at the upstream Platform (Slack's `oauth.v2.access`, Jira's `oauth/token`, etc.) — non-OK response, network failure, or malformed payload. Raw upstream error code stays in logs only; the response message is translated | Check the Platform's status page. Restart the install flow once it recovers. If the failure is persistent and the Platform is healthy, verify the Connected App / OAuth App credentials in operator config | Yes |
 | `conflict` | `IntegrationReconnectRequiredError` | 409 | A lazy-OAuth integration's refresh-token rotation failed permanently. The failing integration is one of **Salesforce** (`invalid_grant`, `inactive_user`, `org_locked`, `inactive_org`), **Jira** (Atlassian `invalid_grant`, stored refresh token rejected, or `offline_access` scope dropped), or **Linear** (`invalid_grant`, refresh token rejected, or `actor=app` scope revoked) — surfaced via the error's internal `platform` field in **logs only**, not the response body. The install's `workspace_plugins.config.status` has already been flipped to `"reconnect_needed"` | Re-run the named integration's OAuth flow from the admin Installs page. The stored refresh token is no longer accepted upstream and no amount of retrying will recover it — verify the App still grants the required scopes (`offline_access` for Jira, `actor=app` for Linear) before reinstalling | No |
+| `plan_limit_exceeded` | `ChatIntegrationLimitError` | 429 | Installing a chat integration would exceed the workspace plan tier's chat-integration cap (#2953). Body carries the `limit` that was hit. Mirrors the connections-cap surface (same code/status) | Uninstall an existing chat integration, or upgrade the plan | No |
+| `billing_check_failed` | `BillingCheckFailedError` | 503 | The chat-integration count couldn't be determined (DB error / missing row), so the cap check failed **closed** (#2953) — a transient infra fault, **not** a plan-cap hit | Retry — this is "try again", not "upgrade your plan". If persistent, check internal-DB health with the `requestId`. (Same wire code as the billing-enforcement middleware's [`billing_check_failed`](#billing--workspace-errors), different `_tag`/source) | Yes |
 
 <Callout>
 The 409 response body carries only the shared `{ error, message, requestId }` envelope — the same shape as every other mapped error. Which integration failed is **not** a response field: the error's internal `platform` value and `_tag` live in logs, and the admin UI reads the install-status surface (`workspace_plugins.config.status === "reconnect_needed"`) directly. The `conflict` wire code is reused rather than introducing a `reconnect_required` code, and one tag covers Salesforce, Jira, and Linear (collapsed from three per-platform tags at the rule of three — see #2708).
 </Callout>
 
-### Platform reachability — Telegram, Discord, Teams (#2748, #2749, #2752)
+### Platform reachability — Telegram, Discord, Teams, WhatsApp, Google Chat (#2748, #2749, #2752, #2753, #2754)
 
-Static-bot install handlers verify the supplied routing identifier (Telegram `chat_id`, Discord `guild_id`, Teams `tenant_id`) against the upstream Platform before persisting the install. Input-shape failures and reachability failures map to 400 because both are admin-correctable; only network-layer outages get the 502 retryable surface.
+Static-bot install handlers verify the supplied routing identifier (Telegram `chat_id`, Discord `guild_id`, Teams `tenant_id`, WhatsApp `phone_number_id`, Google Chat `workspace_id`) against the upstream Platform before persisting the install. Input-shape failures and reachability failures map to 400 because both are admin-correctable; only network-layer outages get the 502 retryable surface.
 
 | Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
 |------|--------|-------------|---------|-----|-----------|
@@ -133,6 +135,12 @@ Static-bot install handlers verify the supplied routing identifier (Telegram `ch
 | `bad_request` | `TeamsTenantIdInvalidError` | 400 | `tenant_id` is not a Microsoft Entra ID tenant GUID (8-4-4-4-12 hex digits), empty, or pasted as a domain like `contoso.onmicrosoft.com` | Paste the tenant GUID from the Entra ID admin portal, not the verified domain | No |
 | `bad_request` | `TeamsReachabilityError` | 400 | Microsoft tenant discovery returned a non-OK response — the tenant doesn't exist, has been deleted, or is unresolvable. The upstream `status` is logged with `requestId` for forensics but is not part of the response body | Verify the tenant GUID in the Entra ID admin portal. Wrong GUIDs are the most common cause | No |
 | `upstream_error` | `TeamsApiUnavailableError` | 502 | Microsoft tenant discovery endpoint unreachable at the network layer | Retry after a short delay. If persistent, check Azure status | Yes |
+| `bad_request` | `WhatsAppPhoneNumberIdInvalidError` | 400 | WhatsApp `phone_number_id` is malformed, empty, or not present in the operator's Meta Business Account | Re-paste the phone-number id from the Meta WhatsApp Manager | No |
+| `bad_request` | `WhatsAppReachabilityError` | 400 | Meta Graph API returned a non-OK envelope verifying the number — number not in the Business Account, wrong id, or the token can't see it. Message includes Meta's verbatim `error.message` | Confirm the number is in the operator's Meta Business Account and the access token can read it; re-paste the id | No |
+| `upstream_error` | `WhatsAppApiUnavailableError` | 502 | Meta Graph API unreachable at the network layer — DNS, TLS, timeout, or malformed response | Retry after a short delay. If persistent, check Meta's platform status | Yes |
+| `bad_request` | `GchatWorkspaceIdInvalidError` | 400 | Google Chat `workspace_id` is malformed or empty | Re-paste the workspace id from Google Chat | No |
+| `bad_request` | `GchatReachabilityError` | 400 | The Pub/Sub round-trip to verify the workspace returned a non-OK envelope — the Atlas Marketplace listing isn't installed, the id is wrong, or `pubsub.publisher` isn't granted on the topic. Message preserves Google's verbatim text when present | Install the Marketplace listing, re-paste the workspace id, and grant `pubsub.publisher` on the topic | No |
+| `upstream_error` | `GchatApiUnavailableError` | 502 | Google's OAuth2 token endpoint or Pub/Sub API unreachable (DNS, TLS, timeout) or returned a 5xx | Retry after a short delay. If persistent, check Google Cloud status | Yes |
 
 ### Scheduler & Delivery
 
@@ -149,6 +157,16 @@ The scheduler runs proactive prompts and report deliveries on workspace cron sch
 | Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
 |------|--------|-------------|---------|-----|-----------|
 | `conflict` | `UnsafeRegionMigrationResetError` | 409 | Operator attempted to reset a region migration that had already passed Phase 3 (cutover). Re-running Phase 1 on a workspace that already moved would re-export stale data and corrupt the destination. `migrationId`, `workspaceId`, `targetRegion`, and `sourceRegion` are on the error instance and structured logs (correlate via `requestId`), not in the response body | Follow the data-residency manual-intervention runbook in [Data Residency](/platform-ops/data-residency). The code path is closed by design; this is not retryable | No |
+
+### Backups (#2989)
+
+Platform backup verify/restore routes (`/api/v1/admin/backups/*`, SaaS/EE). Structural `_tag` mapping replaced the routes' earlier `message.includes(...)` classification. All three messages are admin-safe (no secrets, no connection strings).
+
+| Code | `_tag` | HTTP Status | Trigger | Fix | Retryable |
+|------|--------|-------------|---------|-----|-----------|
+| `not_found` | `BackupNotFoundError` | 404 | The backup id has no matching row — it never existed, or was purged between a restore request and its confirm | Refresh the backups list and pick a current backup id | No |
+| `bad_request` | `BackupInvalidStateError` | 400 | The backup is not in a verifiable/restorable state (status not `completed`/`verified`). The offending status is in the message | Wait for the backup to finish, or pick another that is `completed`/`verified` | No |
+| `bad_request` | `BackupRestoreTokenError` | 400 | The restore confirmation token is missing or expired | Request a fresh restore confirmation token and retry the restore | No |
 
 ### Connection-group entity resolution (#2412)
 
@@ -243,6 +261,24 @@ The `@useatlas/sdk` includes additional codes in the `AtlasErrorCode` type beyon
 | `invalid_response` | Server returned a 2xx status but the body wasn't valid JSON | SDK client-side | No |
 | `unknown_error` | Server returned an error response with an unrecognized error code | SDK client-side | No |
 | `not_available` | Feature not available (e.g., conversation history without `DATABASE_URL`) | Server (admin/CRUD routes) | No |
+
+---
+
+## Context Warnings (non-fatal)
+
+These are **not** errors — they're degradation signals (`severity: "warning"`) emitted mid-stream when the agent's preflight loaders failed but the run was still allowed to proceed with reduced context. They ride the AI-SDK UI message stream as a `data-context-warning` frame (the `ChatContextWarning` shape — a sibling of `ChatErrorInfo` with `title` / `detail` / `requestId`), **not** as an HTTP error envelope. A client parsing the data stream should surface them as a banner and keep rendering the response. Codes are defined in [`@useatlas/types/errors`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/errors.ts) (`CHAT_CONTEXT_WARNING_CODES`); validate with the `isChatContextWarningCode()` guard.
+
+| Code | Meaning |
+|------|---------|
+| `semantic_layer_unavailable` | The semantic layer couldn't be loaded for this turn; the agent ran with reduced schema context |
+| `learned_patterns_unavailable` | Learned query patterns couldn't be loaded; the agent ran without them |
+| `plan_limit_warning` | The workspace is approaching, in grace against, or unable to read its plan budget. The request was allowed — act before the next request hits the hard `plan_limit_exceeded` block |
+| `bound_dashboard_unavailable` | The drawer-side chat requested a bind to a dashboard but the bind/resolve failed (dashboard deleted, transient DB outage, race); the turn degraded to the default agent |
+| `rest_focus_unavailable` | The conversation is focused on a single REST datasource that was temporarily unresolvable; the turn kept SQL suspended rather than widening scope back to SQL |
+
+<Callout>
+Because these are warnings, not errors, the SDK's `isChatErrorCode()` / `isRetryableError()` guards do not apply to them — handle the `data-context-warning` stream frame separately from the `{ error, message, requestId }` error envelope.
+</Callout>
 
 ---
 

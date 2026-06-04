@@ -44,7 +44,11 @@ import * as crypto from "crypto";
 import { tool } from "ai";
 import { z } from "zod";
 import { CHART_TYPES } from "@useatlas/types";
-import { dashboardParametersSchema, dashboardTextCardContentSchema } from "@useatlas/schemas";
+import {
+  dashboardParametersSchema,
+  dashboardTextCardContentSchema,
+  dashboardChartConfigSchema,
+} from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
@@ -55,11 +59,10 @@ import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/da
 
 const log = createLogger("tool:create-dashboard");
 
-const ChartConfigSchema = z.object({
-  type: z.enum(CHART_TYPES),
-  categoryColumn: z.string().min(1),
-  valueColumns: z.array(z.string().min(1)).min(1),
-});
+/** Chart/table/KPI config. The canonical schema lives in @useatlas/schemas so
+ *  the optional `kpi` block (#3137) round-trips through every persist path
+ *  instead of being stripped at one boundary. */
+const ChartConfigSchema = dashboardChartConfigSchema;
 
 /** A SQL-backed chart/table card (the original kind). `kind` is optional and
  *  defaults to a chart so the long-standing `{ title, sql, chartConfig }` shape
@@ -156,7 +159,13 @@ A typical flow:
 2. Call createDashboard with a title and 1-12 cards. Each card needs: title, sql, chartConfig. Pass the same connectionId you used in executeSQL — omit only when the card targets the default datasource.
 3. The chat surfaces a "Continue editing on the dashboard" link to the new dashboard. The same conversation re-opens there in bound mode so subsequent edits route to that one dashboard.
 
-Layout is optional — the dashboard auto-arranges cards if you omit it. Grid is 24 columns wide; common widths are 12 (half) and 24 (full); common heights are 8 (chart) and 4 (KPI / small table). chartConfig.type is one of: ${CHART_TYPES.join(", ")}.
+Layout is optional — the dashboard auto-arranges cards if you omit it. Grid is 24 columns wide; common widths are 12 (half) and 24 (full); common heights are 8 (a chart) and 4 (a KPI card). chartConfig.type is one of: ${CHART_TYPES.join(", ")}.
+
+KPI / SCORECARD CARDS: a \`kpi\` card is a big-number scorecard — the first thing a reader looks at. Lead a dashboard with 2-3 KPI cards summarizing the top metrics (revenue, active users, conversion), then put the trend charts below them. A KPI card's \`sql\` returns either a SINGLE headline row or a time-ordered multi-row trend (which also draws a compact sparkline under the number); either way \`chartConfig.categoryColumn\` names the label/time column and \`chartConfig.valueColumns[0]\` the metric column (the last row is the headline). Add \`chartConfig.kpi\` to control it:
+  - \`valueFormat\`: "currency" | "number" | "percent" | "duration" (how the big number renders; "percent" expects a ready figure like 12.3, not 0.12; "duration" expects seconds).
+  - \`comparisonSql\`: an OPTIONAL second single-number query for the ▲/▼ delta chip — typically the same metric over the PRIOR period (e.g. \`... WHERE created_at < :date_from\`). It runs through the same SQL guard and binds the same \`:<param>\` placeholders; the UI computes the percentage change vs the primary value. Omit it for a plain big number.
+  - \`comparisonLabel\`: caption under the chip, e.g. "vs. last month".
+Example: { title: "Revenue", sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from", chartConfig: { type: "kpi", categoryColumn: "label", valueColumns: ["total"], kpi: { valueFormat: "currency", comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :prev_from AND created_at < :date_from", comparisonLabel: "vs. prior period" } } }. Every \`:placeholder\` — INCLUDING those in \`comparisonSql\` (here \`:prev_from\` and \`:date_from\`) — must be declared in \`parameters\`, or the whole call is rejected.
 
 SECTION HEADERS (text cards): a card can be a markdown text block instead of a chart — pass { kind: "text", content: "## Top of funnel", layout: { x: 0, y: <row>, w: 24, h: 4 } }. A text card has NO sql/chartConfig and fetches no data; it just renders a sanitized-markdown header or explainer to organize the grid. For ANY dashboard with 4+ cards, group them under section headers — emit a full-width text card (w: 24) above each cluster of related charts ("Top of funnel", "Conversion", "Cohorts"). Keep content short — a heading and at most a sentence.
 
@@ -236,23 +245,34 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
           (c): c is { card: ChartCardInput; idx: number } => c.card.kind !== "text",
         );
 
+      // #3137 — a KPI card's `comparisonSql` runs through the SAME guard at
+      // render time, so validate it up front alongside the primary query.
+      // Both validations run together (no waterfall) per card.
       const validations = await Promise.all(
         chartCards.map(async ({ card, idx }) => {
-          const validation = await validateSQL(card.sql, card.connectionId);
-          return { card, idx, validation };
+          const comparisonSql = card.chartConfig.kpi?.comparisonSql;
+          const [validation, comparisonValidation] = await Promise.all([
+            validateSQL(card.sql, card.connectionId),
+            comparisonSql ? validateSQL(comparisonSql, card.connectionId) : Promise.resolve(null),
+          ]);
+          return { card, idx, validation, comparisonValidation };
         }),
       );
 
-      const validationErrors: CreateDashboardCardValidationError[] = validations
-        .filter(
-          (v): v is typeof v & { validation: { valid: false; error: string } } =>
-            !v.validation.valid,
-        )
-        .map((v) => ({
-          cardIndex: v.idx,
-          cardTitle: v.card.title,
-          error: v.validation.error,
-        }));
+      const validationErrors: CreateDashboardCardValidationError[] = [];
+      for (const v of validations) {
+        if (!v.validation.valid) {
+          validationErrors.push({ cardIndex: v.idx, cardTitle: v.card.title, error: v.validation.error });
+        } else if (v.comparisonValidation && !v.comparisonValidation.valid) {
+          // Surface the comparison query's failure distinctly so the agent
+          // knows which of the card's two queries to fix.
+          validationErrors.push({
+            cardIndex: v.idx,
+            cardTitle: v.card.title,
+            error: `KPI comparison query — ${v.comparisonValidation.error}`,
+          });
+        }
+      }
 
       if (validationErrors.length > 0) {
         log.warn(
@@ -277,7 +297,14 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
       const declaredKeys = new Set((parameters ?? []).map((p) => p.key));
       const placeholderErrors: CreateDashboardCardValidationError[] = [];
       for (const { card, idx } of chartCards) {
-        const undeclared = extractPlaceholderNames(card.sql).filter((name) => !declaredKeys.has(name));
+        // A KPI card's comparisonSql binds the same parameters as its primary
+        // query (#3137), so its placeholders must be declared too.
+        const referenced = new Set(extractPlaceholderNames(card.sql));
+        const comparisonSql = card.chartConfig.kpi?.comparisonSql;
+        if (comparisonSql) {
+          for (const name of extractPlaceholderNames(comparisonSql)) referenced.add(name);
+        }
+        const undeclared = [...referenced].filter((name) => !declaredKeys.has(name));
         if (undeclared.length > 0) {
           placeholderErrors.push({
             cardIndex: idx,

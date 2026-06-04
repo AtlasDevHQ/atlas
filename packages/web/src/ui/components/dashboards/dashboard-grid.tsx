@@ -10,7 +10,7 @@ import {
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import { cn } from "@/lib/utils";
-import type { DashboardCard, DashboardCardLayout, StagedChange } from "@/ui/lib/types";
+import type { DashboardCard, DashboardCardLayout, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 import { COLS, ROW_H, GAP, MIN_W, MIN_H, MOBILE_BREAKPOINT } from "./grid-constants";
 import { withAutoLayout } from "./auto-layout";
 import { DashboardTile } from "./dashboard-tile";
@@ -27,6 +27,11 @@ interface DashboardGridProps {
    * `/api/v1/dashboards/[id]/stage`.
    */
   stages?: StagedChange[];
+  /**
+   * #3137 — per-card KPI comparison query results, keyed by card id. Fed to a
+   * `kpi` tile so it can render the delta chip. Non-KPI cards ignore it.
+   */
+  comparisons?: Record<string, KpiComparisonResult | null>;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -39,6 +44,7 @@ export function DashboardGrid({
   editing,
   refreshingId,
   stages,
+  comparisons,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -139,6 +145,7 @@ export function DashboardGrid({
                 fullscreen={fullscreenId === card.id}
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
+                comparison={comparisons?.[card.id] ?? null}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}
@@ -185,6 +192,7 @@ export function DashboardGrid({
                 fullscreen={fullscreenId === card.id}
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
+                comparison={comparisons?.[card.id] ?? null}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}

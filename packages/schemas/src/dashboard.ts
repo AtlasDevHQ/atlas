@@ -18,6 +18,7 @@
  * NEVER interpolated into SQL text.
  */
 import { z } from "zod";
+import { CHART_TYPES } from "@useatlas/types";
 
 /** Supported parameter value kinds. Mirrors `DashboardParameterType`. */
 export const dashboardParameterTypeSchema = z.enum(["date", "text", "number"]);
@@ -180,3 +181,70 @@ export const dashboardTextCardSchema = z.object({
   content: dashboardTextCardContentSchema,
 });
 export type DashboardTextCardWire = z.infer<typeof dashboardTextCardSchema>;
+
+// ---------------------------------------------------------------------------
+// Chart config + KPI / scorecard cards (#3137)
+//
+// The canonical Zod mirror of `DashboardChartConfig` / `DashboardKpiConfig` in
+// `@useatlas/types`. The chart-type enum is built from the `CHART_TYPES` tuple
+// imported from `@useatlas/types` so adding a chart type there (e.g. "kpi")
+// fails THIS file at compile time if the mirror drifts — the same drift-guard
+// pattern `connection.ts` / `backup.ts` use for their status tuples.
+//
+// `@atlas/api`'s create-dashboard tool, the dashboards REST route, and the
+// bound editor all validate their `chartConfig` input against this single
+// schema, so the optional `kpi` block round-trips through every persist path
+// instead of being silently stripped at one boundary.
+// ---------------------------------------------------------------------------
+
+/** Chart card type. Mirrors `ChartType` (the `CHART_TYPES` tuple in types). */
+export const dashboardChartTypeSchema = z.enum(CHART_TYPES);
+export type DashboardChartTypeWire = z.infer<typeof dashboardChartTypeSchema>;
+
+/** KPI big-number formatting. Mirrors `DashboardKpiValueFormat`. */
+export const dashboardKpiValueFormatSchema = z.enum(["currency", "number", "percent", "duration"]);
+export type DashboardKpiValueFormatWire = z.infer<typeof dashboardKpiValueFormatSchema>;
+
+/** Upper bound on a KPI comparison query — a single-number SELECT, not an essay. */
+export const DASHBOARD_KPI_COMPARISON_SQL_MAX = 10_000;
+
+/**
+ * KPI / scorecard config (#3137). `.strict()` so a stray field (a typo'd
+ * `comparison_sql`, or a future option the client doesn't yet read) is rejected
+ * at the boundary rather than persisted and silently ignored.
+ */
+export const dashboardKpiConfigSchema = z
+  .object({
+    valueFormat: dashboardKpiValueFormatSchema.optional(),
+    comparisonSql: z.string().min(1).max(DASHBOARD_KPI_COMPARISON_SQL_MAX).optional(),
+    comparisonLabel: z.string().min(1).max(120).optional(),
+  })
+  .strict()
+  // `comparisonLabel` captions the delta chip, which only renders when
+  // `comparisonSql` produces a comparison value. A label with no SQL is dead
+  // config — reject it at the boundary rather than persisting a no-op.
+  .superRefine((cfg, ctx) => {
+    if (cfg.comparisonLabel && !cfg.comparisonSql) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparisonLabel has no effect without comparisonSql.",
+        path: ["comparisonLabel"],
+      });
+    }
+  });
+export type DashboardKpiConfigWire = z.infer<typeof dashboardKpiConfigSchema>;
+
+/**
+ * Full chart-config schema. `kpi` is optional and only meaningful when
+ * `type === "kpi"`; the agent surface + REST routes carry it through as-is.
+ * `categoryColumn` allows the empty string (a `table`/`kpi` card may not set a
+ * label) — `valueColumns` must hold at least one column so a card always has a
+ * metric to plot.
+ */
+export const dashboardChartConfigSchema = z.object({
+  type: dashboardChartTypeSchema,
+  categoryColumn: z.string(),
+  valueColumns: z.array(z.string().min(1)).min(1),
+  kpi: dashboardKpiConfigSchema.optional(),
+});
+export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema>;

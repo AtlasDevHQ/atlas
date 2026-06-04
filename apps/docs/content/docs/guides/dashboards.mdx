@@ -70,6 +70,49 @@ The `createDashboard` tool emits a text card as `{ kind: "text", content: "## To
 Text-card content is rendered with the same markdown renderer as chat — headings, lists, tables, bold/italic, links, and code. Raw HTML is **not** evaluated (no `rehype-raw`), so a text card can't inject scripts or markup into the page.
 </Callout>
 
+### KPI / scorecard cards
+
+A **KPI card** is a chart card with `chartConfig.type: "kpi"` — a compact scorecard rather than a plot. It's the first thing a reader looks at, so lead a dashboard with two or three of them ("Revenue", "Active users", "Conversion") and put the trend charts below. Each KPI card renders:
+
+- **A big formatted number** — the headline metric.
+- **A delta chip** (▲/▼ + %) — the change versus a comparison value, when one is configured. Up is green, down is red.
+- **A sparkline** — drawn automatically when the query returns a trend (two or more rows) instead of a single value.
+
+The card's `sql` returns the headline metric — a single row for a plain scorecard, or a time-ordered multi-row trend (the last row is the headline, and the value column draws the sparkline). Either way `categoryColumn` names the label/time column and `valueColumns[0]` the metric column. A `chartConfig.kpi` block controls the rest:
+
+| Field | Description |
+|-------|-------------|
+| `valueFormat` | How the big number renders: `currency` (`$1.2M`), `number` (`1.2K`), `percent` (a ready figure like `12.3` → `12.3%`, not `0.12`), or `duration` (seconds → `1h 2m`). Defaults to `number`. |
+| `comparisonSql` | Optional second single-number query — usually the same metric over the **prior period**. The UI computes the percentage change versus the headline value to draw the delta chip. Omit it for a plain big number. |
+| `comparisonLabel` | Caption under the chip, e.g. "vs. last month". |
+
+Ask the agent for them in chat:
+
+> "Lead the dashboard with KPI cards for revenue, new customers, and churn, each showing the change vs. last month."
+
+A KPI card binds [parameters](#parameters) exactly like any other card, and the delta tracks whatever window the parameter bar selects. Every `:placeholder` — including those in `comparisonSql` — must be declared in the dashboard's `parameters`. The example below references the prior window via a `:prev_from` parameter (declared alongside `:date_from` / `:date_to`); declaring it is what lets the comparison query bind at render time.
+
+```json
+{
+  "title": "Revenue",
+  "sql": "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to",
+  "chartConfig": {
+    "type": "kpi",
+    "categoryColumn": "label",
+    "valueColumns": ["total"],
+    "kpi": {
+      "valueFormat": "currency",
+      "comparisonSql": "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :prev_from AND created_at < :date_from",
+      "comparisonLabel": "vs. prior period"
+    }
+  }
+}
+```
+
+<Callout type="warn" title="The comparison query runs through the same guard">
+`comparisonSql` is executed as a second query through the **identical** SQL pipeline as the primary — SELECT-only, AST-validated, table-whitelisted, auto-LIMITed, statement-timed-out — and it binds the dashboard's parameters the same way (server-side, never interpolated). A comparison query that fails validation simply drops the delta chip; it never breaks the headline number.
+</Callout>
+
 ---
 
 ## Parameters

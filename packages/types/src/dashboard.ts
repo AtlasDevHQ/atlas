@@ -4,13 +4,48 @@ import type { ShareMode } from "./share";
 // Chart config (stored in dashboard_cards.chart_config JSONB)
 // ---------------------------------------------------------------------------
 
-export const CHART_TYPES = ["bar", "line", "pie", "area", "scatter", "table"] as const;
+export const CHART_TYPES = ["bar", "line", "pie", "area", "scatter", "table", "kpi"] as const;
 export type ChartType = (typeof CHART_TYPES)[number];
+
+/**
+ * Formatting applied to a KPI card's big number (#3137). Drives the
+ * client-side `formatKpiValue` formatter — `currency`/`percent` add the
+ * symbol, `number` adds thousands grouping, `duration` renders seconds as a
+ * compact `1h 2m`. Wire-type mirror of `dashboardKpiValueFormatSchema` in
+ * `@useatlas/schemas`.
+ */
+export type DashboardKpiValueFormat = "currency" | "number" | "percent" | "duration";
+
+/**
+ * KPI / scorecard configuration (#3137), present only on a `kpi` chart card.
+ * The card's primary `sql` returns the headline metric: `categoryColumn` names
+ * the label column and `valueColumns[0]` the number. A single row is the common
+ * case (a plain scorecard); a multi-row trend is also valid — the last row is
+ * the headline and the value column drives an optional sparkline. `comparisonSql`
+ * is an OPTIONAL second single-number query run through the SAME SQL guard
+ * (validation + auto-LIMIT + statement timeout) at view time; the UI computes
+ * the delta chip from the two values. Both queries bind the dashboard's
+ * `:<param>` placeholders identically.
+ */
+export interface DashboardKpiConfig {
+  /** How to format the headline number. Defaults to `number` when omitted. */
+  valueFormat?: DashboardKpiValueFormat;
+  /**
+   * Second single-number query for the delta chip. Runs through the same SQL
+   * guard as the primary query — never string-interpolated. Omit for a KPI
+   * card with no comparison (big number only).
+   */
+  comparisonSql?: string;
+  /** Caption under the delta chip, e.g. "vs. last month". */
+  comparisonLabel?: string;
+}
 
 export interface DashboardChartConfig {
   type: ChartType;
   categoryColumn: string;
   valueColumns: string[];
+  /** Present only when `type === "kpi"` (#3137). */
+  kpi?: DashboardKpiConfig;
 }
 
 /**
@@ -206,8 +241,28 @@ export interface RenderCardRequest {
   parameters?: Record<string, string | number | null>;
 }
 
-/** Wire shape returned by the card render endpoint (mirrors {@link PreviewCardResponse}). */
-export type RenderCardResponse = PreviewCardResponse;
+/**
+ * Result of a KPI card's comparison query (#3137) — the second single-number
+ * query run alongside the primary at render time. Carries the raw
+ * `{ columns, rows }` (same shape as the primary result) so the client extracts
+ * the comparison number with the exact same logic it uses for the headline
+ * value. `null` when the card has no `comparisonSql` or the comparison query
+ * failed (the delta chip is then simply omitted — a broken comparison never
+ * breaks the primary KPI render).
+ */
+export interface KpiComparisonResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+}
+
+/** Wire shape returned by the card render endpoint (extends {@link PreviewCardResponse}). */
+export interface RenderCardResponse extends PreviewCardResponse {
+  /**
+   * KPI comparison query result (#3137). Present (possibly `null`) only for a
+   * `kpi` card; omitted entirely for every other card type.
+   */
+  comparison?: KpiComparisonResult | null;
+}
 
 /**
  * Per-user destructive-op staging (#2365, PRD #2362).

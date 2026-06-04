@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { Markdown } from "@/ui/components/chat/markdown";
+import { KpiCard } from "@/ui/components/dashboards/kpi-card";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
 import type { SharedCard } from "./types";
 
@@ -62,7 +63,11 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
   const hasData = columns.length > 0 && rows.length > 0;
   const stringRows = hasData ? toStringRows(columns, rows) : [];
   const chartType = card.chartConfig?.type;
-  const showChart = hasData && chartType && chartType !== "table";
+  // #3137 — a KPI card renders the compact scorecard (big number + sparkline)
+  // from cached data. The shared view has no /render endpoint, so there's no
+  // comparison delta here — just the headline value.
+  const isKpi = chartType === "kpi";
+  const showChart = hasData && chartType && chartType !== "table" && !isKpi;
 
   return (
     <Card className={`${spanClass} overflow-hidden print:col-span-2 print:break-inside-avoid print:border-zinc-300 print:shadow-none`}>
@@ -81,16 +86,22 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
         )}
       </div>
       {hasData ? (
-        <div>
-          {showChart && (
-            <ResultCardErrorBoundary label="Chart">
-              <div className="px-4 py-3">
-                <ResultChart headers={columns} rows={stringRows} dark={dark} />
-              </div>
-            </ResultCardErrorBoundary>
-          )}
-          <DataTable columns={columns} rows={rows} />
-        </div>
+        isKpi ? (
+          <div className="px-4 py-5">
+            <KpiCard card={card} />
+          </div>
+        ) : (
+          <div>
+            {showChart && (
+              <ResultCardErrorBoundary label="Chart">
+                <div className="px-4 py-3">
+                  <ResultChart headers={columns} rows={stringRows} dark={dark} />
+                </div>
+              </ResultCardErrorBoundary>
+            )}
+            <DataTable columns={columns} rows={rows} />
+          </div>
+        )
       ) : (
         <div className="px-4 py-8 text-center text-xs text-zinc-600 dark:text-zinc-400">
           No data available for this tile.

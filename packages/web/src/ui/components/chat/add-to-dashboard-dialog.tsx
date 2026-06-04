@@ -56,6 +56,11 @@ const CHART_TYPE_LABELS: Record<ChartType, string> = {
   area: "Area Chart",
   scatter: "Scatter Plot",
   table: "Table",
+  // #3137 — KPI cards are authored via chat (createDashboard) / the bound
+  // editor, not the "add result to dashboard" picker, so this label is never
+  // surfaced here; the entry exists only to keep the record exhaustive over
+  // ChartType.
+  kpi: "KPI",
 };
 
 /** Chart types from detectCharts() that are valid for dashboard storage. */

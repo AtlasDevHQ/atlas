@@ -181,3 +181,61 @@ describe("DashboardTile — text cards", () => {
     expect(container.querySelector(".dash-drag-handle")).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// KPI / scorecard cards (#3137)
+// ---------------------------------------------------------------------------
+
+const kpiCard: DashboardCard = {
+  id: "card-kpi",
+  dashboardId: "dash-1",
+  position: 0,
+  title: "Revenue",
+  kind: "chart",
+  sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders",
+  chartConfig: {
+    type: "kpi",
+    categoryColumn: "label",
+    valueColumns: ["total"],
+    kpi: { valueFormat: "currency", comparisonLabel: "vs. last month" },
+  },
+  content: null,
+  cachedColumns: ["label", "total"],
+  cachedRows: [{ label: "Revenue", total: 1200000 }],
+  cachedAt: "2026-04-25T12:00:00Z",
+  connectionGroupId: null,
+  layout: { x: 0, y: 0, w: 6, h: 4 },
+  createdAt: "2026-04-25T12:00:00Z",
+  updatedAt: "2026-04-25T12:00:00Z",
+};
+
+describe("DashboardTile — KPI cards", () => {
+  afterEach(cleanup);
+
+  test("routes a kpi card to the KpiCard body (big number, no chart, no view toggle)", () => {
+    render(<DashboardTile {...baseProps} card={kpiCard} />);
+    expect(screen.getByTestId("kpi-value").textContent).toBe("$1.2M");
+    // The big number is the view — no chart mount, no Chart/Table toggle.
+    expect(screen.queryByTestId("result-chart")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Chart" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Table" })).toBeNull();
+  });
+
+  test("renders the delta chip from the comparison prop", () => {
+    render(
+      <DashboardTile
+        {...baseProps}
+        card={kpiCard}
+        comparison={{ columns: ["total"], rows: [{ total: 1000000 }] }}
+      />,
+    );
+    expect(screen.getByTestId("kpi-delta").getAttribute("data-direction")).toBe("up");
+  });
+
+  test("keeps the tile chrome — refresh / fullscreen / actions reachable", () => {
+    render(<DashboardTile {...baseProps} card={kpiCard} />);
+    expect(screen.getByRole("button", { name: "Refresh tile" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tile actions" })).toBeTruthy();
+  });
+});

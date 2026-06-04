@@ -493,7 +493,7 @@ When proactive mode is first enabled for a workspace, Atlas posts a one-time ann
 | `GCHAT_PROJECT_NUMBER` | Google Cloud project number for direct-webhook JWT verification (optional) |
 | `GCHAT_PUBSUB_AUDIENCE` | Expected `aud` claim for Pub/Sub push JWTs (optional) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook secret token verified against the `x-telegram-bot-api-secret-token` header. **Required on Atlas** — the adapter isn't built without it (#3154). |
 | `GITHUB_APP_ID` | GitHub App ID (for App-based auth) |
 | `GITHUB_PRIVATE_KEY` | GitHub App private key in PEM format (for App-based auth) |
 | `GITHUB_INSTALLATION_ID` | Installation ID for single-tenant mode (optional) |

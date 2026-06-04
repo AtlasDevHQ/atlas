@@ -43,6 +43,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { getWebOrigin } from "@atlas/api/lib/web-origin";
 import { runHandler, runEffect } from "@atlas/api/lib/effect/hono";
 import { getConfig } from "@atlas/api/lib/config";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import {
   WorkspaceInstaller,
@@ -1693,6 +1694,19 @@ integrations.openapi(disconnectRoute, async (c) =>
       { workspaceId, platform },
       "Platform install disconnected (both stores cleared)",
     );
+
+    // Audit the disconnect (#3163). The removed legacy per-platform disconnect
+    // handlers each emitted `integration.disable`; the unified route must keep
+    // that audit trail. `runEffect` throws on a failed uninstall (the 404/500
+    // bubbles to Hono before reaching here), so this only fires on success.
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.integration.disable,
+      targetType: "integration",
+      targetId: workspaceId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { platform },
+    });
+
     return c.json({ message: `${platform} disconnected successfully.` }, 200);
   }),
 );

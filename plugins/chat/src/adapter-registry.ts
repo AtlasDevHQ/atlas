@@ -504,7 +504,8 @@ export interface BuildAdapterRegistryArgs {
  *      cross-version catalog row).
  *   5. All required env vars present — missing creds is an `error` so
  *      the operator can fix env wiring without reading source. Telegram's
- *      gate is `TELEGRAM_BOT_TOKEN`.
+ *      gate is `TELEGRAM_BOT_TOKEN` + `TELEGRAM_WEBHOOK_SECRET` (the secret is
+ *      mandatory since #3154 — see `TELEGRAM_BUILDER`).
  */
 export function buildChatAdapterRegistry(
   args: BuildAdapterRegistryArgs,

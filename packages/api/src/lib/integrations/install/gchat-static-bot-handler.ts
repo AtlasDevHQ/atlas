@@ -103,11 +103,20 @@ export const GCHAT_CATALOG_ID = "catalog:gchat";
  * reconnect of the same workspace. Read-only pre-check — narrows the
  * cross-tenant window without being transactionally fused to the cap-gate
  * INSERT (first writer wins; the loser's fail-closed is recoverable).
+ *
+ * The literal `my_customer` self-install alias is exempt: it is a
+ * caller-relative reference (each Google Workspace admin's "my own tenant"),
+ * NOT a globally unique customer id, so comparing it across workspaces would
+ * falsely block every later self-install. Two different tenants legitimately
+ * storing `my_customer` is a separate (pre-existing) non-routability concern —
+ * the inbound resolver matches the *real* customer id from the event envelope,
+ * never the literal alias — and is out of scope for this guard.
  */
 async function assertWorkspaceIdUnboundElsewhere(
   gchatWorkspaceId: string,
   workspaceId: WorkspaceId,
 ): Promise<void> {
+  if (gchatWorkspaceId === "my_customer") return;
   const rows = await internalQuery<{ workspace_id: string }>(
     `SELECT workspace_id
        FROM workspace_plugins

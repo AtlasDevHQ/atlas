@@ -369,6 +369,25 @@ describe("GchatStaticBotInstallHandler.confirmInstall — cross-workspace guard"
     await expect(handler.confirmInstall(wsid, VALID_WORKSPACE_ID)).rejects.toThrow(/db down/);
     expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
+
+  it("exempts the 'my_customer' self-install alias from the cross-workspace check", async () => {
+    // `my_customer` is caller-relative (each admin's own tenant), not a global
+    // id — so a second workspace self-installing with it must NOT collide with
+    // the first. The guard skips the SELECT entirely for this alias, and the
+    // install proceeds even if another workspace already stored `my_customer`.
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-other" }]),
+    );
+    const handler = buildHandler();
+    const result = await handler.confirmInstall(wsid, "my_customer");
+    expect(result.installRecord.catalogId).toBe(GCHAT_SLUG);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    // The guard never queried workspace_plugins for the alias (it returns early).
+    const guardCall = mockInternalQuery.mock.calls.find(
+      ([sql]) => typeof sql === "string" && sql.includes("config->>'workspace_id'"),
+    );
+    expect(guardCall).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

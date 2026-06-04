@@ -51,7 +51,7 @@ message), so without the secret anyone who learns a connected `chat_id` could
 POST a forged update to your public webhook URL and trigger an agent run. To
 fail closed, Atlas does **not** register the Telegram adapter at all when the
 secret is unset — inbound Telegram traffic is ignored until you set it (the
-boot log emits an AdapterRegistry missing-env warning). This matches Discord's
+boot log emits an AdapterRegistry missing-env **error**). This matches Discord's
 mandatory Ed25519 signature check and WhatsApp / Google Chat's mandatory inbound
 auth. You'll pass the same value to Telegram's `setWebhook` call in step 4.
 

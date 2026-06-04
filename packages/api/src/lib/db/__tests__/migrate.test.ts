@@ -136,7 +136,8 @@ describe("runMigrations", () => {
     //   Plus 0115 (organization.last_active_at for BYOT dormancy gate, #2377) = 116.
     //   Plus 0116 (dashboards.parameters for dashboard parameters, #2267) = 117.
     //   Plus 0117 (dashboard_cards.content for text/section cards, #3138) = 118.
-    expect(count).toBe(118);
+    //   Plus 0118 (clear user.role='admin' + member backfill, #2890) = 119.
+    expect(count).toBe(119);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -283,6 +284,7 @@ describe("runMigrations", () => {
         "0115_org_last_active_at.sql",
         "0116_dashboard_parameters.sql",
         "0117_dashboard_text_cards.sql",
+        "0118_drop_user_admin_role.sql",
       ],
     });
 

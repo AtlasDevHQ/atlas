@@ -12,13 +12,13 @@
  *   - No internal DB → no-op, no throw (auth should still work).
  *   - Already on a non-default tier → no-op (preserve platform-admin
  *     pre-seeded orgs and re-invocation safety).
- *   - SELECT or UPDATE throws → log + swallow (mirror
- *     `promoteOrgOwnerToAdmin`; never block org creation).
+ *   - SELECT or UPDATE throws → log + swallow (never block org creation).
  *
- * Same caveat as `org-owner-promotion.test.ts`: this test exercises the
- * function in isolation. It cannot catch a refactor that deletes the
- * `afterCreateOrganization` composition in `buildPlugins()` — Better
- * Auth closes over plugin options, so the wiring isn't introspectable.
+ * Caveat: this test exercises the function in isolation. It cannot catch a
+ * refactor that deletes the `afterCreateOrganization` composition in
+ * `buildPlugins()` — Better Auth closes over plugin options, so the wiring
+ * isn't introspectable. The `databaseHooks-wiring.test.ts` wiring test covers
+ * that gap by driving the composed hook.
  */
 
 import { describe, it, expect, beforeEach, afterAll } from "bun:test";

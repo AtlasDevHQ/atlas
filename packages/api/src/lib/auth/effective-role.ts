@@ -1,15 +1,20 @@
 /**
  * Resolve the effective role from the user-level `user.role` (Better Auth
- * admin plugin) merged with the active organization's `member.role`.
+ * admin plugin) and the active organization's `member.role` (organization
+ * plugin).
  *
- * Better Auth keeps these two role surfaces separate by design:
- *   - `user.role` — system-wide (admin plugin): `platform_admin`, `admin`, `user`
- *   - `member.role` — per-org (organization plugin): `owner`, `admin`, `member`
+ * As of #2890 these two surfaces are single-sourced:
+ *   - `user.role` — cross-tenant (admin plugin): only ever `platform_admin`
+ *     (or a non-admin default). The redundant system-wide `user.role="admin"`
+ *     middle state was dropped.
+ *   - `member.role` — per-org (organization plugin): `owner`/`admin`/`member`,
+ *     the source of truth for tenant-level admin-ness.
  *
- * Atlas's admin console gate is "is this caller an admin *somewhere I trust*"
- * — system OR active-org. Without merging, an org owner whose `user.role`
- * defaulted to "user" (the common signup → accept-invite flow) is locked out
- * of `/admin` even though every API route they'd touch authorizes them.
+ * The resolution is therefore one branch, not a precedence merge:
+ *   effectiveRole = user.role === "platform_admin" ? "platform_admin" : member.role
+ * `platform_admin` is cross-tenant and outranks any per-org role, so it
+ * short-circuits before the member-table lookup; otherwise `member.role`
+ * wins outright (no more `max(user.role, member.role)` level comparison).
  *
  * Used in two places that must stay in lockstep:
  *   1. `validateManaged` — populates `authResult.user.role` for server-side
@@ -17,9 +22,10 @@
  *   2. `customSession` plugin — populates `session.user.effectiveRole` so
  *      the client (`useUserRole`) can hide/show admin chrome consistently.
  *
- * Returns the merged role on success, `undefined` only when both sides are
- * empty/unknown. Fails open to `userRole` on DB error — a transient lookup
- * failure shouldn't lock an admin out of the console mid-session.
+ * Returns the resolved role on success, `undefined` only when neither side
+ * yields one. Fails open to `userRole` on a member-table lookup error — a
+ * transient DB blip shouldn't lock a platform admin or org admin out of the
+ * console mid-session.
  */
 
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -29,19 +35,15 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("auth:effective-role");
 
-/** Role precedence — higher number wins. */
-const ROLE_LEVEL: Record<string, number> = {
-  member: 0,
-  admin: 1,
-  owner: 2,
-  platform_admin: 3,
-};
-
 export async function resolveEffectiveRole(
   userRole: AtlasRole | undefined,
   userId: string,
   activeOrganizationId: string | undefined,
 ): Promise<AtlasRole | undefined> {
+  // platform_admin is cross-tenant and lives only on user.role — it outranks
+  // any per-org member role, so short-circuit before the lookup.
+  if (userRole === "platform_admin") return "platform_admin";
+
   if (!activeOrganizationId || !hasInternalDB()) return userRole;
 
   try {
@@ -51,12 +53,8 @@ export async function resolveEffectiveRole(
     );
     if (rows.length === 0) return userRole;
 
-    const orgRole = parseRole(rows[0].role);
-    if (!orgRole) return userRole;
-
-    const userLevel = ROLE_LEVEL[userRole ?? "member"] ?? 0;
-    const orgLevel = ROLE_LEVEL[orgRole] ?? 0;
-    return orgLevel > userLevel ? orgRole : (userRole ?? "member");
+    // member.role is the single source of truth for tenant admin-ness.
+    return parseRole(rows[0].role) ?? userRole;
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },

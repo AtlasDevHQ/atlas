@@ -14,10 +14,8 @@ const statement = {
 
 export const adminAccessControl = createAccessControl(statement);
 
-export const adminRole = adminAccessControl.newRole({
-  ...adminAc.statements,
-});
-
+// #2890: `platform_admin` is the only admin-plugin user.role. Tenant admins
+// flow through the org plugin's member.role (owner/admin/member).
 export const platformAdminRole = adminAccessControl.newRole({
   ...adminAc.statements,
 });

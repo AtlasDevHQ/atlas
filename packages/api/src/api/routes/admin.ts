@@ -2586,9 +2586,17 @@ admin.openapi(changeUserRoleRoute, async (c) => {
 
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
-  const adminApi = await getAdminApi();
-  if (!adminApi) {
+  // #2890: tenant role changes write the org plugin's `member.role` (the
+  // single source of truth for tenant admin-ness), scoped to the actor's
+  // active workspace — not the admin-plugin `user.role` (which now only ever
+  // holds `platform_admin`). Granting cross-tenant `platform_admin` goes
+  // through a platform-admin-gated endpoint, never this per-workspace route.
+  if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "invalid_request", message: "Select an active workspace to change a member's role.", requestId }, 400);
   }
 
   // Org-scoping: workspace admins can only modify users in their own org
@@ -2602,7 +2610,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
   // on the audit row so reconstruction shows the manual deviation.
   const scimGuard = await evaluateSCIMGuardAsync({
     userId,
-    orgId: authResult.user?.activeOrganizationId,
+    orgId,
     requestId,
   });
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
@@ -2627,59 +2635,60 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return c.json({ error: "forbidden", message: "Cannot change your own role." , requestId}, 403);
   }
 
-  // Last admin guard: if demoting an admin, ensure at least one admin remains
-  if (newRole !== "admin" && hasInternalDB()) {
+  // Capture the target's current member.role (for the last-admin guard and
+  // audit metadata). Membership in `orgId` was just confirmed above.
+  let previousRole: string | undefined;
+  try {
+    const roleRow = await internalQuery<{ role: string }>(
+      `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [userId, orgId],
+    );
+    previousRole = roleRow[0]?.role;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId, orgId }, "Failed to read current member role");
+    return c.json({ error: "internal_error", message: "Failed to read current role." , requestId}, 500);
+  }
+
+  // Last-admin guard: don't strip a workspace of its final owner/admin by
+  // demoting the last one to member.
+  if (newRole === "member" && (previousRole === "admin" || previousRole === "owner")) {
     try {
-      const currentUser = await internalQuery<{ role: string }>(
-        `SELECT role FROM "user" WHERE id = $1`,
-        [userId],
+      const remaining = await internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
+        [orgId],
       );
-      if (currentUser[0]?.role === "admin") {
-        const adminCount = await internalQuery<{ count: string }>(
-          `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
-        );
-        if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-          return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
-        }
+      if (parseInt(String(remaining[0]?.count ?? "0"), 10) <= 1) {
+        return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
       }
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId }, "Last admin guard check failed");
       return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
     }
   }
 
   try {
-    // Capture previous role for audit metadata (best-effort — may be undefined for non-DB auth)
-    let previousRole: string | undefined;
-    if (hasInternalDB()) {
-      try {
-        const roleRow = await internalQuery<{ role: string }>(
-          `SELECT role FROM "user" WHERE id = $1`,
-          [userId],
-        );
-        previousRole = roleRow[0]?.role;
-      } catch {
-        // intentionally ignored: previous role is metadata only, not critical
-      }
+    const updated = await internalQuery<{ userId: string }>(
+      `UPDATE member SET role = $1 WHERE "userId" = $2 AND "organizationId" = $3 RETURNING "userId"`,
+      [newRole, userId, orgId],
+    );
+    // Race: membership could have been revoked between the verify and the
+    // write. Treat a zero-row update as "not found" rather than a silent ok.
+    if (updated.length === 0) {
+      return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
     }
-
-    await adminApi.setRole({
-      body: { userId, role: newRole },
-      headers: c.req.raw.headers,
-    });
-    log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
+    log.info({ requestId, targetUserId: userId, orgId, newRole, actorId: authResult.user?.id }, "Member role changed");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.user.changeRole,
       targetType: "user",
       targetId: userId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { previousRole, newRole, ...(scimOverride && { scim_override: true }) },
+      metadata: { previousRole, newRole, orgId, ...(scimOverride && { scim_override: true }) },
     });
 
     return c.json({ success: true }, 200);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), userId, orgId }, "Failed to set member role");
     return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
   }
 });
@@ -2909,23 +2918,28 @@ admin.openapi(deleteUserRoute, async (c) => {
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
   const scimOverride = scimGuard.kind === "override";
 
-  // Last admin guard
-  if (hasInternalDB()) {
+  // Last-admin guard: don't delete a workspace's final owner/admin. Scoped to
+  // the actor's active workspace — admin-ness lives in member.role (#2890), so
+  // a platform admin acting cross-tenant with no active org skips this guard.
+  const deleteGuardOrgId = authResult.user?.activeOrganizationId;
+  if (hasInternalDB() && deleteGuardOrgId) {
     try {
-      const currentUser = await internalQuery<{ role: string }>(
-        `SELECT role FROM "user" WHERE id = $1`,
-        [userId],
+      const targetMember = await internalQuery<{ role: string }>(
+        `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+        [userId, deleteGuardOrgId],
       );
-      if (currentUser[0]?.role === "admin") {
+      const targetRole = targetMember[0]?.role;
+      if (targetRole === "admin" || targetRole === "owner") {
         const adminCount = await internalQuery<{ count: string }>(
-          `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+          `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
+          [deleteGuardOrgId],
         );
         if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
           return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
         }
       }
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)) }, "Last admin guard check failed");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: deleteGuardOrgId }, "Last admin guard check failed");
       return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
     }
   }

@@ -246,6 +246,11 @@ beforeEach(() => {
     if (s.includes('from member where "userid"') && s.includes('"organizationid"')) {
       return [{ userId: "user-scim-1", role: "member" }];
     }
+    // changeUserRole's member-role write (#2890): UPDATE ... RETURNING "userId".
+    // A non-empty result means the row existed, so the handler proceeds (200).
+    if (s.includes("update member")) {
+      return [{ userId: "user-scim-1" }];
+    }
     if (s.includes('from "user"') && s.includes("role")) {
       return [{ role: "member" }];
     }
@@ -254,6 +259,13 @@ beforeEach(() => {
     return [];
   });
 });
+
+/** Did changeUserRole write member.role (the #2890 side effect)? */
+function sawMemberRoleUpdate(): boolean {
+  return mocks.mockInternalQuery.mock.calls.some(
+    (call) => typeof call[0] === "string" && call[0].toLowerCase().includes("update member"),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // changeUserRoleRoute (PATCH /admin/users/:id/role)
@@ -281,7 +293,7 @@ describe("F-57 — PATCH /admin/users/:id/role (changeUserRole)", () => {
     expect(body.code).toBe("SCIM_MANAGED");
     // The mutation must NOT have run — the F-57 contract is "block before
     // the side effect", not "block after the change persisted".
-    expect(mockSetRole).not.toHaveBeenCalled();
+    expect(sawMemberRoleUpdate()).toBe(false);
   });
 
   it("override policy → mutation proceeds + audit metadata.scim_override = true", async () => {
@@ -296,7 +308,7 @@ describe("F-57 — PATCH /admin/users/:id/role (changeUserRole)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockSetRole).toHaveBeenCalled();
+    expect(sawMemberRoleUpdate()).toBe(true);
     const auditCall = mockLogAdminAction.mock.calls.find(
       (call) => call[0]?.metadata && (call[0].metadata as Record<string, unknown>).scim_override === true,
     );
@@ -314,7 +326,7 @@ describe("F-57 — PATCH /admin/users/:id/role (changeUserRole)", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(mockSetRole).toHaveBeenCalled();
+    expect(sawMemberRoleUpdate()).toBe(true);
     const overrideMarker = mockLogAdminAction.mock.calls.some(
       (call) => (call[0]?.metadata as Record<string, unknown> | undefined)?.scim_override === true,
     );

@@ -43,8 +43,17 @@ export type AtlasRole = (typeof ATLAS_ROLES)[number];
 export const ATLAS_MODES = ["developer", "published"] as const;
 export type AtlasMode = (typeof ATLAS_MODES)[number];
 
-/** Roles that qualify for admin-level features (developer mode, admin console, etc.). */
-export const ADMIN_ROLES = ["admin", "owner", "platform_admin"] as const;
+/**
+ * Roles that qualify for admin-level features (developer mode, admin console, etc.).
+ *
+ * Single-sourced as of #2890: `owner` and `admin` are the org-plugin
+ * `member.role` values (per-workspace), and `platform_admin` is the only
+ * remaining admin-plugin `user.role` value (cross-tenant). The redundant
+ * system-wide `user.role = "admin"` middle state was dropped — every tenant
+ * admin now flows exclusively through `member.role`, so the `admin` here
+ * comes from exactly one surface.
+ */
+export const ADMIN_ROLES = ["owner", "admin", "platform_admin"] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 // ── Client-side auth interfaces ────────────────────────────────────

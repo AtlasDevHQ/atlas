@@ -87,7 +87,7 @@ ATLAS_CORS_ORIGIN=https://app.example.com      # Required for cross-origin cooki
 On first deployment:
 - If `ATLAS_ADMIN_EMAIL` is set, the user matching that email gets `admin` role on signup
 - If `ATLAS_ADMIN_EMAIL` is not set, the first user to sign up gets `admin` automatically
-- Subsequent signups get the `analyst` role (set by Better Auth's `defaultRole` in the admin plugin)
+- Subsequent signups get the default `member` role (set by the `role` user field's `defaultValue`; the Better Auth admin plugin was removed in #3159)
 
 #### Dev admin seeding
 
@@ -295,7 +295,7 @@ Atlas has three roles with increasing privileges:
 
 Default roles by auth mode:
 - **Simple Key**: `analyst` (override with `ATLAS_API_KEY_ROLE`)
-- **Managed**: `analyst` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
+- **Managed**: `member` for new signups (first signup or `ATLAS_ADMIN_EMAIL` match gets `admin`)
 - **BYOT**: Extracted from JWT claim (defaults to `viewer` if missing)
 
 ## Rate Limiting

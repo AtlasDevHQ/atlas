@@ -88,6 +88,69 @@ describe("validateManaged()", () => {
     });
   });
 
+  // #3159 — the Better Auth admin plugin (which enforced ban at session create)
+  // was removed. `validateManaged` now enforces ban per-request off the
+  // `banned`/`banExpires` fields the `additionalFields` config keeps on the
+  // getSession user. Without this, ban would go inert after the plugin removal.
+  describe("ban enforcement (#3159)", () => {
+    it("rejects a permanently banned user (banExpires null)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_banned", email: "b@example.com", banned: true, banExpires: null },
+        session: { id: "s1", userId: "usr_banned" },
+      });
+
+      const result = await validateManaged(makeRequest());
+
+      expect(result).toEqual({
+        authenticated: false,
+        mode: "managed",
+        status: 401,
+        error: "Account is banned",
+      });
+    });
+
+    it("rejects a banned user whose ban has not yet expired", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: {
+          id: "usr_temp_ban",
+          email: "t@example.com",
+          banned: true,
+          banExpires: new Date(Date.now() + 60_000).toISOString(),
+        },
+        session: { id: "s2", userId: "usr_temp_ban" },
+      });
+
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      expect((result as { status: number }).status).toBe(401);
+    });
+
+    it("allows a user whose ban has already expired", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: {
+          id: "usr_expired_ban",
+          email: "e@example.com",
+          banned: true,
+          banExpires: new Date(Date.now() - 60_000).toISOString(),
+        },
+        session: { id: "s3", userId: "usr_expired_ban" },
+      });
+
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+
+    it("allows a non-banned user (banned: false)", async () => {
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_ok", email: "ok@example.com", banned: false, banExpires: null },
+        session: { id: "s4", userId: "usr_ok" },
+      });
+
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+  });
+
   it("passes request headers to getSession", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 

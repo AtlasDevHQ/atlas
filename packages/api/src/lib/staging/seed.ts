@@ -50,6 +50,7 @@ import { Context, Data, Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getApiRegion } from "@atlas/api/lib/residency/misrouting";
 import { internalQuery } from "@atlas/api/lib/db/internal";
+import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 
 const log = createLogger("staging-seed");
 
@@ -220,16 +221,13 @@ async function markerExists(): Promise<boolean> {
 
 /**
  * Create (or reuse) the deterministic staging admin. Returns the user id.
- * Reuses an existing `admin@staging.useatlas.dev` row so a re-run after a
- * partial boot does not trip Better Auth's duplicate-email guard.
+ * `createPlatformAdminUser` is itself retry-safe — it reuses an existing
+ * `admin@staging.useatlas.dev` row (so a re-run after a partial boot doesn't
+ * trip Better Auth's duplicate-email guard) and always (re)promotes to
+ * `platform_admin`, repairing a prior run that created the user but not the
+ * role. So this wrapper just supplies the deterministic credential.
  */
 async function createAdminUser(): Promise<string> {
-  const existing = await internalQuery<{ id: string }>(
-    `SELECT id FROM "user" WHERE LOWER(email) = $1 LIMIT 1`,
-    [STAGING_ADMIN_EMAIL],
-  );
-  if (existing.length > 0) return existing[0].id;
-
   const password = process.env.STAGING_ADMIN_PASSWORD?.trim();
   if (!password) {
     throw new Error(
@@ -239,32 +237,18 @@ async function createAdminUser(): Promise<string> {
   }
 
   const auth = await getAuth();
-  // Better Auth's typed `api` surface doesn't expose the admin/organization
-  // plugin endpoints, so reach them through the same loose cast the dev seed
-  // uses (`lib/auth/migrate.ts`).
+  // Better Auth's typed `api` surface doesn't expose the organization plugin's
+  // endpoints, so reach them through the same loose cast the dev seed uses
+  // (`lib/auth/migrate.ts`).
   const api = auth.api as Record<string, unknown>;
-  const createUser = api.createUser as
-    | ((opts: {
-        body: { email: string; password: string; name: string; role: string };
-      }) => Promise<{ user?: { id: string } } | undefined>)
-    | undefined;
-  if (!createUser) {
-    throw new Error("Staging seed: admin createUser API unavailable on the auth instance");
-  }
-
-  const result = await createUser({
-    body: {
-      email: STAGING_ADMIN_EMAIL,
-      password,
-      name: "Staging Admin",
-      role: "platform_admin",
-    },
+  // #3159 — the admin plugin's `createUser` (which accepted a `role`) was
+  // removed; `createPlatformAdminUser` creates via core signUpEmail + promotes
+  // the row to `platform_admin` directly (role is an input:false additionalField).
+  return createPlatformAdminUser(api, {
+    email: STAGING_ADMIN_EMAIL,
+    password,
+    name: "Staging Admin",
   });
-  const userId = result?.user?.id;
-  if (!userId) {
-    throw new Error("Staging seed: createUser returned no user id");
-  }
-  return userId;
 }
 
 /**

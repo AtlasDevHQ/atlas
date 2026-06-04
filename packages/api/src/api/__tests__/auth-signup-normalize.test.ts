@@ -120,15 +120,15 @@ describe("maybeNormalizeSignupResponse — scope guards", () => {
     expect(result).toBe(upstream);
   });
 
-  it("returns the upstream Response ref unchanged when body already has user.image", async () => {
-    // The fast-path: synthetic existing-email envelope already has
-    // `image: null`, and a signup body that supplied `image` rounds
-    // through the real path with it already present. Either way, the
-    // pure helper returns the same reference and the wrapper must
-    // return the ORIGINAL `upstream` Response — not a rebuilt one —
-    // so we don't strip `Content-Length` or allocate on the hot path.
+  it("returns the upstream Response ref unchanged when body already has every parity key", async () => {
+    // The fast-path: the synthetic existing-email envelope already
+    // materializes all parity keys (`image`/`banExpires`/`banReason` — the
+    // latter two moved to user.additionalFields in #3159). When all are
+    // present the pure helper returns the same reference and the wrapper must
+    // return the ORIGINAL `upstream` Response — not a rebuilt one — so we don't
+    // strip `Content-Length` or allocate on the hot path.
     const upstream = jsonResponse({
-      user: { id: "u1", email: "a@example.com", image: null },
+      user: { id: "u1", email: "a@example.com", image: null, banExpires: null, banReason: null },
     });
     const result = await maybeNormalizeSignupResponse(
       makeCtx("/api/auth/sign-up/email"),
@@ -139,7 +139,7 @@ describe("maybeNormalizeSignupResponse — scope guards", () => {
 });
 
 describe("maybeNormalizeSignupResponse — rewrite path", () => {
-  it("rewrites the body to include user.image: null when absent", async () => {
+  it("rewrites the body to include image / banExpires / banReason: null when absent", async () => {
     const upstream = jsonResponse({
       user: { id: "u1", email: "a@example.com", name: "A", emailVerified: false },
     });
@@ -152,6 +152,8 @@ describe("maybeNormalizeSignupResponse — rewrite path", () => {
 
     const parsed = (await result.json()) as { user: Record<string, unknown> };
     expect(parsed.user.image).toBeNull();
+    expect(parsed.user.banExpires).toBeNull(); // #3159 parity key
+    expect(parsed.user.banReason).toBeNull(); // #3159 parity key
     // Every sibling field survives the rewrite.
     expect(parsed.user.id).toBe("u1");
     expect(parsed.user.email).toBe("a@example.com");
@@ -160,11 +162,11 @@ describe("maybeNormalizeSignupResponse — rewrite path", () => {
   });
 
   it("drops stale Content-Length from the upstream headers on rewrite", async () => {
-    // The rewritten body is strictly longer than the upstream (one
-    // extra `"image":null,` key). If the original Content-Length is
-    // carried over, a strict HTTP client would truncate the trailing
-    // bytes and the `image` key might not even make it to the wire —
-    // silently reopening the oracle. Drop the header so the runtime
+    // The rewritten body is strictly longer than the upstream (it gains the
+    // missing parity keys — `image`/`banExpires`/`banReason`: null). If the
+    // original Content-Length is carried over, a strict HTTP client would
+    // truncate the trailing bytes and a parity key might not even make it to
+    // the wire — silently reopening the oracle. Drop the header so the runtime
     // recomputes on send.
     const upstream = jsonResponse(
       { user: { id: "u1", email: "a@example.com" } },

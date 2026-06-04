@@ -192,6 +192,22 @@ describe("organization plugin wiring", () => {
   });
 });
 
+// #3159 — the Better Auth admin plugin authorized the caller off the RAW
+// `user.role` column (via `hasPermission`), a contained-but-live footgun after
+// #2890. It was removed entirely; its consumers are direct internal-DB ops and
+// ban enforcement is reproduced via the session-create hook + a per-request
+// check. This test is the runtime half of the reintroduction guard (the static
+// half is scripts/check-no-admin-plugin.sh): a future `admin()` re-add trips
+// here. If you genuinely need it back, you are also re-adding the raw-role
+// authorization seam — reconsider.
+describe("admin plugin removal (#3159)", () => {
+  it("buildPlugins() contains no Better Auth admin plugin", () => {
+    const plugins = buildPlugins();
+    const adminPlugin = plugins.find((p: { id?: string }) => p.id === "admin");
+    expect(adminPlugin).toBeUndefined();
+  });
+});
+
 // #3045 — WebAuthn rpID silently defaulted to the prod domain on every deploy
 // whose ATLAS_RPID was unset, breaking passkeys with an opaque browser error
 // on staging / self-hosted custom domains / preview envs. The resolver derives

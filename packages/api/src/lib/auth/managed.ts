@@ -12,6 +12,7 @@ import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
+import { isEffectivelyBanned } from "@atlas/api/lib/auth/admin-user-ops";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -43,6 +44,31 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // admin plugin) for unit tests that mock auth.api.getSession without
   // routing through the customSession callback.
   const sessionUser = session.user as Record<string, unknown>;
+
+  // #3159 — per-request ban enforcement (defense-in-depth). The removed Better
+  // Auth admin plugin rejected banned users only at session-CREATE; we reproduce
+  // that create-time guard in server.ts and `banUserDirect` deletes the banned
+  // user's live sessions. This read-side check is the third layer: it rejects a
+  // banned user whose ban is visible on a fresh getSession read. `banned`/
+  // `banExpires` ride along on the getSession user via `additionalFields`; an
+  // expired ban (banExpires in the past) is treated as lifted.
+  //
+  // NOTE the bound: Better Auth serves the cookie-cache snapshot on a cache hit
+  // (up to `cookieCache.maxAge`, default 30s — see SESSION_COOKIE_CACHE_*), so
+  // this check reflects ban state as of the last fresh read, not strictly the
+  // current row. Primary eviction is `banUserDirect`'s session delete; this
+  // catches a banned user who still has a live session once the read refreshes.
+  if (
+    isEffectivelyBanned(
+      sessionUser?.banned as boolean | null | undefined,
+      sessionUser?.banExpires as string | Date | null | undefined,
+      Date.now(),
+    )
+  ) {
+    log.info({ userId }, "Rejecting session — user is banned");
+    return { authenticated: false, mode: "managed", status: 401, error: "Account is banned" };
+  }
+
   const stampedRole = sessionUser?.effectiveRole ?? sessionUser?.role;
   // Better Auth can store roles as comma-separated strings; Atlas uses only the first.
   const rawRole = typeof stampedRole === "string" ? stampedRole.split(",")[0].trim() : stampedRole;

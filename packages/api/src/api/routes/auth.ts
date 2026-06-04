@@ -44,19 +44,18 @@ const SIGNUP_EMAIL_PATH = "/api/auth/sign-up/email";
 const CLIENT_IP_HEADER = "x-atlas-client-ip";
 
 /**
- * Better Auth admin-plugin endpoint that deletes a user GLOBALLY (cascading
- * every `member` row across all workspaces). It is exposed through this
- * catch-all and authorized by the admin-plugin ACL, which grants a platform
- * admin full statements (`lib/auth/admin-permissions.ts`). Reached directly, it
- * would bypass the multi-workspace last-admin guard in
- * `DELETE /api/v1/admin/users/{id}` (#3166) — the same unguarded-native-path
- * class #3164 closed for the org-plugin member endpoints (Codex P1 on #3171).
+ * Historically Better Auth's admin() plugin exposed `POST /api/auth/admin/remove-user`
+ * through this catch-all — a GLOBAL user delete (cascading `member` rows across
+ * all workspaces) that, reached directly, bypassed the multi-workspace
+ * last-admin guard in `DELETE /api/v1/admin/users/{id}` (#3164/#3166).
  *
- * We refuse the HTTP path here rather than via a Better Auth `hooks.before`:
- * hooks run for `auth.api.*` server calls too, so a hook would also break
- * Atlas's own guarded `deleteUserRoute`, which legitimately calls
- * `adminApi.removeUser(...)` AFTER its advisory-lock guard. Blocking only the
- * external HTTP path leaves that internal server-side call untouched.
+ * #3159 removed the admin plugin entirely, so Better Auth no longer registers
+ * this endpoint. This guard STAYS as permanent defense-in-depth: it keeps the
+ * historically-dangerous path refused at the HTTP layer so the last-admin
+ * invariant can only ever be reached through Atlas's guarded route — even if the
+ * plugin (or any other source of `/api/auth/admin/*`) were reintroduced. A
+ * Better Auth `hooks.before` would be the wrong layer: it also fires for
+ * `auth.api.*` server calls, so it could break Atlas's own guarded delete path.
  */
 const NATIVE_ADMIN_REMOVE_USER_PATH = "/api/auth/admin/remove-user";
 
@@ -127,12 +126,14 @@ auth.all("/*", async (c) => {
 
 /**
  * When the upstream Better Auth response is a success envelope for
- * `/sign-up/email`, rewrite it so `user.image` is always present (as
- * `null`) regardless of whether the signup body supplied one.
+ * `/sign-up/email`, rewrite it so every enumeration-parity key
+ * (`image`, plus `banExpires`/`banReason` since #3159 — see
+ * `normalizeSignupResponseBody`) is always present (as `null`)
+ * regardless of whether the real-signup `parseUserOutput` omitted it.
  *
  * Closes F-P3 / #1792 — the real-vs-synthetic response asymmetry that
  * let a client distinguish new from existing emails by checking
- * `"image" in body.user`. The transformation is a no-op for every
+ * e.g. `"image" in body.user`. The transformation is a no-op for every
  * other auth route, every non-2xx status, and every non-JSON body.
  *
  * Scope-guards (any one failing = pass-through unchanged):
@@ -157,8 +158,10 @@ auth.all("/*", async (c) => {
  * for verification tokens) because it copies `upstream.headers` into
  * the new Response; only the body bytes change.
  *
- * Rip this workaround out once better-auth/better-auth#9346 lands a
- * symmetric `parseUserOutput` upstream.
+ * better-auth/better-auth#9346 (symmetric `parseUserOutput`) would let us drop
+ * the `image` leg, but the `banExpires`/`banReason` legs are Atlas
+ * `additionalFields` and would still need normalizing — so this workaround
+ * stays until that asymmetry is also closed.
  */
 export async function maybeNormalizeSignupResponse(
   c: Context,
@@ -183,16 +186,15 @@ export async function maybeNormalizeSignupResponse(
   }
 
   const normalized = normalizeSignupResponseBody(parsed);
-  // Fast path: the real body already had `user.image` (e.g. the
-  // caller supplied one, or we're on the synthetic branch). Return
-  // the original Response so we don't burn an allocation on an
-  // identical serialization.
+  // Fast path: the body already had every parity key (the synthetic
+  // existing-email branch materializes them all, or an already-normalized
+  // body). Return the original Response so we don't burn an allocation on
+  // an identical serialization.
   if (normalized === parsed) return upstream;
 
-  // The rewritten body is longer by one `"image":null,` key — the
-  // upstream Content-Length (if set) is now stale and would make a
-  // strict client truncate the trailing bytes. Drop it and let the
-  // runtime recompute on send.
+  // The rewritten body is longer by the filled parity keys — the upstream
+  // Content-Length (if set) is now stale and would make a strict client
+  // truncate the trailing bytes. Drop it and let the runtime recompute on send.
   const headers = new Headers(upstream.headers);
   headers.delete("content-length");
 

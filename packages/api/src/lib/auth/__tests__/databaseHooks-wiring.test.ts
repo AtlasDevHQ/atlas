@@ -127,6 +127,12 @@ function makeRecordingPool(): InternalPool {
   return {
     query: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
+      // #3159 ban-guard lookup (DB-clock `ban_active`): only "banned_user" is
+      // banned; everyone else (incl. the other describe blocks' user ids) reads
+      // back not-banned.
+      if (/ban_active/i.test(sql)) {
+        return rows(params?.[0] === "banned_user" ? [{ banned: true, ban_active: true }] : [{ banned: false, ban_active: false }]);
+      }
       if (/SELECT\s+role\s+FROM\s+"user"/i.test(sql)) return rows([{ role: "member" }]);
       if (/SELECT\s+plan_tier\s+FROM\s+organization/i.test(sql)) return rows([{ plan_tier: "free" }]);
       if (/FROM\s+sso_providers/i.test(sql)) return rows([]);
@@ -331,5 +337,71 @@ describe("databaseHooks.user.create.after wiring", () => {
       email: "newuser@acme.com",
       orgId: "org_welcome",
     });
+  });
+});
+
+// ── databaseHooks.session.create.before — ban guard wiring (#3159) ───
+//
+// `enforceBanOnSessionCreate` is unit-tested in isolation, but its security
+// value depends on the hook actually calling it, awaiting it, and letting its
+// BANNED_USER throw propagate (it runs OUTSIDE the hook's try/catch on purpose).
+// A refactor that moved the call inside the try/catch, dropped the await, or
+// reordered it after the org-auto-set return would silently make ban
+// enforcement-at-create inert while every unit test stayed green. Drive the
+// real composed hook and assert both the propagation and the short-circuit.
+describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () => {
+  function getSessionCreateBefore() {
+    const options = buildAuthOptions(authDeps(buildPlugins()));
+    const hook = (options as {
+      databaseHooks?: { session?: { create?: { before?: unknown } } };
+    }).databaseHooks?.session?.create?.before;
+    expect(
+      typeof hook,
+      "session.create.before must be composed in buildAuthOptions",
+    ).toBe("function");
+    return hook as (session: {
+      userId: string;
+      activeOrganizationId?: string | null;
+    }) => Promise<unknown>;
+  }
+
+  it("refuses session creation for a banned user and short-circuits the active-org lookup", async () => {
+    const before = getSessionCreateBefore();
+
+    let thrown: unknown;
+    try {
+      await before({ userId: "banned_user" });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(
+      thrown,
+      "enforceBanOnSessionCreate must propagate — a banned user's session creation must be refused, not swallowed by the hook's try/catch",
+    ).toBeDefined();
+
+    // The guard runs before the org-auto-set logic, so a banned user must not
+    // even reach the `member` lookup below it.
+    expect(
+      queries.some((q) => /FROM\s+member/i.test(q.sql)),
+      "the ban guard must short-circuit before the active-org member lookup",
+    ).toBe(false);
+  });
+
+  it("allows session creation for a non-banned user (guard runs, then falls through)", async () => {
+    const before = getSessionCreateBefore();
+
+    // Must not throw.
+    await before({ userId: "ok_user" });
+
+    // The guard's ban lookup fired (proving it is wired), and being not-banned
+    // it fell through to the active-org member lookup.
+    expect(
+      queries.some((q) => /ban_active/i.test(q.sql)),
+      "the ban guard's lookup must run on every session create",
+    ).toBe(true);
+    expect(
+      queries.some((q) => /FROM\s+member/i.test(q.sql)),
+      "a non-banned user must fall through to the active-org lookup",
+    ).toBe(true);
   });
 });

@@ -29,7 +29,6 @@ import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 // loaded unconditionally next to twoFactor().
 import { passkeyClient } from "@better-auth/passkey/client";
 import {
-  adminClient,
   emailOTPClient,
   organizationClient,
   twoFactorClient,
@@ -45,7 +44,6 @@ import type { InvitationStatus } from "better-auth/plugins/organization";
 // at compile time via the `OrgErrorCode` union below.
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
-import { adminAccessControl, platformAdminRole } from "./admin-permissions";
 import type { AuthApiResult, Passkey, PasskeySignIn } from "./wire-types";
 
 function getBaseURL(): string {
@@ -64,14 +62,10 @@ const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [
     apiKeyClient(),
-    adminClient({
-      // Mirrors the server admin plugin (#2890): `platform_admin` is the
-      // only admin-plugin user.role. Tenant admins use the org plugin below.
-      ac: adminAccessControl,
-      roles: {
-        platform_admin: platformAdminRole,
-      },
-    }),
+    // #3159 — the `adminClient()` mirror was removed alongside the server
+    // `admin()` plugin. Nothing in the web app calls `authClient.admin.*`
+    // (user management goes through the platform_admin-gated REST routes under
+    // `/api/v1/admin/*`), so dropping the client plugin removes dead surface.
     organizationClient({
       ac,
       roles: { owner, admin, member },

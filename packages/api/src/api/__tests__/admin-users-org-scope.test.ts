@@ -31,26 +31,23 @@ const mocks = createApiTestMocks({
   authMode: "managed",
 });
 
-// --- Test-specific overrides: Better Auth admin API ---
+// #3159 — ban/unban/delete/revoke no longer go through the Better Auth admin
+// plugin (`getAuthInstance().api.*`); they are direct internal-DB ops
+// (`banUserDirect`/`unbanUserDirect`/`removeUserDirect`/`revokeUserSessionsDirect`),
+// so there is nothing to stub on the server api. The default server mock from
+// `createApiTestMocks` (`getAuthInstance: () => null`) is left in place; we
+// assert the real SQL each op issues via `ranSql` below.
 
-const mockSetRole: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
-const mockBanUser: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
-const mockUnbanUser: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
-const mockRemoveUser: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
-const mockRevokeSessions: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
-
-mock.module("@atlas/api/lib/auth/server", () => ({
-  getAuthInstance: () => ({
-    api: {
-      listUsers: mock(() => Promise.resolve({ users: [], total: 0 })),
-      setRole: mockSetRole,
-      banUser: mockBanUser,
-      unbanUser: mockUnbanUser,
-      removeUser: mockRemoveUser,
-      revokeSessions: mockRevokeSessions,
-    },
-  }),
-}));
+/** True if any `internalQuery` (or under-lock `tx.query`) call matched `pattern`. */
+function ranSql(pattern: RegExp): boolean {
+  return mocks.mockInternalQuery.mock.calls.some(
+    (call) => typeof call[0] === "string" && pattern.test(call[0] as string),
+  );
+}
+const ranUserUpdate = () => ranSql(/UPDATE\s+"user"/i);
+const ranUserDelete = () => ranSql(/DELETE FROM "user"/i);
+const ranSessionDelete = () => ranSql(/DELETE FROM session/i);
+const ranAccountDelete = () => ranSql(/DELETE FROM account/i);
 
 // --- Audit mock — capture logAdminAction calls to verify the compliance path ---
 const mockLogAdminAction: Mock<(entry: unknown) => void> = mock(() => {});
@@ -208,6 +205,9 @@ function mockDeleteGuard(
     if (s.includes('select "organizationid" from member where "userid" = $1')) {
       return orgIds.map((id) => ({ organizationId: id }));
     }
+    // removeUserDirect's final user delete RETURNs id — a row means "found", so
+    // the route reports 200 rather than the not-found 404.
+    if (/delete from "user"/i.test(sql)) return [{ id: "deleted" }];
     return [];
   });
 }
@@ -219,11 +219,6 @@ describe("Org-scoped user write operations (#983)", () => {
     mocks.mockAuthenticateRequest.mockReset();
     mocks.mockInternalQuery.mockReset();
     mocks.mockInternalQuery.mockResolvedValue([]);
-    mockSetRole.mockClear();
-    mockBanUser.mockClear();
-    mockUnbanUser.mockClear();
-    mockRemoveUser.mockClear();
-    mockRevokeSessions.mockClear();
     mockLogAdminAction.mockClear();
     mocks.hasInternalDB = true;
   });
@@ -567,21 +562,28 @@ describe("Org-scoped user write operations (#983)", () => {
       const body = await res.json() as { error: string; message: string };
       expect(body.error).toBe("forbidden");
       expect(body.message).toContain("/membership");
-      expect(mockBanUser).not.toHaveBeenCalled();
+      expect(ranUserUpdate()).toBe(false);
     });
 
     it("platform admin can ban any user", async () => {
       setPlatformAdmin();
+      // banUserDirect's UPDATE RETURNs id — a row means the user existed (200).
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /UPDATE\s+"user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
       );
       expect(res.status).toBe(200);
-      expect(mockBanUser).toHaveBeenCalled();
+      expect(ranUserUpdate()).toBe(true);
     });
 
     it("platform admin ban emits logAdminAction with user.ban", async () => {
       setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /UPDATE\s+"user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", {}),
@@ -591,6 +593,34 @@ describe("Org-scoped user write operations (#983)", () => {
       const entry = mockLogAdminAction.mock.calls[0]![0] as { actionType: string; targetId: string };
       expect(entry.actionType).toBe("user.ban");
       expect(entry.targetId).toBe("user-in-any-org");
+    });
+
+    // The removed plugin's banUser rejected a missing id with NOT_FOUND;
+    // preserve that (the UPDATE matches zero rows → found:false → 404), so a
+    // typo'd id doesn't yield a false-success audit.
+    it("returns 404 (no audit) when the ban target does not exist", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockResolvedValue([]); // UPDATE "user" matches nothing
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/ghost/ban", {}),
+      );
+      expect(res.status).toBe(404);
+      expect((await res.json() as { error: string }).error).toBe("not_found");
+      expect(mockLogAdminAction).not.toHaveBeenCalled();
+    });
+
+    // The body no longer rides Better Auth's schema — a non-numeric expiresIn
+    // must 400, not silently coerce to a permanent ban.
+    it("rejects a non-numeric expiresIn with 400 (no DB write)", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/ban", { expiresIn: "soon" }),
+      );
+      expect(res.status).toBe(400);
+      expect((await res.json() as { error: string }).error).toBe("invalid_request");
+      expect(ranUserUpdate()).toBe(false);
     });
   });
 
@@ -745,7 +775,7 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("POST", "/api/v1/admin/users/user-in-org-1/unban", {}),
       );
       expect(res.status).toBe(403);
-      expect(mockUnbanUser).not.toHaveBeenCalled();
+      expect(ranUserUpdate()).toBe(false);
     });
 
     it("platform admin can unban any user", async () => {
@@ -755,7 +785,7 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/unban", {}),
       );
       expect(res.status).toBe(200);
-      expect(mockUnbanUser).toHaveBeenCalled();
+      expect(ranUserUpdate()).toBe(true);
     });
   });
 
@@ -770,17 +800,27 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(403);
       const body = await res.json() as { error: string };
       expect(body.error).toBe("forbidden");
-      expect(mockRemoveUser).not.toHaveBeenCalled();
+      expect(ranUserDelete()).toBe(false);
     });
 
-    it("platform admin can delete any user", async () => {
+    it("platform admin can delete any user (full session+account+user cascade)", async () => {
       setPlatformAdmin();
+      // removeUserDirect's user delete RETURNs id — a row means "found" (200).
+      // The membership enumeration returns [] (no workspaces to guard).
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) =>
+        /DELETE FROM "user"/i.test(sql) ? [{ id: "user-in-any-org" }] : [],
+      );
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-in-any-org"),
       );
       expect(res.status).toBe(200);
-      expect(mockRemoveUser).toHaveBeenCalled();
+      // removeUserDirect reproduces the plugin cascade: session + account + user.
+      // Asserting only the user delete would miss a regression that drops the
+      // session/account legs and orphans a deleted user's bearer token in account.
+      expect(ranSessionDelete()).toBe(true);
+      expect(ranAccountDelete()).toBe(true);
+      expect(ranUserDelete()).toBe(true);
     });
 
     it("blocks deleting the sole admin/owner of a workspace", async () => {
@@ -794,7 +834,7 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(403);
       const body = await res.json() as { message: string };
       expect(body.message).toMatch(/last admin/);
-      expect(mockRemoveUser).not.toHaveBeenCalled();
+      expect(ranUserDelete()).toBe(false);
     });
 
     // #3166 — the cross-workspace hole PR #3162 left open: the guard only
@@ -813,7 +853,7 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(403);
       const body = await res.json() as { message: string };
       expect(body.message).toMatch(/last admin/);
-      expect(mockRemoveUser).not.toHaveBeenCalled();
+      expect(ranUserDelete()).toBe(false);
     });
 
     it("refuses and names the count when several workspaces would be stripped (#3166)", async () => {
@@ -827,7 +867,7 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(403);
       const body = await res.json() as { message: string };
       expect(body.message).toMatch(/2 workspaces/);
-      expect(mockRemoveUser).not.toHaveBeenCalled();
+      expect(ranUserDelete()).toBe(false);
     });
 
     // #3166 — the guard-passing delete: the target is an admin/owner of one or
@@ -843,7 +883,7 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("DELETE", "/api/v1/admin/users/user-x"),
       );
       expect(res.status).toBe(200);
-      expect(mockRemoveUser).toHaveBeenCalledTimes(1);
+      expect(ranUserDelete()).toBe(true);
     });
 
     // A target who is only ever a plain member (or has no memberships) has no
@@ -856,7 +896,20 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("DELETE", "/api/v1/admin/users/plain-member"),
       );
       expect(res.status).toBe(200);
-      expect(mockRemoveUser).toHaveBeenCalledTimes(1);
+      expect(ranUserDelete()).toBe(true);
+    });
+
+    // The user delete RETURNs zero rows for a stale id → 404 (matching the
+    // removed plugin's NOT_FOUND), not a false-success audit.
+    it("returns 404 when the delete target does not exist", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockResolvedValue([]); // no memberships, user delete matches nothing
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/ghost"),
+      );
+      expect(res.status).toBe(404);
+      expect((await res.json() as { error: string }).error).toBe("not_found");
     });
   });
 
@@ -871,7 +924,7 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(403);
       const body = await res.json() as { error: string };
       expect(body.error).toBe("forbidden");
-      expect(mockRevokeSessions).not.toHaveBeenCalled();
+      expect(ranSessionDelete()).toBe(false);
     });
 
     it("platform admin can revoke sessions for any user", async () => {
@@ -881,7 +934,7 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("POST", "/api/v1/admin/users/user-in-any-org/revoke"),
       );
       expect(res.status).toBe(200);
-      expect(mockRevokeSessions).toHaveBeenCalled();
+      expect(ranSessionDelete()).toBe(true);
     });
   });
 

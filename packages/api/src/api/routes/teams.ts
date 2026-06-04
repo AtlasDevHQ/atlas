@@ -27,8 +27,13 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { getInstallHandler } from "@atlas/api/lib/integrations/install/dispatch";
-import { TEAMS_SLUG } from "@atlas/api/lib/integrations/install/teams-static-bot-handler";
+// NOTE: `getInstallHandler` is imported *lazily* inside the callback (see
+// below), not at module top. `api/index.ts` dynamically imports this route, and
+// pulling the install/enforcement graph in at module-load time here forms a
+// circular load that surfaces as "Export named 'checkChatIntegrationLimit' not
+// found in billing/enforcement.ts" when other app-importing tests link the app.
+// Keeping this module's static import graph light (like the rest of the route
+// layer) avoids the cycle. The Teams catalog slug is the literal "teams".
 import {
   TeamsApiUnavailableError,
   TeamsReachabilityError,
@@ -240,9 +245,12 @@ teams.openapi(callbackRoute, async (c) => {
   // `checkChatIntegrationLimitAndInstall` (over-cap -> ChatIntegrationLimitError,
   // count-check -> BillingCheckFailedError, reconnect grandfathered).
   const workspaceId = (oauthState.orgId ?? "self-hosted") as WorkspaceId;
+  // Lazy import (see module-top note): keep the install/enforcement graph out
+  // of this route's static import chain to avoid a circular-load.
+  const { getInstallHandler } = await import("@atlas/api/lib/integrations/install");
   let handler;
   try {
-    handler = getInstallHandler({ slug: TEAMS_SLUG, install_model: "static-bot" });
+    handler = getInstallHandler({ slug: "teams", install_model: "static-bot" });
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), requestId },

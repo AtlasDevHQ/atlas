@@ -2826,13 +2826,11 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
   const rateLimitGuardLayer = RateLimitGuardLive.pipe(Layer.provide(configLayer));
   // #3178 — fails boot when the configured provider's API key is missing in
-  // SaaS (boot-green-then-503 otherwise). Depends on `Config` + `Settings`:
-  // it resolves the provider via `getSettingAuto` (admin-console setting → env
-  // → default), so it must sequence after the settings cache is warm to match
-  // the runtime (#3198). Same `configLayer + settingsLayer` shape as DpaGuard.
-  const providerKeyGuardLayer = ProviderKeyGuardLive.pipe(
-    Layer.provide(Layer.merge(configLayer, settingsLayer)),
-  );
+  // SaaS (boot-green-then-503 otherwise). Depends only on `Config`; it resolves
+  // the provider env-only (matching getModel()/resolveProvider, the path the
+  // main chat uses — #3198) and reads its key from env, so it runs as a peer of
+  // the other env-checking guards.
+  const providerKeyGuardLayer = ProviderKeyGuardLive.pipe(Layer.provide(configLayer));
   // #2672 — walks the chat catalog and fails boot when an oauth+enabled
   // entry's adapter-builder requiredEnv keys are missing in SaaS. Depends
   // only on `Config` and reads env directly, so it runs in parallel with

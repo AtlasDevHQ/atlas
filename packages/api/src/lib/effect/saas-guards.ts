@@ -86,7 +86,7 @@
 
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { Config, Settings } from "./layers";
+import { Config } from "./layers";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const log = createLogger("effect:saas-guards");
@@ -536,67 +536,62 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
 /**
  * Fail boot in SaaS when the configured LLM provider's API key is missing.
  *
- * Resolves the provider exactly as the runtime model-init does — `resolveSelection`
- * in `lib/providers.ts` uses `getSettingAuto("ATLAS_PROVIDER") ?? getDefaultProvider()`,
- * and `getSettingAuto` folds the DB-persisted admin setting → env (`ATLAS_PROVIDER`)
- * → registry default. The guard mirrors that precedence so it asserts on the SAME
- * key the first chat would require (see the `Settings` note below for why an
- * env-only check would be wrong). The required key is then looked up via the
- * shared `PROVIDER_KEY_MAP` (SSOT in `lib/providers.ts`):
+ * Resolves the provider EXACTLY as the main chat path does. `/api/v1/chat`
+ * (`chat.ts`) calls `runAgent()` without an injected model, which reaches
+ * `getModel()` / `getProviderType()` → `resolveProvider()` →
+ * `resolveSelection()` (no args) → `process.env.ATLAS_PROVIDER ??
+ * getDefaultProvider()` (`lib/providers.ts`). That is **env-only** — it does
+ * NOT consult `getSettingAuto`/persisted admin settings. The settings-aware
+ * `resolveModelFromSettings` / `AtlasAiModel` path (which folds the persisted
+ * `ATLAS_PROVIDER` setting) is reached only via `runAgentEffect`, which no
+ * production route calls. Matching `getModel` keeps the guard asserting on the
+ * SAME provider + key a real chat will use, and stays in lockstep with the
+ * per-request diagnostic `startup.ts:checkProviderApiKey` (also env-only).
+ * (A persisted-only `ATLAS_PROVIDER` therefore does NOT change what a real
+ * chat resolves, so an env-only guard cannot false-fail it — and `setSetting`
+ * can't mutate `process.env`, so the boot decision can't be bypassed at
+ * runtime either. See #3198.)
+ *
+ * The required key is looked up via the shared `PROVIDER_KEY_MAP` (SSOT in
+ * `lib/providers.ts`):
  *
  *   - `undefined` → unknown / unmapped provider (e.g. `openai-compatible`,
  *     which authenticates via a base URL): skip. `providers.ts` throws a
  *     descriptive error at model init for a genuinely-unknown provider, so the
- *     guard doesn't duplicate that.
+ *     guard doesn't duplicate that. (Fuller per-provider required-config
+ *     validation — Bedrock secret/region, openai-compatible base URL — is
+ *     tracked in #3200.)
  *   - `""` → `ollama`: skip (runs locally, no key).
  *   - otherwise → read the key straight from `process.env` (dynamic key, same
- *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty. (The
- *     provider *selection* is settings-aware; the API *keys* come from env, the
- *     same contract as the runtime SDK clients and `startup.ts:checkProviderApiKey`.)
+ *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty.
  *
  * Self-hosted is intentionally unaffected: an operator running a keyless dev
  * loop keeps the existing per-request 503 from `validateEnvironment` rather
  * than a hard boot failure.
  *
- * Depends on `Settings` (not just `Config`) so the persisted-settings cache is
- * loaded before the guard reads it — the runtime resolves `ATLAS_PROVIDER`
- * through `getSettingAuto()` (DB-persisted platform setting → env → default),
- * so a SaaS region that configures its provider via the admin console rather
- * than an env var would otherwise be FALSE-FAILED at boot by an env-only check
- * (#3198 Codex P1). Sequencing after `Settings` mirrors `DpaGuardLive`.
- *
- * `getDefaultProvider` + `PROVIDER_KEY_MAP` + `getSettingAuto` are pulled via
- * dynamic `import()` to keep `providers.ts` (which statically imports the
- * `@ai-sdk/*` packages) and `settings.ts` out of `saas-guards.ts`'s static
- * graph — same lazy-import wall-off as `EncryptionKeyGuardLive`. A rejected
- * import is promoted to a defect via `Effect.orDie` (rather than silently
- * skipping the check): both modules are core and always loadable at boot, so a
- * rejection means the api can't run anyway, and a silent skip would reintroduce
- * the boot-green-then-503 hole this guard closes.
+ * `getDefaultProvider` + `PROVIDER_KEY_MAP` are pulled via dynamic `import()`
+ * to keep `providers.ts` (which statically imports the `@ai-sdk/*` packages)
+ * out of `saas-guards.ts`'s static graph — same lazy-import wall-off as
+ * `EncryptionKeyGuardLive`. A rejected import is promoted to a defect via
+ * `Effect.orDie` (rather than silently skipping the check): `providers.ts` is
+ * core and always loadable at boot, so a rejection means the api can't run
+ * anyway, and a silent skip would reintroduce the boot-green-then-503 hole
+ * this guard closes.
  */
-export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, Config | Settings> = Layer.effectDiscard(
+export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, Config> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
-    // Sequence after the persisted-settings cache is warm so `getSettingAuto`
-    // below sees admin-console-configured provider overrides, not just env.
-    yield* Settings;
 
-    const [{ getDefaultProvider, PROVIDER_KEY_MAP }, { getSettingAuto }] = yield* Effect.tryPromise({
-      try: () =>
-        Promise.all([
-          import("@atlas/api/lib/providers"),
-          import("@atlas/api/lib/settings"),
-        ]),
+    const { getDefaultProvider, PROVIDER_KEY_MAP } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/providers"),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(Effect.orDie);
 
-    // Resolve EXACTLY as the runtime model-init does (`resolveSelection` in
-    // providers.ts): `getSettingAuto("ATLAS_PROVIDER")` folds the DB-persisted
-    // platform setting → env (`ATLAS_PROVIDER`) → registry default; when none
-    // is set, `getDefaultProvider()` supplies the SaaS gateway default. This
-    // keeps the boot guard in lockstep with the provider a real chat will use.
-    const provider = getSettingAuto("ATLAS_PROVIDER") ?? getDefaultProvider();
+    // Env-only, matching getModel() → resolveProvider() → resolveSelection()
+    // (the path chat.ts/runAgent actually uses); getDefaultProvider() supplies
+    // the SaaS gateway default when ATLAS_PROVIDER is unset.
+    const provider = readSaasEnv().ATLAS_PROVIDER ?? getDefaultProvider();
     const requiredKey = PROVIDER_KEY_MAP[provider];
 
     // `undefined` → unknown/unmapped provider (skip; model init reports it).

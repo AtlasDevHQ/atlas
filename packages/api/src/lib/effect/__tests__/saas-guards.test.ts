@@ -13,7 +13,7 @@
  * output without rewiring imports.
  */
 
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock } from "bun:test";
 import { Effect, Exit, Layer } from "effect";
 
 // Logger no-op mock — keeps these tests quiet (and isolated from any
@@ -32,21 +32,6 @@ mock.module("@atlas/api/lib/logger", () => ({
   getLogger: () => ({ error: () => {}, warn: () => {}, info: () => {}, debug: () => {}, level: "info" }),
   setLogLevel: () => true,
   getRequestContext: () => undefined,
-}));
-
-// `ProviderKeyGuardLive` lazy-imports `@atlas/api/lib/settings` and resolves
-// `ATLAS_PROVIDER` via `getSettingAuto` (DB-persisted platform setting → env →
-// default), matching the runtime model path. It's the ONLY guard in this file
-// that touches settings, so a thin mock here is safe. `getSettingAuto` mirrors
-// the real tier chain for the keys these tests read: a test-controlled
-// persisted override first, then `process.env` (Tier 3). `_persistedProvider`
-// lets a test exercise the persisted-DB tier (env unset) that the env-driven
-// tests below can't reach. Default `undefined` → pure env behavior.
-let _persistedProvider: string | undefined = undefined;
-mock.module("@atlas/api/lib/settings", () => ({
-  getSettingAuto: (key: string): string | undefined =>
-    key === "ATLAS_PROVIDER" ? _persistedProvider ?? process.env.ATLAS_PROVIDER : process.env[key],
-  getSetting: (key: string): string | undefined => process.env[key],
 }));
 
 // Type-only imports for the tagged error classes and the `Config` Tag
@@ -82,13 +67,8 @@ const {
   ChatAdapterEnvGuardLive,
   ChatAdapterEnvMissingError,
 } = await import("../saas-guards");
-const { Config, Settings } = await import("../layers");
+const { Config } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
-
-// `ProviderKeyGuardLive` depends on `Settings` (it sequences after the
-// settings cache is warm). The value is unused by the guard — only the
-// dependency-ordering matters — so a `loaded: 0` stub satisfies the Layer.
-const TestSettingsLayer = Layer.succeed(Settings, { loaded: 0 });
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -635,55 +615,12 @@ describe("ProviderKeyGuardLive", () => {
       Effect.void.pipe(
         Effect.provide(
           ProviderKeyGuardLive.pipe(
-            Layer.provide(
-              Layer.merge(makeTestConfigLayer({ deployMode: "saas" }), TestSettingsLayer),
-            ),
+            Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
           ),
         ),
       ),
     ) as Promise<Exit.Exit<void, TProviderKeyMissingError>>;
   }
-
-  // `_persistedProvider` is module-level (the settings mock closes over it);
-  // reset before each case so a persisted-tier test can't leak into the
-  // env-driven cases.
-  beforeEach(() => {
-    _persistedProvider = undefined;
-  });
-
-  // #3198 Codex P1 — the runtime resolves ATLAS_PROVIDER through
-  // getSettingAuto (admin-console-persisted setting → env → default), so a
-  // SaaS region that configures its provider via the admin UI (env-level
-  // ATLAS_PROVIDER unset, no AI_GATEWAY_API_KEY) must NOT be false-failed at
-  // boot. Persisted anthropic + ANTHROPIC_API_KEY present → boots.
-  test("boots in SaaS when a PERSISTED ATLAS_PROVIDER's key is set, even with env-provider unset (#3198)", async () => {
-    await withCleanEnv(() =>
-      withoutAnthropicKey(async () => {
-        process.env.ATLAS_DEPLOY_MODE = "saas"; // getDefaultProvider() would say "gateway"
-        _persistedProvider = "anthropic"; // ...but the persisted setting wins, like the runtime
-        process.env.ANTHROPIC_API_KEY = "test-anthropic-key";
-        const exit = await runGuard();
-        expect(Exit.isSuccess(exit)).toBe(true);
-      }),
-    );
-  });
-
-  // Corollary — a persisted provider whose key is absent still fails boot, and
-  // reports the SETTINGS-resolved provider (not the gateway default).
-  test("fails boot in SaaS when a PERSISTED ATLAS_PROVIDER's key is missing (#3198)", async () => {
-    await withCleanEnv(() =>
-      withoutAnthropicKey(async () => {
-        process.env.ATLAS_DEPLOY_MODE = "saas";
-        _persistedProvider = "anthropic";
-        const exit = await runGuard();
-        expect(Exit.isFailure(exit)).toBe(true);
-        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
-        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
-        expect((failure as TProviderKeyMissingError).provider).toBe("anthropic");
-        expect((failure as TProviderKeyMissingError).requiredKey).toBe("ANTHROPIC_API_KEY");
-      }),
-    );
-  });
 
   // The gateway default is the SaaS prod path: ATLAS_PROVIDER unset →
   // getDefaultProvider() → "gateway" (because ATLAS_DEPLOY_MODE=saas) →
@@ -769,9 +706,7 @@ describe("ProviderKeyGuardLive", () => {
           Effect.void.pipe(
             Effect.provide(
               ProviderKeyGuardLive.pipe(
-                Layer.provide(
-                  Layer.merge(makeTestConfigLayer({ deployMode: "self-hosted" }), TestSettingsLayer),
-                ),
+                Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
               ),
             ),
           ),

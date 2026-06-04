@@ -1409,21 +1409,24 @@ async function applyDeployMode(
   // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
   // walls the boot-only modules off from request-path consumers.
   // Only a CONFIG-FILE "saas" that was the OPERATIVE request counts as a silent
-  // downgrade. `resolveDeployMode` reads `process.env.ATLAS_DEPLOY_MODE ??
-  // configFileValue`, so the config-file value is operative ONLY when the env
-  // var is unset/empty. ANY explicit env value wins over the config file and is
-  // therefore an env-driven resolution, not a missing-enterprise downgrade:
+  // downgrade. A *recognized* explicit env value (`saas` | `self-hosted` |
+  // `auto`) wins over the config file (resolveDeployMode precedence), so it's an
+  // env-driven resolution, not a missing-enterprise downgrade:
   //   - env "saas"        → EnterpriseGuardLive hard-fails at boot
   //   - env "self-hosted" → explicit operator override (#3198 Codex P2)
   //   - env "auto"        → explicit auto-resolution, not a config downgrade
   //                         (#3198 Codex P2)
-  // Flagging any of those would leave `/health` permanently (and falsely)
-  // degraded with an "enterprise not enabled" claim.
+  // But an UNRECOGNIZED env value (a typo like "sasa", or unset/empty) is NOT a
+  // deliberate override — resolveDeployMode treats it as `auto` and the config
+  // file's "saas" is still the operator's expressed intent, so the downgrade
+  // signal must survive (#3198 Codex follow-up). Mirrors the same recognized
+  // set resolveDeployMode validates against.
   const envDeployMode = process.env.ATLAS_DEPLOY_MODE;
-  const envProvidesDeployMode = envDeployMode !== undefined && envDeployMode !== "";
+  const envSetRecognizedMode =
+    envDeployMode === "saas" || envDeployMode === "self-hosted" || envDeployMode === "auto";
   if (
     resolved.deployMode !== "saas" &&
-    !envProvidesDeployMode &&
+    !envSetRecognizedMode &&
     configFileValue === "saas"
   ) {
     const reason =

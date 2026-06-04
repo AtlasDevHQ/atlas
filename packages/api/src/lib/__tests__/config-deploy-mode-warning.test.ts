@@ -184,4 +184,25 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     expect(errorLogs).toHaveLength(0);
     expect(resolved.deployModeDowngraded).toBeUndefined();
   });
+
+  // #3198 Codex (round 3) — an UNRECOGNIZED env value (typo) is not a deliberate
+  // override: resolveDeployMode treats it as `auto`, but the config-file `saas`
+  // is still the operator's intent, so the silent-downgrade signal must survive.
+  it("DOES flag a downgrade when env is an invalid value over config saas", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "sasa"; // typo → treated as auto → self-hosted
+    const dir = ensureTmpDir(`env-invalid-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const critical = logCalls.find(
+      (c) => c.level === "error" && c.message.includes("CRITICAL") && c.message.includes("#1978"),
+    );
+    expect(critical).toBeDefined();
+    expect(resolved.deployModeDowngraded).toBeDefined();
+    expect(resolved.deployModeDowngraded!.reason).toContain("#1978");
+  });
 });

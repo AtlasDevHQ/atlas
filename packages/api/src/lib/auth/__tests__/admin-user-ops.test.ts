@@ -190,7 +190,9 @@ describe("removeUserDirect", () => {
 // ---------------------------------------------------------------------------
 
 describe("createPlatformAdminUser", () => {
-  it("creates via signUpEmail and promotes the row to platform_admin", async () => {
+  it("creates via signUpEmail and promotes the row to platform_admin (verified)", async () => {
+    // existing-check → none; promotion UPDATE … RETURNING → a row (verified).
+    queryImpl = async (sql) => (/UPDATE\s+"user"/i.test(sql) ? [{ id: "new-admin" }] : []);
     const signUpBodies: unknown[] = [];
     const api = {
       signUpEmail: async (o: { body: unknown }) => {
@@ -208,20 +210,54 @@ describe("createPlatformAdminUser", () => {
     expect(signUpBodies[0]).toEqual({ email: "a@x.dev", password: "pw-1234567890", name: "Admin" });
     const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
     expect(update!.sql).toContain("role = 'platform_admin'");
+    expect(update!.sql).toContain("RETURNING id");
     expect(update!.params?.[0]).toBe("new-admin");
   });
 
+  it("reuses an existing row and re-promotes (retry-safe — no signUpEmail)", async () => {
+    queryImpl = async (sql) => {
+      if (/SELECT id FROM "user"/i.test(sql)) return [{ id: "existing" }];
+      if (/UPDATE\s+"user"/i.test(sql)) return [{ id: "existing" }];
+      return [];
+    };
+    let signUpCalled = false;
+    const api = {
+      signUpEmail: async () => {
+        signUpCalled = true;
+        return { user: { id: "should-not-be-used" } };
+      },
+    };
+    const id = await createPlatformAdminUser(api, { email: "a@x.dev", password: "pw", name: "A" });
+    expect(id).toBe("existing");
+    // Repairs a prior partial run by promoting the existing row, not re-creating.
+    expect(signUpCalled).toBe(false);
+    const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
+    expect(update!.params?.[0]).toBe("existing");
+  });
+
   it("throws when signUpEmail is unavailable on the auth api", async () => {
+    queryImpl = async () => []; // no existing row
     await expect(createPlatformAdminUser({}, { email: "a@x.dev", password: "pw", name: "A" })).rejects.toThrow(
       /signUpEmail API unavailable/,
     );
   });
 
   it("throws when signUpEmail returns no user id", async () => {
+    queryImpl = async () => [];
     const api = { signUpEmail: async () => ({ user: {} }) };
     await expect(
       createPlatformAdminUser(api, { email: "a@x.dev", password: "pw", name: "A" }),
     ).rejects.toThrow(/no user id/);
+  });
+
+  it("throws (loudly) when the promotion verifies empty — no silent un-promoted user", async () => {
+    // existing-check → none; signUpEmail makes a user; UPDATE … RETURNING → []
+    // (row vanished / promote matched nothing).
+    queryImpl = async () => [];
+    const api = { signUpEmail: async () => ({ user: { id: "ghost" } }) };
+    await expect(
+      createPlatformAdminUser(api, { email: "a@x.dev", password: "pw", name: "A" }),
+    ).rejects.toThrow(/could not be promoted/);
   });
 });
 

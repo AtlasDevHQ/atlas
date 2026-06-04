@@ -223,30 +223,63 @@ export async function banUserDirect(opts: {
  * Takes the loose `auth.api` surface (rather than importing `getAuthInstance`)
  * so this module stays free of a cycle with `server.ts`.
  *
- * @returns the created user's id.
+ * Retry-safe (CodeRabbit): create + promote is two steps (signUpEmail can't set
+ * an `input: false` field), so a prior run that created the user but failed the
+ * promotion leaves a sticky un-promoted row the callers' idempotency guards
+ * (`seedDevUser`'s user-count, the staging seed's reuse-by-email) won't repair.
+ * So we reuse an existing row by email instead of re-creating, ALWAYS (re)promote
+ * idempotently, and VERIFY the promotion with `RETURNING` — a partial prior run
+ * is repaired on the next attempt rather than left half-done.
+ *
+ * @returns the user's id (created or repaired), guaranteed `platform_admin`.
  */
 export async function createPlatformAdminUser(
   authApi: Record<string, unknown>,
   opts: { email: string; password: string; name: string },
 ): Promise<string> {
-  const signUpEmail = authApi.signUpEmail as
-    | ((o: {
-        body: { email: string; password: string; name: string };
-      }) => Promise<{ user?: { id?: string } } | undefined>)
-    | undefined;
-  if (!signUpEmail) {
-    throw new Error("createPlatformAdminUser: signUpEmail API unavailable on the auth instance");
+  // Reuse an existing row (repairs a prior run that created but didn't promote)
+  // rather than re-creating — signUpEmail on an existing email would hit the
+  // enumeration-safe synthetic path and not return the real id.
+  const existing = await internalQuery<{ id: string }>(
+    `SELECT id FROM "user" WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    [opts.email],
+  );
+
+  let userId: string;
+  const existingId = existing[0]?.id;
+  if (existingId) {
+    userId = existingId;
+  } else {
+    const signUpEmail = authApi.signUpEmail as
+      | ((o: {
+          body: { email: string; password: string; name: string };
+        }) => Promise<{ user?: { id?: string } } | undefined>)
+      | undefined;
+    if (!signUpEmail) {
+      throw new Error("createPlatformAdminUser: signUpEmail API unavailable on the auth instance");
+    }
+    const result = await signUpEmail({
+      body: { email: opts.email, password: opts.password, name: opts.name },
+    });
+    const createdId = result?.user?.id;
+    if (!createdId) {
+      throw new Error("createPlatformAdminUser: signUpEmail returned no user id");
+    }
+    userId = createdId;
   }
 
-  const result = await signUpEmail({
-    body: { email: opts.email, password: opts.password, name: opts.name },
-  });
-  const userId = result?.user?.id;
-  if (!userId) {
-    throw new Error("createPlatformAdminUser: signUpEmail returned no user id");
+  // Idempotent promote, verified: RETURNING proves the row exists and is now
+  // platform_admin — so a failed/zero-row promotion is loud, not silently
+  // leaving a plain user behind.
+  const promoted = await internalQuery<{ id: string }>(
+    `UPDATE "user" SET role = 'platform_admin' WHERE id = $1 RETURNING id`,
+    [userId],
+  );
+  if (promoted.length === 0) {
+    throw new Error(
+      `createPlatformAdminUser: user ${userId} could not be promoted to platform_admin (row missing)`,
+    );
   }
-
-  await internalQuery(`UPDATE "user" SET role = 'platform_admin' WHERE id = $1`, [userId]);
   return userId;
 }
 

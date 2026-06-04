@@ -13,8 +13,10 @@
  *   smoke-crm              End-to-end CRM lead-capture verification: inject fixture
  *                          personas below Turnstile via the outbox, wait for the
  *                          flusher to drain, then diff the resulting Twenty Persons/
- *                          Notes against the fixture. Local-only (never runs in CI).
- *                          Optional `--wipe-twenty` is double-gated by
+ *                          Notes against the fixture. Makes live Twenty calls:
+ *                          run ad-hoc by an operator and as the post-deploy
+ *                          staging-smoke gate, not per-PR CI. Optional
+ *                          `--wipe-twenty` is double-gated by
  *                          `ATLAS_SMOKE_WIPE_OK=1`. See ./ops-smoke-crm.ts.
  *
  * Wipe replaces internal/wipe-prod.sh's per-DB logic; the script's

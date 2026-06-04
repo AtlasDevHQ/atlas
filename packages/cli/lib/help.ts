@@ -739,7 +739,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       {
         name: "smoke-crm",
         description:
-          "End-to-end CRM lead-capture verification — inject fixture personas below Turnstile via the outbox, wait for the flusher to drain, then diff the resulting Twenty Persons/Notes against the fixture. Local-only (never runs in CI). Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1), --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60), --database-url <url>.",
+          "End-to-end CRM lead-capture verification — inject fixture personas below Turnstile via the outbox, wait for the flusher to drain, then diff the resulting Twenty Persons/Notes against the fixture. Makes live Twenty calls: run ad-hoc by an operator and as the post-deploy staging-smoke gate, not per-PR CI. Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1), --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60), --database-url <url>.",
       },
     ],
     flags: [

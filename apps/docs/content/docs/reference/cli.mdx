@@ -855,7 +855,7 @@ Already-run on prod against `demo_leads`; safe to re-run if a new region comes o
 
 ### ops smoke-crm
 
-End-to-end verification of the demo → Twenty CRM lead-capture pipeline. It injects fixture personas **below** the form/Turnstile layer (straight into `crm_outbox` via `enqueue`), waits for the lead-outbox flusher to drain, then lists Twenty over REST and diffs the resulting Persons + Notes against what the fixture declared. It is a **local-only** operator check — it makes live Twenty network calls and never runs in CI.
+End-to-end verification of the demo → Twenty CRM lead-capture pipeline. It injects fixture personas **below** the form/Turnstile layer (straight into `crm_outbox` via `enqueue`), waits for the lead-outbox flusher to drain, then lists Twenty over REST and diffs the resulting Persons + Notes against what the fixture declared. Because it makes live Twenty network calls it is **not** part of per-PR CI, but it is not local-only either: an operator runs it ad-hoc, **and** it is the post-deploy **Staging Smoke** gate (`.github/workflows/staging-smoke.yml`), which fires after a staging deploy to prove the flusher path is alive against the staging DB + Twenty. Changing or removing this subcommand will break that gate.
 
 ```bash
 bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] \

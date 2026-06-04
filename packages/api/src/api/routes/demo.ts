@@ -604,7 +604,18 @@ demo.openapi(demoChatRoute, async (c) => {
         // datasource-framed `internal_error`.
         const matched = matchError(err, { subsystem: "provider" });
         if (matched) {
-          const httpStatus = matched.code === "rate_limited" ? 429 : 500;
+          // Honor the canonical code→HTTP contract (mirror of
+          // CLASSIFIER_STATUS_MAP in chat.ts + reference/error-codes.mdx): a
+          // provider outage must surface as 503/504, not a misleading 500.
+          // matchError returns one of rate_limited / provider_unreachable /
+          // provider_timeout / internal_error here.
+          const STATUS_BY_CODE: Record<string, 429 | 500 | 503 | 504> = {
+            rate_limited: 429,
+            provider_unreachable: 503,
+            provider_timeout: 504,
+            internal_error: 500,
+          };
+          const httpStatus = STATUS_BY_CODE[matched.code] ?? 500;
           if (matched.code === "rate_limited") {
             log.warn({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
           } else {

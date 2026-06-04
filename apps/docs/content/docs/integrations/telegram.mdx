@@ -17,17 +17,6 @@ dance and gets its own bot token. Telegram's model is operator-shared
 because Telegram bots don't have a per-workspace install concept —
 adding the bot to a chat is the install.
 
-<Callout type="warn" title="Per-workspace install not available yet">
-The per-workspace install flow described below is **not currently available**
-in the Atlas admin UI. Its legacy connect route was removed in
-[#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) because it bypassed the
-chat-integration cap and produced a non-routable install. The cap-gated
-static-bot install (routing-identifier capture, like Discord) is tracked in
-[#3141](https://github.com/AtlasDevHQ/atlas/issues/3141); until it ships the
-Telegram card shows **"Coming soon."** The operator setup below remains valid
-groundwork.
-</Callout>
-
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to a Telegram bot. Self-hosted operators
@@ -132,15 +121,23 @@ Before Atlas can listen on a chat, the bot has to be a member of it.
 
 Telegram chat ids are signed integers — positive for users, negative
 for groups, and start with `-100` for supergroups and channels. They
-aren't visible in the Telegram UI directly. The easiest ways to look
-one up:
+aren't visible in the Telegram UI directly. All of these lookups are
+**token-free** — they don't require the operator's `TELEGRAM_BOT_TOKEN`
+(which Atlas Cloud workspace admins don't have):
 
-- **DM with the bot:** message the bot once, then visit
-  `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates` —
-  your user id is under `result[].message.from.id`.
+- **DM with the bot:** message [@userinfobot](https://t.me/userinfobot)
+  — it replies with your numeric **user id**, which is the chat id of
+  your 1:1 chat with the Atlas bot (for private chats, the chat id and
+  your user id are the same).
 - **Group / channel:** add [@userinfobot](https://t.me/userinfobot)
   to the chat, send any message, and it replies with the chat id.
   Remove the bot afterwards.
+
+Self-hosted operators who hold the bot token can alternatively read ids
+from `https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates` after
+a message lands — the chat id is under `result[].message.chat.id`. This
+path is operator-only; the bot token is an operator-wide secret (see the
+warning in [operator step 1](#1-create-a-bot-with-botfather)).
 
 <Callout type="warn" title="Don't use @username">
   Public Telegram aliases like `@my_channel` aren't accepted as a

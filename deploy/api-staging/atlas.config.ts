@@ -286,12 +286,13 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #2748 shipped the handler, but no live route ever called it — the
-      // only install path was the legacy connect route, which bypassed the
-      // chat-integration cap and produced a non-functional (non-routable)
-      // install. #2994 removed that route, so this is back to coming_soon
-      // until the cap-gated static-bot install ships (#3141).
-      implementation_status: "coming_soon",
+      // #3141 (keystone of umbrella #2994) shipped the cap-gated static-bot
+      // install: the generic `/install-form` route captures the chat_id and
+      // `TelegramStaticBotInstallHandler.confirmInstall` persists through
+      // `checkChatIntegrationLimitAndInstall` (over-cap → 429, reconnect
+      // grandfathered). The legacy connect route that #2994 removed (uncapped,
+      // non-routable) is gone for good.
+      implementation_status: "available",
       name: "Telegram",
       description:
         "Chat with Atlas inside a Telegram group, channel, or 1:1 conversation. The operator wires a shared bot (TELEGRAM_BOT_TOKEN); each workspace points the bot at one chat by id.",

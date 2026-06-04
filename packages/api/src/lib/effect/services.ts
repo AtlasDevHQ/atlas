@@ -894,7 +894,12 @@ export function createAuthContextTestLayer(
 // so this contract can be typed without pulling in `@atlas/ee`.
 
 type ResidencyRegionRoute = {
-  readonly databaseUrl: string;
+  // Optional (#3176/#3198): a region's internal-DB URL may be unset on an
+  // instance that doesn't claim it. `getRegionAwareConnection` routes the
+  // analytics datasource off `datasourceUrl`/`region` and never reads
+  // `databaseUrl`, so it is passenger data here — omitted when unconfigured
+  // rather than coerced to an empty string.
+  readonly databaseUrl?: string;
   readonly datasourceUrl?: string;
   readonly region: string;
 };

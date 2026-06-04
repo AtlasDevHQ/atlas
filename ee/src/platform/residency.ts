@@ -241,7 +241,7 @@ export const getWorkspaceRegionAssignment = (
  */
 export const resolveRegionDatabaseUrl = (
   workspaceId: string,
-): Effect.Effect<{ databaseUrl: string; datasourceUrl?: string; region: string } | null> =>
+): Effect.Effect<{ databaseUrl?: string; datasourceUrl?: string; region: string } | null> =>
   Effect.gen(function* () {
     const config = getConfig();
     if (!config?.residency) return null;
@@ -307,8 +307,18 @@ export const resolveRegionDatabaseUrl = (
       return null;
     }
 
+    // `databaseUrl` is optional on `RegionConfig` (#3176): a non-claimed
+    // region's internal-DB URL may be unset on an instance that doesn't serve
+    // it. Do NOT bail to null on an empty/absent `databaseUrl` — the only
+    // consumer (`getRegionAwareConnection`) routes the analytics datasource off
+    // `datasourceUrl`/`region` and never reads `databaseUrl`, so returning null
+    // here would silently DROP a region's datasource routing and fall the query
+    // through to the default datasource (#3198 Codex P1). Pass the route through
+    // unchanged; `databaseUrl` is omitted when unset so no empty connection
+    // string reaches a pool. Routing semantics are identical to before the
+    // schema relaxation — `datasourceUrl` was always the routing key.
     return {
-      databaseUrl: regionConfig.databaseUrl,
+      ...(regionConfig.databaseUrl ? { databaseUrl: regionConfig.databaseUrl } : {}),
       datasourceUrl: regionConfig.datasourceUrl,
       region,
     };

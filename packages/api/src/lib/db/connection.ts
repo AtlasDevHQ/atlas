@@ -1740,7 +1740,7 @@ export async function getRegionAwareConnection(
     return yield* residency.resolveRegionDatabaseUrl(orgId);
   });
 
-  let regionInfo: { databaseUrl: string; datasourceUrl?: string; region: string } | null;
+  let regionInfo: { databaseUrl?: string; datasourceUrl?: string; region: string } | null;
   try {
     regionInfo = await runEnterprise(resolveRegion);
   } catch (err) {

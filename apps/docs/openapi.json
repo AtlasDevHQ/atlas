@@ -425,6 +425,17 @@
                         "type": "string"
                       }
                     },
+                    "deployModeDowngraded": {
+                      "type": "object",
+                      "properties": {
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "reason"
+                      ]
+                    },
                     "brandColor": {
                       "type": "string"
                     },
@@ -924,6 +935,17 @@
                           "items": {
                             "type": "string"
                           }
+                        },
+                        "deployModeDowngraded": {
+                          "type": "object",
+                          "properties": {
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "reason"
+                          ]
                         },
                         "brandColor": {
                           "type": "string"

@@ -43,6 +43,13 @@
  *      so a platform admin can't re-open the hole at runtime via
  *      `setSetting`.
  *
+ *   4b. {@link ProviderKeyGuardLive} (#3178) — the configured LLM provider
+ *      (`ATLAS_PROVIDER` or the gateway default) has no API key set. Without
+ *      it the api boots green and every chat 503s with `MISSING_API_KEY` at
+ *      first I/O. Resolves the provider exactly as the runtime does and reads
+ *      the required key (via `PROVIDER_KEY_MAP`) at boot. Self-hosted keeps the
+ *      per-request 503 so keyless dev loops still boot.
+ *
  *   5. {@link RegionGuardLive} (#1988 C7) — claimed `ATLAS_API_REGION`
  *      missing from `config.residency.regions` or pointing at a
  *      malformed `databaseUrl`. Without this guard, a region-routing
@@ -88,6 +95,7 @@ const ISSUE_REF = "#1978";
 const RATE_LIMIT_ISSUE_REF = "#1983";
 const ISSUE_REF_1988 = "#1988";
 const CHAT_ADAPTER_ISSUE_REF = "#2672";
+const PROVIDER_KEY_ISSUE_REF = "#3178";
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Tagged errors
@@ -154,6 +162,39 @@ export class InternalDatabaseRequiredError extends Data.TaggedError("InternalDat
  */
 export class RateLimitRequiredError extends Data.TaggedError("RateLimitRequiredError")<{
   readonly message: string;
+}> {}
+
+/**
+ * SaaS region booted with `ATLAS_PROVIDER` (or the gateway default) set to a
+ * provider whose API key env var is unset. Without this guard the api boots
+ * green, `/health` liveness stays green, and every real chat 503s via
+ * `validateEnvironment`'s per-request `MISSING_API_KEY` diagnostic — the exact
+ * "broken at first I/O" class the guard family exists to prevent (#3178).
+ *
+ * `provider` is the resolved provider string and `requiredKey` the env var that
+ * was expected (e.g. `anthropic` / `ANTHROPIC_API_KEY`), both exposed so the
+ * operator-actionable boot log names the missing key without re-parsing
+ * `message`. Self-hosted is unaffected — operators may run keyless dev loops
+ * and keep the per-request 503.
+ */
+export class ProviderKeyMissingError extends Data.TaggedError("ProviderKeyMissingError")<{
+  readonly message: string;
+  readonly provider: string;
+  readonly requiredKey: string;
+}> {}
+
+/**
+ * SaaS region booted with `ATLAS_PROVIDER` set to a value that isn't a
+ * supported provider (a typo / unsupported vendor). `resolveSelection()` in
+ * `lib/providers.ts` throws `Unknown provider "<x>"` at model init, so the api
+ * boots green and then 503s every chat — the same boot-green-then-broken class
+ * `ProviderKeyMissingError` catches, but for the provider *name* rather than its
+ * key. Distinct error so the operator log names "unsupported provider" (not a
+ * missing key). Self-hosted keeps the per-request throw (#3198).
+ */
+export class ProviderUnsupportedError extends Data.TaggedError("ProviderUnsupportedError")<{
+  readonly message: string;
+  readonly provider: string;
 }> {}
 
 /**
@@ -496,6 +537,113 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
             `SaaS region booted with ATLAS_RATE_LIMIT_RPM=${JSON.stringify(raw)} — value would parse to ` +
             `"rate limiting disabled" at runtime via getRpmLimit() + checkRateLimit() in auth/middleware.ts. ` +
             `Set ATLAS_RATE_LIMIT_RPM to a positive integer (>= 1). See ${RATE_LIMIT_ISSUE_REF}.`,
+        }),
+      );
+    }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  ProviderKeyGuardLive (#3178)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot in SaaS when the configured LLM provider's API key is missing.
+ *
+ * Resolves the provider EXACTLY as the main chat path does. `/api/v1/chat`
+ * (`chat.ts`) calls `runAgent()` without an injected model, which reaches
+ * `getModel()` / `getProviderType()` → `resolveProvider()` →
+ * `resolveSelection()` (no args) → `process.env.ATLAS_PROVIDER ??
+ * getDefaultProvider()` (`lib/providers.ts`). That is **env-only** — it does
+ * NOT consult `getSettingAuto`/persisted admin settings. The settings-aware
+ * `resolveModelFromSettings` / `AtlasAiModel` path (which folds the persisted
+ * `ATLAS_PROVIDER` setting) is reached only via `runAgentEffect`, which no
+ * production route calls. Matching `getModel` keeps the guard asserting on the
+ * SAME provider + key a real chat will use, and stays in lockstep with the
+ * per-request diagnostic `startup.ts:checkProviderApiKey` (also env-only).
+ * (A persisted-only `ATLAS_PROVIDER` therefore does NOT change what a real
+ * chat resolves, so an env-only guard cannot false-fail it — and `setSetting`
+ * can't mutate `process.env`, so the boot decision can't be bypassed at
+ * runtime either. See #3198.)
+ *
+ * The required key is looked up via the shared `PROVIDER_KEY_MAP` (SSOT in
+ * `lib/providers.ts`):
+ *
+ *   - provider not in the supported set → a typo / unsupported vendor: fail boot
+ *     with {@link ProviderUnsupportedError} (in SaaS, `resolveSelection()` would
+ *     otherwise throw on every chat — boot-green-then-broken). `isSupportedProvider`
+ *     distinguishes this from a valid-but-keyless provider below.
+ *   - valid provider, `PROVIDER_KEY_MAP[provider] === undefined` → keyless
+ *     (e.g. `openai-compatible`, which authenticates via a base URL): skip the
+ *     key check. (Fuller per-provider required-config validation — Bedrock
+ *     secret/region, openai-compatible base URL — is tracked in #3200.)
+ *   - `""` → `ollama`: skip (runs locally, no key).
+ *   - otherwise → read the key straight from `process.env` (dynamic key, same
+ *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty.
+ *
+ * Self-hosted is intentionally unaffected: an operator running a keyless dev
+ * loop keeps the existing per-request 503 from `validateEnvironment` rather
+ * than a hard boot failure.
+ *
+ * `getDefaultProvider` + `PROVIDER_KEY_MAP` are pulled via dynamic `import()`
+ * to keep `providers.ts` (which statically imports the `@ai-sdk/*` packages)
+ * out of `saas-guards.ts`'s static graph — same lazy-import wall-off as
+ * `EncryptionKeyGuardLive`. A rejected import is promoted to a defect via
+ * `Effect.orDie` (rather than silently skipping the check): `providers.ts` is
+ * core and always loadable at boot, so a rejection means the api can't run
+ * anyway, and a silent skip would reintroduce the boot-green-then-503 hole
+ * this guard closes.
+ */
+export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError | ProviderUnsupportedError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    const { getDefaultProvider, PROVIDER_KEY_MAP, isSupportedProvider } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/providers"),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.orDie);
+
+    // Env-only, matching getModel() → resolveProvider() → resolveSelection()
+    // (the path chat.ts/runAgent actually uses); getDefaultProvider() supplies
+    // the SaaS gateway default when ATLAS_PROVIDER is unset.
+    const provider = readSaasEnv().ATLAS_PROVIDER ?? getDefaultProvider();
+
+    // Unsupported provider (typo / unknown vendor): `resolveSelection()` would
+    // throw on every chat in SaaS, so fail boot instead of skipping. Checked
+    // BEFORE the key lookup so a typo isn't mistaken for a valid keyless
+    // provider (both give `PROVIDER_KEY_MAP[provider] === undefined`).
+    if (!isSupportedProvider(provider)) {
+      return yield* Effect.fail(
+        new ProviderUnsupportedError({
+          provider,
+          message:
+            `SaaS region booted with ATLAS_PROVIDER="${provider}", which is not a supported provider — ` +
+            `model initialization (resolveSelection) would throw on every chat/query at first I/O while ` +
+            `boot and /health stay green. Set ATLAS_PROVIDER to one of: anthropic, openai, bedrock, ollama, ` +
+            `openai-compatible, gateway (or unset it to use the SaaS gateway default). See ${PROVIDER_KEY_ISSUE_REF}.`,
+        }),
+      );
+    }
+
+    const requiredKey = PROVIDER_KEY_MAP[provider];
+
+    // Valid provider with no mapped key → keyless (`ollama` → `""`,
+    // `openai-compatible` → `undefined`): skip the key check. (#3200 tracks
+    // openai-compatible's base-URL validation.)
+    if (!requiredKey) return;
+
+    const value = process.env[requiredKey];
+    if (value === undefined || value === "") {
+      yield* Effect.fail(
+        new ProviderKeyMissingError({
+          provider,
+          requiredKey,
+          message:
+            `SaaS region booted with provider "${provider}" but ${requiredKey} is not set — the api ` +
+            `would boot green, /health would stay green, and every chat/query would 503 with ` +
+            `MISSING_API_KEY at first I/O. Set ${requiredKey} on every region's api service before ` +
+            `booting (or set ATLAS_PROVIDER to a provider whose key is configured). See ${PROVIDER_KEY_ISSUE_REF}.`,
         }),
       );
     }

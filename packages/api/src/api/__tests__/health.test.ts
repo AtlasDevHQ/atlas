@@ -444,6 +444,41 @@ describe("GET /api/health — internal DB / deploy mode contract", () => {
     const body = (await response.json()) as Record<string, unknown>;
     expect(body.status).toBe("degraded");
   });
+
+  // #3184 — a config-file SaaS→self-hosted downgrade (enterprise not enabled)
+  // must be visible on /health beyond the CRITICAL boot log. No diagnostics
+  // here, so status would otherwise be "ok"; the downgrade promotes it to
+  // degraded and exposes the reason. Stays 200 — the box still serves traffic.
+  it("surfaces deployModeDowngraded and promotes status to degraded (#3184)", async () => {
+    mockValidateEnvironment.mockResolvedValue([]);
+    const config = await import("@atlas/api/lib/config");
+    config._setConfigForTest({
+      deployMode: "self-hosted",
+      deployModeDowngraded: {
+        reason: 'atlas.config.ts requested deployMode "saas" but enterprise is not enabled — see #1978',
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for this path
+    } as any);
+
+    const response = await app.fetch(healthRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.status).toBe("degraded");
+    expect(body.deployModeDowngraded).toEqual({
+      reason: expect.stringContaining("#1978"),
+    });
+  });
+
+  it("omits deployModeDowngraded on a normal boot (#3184)", async () => {
+    mockValidateEnvironment.mockResolvedValue([]);
+    const config = await import("@atlas/api/lib/config");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- partial ResolvedConfig is sufficient for the deployMode path
+    config._setConfigForTest({ deployMode: "self-hosted" } as any);
+
+    const response = await app.fetch(healthRequest());
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.deployModeDowngraded).toBeUndefined();
+  });
 });
 
 // #1987 — plugin healthcheck must surface in /health.

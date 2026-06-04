@@ -254,8 +254,22 @@ const PoolConfigSchema = z.object({
 const RegionConfigSchema = z.object({
   /** Human-readable region label for the admin console. */
   label: z.string().min(1),
-  /** Database URL for the region's internal database. */
-  databaseUrl: z.string().min(1, "Region database URL must not be empty"),
+  /**
+   * Database URL for the region's internal database.
+   *
+   * Intentionally **not** `.min(1)` (#3176): the SaaS deploy config
+   * (`deploy/api/atlas.config.ts`) declares all regions in one map and reads
+   * each `databaseUrl` from a region-specific env var, but a given api service
+   * only sets the env var for the region it claims (`ATLAS_API_REGION`). The
+   * other regions' vars resolve to `""`/`undefined` (the Railway shared-scope
+   * hazard), and a fleet-wide `.min(1)` parse here would abort boot on every
+   * service for one unset non-claimed region. The hard `postgres://`
+   * well-formedness check is scoped to the **claimed** region by
+   * `RegionGuardLive` (`lib/effect/saas-guards.ts`), which already validates
+   * per-claim — so an empty/malformed *claimed* URL still fails boot, while an
+   * empty/unset *non-claimed* URL no longer takes down the fleet.
+   */
+  databaseUrl: z.string().optional(),
   /** Optional datasource URL override for analytics in this region. */
   datasourceUrl: z.string().min(1).optional(),
   /** Public API endpoint for this region (e.g. "https://api-eu.useatlas.dev"). */
@@ -715,6 +729,16 @@ export interface ResolvedConfig {
   residency?: ResidencyConfig;
   /** Resolved deploy mode — binary "saas" or "self-hosted" (auto is resolved at boot). */
   deployMode?: "saas" | "self-hosted";
+  /**
+   * Set when `atlas.config.ts` requested `deployMode: "saas"` but enterprise
+   * was not enabled, so `resolveDeployMode` silently downgraded to
+   * `self-hosted` (the config-file path — the env-var path fails boot via
+   * `EnterpriseGuardLive` instead). The env-path downgrade is loud; this
+   * config-file path otherwise only emits a CRITICAL log. Threaded here so
+   * `/health` can surface a `degraded` flag + reason beyond the log line
+   * (#3184). Absent on a normal boot.
+   */
+  deployModeDowngraded?: { reason: string };
   /**
    * Plugin Catalog declaration — flat list of installable chat Platforms
    * and integration plugins. Seeded into `plugin_catalog` at boot via
@@ -1384,22 +1408,50 @@ async function applyDeployMode(
   // create-atlas standalone scaffold would fail at build time trying to
   // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
   // walls the boot-only modules off from request-path consumers.
+  // Only a CONFIG-FILE "saas" that was the OPERATIVE request counts as a silent
+  // downgrade. A *recognized* explicit env value (`saas` | `self-hosted` |
+  // `auto`) wins over the config file (resolveDeployMode precedence), so it's an
+  // env-driven resolution, not a missing-enterprise downgrade:
+  //   - env "saas"        → EnterpriseGuardLive hard-fails at boot
+  //   - env "self-hosted" → explicit operator override (#3198 Codex P2)
+  //   - env "auto"        → explicit auto-resolution, not a config downgrade
+  //                         (#3198 Codex P2)
+  // But an UNRECOGNIZED env value (a typo like "sasa", or unset/empty) is NOT a
+  // deliberate override — resolveDeployMode treats it as `auto` and the config
+  // file's "saas" is still the operator's expressed intent, so the downgrade
+  // signal must survive (#3198 Codex follow-up). Mirrors the same recognized
+  // set resolveDeployMode validates against.
+  const envDeployMode = process.env.ATLAS_DEPLOY_MODE;
+  const envSetRecognizedMode =
+    envDeployMode === "saas" || envDeployMode === "self-hosted" || envDeployMode === "auto";
   if (
     resolved.deployMode !== "saas" &&
-    process.env.ATLAS_DEPLOY_MODE !== "saas" &&
+    !envSetRecognizedMode &&
     configFileValue === "saas"
   ) {
+    // Cause-agnostic wording (#3198 Codex round 4): the downgrade can be caused
+    // by missing enterprise OR an invalid ATLAS_DEPLOY_MODE (treated as auto) OR
+    // auto-resolution without an internal DB even when enterprise IS enabled.
+    // Don't assert a single cause — list the candidates so the prescribed
+    // remediation can actually fix the resolved state.
+    const reason =
+      `atlas.config.ts requested deployMode "saas" but it resolved to "${resolved.deployMode}" — ` +
+      `the SaaS contracts (DPA, encryption, internal-DB guards) are NOT running. Likely causes: ` +
+      `@atlas/ee not installed or ATLAS_ENTERPRISE_ENABLED unset; an invalid ATLAS_DEPLOY_MODE value ` +
+      `(treated as "auto"); or auto-resolution without DATABASE_URL. Fix the underlying cause, or ` +
+      `remove the deployMode override from atlas.config.ts. See #1978.`;
     log.error(
       {
         requested: "saas",
         resolved: resolved.deployMode,
         source: "atlas.config.ts",
       },
-      `CRITICAL: atlas.config.ts requested deployMode "saas" but enterprise is not enabled — ` +
-        `silently downgraded to "${resolved.deployMode}". DPA, encryption, and internal-DB ` +
-        `guards will NOT run. Build with @atlas/ee installed and ATLAS_ENTERPRISE_ENABLED=true, ` +
-        `or remove the deployMode override from atlas.config.ts. See #1978.`,
+      `CRITICAL: ${reason}`,
     );
+    // #3184 — surface the silent downgrade beyond the log so a headless
+    // Railway box shows a degraded `/health` signal, not just one easy-to-miss
+    // CRITICAL line. Health reads this off the resolved config singleton.
+    resolved.deployModeDowngraded = { reason };
   }
 
   // Pool-default warning runs after deploy mode resolves so the

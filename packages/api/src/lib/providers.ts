@@ -38,6 +38,16 @@ const VALID_PROVIDERS: ReadonlySet<ConfigProvider> = new Set([
   "gateway",
 ]);
 
+/**
+ * Whether `value` is a supported `ATLAS_PROVIDER`. Exposed so boot guards can
+ * distinguish a genuinely-unknown provider (a typo — `resolveSelection()` would
+ * throw on every chat) from a valid-but-keyless one (`ollama`,
+ * `openai-compatible`). Mirrors the membership `resolveSelection()` enforces.
+ */
+export function isSupportedProvider(value: string): boolean {
+  return VALID_PROVIDERS.has(value as ConfigProvider);
+}
+
 const PROVIDER_DEFAULTS: Record<ConfigProvider, string | undefined> = {
   anthropic: "claude-opus-4-8",
   openai: "gpt-4o",
@@ -68,6 +78,31 @@ export function getDefaultProvider(): ConfigProvider {
     ? "gateway"
     : "anthropic";
 }
+
+/**
+ * Maps an `ATLAS_PROVIDER` value to the env var that holds its API key.
+ *
+ * Single source of truth for "which key does this provider need" — consumed
+ * by `startup.ts`'s per-request diagnostic (`checkProviderApiKey`, a 503 path)
+ * AND by `ProviderKeyGuardLive` (the SaaS boot guard, #3178) so the two agree
+ * on the exact key the runtime will require. Lives here next to
+ * {@link getDefaultProvider} (the provider-resolution SSOT) rather than in
+ * `startup.ts` so the boot guard can read it without pulling the startup
+ * module's heavy request-path graph.
+ *
+ * - `ollama` → empty string: runs locally, no API key required (callers treat
+ *   `""` as "no key needed", distinct from an unknown provider's `undefined`).
+ * - `openai-compatible` is intentionally absent: it authenticates via a base
+ *   URL, not a fixed key var, so neither the diagnostic nor the guard asserts
+ *   a key for it (lookup is `undefined` → skipped).
+ */
+export const PROVIDER_KEY_MAP: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  bedrock: "AWS_ACCESS_KEY_ID",
+  ollama: "", // Ollama runs locally, no API key required
+  gateway: "AI_GATEWAY_API_KEY",
+};
 
 /** Anthropic-family model ids contain "anthropic" or "claude". */
 function isAnthropicFamilyModelId(modelId: string): boolean {

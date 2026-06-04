@@ -85,7 +85,7 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
       `export default { deployMode: "saas" };`,
     );
 
-    await loadConfig(dir);
+    const resolved = await loadConfig(dir);
 
     const errorLogs = logCalls.filter((c) => c.level === "error");
     // The "CRITICAL" + "#1978" pair is the operator-grep signal.
@@ -93,6 +93,12 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     expect(critical).toBeDefined();
     expect((critical!.payload as Record<string, unknown>).source).toBe("atlas.config.ts");
     expect((critical!.payload as Record<string, unknown>).requested).toBe("saas");
+
+    // #3184 — the downgrade is also threaded onto the resolved config so
+    // /health can surface a degraded flag + reason beyond the log line.
+    expect(resolved.deployModeDowngraded).toBeDefined();
+    expect(resolved.deployModeDowngraded!.reason).toContain("#1978");
+    expect(resolved.deployModeDowngraded!.reason).toContain("SaaS contracts");
   });
 
   // Negative cases — must NOT log so the warning stays meaningful.
@@ -133,9 +139,70 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     const dir = ensureTmpDir(`auto-${testCounter}`);
     writeFileSync(resolve(dir, "atlas.config.ts"), `export default {};`);
 
-    await loadConfig(dir);
+    const resolved = await loadConfig(dir);
 
     const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
     expect(errorLogs).toHaveLength(0);
+    // #3184 — no downgrade, so the health-facing flag stays unset.
+    expect(resolved.deployModeDowngraded).toBeUndefined();
+  });
+
+  // #3198 Codex P2 — an explicit `ATLAS_DEPLOY_MODE=self-hosted` env var WINS
+  // over a config-file `deployMode: "saas"` by resolveDeployMode precedence, so
+  // it's an intentional override, NOT a silent missing-enterprise downgrade.
+  // It must neither log CRITICAL nor stamp the health-facing flag (otherwise
+  // /health would permanently report degraded with a false claim).
+  it("does NOT flag a downgrade when env explicitly overrides config saas with self-hosted", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "self-hosted";
+    const dir = ensureTmpDir(`env-self-hosted-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
+    expect(errorLogs).toHaveLength(0);
+    expect(resolved.deployModeDowngraded).toBeUndefined();
+  });
+
+  // #3198 Codex P2 (follow-up) — an explicit `ATLAS_DEPLOY_MODE=auto` ALSO wins
+  // over a config-file `saas` (resolveDeployMode reads env ?? configFile), so a
+  // legitimate auto→self-hosted resolution must not be reported as a downgrade.
+  it("does NOT flag a downgrade when env explicitly sets auto over config saas", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "auto";
+    const dir = ensureTmpDir(`env-auto-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
+    expect(errorLogs).toHaveLength(0);
+    expect(resolved.deployModeDowngraded).toBeUndefined();
+  });
+
+  // #3198 Codex (round 3) — an UNRECOGNIZED env value (typo) is not a deliberate
+  // override: resolveDeployMode treats it as `auto`, but the config-file `saas`
+  // is still the operator's intent, so the silent-downgrade signal must survive.
+  it("DOES flag a downgrade when env is an invalid value over config saas", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "sasa"; // typo → treated as auto → self-hosted
+    const dir = ensureTmpDir(`env-invalid-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const critical = logCalls.find(
+      (c) => c.level === "error" && c.message.includes("CRITICAL") && c.message.includes("#1978"),
+    );
+    expect(critical).toBeDefined();
+    expect(resolved.deployModeDowngraded).toBeDefined();
+    expect(resolved.deployModeDowngraded!.reason).toContain("#1978");
   });
 });

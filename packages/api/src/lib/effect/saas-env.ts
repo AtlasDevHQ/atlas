@@ -41,6 +41,18 @@ export interface SaasEnv {
   // Rate limiting (RateLimitGuardLive)
   readonly ATLAS_RATE_LIMIT_RPM: string | undefined;
 
+  // LLM provider key (ProviderKeyGuardLive, #3178). `ATLAS_PROVIDER` selects
+  // the provider (unset → `getDefaultProvider()`, which is `gateway` in SaaS).
+  // `AI_GATEWAY_API_KEY` is the key the SaaS gateway-default path requires; it
+  // is listed here so `makeBootSmokeFixture` populates it (the boot-smoke gate
+  // boots on the gateway default). The guard resolves the *required* key for
+  // the configured provider dynamically via `PROVIDER_KEY_MAP` and reads it
+  // straight from `process.env` — so a non-gateway key (ANTHROPIC_API_KEY,
+  // OPENAI_API_KEY, AWS_ACCESS_KEY_ID) need not be enumerated here (same
+  // dynamic-read pattern as ChatAdapterEnvGuardLive's adapter keys).
+  readonly ATLAS_PROVIDER: string | undefined;
+  readonly AI_GATEWAY_API_KEY: string | undefined;
+
   // Region routing (RegionGuardLive + atlas.config.ts residency)
   readonly ATLAS_API_REGION: string | undefined;
   readonly ATLAS_REGION_US_DB_URL: string | undefined;
@@ -110,6 +122,8 @@ export const SAAS_ENV_KEYS = [
   "ATLAS_ENCRYPTION_KEY",
   "BETTER_AUTH_SECRET",
   "ATLAS_RATE_LIMIT_RPM",
+  "ATLAS_PROVIDER",
+  "AI_GATEWAY_API_KEY",
   "ATLAS_API_REGION",
   "ATLAS_REGION_US_DB_URL",
   "ATLAS_REGION_EU_DB_URL",
@@ -147,6 +161,8 @@ export function readSaasEnv(env: NodeJS.ProcessEnv = process.env): SaasEnv {
     ATLAS_ENCRYPTION_KEY: env.ATLAS_ENCRYPTION_KEY,
     BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET,
     ATLAS_RATE_LIMIT_RPM: env.ATLAS_RATE_LIMIT_RPM,
+    ATLAS_PROVIDER: env.ATLAS_PROVIDER,
+    AI_GATEWAY_API_KEY: env.AI_GATEWAY_API_KEY,
     ATLAS_API_REGION: env.ATLAS_API_REGION,
     ATLAS_REGION_US_DB_URL: env.ATLAS_REGION_US_DB_URL,
     ATLAS_REGION_EU_DB_URL: env.ATLAS_REGION_EU_DB_URL,
@@ -217,6 +233,14 @@ export function makeBootSmokeFixture(
     // at-rest encryption — this is purely the Better Auth path.
     BETTER_AUTH_SECRET: "ci-fixture-better-auth-secret-not-a-secret-pad-pad",
     ATLAS_RATE_LIMIT_RPM: "300",
+    // ProviderKeyGuardLive (#3178): leave ATLAS_PROVIDER unset so the guard
+    // exercises the SaaS gateway default (getDefaultProvider() → "gateway"),
+    // and supply the key that path requires. Not a secret — identical every
+    // CI run, like the other fixture placeholders. The gateway SDK only reads
+    // it at per-request model init, never at boot, so any non-empty value
+    // satisfies the boot guard.
+    ATLAS_PROVIDER: undefined,
+    AI_GATEWAY_API_KEY: "ci-fixture-ai-gateway-key-not-a-secret",
     ATLAS_API_REGION: "us",
     ATLAS_REGION_US_DB_URL: databaseUrl,
     ATLAS_REGION_EU_DB_URL: databaseUrl,

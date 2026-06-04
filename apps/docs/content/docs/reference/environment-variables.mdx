@@ -545,12 +545,16 @@ ATLAS_PUBLIC_URL=https://api.example.com
 
 Settings for multi-region deployments with per-workspace region routing. See also [`residency` in atlas.config.ts](/reference/config#residency) and the [Data Residency guide](/platform-ops/data-residency).
 
+<Callout type="info">
+**Per-service scoping (#3176).** Each `ATLAS_REGION_*_DB_URL` only has to be set on the api service whose `ATLAS_API_REGION` **claims that region** — the US service needs `ATLAS_REGION_US_DB_URL`, the EU service needs `ATLAS_REGION_EU_DB_URL`, and so on. The shared `deploy/api/atlas.config.ts` declares all regions in one map, but a non-claimed region's URL may be left unset/empty on a given service without aborting its boot. Only the **claimed** region's URL is hard-validated at boot (by `RegionGuardLive`); an empty or malformed claimed URL still fails boot.
+</Callout>
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_API_REGION` | — | Region identity of this API instance (e.g. `us-west`, `eu-west`, `ap-southeast`). Used for misrouting detection. Falls back to `residency.defaultRegion` from config if unset |
-| `ATLAS_REGION_US_DB_URL` | — | Per-region internal-DB URL used by the SaaS residency router when `ATLAS_API_REGION=us-*`. Required on SaaS regions that route to a US workspace database. Source: `packages/api/src/lib/effect/saas-env.ts` |
-| `ATLAS_REGION_EU_DB_URL` | — | Per-region internal-DB URL used by the residency router when `ATLAS_API_REGION=eu-*`. Required on SaaS regions that route to an EU workspace database |
-| `ATLAS_REGION_APAC_DB_URL` | — | Per-region internal-DB URL used by the residency router when `ATLAS_API_REGION=ap-*`. Required on SaaS regions that route to an APAC workspace database |
+| `ATLAS_REGION_US_DB_URL` | — | Per-region internal-DB URL for the US region. **Only required on the api service that claims `ATLAS_API_REGION=us`** — other services may leave it unset/empty (see callout above). Source: `packages/api/src/lib/effect/saas-env.ts` |
+| `ATLAS_REGION_EU_DB_URL` | — | Per-region internal-DB URL for the EU region. **Only required on the api service that claims `ATLAS_API_REGION=eu`** — other services may leave it unset/empty |
+| `ATLAS_REGION_APAC_DB_URL` | — | Per-region internal-DB URL for the APAC region. **Only required on the api service that claims `ATLAS_API_REGION=apac`** — other services may leave it unset/empty |
 | `ATLAS_STRICT_ROUTING` | `false` | When `true`, misrouted requests receive `421 Misdirected Request` with a `correctApiUrl` hint instead of being served with a warning log |
 | `ATLAS_INTERNAL_SECRET` | — | Shared secret for cross-region service-to-service auth. Required for region migration operations. Both the source and target API instances must share the same secret |
 

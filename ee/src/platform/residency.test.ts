@@ -234,6 +234,36 @@ describe("residency", () => {
       expect(result!.region).toBe("eu-west");
     });
 
+    // #3176/#3198 — a region whose internal-DB `databaseUrl` is unset on this
+    // instance (now allowed, so a non-claimed region URL can't abort boot
+    // fleet-wide) must STILL resolve its analytics datasource routing. The
+    // caller routes off `datasourceUrl`/`region` and never reads `databaseUrl`,
+    // so the resolver must NOT bail to null (that would silently drop the
+    // region's datasource and fall through to the default datasource — the
+    // Codex P1 on PR #3198). `databaseUrl` is simply omitted.
+    it("preserves datasource routing when a region's databaseUrl is unset (#3198)", async () => {
+      mockConfig = {
+        residency: {
+          regions: {
+            "us": { label: "US", databaseUrl: "postgresql://us/atlas" },
+            // EU's internal-DB URL is unset on this US box, but it still
+            // declares a per-region analytics datasource override.
+            "eu-west": { label: "EU West", datasourceUrl: "postgresql://eu-west/data" },
+          },
+          defaultRegion: "us",
+        },
+      };
+      mockRows.push([{ region: "eu-west" }]);
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
+      expect(result).not.toBeNull();
+      expect(result!.region).toBe("eu-west");
+      expect(result!.datasourceUrl).toBe("postgresql://eu-west/data");
+      expect(result!.databaseUrl).toBeUndefined();
+      // No "contract may be violated" error — this is the expected per-service
+      // omission state, not a misconfiguration.
+      expect(loggerErrors).toHaveLength(0);
+    });
+
     it("returns null when residency is not configured", async () => {
       mockConfig = {};
       const result = await run(resolveRegionDatabaseUrl("org-1"));

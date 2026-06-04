@@ -45,6 +45,8 @@ import type {
   EncryptionKeyMalformedError as TEncryptionKeyMalformedError,
   InternalDatabaseRequiredError as TInternalDatabaseRequiredError,
   RateLimitRequiredError as TRateLimitRequiredError,
+  ProviderKeyMissingError as TProviderKeyMissingError,
+  ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
   ChatAdapterEnvMissingError as TChatAdapterEnvMissingError,
 } from "../saas-guards";
@@ -59,6 +61,9 @@ const {
   InternalDatabaseRequiredError,
   RateLimitGuardLive,
   RateLimitRequiredError,
+  ProviderKeyGuardLive,
+  ProviderKeyMissingError,
+  ProviderUnsupportedError,
   RegionGuardLive,
   RegionMisconfiguredError,
   ChatAdapterEnvGuardLive,
@@ -589,6 +594,150 @@ describe("RateLimitGuardLive", () => {
   });
 });
 
+// ══════════════════════════════════════════════════════════════════════
+// ██  ProviderKeyGuardLive (#3178)
+// ══════════════════════════════════════════════════════════════════════
+
+describe("ProviderKeyGuardLive", () => {
+  // ANTHROPIC_API_KEY isn't a member of SAAS_ENV_KEYS (the guard reads any
+  // provider key dynamically from process.env), so `withCleanEnv` doesn't
+  // clear it. A dev machine may have it set, which would let a "fails when
+  // missing" assertion pass for the wrong reason — delete it explicitly.
+  function withoutAnthropicKey<T>(run: () => Promise<T>): Promise<T> {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    return run().finally(() => {
+      if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
+      else delete process.env.ANTHROPIC_API_KEY;
+    });
+  }
+
+  function runGuard(): Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>> {
+    return Effect.runPromiseExit(
+      Effect.void.pipe(
+        Effect.provide(
+          ProviderKeyGuardLive.pipe(
+            Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+          ),
+        ),
+      ),
+    ) as Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>>;
+  }
+
+  // The gateway default is the SaaS prod path: ATLAS_PROVIDER unset →
+  // getDefaultProvider() → "gateway" (because ATLAS_DEPLOY_MODE=saas) →
+  // requires AI_GATEWAY_API_KEY, which is a SAAS_ENV_KEYS member cleared by
+  // withCleanEnv. The acceptance criterion explicitly calls out this path.
+  test("fails boot in SaaS (gateway default) when AI_GATEWAY_API_KEY is missing", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas"; // drives getDefaultProvider() → gateway
+      const exit = await runGuard();
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+      expect((failure as TProviderKeyMissingError)._tag).toBe("ProviderKeyMissingError");
+      expect((failure as TProviderKeyMissingError).provider).toBe("gateway");
+      expect((failure as TProviderKeyMissingError).requiredKey).toBe("AI_GATEWAY_API_KEY");
+      expect((failure as TProviderKeyMissingError).message).toContain("#3178");
+    });
+  });
+
+  test("fails boot in SaaS when ATLAS_PROVIDER=anthropic but ANTHROPIC_API_KEY is unset", async () => {
+    await withCleanEnv(() =>
+      withoutAnthropicKey(async () => {
+        process.env.ATLAS_PROVIDER = "anthropic";
+        const exit = await runGuard();
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+        expect((failure as TProviderKeyMissingError).provider).toBe("anthropic");
+        expect((failure as TProviderKeyMissingError).requiredKey).toBe("ANTHROPIC_API_KEY");
+      }),
+    );
+  });
+
+  // Empty-string key is treated as missing (matches the per-request
+  // diagnostic's `!process.env[requiredKey]` truthy check).
+  test("fails boot in SaaS when the provider key is an empty string", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      process.env.AI_GATEWAY_API_KEY = "";
+      const exit = await runGuard();
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+    });
+  });
+
+  test("succeeds in SaaS (gateway default) when AI_GATEWAY_API_KEY is set", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_DEPLOY_MODE = "saas";
+      process.env.AI_GATEWAY_API_KEY = " test-gateway-key";
+      const exit = await runGuard();
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // ollama runs locally and needs no key — PROVIDER_KEY_MAP maps it to "",
+  // which the guard treats as "no key required" and skips.
+  test("succeeds in SaaS with ATLAS_PROVIDER=ollama (no key required)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PROVIDER = "ollama";
+      const exit = await runGuard();
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // openai-compatible authenticates via a base URL, not a fixed key var, so
+  // PROVIDER_KEY_MAP has no entry — but it IS a supported provider, so the guard
+  // skips the key check rather than treating it as unknown.
+  test("succeeds in SaaS for a valid keyless provider (openai-compatible)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PROVIDER = "openai-compatible";
+      const exit = await runGuard();
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // #3198 Codex (round 4) — a typo / unsupported ATLAS_PROVIDER would make
+  // resolveSelection() throw on every chat at first I/O while boot/health stay
+  // green. Fail boot with the distinct ProviderUnsupportedError instead of
+  // skipping (an unknown provider also yields PROVIDER_KEY_MAP[x] === undefined,
+  // so it must be distinguished from a valid keyless provider).
+  test("fails boot in SaaS when ATLAS_PROVIDER is an unsupported value (#3198)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_PROVIDER = "anthrop"; // typo
+      const exit = await runGuard();
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(ProviderUnsupportedError);
+      expect((failure as TProviderUnsupportedError)._tag).toBe("ProviderUnsupportedError");
+      expect((failure as TProviderUnsupportedError).provider).toBe("anthrop");
+      expect((failure as TProviderUnsupportedError).message).toContain("#3178");
+    });
+  });
+
+  // The self-hosted counterpart of the test pair the issue calls for:
+  // a keyless dev loop must still boot (it keeps the per-request 503).
+  test("succeeds on self-hosted with no provider key (per-request 503 preserved)", async () => {
+    await withCleanEnv(() =>
+      withoutAnthropicKey(async () => {
+        process.env.ATLAS_PROVIDER = "anthropic";
+        const exit = await Effect.runPromiseExit(
+          Effect.void.pipe(
+            Effect.provide(
+              ProviderKeyGuardLive.pipe(
+                Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
+              ),
+            ),
+          ),
+        );
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+});
+
 // Note: tests for `warnIfDeployModeSilentlyDowngraded` previously lived
 // here. The helper was inlined into `lib/config.ts` to break a static-
 // reachability chain that broke the create-atlas standalone scaffold
@@ -711,6 +860,68 @@ describe("RegionGuardLive", () => {
         ),
       );
       expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // #3176 — the load-bearing acceptance criterion. A US service claims `us`
+  // (valid URL), while a NON-claimed region (`eu`) has an empty databaseUrl
+  // because its env var isn't set on this box. Boot must succeed: only the
+  // claimed region is validated, so one unset non-claimed region can't take
+  // down the fleet. The schema-level half of this fix is pinned in config.test.ts.
+  test("boots in SaaS when a non-claimed region's databaseUrl is empty (#3176)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_API_REGION = "us";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                residency: {
+                  regions: {
+                    "us": { databaseUrl: "postgres://u:p@h:5432/db" },
+                    "eu": { databaseUrl: "" }, // env var unset on this US service
+                  },
+                  defaultRegion: "us",
+                },
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  // #3176 corollary — the empty-URL protection is preserved, just scoped: an
+  // empty databaseUrl on the CLAIMED region still fails boot (it's the URL this
+  // service actually routes to). Complements the malformed-URL test above with
+  // the specific empty-string case the old `.min(1)` schema check used to catch.
+  test("fails boot in SaaS when the claimed region's databaseUrl is empty (#3176 corollary)", async () => {
+    await withCleanEnv(async () => {
+      process.env.ATLAS_API_REGION = "us";
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(
+          Effect.provide(
+            RegionGuardLive.pipe(
+              Layer.provide(makeTestConfigLayer({
+                deployMode: "saas",
+                residency: {
+                  regions: {
+                    "us": { databaseUrl: "" }, // claimed region — must still fail boot
+                    "eu": { databaseUrl: "postgres://u:p@h:5432/db" },
+                  },
+                  defaultRegion: "us",
+                },
+              })),
+            ),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+      expect(failure).toBeInstanceOf(RegionMisconfiguredError);
+      expect((failure as TRegionMisconfiguredError).cause).toBe("malformed_database_url");
     });
   });
 });

@@ -213,9 +213,20 @@ describe("Org-scoped user write operations (#983)", () => {
     it("platform admin can change role for a user in their active workspace", async () => {
       // #2890: role changes write member.role, so even a platform admin acts
       // within an active workspace (verifyOrgMembership still bypasses the
-      // membership check, but the write is org-scoped).
+      // membership check, but the write is org-scoped). #3157: when the target
+      // is a member of the active workspace, resolution uses it — assert the
+      // UPDATE targets org-1, not some other resolved org.
       setPlatformAdmin("org-1");
-      mockMembershipFor("user-in-any-org");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        if (/update member/i.test(sql)) {
+          expect(params).toEqual(["member", "user-in-any-org", "org-1"]);
+          return [{ userId: "user-in-any-org" }];
+        }
+        if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
+          return params?.[0] === "user-in-any-org" ? [{ userId: "user-in-any-org" }] : [];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
@@ -230,9 +241,14 @@ describe("Org-scoped user write operations (#983)", () => {
     // ("select an active workspace"); now the target's membership is resolved.
     it("platform admin with no active org auto-resolves a single-workspace target (#3157)", async () => {
       setPlatformAdmin(); // no active org
-      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
         const s = sql.toLowerCase();
-        if (/update member/i.test(sql)) return [{ userId: "user-x" }];
+        if (/update member/i.test(sql)) {
+          // The write targets the RESOLVED workspace (org-7), not the absent
+          // active one.
+          expect(params).toEqual(["admin", "user-x", "org-7"]);
+          return [{ userId: "user-x" }];
+        }
         // Membership resolution — exactly one workspace.
         if (s.includes("left join organization")) return [{ organizationId: "org-7", name: "Org 7" }];
         if (s.includes("count(*)")) return [{ count: "2" }]; // promotion, not a demotion
@@ -705,6 +721,29 @@ describe("Org-scoped user write operations (#983)", () => {
       const body = await res.json() as { message: string };
       expect(body.message).toMatch(/last admin/);
       expect(mockRemoveUser).not.toHaveBeenCalled();
+    });
+
+    // #3158 — the guard-passing delete: target is an admin/owner of the active
+    // workspace but a co-admin remains (count > 1), so removeUser MUST run, and
+    // it runs INSIDE the advisory lock (the refactor moved it from after the
+    // guard into the locked callback). Guards against a regression that returns
+    // "ok" without actually deleting, or skips the lock.
+    it("deletes an admin when a co-admin remains, invoking removeUser under the lock", async () => {
+      setPlatformAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (s.includes("count(*)")) return [{ count: "2" }]; // co-admin remains
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-x", role: "admin" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/users/user-x"),
+      );
+      expect(res.status).toBe(200);
+      expect(mockRemoveUser).toHaveBeenCalledTimes(1);
     });
   });
 

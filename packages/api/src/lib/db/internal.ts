@@ -1878,9 +1878,11 @@ export interface WorkspaceAdminLockTx {
  * The callback's count + role re-read MUST go through `tx.query` (the locked
  * connection) to be transaction-consistent — a stray `internalQuery` would land
  * on a different pooled connection, outside the lock. Throwing from the callback
- * rolls back and re-throws so the caller surfaces a 5xx. Uses the raw pool (a
- * dedicated transaction connection), not the shared `_sqlClient`, exactly like
- * {@link cascadeWorkspaceDelete} and the chat-install gate.
+ * rolls back and re-throws so the caller surfaces a 5xx. Always uses the raw
+ * pool (a dedicated transaction connection), not the shared `_sqlClient` — the
+ * same manual BEGIN/COMMIT/ROLLBACK + destroy-on-failed-rollback mechanics as
+ * the raw-pool fallback in {@link cascadeWorkspaceDelete} and the chat-install
+ * gate.
  */
 export async function withWorkspaceAdminLock<T>(
   orgId: string,

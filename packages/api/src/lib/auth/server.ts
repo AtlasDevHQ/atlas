@@ -54,6 +54,7 @@ import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
+import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/api/lib/auth/org-member-guards";
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { adminAccessControl, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
@@ -1375,6 +1376,15 @@ export function buildPlugins() {
             cancelledBy: { id: cancelledBy.user.id, email: cancelledBy.user.email },
           });
         },
+        // #3164 — BLOCK Better Auth's native member-mutation endpoints
+        // (`update-member-role` / `remove-member`) so the ONLY path to mutate a
+        // membership is Atlas's advisory-lock-guarded admin routes (#3158).
+        // Coordinating via these hooks is unsound (the lock can't span Better
+        // Auth's separate-connection write); the full rationale + why
+        // leaveOrganization / removeUser are unaffected live in
+        // `org-member-guards.ts`.
+        beforeUpdateMemberRole: blockNativeMemberRoleUpdate,
+        beforeRemoveMember: blockNativeMemberRemoval,
       },
       async sendInvitationEmail(data) {
         // The actual render + dispatch lives in `lib/auth/invitations.ts`

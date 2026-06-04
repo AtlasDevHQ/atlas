@@ -2390,3 +2390,26 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 **Deferred (tracked):** platform `/users` cross-tenant role change under per-org scoping (#3157); making the last-admin guards atomic — a pre-existing TOCTOU (#3158).
 
 **Category:** Model-collapse / seam-cleaning — two overlapping role surfaces with an undefined-semantics middle state reduced to one source of truth (`member.role`) + one cross-tenant escape hatch (`platform_admin`), deleting a duplicate resolver and closing every raw-`user.role` authorization seam as a class.
+
+---
+
+## 83. Last-admin invariant on one seam — block the native endpoints, generalize the lock to N workspaces (#3164 + #3166)
+
+**Date:** 2026-06-04
+**Issue:** #3164, #3166
+**PR:** #PLACEHOLDER_PR
+
+**Problem:** Win #82 single-sourced tenant admin-ness on `member.role`, and PR #3162 (#3158) made Atlas's three *custom* admin guards (`changeUserRoleRoute` / `removeMembershipRoute` / `deleteUserRoute`) atomic against each other via a per-workspace `pg_advisory_xact_lock` (`withWorkspaceAdminLock`). Review found the invariant still had two holes the lock didn't cover:
+- **A second, unguarded mutation surface (#3164).** Better Auth's organization plugin exposes native `POST /organization/update-member-role` and `POST /organization/remove-member` through the managed-auth catch-all, granted to tenant `admin`/`owner` by `org-permissions.ts`. Those endpoints take *no* advisory lock, so a native removal could race a locked demotion and strip a workspace of its last admin/owner — the exact TOCTOU #3158 closed, reachable by a different door.
+- **The lock was scoped to one workspace (#3166).** `deleteUserRoute` calls Better Auth's `removeUser`, which cascades the delete **globally** (every `member` row across all workspaces), but the guard only locked + counted the caller's `activeOrganizationId`. Deleting the sole admin of *another* workspace stripped it silently.
+
+**Solution:** Enforce the invariant at a single seam — *every* path that can shrink an admin set either runs under the advisory lock or is refused.
+- **Block, don't coordinate (#3164).** A new `org-member-guards.ts` wires `beforeUpdateMemberRole` / `beforeRemoveMember` to throw `APIError("FORBIDDEN", { code: "ATLAS_USE_ADMIN_API" })`, pointing callers at the guarded Atlas routes. Coordinating (acquire the lock inside the `before*` hook) is **unsound**: the hook's transaction-scoped lock releases when the hook returns, but Better Auth commits the member mutation afterward on its *own* connection — the lock can't span the write, so the TOCTOU reopens. Blocking removes the unguarded door entirely; nothing in Atlas calls these endpoints, and `leaveOrganization` (separate handler, its own owner guard) and the admin-plugin `removeUser` cascade (different plugin, no hook) are unaffected.
+- **Generalize the lock to N workspaces (#3166).** `withWorkspaceAdminLock(orgId)` becomes a one-element wrapper over a new `withWorkspaceAdminLocks(orgIds)` that dedupes + **sorts** the ids and acquires `pg_advisory_xact_lock` for each in one transaction. Sorted acquisition is the deadlock-avoidance invariant (two concurrent multi-workspace deletes grab shared locks in the same order; a single-lock guard never waits on a second lock, so it can't cycle either). `deleteUserRoute` now enumerates the target's admin/owner workspaces, locks them all, re-counts the *other* admins per workspace under the locks, refuses (403, nothing deleted) if **any** would hit zero, and removes the target's member rows under the locks — `removeUser` still runs *after* the locks release (the bounded-pool nested-checkout deadlock Codex flagged on #3162 stays avoided: one connection, all locks, no nesting).
+
+**Impact:**
+- **One invariant, one seam.** Member roles/removals mutate only through the advisory-lock-guarded custom routes; the native endpoints are closed; the global delete is guarded across every affected workspace. There is no longer a member-mutation path that can strip the last admin/owner.
+- **The single → multi lock generalization is free for existing callers.** `withWorkspaceAdminLock` keeps its signature (delegates to the plural), so the role-change and membership-removal guards are untouched; only the seam they share grew a multi-workspace sibling.
+- **Proven under real concurrency.** `admin-last-admin-pg.test.ts` gains four `withWorkspaceAdminLocks` cases (sole-admin-of-B-from-active-A refused; multi-workspace atomic refuse; delete-vs-demote serialize → ≥1 admin always remains) alongside the existing #3158 demote/demote + delete/demote races. The block is unit-tested in `org-member-guards.test.ts` (both hooks always 403 with the pointer code).
+
+**Category:** Seam-cleaning / completion pass — finish enforcing a single invariant (≥1 admin/owner per workspace) across *every* mutation path: close the unguarded duplicate surface by blocking it (coordinating was provably unsound), and lift the per-workspace lock to a deterministic multi-workspace lock so the one cascade that spans workspaces is guarded the same way. Builds directly on win #82 (the single-source role model) and the #3158 advisory lock.

@@ -1857,23 +1857,35 @@ export interface WorkspaceAdminLockTx {
 }
 
 /**
- * Run `fn` inside a transaction holding a per-workspace advisory lock, so every
- * "last admin/owner" guard for the same workspace serializes. Without it, two
- * concurrent demotions — or a demote racing a membership removal / user delete —
- * each read the OTHER admin as still present in their own uncommitted snapshot
- * and both succeed, stripping the workspace of its last admin/owner (#3158).
+ * Run `fn` inside a transaction holding per-workspace advisory locks for EVERY
+ * workspace in `orgIds`, so every "last admin/owner" guard touching any of them
+ * serializes. Without it, two concurrent demotions — or a demote racing a
+ * membership removal / user delete — each read the OTHER admin as still present
+ * in their own uncommitted snapshot and both succeed, stripping the workspace of
+ * its last admin/owner (#3158).
  *
  * A plain `UPDATE ... WHERE EXISTS (another admin)` does NOT close this window
  * under READ COMMITTED: the EXISTS subquery takes no row lock, so two demotions
  * of DIFFERENT admins never conflict. The count (the decision) and the mutation
  * must both run while a shared lock is held.
  *
- * Advisory lock — not `SELECT ... FOR UPDATE` on the admin rows — because the
+ * Advisory locks — not `SELECT ... FOR UPDATE` on the admin rows — because the
  * user-delete guard mutates through Better Auth's `removeUser` on a SEPARATE
  * connection; row locks this transaction held on the rows `removeUser` deletes
- * would deadlock. The advisory lock serializes the *decision* across all three
- * guarded paths (role change / membership removal / user delete) without
- * locking the member rows themselves. Mirrors the chat-install gate (#3001).
+ * would deadlock. The advisory locks serialize the *decision* across every
+ * guarded path (role change / membership removal / user delete) without locking
+ * the member rows themselves. Mirrors the chat-install gate (#3001).
+ *
+ * Multiple locks (the global user delete, #3166): a `platform_admin` delete
+ * cascades across ALL of the target's workspaces, so the guard must lock every
+ * workspace where the target is an admin/owner — not just the caller's active
+ * one. The ids are deduped and acquired in SORTED order so two concurrent
+ * multi-workspace deletes with overlapping sets always grab shared locks in the
+ * same sequence and can never deadlock-cycle. A single-workspace guard (1 lock)
+ * never waits on a second lock, so it can't cycle against a multi-lock caller
+ * either. All locks share the one {@link LAST_ADMIN_LOCK_NAMESPACE}, so a
+ * single-workspace demotion in workspace B and a multi-workspace delete that
+ * includes B serialize on `hashtext(B)`.
  *
  * The callback's count + role re-read MUST go through `tx.query` (the locked
  * connection) to be transaction-consistent — a stray `internalQuery` would land
@@ -1883,11 +1895,24 @@ export interface WorkspaceAdminLockTx {
  * same manual BEGIN/COMMIT/ROLLBACK + destroy-on-failed-rollback mechanics as
  * the raw-pool fallback in {@link cascadeWorkspaceDelete} and the chat-install
  * gate.
+ *
+ * Acquire one connection per call and hold every lock on it for the whole
+ * transaction — never nest a second {@link withWorkspaceAdminLock(s)} (or any
+ * other pool checkout) inside `fn`. The internal pool is bounded (max 5);
+ * nesting checkouts under the lock lets concurrent callers each hold a client
+ * while waiting for another, starving the pool (the nested-pool deadlock Codex
+ * flagged on PR #3162). All the workspaces a call needs go in the single
+ * `orgIds` array passed here.
  */
-export async function withWorkspaceAdminLock<T>(
-  orgId: string,
+export async function withWorkspaceAdminLocks<T>(
+  orgIds: readonly string[],
   fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
 ): Promise<T> {
+  // Dedupe + sort so the lock-acquisition order is identical for every caller
+  // regardless of the order their orgIds arrive in — the deadlock-avoidance
+  // invariant. Empty input still opens the transaction (the callback may run
+  // guard-free reads), it just holds no advisory lock.
+  const sortedOrgIds = [...new Set(orgIds)].sort();
   const client = await getInternalDB().connect();
   // Destroy the client on a failed ROLLBACK so a dirty socket doesn't poison
   // the next borrower (matches cascadeWorkspaceDelete).
@@ -1900,14 +1925,16 @@ export async function withWorkspaceAdminLock<T>(
   };
   try {
     await client.query("BEGIN");
-    // Transaction-scoped advisory lock keyed on the workspace; released
+    // Transaction-scoped advisory locks keyed on each workspace; released
     // automatically on COMMIT/ROLLBACK. hashtext maps the text org id to the
     // int4 the lock takes — a cross-workspace hash collision only costs extra
-    // serialization, never correctness.
-    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
-      LAST_ADMIN_LOCK_NAMESPACE,
-      orgId,
-    ]);
+    // serialization, never correctness. Acquired in sorted order (see above).
+    for (const orgId of sortedOrgIds) {
+      await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+        LAST_ADMIN_LOCK_NAMESPACE,
+        orgId,
+      ]);
+    }
     const result = await fn(tx);
     await client.query("COMMIT");
     return result;
@@ -1915,14 +1942,27 @@ export async function withWorkspaceAdminLock<T>(
     await client.query("ROLLBACK").catch((rbErr: unknown) => {
       rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
       log.warn(
-        { orgId, err: rollbackErr.message },
-        "ROLLBACK failed during withWorkspaceAdminLock — client will be destroyed",
+        { orgIds: sortedOrgIds, err: rollbackErr.message },
+        "ROLLBACK failed during withWorkspaceAdminLocks — client will be destroyed",
       );
     });
     throw err;
   } finally {
     client.release(rollbackErr ?? undefined);
   }
+}
+
+/**
+ * Single-workspace convenience wrapper over {@link withWorkspaceAdminLocks} —
+ * the common case for the role-change and membership-removal guards, which only
+ * ever touch the caller's active workspace. See that function for the full
+ * rationale on why this is an advisory lock and not row locks.
+ */
+export async function withWorkspaceAdminLock<T>(
+  orgId: string,
+  fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
+): Promise<T> {
+  return withWorkspaceAdminLocks([orgId], fn);
 }
 
 /**

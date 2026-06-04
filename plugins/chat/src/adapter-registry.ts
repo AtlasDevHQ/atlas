@@ -381,23 +381,36 @@ const GCHAT_BUILDER: ChatAdapterBuilder<Adapter> = {
 /**
  * Microsoft Teams (#3142 — fifth static-bot adapter, completing the
  * Phase D family under umbrella #2994). The operator wires one Microsoft
- * Entra ID app registration (`TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`)
- * operating in MultiTenant mode — `appTenantId` is intentionally omitted
- * so a single app serves every customer tenant; per-Workspace routing by
- * the tenant GUID lives downstream in executeQuery's Teams branch. The
- * `@chat-adapter/teams` adapter verifies the Bot Framework JWT on every
- * inbound activity internally, so there's no separate webhook-secret env
- * var (unlike Telegram).
+ * Entra ID app registration (`TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`).
+ *
+ * App tenancy: by default the app runs **MultiTenant** (one app serves
+ * every customer tenant; per-Workspace routing by the tenant GUID lives
+ * downstream in executeQuery's Teams branch). An operator running a
+ * **single-tenant** Azure Bot sets `TEAMS_TENANT_ID` — when present we
+ * pass it through so `createTeamsAdapter` configures the upstream adapter
+ * as `appType: "SingleTenant"` with that tenant; omitting it would leave
+ * the adapter MultiTenant and break Bot Framework auth for single-tenant
+ * deployments (Codex #3156).
+ *
+ * The `@chat-adapter/teams` adapter verifies the Bot Framework JWT on
+ * every inbound activity internally, so there's no separate webhook-secret
+ * env var (unlike Telegram).
  */
 const TEAMS_BUILDER: ChatAdapterBuilder<Adapter> = {
   slug: "teams",
   platform: "teams",
+  // TEAMS_TENANT_ID is intentionally NOT required — it's only set for
+  // single-tenant Azure Bots; MultiTenant deployments omit it.
   requiredEnv: ["TEAMS_APP_ID", "TEAMS_APP_PASSWORD"],
   build(env) {
     const appId = env.TEAMS_APP_ID;
     const appPassword = env.TEAMS_APP_PASSWORD;
     if (!appId || !appPassword) return null;
-    const config: TeamsAdapterConfig = { appId, appPassword };
+    const config: TeamsAdapterConfig = {
+      appId,
+      appPassword,
+      ...(env.TEAMS_TENANT_ID ? { tenantId: env.TEAMS_TENANT_ID } : {}),
+    };
     return createTeamsAdapter(config);
   },
 };

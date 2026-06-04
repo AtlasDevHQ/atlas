@@ -703,6 +703,23 @@ function resolveStaticBotRoutingKey(configSchema: unknown): string | null {
   return null;
 }
 
+/**
+ * The set of field keys a catalog row's `config_schema` declares (#3140). Used
+ * to whitelist the `extras` a static-bot install forwards to `confirmInstall`
+ * so an undeclared body key can't reach persistence — defense-in-depth over the
+ * handler's own key extraction. Narrows the `unknown` schema defensively.
+ */
+function staticBotDeclaredKeys(configSchema: unknown): ReadonlySet<string> {
+  const keys = new Set<string>();
+  if (!Array.isArray(configSchema)) return keys;
+  for (const field of configSchema) {
+    if (!field || typeof field !== "object") continue;
+    const key = (field as Record<string, unknown>).key;
+    if (typeof key === "string" && key.length > 0) keys.add(key);
+  }
+  return keys;
+}
+
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -1114,11 +1131,17 @@ integrations.openapi(installFormRoute, async (c) =>
     // Trim surrounding whitespace — a form input can carry copy-paste padding
     // that the handler's anchored format regex would otherwise reject.
     const routingIdentifier = rawRouting.trim();
-    // Everything but the routing-id field is forwarded as extras; the handler
-    // extracts its own known label keys (display_name, …) and drops the rest
-    // per the StaticBotInstallHandler contract.
-    const extras: Record<string, unknown> = { ...formData };
-    delete extras[routingKey];
+    // Forward only the catalog-declared fields (minus the routing id) as extras,
+    // built from `config_schema` rather than cloned from the raw body. The
+    // handler already drops keys it doesn't know, but whitelisting here keeps
+    // an undeclared JSON key from ever reaching `confirmInstall` — so a handler
+    // that persists `extras` can't write schema-foreign data into
+    // workspace_plugins.config (#3148 review).
+    const declaredKeys = staticBotDeclaredKeys(row.config_schema);
+    const extras: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(formData)) {
+      if (key !== routingKey && declaredKeys.has(key)) extras[key] = value;
+    }
 
     // `confirmInstall` validates the routing id, round-trips the platform for
     // reachability, and upserts the workspace_plugins(pillar='chat') row. Its

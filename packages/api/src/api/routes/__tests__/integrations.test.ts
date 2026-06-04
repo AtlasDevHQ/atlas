@@ -2068,6 +2068,25 @@ describe("POST /:platform/install-form — static-bot install (#3140)", () => {
       // The non-routing fields ride through as extras (the right key was deleted).
       expect(confirmArgs?.extras).toEqual({ label: "Ops", priority: 5 });
     });
+
+    it("drops undeclared body keys from extras — only config_schema-declared fields reach confirmInstall", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: "-1001234567890",
+          display_name: "Data Team",
+          // Undeclared keys (not in TELEGRAM_CONFIG_SCHEMA) must not be forwarded.
+          injected: "should-be-dropped",
+          pillar: "datasource",
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      // Only the declared `display_name` survives; the routing key + undeclared
+      // keys are stripped before confirmInstall.
+      expect(confirmArgs?.extras).toEqual({ display_name: "Data Team" });
+    });
   });
 
   describe("dormancy gate — coming_soon refused", () => {

@@ -129,10 +129,16 @@ This ADR partially supersedes it for Datasources: built-in catalog rows for Data
 
 The four form-shaped static-bot chat platforms (Telegram `chat_id`, Teams
 `tenant_id`, Google Chat `workspace_id`, WhatsApp `phone_number_id`) capture a
-**routing identifier** the admin types into a form — there is no OAuth dance and
-no per-workspace credential (the bot is operator-shared via env-var tokens; the
-routing id is non-secret and persisted to `workspace_plugins.config`, which the
-chat runtime reads at message time). `StaticBotInstallHandler.confirmInstall`
+**routing identifier** the admin types into a form. There is no OAuth dance and,
+crucially, **no per-tenant install credential at all** — the install record
+holds only the non-secret routing id in `workspace_plugins.config`, which the
+chat runtime reads at message time. The bot's auth is an *operator* credential
+(the platform bot token, an `ATLAS_*`/env var owned by the deploy operator, the
+single bot shared across every workspace), never sourced per-install: it is not
+read on the install path, not stored in `workspace_plugins`, and not surfaced in
+Admin → Integrations. This upholds the policy that **per-tenant plugin
+credentials never fall back to operator env vars** — the only thing a tenant
+supplies here is a routing identifier, not a secret. `StaticBotInstallHandler.confirmInstall`
 already owns the cap-counted `workspace_plugins(pillar='chat')` write, but the
 only live route wired to it was Discord's OAuth-shaped redirect
 (`integrations-discord.ts`). These four had no live install route at all after

@@ -2325,10 +2325,11 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const slaThresholds = await del(`DELETE FROM sla_thresholds WHERE workspace_id = $1`);
     const regionMigrations = await del(`DELETE FROM region_migrations WHERE workspace_id = $1`);
     const workspacePlugins = await del(`DELETE FROM workspace_plugins WHERE workspace_id = $1`);
-    // Per-workspace encrypted credential stores (keyed by workspace_id, not
-    // org_id). Without these, a "full" purge leaves secrets at rest:
-    // integration_credentials = lazy-OAuth bundles (Salesforce/Jira/etc.,
-    // ADR-0005); twenty_integrations = Twenty CRM API key.
+    // Per-workspace encrypted credential stores, matched on the workspace_id
+    // column (same value as orgId — see the Phase-3 header above). Without
+    // these, a "full" purge leaves secrets at rest: integration_credentials =
+    // lazy-OAuth bundles (Salesforce/Jira/etc., ADR-0005); twenty_integrations
+    // = Twenty CRM API key.
     const integrationCredentials = await del(`DELETE FROM integration_credentials WHERE workspace_id = $1`);
     const twentyIntegrations = await del(`DELETE FROM twenty_integrations WHERE workspace_id = $1`);
 

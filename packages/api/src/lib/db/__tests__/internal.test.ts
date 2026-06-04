@@ -901,9 +901,9 @@ describe("hardDeleteWorkspace()", () => {
   });
 
   it("purges per-workspace credential stores (integration_credentials + twenty_integrations)", async () => {
-    // GDPR completeness: both encrypted-secret tables are keyed by workspace_id
-    // (not org_id) and must be cleared + counted, else credentials persist at
-    // rest after a "full" hard delete (#3168).
+    // GDPR completeness: both encrypted-secret tables are matched on the
+    // workspace_id column and must be cleared + counted, else credentials
+    // persist at rest after a "full" hard delete (#3168).
     const { pool: basePool } = createMockPool();
     const queries: string[] = [];
     const client = {

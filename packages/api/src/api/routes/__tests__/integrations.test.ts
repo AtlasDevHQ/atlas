@@ -1691,24 +1691,59 @@ describe("DELETE /api/v1/integrations/slack — dual-store teardown", () => {
   });
 
   it("returns 501 for a real catalog platform whose disconnect path isn't wired", async () => {
-    // Future-Platform safety net: catalog returns a `teams` row (a real
-    // Platform), but the WorkspaceInstaller credential dispatch only
-    // covers `slack` + INTEGRATION_CREDENTIALS_SLUGS today. The 501
-    // must short-circuit before either store is touched.
+    // Future-Platform safety net: catalog returns an `email` row (a real
+    // Platform), but the unified disconnect gate only admits `slack` +
+    // INTEGRATION_CREDENTIALS_SLUGS + INLINE_CREDENTIAL_SLUGS +
+    // DEDICATED_TABLE_CREDENTIAL_SLUGS + STATIC_BOT_CHAT_SLUGS. Email
+    // disconnects through its own legacy admin endpoint, so the unified
+    // route must 501 short-circuit before either store is touched rather
+    // than silently no-op'ing. (teams/telegram/gchat/whatsapp/discord are
+    // wired via STATIC_BOT_CHAT_SLUGS since #3154 GAP 1, so they no longer
+    // make valid unwired examples.)
     mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
       if (sql.includes("FROM plugin_catalog")) {
-        return [{ id: "catalog:teams", slug: "teams", install_model: "oauth", enabled: true, pillar: "chat", config_schema: null }];
+        return [{ id: "catalog:email", slug: "email", install_model: "form", enabled: true, pillar: "action", config_schema: null }];
       }
       return [];
     });
 
-    const res = await request("/api/v1/integrations/teams", { method: "DELETE" });
+    const res = await request("/api/v1/integrations/email", { method: "DELETE" });
 
     expect(res.status).toBe(501);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("disconnect_unavailable");
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
     expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+
+  it("disconnects a static-bot chat platform via the unified path — no 501, no separate credential store (#3154 GAP 1)", async () => {
+    // telegram/discord/gchat/whatsapp/teams have no per-workspace credential
+    // store (operator-shared bot; routing id in workspace_plugins.config), so
+    // the workspace_plugins DELETE IS the teardown. Pre-GAP-1 these 501'd; now
+    // they flow through WorkspaceInstaller.uninstall like the inline class.
+    mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+      if (sql.includes("DELETE FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.delete");
+        return [];
+      }
+      if (sql.includes("FROM plugin_catalog")) {
+        return [{ id: "catalog:telegram", slug: "telegram", install_model: "static-bot", enabled: true, pillar: "chat", config_schema: null }];
+      }
+      if (sql.includes("FROM workspace_plugins")) {
+        callOrder.push("workspace_plugins.select");
+        // Static-bot installs carry no team_id — the credential dispatch
+        // falls into the no-op branch, so no separate store is touched.
+        return [{ id: "install-tg", install_id: "install-tg", team_id: null }];
+      }
+      return [];
+    });
+
+    const res = await request("/api/v1/integrations/telegram", { method: "DELETE" });
+
+    expect(res.status).toBe(200);
+    expect(callOrder).toContain("workspace_plugins.delete");
+    // No chat_cache / integration_credentials teardown for a static-bot slug.
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
   });
 
   it("returns 400 missing_org_binding when managed-auth user has no active org", async () => {

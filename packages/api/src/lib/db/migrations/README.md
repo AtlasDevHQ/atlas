@@ -7,13 +7,20 @@ request handlers *inside the same container*. Better Auth-owned tables follow
 the `MANAGED_AUTH_MIGRATIONS` ordering in `db/internal.ts`.
 
 Companion one-shot backfill scripts live in [`scripts/`](./scripts/README.md).
-Every schema change must be mirrored in `db/schema.ts` in the same PR. Note the
-guard's reach: `scripts/check-schema-drift.sh` (in `/ci`) only checks that each
-`CREATE TABLE` has a matching `pgTable` (table-level existence) and that dropped
-tables are removed from `schema.ts`. It does **not** inspect `ALTER TABLE` —
-added/changed columns, types, constraints, and indexes are **not** caught, so an
-unmirrored `ALTER TABLE` passes `/ci` green and a later `drizzle-kit generate`
-can then emit a migration that reverts it. Mirror column-level changes by hand.
+Every schema change must be mirrored in `db/schema.ts` in the same PR. Note how
+narrow the guard's reach is: `scripts/check-schema-drift.sh` (in `/ci`) does a
+single forward check — every `CREATE TABLE` name must have a matching `pgTable`
+(table-level existence). That's all it enforces. It does **not**:
+- inspect `ALTER TABLE` — added/changed columns, types, constraints, indexes are
+  **not** compared, so an unmirrored `ALTER TABLE` passes `/ci` green and a later
+  `drizzle-kit generate` can emit a migration that reverts it;
+- verify that a *dropped* table's `pgTable` was removed — `DROP TABLE` names are
+  only subtracted from the expected set (to avoid a false-positive), never
+  reverse-checked, so a leftover `pgTable` for a dropped table also passes green
+  and can have `drizzle-kit generate` re-`CREATE` it.
+
+So mirror column-level changes and dropped-table removals **by hand** — a green
+drift check does not confirm either.
 
 ## Two-phase drop discipline (expand–contract)
 
@@ -54,14 +61,17 @@ still-running pod (N or N-1) reads the object.
 For a **`DROP COLUMN`**, the same split applies: stop writing the column in N
 (let it go `NULL`/default), drop it in N+1.
 
-### How the schema-drift guard already encodes this
+### How the schema-drift guard relates to drops
 
 `scripts/check-schema-drift.sh` computes *expected tables = created MINUS
 dropped*: every `DROP TABLE [IF EXISTS] <name>` subtracts that table from the set
-it expects to find in `schema.ts`. So the guard's contract is already
-"a dropped table must also be removed from `schema.ts`" — pair your drop
-migration with the matching `schema.ts` deletion in one commit and the check
-stays green (the same reason `mcp_tokens`, dropped by 0047, is excluded).
+it expects to find in `schema.ts`. That subtraction only stops a *false
+positive* — once a table is dropped, the forward check no longer demands a
+`pgTable` for it (the same reason `mcp_tokens`, dropped by 0047, is excluded). It
+does **not** verify you removed the stale `pgTable`; that remains your job (see
+the guard-reach note at the top). Pair your drop migration with the matching
+`schema.ts` deletion in the same commit so a later `drizzle-kit generate` can't
+re-`CREATE` the table.
 
 ### Motivating examples
 
@@ -72,8 +82,10 @@ stays green (the same reason `mcp_tokens`, dropped by 0047, is excluded).
   draining N-1 pod still runs the *old* readers during overlap and would 500 on
   `teams_installations`. Moving the readers was necessary but **not** sufficient —
   it was acceptable only under the pre-launch exception below (no real overlap
-  traffic), and the migration header flags it as a deliberate exception. Once a
-  customer is live, this same drop would have needed the two-phase split.
+  traffic). Once a customer is live, this same drop would have needed the
+  two-phase split. (The `0119` header documents *why the tables are unused*, not
+  the overlap reasoning — capturing that deploy-safety rationale in the header is
+  exactly the discipline this doc is asking future drops to add.)
 - **`0118_drop_user_admin_role.sql`** — unbounded `UPDATE member/user` scans plus
   the column retirement. A no-op on current data, but the advisory-lock hold
   grows with table size, so at scale the migration itself becomes the stall — a
@@ -82,6 +94,7 @@ stays green (the same reason `mcp_tokens`, dropped by 0047, is excluded).
 ### When a one-release drop is still fine
 
 Pre-launch (no customers) the overlap window carries no real traffic, so a
-same-release "remove reads + drop" is acceptable today — but write it as a
-*deliberate* exception in the migration header (as `0119` does), not a default.
-Once live, default to the two-phase split.
+same-release "remove reads + drop" is acceptable today — but call it out as a
+*deliberate* exception in the migration header (state that the overlap is
+empty because there are no customers yet), not a default. Once live, default to
+the two-phase split.

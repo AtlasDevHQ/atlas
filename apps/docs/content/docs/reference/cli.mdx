@@ -865,14 +865,14 @@ bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--personas <path>` | — | Required. Fixture file declaring the personas to inject and the expected Persons/Notes. |
-| `--wipe-twenty` | off | Clear the Twenty workspace before the run. **Destructive** — double-gated by `ATLAS_SMOKE_WIPE_OK=1` (the run aborts if the flag is passed without the env var). |
+| `--wipe-twenty` | off | **Best-effort** delete of existing Persons/Notes/Companies before the run (bounded to `SMOKE_MAX_RECORDS_PER_TYPE` = 1,000 per object type; per-record delete failures are logged and the run continues, so it is not a guaranteed full clear). **Destructive** — double-gated by `ATLAS_SMOKE_WIPE_OK=1` (the run aborts if the flag is passed without the env var). |
 | `--twenty-base-url <url>` | `TWENTY_BASE_URL` or `https://api.twenty.com` | Twenty REST base URL. |
 | `--twenty-api-key <key>` | `TWENTY_API_KEY` | Twenty API key. Required — pass the flag or set the env var. |
 | `--timeout-seconds <n>` | `60` | How long to poll `crm_outbox` for all enqueued rows to reach `done`/`dead` before failing. |
 | `--database-url <url>` | `ATLAS_TEAM_PG_URL` / `DATABASE_URL` | Explicit tenant-DB URL (same resolution as `ops wipe`). |
 
 <Callout type="warn" title="Every run writes to Twenty; --wipe-twenty also deletes">
-A smoke run is **never read-only**: it enqueues the fixture personas and the flusher creates/updates Persons + Notes in the target Twenty workspace, leaving fixture records behind. Point it at a staging/test Twenty workspace, **never production**. `--wipe-twenty` additionally **deletes** workspace data before the run and is gated by `ATLAS_SMOKE_WIPE_OK=1` exactly as `ops wipe` is gated by `ATLAS_WIPE_OK=1`; omitting it only skips that *delete* phase — it does not make the run non-mutating.
+A smoke run is **never read-only**: it enqueues the fixture personas and the flusher creates/updates Persons + Notes in the target Twenty workspace, leaving fixture records behind. Point it at a staging/test Twenty workspace, **never production**. `--wipe-twenty` additionally does a best-effort **delete** of existing records before the run (bounded, continues on per-record errors — see the flag table) and is gated by `ATLAS_SMOKE_WIPE_OK=1` exactly as `ops wipe` is gated by `ATLAS_WIPE_OK=1`; omitting it only skips that *delete* phase — it does not make the run non-mutating.
 </Callout>
 
 **Exit codes:** `0` = clean (observed matches expected); `1` = argument/fixture parse error; `2` = outbox drain timed out; `3` = diff dirty (dispatcher misbehaved or Twenty unreachable); `4` = wipe phase failed; `5` = infrastructure failure (tenant DB unreachable, enqueue insert failed, or poll query errored).

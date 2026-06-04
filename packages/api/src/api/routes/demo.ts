@@ -602,6 +602,12 @@ demo.openapi(demoChatRoute, async (c) => {
         // errors are caught as tool results). Pass `subsystem: "provider"` so
         // an unreachable host is labeled `provider_unreachable`, not the
         // datasource-framed `internal_error`.
+        //
+        // NOTE: this only covers errors thrown *before* the stream is returned
+        // (runAgent throwing synchronously). A provider error raised mid-stream
+        // hits the `createUIMessageStream` onError above, which still returns a
+        // generic string — classifying that path (as chat.ts does) is tracked
+        // by #3202.
         const matched = matchError(err, { subsystem: "provider" });
         if (matched) {
           // Honor the canonical code→HTTP contract (mirror of

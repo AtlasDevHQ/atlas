@@ -1,66 +1,59 @@
 /**
- * Discord integration OAuth routes.
+ * Discord legacy OAuth install routes — RETIRED (#3145, umbrella #2994).
  *
- * - GET /api/v1/discord/install   — Redirect to Discord OAuth2 authorize
- * - GET /api/v1/discord/callback  — Handle OAuth2 authorization callback
+ * - GET /api/v1/discord/install   — 410 Gone (was: Discord OAuth2 authorize redirect)
+ * - GET /api/v1/discord/callback  — 410 Gone (was: OAuth2 callback)
  *
- * Discord uses OAuth2 to authorize a bot into a guild (server).
- * Platform operator registers a Discord Application and sets
- * DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET as env vars.
- * What changes per-org is the guild authorization — like Teams,
- * the bot token itself is a platform-level credential.
+ * This was the **residual uncapped** Discord install: its callback wrote a
+ * `discord_installations` row via `saveDiscordInstallation` with **no**
+ * chat-integration cap check — the same bypass the unified install pipeline
+ * (ADR-0007) was built to eliminate. The working, cap-gated Discord install
+ * lives in `routes/integrations-discord.ts` at
+ * `/api/v1/integrations/discord/{install,callback}`: it dispatches into
+ * `DiscordStaticBotInstallHandler.confirmInstall`, which persists a
+ * `workspace_plugins` row through the advisory-locked
+ * `checkChatIntegrationLimitAndInstall` (over-cap → 429, reconnect
+ * grandfathered) and verifies the guild via the Discord API.
+ *
+ * Both routes are kept mounted (not deleted) so a stale bookmark or in-flight
+ * Discord redirect lands on an explicit **410 Gone** pointing at the new path
+ * rather than a 404 that reads like an outage. With this retirement, every
+ * chat install path routes through the cap gate — closing the last bypass
+ * under umbrella #2994.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { saveDiscordInstallation } from "@atlas/api/lib/discord/store";
-import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
-import { adminAuthPreamble } from "./admin-auth";
-import { getConfig } from "@atlas/api/lib/config";
-import { getWebOrigin } from "@atlas/api/lib/web-origin";
 
 const log = createLogger("discord");
 
 const discord = new OpenAPIHono({ defaultHook: validationHook });
 
+/** Shared 410 body — the install moved to the cap-gated integrations route. */
+const RETIRED_MESSAGE =
+  "The legacy Discord OAuth install has been retired. Install Discord from " +
+  "Admin → Integrations → Discord, which uses the cap-gated bot-install flow at " +
+  "/api/v1/integrations/discord/install. The old /api/v1/discord/* endpoints created " +
+  "uncapped installs and no longer accept connections.";
+
 // ---------------------------------------------------------------------------
-// Route definitions
+// Route definitions — both retired to 410 Gone
 // ---------------------------------------------------------------------------
 
 const installRoute = createRoute({
   method: "get",
   path: "/install",
   tags: ["Discord"],
-  summary: "Discord OAuth install redirect",
+  summary: "Discord OAuth install redirect (retired)",
   description:
-    "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured. " +
-    "Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting " +
-    "guild authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
+    "Retired in #3145 — Discord now installs via the cap-gated flow at " +
+    "/api/v1/integrations/discord/install. Returns 410 Gone.",
   responses: {
-    302: {
-      description: "Redirect to Discord OAuth2 authorize page",
-    },
-    401: {
-      description: "Not authenticated",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Caller is not an admin/owner of the workspace",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    429: {
-      description: "Rate limited",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Failed to save OAuth state",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    501: {
-      description: "Discord not configured",
+    410: {
+      description: "Endpoint retired — install via /api/v1/integrations/discord/install",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -70,243 +63,49 @@ const callbackRoute = createRoute({
   method: "get",
   path: "/callback",
   tags: ["Discord"],
-  summary: "Discord OAuth callback",
+  summary: "Discord OAuth callback (retired)",
   description:
-    "Handles the OAuth2 callback from Discord. Verifies the guild authorization, " +
-    "saves the installation, and returns HTML on success or failure.",
+    "Retired in #3145 — the legacy callback wrote an uncapped install. Returns 410 Gone.",
   request: {
     query: z.object({
-      state: z.string().optional().openapi({ description: "CSRF state parameter" }),
-      code: z.string().optional().openapi({ description: "Authorization code from Discord" }),
-      guild_id: z.string().optional().openapi({ description: "Authorized guild ID" }),
-      error: z.string().optional().openapi({ description: "Error code from Discord on denial" }),
-      error_description: z.string().optional().openapi({ description: "Human-readable error from Discord" }),
+      state: z.string().optional().openapi({ description: "Legacy CSRF state (ignored)" }),
+      code: z.string().optional().openapi({ description: "Legacy authorization code (ignored)" }),
+      guild_id: z.string().optional().openapi({ description: "Legacy guild id (ignored)" }),
     }),
   },
   responses: {
-    200: {
-      description: "Installation successful (HTML response, when no web origin is configured)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    302: {
-      description: "Installation successful (redirect to /admin/integrations on the web app)",
-    },
-    400: {
-      description: "Invalid or expired state, or authorization denied",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Installation failed (HTML response)",
-      content: { "text/html": { schema: z.string() } },
-    },
-    501: {
-      description: "Discord not configured",
+    410: {
+      description: "Endpoint retired — install via /api/v1/integrations/discord/install",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
 
 // ---------------------------------------------------------------------------
-// Handlers
+// Handlers — inert; no OAuth state, no install write
 // ---------------------------------------------------------------------------
+//
+// These tombstone routes are public (no `adminAuthPreamble`, no
+// `checkRateLimit`), so anonymous bot scans hit them freely. Log at `debug`,
+// not `info`, so repeated unauthenticated hits can't flood production logs;
+// the `requestId` stays in the 410 body for correlation when debug is enabled.
 
-// --- GET /api/v1/discord/install ---
-
-discord.openapi(installRoute, async (c) => {
-  const clientId = process.env.DISCORD_CLIENT_ID;
-  if (!clientId) {
-    return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
-  }
-
-  // F-04 (security): require authenticated admin so the OAuth state binds the
-  // resulting guild authorization to a real org. Anonymous /install was an
-  // install-hijack vector — an attacker could trigger the redirect and have
-  // the guild bound to org_id = NULL, then later be claimed by another tenant.
+discord.openapi(installRoute, (c) => {
   const requestId = crypto.randomUUID();
-  const preamble = await adminAuthPreamble(c.req.raw, requestId);
-  if ("error" in preamble) {
-    return c.json(preamble.error, preamble.status, preamble.headers);
-  }
-  const orgId = preamble.authResult.user?.activeOrganizationId ?? undefined;
-
-  const nonce = crypto.randomUUID();
-  try {
-    await saveOAuthState(nonce, { orgId, provider: "discord" });
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to save OAuth state for Discord install",
-    );
-    return c.json(
-      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
-      500,
-    );
-  }
-
-  const origin = new URL(c.req.url).origin;
-  const redirectUri = `${origin}/api/v1/discord/callback`;
-  // 2048 = Send Messages permission
-  const url =
-    `https://discord.com/oauth2/authorize` +
-    `?client_id=${encodeURIComponent(clientId)}` +
-    `&permissions=2048` +
-    `&scope=bot+applications.commands` +
-    `&response_type=code` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&state=${encodeURIComponent(nonce)}`;
-  return c.redirect(url);
+  log.debug(
+    { requestId },
+    "Discord legacy /install hit after retirement — redirecting caller to the cap-gated install flow",
+  );
+  return c.json({ error: "endpoint_retired", message: RETIRED_MESSAGE, requestId }, 410);
 });
 
-// --- GET /api/v1/discord/callback ---
-
-discord.openapi(callbackRoute, async (c) => {
-  const clientId = process.env.DISCORD_CLIENT_ID;
-  const clientSecret = process.env.DISCORD_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
-  }
-
+discord.openapi(callbackRoute, (c) => {
   const requestId = crypto.randomUUID();
-
-  // Consume the CSRF nonce first — even if the user denied authorization,
-  // the nonce must be consumed to prevent replay attacks.
-  const nonce = c.req.query("state");
-  if (!nonce) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter." }, 400);
-  }
-
-  let oauthState: Awaited<ReturnType<typeof consumeOAuthState>>;
-  try {
-    oauthState = await consumeOAuthState(nonce);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), requestId },
-      "Failed to validate OAuth state — internal database may be unavailable",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Could not validate the authorization. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  if (!oauthState) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter. Please start the installation again." }, 400);
-  }
-
-  if (oauthState.provider !== "discord") {
-    log.warn({ expected: "discord", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
-    return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
-  }
-
-  // F-04 (security): in SaaS mode, every install must bind to an org. A
-  // missing orgId here means /install was reached without a valid admin
-  // session (or the row was tampered with) — refuse to bind the guild.
-  // Self-hosted is allowed to keep platform-wide installs (orgId may be
-  // undefined when there is no internal DB / no org concept).
-  if (oauthState.orgId === undefined && getConfig()?.deployMode === "saas") {
-    log.warn({ requestId }, "Rejecting Discord install: SaaS mode requires orgId on OAuth state");
-    return c.json(
-      { error: "missing_org_binding", message: "Install must be initiated by an authenticated workspace admin." },
-      400,
-    );
-  }
-
-  // Check for error from Discord (user denied authorization)
-  const errorCode = c.req.query("error");
-  if (errorCode) {
-    const errorDesc = c.req.query("error_description") ?? "Authorization was not granted";
-    log.info({ errorCode, errorDesc }, "Discord authorization denied");
-    return c.json(
-      { error: "authorization_denied", message: errorDesc },
-      400,
-    );
-  }
-
-  const code = c.req.query("code");
-  if (!code) {
-    return c.json({ error: "missing_code", message: "Missing authorization code" }, 400);
-  }
-
-  // Exchange authorization code for token response (contains guild info)
-  const origin = new URL(c.req.url).origin;
-  const redirectUri = `${origin}/api/v1/discord/callback`;
-
-  let tokenData: Record<string, unknown>;
-  try {
-    const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: redirectUri,
-      }),
-    });
-
-    if (!tokenRes.ok) {
-      const body = await tokenRes.text();
-      log.error({ status: tokenRes.status, body, requestId }, "Discord token exchange failed");
-      return c.html(
-        `<html><body><h1>Installation Failed</h1><p>Could not exchange authorization code. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-        500,
-      );
-    }
-
-    tokenData = (await tokenRes.json()) as Record<string, unknown>;
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err), requestId },
-      "Discord token exchange request failed",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Could not contact Discord. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  // Extract guild info from the token response
-  const guild = tokenData.guild as { id?: string; name?: string } | undefined;
-  const guildId = guild?.id;
-  const guildName = guild?.name ?? null;
-
-  if (!guildId || typeof guildId !== "string") {
-    log.error(
-      { hasGuild: !!tokenData.guild, tokenType: tokenData.token_type, requestId },
-      "Discord token response missing guild.id",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Discord did not return guild information. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  try {
-    const orgId = oauthState.orgId;
-    await saveDiscordInstallation(guildId, {
-      orgId,
-      guildName: guildName ?? undefined,
-    });
-    log.info({ guildId, guildName, orgId }, "Discord installation saved");
-  } catch (saveErr) {
-    log.error(
-      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), guildId, requestId },
-      "Failed to save Discord installation",
-    );
-    return c.html(
-      `<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
-      500,
-    );
-  }
-
-  const webOrigin = getWebOrigin();
-  if (webOrigin) {
-    return c.redirect(`${webOrigin}/admin/integrations?installed=discord`);
-  }
-  return c.html(
-    "<html><body><h1>Atlas installed!</h1><p>You can now use Atlas in your Discord server.</p></body></html>",
+  log.debug(
+    { requestId },
+    "Discord legacy /callback hit after retirement — no guild bound (uncapped install path removed)",
   );
+  return c.json({ error: "endpoint_retired", message: RETIRED_MESSAGE, requestId }, 410);
 });
 
 export { discord };

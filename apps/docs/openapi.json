@@ -74444,72 +74444,11 @@
         "tags": [
           "Discord"
         ],
-        "summary": "Discord OAuth install redirect",
-        "description": "Redirects to the Discord OAuth2 authorize page. Requires DISCORD_CLIENT_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting guild authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
+        "summary": "Discord OAuth install redirect (retired)",
+        "description": "Retired in #3145 — Discord now installs via the cap-gated flow at /api/v1/integrations/discord/install. Returns 410 Gone.",
         "responses": {
-          "302": {
-            "description": "Redirect to Discord OAuth2 authorize page"
-          },
-          "401": {
-            "description": "Not authenticated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin/owner of the workspace",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Rate limited",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Failed to save OAuth state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "Discord not configured",
+          "410": {
+            "description": "Endpoint retired — install via /api/v1/integrations/discord/install",
             "content": {
               "application/json": {
                 "schema": {
@@ -74542,111 +74481,43 @@
         "tags": [
           "Discord"
         ],
-        "summary": "Discord OAuth callback",
-        "description": "Handles the OAuth2 callback from Discord. Verifies the guild authorization, saves the installation, and returns HTML on success or failure.",
+        "summary": "Discord OAuth callback (retired)",
+        "description": "Retired in #3145 — the legacy callback wrote an uncapped install. Returns 410 Gone.",
         "parameters": [
           {
             "schema": {
               "type": "string",
-              "description": "CSRF state parameter"
+              "description": "Legacy CSRF state (ignored)"
             },
             "required": false,
-            "description": "CSRF state parameter",
+            "description": "Legacy CSRF state (ignored)",
             "name": "state",
             "in": "query"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Authorization code from Discord"
+              "description": "Legacy authorization code (ignored)"
             },
             "required": false,
-            "description": "Authorization code from Discord",
+            "description": "Legacy authorization code (ignored)",
             "name": "code",
             "in": "query"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Authorized guild ID"
+              "description": "Legacy guild id (ignored)"
             },
             "required": false,
-            "description": "Authorized guild ID",
+            "description": "Legacy guild id (ignored)",
             "name": "guild_id",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Error code from Discord on denial"
-            },
-            "required": false,
-            "description": "Error code from Discord on denial",
-            "name": "error",
-            "in": "query"
-          },
-          {
-            "schema": {
-              "type": "string",
-              "description": "Human-readable error from Discord"
-            },
-            "required": false,
-            "description": "Human-readable error from Discord",
-            "name": "error_description",
             "in": "query"
           }
         ],
         "responses": {
-          "200": {
-            "description": "Installation successful (HTML response, when no web origin is configured)",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "302": {
-            "description": "Installation successful (redirect to /admin/integrations on the web app)"
-          },
-          "400": {
-            "description": "Invalid or expired state, or authorization denied",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Installation failed (HTML response)",
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "501": {
-            "description": "Discord not configured",
+          "410": {
+            "description": "Endpoint retired — install via /api/v1/integrations/discord/install",
             "content": {
               "application/json": {
                 "schema": {

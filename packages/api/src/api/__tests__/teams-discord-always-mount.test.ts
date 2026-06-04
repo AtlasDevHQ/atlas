@@ -81,8 +81,12 @@ describe("/api/v1/{teams,discord} always-mount contract", () => {
     expect(resp.status).toBe(501);
   });
 
-  it("/api/v1/discord/install returns 501 (not 404) when DISCORD_CLIENT_ID unset at import", async () => {
+  it("/api/v1/discord/install returns 410 (not 404) — legacy OAuth route retired in #3145", async () => {
+    // The legacy uncapped Discord OAuth install was retired in #3145 (the
+    // cap-gated path is /api/v1/integrations/discord/install). The route stays
+    // mounted and returns 410 Gone regardless of env, so a stale Discord
+    // redirect lands on an explicit "moved" signal, not a 404.
     const resp = await app.request("/api/v1/discord/install", { method: "GET" });
-    expect(resp.status).toBe(501);
+    expect(resp.status).toBe(410);
   });
 });

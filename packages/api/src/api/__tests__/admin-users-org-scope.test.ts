@@ -724,11 +724,12 @@ describe("Org-scoped user write operations (#983)", () => {
     });
 
     // #3158 — the guard-passing delete: target is an admin/owner of the active
-    // workspace but a co-admin remains (count > 1), so removeUser MUST run, and
-    // it runs INSIDE the advisory lock (the refactor moved it from after the
-    // guard into the locked callback). Guards against a regression that returns
-    // "ok" without actually deleting, or skips the lock.
-    it("deletes an admin when a co-admin remains, invoking removeUser under the lock", async () => {
+    // workspace but a co-admin remains (count > 1), so the guard passes and the
+    // global account delete (removeUser) MUST run. The guard removes the user
+    // from the active workspace under the lock, then removeUser runs after the
+    // lock releases. Guards against a regression that returns "ok"/403 without
+    // actually deleting the account.
+    it("deletes an admin when a co-admin remains, invoking removeUser", async () => {
       setPlatformAdmin("org-1");
       mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
         const s = sql.toLowerCase();

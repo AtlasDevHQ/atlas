@@ -3130,23 +3130,34 @@ admin.openapi(deleteUserRoute, async (c) => {
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
   const scimOverride = scimGuard.kind === "override";
 
-  // Last-admin guard + the global delete, made atomic against concurrent
-  // demotions / removals via the per-workspace advisory lock (#3158). The count
-  // and the `removeUser` call BOTH run while the lock is held — a concurrent
-  // demote that slipped between the count and the delete could otherwise strip
-  // the workspace's last admin. Scoped to the actor's active workspace;
+  // Last-admin guard for the actor's active workspace, made atomic against
+  // concurrent demotions / removals via the per-workspace advisory lock (#3158).
+  // Two operations under the SAME lock, in this order:
+  //   1. Inside the lock: count admins/owners; if removing this admin/owner
+  //      would leave none, refuse (403, nothing deleted). Otherwise remove the
+  //      user from THIS workspace (a direct member DELETE — the same serializing
+  //      mutation removeMembershipRoute uses). Doing the removal under the lock
+  //      is what closes the count→mutate TOCTOU against a concurrent demote.
+  //   2. AFTER the lock releases: the global account delete via Better Auth's
+  //      `removeUser` (cascade-deletes the remaining member rows + account).
+  //
+  // `removeUser` runs OUTSIDE the lock deliberately. It borrows its own client
+  // from the bounded internal pool (max 5); nesting that acquire inside the lock
+  // transaction would let concurrent deletes hold every client and starve each
+  // other's `removeUser` (deadlock — Codex P1 on PR #3162). Running it last also
+  // keeps the irreversible global delete from being followed by a fallible
+  // COMMIT (Codex P2): the only thing committed before it is the reversible,
+  // self-consistent "removed from this workspace" state.
+  //
   // admin-ness lives in member.role (#2890), so a platform admin acting
   // cross-tenant with no active org has no workspace to guard and deletes
-  // directly. `removeUser` is Better Auth's global delete on its OWN connection
-  // (cascades the member rows), so the advisory lock — not `FOR UPDATE` row
-  // locks — is what serializes it without deadlocking against the rows it
-  // cascades.
+  // directly.
   const deleteGuardOrgId = authResult.user?.activeOrganizationId;
-  type DeleteOutcome = { kind: "ok" } | { kind: "last_admin" };
-  let outcome: DeleteOutcome;
-  try {
-    if (hasInternalDB() && deleteGuardOrgId) {
-      outcome = await withWorkspaceAdminLock<DeleteOutcome>(deleteGuardOrgId, async (tx) => {
+  if (hasInternalDB() && deleteGuardOrgId) {
+    type DeleteGuardOutcome = { kind: "ok" } | { kind: "last_admin" };
+    let guard: DeleteGuardOutcome;
+    try {
+      guard = await withWorkspaceAdminLock<DeleteGuardOutcome>(deleteGuardOrgId, async (tx) => {
         const targetMember = await tx.query<{ role: string }>(
           `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
           [userId, deleteGuardOrgId],
@@ -3161,24 +3172,31 @@ admin.openapi(deleteUserRoute, async (c) => {
             return { kind: "last_admin" };
           }
         }
-        // Delete while still holding the lock so a concurrent demote/removal
-        // can't strip the co-admin between our count and the delete.
-        await adminApi.removeUser({ body: { userId }, headers: c.req.raw.headers });
+        // Remove from the active workspace under the lock. `removeUser` below
+        // also cascade-deletes member rows, so this is idempotent with it; its
+        // purpose here is to serialize against a concurrent demote/removal.
+        await tx.query(
+          `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
+          [userId, deleteGuardOrgId],
+        );
         return { kind: "ok" };
       });
-    } else {
-      // No active workspace to guard (platform admin, cross-tenant) — delete
-      // directly, as before.
-      await adminApi.removeUser({ body: { userId }, headers: c.req.raw.headers });
-      outcome = { kind: "ok" };
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId, orgId: deleteGuardOrgId }, "Last admin guard failed during delete");
+      return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
     }
+    if (guard.kind === "last_admin") {
+      return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
+    }
+  }
+
+  // Global account delete — runs after the advisory lock has released, on its
+  // own pooled connection. Irreversible, and the LAST mutating step.
+  try {
+    await adminApi.removeUser({ body: { userId }, headers: c.req.raw.headers });
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
     return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
-  }
-
-  if (outcome.kind === "last_admin") {
-    return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
   }
 
   log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");

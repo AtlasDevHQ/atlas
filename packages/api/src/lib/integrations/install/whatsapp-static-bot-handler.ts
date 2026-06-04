@@ -78,6 +78,7 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.whatsapp");
 
@@ -93,16 +94,28 @@ export const WHATSAPP_SLUG: CatalogId = "whatsapp";
 export const WHATSAPP_CATALOG_ID = "catalog:whatsapp";
 
 /**
- * Cross-workspace ownership guard (#3144 / Codex #3153). Reachability proves
- * the phone_number_id is in the operator's WhatsApp Business Account, not that
- * the installing workspace controls it — so reject an id already bound to a
- * *different* workspace before persisting. The `workspace_id <> $3` filter
+ * Surfaced when a phone_number_id is already bound to a different workspace —
+ * by the pre-check below AND by `confirmInstall`'s catch when the
+ * migration-0120 partial unique index rejects a concurrent claim. Single
+ * source so both paths return identical, actionable text (#3167).
+ */
+const WHATSAPP_ROUTING_CONFLICT_MESSAGE =
+  "This WhatsApp number is already connected to a different Atlas workspace. Each phone number can be linked to only one workspace — disconnect it there first, or contact your operator if you believe this is an error.";
+
+/**
+ * Cross-workspace ownership guard (#3144 / Codex #3153 / #3167). Reachability
+ * proves the phone_number_id is in the operator's WhatsApp Business Account,
+ * not that the installing workspace controls it — so reject an id already bound
+ * to a *different* workspace before persisting. The `workspace_id <> $3` filter
  * excludes the installing workspace, so a reconnect (same workspace re-binding
- * its own id) is never blocked. Read-only pre-check: it narrows the
- * cross-tenant window but isn't transactionally fused with the cap gate's
- * INSERT, so the simultaneous-race case (two workspaces binding a
- * never-before-seen id at once) remains — tracked, with the full
- * ownership-proof flow, in #3154.
+ * its own id) is never blocked.
+ *
+ * This read-only pre-check catches the common case cheaply. The
+ * simultaneous-race case (two workspaces binding a never-before-seen
+ * phone_number_id at the same instant) is now closed by the partial unique
+ * index from migration 0120 (#3167): the losing writer's UPSERT fails with a
+ * 23505 that `confirmInstall`'s catch maps back to
+ * {@link WHATSAPP_ROUTING_CONFLICT_MESSAGE}, so both paths return the same error.
  */
 async function assertPhoneNumberUnboundElsewhere(
   phoneNumberId: string,
@@ -124,8 +137,7 @@ async function assertPhoneNumberUnboundElsewhere(
       "WhatsApp install rejected — phone_number_id already bound to a different workspace",
     );
     throw new WhatsAppPhoneNumberIdInvalidError({
-      message:
-        "This WhatsApp number is already connected to a different Atlas workspace. Each phone number can be linked to only one workspace — disconnect it there first, or contact your operator if you believe this is an error.",
+      message: WHATSAPP_ROUTING_CONFLICT_MESSAGE,
     });
   }
 }
@@ -344,16 +356,18 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     // omitting the label entirely.
     const apiFallback = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153) ────
+    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153 / #3167) ─
     // The operator's Meta token can read any phone_number_id shared into
     // its WhatsApp Business Account, so reachability proves the number is
     // in the operator's account — NOT that THIS workspace controls it.
     // Reject a phone_number_id already bound to a *different* workspace so
     // one customer can't claim another's number and intercept its inbound
     // messages (a reconnect by the same workspace is excluded by the
-    // `workspace_id <> $3` filter). This narrows the cross-tenant window;
-    // the residual (two workspaces racing a never-before-bound id, and the
-    // full operator-approval/ownership-proof flow) is tracked in #3154.
+    // `workspace_id <> $3` filter). This pre-check catches the common case
+    // cheaply; the simultaneous-race residual (two workspaces racing a
+    // never-before-bound id) is closed by the migration-0120 partial unique
+    // index, whose 23505 the cap-gate catch below maps to the same error
+    // (#3167).
     await assertPhoneNumberUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
@@ -403,6 +417,19 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
         },
       );
     } catch (err) {
+      if (isRoutingIdUniqueViolation(err)) {
+        // Another workspace claimed this phone_number_id between our pre-check
+        // and our UPSERT; the migration-0120 partial unique index rejected us
+        // (#3167). Surface the same actionable error the pre-check returns
+        // rather than a raw 500 — first writer wins, we lost the race.
+        log.warn(
+          { workspaceId },
+          "WhatsApp install rejected — phone_number_id claimed by another workspace concurrently (unique index)",
+        );
+        throw new WhatsAppPhoneNumberIdInvalidError({
+          message: WHATSAPP_ROUTING_CONFLICT_MESSAGE,
+        });
+      }
       log.error(
         {
           workspaceId,

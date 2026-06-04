@@ -48,6 +48,7 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.discord");
 
@@ -64,19 +65,32 @@ export const DISCORD_SLUG: CatalogId = "discord";
 export const DISCORD_CATALOG_ID = "catalog:discord";
 
 /**
- * Cross-workspace ownership guard (#3154). The OAuth bot-install redirect
- * proves an admin of the guild authorized the operator bot, but a guild id is
- * non-secret (it leaks in every Discord message envelope and is copyable by
- * any member via Developer Mode). So reject a guild_id already bound to a
- * *different* workspace before persisting — otherwise a second workspace can
- * claim the same guild and the read-side resolver in `executeQuery.ts`
- * fail-closes on `rows.length > 1`, disabling BOTH workspaces (a
- * griefing / availability vector). The `workspace_id <> $3` filter excludes
- * the installing workspace so a reconnect (same workspace re-binding its own
- * guild) is never blocked. Read-only pre-check: it narrows the cross-tenant
- * window but isn't transactionally fused with the cap gate's INSERT, so the
- * simultaneous-race case remains (acceptable — first writer wins, the loser's
- * read-side fail-closed is recoverable by disconnecting one side).
+ * Surfaced when a guild_id is already bound to a different workspace — by the
+ * pre-check below AND by `confirmInstall`'s catch when the migration-0120
+ * partial unique index rejects a concurrent claim. Single source so both paths
+ * return identical, actionable text (#3167).
+ */
+const DISCORD_ROUTING_CONFLICT_MESSAGE =
+  "This Discord server is already connected to a different Atlas workspace. Each server can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.";
+
+/**
+ * Cross-workspace ownership guard (#3154 / #3167). The OAuth bot-install
+ * redirect proves an admin of the guild authorized the operator bot, but a
+ * guild id is non-secret (it leaks in every Discord message envelope and is
+ * copyable by any member via Developer Mode). So reject a guild_id already
+ * bound to a *different* workspace before persisting — otherwise a second
+ * workspace can claim the same guild and the read-side resolver in
+ * `executeQuery.ts` fail-closes on `rows.length > 1`, disabling BOTH
+ * workspaces (a griefing / availability vector). The `workspace_id <> $3`
+ * filter excludes the installing workspace so a reconnect (same workspace
+ * re-binding its own guild) is never blocked.
+ *
+ * This read-only pre-check catches the common case cheaply. The
+ * simultaneous-race case (two workspaces binding a never-before-seen guild_id
+ * at the same instant) is now closed by the partial unique index from
+ * migration 0120 (#3167): the losing writer's UPSERT fails with a 23505 that
+ * `confirmInstall`'s catch maps back to {@link DISCORD_ROUTING_CONFLICT_MESSAGE},
+ * so both paths return the same error.
  */
 async function assertGuildIdUnboundElsewhere(
   guildId: string,
@@ -98,8 +112,7 @@ async function assertGuildIdUnboundElsewhere(
       "Discord install rejected — guild_id already bound to a different workspace",
     );
     throw new DiscordGuildIdInvalidError({
-      message:
-        "This Discord server is already connected to a different Atlas workspace. Each server can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+      message: DISCORD_ROUTING_CONFLICT_MESSAGE,
     });
   }
 }
@@ -271,13 +284,15 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // a failed verification never leaves a half-installed row behind.
     const apiGuildName = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // Reachability proves the operator bot is in the guild, NOT that THIS
     // workspace owns it — guild ids are non-secret. Reject a guild_id already
     // bound to a *different* workspace so a second workspace can't claim it and
     // collapse the read-side resolver onto a `rows.length > 1` fail-closed
     // (which would disable both). A reconnect by the same workspace is excluded
-    // by the `workspace_id <> $3` filter.
+    // by the `workspace_id <> $3` filter. The simultaneous-race residual is
+    // closed by the migration-0120 partial unique index, whose 23505 the
+    // cap-gate catch below maps to the same error (#3167).
     await assertGuildIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 2c. Plan cap + install row — atomic (#2953, #3001) ─────────
@@ -327,6 +342,19 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
         },
       );
     } catch (err) {
+      if (isRoutingIdUniqueViolation(err)) {
+        // Another workspace claimed this guild_id between our pre-check and
+        // our UPSERT; the migration-0120 partial unique index rejected us
+        // (#3167). Surface the same actionable error the pre-check returns
+        // rather than a raw 500 — first writer wins, we lost the race.
+        log.warn(
+          { workspaceId },
+          "Discord install rejected — guild_id claimed by another workspace concurrently (unique index)",
+        );
+        throw new DiscordGuildIdInvalidError({
+          message: DISCORD_ROUTING_CONFLICT_MESSAGE,
+        });
+      }
       log.error(
         {
           workspaceId,

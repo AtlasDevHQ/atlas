@@ -65,6 +65,7 @@ import type {
   InstallRecord,
   StaticBotInstallHandler,
 } from "./types";
+import { isRoutingIdUniqueViolation } from "./routing-id-conflict";
 
 const log = createLogger("integrations.install.teams");
 
@@ -81,17 +82,33 @@ export const TEAMS_SLUG: CatalogId = "teams";
 export const TEAMS_CATALOG_ID = "catalog:teams";
 
 /**
- * Cross-workspace ownership guard (#3154). Teams captures its tenant_id through
- * the Azure AD admin-consent callback, so the id is ownership-proven for the
- * consenting admin — but the tenant GUID is non-secret (it rides in every Bot
- * Framework activity envelope's `channelData.tenant.id`), and two distinct
- * Atlas workspaces controlled from the same Microsoft tenant could both
- * legitimately consent it. Binding the same tenant_id to two workspaces
+ * Surfaced when a tenant_id is already bound to a different workspace — by the
+ * pre-check below AND by `confirmInstall`'s catch when the migration-0120
+ * partial unique index rejects a concurrent claim. Single source so both paths
+ * return identical, actionable text (#3167).
+ */
+const TEAMS_ROUTING_CONFLICT_MESSAGE =
+  "This Microsoft Teams tenant is already connected to a different Atlas workspace. Each tenant can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.";
+
+/**
+ * Cross-workspace ownership guard (#3154 / #3167). Teams captures its tenant_id
+ * through the Azure AD admin-consent callback, so the id is ownership-proven
+ * for the consenting admin — but the tenant GUID is non-secret (it rides in
+ * every Bot Framework activity envelope's `channelData.tenant.id`), and two
+ * distinct Atlas workspaces controlled from the same Microsoft tenant could
+ * both legitimately consent it. Binding the same tenant_id to two workspaces
  * collapses the read-side resolver in `executeQuery.ts` onto a
  * `rows.length > 1` fail-closed, disabling BOTH. So this is a
  * uniqueness/availability guard (first binder wins): reject a tenant_id already
  * bound to a *different* workspace. The `workspace_id <> $3` filter excludes a
  * reconnect of the same workspace.
+ *
+ * This read-only pre-check catches the common case cheaply. The
+ * simultaneous-race case (two workspaces consenting a never-before-seen
+ * tenant_id at the same instant) is now closed by the partial unique index
+ * from migration 0120 (#3167): the losing writer's UPSERT fails with a 23505
+ * that `confirmInstall`'s catch maps back to {@link TEAMS_ROUTING_CONFLICT_MESSAGE},
+ * so both paths return the same error.
  */
 async function assertTenantIdUnboundElsewhere(
   tenantId: string,
@@ -113,8 +130,7 @@ async function assertTenantIdUnboundElsewhere(
       "Teams install rejected — tenant_id already bound to a different workspace",
     );
     throw new TeamsTenantIdInvalidError({
-      message:
-        "This Microsoft Teams tenant is already connected to a different Atlas workspace. Each tenant can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+      message: TEAMS_ROUTING_CONFLICT_MESSAGE,
     });
   }
 }
@@ -252,13 +268,15 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
     // row behind.
     await this.verifyReachability(normalizedTenantId);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // Even though admin-consent proves tenant ownership, the tenant GUID is
     // non-secret and two Atlas workspaces in the same Microsoft tenant could
     // both consent it — binding it twice collapses the read-side resolver onto
     // a `rows.length > 1` fail-closed (disabling both). Reject a tenant_id
     // already bound to a *different* workspace; a reconnect is excluded by
-    // `workspace_id <> $3`.
+    // `workspace_id <> $3`. The simultaneous-race residual is closed by the
+    // migration-0120 partial unique index, whose 23505 the cap-gate catch
+    // below maps to the same error (#3167).
     await assertTenantIdUnboundElsewhere(normalizedTenantId, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
@@ -307,6 +325,19 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
         },
       );
     } catch (err) {
+      if (isRoutingIdUniqueViolation(err)) {
+        // Another workspace consented this tenant_id between our pre-check and
+        // our UPSERT; the migration-0120 partial unique index rejected us
+        // (#3167). Surface the same actionable error the pre-check returns
+        // rather than a raw 500 — first binder wins, we lost the race.
+        log.warn(
+          { workspaceId },
+          "Teams install rejected — tenant_id claimed by another workspace concurrently (unique index)",
+        );
+        throw new TeamsTenantIdInvalidError({
+          message: TEAMS_ROUTING_CONFLICT_MESSAGE,
+        });
+      }
       log.error(
         {
           workspaceId,

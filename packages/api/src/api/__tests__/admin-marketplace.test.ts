@@ -1959,6 +1959,54 @@ describe("audit emission — Workspace marketplace", () => {
       expect(entry.metadata!.error).toContain("config update failed");
     });
 
+    it("maps a routing-id unique violation (23505) to 409 with the cross-workspace conflict message (#3167)", async () => {
+      // Editing a static-bot install's routing field via the generic config
+      // PUT can collide with another workspace's id; the migration-0120 partial
+      // unique index raises 23505. The handler must surface the actionable
+      // "already connected elsewhere" 409, not a generic 500 — and still log
+      // the failure audit (tapError fires before the catch).
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
+      setQueryResult(
+        "UPDATE workspace_plugins",
+        Object.assign(new Error("duplicate key value violates unique constraint"), {
+          code: "23505",
+          constraint: "workspace_plugins_chat_routing_id_unique",
+        }),
+      );
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { chat_id: "-100999" } }),
+      });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("routing_conflict");
+      expect(body.message).toMatch(/already connected to a different Atlas workspace/i);
+      // Failure audit still emitted by the tapError before the catch.
+      expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+      expect(mockLogAdminAction.mock.calls[0]![0].status).toBe("failure");
+    });
+
+    it("re-throws a 23505 on a DIFFERENT index as a 500 — not relabelled as a routing conflict (#3167)", async () => {
+      setQueryResult("FROM workspace_plugins wp", [{ config: {}, config_schema: null }]);
+      setQueryResult(
+        "UPDATE workspace_plugins",
+        Object.assign(new Error("duplicate key value violates unique constraint"), {
+          code: "23505",
+          constraint: "workspace_plugins_id_unique",
+        }),
+      );
+
+      const res = await buildWorkspaceApp().request("/marketplace/inst-1/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: { key: "val" } }),
+      });
+      expect(res.status).toBe(500);
+    });
+
     it("does not emit audit when installation not found (404)", async () => {
       // The pre-SELECT for secret restoration finds no row, short-circuits
       // to 404 before UPDATE runs.

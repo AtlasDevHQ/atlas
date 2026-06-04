@@ -240,6 +240,16 @@ describe("DiscordStaticBotInstallHandler.confirmInstall — cross-workspace guar
     expect(result.installRecord.catalogId).toBe(DISCORD_SLUG);
     expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
+
+  it("fails closed when the uniqueness pre-check query errors — aborts before the cap gate", async () => {
+    // The guard doesn't swallow the internalQuery rejection; it propagates so
+    // the install aborts (no row written) rather than fail-open past an
+    // un-runnable uniqueness check.
+    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("db down")));
+    const handler = new DiscordStaticBotInstallHandler({ botToken: "tkn", clientId: "111" });
+    await expect(handler.confirmInstall(wsid, "123456789012345678")).rejects.toThrow(/db down/);
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -351,6 +351,13 @@ describe("TeamsStaticBotInstallHandler.confirmInstall — cross-workspace guard"
     expect(result.installRecord.catalogId).toBe(TEAMS_SLUG);
     expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
+
+  it("fails closed when the uniqueness pre-check query errors — aborts before the cap gate", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("db down")));
+    const handler = new TeamsStaticBotInstallHandler({ appId: "id", appPassword: "pwd" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_TENANT)).rejects.toThrow(/db down/);
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

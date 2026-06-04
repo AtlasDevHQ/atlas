@@ -362,6 +362,13 @@ describe("GchatStaticBotInstallHandler.confirmInstall — cross-workspace guard"
     expect(result.installRecord.catalogId).toBe(GCHAT_SLUG);
     expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
+
+  it("fails closed when the uniqueness pre-check query errors — aborts before the cap gate", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("db down")));
+    const handler = buildHandler();
+    await expect(handler.confirmInstall(wsid, VALID_WORKSPACE_ID)).rejects.toThrow(/db down/);
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

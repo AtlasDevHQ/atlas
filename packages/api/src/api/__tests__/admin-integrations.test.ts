@@ -460,6 +460,76 @@ describe("admin integrations routes", () => {
       const text = await res.text();
       expect(text).not.toContain("xoxb-secret");
     });
+
+    // #3161 — teams/telegram/gchat/whatsapp connection status is re-sourced
+    // from `workspace_plugins` (their per-platform tables were dropped). A row
+    // for catalog:<slug> means connected; routing-id config fields map through.
+    it("reports static-bot platforms connected from workspace_plugins, mapping config fields", async () => {
+      mockGetInstallationByOrg.mockResolvedValue(null);
+      // sql-discriminating mock: the static-bot status query selects from
+      // workspace_plugins with `catalog_id = ANY(...)`; everything else
+      // (slack meta lookup, webhook count) gets the inert `[{ count: 0 }]`.
+      mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+        if (sql.includes("catalog_id = ANY")) {
+          return [
+            { catalog_id: "catalog:teams", installed_at: "2026-06-01T00:00:00.000Z", config: { tenant_id: "t-abc", tenant_name: "Acme" } },
+            { catalog_id: "catalog:whatsapp", installed_at: "2026-06-02T00:00:00.000Z", config: { phone_number_id: "1098765432109876", display_phone: "+1 555 0100" } },
+          ];
+        }
+        return [{ count: 0 }];
+      });
+
+      const res = await request("/api/v1/admin/integrations/status");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        teams: { connected: boolean; tenantId: string | null; tenantName: string | null; installedAt: string | null };
+        whatsapp: { connected: boolean; phoneNumberId: string | null; displayPhone: string | null };
+        telegram: { connected: boolean; botId: string | null; botUsername: string | null };
+        gchat: { connected: boolean; projectId: string | null; serviceAccountEmail: string | null };
+      };
+
+      // Present rows → connected, with config fields mapped through.
+      expect(data.teams.connected).toBe(true);
+      expect(data.teams.tenantId).toBe("t-abc");
+      expect(data.teams.tenantName).toBe("Acme");
+      expect(data.teams.installedAt).toBe("2026-06-01T00:00:00.000Z");
+      expect(data.whatsapp.connected).toBe(true);
+      expect(data.whatsapp.phoneNumberId).toBe("1098765432109876");
+      expect(data.whatsapp.displayPhone).toBe("+1 555 0100");
+
+      // Absent rows → disconnected.
+      expect(data.telegram.connected).toBe(false);
+      expect(data.gchat.connected).toBe(false);
+
+      // The credential-specific fields that lived in the dropped tables are
+      // gone — operator-shared bots have no per-workspace bot id / project id /
+      // SA email, so these stay null even when connected.
+      expect(data.telegram.botId).toBeNull();
+      expect(data.telegram.botUsername).toBeNull();
+      expect(data.gchat.projectId).toBeNull();
+      expect(data.gchat.serviceAccountEmail).toBeNull();
+    });
+
+    it("reports static-bot platforms disconnected when no workspace_plugins row exists", async () => {
+      mockGetInstallationByOrg.mockResolvedValue(null);
+      mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+        if (sql.includes("catalog_id = ANY")) return []; // none installed
+        return [{ count: 0 }];
+      });
+
+      const res = await request("/api/v1/admin/integrations/status");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        teams: { connected: boolean };
+        telegram: { connected: boolean };
+        gchat: { connected: boolean };
+        whatsapp: { connected: boolean };
+      };
+      expect(data.teams.connected).toBe(false);
+      expect(data.telegram.connected).toBe(false);
+      expect(data.gchat.connected).toBe(false);
+      expect(data.whatsapp.connected).toBe(false);
+    });
   });
 
   // ─── DELETE /integrations/slack ──────────────────────────────────

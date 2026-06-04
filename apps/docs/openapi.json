@@ -74209,11 +74209,72 @@
         "tags": [
           "Teams"
         ],
-        "summary": "Teams OAuth install redirect (retired)",
-        "description": "Retired in #3142 — Teams now installs via the cap-gated static-bot flow at Admin → Integrations. Returns 410 Gone pointing at the new path.",
+        "summary": "Teams OAuth install redirect",
+        "description": "Redirects to the Azure AD admin consent page. Requires TEAMS_APP_ID to be configured. Caller must be authenticated as a workspace admin/owner — the OAuth state binds the resulting tenant authorization to the caller's organization, so anonymous installs are rejected to prevent install hijacking.",
         "responses": {
-          "410": {
-            "description": "Endpoint retired — install via Admin → Integrations",
+          "302": {
+            "description": "Redirect to Azure AD admin consent page"
+          },
+          "401": {
+            "description": "Not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin/owner of the workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to save OAuth state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Teams not configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -74246,33 +74307,111 @@
         "tags": [
           "Teams"
         ],
-        "summary": "Teams OAuth callback (retired)",
-        "description": "Retired in #3142 — the admin-consent callback no longer binds a tenant (that path wrote an uncapped install). Returns 410 Gone.",
+        "summary": "Teams OAuth callback (cap-gated install)",
+        "description": "Handles the admin-consent callback from Azure AD. Dispatches the verified tenant id into the cap-gated static-bot install handler (writes workspace_plugins via checkChatIntegrationLimitAndInstall), then redirects to /admin/integrations (or returns HTML when no web origin is configured).",
         "parameters": [
           {
             "schema": {
               "type": "string",
-              "description": "Legacy CSRF state (ignored)"
+              "description": "CSRF state parameter"
             },
-            "required": false,
-            "description": "Legacy CSRF state (ignored)",
+            "required": true,
+            "description": "CSRF state parameter",
             "name": "state",
             "in": "query"
           },
           {
             "schema": {
               "type": "string",
-              "description": "Legacy Azure AD tenant id (ignored)"
+              "description": "Azure AD tenant ID (absent on denial)"
             },
             "required": false,
-            "description": "Legacy Azure AD tenant id (ignored)",
+            "description": "Azure AD tenant ID (absent on denial)",
             "name": "tenant",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Whether admin consent was granted"
+            },
+            "required": false,
+            "description": "Whether admin consent was granted",
+            "name": "admin_consent",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Error code from Azure AD on denial"
+            },
+            "required": false,
+            "description": "Error code from Azure AD on denial",
+            "name": "error",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Human-readable error from Azure AD"
+            },
+            "required": false,
+            "description": "Human-readable error from Azure AD",
+            "name": "error_description",
             "in": "query"
           }
         ],
         "responses": {
-          "410": {
-            "description": "Endpoint retired — install via Admin → Integrations",
+          "200": {
+            "description": "Installation successful (HTML, when no web origin is configured)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "302": {
+            "description": "Installation outcome (redirect to /admin/integrations on the web app)"
+          },
+          "400": {
+            "description": "Invalid or expired state, or consent not granted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Installation failed (HTML response)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Teams not configured",
             "content": {
               "application/json": {
                 "schema": {

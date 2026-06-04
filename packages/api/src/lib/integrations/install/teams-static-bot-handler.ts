@@ -138,6 +138,14 @@ export interface TeamsInstallConfig {
 
 export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
+  // Teams captures its routing identifier (Microsoft Entra ID tenant GUID)
+  // through the Azure AD **admin-consent** OAuth callback — the consent
+  // happens in the admin's own tenant and Azure returns the verified tenant
+  // id, which IS the ownership proof (analogous to Discord's bot-install
+  // redirect). So the form-based `/install-form` route refuses it (#3142);
+  // the dedicated OAuth callback in `routes/teams.ts` dispatches into
+  // `confirmInstall` instead. See {@link StaticBotInstallHandler.oauthShaped}.
+  readonly oauthShaped = true as const;
 
   private readonly appId: string;
   private readonly newId: () => string;

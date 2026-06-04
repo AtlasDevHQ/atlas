@@ -123,14 +123,17 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #3142 (umbrella #2994) shipped the cap-gated static-bot install +
-      // the full Teams runtime branch: the generic `/install-form` route
-      // captures the tenant_id and `TeamsStaticBotInstallHandler.confirmInstall`
-      // persists through `checkChatIntegrationLimitAndInstall` (over-cap → 429,
-      // reconnect grandfathered); the `@chat-adapter/teams` builder + the
-      // /webhooks/teams receive route + the executeQuery Teams branch all land
-      // in #3142. teams is added to the chatPlugin catalog below so its adapter
-      // instantiates + the webhook mounts.
+      // #3142 (umbrella #2994) shipped the cap-gated install + the full Teams
+      // runtime branch. Teams is OAuth-shaped (like Discord): the Azure AD
+      // admin-consent callback (`GET /api/v1/teams/callback`) returns the
+      // *verified* tenant id — the ownership proof — and dispatches it into
+      // `TeamsStaticBotInstallHandler.confirmInstall`, which persists through
+      // `checkChatIntegrationLimitAndInstall` (over-cap → 429, reconnect
+      // grandfathered). The generic `/install-form` route refuses Teams
+      // (`oauthShaped`). The `@chat-adapter/teams` builder + the /webhooks/teams
+      // receive route + the executeQuery Teams branch also land in #3142; teams
+      // is added to the chatPlugin catalog below so its adapter instantiates +
+      // the webhook mounts.
       implementation_status: "available",
       name: "Microsoft Teams",
       description:

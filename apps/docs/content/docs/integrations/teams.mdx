@@ -147,28 +147,29 @@ and click **Add**.
   request the role first.
 </Callout>
 
-#### 2. Capture the tenant_id
+#### 2. Grant admin consent in Atlas
 
-Find your tenant's GUID in the
-[Microsoft Entra admin center](https://entra.microsoft.com) under
-**Overview** → **Tenant ID**, or run:
+In **Admin → Integrations → Microsoft Teams**, click **Install**. Atlas
+redirects you to Microsoft's **admin-consent** page
+(`https://login.microsoftonline.com/common/adminconsent`). Sign in as a
+**Teams admin** or **Global admin** of the tenant you uploaded the
+manifest to, review the requested permissions, and click **Accept**.
 
-```bash
-az account show --query tenantId --output tsv
-```
+Because you consent *inside your own tenant*, Microsoft returns the
+**verified tenant id** to Atlas on the callback — Atlas never asks you
+to paste a GUID, and a workspace can only bind a tenant it actually
+administers (this is the ownership proof, analogous to Discord's
+bot-install authorize flow).
 
-Paste the GUID (format: `8-4-4-4-12` hex digits, e.g.
-`72f988bf-86f1-41af-91ab-2d7cd011db47`) into the Atlas install modal
-and click **Confirm**.
+#### 3. Atlas verifies + records the install
 
-#### 3. Atlas verifies the tenant
-
-Atlas immediately calls Microsoft's OIDC discovery endpoint
-(`https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration`)
-to confirm the tenant exists in Microsoft Entra ID. If it succeeds,
-the install row is persisted and the card flips to "Installed". If it
-fails, Microsoft's error message bubbles up verbatim — see the next
-section.
+On the callback, Atlas re-checks the tenant against Microsoft's OIDC
+discovery endpoint
+(`https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration`),
+enforces your plan's chat-integration cap, and persists the
+`workspace_plugins` row. The card flips to "Installed". If you're at
+your plan's cap you'll see an upgrade prompt; if Microsoft rejects the
+tenant, the error bubbles up — see the next section.
 
 ### Path B: AppSource Marketplace (operator-listed)
 

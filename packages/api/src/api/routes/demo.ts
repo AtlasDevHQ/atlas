@@ -94,6 +94,24 @@ interface DemoErrorClassification {
 }
 
 /**
+ * Flatten an error + its `cause` chain into one string. `matchError` inspects
+ * only `error.message`, but the AI SDK wraps a transport failure (ECONNREFUSED /
+ * ENOTFOUND / "fetch failed") in an `APICallError` whose connection detail lives
+ * on `.cause`, not the top-level message — so without this a mid-stream provider
+ * outage would miss the `provider_unreachable` match (#3202/#3206 Codex).
+ */
+function flattenErrorMessage(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; current instanceof Error && depth < 5; depth++) {
+    parts.push(current.message);
+    current = (current as { cause?: unknown }).cause;
+  }
+  if (typeof current === "string" && current.length > 0) parts.push(current);
+  return parts.join(" | ");
+}
+
+/**
  * Classify a demo agent-loop error. Single source of truth for the demo surface,
  * invoked by BOTH the synchronous catch (which builds the JSON HTTP response) and
  * the mid-stream `createUIMessageStream` `onError` path (which serializes the SSE
@@ -129,9 +147,17 @@ export function classifyDemoError(err: unknown, requestId: string): DemoErrorCla
     if (status === 408 || /timeout/i.test(message)) {
       return { code: "provider_timeout", message: "The request timed out." };
     }
-    return { code: "provider_error", message: `LLM provider error (HTTP ${status}).` };
+    if (typeof status === "number") {
+      return { code: "provider_error", message: `LLM provider error (HTTP ${status}).` };
+    }
+    // No HTTP status → the SDK wrapped a transport/connection failure (e.g.
+    // ECONNREFUSED/ENOTFOUND/"fetch failed" on `.cause`). Fall through to the
+    // connection-aware matchError below so it maps to provider_unreachable
+    // rather than a misleading `provider_error (HTTP undefined)` (#3206 Codex).
   }
-  const matched = matchError(err, { subsystem: "provider" });
+  // Inspect the message AND the cause chain so a connection failure the SDK
+  // buried on `APICallError.cause` still maps to provider_unreachable.
+  const matched = matchError(new Error(flattenErrorMessage(err)), { subsystem: "provider" });
   if (
     matched &&
     (matched.code === "provider_unreachable" ||

@@ -36,6 +36,19 @@ describe("classifyDemoError (#3202)", () => {
     expect(cls.code).toBe("internal_error");
     expect(cls.message).toContain(REQUEST_ID.slice(0, 8));
   });
+
+  it("unwraps a connection failure buried on the error's cause (#3206)", () => {
+    // The AI SDK wraps a transport failure in an outer error whose top-level
+    // message has no ECONNREFUSED — the detail lives on `.cause`.
+    const err = new Error("Cannot connect to API", {
+      cause: new Error("connect ECONNREFUSED 10.0.0.5:443"),
+    });
+    expect(classifyDemoError(err, REQUEST_ID).code).toBe("provider_unreachable");
+  });
+
+  it("maps a 'fetch failed' transport error to provider_unreachable (#3206)", () => {
+    expect(classifyDemoError(new Error("fetch failed"), REQUEST_ID).code).toBe("provider_unreachable");
+  });
 });
 
 describe("buildDemoMidStreamErrorFrame (#3202)", () => {

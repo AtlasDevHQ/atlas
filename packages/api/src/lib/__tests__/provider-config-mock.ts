@@ -39,8 +39,12 @@ export function mockGetMissingProviderConfig(provider: string): string[] {
       return isEnvSet("OPENAI_API_KEY") ? [] : ["OPENAI_API_KEY"];
     case "gateway":
       return isEnvSet("AI_GATEWAY_API_KEY") ? [] : ["AI_GATEWAY_API_KEY"];
-    case "openai-compatible":
-      return isEnvSet("OPENAI_COMPATIBLE_BASE_URL") ? [] : ["OPENAI_COMPATIBLE_BASE_URL"];
+    case "openai-compatible": {
+      const missing: string[] = [];
+      if (!isEnvSet("OPENAI_COMPATIBLE_BASE_URL")) missing.push("OPENAI_COMPATIBLE_BASE_URL");
+      if (!isEnvSet("ATLAS_MODEL")) missing.push("ATLAS_MODEL");
+      return missing;
+    }
     case "bedrock": {
       const pair = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"];
       if (!pair.some(isEnvSet)) return []; // credential-provider chain

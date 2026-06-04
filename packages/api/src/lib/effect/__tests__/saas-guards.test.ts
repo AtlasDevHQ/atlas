@@ -652,6 +652,7 @@ describe("ProviderKeyGuardLive", () => {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "OPENAI_COMPATIBLE_BASE_URL",
+    "ATLAS_MODEL",
   ] as const;
   function withProviderEnv<T>(overrides: Record<string, string>, run: () => Promise<T>): Promise<T> {
     const saved: Record<string, string | undefined> = {};
@@ -771,11 +772,11 @@ describe("ProviderKeyGuardLive", () => {
     });
   });
 
-  // #3200 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL, which
-  // has no PROVIDER_KEY_MAP entry. The old single-key guard skipped it entirely,
-  // so boot stayed green and buildModel() threw on the first chat. The set-based
-  // check now requires the base URL.
-  test("fails boot in SaaS for openai-compatible with no OPENAI_COMPATIBLE_BASE_URL (#3200)", async () => {
+  // #3200 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL (no
+  // PROVIDER_KEY_MAP entry) AND needs ATLAS_MODEL (it has no default model, so
+  // resolveSelection() throws without one — #3206 Codex). The old single-key
+  // guard skipped it entirely; the set-based check now requires both.
+  test("fails boot in SaaS for openai-compatible with neither base URL nor model (#3200)", async () => {
     await withCleanEnv(() =>
       withProviderEnv({}, async () => {
         process.env.ATLAS_PROVIDER = "openai-compatible";
@@ -784,18 +785,39 @@ describe("ProviderKeyGuardLive", () => {
         const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
         expect(failure).toBeInstanceOf(ProviderKeyMissingError);
         expect((failure as TProviderKeyMissingError).provider).toBe("openai-compatible");
-        expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["OPENAI_COMPATIBLE_BASE_URL"]);
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual([
+          "OPENAI_COMPATIBLE_BASE_URL",
+          "ATLAS_MODEL",
+        ]);
       }),
     );
   });
 
-  test("succeeds in SaaS for openai-compatible once OPENAI_COMPATIBLE_BASE_URL is set (#3200)", async () => {
+  // Base URL set but no model → still incomplete (openai-compatible has no
+  // default model). Pins the ATLAS_MODEL half of the required set.
+  test("fails boot in SaaS for openai-compatible with base URL but no ATLAS_MODEL (#3206)", async () => {
     await withCleanEnv(() =>
       withProviderEnv({ OPENAI_COMPATIBLE_BASE_URL: "http://localhost:8000/v1" }, async () => {
         process.env.ATLAS_PROVIDER = "openai-compatible";
         const exit = await runGuard();
-        expect(Exit.isSuccess(exit)).toBe(true);
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["ATLAS_MODEL"]);
       }),
+    );
+  });
+
+  test("succeeds in SaaS for openai-compatible once base URL AND model are set (#3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv(
+        { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:8000/v1", ATLAS_MODEL: "my-model" },
+        async () => {
+          process.env.ATLAS_PROVIDER = "openai-compatible";
+          const exit = await runGuard();
+          expect(Exit.isSuccess(exit)).toBe(true);
+        },
+      ),
     );
   });
 

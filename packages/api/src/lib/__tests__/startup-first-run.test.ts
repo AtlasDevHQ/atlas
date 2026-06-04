@@ -121,7 +121,7 @@ const MANAGED_VARS = [
   "ATLAS_AUTH_AUDIENCE", "ATLAS_SANDBOX", "ATLAS_SANDBOX_URL",
   "ATLAS_RUNTIME", "VERCEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
   "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "OPENAI_COMPATIBLE_BASE_URL",
-  "AI_GATEWAY_API_KEY", "ATLAS_DEMO_DATA",
+  "ATLAS_MODEL", "AI_GATEWAY_API_KEY", "ATLAS_DEMO_DATA",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -217,22 +217,40 @@ describe("first-run: missing LLM provider API key", () => {
     expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
   });
 
-  // #3200 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL, which
-  // has no PROVIDER_KEY_MAP entry; the old single-key check skipped it entirely.
-  it("flags the missing base URL for openai-compatible (#3200)", async () => {
+  // #3200/#3206 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL
+  // (no PROVIDER_KEY_MAP entry) and needs ATLAS_MODEL (no default model); the old
+  // single-key check skipped the provider entirely.
+  it("flags the missing base URL and model for openai-compatible (#3200/#3206)", async () => {
     process.env.ATLAS_PROVIDER = "openai-compatible";
     delete process.env.OPENAI_COMPATIBLE_BASE_URL;
+    delete process.env.ATLAS_MODEL;
 
     const errors = await validateEnvironment();
     const err = errors.find((e) => e.code === "MISSING_API_KEY");
     expect(err).toBeDefined();
     expect(err!.message).toContain("OPENAI_COMPATIBLE_BASE_URL");
+    expect(err!.message).toContain("ATLAS_MODEL");
   });
 
   it("no error when using ollama (no key required)", async () => {
     process.env.ATLAS_PROVIDER = "ollama";
 
     const errors = await validateEnvironment();
+    expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
+  });
+
+  // #3206 (CodeRabbit) — a typo'd / unsupported provider must surface a
+  // diagnostic so /health flags it; resolveSelection() would otherwise throw on
+  // every request while /health stays green.
+  it("flags an unsupported ATLAS_PROVIDER with an INVALID_CONFIG diagnostic (#3206)", async () => {
+    process.env.ATLAS_PROVIDER = "anthropc"; // typo
+
+    const errors = await validateEnvironment();
+    const err = errors.find((e) => e.code === "INVALID_CONFIG");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("anthropc");
+    expect(err!.message).toContain("not a supported provider");
+    // ...and no misleading MISSING_API_KEY for the unknown provider.
     expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
   });
 

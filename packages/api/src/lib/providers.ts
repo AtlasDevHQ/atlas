@@ -163,10 +163,19 @@ export function getMissingProviderConfig(provider: string): string[] {
       return isProviderEnvSet("OPENAI_API_KEY") ? [] : ["OPENAI_API_KEY"];
     case "gateway":
       return isProviderEnvSet("AI_GATEWAY_API_KEY") ? [] : ["AI_GATEWAY_API_KEY"];
-    case "openai-compatible":
-      return isProviderEnvSet("OPENAI_COMPATIBLE_BASE_URL")
-        ? []
-        : ["OPENAI_COMPATIBLE_BASE_URL"];
+    case "openai-compatible": {
+      // Needs its base URL AND a model id: openai-compatible is the only
+      // provider with no `PROVIDER_DEFAULTS` model, so `resolveSelection()`
+      // throws "ATLAS_MODEL is required" without one — the same
+      // boot-green-then-first-I/O failure the guard exists to prevent. The
+      // model is resolved from `ATLAS_MODEL` on the env path this check covers
+      // (resolveSelection: `modelOverride ?? process.env.ATLAS_MODEL ??
+      // PROVIDER_DEFAULTS[provider]`).
+      const missing: string[] = [];
+      if (!isProviderEnvSet("OPENAI_COMPATIBLE_BASE_URL")) missing.push("OPENAI_COMPATIBLE_BASE_URL");
+      if (!isProviderEnvSet("ATLAS_MODEL")) missing.push("ATLAS_MODEL");
+      return missing;
+    }
     case "bedrock":
       return missingBedrockStaticCreds();
     case "ollama":

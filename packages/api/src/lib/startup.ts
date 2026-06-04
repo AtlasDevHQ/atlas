@@ -172,10 +172,22 @@ function checkDatasourceUrlPresence(
 function checkProviderApiKey(errors: DiagnosticError[]): void {
   const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
 
-  // Unknown provider — providers.ts will throw a descriptive error at model
-  // init, so we don't duplicate that check here (and `getMissingProviderConfig`
-  // returns `[]` for it, which would otherwise read as "fully configured").
-  if (!isSupportedProvider(provider)) return;
+  // Unknown provider (typo / unsupported vendor): `resolveSelection()` throws at
+  // model init on every chat/query, so without a diagnostic `/health` would stay
+  // green while the agent is dead. Surface it (#3206 CodeRabbit) — the SaaS boot
+  // guard already hard-fails this via `ProviderUnsupportedError`; self-hosted
+  // keeps booting but the diagnostic flags the misconfig. `getMissingProviderConfig`
+  // returns `[]` for an unknown provider, so the set check below cannot catch it.
+  if (!isSupportedProvider(provider)) {
+    errors.push({
+      code: "INVALID_CONFIG",
+      message:
+        `ATLAS_PROVIDER="${provider}" is not a supported provider — model initialization will fail on ` +
+        `every chat/query. Set ATLAS_PROVIDER to one of: anthropic, openai, bedrock, ollama, ` +
+        `openai-compatible, gateway.`,
+    });
+    return;
+  }
 
   // Required-config as a SET (#3200): Bedrock needs an access key AND a secret
   // (all-or-none with the AWS credential-provider chain); openai-compatible

@@ -151,3 +151,44 @@ describe("twentyPlugin — config validation", () => {
     ).toThrow("Plugin config validation failed");
   });
 });
+
+describe("twentyPlugin — healthCheck (#3179)", () => {
+  test("defines a healthCheck so a revoked key can surface unhealthy", () => {
+    // Without it, PluginRegistry falls back to the last post-init status and
+    // reports `healthy` forever (the bug #3179 fixes).
+    expect(typeof twentyPlugin(VALID_CONFIG).healthCheck).toBe("function");
+  });
+
+  test("reports healthy when the Twenty probe returns 200", async () => {
+    const plugin = twentyPlugin(VALID_CONFIG);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ components: { schemas: { Person: { properties: {} } } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("reports unhealthy when the Twenty key is revoked (401)", async () => {
+    const plugin = twentyPlugin(VALID_CONFIG);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ messages: ["Unauthorized"] }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(false);
+      expect(result.message).toContain("401");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

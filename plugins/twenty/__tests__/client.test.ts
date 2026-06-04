@@ -12,6 +12,7 @@ import {
   stampStripeCustomerId,
   getPersonMetadata,
   getPersonRestSchema,
+  probeTwentyHealth,
   createNote,
   listPeople,
   getPerson,
@@ -1916,5 +1917,64 @@ describe("wipeWorkspace", () => {
         status: 500,
       });
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+//  probeTwentyHealth — credential liveness probe (#3179)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("probeTwentyHealth", () => {
+  test("reports healthy on a 200 from /rest/open-api/core", async () => {
+    const { fetch, calls } = makeScriptedFetch([
+      { status: 200, body: { components: { schemas: { Person: { properties: {} } } } } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(true);
+    expect(result.message).toBeUndefined();
+    expect(typeof result.latencyMs).toBe("number");
+    // Reuses the existing OpenAPI probe endpoint + bearer auth.
+    expect(calls[0].url).toContain("/rest/open-api/core");
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].headers.Authorization).toBe("Bearer twenty_test_apikey_xyz");
+  });
+
+  test("reports unhealthy when the API key is revoked (401)", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["Unauthorized"] } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("401");
+    expect(result.message).toContain("Unauthorized");
+    expect(typeof result.latencyMs).toBe("number");
+  });
+
+  test("reports unhealthy on a 403 (key valid but lacking access)", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 403, body: { messages: ["Forbidden"] } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("403");
+  });
+
+  test("reports unhealthy (never throws) on a transport failure", async () => {
+    const throwingFetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof globalThis.fetch;
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: throwingFetch }));
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("ECONNREFUSED");
+    expect(typeof result.latencyMs).toBe("number");
+  });
+
+  test("never leaks the API key in the failure message", async () => {
+    const { fetch } = makeScriptedFetch([
+      { status: 401, body: { messages: ["Unauthorized"] } },
+    ]);
+    const result = await probeTwentyHealth(baseConfig({ fetchImpl: fetch }));
+    expect(result.healthy).toBe(false);
+    expect(result.message).not.toContain("twenty_test_apikey_xyz");
   });
 });

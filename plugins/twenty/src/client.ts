@@ -863,6 +863,62 @@ export async function getPersonRestSchema(
   return { fields: new Set(Object.keys(properties)) };
 }
 
+/** Result of a {@link probeTwentyHealth} liveness check. */
+export interface TwentyHealthResult {
+  readonly healthy: boolean;
+  /** Sanitized reason on failure (status + upstream message). Never the API key. */
+  readonly message?: string;
+  /** Round-trip latency in ms (always set, even on failure). */
+  readonly latencyMs: number;
+}
+
+/**
+ * Lightweight liveness probe for a Twenty credential. Issues a single
+ * authenticated GET against `/rest/open-api/core` — the same endpoint the
+ * boot schema probe ({@link getPersonRestSchema}) uses — and reports whether
+ * the bearer token is still accepted. A revoked or expired API key surfaces
+ * as a 401/403 (`healthy: false`) instead of silently failing later at
+ * dispatch time, which matters because Twenty backs Atlas's own production
+ * lead-capture pipeline (`ee/src/saas-crm/`).
+ *
+ * Unlike `getPersonRestSchema`, this does NOT require the Person object to be
+ * present — `response.ok` is the liveness signal, so the check stays a pure
+ * credential probe. Never throws: transport failures (DNS, timeout, network)
+ * and non-2xx responses both resolve to `{ healthy: false }` with a sanitized
+ * message, so the plugin health surface always gets a definite signal. The
+ * API key is never included in the message.
+ */
+export async function probeTwentyHealth(
+  config: TwentyClientConfig,
+): Promise<TwentyHealthResult> {
+  const fetchImpl = config.fetchImpl ?? globalThis.fetch;
+  const url = buildOpenApiUrl(config.baseUrl);
+  const start = performance.now();
+  try {
+    const response = await fetchImpl(url, {
+      method: "GET",
+      headers: buildAuthHeaders(config.apiKey),
+      signal: AbortSignal.timeout(config.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    });
+    const latencyMs = Math.round(performance.now() - start);
+    if (response.ok) {
+      return { healthy: true, latencyMs };
+    }
+    const detail = await readErrorDetail(response);
+    return {
+      healthy: false,
+      message: `Twenty health probe returned HTTP ${response.status}: ${detail.message}`,
+      latencyMs,
+    };
+  } catch (err) {
+    return {
+      healthy: false,
+      message: err instanceof Error ? err.message : String(err),
+      latencyMs: Math.round(performance.now() - start),
+    };
+  }
+}
+
 // Read-only helpers — return the full upstream record shape with no
 // field subsetting. Custom Atlas fields (`atlasFirstSource`, `atlasIp`,
 // etc.) flow through automatically; any future workspace column appears

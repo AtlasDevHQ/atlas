@@ -63,6 +63,7 @@
 
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   BillingCheckFailedError,
   ChatIntegrationLimitError,
@@ -90,6 +91,44 @@ export const WHATSAPP_SLUG: CatalogId = "whatsapp";
  * the seeder rename rule.
  */
 export const WHATSAPP_CATALOG_ID = "catalog:whatsapp";
+
+/**
+ * Cross-workspace ownership guard (#3144 / Codex #3153). Reachability proves
+ * the phone_number_id is in the operator's WhatsApp Business Account, not that
+ * the installing workspace controls it — so reject an id already bound to a
+ * *different* workspace before persisting. The `workspace_id <> $3` filter
+ * excludes the installing workspace, so a reconnect (same workspace re-binding
+ * its own id) is never blocked. Read-only pre-check: it narrows the
+ * cross-tenant window but isn't transactionally fused with the cap gate's
+ * INSERT, so the simultaneous-race case (two workspaces binding a
+ * never-before-seen id at once) remains — tracked, with the full
+ * ownership-proof flow, in #3154.
+ */
+async function assertPhoneNumberUnboundElsewhere(
+  phoneNumberId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'phone_number_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [WHATSAPP_CATALOG_ID, phoneNumberId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "WhatsApp install rejected — phone_number_id already bound to a different workspace",
+    );
+    throw new WhatsAppPhoneNumberIdInvalidError({
+      message:
+        "This WhatsApp number is already connected to a different Atlas workspace. Each phone number can be linked to only one workspace — disconnect it there first, or contact your operator if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Meta Graph API version used for the phone-number lookup. Pinned rather
@@ -304,6 +343,18 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     // pair so extractDisplayPhone can fall back through both before
     // omitting the label entirely.
     const apiFallback = await this.verifyReachability(routingIdentifier);
+
+    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153) ────
+    // The operator's Meta token can read any phone_number_id shared into
+    // its WhatsApp Business Account, so reachability proves the number is
+    // in the operator's account — NOT that THIS workspace controls it.
+    // Reject a phone_number_id already bound to a *different* workspace so
+    // one customer can't claim another's number and intercept its inbound
+    // messages (a reconnect by the same workspace is excluded by the
+    // `workspace_id <> $3` filter). This narrows the cross-tenant window;
+    // the residual (two workspaces racing a never-before-bound id, and the
+    // full operator-approval/ownership-proof flow) is tracked in #3154.
+    await assertPhoneNumberUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
     // Mirrors the email-form-handler / discord-static-bot-handler /

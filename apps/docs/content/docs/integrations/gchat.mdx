@@ -19,6 +19,19 @@ OAuth dance. Google Chat's bot model is operator-shared because
 Google Chat apps are published once to the Workspace Marketplace and
 installed per-Workspace under a single application registration.
 
+<Callout type="warn" title="Per-workspace install not available yet">
+The cap-gated install handler is wired, but Google Chat stays **"Coming
+soon"** in the admin UI until the customer-install binding lands. Google
+Chat's ownership-proven bind is the **Workspace Marketplace install
+webhook** — Google delivers the customer-verified `workspace_id` directly,
+so an admin never pastes it. Accepting a pasted `workspace_id` through the
+generic form would let one workspace claim another's Google Workspace
+before that customer connects, so the form path stays gated until the
+Marketplace-webhook receiver is wired (tracked in
+[#3154](https://github.com/AtlasDevHQ/atlas/issues/3154)). The operator
+setup below remains valid groundwork.
+</Callout>
+
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to a Google Cloud project + Workspace

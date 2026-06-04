@@ -42,8 +42,14 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
+// The handler's cross-workspace ownership guard (#3144) reads
+// `workspace_plugins` via `internalQuery` before the cap gate. Default returns
+// [] (no conflict); the guard test overrides it to a matching row.
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
+  () => Promise.resolve([]),
+);
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mock(() => Promise.resolve([])),
+  internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
@@ -151,6 +157,8 @@ beforeEach(() => {
   mockCheckChatLimitAndInstall.mockImplementation(() =>
     Promise.resolve({ allowed: true as const, rows: [{ id: "install-whatsapp-row-1" }] }),
   );
+  mockInternalQuery.mockClear();
+  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -449,6 +457,43 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     }
     expect(caught?.cause).toBeUndefined();
     expect(caught?.message).not.toContain("EAA-secret-do-not-leak");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-workspace ownership guard (#3144 / Codex #3153)
+// ---------------------------------------------------------------------------
+
+describe("WhatsAppStaticBotInstallHandler.confirmInstall — cross-workspace guard", () => {
+  it("rejects a phone_number_id already bound to a different workspace, and never reaches the cap gate", async () => {
+    // Reachability proves the number is in the operator's Meta account, not
+    // that THIS workspace owns it. The guard SELECT finds an existing bind in
+    // another workspace and refuses before the cap gate runs — so an admin
+    // can't claim another customer's number.
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-victim" }]),
+    );
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+    // The guard scopes its lookup to (catalog:whatsapp, enabled, the routing id,
+    // workspace_id <> self) so a reconnect by the same workspace is never caught.
+    const [sql, params] = mockInternalQuery.mock.calls[0];
+    expect(String(sql)).toMatch(/config->>'phone_number_id'/);
+    expect(String(sql)).toMatch(/workspace_id\s*<>\s*\$3/);
+    expect(params).toEqual([WHATSAPP_CATALOG_ID, SAMPLE_PHONE_NUMBER_ID, wsid]);
+  });
+
+  it("allows the install when the routing id is bound only to the installing workspace (reconnect) — guard returns no conflict", async () => {
+    // The `workspace_id <> $3` filter means a same-workspace reconnect returns
+    // no rows; the install proceeds to the cap gate (which grandfathers it).
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    expect(result.installRecord.catalogId).toBe(WHATSAPP_SLUG);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 });
 

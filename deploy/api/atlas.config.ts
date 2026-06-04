@@ -211,13 +211,18 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #3143 (umbrella #2994) shipped the cap-gated static-bot install:
-      // the generic `/install-form` route captures the workspace_id and
-      // `GchatStaticBotInstallHandler.confirmInstall` persists through
-      // `checkChatIntegrationLimitAndInstall` (over-cap → 429, reconnect
-      // grandfathered). gchat is already in the chatPlugin catalog below,
-      // so its webhook receive route + adapter are wired.
-      implementation_status: "available",
+      // #3143 cap-gated `GchatStaticBotInstallHandler.confirmInstall`
+      // (checkChatIntegrationLimitAndInstall — over-cap → 429, reconnect
+      // grandfathered), but gchat stays coming_soon: its ownership-proven
+      // bind is the Google Workspace **Marketplace install webhook** (which
+      // delivers the customer-verified workspace_id), and that receiver isn't
+      // wired yet. Flipping available would only expose the generic
+      // `/install-form` paste path, where an admin could submit *another*
+      // customer's workspace_id before that customer connects and capture
+      // their inbound Chat events (cross-tenant) — Codex flagged this on
+      // #3153. Flip to available once the Marketplace-webhook → confirmInstall
+      // binding lands (tracked in #3154). The cap-gate is ready for that.
+      implementation_status: "coming_soon",
       name: "Google Chat",
       description:
         "Chat with Atlas inside Google Chat. The operator wires a shared service account (GCHAT_SERVICE_ACCOUNT_JSON + GCHAT_PUBSUB_TOPIC) and publishes the Atlas listing in the Google Workspace Marketplace; customer admins install the listing per-Workspace, and Atlas captures the Workspace customer id from the Marketplace webhook.",

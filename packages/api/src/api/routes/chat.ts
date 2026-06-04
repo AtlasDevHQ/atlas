@@ -279,19 +279,11 @@ function classifyChatError(err: unknown, requestId?: string): ChatErrorClassific
     };
   }
   // Pattern-matched fallback for non-APICallError exceptions. In this route
-  // we know an unreachable host is the LLM, not the analytics datasource —
-  // re-route the generic `internal_error` matchError default accordingly.
-  const errMessage = err instanceof Error ? err.message : String(err);
-  const matched = matchError(err);
+  // an unreachable host is the LLM, not the analytics datasource, so we pass
+  // `subsystem: "provider"` — `matchError` then labels a connection failure
+  // `provider_unreachable` directly (no post-hoc re-routing needed here).
+  const matched = matchError(err, { subsystem: "provider" });
   if (matched) {
-    const isConnectionError = /ECONNREFUSED|ENOTFOUND|fetch failed/i.test(errMessage);
-    if (matched.code === "internal_error" && isConnectionError) {
-      return {
-        code: "provider_unreachable",
-        message:
-          "Could not reach the LLM provider. Check your network connection and provider status.",
-      };
-    }
     if (matched.code === "provider_unreachable") {
       return {
         code: "provider_unreachable",

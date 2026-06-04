@@ -724,19 +724,34 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
   ops: {
     description:
       "Operator-only tools that touch tenant data. Destructive subcommands require an explicit double-confirm flag.",
-    usage: "ops <wipe> [options]",
+    usage: "ops <wipe|backfill-crm-leads|smoke-crm> [options]",
     subcommands: [
       {
         name: "wipe",
         description:
           "TRUNCATE every public table in the tenant DB (excluding migration bookkeeping) with RESTART IDENTITY CASCADE. Requires ATLAS_WIPE_OK=1 + --confirm. No backup is taken — wrap with pg_dump yourself.",
       },
+      {
+        name: "backfill-crm-leads",
+        description:
+          "Enqueue every existing demo_leads row into crm_outbox so the flusher dispatches them to Twenty as Persons. Re-runs are safe (dedupe by primary email). Flags: --dry-run, --batch-size N (default 500), --source demo, --database-url <url>.",
+      },
+      {
+        name: "smoke-crm",
+        description:
+          "End-to-end CRM lead-capture verification — inject fixture personas below Turnstile via the outbox, wait for the flusher to drain, then diff the resulting Twenty Persons/Notes against the fixture. Makes live Twenty calls: run ad-hoc by an operator and as the post-deploy staging-smoke gate, not per-PR CI. Flags: --personas <path> (required), --wipe-twenty (requires ATLAS_SMOKE_WIPE_OK=1), --twenty-base-url <url>, --twenty-api-key <key>, --timeout-seconds N (default 60), --database-url <url>.",
+      },
     ],
     flags: [
       {
         flag: "--confirm",
         description:
-          "Required to proceed past the double-confirm gate. Pair with ATLAS_WIPE_OK=1 in the env.",
+          "wipe: required to proceed past the double-confirm gate. Pair with ATLAS_WIPE_OK=1 in the env.",
+      },
+      {
+        flag: "--wipe-twenty",
+        description:
+          "smoke-crm: clear the Twenty workspace before the run. Destructive — double-gated by ATLAS_SMOKE_WIPE_OK=1.",
       },
       {
         flag: "--database-url <url>",
@@ -747,6 +762,9 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     examples: [
       "ATLAS_WIPE_OK=1 atlas ops wipe --confirm",
       "ATLAS_WIPE_OK=1 atlas ops wipe --confirm --database-url $US_DB_URL",
+      "atlas ops backfill-crm-leads --dry-run",
+      "atlas ops smoke-crm --personas ./fixtures/personas.yml",
+      "ATLAS_SMOKE_WIPE_OK=1 atlas ops smoke-crm --personas ./fixtures/personas.yml --wipe-twenty",
     ],
   },
 };

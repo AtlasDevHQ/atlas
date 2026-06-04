@@ -10,6 +10,14 @@
  *                          so the lead-outbox flusher dispatches them to Twenty as
  *                          Persons. Re-runs are safe — `TwentyClient.upsertPerson`
  *                          dedupes by primary email. See #2736.
+ *   smoke-crm              End-to-end CRM lead-capture verification: inject fixture
+ *                          personas below Turnstile via the outbox, wait for the
+ *                          flusher to drain, then diff the resulting Twenty Persons/
+ *                          Notes against the fixture. Makes live Twenty calls:
+ *                          run ad-hoc by an operator and as the post-deploy
+ *                          staging-smoke gate, not per-PR CI. Optional
+ *                          `--wipe-twenty` is double-gated by
+ *                          `ATLAS_SMOKE_WIPE_OK=1`. See ./ops-smoke-crm.ts.
  *
  * Wipe replaces internal/wipe-prod.sh's per-DB logic; the script's
  * Railway-credential fetching and 3-region orchestration are operator concerns

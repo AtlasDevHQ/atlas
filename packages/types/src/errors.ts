@@ -291,14 +291,26 @@ export function parseContextWarning(value: unknown): ChatContextWarning | null {
 /**
  * Result from `matchError()` — a pattern-matched, user-safe error.
  *
- * `code` is a suggested `ChatErrorCode`. Callers may override it based
- * on context (e.g. ECONNREFUSED in the chat route is `provider_unreachable`,
- * but in startup it's `internal_error`).
+ * `code` is the resolved `ChatErrorCode`. A bare connection failure
+ * (ECONNREFUSED/ENOTFOUND) is ambiguous — the unreachable host could be the
+ * analytics datasource or the LLM provider — so callers pass `subsystem` to
+ * `matchError()` and the returned `code`/`message` are already correct for
+ * that context (no post-hoc re-labeling needed).
  */
 export interface MatchedError {
   code: ChatErrorCode;
   message: string;
 }
+
+/**
+ * Which dependency a caller was talking to when the error was raised.
+ *
+ * Disambiguates connection failures whose error text is identical regardless
+ * of the unreachable host: `"provider"` → the LLM/AI provider, `"datasource"`
+ * → the analytics database. Defaults to `"datasource"` to preserve the
+ * historical framing every DB-connectivity caller relies on.
+ */
+export type ErrorSubsystem = "provider" | "datasource";
 
 /**
  * Extract a hostname from an error message (e.g. "connect ECONNREFUSED 127.0.0.1:5432").
@@ -325,12 +337,18 @@ function extractHostFromError(msg: string): string {
  * @param error  - The caught error (any type).
  * @param opts.timeoutSeconds - Configured query/request timeout, included in
  *   timeout messages so users know the limit. Defaults to 30.
+ * @param opts.subsystem - Which dependency the caller was talking to, used to
+ *   label connection failures (ECONNREFUSED/ENOTFOUND) correctly. Defaults to
+ *   `"datasource"`. Provider-facing callers (the chat/demo agent routes) pass
+ *   `"provider"` so an unreachable LLM host maps to `provider_unreachable`
+ *   instead of the datasource-framed `internal_error`.
  */
 export function matchError(
   error: unknown,
-  opts?: { timeoutSeconds?: number },
+  opts?: { timeoutSeconds?: number; subsystem?: ErrorSubsystem },
 ): MatchedError | null {
   const msg = error instanceof Error ? error.message : String(error);
+  const subsystem = opts?.subsystem ?? "datasource";
 
   // Pool exhaustion — too many active database connections (transient)
   if (/too many (clients already|connections)|connection pool exhausted|remaining connection slots are reserved/i.test(msg)) {
@@ -340,22 +358,30 @@ export function matchError(
     };
   }
 
-  // ECONNREFUSED — database or service unreachable
-  if (/ECONNREFUSED/i.test(msg)) {
+  // ECONNREFUSED (refused) / ENOTFOUND (DNS) — a connection failure whose
+  // error text is identical whether the unreachable host is the analytics
+  // datasource or the LLM provider. `subsystem` is the disambiguator: a
+  // provider-facing caller gets `provider_unreachable`; everyone else keeps
+  // the historical datasource framing.
+  const isConnRefused = /ECONNREFUSED/i.test(msg);
+  if (isConnRefused || /ENOTFOUND/i.test(msg)) {
+    if (subsystem === "provider") {
+      return {
+        code: "provider_unreachable",
+        message:
+          "Could not reach the LLM provider. Check your network connection and provider status.",
+      };
+    }
     const host = extractHostFromError(msg);
-    return {
-      code: "internal_error",
-      message: `Database unreachable at ${host} — check that the database is running and accessible`,
-    };
-  }
-
-  // ENOTFOUND — DNS resolution failure
-  if (/ENOTFOUND/i.test(msg)) {
-    const host = extractHostFromError(msg);
-    return {
-      code: "internal_error",
-      message: `Could not resolve hostname "${host}" — check your connection URL`,
-    };
+    return isConnRefused
+      ? {
+          code: "internal_error",
+          message: `Database unreachable at ${host} — check that the database is running and accessible`,
+        }
+      : {
+          code: "internal_error",
+          message: `Could not resolve hostname "${host}" — check your connection URL`,
+        };
   }
 
   // SSL / TLS errors — match specific error contexts, not bare keywords

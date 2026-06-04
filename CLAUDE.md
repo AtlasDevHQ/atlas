@@ -53,6 +53,7 @@ Guidance for Claude Code when working in this repository.
 ### Database & Migrations
 - [ ] **Drizzle schema mirrors every migration** — A new `db/migrations/####_*.sql` that creates/alters a table needs a matching `db/schema.ts` update **in the same PR** — mirror types, composite PKs, indexes, CHECK constraints. `scripts/check-schema-drift.sh` (in `/ci`) fails on missing mirrors; without it, the next `drizzle-kit generate` emits a `DROP TABLE` that wipes the table on deploy
 - [ ] **DROP TABLE migrations tracked separately** — `check-schema-drift.sh` excludes tables explicitly dropped by migrations (e.g. `mcp_tokens`, dropped by 0047). When you drop a table, remove its `pgTable` from `schema.ts` in the same commit
+- [ ] **Two-phase drop discipline for `DROP TABLE`/`DROP COLUMN`** — stop reading/writing the object in release N, drop it in release N+1, so the N-1↔N deploy-overlap window can never `relation/column does not exist`. Rationale + expand-contract checklist: [packages/api/src/lib/db/migrations/README.md](packages/api/src/lib/db/migrations/README.md)
 - [ ] **Real-Postgres migration smoke runs in CI** — `migrate-pg.test.ts` runs every migration against `TEST_DATABASE_URL`; Better-Auth-dependent migrations must join `MANAGED_AUTH_MIGRATIONS` in `db/internal.ts`. See [docs/development/testing.md](docs/development/testing.md)
 
 ### Effect.ts (packages/api only)
@@ -166,9 +167,13 @@ bun run atlas -- seed workspace --workspace <id|slug> --group prod \
 ATLAS_WIPE_OK=1 bun run atlas -- ops wipe --confirm [--database-url <url>]
 # One-shot: enqueue every demo_leads row into crm_outbox for dispatch to Twenty:
 bun run atlas -- ops backfill-crm-leads [--dry-run] [--batch-size 500] [--source demo]
+# E2E check of the demo→Twenty lead pipeline (below Turnstile, via the outbox);
+# run ad-hoc by an operator AND as the post-deploy staging-smoke gate:
+bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] [--twenty-base-url <url>] \
+  [--twenty-api-key <key>] [--timeout-seconds 60] [--database-url <url>]
 ```
 
-`ops wipe` is the only destructive subcommand: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
+`ops wipe` is the only subcommand that wipes the tenant DB: requires **both** `ATLAS_WIPE_OK=1` **and** `--confirm` (intentional double-gate). No backup is taken — wrap with `pg_dump` yourself. Operates on one DB per invocation. `ops smoke-crm` is an end-to-end verification of the demo→Twenty lead-capture pipeline — run ad-hoc by an operator and as the post-deploy Staging Smoke gate (`.github/workflows/staging-smoke.yml`), though not per-PR CI; its optional `--wipe-twenty` phase clears the Twenty workspace and is double-gated by `ATLAS_SMOKE_WIPE_OK=1`. One-shot migration backfills live next to their migration in `db/migrations/scripts/`.
 
 ## Architecture
 

@@ -597,9 +597,31 @@ demo.openapi(demoChatRoute, async (c) => {
           return c.json({ error: "provider_error", message: `LLM provider error (HTTP ${status}).`, retryable: true, requestId }, 502);
         }
 
-        const matched = matchError(err);
+        // Like the chat route, the demo runs the agent loop — an exception
+        // reaching here is the LLM provider, not the datasource (executeSQL
+        // errors are caught as tool results). Pass `subsystem: "provider"` so
+        // an unreachable host is labeled `provider_unreachable`, not the
+        // datasource-framed `internal_error`.
+        //
+        // NOTE: this only covers errors thrown *before* the stream is returned
+        // (runAgent throwing synchronously). A provider error raised mid-stream
+        // hits the `createUIMessageStream` onError above, which still returns a
+        // generic string — classifying that path (as chat.ts does) is tracked
+        // by #3202.
+        const matched = matchError(err, { subsystem: "provider" });
         if (matched) {
-          const httpStatus = matched.code === "rate_limited" ? 429 : 500;
+          // Honor the canonical code→HTTP contract (mirror of
+          // CLASSIFIER_STATUS_MAP in chat.ts + reference/error-codes.mdx): a
+          // provider outage must surface as 503/504, not a misleading 500.
+          // matchError returns one of rate_limited / provider_unreachable /
+          // provider_timeout / internal_error here.
+          const STATUS_BY_CODE: Record<string, 429 | 500 | 503 | 504> = {
+            rate_limited: 429,
+            provider_unreachable: 503,
+            provider_timeout: 504,
+            internal_error: 500,
+          };
+          const httpStatus = STATUS_BY_CODE[matched.code] ?? 500;
           if (matched.code === "rate_limited") {
             log.warn({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
           } else {

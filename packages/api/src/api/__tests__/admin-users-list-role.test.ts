@@ -128,10 +128,16 @@ describe("GET /api/v1/admin/users — effective workspace role (#3165)", () => {
     expect(roleById["u-none"]).toBe("member"); // no memberships → falls back
   });
 
-  it("falls back to user.role and still 200s when the member lookup fails", async () => {
+  it("degrades tenant roles to the 'unknown' sentinel (fail-closed), still 200s, when the member lookup fails", async () => {
+    // Falling back to user.role would render an owner as "member" and silently
+    // skip the demotion confirm (the very #3165 bug). The unknown sentinel makes
+    // the web's isDemotion fail-closed (always confirm) while the lookup is broken.
     mockListUsers.mockResolvedValue({
-      users: [{ id: "u-1", email: "a@x.dev", name: "A", role: "member", createdAt: "2026-01-01" }],
-      total: 1,
+      users: [
+        { id: "u-1", email: "a@x.dev", name: "A", role: "member", createdAt: "2026-01-01" },
+        { id: "u-pa", email: "pa@x.dev", name: "P", role: "platform_admin", createdAt: "2026-01-02" },
+      ],
+      total: 2,
     });
     mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
       if (/from member where "userid" = any/i.test(sql)) throw new Error("DB down");
@@ -141,6 +147,8 @@ describe("GET /api/v1/admin/users — effective workspace role (#3165)", () => {
     const res = await app.fetch(adminRequest("GET", "/api/v1/admin/users"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { users: Array<{ id: string; role: string }> };
-    expect(body.users[0]?.role).toBe("member");
+    const roleById = Object.fromEntries(body.users.map((u) => [u.id, u.role]));
+    expect(roleById["u-1"]).toBe("unknown"); // NOT "member" — fail-closed
+    expect(roleById["u-pa"]).toBe("platform_admin"); // user-level role unaffected by the lookup
   });
 });

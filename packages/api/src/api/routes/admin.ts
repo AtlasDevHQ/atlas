@@ -321,6 +321,19 @@ async function resolvePlatformTargetWorkspace(opts: {
 const MEMBER_ROLE_RANK: Record<string, number> = { member: 0, admin: 1, owner: 2 };
 
 /**
+ * Sentinel role shown for a tenant user in the cross-tenant `/platform/users`
+ * list when the per-workspace `member.role` lookup FAILS (#3165). It must NOT be
+ * a real role: falling back to the raw `user.role` (which is `member` for owners
+ * post-#2890) would re-introduce the very mislabel #3165 fixes, and the web
+ * `isDemotion` confirm is the only barrier for non-last-admin demotions (e.g.
+ * owner→admin) — the write-path guard only blocks demoting the LAST admin. An
+ * out-of-set value makes the web's `isDemotion` fail-closed (always confirm),
+ * so a transient lookup error degrades the list SAFELY rather than silently
+ * disarming the confirmation.
+ */
+const UNRESOLVED_WORKSPACE_ROLE = "unknown";
+
+/**
  * Summarize a user's effective workspace role for the cross-tenant
  * `/platform/users` list (#3165). After #2890, `user.role` only ever holds
  * `platform_admin` — tenant admin-ness lives in `member.role` per workspace —
@@ -2540,7 +2553,7 @@ admin.openapi(changePasswordRoute, async (c) => {
 // -- Users ------------------------------------------------------------------
 
 admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () => {
-  const { authResult } = await adminAuthAndContext(c, "admin:users");
+  const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
@@ -2640,12 +2653,16 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
   // real role (a workspace owner would otherwise show as `member`, and an
   // owner→admin change would skip the demotion confirm). `platform_admin` stays
   // as-is (it is a cross-tenant user-level role, not a workspace membership).
-  // Best-effort: a failed lookup falls back to the raw `user.role` for display
-  // rather than 500-ing the whole list — the authoritative last-admin guard
-  // lives server-side on the write path, not on this label.
+  // Best-effort: a failed lookup degrades to the `unknown` sentinel for tenant
+  // users (NOT raw `user.role`, which is `member` for owners → would re-create
+  // the #3165 mislabel and silently disarm the demotion confirm) so the list
+  // still renders (200, not 500). The unknown sentinel makes the web confirm
+  // every role change while the lookup is broken. A user with a successful
+  // lookup but no membership rows correctly resolves to `member`.
   const userRows = result.users as Array<Record<string, unknown>>;
   const effectiveRole = new Map<string, string>();
   const userIds = userRows.map((u) => String(u.id));
+  let roleLookupFailed = false;
   if (userIds.length > 0 && hasInternalDB()) {
     try {
       const memberRows = await internalQuery<{ userId: string; role: string }>(
@@ -2663,9 +2680,12 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
         if (hi) effectiveRole.set(uid, hi);
       }
     } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Failed to resolve effective workspace roles for user list — falling back to user.role",
+      // error, not warn: this disables the demotion-confirm safeguard for every
+      // displayed tenant user until the lookup recovers — operator-visible.
+      roleLookupFailed = true;
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), requestId },
+        "Failed to resolve effective workspace roles for user list — degrading tenant roles to 'unknown' (fail-closed confirm)",
       );
     }
   }
@@ -2676,7 +2696,8 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
       const role =
         u.role === "platform_admin"
           ? "platform_admin"
-          : (effectiveRole.get(id) ?? (u.role ?? "member"));
+          : (effectiveRole.get(id) ??
+            (roleLookupFailed ? UNRESOLVED_WORKSPACE_ROLE : (u.role ?? "member")));
       return {
         id: u.id,
         email: u.email,

@@ -597,7 +597,12 @@ demo.openapi(demoChatRoute, async (c) => {
           return c.json({ error: "provider_error", message: `LLM provider error (HTTP ${status}).`, retryable: true, requestId }, 502);
         }
 
-        const matched = matchError(err);
+        // Like the chat route, the demo runs the agent loop — an exception
+        // reaching here is the LLM provider, not the datasource (executeSQL
+        // errors are caught as tool results). Pass `subsystem: "provider"` so
+        // an unreachable host is labeled `provider_unreachable`, not the
+        // datasource-framed `internal_error`.
+        const matched = matchError(err, { subsystem: "provider" });
         if (matched) {
           const httpStatus = matched.code === "rate_limited" ? 429 : 500;
           if (matched.code === "rate_limited") {

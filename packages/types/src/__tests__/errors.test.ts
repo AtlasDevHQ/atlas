@@ -98,6 +98,51 @@ describe("matchError", () => {
     expect(result.message).not.toContain("postgresql://");
   });
 
+  // --- Provider-vs-datasource disambiguation (#3186) ---
+  //
+  // ECONNREFUSED/ENOTFOUND are identical whether the unreachable host is the
+  // analytics datasource or the LLM provider. Callers pass `subsystem` to
+  // disambiguate; without it we default to datasource framing (the historical
+  // behavior every DB-connectivity caller relies on).
+
+  test("ECONNREFUSED with subsystem:datasource is internal_error (the default)", () => {
+    const err = new Error("connect ECONNREFUSED 10.0.0.1:5432");
+    const explicit = matchError(err, { subsystem: "datasource" }) as MatchedError;
+    const defaulted = matchError(err) as MatchedError;
+    expect(explicit.code).toBe("internal_error");
+    expect(explicit.message).toContain("Database unreachable");
+    // Omitting subsystem must match passing datasource explicitly.
+    expect(defaulted.code).toBe(explicit.code);
+    expect(defaulted.message).toBe(explicit.message);
+  });
+
+  test("ECONNREFUSED with subsystem:provider is provider_unreachable", () => {
+    const err = new Error("connect ECONNREFUSED 10.0.0.1:443");
+    const result = matchError(err, { subsystem: "provider" }) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("provider_unreachable");
+    // Provider framing must not leak the database-host phrasing.
+    expect(result.message).not.toContain("Database unreachable");
+    expect(result.message).toMatch(/provider/i);
+  });
+
+  test("ENOTFOUND with subsystem:provider is provider_unreachable", () => {
+    const err = new Error("getaddrinfo ENOTFOUND api.openai.com");
+    const result = matchError(err, { subsystem: "provider" }) as MatchedError;
+    expect(result).not.toBeNull();
+    expect(result.code).toBe("provider_unreachable");
+    expect(result.message).not.toContain("Could not resolve hostname");
+    expect(result.message).toMatch(/provider/i);
+  });
+
+  test("ENOTFOUND with subsystem:datasource keeps the DNS-resolution message", () => {
+    const err = new Error("getaddrinfo ENOTFOUND db.example.com");
+    const result = matchError(err, { subsystem: "datasource" }) as MatchedError;
+    expect(result.code).toBe("internal_error");
+    expect(result.message).toContain("Could not resolve hostname");
+    expect(result.message).toContain("db.example.com");
+  });
+
   // --- Timeout ---
 
   test("matches timeout errors with default seconds", () => {

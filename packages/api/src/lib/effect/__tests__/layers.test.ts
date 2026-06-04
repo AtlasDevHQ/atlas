@@ -799,11 +799,15 @@ describe("buildAppLayer", () => {
     const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
     const savedProvider = process.env.ATLAS_PROVIDER;
     const savedAnthropic = process.env.ANTHROPIC_API_KEY;
+    const savedResend = process.env.RESEND_API_KEY;
     // Satisfy the sibling guards so the cause carries exclusively the
-    // provider-key error.
+    // provider-key error. RESEND_API_KEY satisfies DpaGuardLive: it now shares
+    // the settings layer with ProviderKeyGuardLive (#3198), so a DpaGuard
+    // failure would interrupt the sibling before its error surfaces.
     process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
     process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
     process.env.ATLAS_RATE_LIMIT_RPM = "300";
+    process.env.RESEND_API_KEY = "re_wiring-regression-test-key";
     process.env.ATLAS_PROVIDER = "anthropic";
     delete process.env.ANTHROPIC_API_KEY;
 
@@ -825,6 +829,8 @@ describe("buildAppLayer", () => {
       else delete process.env.ATLAS_ENCRYPTION_KEYS;
       if (savedRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = savedRpm;
       else delete process.env.ATLAS_RATE_LIMIT_RPM;
+      if (savedResend !== undefined) process.env.RESEND_API_KEY = savedResend;
+      else delete process.env.RESEND_API_KEY;
       if (savedProvider !== undefined) process.env.ATLAS_PROVIDER = savedProvider;
       else delete process.env.ATLAS_PROVIDER;
       if (savedAnthropic !== undefined) process.env.ANTHROPIC_API_KEY = savedAnthropic;

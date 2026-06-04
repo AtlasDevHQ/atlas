@@ -166,4 +166,22 @@ describe("applyDeployMode: config-file silent-downgrade warning (#1978)", () => 
     expect(errorLogs).toHaveLength(0);
     expect(resolved.deployModeDowngraded).toBeUndefined();
   });
+
+  // #3198 Codex P2 (follow-up) — an explicit `ATLAS_DEPLOY_MODE=auto` ALSO wins
+  // over a config-file `saas` (resolveDeployMode reads env ?? configFile), so a
+  // legitimate auto→self-hosted resolution must not be reported as a downgrade.
+  it("does NOT flag a downgrade when env explicitly sets auto over config saas", async () => {
+    process.env.ATLAS_DEPLOY_MODE = "auto";
+    const dir = ensureTmpDir(`env-auto-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "atlas.config.ts"),
+      `export default { deployMode: "saas" };`,
+    );
+
+    const resolved = await loadConfig(dir);
+
+    const errorLogs = logCalls.filter((c) => c.level === "error" && c.message.includes("CRITICAL"));
+    expect(errorLogs).toHaveLength(0);
+    expect(resolved.deployModeDowngraded).toBeUndefined();
+  });
 });

@@ -86,7 +86,7 @@
 
 import { Data, Effect, Layer } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { Config } from "./layers";
+import { Config, Settings } from "./layers";
 import { readSaasEnv, type SaasEnv } from "./saas-env";
 
 const log = createLogger("effect:saas-guards");
@@ -536,11 +536,13 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
 /**
  * Fail boot in SaaS when the configured LLM provider's API key is missing.
  *
- * Resolves the provider exactly as the runtime model-init does
- * (`process.env.ATLAS_PROVIDER ?? getDefaultProvider()` — see
- * `lib/providers.ts` and `startup.ts:checkProviderApiKey`) so the guard
- * asserts on the SAME key the first chat would require. The required key is
- * looked up via the shared `PROVIDER_KEY_MAP` (SSOT in `lib/providers.ts`):
+ * Resolves the provider exactly as the runtime model-init does — `resolveSelection`
+ * in `lib/providers.ts` uses `getSettingAuto("ATLAS_PROVIDER") ?? getDefaultProvider()`,
+ * and `getSettingAuto` folds the DB-persisted admin setting → env (`ATLAS_PROVIDER`)
+ * → registry default. The guard mirrors that precedence so it asserts on the SAME
+ * key the first chat would require (see the `Settings` note below for why an
+ * env-only check would be wrong). The required key is then looked up via the
+ * shared `PROVIDER_KEY_MAP` (SSOT in `lib/providers.ts`):
  *
  *   - `undefined` → unknown / unmapped provider (e.g. `openai-compatible`,
  *     which authenticates via a base URL): skip. `providers.ts` throws a
@@ -548,32 +550,53 @@ export const RateLimitGuardLive: Layer.Layer<never, RateLimitRequiredError, Conf
  *     guard doesn't duplicate that.
  *   - `""` → `ollama`: skip (runs locally, no key).
  *   - otherwise → read the key straight from `process.env` (dynamic key, same
- *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty.
+ *     pattern as `ChatAdapterEnvGuardLive`) and fail boot when unset/empty. (The
+ *     provider *selection* is settings-aware; the API *keys* come from env, the
+ *     same contract as the runtime SDK clients and `startup.ts:checkProviderApiKey`.)
  *
  * Self-hosted is intentionally unaffected: an operator running a keyless dev
  * loop keeps the existing per-request 503 from `validateEnvironment` rather
  * than a hard boot failure.
  *
- * `getDefaultProvider` + `PROVIDER_KEY_MAP` are pulled via dynamic `import()`
- * to keep `providers.ts` (which statically imports the `@ai-sdk/*` packages)
- * out of `saas-guards.ts`'s static graph — same lazy-import wall-off as
- * `EncryptionKeyGuardLive`. A rejected import is promoted to a defect via
- * `Effect.orDie` (rather than silently skipping the check): `providers.ts` is
- * core and always loadable at boot, so a rejection means the api can't run
- * anyway, and a silent skip would reintroduce the boot-green-then-503 hole
- * this guard closes.
+ * Depends on `Settings` (not just `Config`) so the persisted-settings cache is
+ * loaded before the guard reads it — the runtime resolves `ATLAS_PROVIDER`
+ * through `getSettingAuto()` (DB-persisted platform setting → env → default),
+ * so a SaaS region that configures its provider via the admin console rather
+ * than an env var would otherwise be FALSE-FAILED at boot by an env-only check
+ * (#3198 Codex P1). Sequencing after `Settings` mirrors `DpaGuardLive`.
+ *
+ * `getDefaultProvider` + `PROVIDER_KEY_MAP` + `getSettingAuto` are pulled via
+ * dynamic `import()` to keep `providers.ts` (which statically imports the
+ * `@ai-sdk/*` packages) and `settings.ts` out of `saas-guards.ts`'s static
+ * graph — same lazy-import wall-off as `EncryptionKeyGuardLive`. A rejected
+ * import is promoted to a defect via `Effect.orDie` (rather than silently
+ * skipping the check): both modules are core and always loadable at boot, so a
+ * rejection means the api can't run anyway, and a silent skip would reintroduce
+ * the boot-green-then-503 hole this guard closes.
  */
-export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, Config> = Layer.effectDiscard(
+export const ProviderKeyGuardLive: Layer.Layer<never, ProviderKeyMissingError, Config | Settings> = Layer.effectDiscard(
   Effect.gen(function* () {
     const { config } = yield* Config;
     if (config.deployMode !== "saas") return;
+    // Sequence after the persisted-settings cache is warm so `getSettingAuto`
+    // below sees admin-console-configured provider overrides, not just env.
+    yield* Settings;
 
-    const { getDefaultProvider, PROVIDER_KEY_MAP } = yield* Effect.tryPromise({
-      try: () => import("@atlas/api/lib/providers"),
+    const [{ getDefaultProvider, PROVIDER_KEY_MAP }, { getSettingAuto }] = yield* Effect.tryPromise({
+      try: () =>
+        Promise.all([
+          import("@atlas/api/lib/providers"),
+          import("@atlas/api/lib/settings"),
+        ]),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     }).pipe(Effect.orDie);
 
-    const provider = readSaasEnv().ATLAS_PROVIDER ?? getDefaultProvider();
+    // Resolve EXACTLY as the runtime model-init does (`resolveSelection` in
+    // providers.ts): `getSettingAuto("ATLAS_PROVIDER")` folds the DB-persisted
+    // platform setting → env (`ATLAS_PROVIDER`) → registry default; when none
+    // is set, `getDefaultProvider()` supplies the SaaS gateway default. This
+    // keeps the boot guard in lockstep with the provider a real chat will use.
+    const provider = getSettingAuto("ATLAS_PROVIDER") ?? getDefaultProvider();
     const requiredKey = PROVIDER_KEY_MAP[provider];
 
     // `undefined` → unknown/unmapped provider (skip; model init reports it).

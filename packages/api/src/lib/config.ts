@@ -1408,22 +1408,22 @@ async function applyDeployMode(
   // create-atlas standalone scaffold would fail at build time trying to
   // resolve `@opentelemetry/sdk-node`. Keeping the helper inline here
   // walls the boot-only modules off from request-path consumers.
-  // Only a CONFIG-FILE "saas" that was the operative request counts as a
-  // silent downgrade. If the env explicitly set a concrete mode it WINS over
-  // the config file (resolveDeployMode precedence), so that's an intentional
-  // override, not a missing-enterprise downgrade:
-  //   - env "saas"        → handled by EnterpriseGuardLive (hard fail at boot)
-  //   - env "self-hosted" → explicit operator choice; must NOT be flagged
-  //     (else /health would permanently report degraded with a false
-  //     "enterprise not enabled" claim — #3198 Codex P2)
-  // "auto"/unset env leaves the config file's "saas" operative, so it can be
-  // genuinely downgraded when enterprise is missing.
-  const envRequestedConcreteMode =
-    process.env.ATLAS_DEPLOY_MODE === "saas" ||
-    process.env.ATLAS_DEPLOY_MODE === "self-hosted";
+  // Only a CONFIG-FILE "saas" that was the OPERATIVE request counts as a silent
+  // downgrade. `resolveDeployMode` reads `process.env.ATLAS_DEPLOY_MODE ??
+  // configFileValue`, so the config-file value is operative ONLY when the env
+  // var is unset/empty. ANY explicit env value wins over the config file and is
+  // therefore an env-driven resolution, not a missing-enterprise downgrade:
+  //   - env "saas"        → EnterpriseGuardLive hard-fails at boot
+  //   - env "self-hosted" → explicit operator override (#3198 Codex P2)
+  //   - env "auto"        → explicit auto-resolution, not a config downgrade
+  //                         (#3198 Codex P2)
+  // Flagging any of those would leave `/health` permanently (and falsely)
+  // degraded with an "enterprise not enabled" claim.
+  const envDeployMode = process.env.ATLAS_DEPLOY_MODE;
+  const envProvidesDeployMode = envDeployMode !== undefined && envDeployMode !== "";
   if (
     resolved.deployMode !== "saas" &&
-    !envRequestedConcreteMode &&
+    !envProvidesDeployMode &&
     configFileValue === "saas"
   ) {
     const reason =

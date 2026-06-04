@@ -2368,3 +2368,25 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 - **The cap gate stays on a single advisory-locked insert path** (`checkChatIntegrationLimitAndInstall`, inside `confirmInstall`) — the route adds no second write path.
 
 **Category:** Seam-cleaning / module-deepening — a single non-OAuth-install route plus three explicit discriminators (`oauthShaped`, `coming_soon`, declared-key whitelist) over the irregular surface of "let four operator-shared bots capture a routing identifier without a cap bypass or an ownership-proof bypass," set *before* the per-platform consumers exist so they are born reading the spine rather than retrofitted onto it (same shape as wins #72 / #73).
+
+---
+
+## 82. Single-sourced tenant admin role — `member.role` is the one authority; `user.role` collapses to `platform_admin` (#2890)
+
+**Date:** 2026-06-04
+**Issue:** #2890
+**PR:** #3155
+
+**Problem:** Atlas ran **two** Better Auth role surfaces side by side — the admin plugin's system-wide `user.role` (`platform_admin`/`admin`/`user`) and the organization plugin's per-org `member.role` (`owner`/`admin`/`member`). The `admin` value lived on *both*, with no defined semantics for the overlap. `user.role='admin'` was a carryover "system admin who isn't platform_admin" middle state that nothing conceptually needed — yet it was actively written in two places (`promoteOrgOwnerToAdmin` on org create; `changeUserRole` wrote `user.role`, not `member.role`). PR #2889 papered over the resulting client/server divergence by stamping a merged `effectiveRole = max(user.role, member.role)` on the session, but left the two-source model — plus a duplicate `max()` resolver in `actor.ts` for scheduled/proactive actors. Worse, every path that authorized off the **raw** `user.role` (Better Auth's admin-plugin `removeUser`/`revokeSessions`, the SCIM-token hook) silently depended on org owners carrying `user.role='admin'`.
+
+**Solution:** Drop `admin` from the admin-plugin ACL so `user.role` only ever holds `platform_admin`; make `member.role` the single source of truth for tenant admin-ness. The precedence merge collapses to one branch — `effectiveRole = user.role === "platform_admin" ? "platform_admin" : member.role` — and `actor.ts` is deduped onto that one canonical resolver (the `max()` copy deleted). Migration `0118` mirrors any `user.role` admin grant into `member.role` (lossless; segment-aware for comma-separated roles) then clears the column; a 3-region prod audit confirmed **0** rows whose admin-ness lived only in `user.role`, so no demotions. The remaining raw-`user.role` authorization sites were closed as a class: `changeUserRole`/`deleteUser` write/guard `member.role` (org-scoped, with a rank guard so an `admin` can't mint/modify `owner`); `deleteUser` + `revokeUserSessions` gate to `platform_admin` (F-14 pattern — both are global blast-radius); SCIM-token minting resolves the effective grant (`canGenerateSCIMToken`, fail-closed).
+
+**Impact:**
+- **One authority, not two** — tenant admin-ness reads from `member.role` everywhere (interactive, scheduled, proactive, SCIM), so the client-visible role can no longer diverge from what the server authorizes. The duplicate `actor.ts` resolver is gone.
+- **The "raw `user.role` authorization" footgun class is eliminated** — the review (CodeRabbit + Codex) surfaced three live consumers that assumed org owners carry `user.role='admin'`; all are now decoupled from the raw column.
+- **The admin plugin is reduced to a single role (`platform_admin`) with every consumer platform-only**, making its eventual full removal tractable (only `impersonateUser` is non-trivial to reimplement) — a clean follow-up.
+- **No behavior change for `platform_admin` or `owner`/`admin` org members**; the migration is a no-op on current prod data (audited) and verified by a real-Postgres backfill round-trip.
+
+**Deferred (tracked):** platform `/users` cross-tenant role change under per-org scoping (#3157); making the last-admin guards atomic — a pre-existing TOCTOU (#3158).
+
+**Category:** Model-collapse / seam-cleaning — two overlapping role surfaces with an undefined-semantics middle state reduced to one source of truth (`member.role`) + one cross-tenant escape hatch (`platform_admin`), deleting a duplicate resolver and closing every raw-`user.role` authorization seam as a class.

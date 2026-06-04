@@ -27,10 +27,15 @@
  *   # Connect via: http://localhost:8080/mcp
  */
 
-import { createAtlasMcpServer } from "../src/server.js";
-import { resolveMcpActor } from "../src/actor.js";
+// NOTE: only telemetry-bootstrap is imported statically here. The MCP server
+// modules (server.ts → tools/prompts → @atlas/api/lib/metrics) are imported
+// *dynamically* inside main(), AFTER startMcpTelemetry(), because
+// @opentelemetry/api@1.x has no ProxyMeter: a meter obtained before
+// sdk.start() is a permanent no-op, so any module that creates atlas.mcp.*
+// instruments must load only after the SDK is running, or its counters never
+// export (#3199). The API server gets this ordering for free via Next.js's
+// instrumentation.ts register() hook; the standalone process must enforce it.
 import { startMcpTelemetry } from "../src/telemetry-bootstrap.js";
-import { initializeConfig } from "@atlas/api/lib/config";
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
@@ -67,10 +72,14 @@ function parseArgs(argv: string[]) {
 async function main() {
   const { transport, port, corsOrigin } = parseArgs(process.argv);
 
-  // #3199 — initialize OTel in the standalone MCP process so atlas.mcp.*
-  // traces/metrics actually export. No-op (returns null) unless
-  // OTEL_EXPORTER_OTLP_ENDPOINT is set; covers both stdio and sse transports.
+  // #3199 — initialize OTel FIRST (before importing any MCP server module so
+  // atlas.mcp.* instruments bind to the real meter, see the import note above).
+  // No-op (returns null) unless OTEL_EXPORTER_OTLP_ENDPOINT is set; covers both
+  // stdio and sse transports.
   const shutdownTelemetry = await startMcpTelemetry();
+
+  // Dynamic import — must come after startMcpTelemetry() (see import note).
+  const { createAtlasMcpServer } = await import("../src/server.js");
 
   if (transport === "sse") {
     // #1858: resolve the actor once at boot and share it across all SSE
@@ -78,6 +87,8 @@ async function main() {
     // — resolving lazily per-session would push the failure to the first
     // request and let the server start in a known-broken state. Initialize
     // config first since `resolveMcpActor` touches the internal DB.
+    const { initializeConfig } = await import("@atlas/api/lib/config");
+    const { resolveMcpActor } = await import("../src/actor.js");
     await initializeConfig();
     const actor = await resolveMcpActor();
 
@@ -130,6 +141,14 @@ async function main() {
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // An MCP host can end a stdio session by closing stdin rather than sending a
+  // signal. When OTel is on, the periodic metric-reader timer keeps the event
+  // loop alive, so the process would hang after the transport ends. Tear down
+  // on stdin EOF/close too (the shuttingDown guard makes the double path safe).
+  // (#3199, Codex P2)
+  process.stdin.once("end", () => void shutdown());
+  process.stdin.once("close", () => void shutdown());
 
   // Log to stderr so it doesn't interfere with JSON-RPC on stdout
   console.error("[atlas-mcp] Server running on stdio");

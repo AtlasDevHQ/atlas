@@ -63,7 +63,7 @@ Each provider requires its own API key:
 | `gateway` | `AI_GATEWAY_API_KEY` |
 
 <Callout type="warn">
-Some providers need a **complete** credential set, not just one key. `bedrock` requires `AWS_ACCESS_KEY_ID` **and** `AWS_SECRET_ACCESS_KEY` (the region resolves through the standard AWS credential chain — set `AWS_REGION` unless your deploy supplies it another way); `openai-compatible` requires `OPENAI_COMPATIBLE_BASE_URL`. On **SaaS** (`ATLAS_DEPLOY_MODE=saas`), the provider-key boot guard (`ProviderKeyGuardLive`) rejects an incomplete set at startup rather than letting boot pass and the first chat fail; self-hosted surfaces the same gap as a per-request `503`. See #3178, #3200.
+Some providers need a **complete** credential set, not just one key, for chat to actually work: `bedrock` needs `AWS_ACCESS_KEY_ID` **and** `AWS_SECRET_ACCESS_KEY` (the region resolves through the standard AWS credential chain — set `AWS_REGION` unless your deploy supplies it another way); `openai-compatible` needs `OPENAI_COMPATIBLE_BASE_URL`. On **SaaS** (`ATLAS_DEPLOY_MODE=saas`), the provider-key boot guard (`ProviderKeyGuardLive`, #3178) currently fails startup only when the provider's **primary** key is missing (`AWS_ACCESS_KEY_ID` for bedrock; `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `AI_GATEWAY_API_KEY` for the others). A config that satisfies the primary key but is still incomplete — bedrock without its secret, or `openai-compatible` (which the guard doesn't gate at all) without its base URL — boots green and fails on the first chat. Tightening the guard to validate the full per-provider set is tracked in #3200.
 </Callout>
 
 **Default models per provider:**

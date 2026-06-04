@@ -567,10 +567,26 @@ export async function listTaskRuns(
 export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
   if (!hasInternalDB()) return [];
   try {
+    // Orphan guard (#3180): a plugin-owned task whose owning install row is
+    // gone must never be dispatched — otherwise it consumes a tick, a
+    // task_run row, and tokens before failing downstream. Exclude any task
+    // with a non-null plugin_id that has NO live workspace_plugins row
+    // matching on (catalog_id = plugin_id, workspace_id = org_id) — the exact
+    // pair the uninstall cleanup and orphan-reconcile sweep scope by (see
+    // lib/scheduler/orphan-task-reconcile.ts). Non-plugin tasks
+    // (plugin_id IS NULL) are always eligible.
     const rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM scheduled_tasks
-       WHERE enabled = true AND next_run_at <= now()
-       ORDER BY next_run_at ASC`,
+      `SELECT st.* FROM scheduled_tasks st
+       WHERE st.enabled = true AND st.next_run_at <= now()
+         AND (
+           st.plugin_id IS NULL
+           OR EXISTS (
+             SELECT 1 FROM workspace_plugins wp
+             WHERE wp.catalog_id = st.plugin_id
+               AND wp.workspace_id = st.org_id
+           )
+         )
+       ORDER BY st.next_run_at ASC`,
     );
     return rows.map(rowToScheduledTask);
   } catch (err) {

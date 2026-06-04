@@ -622,6 +622,22 @@ describe("scheduled-tasks module", () => {
       expect(queryCalls[0].sql).toContain("next_run_at <= now()");
     });
 
+    it("excludes orphaned plugin tasks via a workspace_plugins guard (#3180)", async () => {
+      // An orphaned plugin task (plugin_id set, no live install row) must
+      // never be dispatched. The guard lives in SQL — assert the query joins
+      // against workspace_plugins on the (catalog_id = plugin_id,
+      // workspace_id = org_id) pair, and that NULL-plugin (non-plugin) tasks
+      // stay eligible.
+      enableInternalDB();
+      setResults({ rows: [makeTaskRow()] });
+      await getTasksDueForExecution();
+      const sql = queryCalls[0].sql;
+      expect(sql).toContain("workspace_plugins");
+      expect(sql).toContain("plugin_id IS NULL");
+      expect(sql).toContain("wp.catalog_id = st.plugin_id");
+      expect(sql).toContain("wp.workspace_id = st.org_id");
+    });
+
     it("returns empty when no DB", async () => {
       expect(await getTasksDueForExecution()).toEqual([]);
     });

@@ -1169,6 +1169,39 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
 
+      // #3180 — clean up plugin-owned scheduled tasks so the scheduler doesn't
+      // keep firing them after disconnect, mirroring the marketplace DELETE
+      // path (admin-marketplace.ts). Scoped by (plugin_id = catalog_id,
+      // org_id = workspace_id) — exactly the pair the orphan guard in
+      // getTasksDueForExecution and the orphan-reconcile sweep use. Without
+      // this, WorkspaceInstaller disconnects were asymmetric with the
+      // marketplace path and left tasks behind. Best-effort (matches the
+      // marketplace posture): the install row is already gone, so a transient
+      // internal-DB hiccup must not strand the uninstall — and the
+      // execution-time guard skips the orphan + the reconcile fiber sweeps it.
+      yield* Effect.tryPromise({
+        try: () =>
+          lazyInternalQuery()(
+            `DELETE FROM scheduled_tasks
+              WHERE plugin_id = $1 AND org_id = $2`,
+            [catalog.id, workspaceId],
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            {
+              workspaceId,
+              catalogSlug,
+              catalogId: catalog.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "WorkspaceInstaller.uninstall: scheduled-task cleanup failed — orphan tasks are skipped by the execution-time guard and swept by the reconcile fiber",
+          );
+          return Effect.succeed(undefined);
+        }),
+      );
+
       // Evict the LazyPluginLoader cache for this (workspace, catalog).
       // Without this, a hot workspace whose tool dispatch warmed the
       // cache before disconnect keeps the stale `PluginLike` (and its

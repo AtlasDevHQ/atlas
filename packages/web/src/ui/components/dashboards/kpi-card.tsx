@@ -112,6 +112,29 @@ export function formatKpiValue(value: number | null, format?: DashboardKpiValueF
   }
 }
 
+/** True when a card is a KPI card that declares a comparison query (#3137).
+ *  A text card (`chartConfig: null`) or a non-KPI chart card is never a match. */
+export function hasKpiComparison(card: Pick<DashboardCard, "chartConfig">): boolean {
+  return card.chartConfig?.type === "kpi" && !!card.chartConfig?.kpi?.comparisonSql;
+}
+
+/**
+ * Stable signature of a dashboard's KPI-comparison set — `id:comparisonSql` for
+ * each KPI card that has a comparison query, joined. The dashboard page keys its
+ * default-comparison fetch effect on this so it re-runs ONLY when a KPI card's
+ * comparison query is added, removed, or edited — an unrelated refetch (a stage
+ * change, a layout save) leaves the signature unchanged and doesn't re-fire
+ * every comparison query.
+ */
+export function kpiComparisonSignature(
+  cards: Array<Pick<DashboardCard, "id" | "chartConfig">>,
+): string {
+  return cards
+    .filter(hasKpiComparison)
+    .map((c) => `${c.id}:${c.chartConfig?.kpi?.comparisonSql ?? ""}`)
+    .join("|");
+}
+
 /** Inline SVG sparkline — a single polyline over the series, normalized to the
  *  viewBox. Decorative (`aria-hidden`); the headline number carries the value. */
 function Sparkline({ values, className }: { values: number[]; className?: string }) {

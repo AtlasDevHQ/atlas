@@ -6,6 +6,8 @@ import {
   computeKpiDelta,
   extractKpiNumber,
   formatKpiValue,
+  hasKpiComparison,
+  kpiComparisonSignature,
 } from "../kpi-card";
 
 // ---------------------------------------------------------------------------
@@ -108,9 +110,16 @@ describe("formatKpiValue", () => {
     expect(formatKpiValue(12.34, "percent")).toBe("12.3%");
   });
 
-  test("formats a duration (seconds) compactly", () => {
-    expect(formatKpiValue(3661, "duration")).toBe("1h 1m");
+  test("formats a duration (seconds) compactly across unit boundaries", () => {
     expect(formatKpiValue(45, "duration")).toBe("45s");
+    expect(formatKpiValue(60, "duration")).toBe("1m"); // exact minute — no trailing seconds
+    expect(formatKpiValue(3600, "duration")).toBe("1h"); // exact hour — no trailing minutes
+    expect(formatKpiValue(3661, "duration")).toBe("1h 1m");
+    expect(formatKpiValue(90061, "duration")).toBe("1d 1h"); // multi-day branch
+  });
+
+  test("formats a negative percent with its sign", () => {
+    expect(formatKpiValue(-4.2, "percent")).toBe("-4.2%");
   });
 
   test("defaults to compact number formatting when no format is given", () => {
@@ -120,6 +129,54 @@ describe("formatKpiValue", () => {
   test("renders an em-dash for a null / non-finite value", () => {
     expect(formatKpiValue(null, "currency")).toBe("—");
     expect(formatKpiValue(Number.NaN, "number")).toBe("—");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasKpiComparison / kpiComparisonSignature — the page's re-fetch keying.
+// ---------------------------------------------------------------------------
+
+describe("hasKpiComparison", () => {
+  test("true only for a kpi card with a comparisonSql", () => {
+    expect(
+      hasKpiComparison({ chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: "SELECT 1 AS v" } } }),
+    ).toBe(true);
+  });
+  test("false for a kpi card without a comparisonSql", () => {
+    expect(
+      hasKpiComparison({ chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { valueFormat: "number" } } }),
+    ).toBe(false);
+  });
+  test("false for a non-kpi chart card and a text card (null chartConfig)", () => {
+    expect(hasKpiComparison({ chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } })).toBe(false);
+    expect(hasKpiComparison({ chartConfig: null })).toBe(false);
+  });
+});
+
+describe("kpiComparisonSignature", () => {
+  const kpiWith = (id: string, sql: string) => ({
+    id,
+    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: sql } },
+  });
+
+  test("includes only KPI cards with a comparison query, keyed by id + sql", () => {
+    const sig = kpiComparisonSignature([
+      kpiWith("a", "SELECT 1 AS v"),
+      { id: "b", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
+      kpiWith("c", "SELECT 2 AS v"),
+    ]);
+    expect(sig).toBe("a:SELECT 1 AS v|c:SELECT 2 AS v");
+  });
+
+  test("changes when a comparison query changes, but not on unrelated card churn", () => {
+    const before = kpiComparisonSignature([kpiWith("a", "SELECT 1 AS v")]);
+    const editedSql = kpiComparisonSignature([kpiWith("a", "SELECT 99 AS v")]);
+    const unrelated = kpiComparisonSignature([
+      kpiWith("a", "SELECT 1 AS v"),
+      { id: "z", chartConfig: { type: "line", categoryColumn: "l", valueColumns: ["v"] } },
+    ]);
+    expect(editedSql).not.toBe(before);
+    expect(unrelated).toBe(before); // a non-comparison card doesn't move the signature
   });
 });
 
@@ -181,6 +238,30 @@ describe("<KpiCard>", () => {
       <KpiCard card={kpiCard} comparison={{ columns: ["total"], rows: [{ total: 0 }] }} />,
     );
     expect(screen.queryByTestId("kpi-delta")).toBeNull();
+  });
+
+  test("renders a down delta chip when the comparison is above the current value", () => {
+    render(
+      <KpiCard card={kpiCard} comparison={{ columns: ["total"], rows: [{ total: 1500000 }] }} />,
+    );
+    const chip = screen.getByTestId("kpi-delta");
+    expect(chip.getAttribute("data-direction")).toBe("down");
+    expect(chip.textContent).toContain("20%");
+  });
+
+  test("renders a flat delta chip when current equals the comparison", () => {
+    render(
+      <KpiCard card={kpiCard} comparison={{ columns: ["total"], rows: [{ total: 1200000 }] }} />,
+    );
+    expect(screen.getByTestId("kpi-delta").getAttribute("data-direction")).toBe("flat");
+  });
+
+  test("renders an em-dash and no chip/sparkline when there is no cached data", () => {
+    const empty: DashboardCard = { ...kpiCard, cachedColumns: null, cachedRows: null };
+    render(<KpiCard card={empty} comparison={{ columns: ["total"], rows: [{ total: 1000000 }] }} />);
+    expect(screen.getByTestId("kpi-value").textContent).toBe("—");
+    expect(screen.queryByTestId("kpi-delta")).toBeNull();
+    expect(screen.queryByTestId("kpi-sparkline")).toBeNull();
   });
 
   test("renders a sparkline when the primary query returns a trend (≥2 points)", () => {

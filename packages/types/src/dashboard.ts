@@ -18,8 +18,10 @@ export type DashboardKpiValueFormat = "currency" | "number" | "percent" | "durat
 
 /**
  * KPI / scorecard configuration (#3137), present only on a `kpi` chart card.
- * The card's primary `sql` returns the headline metric (a single row —
- * `categoryColumn` is the label, `valueColumns[0]` the number). `comparisonSql`
+ * The card's primary `sql` returns the headline metric: `categoryColumn` names
+ * the label column and `valueColumns[0]` the number. A single row is the common
+ * case (a plain scorecard); a multi-row trend is also valid — the last row is
+ * the headline and the value column drives an optional sparkline. `comparisonSql`
  * is an OPTIONAL second single-number query run through the SAME SQL guard
  * (validation + auto-LIMIT + statement timeout) at view time; the UI computes
  * the delta chip from the two values. Both queries bind the dashboard's

@@ -1917,12 +1917,24 @@ authed.openapi(renderCardRoute, async (c) => {
           explanation: `Dashboard card render: ${cardResult.data.title}`,
           parameters: paramValues,
         }),
+        // The comparison is isolated with its own `.catch`: `runUserQueryPipeline`
+        // maps every TYPED pipeline error to a `UserQueryOutcome` variant, but an
+        // unexpected DEFECT (a throw outside that channel) would otherwise reject
+        // the whole `Promise.all` and 500 the primary render. Degrade an
+        // unexpected throw to `null` so a broken comparison never breaks the
+        // headline number — but log it (never silently swallowed).
         comparisonSql
           ? runUserQueryPipeline({
               sql: comparisonSql,
               ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
               explanation: `Dashboard KPI comparison: ${cardResult.data.title}`,
               parameters: paramValues,
+            }).catch((err) => {
+              log.warn(
+                { cardId, requestId, err: err instanceof Error ? err.message : String(err) },
+                "KPI comparison query threw — delta chip omitted",
+              );
+              return null;
             })
           : Promise.resolve(null),
       ]),

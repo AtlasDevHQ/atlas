@@ -155,6 +155,19 @@ describe("dashboardKpiConfigSchema", () => {
       dashboardKpiConfigSchema.safeParse({ comparisonSql: "SELECT 1 AS n", trend: true }).success,
     ).toBe(false);
   });
+
+  test("rejects a comparisonLabel with no comparisonSql (dead config)", () => {
+    expect(dashboardKpiConfigSchema.safeParse({ comparisonLabel: "vs. last month" }).success).toBe(false);
+  });
+
+  test("accepts a comparisonLabel alongside a comparisonSql", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        comparisonSql: "SELECT 1 AS n",
+        comparisonLabel: "vs. last month",
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("dashboardChartConfigSchema", () => {

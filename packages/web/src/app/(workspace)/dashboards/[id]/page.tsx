@@ -31,6 +31,7 @@ import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banne
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
 import { nextTileLayout, withAutoLayout } from "@/ui/components/dashboards/auto-layout";
+import { hasKpiComparison, kpiComparisonSignature } from "@/ui/components/dashboards/kpi-card";
 import { StageProvider } from "@/ui/components/dashboards/stage-context";
 import type { StagedChange } from "@/ui/lib/types";
 import { useVisibilityGatedPoll } from "@/ui/hooks/use-visibility-gated-poll";
@@ -489,6 +490,11 @@ export default function DashboardViewPage() {
   // override values and overlay the returned rows on the grid. A sequence guard
   // drops stale batches so a slower earlier change can't clobber a newer one.
   const paramReqSeq = useRef(0);
+  // #3137 — a SINGLE sequence counter for every write to `comparisons`, shared
+  // by both writers (this handler's override path and `loadDefaultComparisons`).
+  // Without a shared counter, a slow default-period fetch could land after an
+  // override and clobber its delta chips with stale default-period values.
+  const comparisonReqSeq = useRef(0);
   async function handleParamsChange(overrides: ParameterValues) {
     if (!dashboard) return;
     // Advance the sequence on EVERY change — including Reset — so an older
@@ -506,6 +512,10 @@ export default function DashboardViewPage() {
       void loadDefaultComparisons();
       return;
     }
+    // #3137 — claim ownership of the shared comparison counter too, so a
+    // concurrently in-flight loadDefaultComparisons (from mount or a prior
+    // reset) can't land afterward and overwrite this batch's delta chips.
+    const cSeq = ++comparisonReqSeq.current;
     // #3138: text / section-block cards have no SQL — the /render endpoint
     // short-circuits them to an empty result, and the tile ignores cached
     // data, so skip them client-side rather than firing a redundant request
@@ -564,7 +574,10 @@ export default function DashboardViewPage() {
               ok: true,
               columns: json.columns,
               rows: json.rows,
-              comparison: json.comparison ?? null,
+              // Left undefined for a non-KPI card (the render endpoint omits the
+              // field); a KPI card carries the block or `null`. The map-build
+              // below uses this to record comparisons for KPI cards only.
+              comparison: json.comparison,
             };
           } catch (err) {
             return {
@@ -583,13 +596,16 @@ export default function DashboardViewPage() {
       for (const entry of entries) {
         if (entry.ok) {
           next[entry.cardId] = { columns: entry.columns, rows: entry.rows };
-          // `comparison` is undefined for non-KPI cards — only record the ones
-          // the render endpoint actually returned a comparison block for.
+          // `comparison` is undefined for a non-KPI card (the render endpoint
+          // omits the field) — record only the KPI cards, whose value is the
+          // comparison block or `null` (comparison configured but failed).
           if (entry.comparison !== undefined) nextComparisons[entry.cardId] = entry.comparison;
         } else errors.push(entry.error);
       }
       setParamResults(next);
-      setComparisons(nextComparisons);
+      // Guarded by the shared comparison counter, not paramReqSeq — a newer
+      // default-period fetch must win over this batch's deltas.
+      if (cSeq === comparisonReqSeq.current) setComparisons(nextComparisons);
       if (errors.length > 0) {
         const distinct = [...new Set(errors)];
         const shown = distinct.slice(0, 2).join("; ");
@@ -607,18 +623,16 @@ export default function DashboardViewPage() {
   // #3137 — fetch KPI comparison values against the parameter DEFAULTS. Used on
   // first load and when the bar is reset; interactive overrides are captured
   // inline in handleParamsChange instead (a single /render call carries both the
-  // primary rows and the comparison). A sequence guard drops stale batches.
-  const comparisonReqSeq = useRef(0);
+  // primary rows and the comparison). The shared `comparisonReqSeq` guard drops
+  // stale batches (including ones racing an in-flight override write).
   async function loadDefaultComparisons() {
     if (!dashboard) return;
-    const kpiCards = dashboard.cards.filter(
-      (c) => c.kind !== "text" && c.chartConfig?.type === "kpi" && !!c.chartConfig?.kpi?.comparisonSql,
-    );
+    const kpiCards = dashboard.cards.filter(hasKpiComparison);
+    const seq = ++comparisonReqSeq.current;
     if (kpiCards.length === 0) {
       setComparisons({});
       return;
     }
-    const seq = ++comparisonReqSeq.current;
     const entries = await Promise.all(
       kpiCards.map(async (card): Promise<[string, KpiComparisonResult | null]> => {
         try {
@@ -631,7 +645,23 @@ export default function DashboardViewPage() {
               body: JSON.stringify({ parameters: {} }),
             },
           );
-          if (!res.ok) return [card.id, null];
+          if (!res.ok) {
+            // Degrade to no delta chip, but surface the backend reason for
+            // debugging — never drop a non-OK response without a trace.
+            let reason = `status ${res.status}`;
+            try {
+              const body = (await res.json()) as { message?: string; error?: string };
+              reason = body.message ?? body.error ?? reason;
+            } catch {
+              // non-JSON error body — keep the status-based reason
+            }
+            console.debug("[dashboard] KPI comparison render not OK", {
+              cardId: card.id,
+              status: res.status,
+              reason,
+            });
+            return [card.id, null];
+          }
           const json = (await res.json()) as { comparison?: KpiComparisonResult | null };
           return [card.id, json.comparison ?? null];
         } catch (err) {
@@ -652,17 +682,14 @@ export default function DashboardViewPage() {
   // Re-fetch default-period comparisons whenever the set of KPI cards (or their
   // comparison queries) changes — keyed on a derived signature so an unrelated
   // dashboard refetch (stage change, layout save) doesn't re-run it.
-  const kpiComparisonSignature = (dashboard?.cards ?? [])
-    .filter((c) => c.chartConfig?.type === "kpi" && !!c.chartConfig?.kpi?.comparisonSql)
-    .map((c) => `${c.id}:${c.chartConfig?.kpi?.comparisonSql ?? ""}`)
-    .join("|");
+  const kpiSignature = kpiComparisonSignature(dashboard?.cards ?? []);
   // Keyed on the derived signature only: loadDefaultComparisons reads
   // dashboard/apiUrl/id/isCrossOrigin, but the signature is the sole input that
   // should re-trigger the fetch (a dashboard refetch with the same KPI set
   // must not re-run it).
   useEffect(() => {
     void loadDefaultComparisons();
-  }, [kpiComparisonSignature]);
+  }, [kpiSignature]);
 
   return (
     <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>

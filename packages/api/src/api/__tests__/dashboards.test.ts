@@ -1219,6 +1219,41 @@ describe("dashboard routes", () => {
       expect(body.rows[0].total).toBe(1200000);
       expect(body.comparison).toBeNull();
     });
+
+    it("degrades to null (does not 500 the primary) when the comparison query THROWS a defect", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      // An unexpected defect (not a typed PipelineError) on the comparison path
+      // must not reject Promise.all and take down the primary render.
+      mockRunUserQueryPipeline.mockImplementation(async (opts) => {
+        if (opts.sql.includes("< :date_from")) {
+          throw new Error("connection pool exploded");
+        }
+        return {
+          kind: "ok" as const,
+          columns: ["label", "total"],
+          rows: [{ label: "Revenue", total: 1200000 }],
+          rowCount: 1,
+          executionMs: 4,
+          truncated: false,
+          maskingApplied: false,
+        };
+      });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: kpiCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { rows: { total: number }[]; comparison: unknown };
+      expect(body.rows[0].total).toBe(1200000);
+      expect(body.comparison).toBeNull();
+    });
   });
 
   // -------------------------------------------------------------------------

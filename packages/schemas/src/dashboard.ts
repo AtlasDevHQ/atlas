@@ -219,7 +219,19 @@ export const dashboardKpiConfigSchema = z
     comparisonSql: z.string().min(1).max(DASHBOARD_KPI_COMPARISON_SQL_MAX).optional(),
     comparisonLabel: z.string().min(1).max(120).optional(),
   })
-  .strict();
+  .strict()
+  // `comparisonLabel` captions the delta chip, which only renders when
+  // `comparisonSql` produces a comparison value. A label with no SQL is dead
+  // config — reject it at the boundary rather than persisting a no-op.
+  .superRefine((cfg, ctx) => {
+    if (cfg.comparisonLabel && !cfg.comparisonSql) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparisonLabel has no effect without comparisonSql.",
+        path: ["comparisonLabel"],
+      });
+    }
+  });
 export type DashboardKpiConfigWire = z.infer<typeof dashboardKpiConfigSchema>;
 
 /**

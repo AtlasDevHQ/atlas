@@ -73431,16 +73431,16 @@
         "tags": [
           "Integrations"
         ],
-        "summary": "Submit form-based install (no OAuth)",
-        "description": "Persists the submitted credentials + install metadata for an `install_model: \"form\"` catalog entry (#2660 — Email, future Webhook / Obsidian). Validates the JSON body against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the workspace_plugins row. 400 with field-level detail on validation failure; the route rejects requests pointed at non-form catalog entries with 400 (`wrong_install_model`).",
+        "summary": "Submit a non-OAuth install (form credentials or static-bot routing id)",
+        "description": "Persists the submitted install for a non-OAuth catalog entry. Two install models share this route:\n\n- `install_model: \"form\"` (#2660 — Email, Webhook / Obsidian): validates the JSON body against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the workspace_plugins row. 400 with field-level detail on validation failure.\n- `install_model: \"static-bot\"` (#3140 — Telegram / Teams / Google Chat / WhatsApp): the first `required` field in the catalog `config_schema` is the routing identifier (chat_id, tenant_id, …); the route forwards its value to the handler's `confirmInstall`, which upserts the workspace_plugins(pillar='chat') row. The cap gate (`checkChatIntegrationLimitAndInstall`, the advisory-locked insert path — over-cap → 429, reconnect grandfathered) lives inside `confirmInstall`; Discord and Slack run it today, the four form-shaped static-bots adopt it in #3141–#3144. Until a platform's slice ships, its catalog row stays `coming_soon` and the route refuses it (409 `platform_not_available`), so this route never reaches a not-yet-cap-gated handler.\n\nThe route rejects requests pointed at OAuth-installable catalog entries with 400 (`wrong_install_model`), and OAuth-shaped static-bots (Discord) with 400 (`oauth_shaped_static_bot` — install those via their dedicated OAuth endpoint).",
         "parameters": [
           {
             "schema": {
               "type": "string",
-              "description": "Catalog slug (e.g. 'email')"
+              "description": "Catalog slug (e.g. 'email', 'telegram')"
             },
             "required": true,
-            "description": "Catalog slug (e.g. 'email')",
+            "description": "Catalog slug (e.g. 'email', 'telegram')",
             "name": "platform",
             "in": "path"
           }
@@ -73451,7 +73451,7 @@
               "schema": {
                 "type": "object",
                 "additionalProperties": {},
-                "description": "Form data shaped to the catalog entry's `configSchema`. Validated server-side by the per-Platform handler — never trust the client."
+                "description": "Form data shaped to the catalog entry's `configSchema`. For static-bot installs this carries the routing identifier (e.g. `chat_id`) plus optional label fields. Validated server-side by the per-Platform handler — never trust the client."
               }
             }
           }
@@ -73487,7 +73487,7 @@
             }
           },
           "400": {
-            "description": "Validation failure (per-field detail in `fieldErrors`, top-level issues in `formErrors`), missing org binding, or platform is not form-installable.",
+            "description": "Validation failure (per-field detail in `fieldErrors`, top-level issues in `formErrors`), missing org binding, platform is not form/static-bot-installable (`wrong_install_model`), an OAuth-shaped static-bot was submitted here (`oauth_shaped_static_bot`), a static-bot routing identifier was missing (`missing_routing_identifier`), or a static-bot routing id failed the handler's format / reachability check (`bad_request`, carrying the upstream message).",
             "content": {
               "application/json": {
                 "schema": {
@@ -73621,19 +73621,120 @@
               }
             }
           },
-          "429": {
-            "description": "Rate limited",
+          "409": {
+            "description": "Static-bot platform not available for install yet (`platform_not_available`)",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Chat-integration cap reached for a static-bot install (`plan_limit_exceeded`, JSON body carries `limit`), or rate limited.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "error": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "requestId": {
+                          "type": "string"
+                        },
+                        "limit": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "error",
+                        "message",
+                        "limit"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": {}
+                    }
+                  ]
                 }
               }
             }
           },
           "501": {
-            "description": "Form handler not registered",
+            "description": "Form / static-bot handler not registered, or catalog misconfig",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Static-bot upstream verification unreachable (`upstream_error`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable for a static-bot install: `billing_check_failed`",
             "content": {
               "application/json": {
                 "schema": {

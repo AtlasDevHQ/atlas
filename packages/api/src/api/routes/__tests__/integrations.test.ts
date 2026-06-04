@@ -16,7 +16,12 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
-import { BillingCheckFailedError, ChatIntegrationLimitError, PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
+import {
+  BillingCheckFailedError,
+  ChatIntegrationLimitError,
+  PlatformOAuthExchangeError,
+  TelegramChatIdInvalidError,
+} from "@atlas/api/lib/effect/errors";
 import {
   MockInternalDB,
   makeMockInternalDBShimLayer,
@@ -26,9 +31,11 @@ import {
   registerFormHandler,
   registerOAuthDatasourceHandler,
   registerOAuthHandler,
+  registerStaticBotHandler,
   type FormBasedInstallHandler,
   type OAuthDatasourceInstallHandler,
   type OAuthPlatformInstallHandler,
+  type StaticBotInstallHandler,
 } from "@atlas/api/lib/integrations/install";
 import { FormInstallValidationError } from "@atlas/api/lib/integrations/install/email-form-handler";
 
@@ -306,6 +313,81 @@ const fakeFormHandler: FormBasedInstallHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// Fake static-bot handler — slug "telegram" (#3140). The /install-form
+// route's static-bot branch resolves the routing-identifier field from the
+// catalog `config_schema` (first required string field), forwards its value
+// to `confirmInstall`, and maps the handler's tagged failures to HTTP. We
+// stub `confirmInstall` (swappable per test via `confirmInstallImpl`) and
+// record its args so the routing-key resolution + extras split is asserted
+// without standing up the real Telegram reachability round-trip. The cap
+// gate's own behaviour (advisory lock, reconnect grandfathering) is covered
+// by chat-cap-pg.test.ts + enforcement.test.ts; here we only need the
+// route's view of confirmInstall's outcomes.
+//
+// `confirmArgs` captures the last call so tests assert the route resolved
+// `chat_id` as the routing identifier and forwarded `display_name` as extras.
+type ConfirmResult = Awaited<ReturnType<StaticBotInstallHandler["confirmInstall"]>>;
+let confirmArgs: {
+  workspaceId: string;
+  routingIdentifier: string;
+  verificationProof?: string;
+  extras?: Record<string, unknown>;
+} | null = null;
+let confirmInstallImpl: () => Promise<ConfirmResult> = async () => ({
+  installRecord: { id: "install-telegram-1", workspaceId: "ws-1" as never, catalogId: "telegram" },
+});
+
+const fakeStaticBotHandler: StaticBotInstallHandler = {
+  kind: "static-bot" as const,
+  // No `applicationId` — a form-shaped static-bot (Telegram/Teams/gchat/
+  // WhatsApp). The OAuth-shaped rejection suite registers a separate handler
+  // WITH applicationId under the "discord" slug.
+  confirmInstall: async (workspaceId, routingIdentifier, verificationProof, extras) => {
+    confirmArgs = { workspaceId: workspaceId as string, routingIdentifier, verificationProof, extras };
+    return confirmInstallImpl();
+  },
+};
+
+// OAuth-shaped static-bot — `oauthShaped: true` (Discord). The route must
+// refuse a directly-typed routing id here (400 oauth_shaped_static_bot) because
+// Discord's ownership proof rides on the OAuth bot-install redirect. Note it
+// ALSO carries an `applicationId` (Discord's client id) — the route must key
+// the refusal on `oauthShaped`, not `applicationId`.
+let oauthShapedConfirmCalled = false;
+const fakeOAuthShapedStaticBotHandler: StaticBotInstallHandler = {
+  kind: "static-bot" as const,
+  oauthShaped: true,
+  applicationId: "operator-discord-client-id",
+  confirmInstall: async () => {
+    oauthShapedConfirmCalled = true;
+    return { installRecord: { id: "should-not-happen", workspaceId: "ws-1" as never, catalogId: "discord" } };
+  },
+};
+
+// Form-shaped static-bot that nonetheless exposes an `applicationId` — mirrors
+// the real Teams (Microsoft App ID for the manifest URL) and WhatsApp (Meta App
+// ID, for parity) handlers. `oauthShaped` is unset, so the route MUST accept it:
+// keying the OAuth-shaped refusal on `applicationId` would wrongly reject these
+// (the #3140 review trap). Registered under the "teams" slug.
+let appIdConfirmCalled = false;
+const fakeAppIdFormStaticBotHandler: StaticBotInstallHandler = {
+  kind: "static-bot" as const,
+  applicationId: "operator-teams-app-id",
+  confirmInstall: async () => {
+    appIdConfirmCalled = true;
+    return { installRecord: { id: "install-teams-1", workspaceId: "ws-1" as never, catalogId: "teams" } };
+  },
+};
+
+// Catalog `config_schema` for the static-bot suites — mirrors the real
+// Telegram row: routing identifier first (required string), optional label
+// second. The route picks `chat_id` as the routing key.
+const TELEGRAM_CONFIG_SCHEMA = [
+  { key: "chat_id", type: "string", label: "Chat ID", required: true },
+  { key: "display_name", type: "string", label: "Display name", required: false },
+];
+
+// ---------------------------------------------------------------------------
 // Late imports (after mocks)
 // ---------------------------------------------------------------------------
 
@@ -340,6 +422,9 @@ beforeAll(() => {
   registerOAuthHandler("slack", fakeHandler);
   registerOAuthHandler("github", fakeGithubHandler);
   registerFormHandler("email", fakeFormHandler);
+  registerStaticBotHandler("telegram", fakeStaticBotHandler);
+  registerStaticBotHandler("discord", fakeOAuthShapedStaticBotHandler);
+  registerStaticBotHandler("teams", fakeAppIdFormStaticBotHandler);
 });
 
 afterAll(() => {
@@ -382,6 +467,14 @@ beforeEach(() => {
   });
   mockMisrouted = null;
   mockStrictRouting = false;
+  // Static-bot fixtures — reset the swappable confirmInstall impl + arg
+  // capture so each test starts from the happy default.
+  confirmArgs = null;
+  confirmInstallImpl = async () => ({
+    installRecord: { id: "install-telegram-1", workspaceId: "ws-1" as never, catalogId: "telegram" },
+  });
+  oauthShapedConfirmCalled = false;
+  appIdConfirmCalled = false;
 });
 
 // ---------------------------------------------------------------------------
@@ -1864,5 +1957,414 @@ describe("DELETE /api/v1/integrations/salesforce — dual-store teardown", () =>
     expect(res.status).toBe(404);
     expect(mockDeleteCredentialBundle).not.toHaveBeenCalled();
     expect(callOrder).not.toContain("workspace_plugins.delete");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:platform/install-form — static-bot routing-identifier install
+// spine (#3140). The route accepts `install_model: "static-bot"`, resolves
+// the routing-identifier field from the catalog `config_schema` (first
+// required string field), forwards its value to `confirmInstall` (which runs
+// the cap gate), and maps the handler's tagged failures to HTTP.
+// ---------------------------------------------------------------------------
+
+describe("POST /:platform/install-form — static-bot install (#3140)", () => {
+  // An earlier suite (`dispatch failures`) wipes all handler registries and
+  // restores only slack + email, so re-register the static-bot fixtures here
+  // to stay order-independent.
+  beforeEach(() => {
+    registerStaticBotHandler("telegram", fakeStaticBotHandler);
+    registerStaticBotHandler("discord", fakeOAuthShapedStaticBotHandler);
+    registerStaticBotHandler("teams", fakeAppIdFormStaticBotHandler);
+  });
+
+  function stageTelegramCatalog(planTier = "business", implementationStatus = "available") {
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: planTier, is_operator_workspace: false }];
+      }
+      return [
+        {
+          slug: "telegram",
+          install_model: "static-bot",
+          enabled: true,
+          min_plan: "starter",
+          config_schema: TELEGRAM_CONFIG_SCHEMA,
+          implementation_status: implementationStatus,
+        },
+      ];
+    });
+  }
+
+  describe("happy path", () => {
+    beforeEach(() => stageTelegramCatalog());
+
+    it("resolves the routing identifier from config_schema, forwards extras, and returns the install id", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "-1001234567890", display_name: "Data Team" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { installed: boolean; platform: string; installId: string };
+      expect(body).toEqual({ installed: true, platform: "telegram", installId: "install-telegram-1" });
+
+      // The route resolved `chat_id` (first required string field) as the
+      // routing identifier and forwarded the rest as extras.
+      expect(confirmArgs?.routingIdentifier).toBe("-1001234567890");
+      expect(confirmArgs?.workspaceId).toBe("ws-1");
+      expect(confirmArgs?.extras).toEqual({ display_name: "Data Team" });
+      // No caller-supplied verification proof at this surface.
+      expect(confirmArgs?.verificationProof).toBeUndefined();
+    });
+
+    it("trims copy-paste whitespace off the routing identifier before forwarding", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "  -1001234567890  " }),
+      });
+
+      expect(res.status).toBe(200);
+      // The handler's anchored format regex would reject a padded id; the route
+      // trims so a pasted value installs cleanly.
+      expect(confirmArgs?.routingIdentifier).toBe("-1001234567890");
+    });
+
+    it("resolves the routing key even when it is not the first config_schema field", async () => {
+      // The contract is "first REQUIRED STRING field", not "first field". A
+      // leading optional label + a leading required-non-string field must both
+      // be skipped so the route forwards the right value (guards against a
+      // refactor that silently picks the wrong key).
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "business", is_operator_workspace: false }];
+        }
+        return [
+          {
+            slug: "telegram",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            implementation_status: "available",
+            config_schema: [
+              { key: "label", type: "string", required: false },
+              { key: "priority", type: "number", required: true },
+              { key: "chat_id", type: "string", required: true },
+            ],
+          },
+        ];
+      });
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "Ops", priority: 5, chat_id: "-1009998887776" }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(confirmArgs?.routingIdentifier).toBe("-1009998887776");
+      // The non-routing fields ride through as extras (the right key was deleted).
+      expect(confirmArgs?.extras).toEqual({ label: "Ops", priority: 5 });
+    });
+
+    it("drops undeclared body keys from extras — only config_schema-declared fields reach confirmInstall", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          chat_id: "-1001234567890",
+          display_name: "Data Team",
+          // Undeclared keys (not in TELEGRAM_CONFIG_SCHEMA) must not be forwarded.
+          injected: "should-be-dropped",
+          pillar: "datasource",
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      // Only the declared `display_name` survives; the routing key + undeclared
+      // keys are stripped before confirmInstall.
+      expect(confirmArgs?.extras).toEqual({ display_name: "Data Team" });
+    });
+  });
+
+  describe("dormancy gate — coming_soon refused", () => {
+    it("returns 409 platform_not_available for a coming_soon static-bot — confirmInstall not called", async () => {
+      stageTelegramCatalog("business", "coming_soon");
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "-1001234567890" }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("platform_not_available");
+      expect(confirmArgs).toBeNull();
+    });
+  });
+
+  describe("form-shaped static-bot that exposes applicationId (Teams/WhatsApp)", () => {
+    it("is accepted — the OAuth-shaped refusal keys on oauthShaped, not applicationId", async () => {
+      // Regression guard (#3140 review): Teams/WhatsApp populate `applicationId`
+      // for their manifest/parity URLs but are form-shaped (`oauthShaped` unset).
+      // Keying the refusal on `applicationId` would wrongly 400 them.
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "business", is_operator_workspace: false }];
+        }
+        return [
+          {
+            slug: "teams",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            implementation_status: "available",
+            config_schema: [{ key: "tenant_id", type: "string", required: true }],
+          },
+        ];
+      });
+
+      const res = await request("/api/v1/integrations/teams/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tenant_id: "00000000-0000-0000-0000-000000000000" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { installed: boolean; platform: string };
+      expect(body.installed).toBe(true);
+      expect(appIdConfirmCalled).toBe(true);
+    });
+  });
+
+  describe("cap gate — over-cap blocked / billing-check failed", () => {
+    beforeEach(() => stageTelegramCatalog());
+
+    it("returns 429 plan_limit_exceeded (with limit) when confirmInstall hits the chat-integration cap", async () => {
+      // `confirmInstall` runs `checkChatIntegrationLimitAndInstall`; an
+      // over-cap workspace surfaces ChatIntegrationLimitError, which the
+      // route maps to 429 via runHandler's classifyError.
+      confirmInstallImpl = async () => {
+        throw new ChatIntegrationLimitError({
+          message: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+          workspaceId: "ws-1",
+          limit: 1,
+        });
+      };
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "-1001234567890" }),
+      });
+
+      expect(res.status).toBe(429);
+      const body = (await res.json()) as { error: string; limit: number; requestId: string };
+      expect(body.error).toBe("plan_limit_exceeded");
+      expect(body.limit).toBe(1);
+      expect(body.requestId).toBeTruthy();
+    });
+
+    it("returns 503 billing_check_failed when the cap count check fails closed", async () => {
+      confirmInstallImpl = async () => {
+        throw new BillingCheckFailedError({
+          message: "Unable to verify plan limits. Please try again.",
+          workspaceId: "ws-1",
+        });
+      };
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "-1001234567890" }),
+      });
+
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("billing_check_failed");
+    });
+  });
+
+  describe("routing-identifier validation", () => {
+    beforeEach(() => stageTelegramCatalog());
+
+    it("returns 400 bad_request when the handler rejects the routing id format", async () => {
+      confirmInstallImpl = async () => {
+        throw new TelegramChatIdInvalidError({
+          message: 'Telegram chat_id "@channel" is not a valid integer id.',
+        });
+      };
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "@channel" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("bad_request");
+      expect(body.message).toContain("not a valid integer id");
+    });
+
+    it("returns 400 missing_routing_identifier when the routing field is absent — confirmInstall is not called", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ display_name: "no chat id here" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("missing_routing_identifier");
+      expect(body.message).toContain("chat_id");
+      // The route short-circuited before dispatching to the handler.
+      expect(confirmArgs).toBeNull();
+    });
+
+    it("returns 400 missing_routing_identifier when the routing field is blank", async () => {
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "   " }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("missing_routing_identifier");
+      expect(confirmArgs).toBeNull();
+    });
+  });
+
+  describe("OAuth-shaped static-bot rejection (Discord)", () => {
+    beforeEach(() => {
+      // Discord is a static-bot with a populated `applicationId` — its
+      // routing id rides on an OAuth bot-install redirect, so the form
+      // route refuses it.
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "business", is_operator_workspace: false }];
+        }
+        return [
+          {
+            slug: "discord",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            implementation_status: "available",
+            config_schema: [{ key: "guild_id", type: "string", required: true }],
+          },
+        ];
+      });
+    });
+
+    it("returns 400 oauth_shaped_static_bot and never calls confirmInstall", async () => {
+      const res = await request("/api/v1/integrations/discord/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ guild_id: "123456789012345678" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("oauth_shaped_static_bot");
+      expect(oauthShapedConfirmCalled).toBe(false);
+    });
+  });
+
+  describe("catalog misconfiguration", () => {
+    it("returns 501 when the static-bot catalog row declares no required routing field", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "business", is_operator_workspace: false }];
+        }
+        // config_schema with only optional fields — no routing identifier.
+        return [
+          {
+            slug: "telegram",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            config_schema: [{ key: "display_name", type: "string", required: false }],
+          },
+        ];
+      });
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ display_name: "x" }),
+      });
+
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+      expect(confirmArgs).toBeNull();
+    });
+  });
+
+  describe("plan-tier gate", () => {
+    it("returns 403 plan_upgrade_required when the workspace plan ranks below min_plan", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "free", is_operator_workspace: false }];
+        }
+        return [
+          {
+            slug: "telegram",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            config_schema: TELEGRAM_CONFIG_SCHEMA,
+          },
+        ];
+      });
+
+      const res = await request("/api/v1/integrations/telegram/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: "-1001234567890" }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string; required_plan: string; current_plan: string };
+      expect(body.error).toBe("plan_upgrade_required");
+      expect(body.required_plan).toBe("starter");
+      expect(body.current_plan).toBe("free");
+      // Denied before dispatch.
+      expect(confirmArgs).toBeNull();
+    });
+  });
+
+  describe("handler not registered", () => {
+    it("returns 501 handler_unavailable when no static-bot handler is registered for the slug", async () => {
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("FROM organization")) {
+          return [{ plan_tier: "business", is_operator_workspace: false }];
+        }
+        return [
+          {
+            slug: "whatsapp",
+            install_model: "static-bot",
+            enabled: true,
+            min_plan: "starter",
+            config_schema: [{ key: "phone_number_id", type: "string", required: true }],
+          },
+        ];
+      });
+
+      const res = await request("/api/v1/integrations/whatsapp/install-form", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ phone_number_id: "123456" }),
+      });
+
+      expect(res.status).toBe(501);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("handler_unavailable");
+    });
   });
 });

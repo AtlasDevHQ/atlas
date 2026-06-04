@@ -224,24 +224,36 @@ const installFormRoute = createRoute({
   method: "post",
   path: "/{platform}/install-form",
   tags: ["Integrations"],
-  summary: "Submit form-based install (no OAuth)",
+  summary: "Submit a non-OAuth install (form credentials or static-bot routing id)",
   description:
-    "Persists the submitted credentials + install metadata for an `install_model: \"form\"` " +
-    "catalog entry (#2660 — Email, future Webhook / Obsidian). Validates the JSON body " +
+    "Persists the submitted install for a non-OAuth catalog entry. Two install models share " +
+    "this route:\n\n" +
+    "- `install_model: \"form\"` (#2660 — Email, Webhook / Obsidian): validates the JSON body " +
     "against the per-Platform schema, encrypts secret-marked fields at rest, and upserts the " +
-    "workspace_plugins row. 400 with field-level detail on validation failure; the route " +
-    "rejects requests pointed at non-form catalog entries with 400 (`wrong_install_model`).",
+    "workspace_plugins row. 400 with field-level detail on validation failure.\n" +
+    "- `install_model: \"static-bot\"` (#3140 — Telegram / Teams / Google Chat / WhatsApp): the " +
+    "first `required` field in the catalog `config_schema` is the routing identifier (chat_id, " +
+    "tenant_id, …); the route forwards its value to the handler's `confirmInstall`, which upserts the " +
+    "workspace_plugins(pillar='chat') row. The cap gate (`checkChatIntegrationLimitAndInstall`, the " +
+    "advisory-locked insert path — over-cap → 429, reconnect grandfathered) lives inside " +
+    "`confirmInstall`; Discord and Slack run it today, the four form-shaped static-bots adopt it in " +
+    "#3141–#3144. Until a platform's slice ships, its catalog row stays `coming_soon` and the route " +
+    "refuses it (409 `platform_not_available`), so this route never reaches a not-yet-cap-gated handler.\n\n" +
+    "The route rejects requests pointed at OAuth-installable catalog entries with 400 " +
+    "(`wrong_install_model`), and OAuth-shaped static-bots (Discord) with 400 " +
+    "(`oauth_shaped_static_bot` — install those via their dedicated OAuth endpoint).",
   request: {
     params: z.object({
-      platform: z.string().openapi({ description: "Catalog slug (e.g. 'email')" }),
+      platform: z.string().openapi({ description: "Catalog slug (e.g. 'email', 'telegram')" }),
     }),
     body: {
       content: {
         "application/json": {
           schema: z.record(z.string(), z.unknown()).openapi({
             description:
-              "Form data shaped to the catalog entry's `configSchema`. Validated " +
-              "server-side by the per-Platform handler — never trust the client.",
+              "Form data shaped to the catalog entry's `configSchema`. For static-bot installs " +
+              "this carries the routing identifier (e.g. `chat_id`) plus optional label fields. " +
+              "Validated server-side by the per-Platform handler — never trust the client.",
           }),
         },
       },
@@ -263,7 +275,11 @@ const installFormRoute = createRoute({
     400: {
       description:
         "Validation failure (per-field detail in `fieldErrors`, top-level issues in " +
-        "`formErrors`), missing org binding, or platform is not form-installable.",
+        "`formErrors`), missing org binding, platform is not form/static-bot-installable " +
+        "(`wrong_install_model`), an OAuth-shaped static-bot was submitted here " +
+        "(`oauth_shaped_static_bot`), a static-bot routing identifier was missing " +
+        "(`missing_routing_identifier`), or a static-bot routing id failed the handler's " +
+        "format / reachability check (`bad_request`, carrying the upstream message).",
       content: {
         "application/json": {
           schema: ErrorSchema.extend({
@@ -293,8 +309,31 @@ const installFormRoute = createRoute({
       },
     },
     404: { description: "Platform not found in catalog", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limited", content: { "application/json": { schema: AuthErrorSchema } } },
-    501: { description: "Form handler not registered", content: { "application/json": { schema: ErrorSchema } } },
+    // #3140 — static-bot whose slice hasn't shipped yet (`coming_soon`).
+    409: { description: "Static-bot platform not available for install yet (`platform_not_available`)", content: { "application/json": { schema: ErrorSchema } } },
+    // #3140 — static-bot install at the workspace's chat-integration cap
+    // (`plan_limit_exceeded`, body carries `limit`), or rate limited. Raised by
+    // `confirmInstall`'s cap gate — live once a platform's handler is migrated
+    // onto `checkChatIntegrationLimitAndInstall` (#3141–#3144); Discord/Slack
+    // already do.
+    429: {
+      description:
+        "Chat-integration cap reached for a static-bot install " +
+        "(`plan_limit_exceeded`, JSON body carries `limit`), or rate limited.",
+      content: {
+        "application/json": {
+          schema: z.union([ErrorSchema.extend({ limit: z.number() }), AuthErrorSchema]),
+        },
+      },
+    },
+    501: { description: "Form / static-bot handler not registered, or catalog misconfig", content: { "application/json": { schema: ErrorSchema } } },
+    // #3140 — static-bot reachability round-trip to the platform failed
+    // (`upstream_error`): the bot couldn't confirm the routing identifier.
+    502: { description: "Static-bot upstream verification unreachable (`upstream_error`)", content: { "application/json": { schema: ErrorSchema } } },
+    // #3140 — the chat-integration count couldn't be determined (transient DB
+    // fault), so the cap check failed closed: `billing_check_failed` "try again"
+    // (raised by `confirmInstall`'s cap gate, same migration note as 429).
+    503: { description: "Billing/plan-limit check unavailable for a static-bot install: `billing_check_failed`", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -410,6 +449,22 @@ interface CatalogRowFromDb extends Record<string, unknown> {
   readonly install_model: string;
   readonly enabled: boolean;
   readonly min_plan: string;
+  /**
+   * The catalog row's `config_schema` JSONB. Carried on the lookup so the
+   * static-bot install branch can resolve which declared field is the routing
+   * identifier (#3140) without a second query. `null` / absent for rows that
+   * declare no schema; the OAuth + form branches ignore it.
+   */
+  readonly config_schema?: unknown;
+  /**
+   * `implementation_status` — `'available'` once a platform's slice has
+   * shipped, `'coming_soon'` until then. The static-bot branch refuses
+   * `coming_soon` rows (#3140): the four form-shaped platforms stay
+   * `coming_soon` until their slices (#3141–#3144) flip them on *and* migrate
+   * their `confirmInstall` onto the cap gate, so gating here keeps the spine
+   * from ever reaching a not-yet-cap-gated handler.
+   */
+  readonly implementation_status?: string;
 }
 
 /**
@@ -479,9 +534,11 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   slug: string;
   install_model: CatalogInstallModel;
   min_plan: string;
+  config_schema: unknown;
+  implementation_status: string | null;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled, min_plan
+    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status
        FROM plugin_catalog
       WHERE slug = $1 AND enabled = true
       LIMIT 1`,
@@ -502,6 +559,8 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     slug: row.slug,
     install_model: row.install_model as CatalogInstallModel,
     min_plan: row.min_plan,
+    config_schema: row.config_schema ?? null,
+    implementation_status: row.implementation_status ?? null,
   };
 }
 
@@ -610,6 +669,55 @@ function buildPlanUpgradeBody(
     current_plan: deny.current_plan,
     requestId,
   };
+}
+
+/**
+ * Resolve the routing-identifier field key from a catalog row's
+ * `config_schema` (#3140 — static-bot install spine).
+ *
+ * A static-bot install captures one routing identifier the admin types into a
+ * form (Telegram `chat_id`, Teams `tenant_id`, Google Chat `workspace_id`,
+ * WhatsApp `phone_number_id`) plus optional label fields. The convention,
+ * consistent across all four catalog rows, is that the routing identifier is
+ * the **first `required` string field** in `config_schema`; every other field
+ * is an optional label forwarded to the handler as `extras` (the handler
+ * extracts its own known keys and drops the rest, per the
+ * `StaticBotInstallHandler` contract). Resolving this server-side keeps the
+ * routing-id semantics in one place and lets the admin form stay a generic
+ * flat config-field submit.
+ *
+ * `config_schema` is `unknown` on the wire, so narrow defensively. Returns the
+ * field key, or `null` when no required string field exists (a catalog
+ * mis-seed — the caller surfaces a structured 501 so an operator can fix the
+ * row rather than persisting an install with an empty routing id).
+ */
+function resolveStaticBotRoutingKey(configSchema: unknown): string | null {
+  if (!Array.isArray(configSchema)) return null;
+  for (const field of configSchema) {
+    if (!field || typeof field !== "object") continue;
+    const f = field as Record<string, unknown>;
+    if (typeof f.key === "string" && f.key.length > 0 && f.type === "string" && f.required === true) {
+      return f.key;
+    }
+  }
+  return null;
+}
+
+/**
+ * The set of field keys a catalog row's `config_schema` declares (#3140). Used
+ * to whitelist the `extras` a static-bot install forwards to `confirmInstall`
+ * so an undeclared body key can't reach persistence — defense-in-depth over the
+ * handler's own key extraction. Narrows the `unknown` schema defensively.
+ */
+function staticBotDeclaredKeys(configSchema: unknown): ReadonlySet<string> {
+  const keys = new Set<string>();
+  if (!Array.isArray(configSchema)) return keys;
+  for (const field of configSchema) {
+    if (!field || typeof field !== "object") continue;
+    const key = (field as Record<string, unknown>).key;
+    if (typeof key === "string" && key.length > 0) keys.add(key);
+  }
+  return keys;
 }
 
 
@@ -823,18 +931,19 @@ integrations.openapi(installFormRoute, async (c) =>
     if (!row) {
       return c.json({ error: "not_found", message: `Unknown platform "${platform}"`, requestId }, 404);
     }
-    if (row.install_model !== "form") {
-      // A caller hitting `/install-form` on an OAuth or static-bot
-      // catalog row is either a UI bug (modal opened for the wrong
-      // card) or an attacker probing endpoints. Logging the rejection
-      // surfaces both. Mirrors the install + callback handlers'
-      // similar `log.warn` patterns.
+    if (row.install_model !== "form" && row.install_model !== "static-bot") {
+      // A caller hitting `/install-form` on an OAuth(-datasource) catalog
+      // row is either a UI bug (modal opened for the wrong card) or an
+      // attacker probing endpoints. Logging the rejection surfaces both.
+      // Mirrors the install + callback handlers' similar `log.warn`
+      // patterns. `form` (#2660) and `static-bot` (#3140) — both non-OAuth
+      // install submits — are the two accepted models here.
       log.warn(
         { platform, install_model: row.install_model },
-        "Refused form install: platform's install_model is not 'form'",
+        "Refused install-form: platform's install_model is neither 'form' nor 'static-bot'",
       );
       return c.json(
-        { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not form-installable via this route.`, requestId },
+        { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not installable via this route (OAuth platforms use /install).`, requestId },
         400,
       );
     }
@@ -889,49 +998,169 @@ integrations.openapi(installFormRoute, async (c) =>
       handler = getInstallHandler(row);
     } catch (err) {
       log.warn(
-        { platform, err: err instanceof Error ? err.message : String(err) },
-        "No form install handler registered for platform — operator must wire the handler",
+        { platform, install_model: row.install_model, err: err instanceof Error ? err.message : String(err) },
+        "No install handler registered for platform — operator must wire the handler",
       );
       return c.json(
-        { error: "handler_unavailable", message: `Form handler for "${platform}" is not registered on this deploy.`, requestId },
+        { error: "handler_unavailable", message: `Install handler for "${platform}" is not registered on this deploy.`, requestId },
         501,
       );
     }
-    if (handler.kind !== "form") {
-      log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
+
+    // ── Persist — branch on the catalog install model ─────────────
+    // The model check above admitted only `form` and `static-bot`.
+    // `getInstallHandler` dispatches by `install_model`, so a handler.kind
+    // that disagrees is a registration typo (a wrong-kind handler in the
+    // right registry) — surface it as a 501 rather than calling the wrong
+    // method.
+    if (row.install_model === "form") {
+      if (handler.kind !== "form") {
+        log.error({ platform, kind: handler.kind }, "Catalog install_model='form' but dispatch returned non-form handler");
+        return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
+      }
+      try {
+        const { installRecord } = await handler.validateConfig(workspaceId, formData);
+        log.info({ workspaceId, platform, installId: installRecord.id }, "Form-based install completed");
+        return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);
+      } catch (err) {
+        // Tagged validation errors → 400 with field-level detail so the
+        // UI modal can highlight the wrong inputs. Every other throw
+        // bubbles up to `runHandler`'s `classifyError` for the standard
+        // 5xx-with-requestId path.
+        if (err instanceof FormInstallValidationError) {
+          // `fieldErrors` is `Readonly<Record<string, readonly string[]>>`
+          // — Hono's JSON serializer accepts it, but cast back to plain
+          // arrays at the response boundary so OpenAPI schema clients
+          // see a regular `string[]`.
+          const fieldErrors: Record<string, string[]> = {};
+          for (const [k, v] of Object.entries(err.fieldErrors)) fieldErrors[k] = [...v];
+          return c.json(
+            {
+              error: "invalid_form_data",
+              message: "One or more fields failed validation.",
+              requestId,
+              fieldErrors,
+              ...(err.formErrors.length > 0 ? { formErrors: [...err.formErrors] } : {}),
+            },
+            400,
+          );
+        }
+        throw err;
+      }
+    }
+
+    // ── static-bot routing-identifier install (#3140) ─────────────
+    if (handler.kind !== "static-bot") {
+      log.error({ platform, kind: handler.kind }, "Catalog install_model='static-bot' but dispatch returned non-static-bot handler");
       return c.json({ error: "handler_unavailable", message: "Install handler misconfigured.", requestId }, 501);
     }
 
-    // ── Validate + persist ────────────────────────────────────────
-    try {
-      const { installRecord } = await handler.validateConfig(workspaceId, formData);
-      log.info({ workspaceId, platform, installId: installRecord.id }, "Form-based install completed");
-      return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);
-    } catch (err) {
-      // Tagged validation errors → 400 with field-level detail so the
-      // UI modal can highlight the wrong inputs. Every other throw
-      // bubbles up to `runHandler`'s `classifyError` for the standard
-      // 5xx-with-requestId path.
-      if (err instanceof FormInstallValidationError) {
-        // `fieldErrors` is `Readonly<Record<string, readonly string[]>>`
-        // — Hono's JSON serializer accepts it, but cast back to plain
-        // arrays at the response boundary so OpenAPI schema clients
-        // see a regular `string[]`.
-        const fieldErrors: Record<string, string[]> = {};
-        for (const [k, v] of Object.entries(err.fieldErrors)) fieldErrors[k] = [...v];
-        return c.json(
-          {
-            error: "invalid_form_data",
-            message: "One or more fields failed validation.",
-            requestId,
-            fieldErrors,
-            ...(err.formErrors.length > 0 ? { formErrors: [...err.formErrors] } : {}),
-          },
-          400,
-        );
-      }
-      throw err;
+    // Spine gate: only install static-bots a slice has marked `available`.
+    // The four form-shaped platforms stay `coming_soon` until #3141–#3144 ship
+    // them — and those slices are what migrate each handler's `confirmInstall`
+    // onto the cap gate (`checkChatIntegrationLimitAndInstall`). Refusing
+    // `coming_soon` here keeps this generic route from ever reaching a handler
+    // that persists its install WITHOUT the cap gate (Telegram/Teams/gchat/
+    // WhatsApp `confirmInstall` is a bare UPSERT today — only Discord and Slack
+    // run the gate). So the spine is intentionally dormant for real platforms;
+    // a registered fixture proves the path end-to-end in tests.
+    if (row.implementation_status === "coming_soon") {
+      log.info(
+        { platform },
+        "Refused static-bot install: platform is coming_soon (slice not shipped — see #3141–#3144)",
+      );
+      return c.json(
+        {
+          error: "platform_not_available",
+          message: `Platform "${platform}" is not available for install yet.`,
+          requestId,
+        },
+        409,
+      );
     }
+
+    // OAuth-shaped static-bots (Discord) capture their routing identifier
+    // through an OAuth bot-install redirect that proves the admin's workspace
+    // controls the target server. Accepting a directly-typed routing id here
+    // would skip that ownership proof (`confirmInstall` verifies the bot is
+    // reachable, not that the caller owns it), so refuse and point at the
+    // dedicated OAuth endpoint. Keyed on the explicit `oauthShaped` flag, NOT
+    // on `applicationId` — Teams/WhatsApp populate `applicationId` for their
+    // manifest/parity URLs while remaining form-shaped (#3140 review).
+    if (handler.oauthShaped) {
+      log.warn(
+        { platform },
+        "Refused static-bot form install: platform is OAuth-shaped (use its OAuth install endpoint)",
+      );
+      return c.json(
+        {
+          error: "oauth_shaped_static_bot",
+          message: `Platform "${platform}" captures its routing identifier through an OAuth bot-install flow — install it via its OAuth endpoint, not the form route.`,
+          requestId,
+        },
+        400,
+      );
+    }
+
+    // The routing identifier is the first `required` string field declared in
+    // the catalog `config_schema` (chat_id / tenant_id / workspace_id /
+    // phone_number_id). A row with no such field is an operator mis-seed —
+    // surface a 501 rather than persisting an install with an empty routing id.
+    const routingKey = resolveStaticBotRoutingKey(row.config_schema);
+    if (!routingKey) {
+      log.error(
+        { platform },
+        "static-bot catalog row declares no required routing-identifier field in config_schema — operator must fix the row",
+      );
+      return c.json(
+        { error: "handler_unavailable", message: `Internal configuration error for "${platform}". Contact your administrator.`, requestId },
+        501,
+      );
+    }
+    const rawRouting = formData[routingKey];
+    if (typeof rawRouting !== "string" || rawRouting.trim().length === 0) {
+      return c.json(
+        {
+          error: "missing_routing_identifier",
+          message: `Install for "${platform}" requires a non-empty "${routingKey}".`,
+          requestId,
+        },
+        400,
+      );
+    }
+    // Trim surrounding whitespace — a form input can carry copy-paste padding
+    // that the handler's anchored format regex would otherwise reject.
+    const routingIdentifier = rawRouting.trim();
+    // Forward only the catalog-declared fields (minus the routing id) as extras,
+    // built from `config_schema` rather than cloned from the raw body. The
+    // handler already drops keys it doesn't know, but whitelisting here keeps
+    // an undeclared JSON key from ever reaching `confirmInstall` — so a handler
+    // that persists `extras` can't write schema-foreign data into
+    // workspace_plugins.config (#3148 review).
+    const declaredKeys = staticBotDeclaredKeys(row.config_schema);
+    const extras: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(formData)) {
+      if (key !== routingKey && declaredKeys.has(key)) extras[key] = value;
+    }
+
+    // `confirmInstall` validates the routing id, round-trips the platform for
+    // reachability, and upserts the workspace_plugins(pillar='chat') row. Its
+    // tagged failures all map through `runHandler`'s `classifyError`, so no
+    // explicit catch is needed — routing-id-invalid / reachability → 400,
+    // upstream unreachable → 502, and (once a handler is migrated onto
+    // `checkChatIntegrationLimitAndInstall`) at-cap → 429 `plan_limit_exceeded`
+    // / count-check-failed → 503 `billing_check_failed`, with reconnect
+    // grandfathered inside the gate.
+    //
+    // The cap gate lives INSIDE `confirmInstall` (the single advisory-locked
+    // insert path), not here: Discord and Slack run it today; the four
+    // form-shaped static-bots adopt it in #3141–#3144. The `coming_soon` gate
+    // above guarantees this route only reaches a handler once its slice has
+    // shipped that migration, so the 429/503 paths are live exactly when the
+    // platform is installable.
+    const { installRecord } = await handler.confirmInstall(workspaceId, routingIdentifier, undefined, extras);
+    log.info({ workspaceId, platform, installId: installRecord.id }, "Static-bot install completed");
+    return c.json({ installed: true as const, platform, installId: installRecord.id }, 200);
   }),
 );
 

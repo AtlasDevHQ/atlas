@@ -411,9 +411,13 @@ const CatalogEntrySchema = z.object({
   // route validates submitted form data against the declared
   // `configSchema`. A missing/empty schema would accept any payload at
   // install time. Reject at config-load so the misconfig surfaces in
-  // the Zod parse, not at the first install attempt. OAuth / static-bot
-  // entries don't carry a schema (no admin-facing form), so
-  // `configSchema` stays optional for them.
+  // the Zod parse, not at the first install attempt. OAuth entries don't
+  // carry a schema. The form-shaped static-bots (Telegram / Teams /
+  // Google Chat / WhatsApp) DO carry one — the #3140 routing-identifier
+  // modal renders it and the install route resolves the routing field
+  // from it — but the requirement is enforced per-platform at install
+  // time (a missing routing field is a 501), so `configSchema` stays
+  // optional in this schema for them rather than required here.
   (entry) => entry.install_model !== "form" || (Array.isArray(entry.configSchema) && entry.configSchema.length > 0),
   {
     message: "configSchema is required (and non-empty) for catalog entries with install_model='form'",

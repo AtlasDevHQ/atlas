@@ -27,7 +27,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render as rtlRender, type RenderResult, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as rtlRender, screen, type RenderResult, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AtlasProvider } from "@/ui/context";
@@ -326,31 +326,33 @@ describe("CatalogCard — slice 8 lifecycle (#2746)", () => {
     ).toBeNull();
   });
 
-  test("static-bot without BYOT eligibility renders inert Connect", () => {
-    // gchat: static-bot install model, no internal DB → no install path
-    // wired yet on the catalog flow. The CTA renders but is disabled so
-    // the card stays visible (consistent with other "not yet shipped"
-    // states) without misleading the admin into clicking.
+  test("form-shaped static-bot renders the routing-id Install button (#3140)", () => {
+    // gchat: form-shaped static-bot. Pre-#3140 this rendered an inert
+    // disabled "Connect" ("not yet shipped"); the install spine replaces it
+    // with an Install button that opens the routing-identifier modal (the
+    // POST is cap-gated server-side). No internal DB is required — the bot is
+    // operator-shared, so there's no BYOT path to gate on.
     const { container } = render(
       <CatalogCard
         entry={makeEntry({
           id: "catalog:gchat",
           slug: "gchat",
           installModel: "static-bot",
+          configSchema: [{ key: "workspace_id", type: "string", label: "Workspace ID", required: true }],
         })}
         status={null}
         onChange={noopChange}
       />,
     );
-    const cta = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Connect Google Chat"], button[aria-label="Connect gchat"]',
+    const install = container.querySelector<HTMLButtonElement>(
+      '[data-testid="catalog-card-gchat-install"]',
     );
-    // The aria-label uses `entry.name`. The default fixture lands on "Slack";
-    // we override slug but not name, so the assertion uses the default name.
-    // Re-derive the assertion via the generic `Connect ${name}` shape.
-    const fallback = container.querySelector<HTMLButtonElement>('button[aria-label^="Connect "]');
-    expect(cta ?? fallback).not.toBeNull();
-    expect((cta ?? fallback)!.disabled).toBe(true);
+    expect(install).not.toBeNull();
+    expect(install!.disabled).toBe(false);
+    // No inert/disabled Connect remains for this slug.
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label^="Connect "][disabled]'),
+    ).toBeNull();
   });
 });
 
@@ -910,5 +912,159 @@ describe("CatalogCard — BYOT form submit (#2746)", () => {
         ),
       ).toBe(true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// static-bot routing-identifier install (#3140) — the spine's admin form.
+// Form-shaped static-bots (Telegram / Teams / Google Chat / WhatsApp) render
+// an Install button that opens StaticBotInstallModal, replacing the inert
+// "not yet shipped" disabled Connect. Discord (OAuth-shaped) keeps the inert
+// affordance.
+// ---------------------------------------------------------------------------
+
+describe("CatalogCard — static-bot form install (#3140)", () => {
+  const TELEGRAM_SCHEMA = [
+    { key: "chat_id", type: "string", label: "Chat ID", required: true },
+    { key: "display_name", type: "string", label: "Display name", required: false },
+  ];
+
+  function telegramEntry(
+    overrides: Partial<IntegrationsCatalogEntry> = {},
+  ): IntegrationsCatalogEntry {
+    return makeEntry({
+      id: "catalog:telegram",
+      slug: "telegram",
+      installModel: "static-bot",
+      name: "Telegram",
+      description: "Connect Telegram",
+      minPlan: "starter",
+      configSchema: TELEGRAM_SCHEMA,
+      implementationStatus: "available",
+      ...overrides,
+    });
+  }
+
+  test("form-shaped static-bot (available) renders an Install button, not the inert Connect", () => {
+    const { container } = render(
+      <CatalogCard entry={telegramEntry()} status={null} onChange={noopChange} />,
+    );
+
+    const install = container.querySelector('[data-testid="catalog-card-telegram-install"]');
+    expect(install).not.toBeNull();
+    expect((install as HTMLButtonElement).disabled).toBe(false);
+    // Not the coming_soon affordance.
+    expect(
+      container.querySelector('[data-testid="catalog-card-telegram-coming-soon-cta"]'),
+    ).toBeNull();
+  });
+
+  test("coming_soon still dominates — no Install button until the slug is available", () => {
+    const { container } = render(
+      <CatalogCard
+        entry={telegramEntry({ implementationStatus: "coming_soon" })}
+        status={null}
+        onChange={noopChange}
+      />,
+    );
+
+    expect(
+      container.querySelector('[data-testid="catalog-card-telegram-install"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="catalog-card-telegram-coming-soon-cta"]'),
+    ).not.toBeNull();
+  });
+
+  test("Discord (OAuth-shaped static-bot) keeps the inert Connect — no routing-id form", () => {
+    const { container } = render(
+      <CatalogCard
+        entry={telegramEntry({
+          id: "catalog:discord",
+          slug: "discord",
+          name: "Discord",
+          configSchema: [{ key: "guild_id", type: "string", label: "Server ID", required: true }],
+        })}
+        status={null}
+        onChange={noopChange}
+      />,
+    );
+
+    // No typed-form Install affordance for Discord.
+    expect(
+      container.querySelector('[data-testid="catalog-card-discord-install"]'),
+    ).toBeNull();
+  });
+
+  test("clicking Install opens the routing-identifier modal with the config_schema fields", async () => {
+    const { container } = render(
+      <CatalogCard entry={telegramEntry()} status={null} onChange={noopChange} />,
+    );
+
+    const install = container.querySelector(
+      '[data-testid="catalog-card-telegram-install"]',
+    ) as HTMLButtonElement;
+    await act(async () => {
+      fireEvent.click(install);
+    });
+
+    // The modal (a portaled dialog) renders the routing-identifier field
+    // declared in config_schema.
+    expect(await screen.findByText("Install Telegram")).toBeDefined();
+    expect(await screen.findByText("Chat ID")).toBeDefined();
+  });
+
+  test("submitting the routing id POSTs to /install-form and fires onInstalled on success", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: Array<{ url: string; method: string }> = [];
+    globalThis.fetch = mock((input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalls.push({
+        url: typeof input === "string" ? input : input.toString(),
+        method: init?.method ?? "GET",
+      });
+      return Promise.resolve(
+        new Response(JSON.stringify({ installed: true, platform: "telegram", installId: "i-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    let installed = 0;
+    try {
+      const { container } = render(
+        <CatalogCard entry={telegramEntry()} status={null} onChange={() => { installed += 1; }} />,
+      );
+      await act(async () => {
+        fireEvent.click(
+          container.querySelector('[data-testid="catalog-card-telegram-install"]') as HTMLButtonElement,
+        );
+      });
+      // Fill the routing identifier (first input in the portaled dialog = chat_id).
+      const chatInput = (await screen.findAllByRole("textbox"))[0] as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(chatInput, { target: { value: "-1001234567890" } });
+      });
+      // The dialog's submit button is labelled "Install" (FormDialog submitLabel).
+      const submit = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
+        (b) => b.textContent?.trim() === "Install" && b.getAttribute("type") === "submit",
+      );
+      expect(submit).toBeDefined();
+      await act(async () => {
+        fireEvent.click(submit!);
+      });
+
+      await waitFor(() => {
+        expect(
+          fetchCalls.some(
+            (c) => c.method === "POST" && c.url.includes("/api/v1/integrations/telegram/install-form"),
+          ),
+        ).toBe(true);
+      });
+      // Success wiring: onInstalled → onChange refetch fired.
+      await waitFor(() => expect(installed).toBeGreaterThan(0));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

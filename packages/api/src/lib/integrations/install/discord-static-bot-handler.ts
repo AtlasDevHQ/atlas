@@ -171,6 +171,11 @@ function parseDiscordGuildResponse(
 
 export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
   readonly kind = "static-bot" as const;
+  // Discord captures its routing identifier (guild snowflake) through an OAuth
+  // bot-install redirect, so the form-based `/install-form` route refuses it
+  // (#3140) — see {@link StaticBotInstallHandler.oauthShaped}. The four
+  // form-shaped platforms leave this unset.
+  readonly oauthShaped = true as const;
 
   private readonly botToken: string;
   private readonly clientId: string;

@@ -18,25 +18,9 @@
 
 import { useMemo, useState } from "react";
 import { z } from "zod";
-import {
-  FormDialog,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormDescription,
-  FormMessage,
-} from "@/components/form-dialog";
-import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { FormDialog } from "@/components/form-dialog";
 import { getApiUrl } from "@/lib/api-url";
+import { ConfigSchemaFields } from "./config-schema-fields";
 
 /**
  * Subset of `ConfigSchemaField` we need for rendering — kept inline
@@ -132,7 +116,9 @@ export function parseConfigSchema(raw: unknown): FormFieldDescriptor[] {
 // needed for our use case). Cast through `unknown` because Zod's
 // generic ZodObject doesn't unify with the loose Record<string,
 // unknown> shape we synthesize from `configSchema`.
-function buildZodSchema(
+// Exported so the static-bot install modal (#3140) builds its form schema
+// from the same `configSchema` rules without duplicating them.
+export function buildZodSchema(
   fields: FormFieldDescriptor[],
 ): z.ZodType<Record<string, unknown>, Record<string, unknown>> {
   const shape: Record<string, z.ZodTypeAny> = {};
@@ -184,7 +170,9 @@ function buildZodSchema(
  * are passed through; `undefined` is treated as "no default" and the
  * input renders blank.
  */
-function buildDefaultValues(fields: FormFieldDescriptor[]): Record<string, unknown> {
+// Exported so the static-bot install modal (#3140) seeds its form from the
+// same `configSchema` defaults.
+export function buildDefaultValues(fields: FormFieldDescriptor[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of fields) {
     if (field.default === undefined) {
@@ -304,67 +292,7 @@ export function FormInstallModal({
       submitLabel="Install"
       saving={saving}
     >
-      {(form) => (
-        <>
-          {fields.map((field) => (
-            <FormField
-              key={field.key}
-              control={form.control}
-              name={field.key}
-              render={({ field: rhf }) => (
-                <FormItem>
-                  <FormLabel>
-                    {field.label ?? field.key}
-                    {field.required && <span className="ml-1 text-destructive">*</span>}
-                  </FormLabel>
-                  <FormControl>
-                    {field.type === "boolean" ? (
-                      <Checkbox
-                        checked={Boolean(rhf.value)}
-                        onCheckedChange={(checked) => rhf.onChange(Boolean(checked))}
-                        aria-label={field.label ?? field.key}
-                      />
-                    ) : field.type === "select" && field.options && field.options.length > 0 ? (
-                      <Select
-                        value={(rhf.value as string | undefined) ?? ""}
-                        onValueChange={(v) => rhf.onChange(v)}
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder={`Select ${field.label ?? field.key}`} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {field.options.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        type={
-                          field.secret
-                            ? "password"
-                            : field.type === "number"
-                            ? "number"
-                            : "text"
-                        }
-                        value={(rhf.value as string | number | undefined) ?? ""}
-                        onChange={(e) => rhf.onChange(e.target.value)}
-                        autoComplete={field.secret ? "off" : undefined}
-                      />
-                    )}
-                  </FormControl>
-                  {field.description && (
-                    <FormDescription>{field.description}</FormDescription>
-                  )}
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          ))}
-        </>
-      )}
+      {(form) => <ConfigSchemaFields fields={fields} control={form.control} />}
     </FormDialog>
   );
 }

@@ -2,18 +2,19 @@
  * Wiring test for Better Auth's signup-time hooks (#2841).
  *
  * ── The risk this closes ────────────────────────────────────────────
- * Five signup-time side effects run from two Better Auth plugin hooks,
- * each with thorough unit coverage in isolation but — until this file —
+ * Signup-time side effects run from two Better Auth plugin hooks, each
+ * with thorough unit coverage in isolation but — until this file —
  * NO test proving the composition actually attaches them:
  *
  *   • organizationHooks.afterCreateOrganization (in `buildPlugins`)
- *       → promoteOrgOwnerToAdmin, assignSaasTrial
+ *       → assignSaasTrial (org-owner promotion was removed in #2890 —
+ *         the creator is already member.role='owner')
  *   • databaseHooks.user.create.after (in `buildAuthOptions`)
  *       → dispatchSignupCrmLead, the deferred welcome-email path,
  *         _autoProvisionSsoMember
  *
- * The per-helper test files (`org-owner-promotion.test.ts`,
- * `assign-saas-trial.test.ts`, `dispatch-signup-crm-lead.test.ts`,
+ * The per-helper test files (`assign-saas-trial.test.ts`,
+ * `dispatch-signup-crm-lead.test.ts`,
  * `sso-provisioning.test.ts`) each self-document the gap: "Better Auth
  * closes over its plugin options, so the wiring isn't introspectable" and
  * "this cannot detect a refactor that removes the helper call from the
@@ -22,22 +23,20 @@
  * times (#2628 channelAllowed, #2630 botToken, #2676 orgId, #2680
  * reaction-back key mismatch). A refactor that deletes the hook
  * composition in `buildPlugins()` / `buildAuthOptions()` would pass every
- * existing test yet break signup in prod (org owners stuck at
- * role="member", SaaS workspaces stuck on plan_tier="free", no CRM lead,
+ * existing test yet break signup in prod (SaaS workspaces stuck on
+ * plan_tier="free", no CRM lead,
  * no welcome email, no SSO auto-join).
  *
  * ── Why we assert via downstream effects, not helper spies ───────────
- * Four of these are named helpers defined *inside* `server.ts`, called
- * from the hook bodies through lexical bindings
- * (`await promoteOrgOwnerToAdmin(...)`) rather than through the module's
- * export object; the fifth (the welcome email) is an inline deferred block
- * in the hook that dynamically imports `onUserSignup`.
+ * These are named helpers defined *inside* `server.ts`, called from the
+ * hook bodies through lexical bindings (`await assignSaasTrial(...)`)
+ * rather than through the module's export object; the welcome email is an
+ * inline deferred block in the hook that dynamically imports `onUserSignup`.
  * `mock.module("../server")` cannot intercept an intra-module call — and
  * mocking the module under test would defeat the point. So instead of
  * spying the helpers, we drive the *real, composed* hook and assert each
  * one's unique observable side effect:
  *
- *   promoteOrgOwnerToAdmin → UPDATE "user" SET role = 'admin'
  *   assignSaasTrial        → UPDATE organization SET plan_tier = 'trial'
  *   dispatchSignupCrmLead  → SaasCrm.upsertLead({ source: "signup" })
  *   welcome-email path     → setTimeout(…, 2000) → onUserSignup(…)
@@ -238,26 +237,21 @@ describe("organizationHooks.afterCreateOrganization wiring", () => {
     return hook as (args: { user: { id: string }; organization: { id: string } }) => Promise<void>;
   }
 
-  it("invokes promoteOrgOwnerToAdmin AND assignSaasTrial", async () => {
+  it("invokes assignSaasTrial and does NOT promote user.role (#2890)", async () => {
     const afterCreateOrganization = getAfterCreateOrganization();
 
     await afterCreateOrganization({ user: { id: "user_org_1" }, organization: { id: "org_1" } });
 
     const sqls = queries.map((q) => q.sql);
 
-    // promoteOrgOwnerToAdmin: SELECT current role, then promote to admin.
-    // The UPDATE assertion binds to THIS hook's user id (not just "some
-    // role UPDATE fired") so a future code path emitting the same SQL shape
-    // for a different entity can't satisfy it — the canary stays specific.
+    // #2890 removed promoteOrgOwnerToAdmin — the org creator is already
+    // member.role='owner' via the org plugin's creatorRole default, so no
+    // user.role write should fire here. Pin the absence so a regression
+    // re-adding the promotion is caught.
     expect(
-      sqls.some((s) => /SELECT\s+role\s+FROM\s+"user"/i.test(s)),
-      "promoteOrgOwnerToAdmin should read the current role",
-    ).toBe(true);
-    const roleUpdate = queries.find((q) => /UPDATE\s+"user"\s+SET\s+role\s*=\s*'admin'/i.test(q.sql));
-    expect(
-      roleUpdate?.params,
-      "promoteOrgOwnerToAdmin must be wired — expected the role-promotion UPDATE bound to the org owner's id",
-    ).toContain("user_org_1");
+      sqls.some((s) => /UPDATE\s+"user"\s+SET\s+role\s*=\s*'admin'/i.test(s)),
+      "afterCreateOrganization must NOT write user.role='admin' (promotion was removed in #2890)",
+    ).toBe(false);
 
     // assignSaasTrial: SELECT current tier, then flip free → trial, bound
     // to THIS hook's org id.

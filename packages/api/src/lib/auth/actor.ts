@@ -22,21 +22,15 @@
  *   with a clear "approve via the Atlas web app" message.
  */
 
-import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
+import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
+import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 
 const log = createLogger("auth:actor");
-
-const ROLE_LEVEL: Record<AtlasRole, number> = {
-  member: 0,
-  admin: 1,
-  owner: 2,
-  platform_admin: 3,
-};
 
 /**
  * Load a real Atlas user as an actor for a system-initiated call (e.g. the
@@ -52,10 +46,11 @@ const ROLE_LEVEL: Record<AtlasRole, number> = {
  *    missing" from "transient DB blip" so operators don't get told to
  *    recreate tasks during a flapping internal database.
  *
- * Resolves the effective role by comparing the user-level role with the
- * org-level membership role and taking the higher of the two — same logic
- * as `validateManaged` so a scheduled task created by an org owner
- * (user.role="member", member.role="owner") still presents as owner.
+ * Resolves the effective role via the shared `resolveEffectiveRole`
+ * (#2890: `platform_admin` from user.role, else the active org's
+ * member.role) — the same single source of truth as `validateManaged`, so a
+ * scheduled task created by an org owner (member.role="owner") still
+ * presents as owner.
  */
 export async function loadActorUser(
   userId: string,
@@ -85,7 +80,7 @@ export async function loadActorUser(
 
   const row = userRows[0];
   const userRole = parseRole(row.role ?? undefined);
-  const effectiveRole = await resolveEffectiveRole(userRole, userId, orgId);
+  const effectiveRole = await resolveEffectiveRole(userRole, userId, orgId ?? undefined);
 
   return createAtlasUser(
     row.id,
@@ -97,32 +92,6 @@ export async function loadActorUser(
       claims: orgId !== null ? { sub: row.id, org_id: orgId } : { sub: row.id },
     },
   );
-}
-
-async function resolveEffectiveRole(
-  userRole: AtlasRole | undefined,
-  userId: string,
-  orgId: string | null,
-): Promise<AtlasRole | undefined> {
-  if (!orgId || !hasInternalDB()) return userRole;
-  try {
-    const rows = await internalQuery<{ role: string }>(
-      `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-      [userId, orgId],
-    );
-    if (rows.length === 0) return userRole;
-    const orgRole = parseRole(rows[0].role);
-    if (!orgRole) return userRole;
-    const userLevel = ROLE_LEVEL[userRole ?? "member"] ?? 0;
-    const orgLevel = ROLE_LEVEL[orgRole] ?? 0;
-    return orgLevel > userLevel ? orgRole : (userRole ?? "member");
-  } catch (err) {
-    log.warn(
-      { err: errorMessage(err), userId, orgId },
-      "resolveEffectiveRole failed — falling back to user-level role",
-    );
-    return userRole;
-  }
 }
 
 /**

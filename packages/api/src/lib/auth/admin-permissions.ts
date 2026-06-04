@@ -1,13 +1,15 @@
 /**
  * Admin-scoped access control for Better Auth's admin plugin.
  *
- * Defines user-level roles (`admin`, `platform_admin`) that govern
- * who can perform administrative operations (ban users, set roles,
- * impersonate, manage sessions, etc.).
+ * Defines the single user-level admin role, `platform_admin`, that governs
+ * who can perform cross-tenant administrative operations (ban users, set
+ * roles, impersonate, manage sessions, etc.).
  *
- * Separate from org-permissions.ts which handles organization-scoped
- * RBAC (owner/admin/member within an org). This file handles the
- * top-level user role that determines system-wide admin privileges.
+ * As of #2890 the redundant system-wide `admin` user.role was dropped — it
+ * meant "system admin who isn't a platform_admin", which nothing in Atlas
+ * actually needs. Tenant admins flow exclusively through the organization
+ * plugin's `member.role` (owner/admin/member); see org-permissions.ts. This
+ * file now handles only the top-level cross-tenant role.
  *
  * Exported for use in the server config (server.ts). A client-side
  * mirror exists at packages/web/src/lib/auth/admin-permissions.ts —
@@ -23,14 +25,9 @@ const statement = {
 
 export const adminAccessControl = createAccessControl(statement);
 
-/** Standard admin — full admin permissions over users and sessions. */
-export const adminRole = adminAccessControl.newRole({
-  ...adminAc.statements,
-});
-
 /**
- * Platform admin — same permissions as admin.
- * Distinguished by name for platform-operator routes that check
+ * Platform admin — full admin-plugin permissions over users and sessions.
+ * The only role in the admin-plugin ACL: platform-operator routes check
  * `user.role === "platform_admin"` to gate cross-tenant operations.
  */
 export const platformAdminRole = adminAccessControl.newRole({

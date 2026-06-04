@@ -13,12 +13,17 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 import { resolveEffectiveRole } from "../effective-role";
-import { buildCustomSessionPayload } from "../server";
+import { buildCustomSessionPayload, canGenerateSCIMToken } from "../server";
 
 describe("resolveEffectiveRole()", () => {
+  // #2890 model: effectiveRole = user.role === "platform_admin"
+  //                              ? "platform_admin" : member.role.
+  // No more max(user.role, member.role) precedence merge.
+  let queryCalls = 0;
   beforeEach(() => {
+    queryCalls = 0;
     mockHasInternalDB = false;
-    mockInternalQuery = () => Promise.resolve([]);
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([]); };
   });
 
   afterEach(() => {
@@ -27,8 +32,8 @@ describe("resolveEffectiveRole()", () => {
   });
 
   it("returns the userRole as-is when no active org", async () => {
-    const r = await resolveEffectiveRole("admin", "usr_1", undefined);
-    expect(r).toBe("admin");
+    const r = await resolveEffectiveRole("member", "usr_1", undefined);
+    expect(r).toBe("member");
   });
 
   it("returns the userRole as-is when internal DB is unavailable", async () => {
@@ -37,42 +42,63 @@ describe("resolveEffectiveRole()", () => {
     expect(r).toBe("member");
   });
 
-  it("merges to the org member role when it outranks user.role — org admin > 'user'", async () => {
-    // The bug: signup defaults user.role to "user"/undefined; the invite
-    // accept sets member.role="admin". Without this merge, useUserRole
-    // sees "user" and hides the gear icon.
+  it("resolves to member.role when user.role is not platform_admin — org admin", async () => {
+    // signup defaults user.role to "user"/undefined; the invite accept sets
+    // member.role="admin". member.role is the single source of truth for
+    // tenant admin-ness, so it surfaces regardless of the user-level value.
     mockHasInternalDB = true;
-    mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([{ role: "admin" }]); };
     const r = await resolveEffectiveRole(undefined, "usr_1", "org_1");
     expect(r).toBe("admin");
   });
 
-  it("keeps the user-level role when it outranks the org role — platform_admin > org admin", async () => {
+  it("resolves to member.role for a plain org member", async () => {
     mockHasInternalDB = true;
-    mockInternalQuery = () => Promise.resolve([{ role: "admin" }]);
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([{ role: "member" }]); };
+    const r = await resolveEffectiveRole(undefined, "usr_1", "org_1");
+    expect(r).toBe("member");
+  });
+
+  it("member.role wins over a non-platform user.role (no max precedence)", async () => {
+    // Pins the #2890 model change: under the OLD max(user.role, member.role)
+    // a legacy user.role="admin" with member.role="member" returned "admin".
+    // Now member.role is authoritative for everything except platform_admin,
+    // so this resolves DOWN to "member".
+    mockHasInternalDB = true;
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([{ role: "member" }]); };
+    const r = await resolveEffectiveRole("admin", "usr_1", "org_1");
+    expect(r).toBe("member");
+  });
+
+  it("platform_admin short-circuits and never hits the member table", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([{ role: "member" }]); };
     const r = await resolveEffectiveRole("platform_admin", "usr_1", "org_1");
     expect(r).toBe("platform_admin");
+    expect(queryCalls).toBe(0);
   });
 
   it("returns the userRole when no member row exists", async () => {
     mockHasInternalDB = true;
-    mockInternalQuery = () => Promise.resolve([]);
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([]); };
     const r = await resolveEffectiveRole("member", "usr_1", "org_1");
     expect(r).toBe("member");
   });
 
   it("ignores invalid org role strings (fail-safe to userRole)", async () => {
     mockHasInternalDB = true;
-    mockInternalQuery = () => Promise.resolve([{ role: "garbage" }]);
+    mockInternalQuery = () => { queryCalls++; return Promise.resolve([{ role: "garbage" }]); };
     const r = await resolveEffectiveRole("member", "usr_1", "org_1");
     expect(r).toBe("member");
   });
 
   it("fails open to userRole on a DB error", async () => {
+    // Non-platform role so resolution actually reaches the member-table
+    // lookup (platform_admin short-circuits before the try/catch).
     mockHasInternalDB = true;
-    mockInternalQuery = () => Promise.reject(new Error("connection lost"));
-    const r = await resolveEffectiveRole("admin", "usr_1", "org_1");
-    expect(r).toBe("admin");
+    mockInternalQuery = () => { queryCalls++; return Promise.reject(new Error("connection lost")); };
+    const r = await resolveEffectiveRole("member", "usr_1", "org_1");
+    expect(r).toBe("member");
   });
 });
 
@@ -130,5 +156,52 @@ describe("buildCustomSessionPayload()", () => {
       session: { id: "sess_1", userId: "usr_1", activeOrganizationId: "org_1" } as any,
     });
     expect((out.user as Record<string, unknown>).effectiveRole).toBe("admin");
+  });
+});
+
+describe("canGenerateSCIMToken()", () => {
+  // #2890: the SCIM-token hook only sees the raw user.role (now only ever
+  // platform_admin), so authorization must resolve the effective grant from
+  // member.role. Tenant admins/owners must still be able to mint.
+  beforeEach(() => {
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
+  });
+  afterEach(() => {
+    mockHasInternalDB = false;
+    mockInternalQuery = () => Promise.resolve([]);
+  });
+
+  it("platform_admin is authorized without a member lookup", async () => {
+    let queried = false;
+    mockHasInternalDB = true;
+    mockInternalQuery = () => { queried = true; return Promise.resolve([]); };
+    expect(await canGenerateSCIMToken("platform_admin", "usr_1")).toBe(true);
+    expect(queried).toBe(false);
+  });
+
+  it("an org admin/owner (member.role) is authorized even though raw role is not admin", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([{ ok: 1 }]);
+    // raw role is the post-#2890 signup default — admin-ness comes from member.role
+    expect(await canGenerateSCIMToken("member", "usr_owner")).toBe(true);
+  });
+
+  it("a plain member (no admin/owner member row) is denied", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.resolve([]);
+    expect(await canGenerateSCIMToken("member", "usr_plain")).toBe(false);
+  });
+
+  it("fails closed when the member lookup errors", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery = () => Promise.reject(new Error("db down"));
+    expect(await canGenerateSCIMToken("member", "usr_1")).toBe(false);
+  });
+
+  it("without an internal DB falls back to the raw-role predicate", async () => {
+    mockHasInternalDB = false;
+    expect(await canGenerateSCIMToken("admin", "usr_1")).toBe(true);
+    expect(await canGenerateSCIMToken("member", "usr_1")).toBe(false);
   });
 });

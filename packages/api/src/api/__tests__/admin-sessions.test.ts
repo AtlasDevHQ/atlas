@@ -481,6 +481,11 @@ describe("admin sessions — DELETE /sessions/user/:userId", () => {
 // ---------------------------------------------------------------------------
 
 describe("admin users — POST /users/:id/revoke", () => {
+  // #2890: revokeUserSessions is now platform_admin only (global blast radius).
+  beforeEach(() => {
+    mocks.setPlatformAdmin("org-alpha");
+  });
+
   it("emits user.session_revoke_all with pre-counted session count on success", async () => {
     // The route doesn't learn the count from better-auth's revokeSessions,
     // so it pre-queries session COUNT(*). The pre-count hits the internal DB

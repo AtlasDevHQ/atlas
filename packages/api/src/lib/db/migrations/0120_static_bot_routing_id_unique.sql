@@ -43,7 +43,8 @@
 --     the CASE, so the expression is NULL and the row is exempt. Slack
 --     routes on `team_id` via its own path and is intentionally untouched
 --     here. A new static-bot platform must add its key to BOTH this CASE
---     and the `WORKSPACE_PLUGINS_CHAT_ROUTING_ID` mirror in schema.ts.
+--     and the matching `uniqueIndex("workspace_plugins_chat_routing_id_unique")`
+--     CASE expression in db/schema.ts (kept in lockstep).
 --   * disabled installs — `WHERE enabled = true` matches the pre-check's
 --     `enabled = true` filter, so a disconnected (disabled) row frees its
 --     routing id for another workspace exactly as the pre-check intends.

@@ -284,13 +284,15 @@ export class DiscordStaticBotInstallHandler implements StaticBotInstallHandler {
     // a failed verification never leaves a half-installed row behind.
     const apiGuildName = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // Reachability proves the operator bot is in the guild, NOT that THIS
     // workspace owns it — guild ids are non-secret. Reject a guild_id already
     // bound to a *different* workspace so a second workspace can't claim it and
     // collapse the read-side resolver onto a `rows.length > 1` fail-closed
     // (which would disable both). A reconnect by the same workspace is excluded
-    // by the `workspace_id <> $3` filter.
+    // by the `workspace_id <> $3` filter. The simultaneous-race residual is
+    // closed by the migration-0120 partial unique index, whose 23505 the
+    // cap-gate catch below maps to the same error (#3167).
     await assertGuildIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 2c. Plan cap + install row — atomic (#2953, #3001) ─────────

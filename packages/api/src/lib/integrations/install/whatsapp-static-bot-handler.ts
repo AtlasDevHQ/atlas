@@ -356,16 +356,18 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     // omitting the label entirely.
     const apiFallback = await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153) ────
+    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153 / #3167) ─
     // The operator's Meta token can read any phone_number_id shared into
     // its WhatsApp Business Account, so reachability proves the number is
     // in the operator's account — NOT that THIS workspace controls it.
     // Reject a phone_number_id already bound to a *different* workspace so
     // one customer can't claim another's number and intercept its inbound
     // messages (a reconnect by the same workspace is excluded by the
-    // `workspace_id <> $3` filter). This narrows the cross-tenant window;
-    // the residual (two workspaces racing a never-before-bound id, and the
-    // full operator-approval/ownership-proof flow) is tracked in #3154.
+    // `workspace_id <> $3` filter). This pre-check catches the common case
+    // cheaply; the simultaneous-race residual (two workspaces racing a
+    // never-before-bound id) is closed by the migration-0120 partial unique
+    // index, whose 23505 the cap-gate catch below maps to the same error
+    // (#3167).
     await assertPhoneNumberUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─

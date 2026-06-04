@@ -224,15 +224,17 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153) ────
+    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153 / #3167) ─
     // `getChat` proves the operator bot is a member of the chat, NOT that
     // THIS workspace owns it — and chat_ids leak in every message envelope.
     // Reject a chat_id already bound to a *different* workspace so a member
     // of the chat can't bind it to their own workspace and intercept the
     // chat's messages (a reconnect by the same workspace is excluded by the
-    // `workspace_id <> $3` filter). This narrows the cross-tenant window; the
-    // residual (two workspaces racing a never-before-bound id) is tracked,
-    // with the full ownership-proof flow, in #3154.
+    // `workspace_id <> $3` filter). This pre-check catches the common case
+    // cheaply; the simultaneous-race residual (two workspaces racing a
+    // never-before-bound id) is closed by the migration-0120 partial unique
+    // index, whose 23505 the cap-gate catch below maps to the same error
+    // (#3167).
     await assertChatIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3141, #3001) ──────────

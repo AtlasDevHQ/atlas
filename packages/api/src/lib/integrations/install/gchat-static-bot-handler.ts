@@ -450,13 +450,15 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // The Pub/Sub round-trip proves the SA can publish, NOT that THIS
     // workspace owns the customer id (which is non-secret). Reject a
     // workspace_id already bound to a *different* workspace so a second
     // workspace can't claim it and collapse the read-side resolver onto a
     // `rows.length > 1` fail-closed. A reconnect is excluded by `workspace_id
-    // <> $3`.
+    // <> $3`. The simultaneous-race residual is closed by the migration-0120
+    // partial unique index, whose 23505 the cap-gate catch below maps to the
+    // same error (#3167).
     await assertWorkspaceIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3143, #3001) ──────────

@@ -268,13 +268,15 @@ export class TeamsStaticBotInstallHandler implements StaticBotInstallHandler {
     // row behind.
     await this.verifyReachability(normalizedTenantId);
 
-    // ── 2b. Cross-workspace ownership guard (#3154) ─────────────────
+    // ── 2b. Cross-workspace ownership guard (#3154 / #3167) ─────────
     // Even though admin-consent proves tenant ownership, the tenant GUID is
     // non-secret and two Atlas workspaces in the same Microsoft tenant could
     // both consent it — binding it twice collapses the read-side resolver onto
     // a `rows.length > 1` fail-closed (disabling both). Reject a tenant_id
     // already bound to a *different* workspace; a reconnect is excluded by
-    // `workspace_id <> $3`.
+    // `workspace_id <> $3`. The simultaneous-race residual is closed by the
+    // migration-0120 partial unique index, whose 23505 the cap-gate catch
+    // below maps to the same error (#3167).
     await assertTenantIdUnboundElsewhere(normalizedTenantId, workspaceId);
 
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─

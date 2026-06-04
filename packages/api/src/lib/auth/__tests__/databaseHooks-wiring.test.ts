@@ -127,10 +127,11 @@ function makeRecordingPool(): InternalPool {
   return {
     query: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
-      // #3159 ban-guard lookup: only "banned_user" is banned; everyone else
-      // (incl. the other describe blocks' user ids) reads back not-banned.
-      if (/SELECT\s+banned,\s*"banExpires"\s+FROM\s+"user"/i.test(sql)) {
-        return rows(params?.[0] === "banned_user" ? [{ banned: true, banExpires: null }] : [{ banned: false, banExpires: null }]);
+      // #3159 ban-guard lookup (DB-clock `ban_active`): only "banned_user" is
+      // banned; everyone else (incl. the other describe blocks' user ids) reads
+      // back not-banned.
+      if (/ban_active/i.test(sql)) {
+        return rows(params?.[0] === "banned_user" ? [{ banned: true, ban_active: true }] : [{ banned: false, ban_active: false }]);
       }
       if (/SELECT\s+role\s+FROM\s+"user"/i.test(sql)) return rows([{ role: "member" }]);
       if (/SELECT\s+plan_tier\s+FROM\s+organization/i.test(sql)) return rows([{ plan_tier: "free" }]);
@@ -395,7 +396,7 @@ describe("databaseHooks.session.create.before — ban guard wiring (#3159)", () 
     // The guard's ban lookup fired (proving it is wired), and being not-banned
     // it fell through to the active-org member lookup.
     expect(
-      queries.some((q) => /SELECT\s+banned,\s*"banExpires"\s+FROM\s+"user"/i.test(q.sql)),
+      queries.some((q) => /ban_active/i.test(q.sql)),
       "the ban guard's lookup must run on every session create",
     ).toBe(true);
     expect(

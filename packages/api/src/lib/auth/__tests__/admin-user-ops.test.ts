@@ -265,14 +265,17 @@ describe("listPlatformUsers", () => {
 // ---------------------------------------------------------------------------
 
 describe("enforceBanOnSessionCreate", () => {
+  // `ban_active` is computed by the SELECT using the DB clock (NOW()); the mock
+  // returns it directly so the unit test exercises the same branch logic the
+  // real query drives — there is no app-clock decision in this path anymore.
   it("allows when the user is not banned", async () => {
-    queryImpl = async () => [{ banned: false, banExpires: null }];
+    queryImpl = async () => [{ banned: false, ban_active: false }];
     await enforceBanOnSessionCreate("u6"); // must not throw
     expect(find((s) => s.includes("UPDATE"))).toBeUndefined();
   });
 
-  it("throws a BANNED_USER APIError for an active ban", async () => {
-    queryImpl = async () => [{ banned: true, banExpires: null }];
+  it("throws a BANNED_USER APIError for an active ban (DB clock)", async () => {
+    queryImpl = async () => [{ banned: true, ban_active: true }];
     let thrown: unknown;
     try {
       await enforceBanOnSessionCreate("u7");
@@ -285,15 +288,17 @@ describe("enforceBanOnSessionCreate", () => {
     expect(find((s) => s.includes("UPDATE"))).toBeUndefined();
   });
 
-  it("auto-unbans and allows when the ban has expired", async () => {
+  it("auto-unbans and allows when banned but the DB deems it expired (ban_active=false)", async () => {
     queryImpl = async (sql) => {
       if (sql.includes("UPDATE")) return [];
-      return [{ banned: true, banExpires: new Date(Date.now() - 60_000) }];
+      return [{ banned: true, ban_active: false }];
     };
     await enforceBanOnSessionCreate("u8"); // must not throw
     const update = find((s) => s.includes("UPDATE") && s.includes('"user"'));
     expect(update).toBeDefined();
     expect(update!.sql).toContain("banned");
+    // the clear is guarded by the same DB clock (banExpires < NOW())
+    expect(update!.sql).toContain('"banExpires" < NOW()');
     expect(update!.params?.[0]).toBe("u8");
   });
 

@@ -72,9 +72,10 @@ export function isEffectivelyBanned(
   return expiresMs > now;
 }
 
-type BanFieldsRow = {
+type BanCheckRow = {
   banned: boolean | null;
-  banExpires: string | Date | null;
+  /** Computed in SQL with the DB clock — see {@link enforceBanOnSessionCreate}. */
+  ban_active: boolean;
 };
 
 /**
@@ -82,6 +83,16 @@ type BanFieldsRow = {
  * (`admin.mjs:33`): block new-session creation for a banned user, and
  * auto-unban (clear the columns) when the ban has expired. Wired into the
  * existing `databaseHooks.session.create.before` in `server.ts`.
+ *
+ * Whether the ban is *active* is decided with the **database clock** — the SELECT
+ * computes `ban_active = banned AND (banExpires IS NULL OR banExpires > NOW())`,
+ * and the auto-unban UPDATE clears on `banExpires < NOW()`. Using one time source
+ * (the DB) for both the throw decision and the stale-write guard means they can't
+ * disagree under app↔DB clock skew (an earlier version decided "expired" with
+ * `Date.now()` but cleared with `NOW()`, so a skewed/boundary case could allow a
+ * user the DB still considered banned — CodeRabbit). The app-clock predicate
+ * {@link isEffectivelyBanned} is still used by the per-request `validateManaged`
+ * check, which reads the cookie-cached session user and has no DB statement.
  *
  * Fails OPEN (allows) only when there is no internal DB or the user row is
  * absent — a single-tenant deployment with no `user` table never bans, and a
@@ -101,10 +112,12 @@ type BanFieldsRow = {
 export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
   if (!hasInternalDB()) return;
 
-  let rows: BanFieldsRow[];
+  let rows: BanCheckRow[];
   try {
-    rows = await internalQuery<BanFieldsRow>(
-      `SELECT banned, "banExpires" FROM "user" WHERE id = $1 LIMIT 1`,
+    rows = await internalQuery<BanCheckRow>(
+      `SELECT banned,
+              (banned = true AND ("banExpires" IS NULL OR "banExpires" > NOW())) AS ban_active
+         FROM "user" WHERE id = $1 LIMIT 1`,
       [userId],
     );
   } catch (err) {
@@ -121,18 +134,19 @@ export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
   }
   const user = rows[0];
   if (!user) return;
-  if (user.banned !== true) return;
 
-  const now = Date.now();
-  if (!isEffectivelyBanned(user.banned, user.banExpires, now)) {
-    // Ban has expired — clear it so the column reflects reality, then allow
-    // (matches the plugin's auto-unban path). Best-effort: if the clear fails,
-    // still allow the session (the ban is expired regardless).
-    //
-    // The WHERE re-asserts the row is STILL an expired ban
-    // (`"banExpires" < NOW()`), so a concurrent admin re-ban (which sets a
-    // future/NULL `banExpires`) is not clobbered by this stale auto-unban —
-    // the UPDATE then matches zero rows and the fresh ban stands (CodeRabbit).
+  // Actively banned per the DB clock → refuse, before any write.
+  if (user.ban_active) {
+    throw new APIError("FORBIDDEN", { code: "BANNED_USER", message: BANNED_USER_MESSAGE });
+  }
+
+  // Not active. If the row still carries a now-expired ban, clear it so the
+  // column reflects reality (matches the plugin's auto-unban). Best-effort: a
+  // failed clear still allows sign-in (the ban is expired regardless).
+  if (user.banned === true) {
+    // Same DB clock as `ban_active` above; the WHERE re-asserts "still an
+    // expired ban" so a concurrent admin re-ban (future/NULL `banExpires`) is
+    // not clobbered — the UPDATE matches zero rows and the fresh ban stands.
     try {
       await internalQuery(
         `UPDATE "user" SET banned = false, "banReason" = NULL, "banExpires" = NULL
@@ -145,10 +159,8 @@ export async function enforceBanOnSessionCreate(userId: string): Promise<void> {
         "Failed to auto-clear an expired ban on session create — allowing sign-in regardless",
       );
     }
-    return;
   }
-
-  throw new APIError("FORBIDDEN", { code: "BANNED_USER", message: BANNED_USER_MESSAGE });
+  // Falls through to allow: not actively banned (and any expired ban cleared).
 }
 
 /**

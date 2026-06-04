@@ -53,6 +53,7 @@ Guidance for Claude Code when working in this repository.
 ### Database & Migrations
 - [ ] **Drizzle schema mirrors every migration** — A new `db/migrations/####_*.sql` that creates/alters a table needs a matching `db/schema.ts` update **in the same PR** — mirror types, composite PKs, indexes, CHECK constraints. `scripts/check-schema-drift.sh` (in `/ci`) fails on missing mirrors; without it, the next `drizzle-kit generate` emits a `DROP TABLE` that wipes the table on deploy
 - [ ] **DROP TABLE migrations tracked separately** — `check-schema-drift.sh` excludes tables explicitly dropped by migrations (e.g. `mcp_tokens`, dropped by 0047). When you drop a table, remove its `pgTable` from `schema.ts` in the same commit
+- [ ] **Two-phase drop discipline for `DROP TABLE`/`DROP COLUMN`** — stop reading/writing the object in release N, drop it in release N+1, so the N-1↔N deploy-overlap window can never `relation/column does not exist`. Rationale + expand-contract checklist: [packages/api/src/lib/db/migrations/README.md](packages/api/src/lib/db/migrations/README.md)
 - [ ] **Real-Postgres migration smoke runs in CI** — `migrate-pg.test.ts` runs every migration against `TEST_DATABASE_URL`; Better-Auth-dependent migrations must join `MANAGED_AUTH_MIGRATIONS` in `db/internal.ts`. See [docs/development/testing.md](docs/development/testing.md)
 
 ### Effect.ts (packages/api only)

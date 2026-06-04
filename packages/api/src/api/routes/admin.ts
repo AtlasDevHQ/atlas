@@ -312,6 +312,35 @@ async function resolvePlatformTargetWorkspace(opts: {
   };
 }
 
+/**
+ * Rank of the tenant `member.role` values — higher is more privileged. Mirrors
+ * the web `ROLE_RANK` so promotion-vs-demotion is computed identically on both
+ * sides. Unknown roles rank ABOVE `owner` so an unexpected value summarizes to
+ * itself and the web's `isDemotion` fail-closes (always confirm) on it.
+ */
+const MEMBER_ROLE_RANK: Record<string, number> = { member: 0, admin: 1, owner: 2 };
+
+/**
+ * Summarize a user's effective workspace role for the cross-tenant
+ * `/platform/users` list (#3165). After #2890, `user.role` only ever holds
+ * `platform_admin` — tenant admin-ness lives in `member.role` per workspace —
+ * so the global list would otherwise show a workspace `owner` as `member` and
+ * the role dropdown would treat an `owner → admin` change as a promotion,
+ * skipping the demotion-confirm dialog. A user may be `owner` in one workspace
+ * and `member` in another, so we surface their HIGHEST role: a down-rank change
+ * then always trips the confirm (it may over-confirm when the workspace the
+ * write resolves to (#3157) holds a lower role, which is safe — never the
+ * reverse). Returns undefined for an empty set (no memberships).
+ *
+ * @internal exported for unit testing.
+ */
+export function highestMemberRole(roles: readonly string[]): string | undefined {
+  if (roles.length === 0) return undefined;
+  return [...roles].sort(
+    (a, b) => (MEMBER_ROLE_RANK[b] ?? 99) - (MEMBER_ROLE_RANK[a] ?? 99),
+  )[0];
+}
+
 admin.onError(eeOnError);
 
 admin.use(withRequestId);
@@ -2588,7 +2617,12 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
     }, 200);
   }
 
-  // Platform admin or self-hosted: global view via Better Auth admin API
+  // Platform admin or self-hosted: global view via Better Auth admin API.
+  // NB: `filterField: "role"` filters the user-level `user.role` (only ever
+  // `platform_admin` post-#2890), not the per-workspace `member.role` the rows
+  // display below (#3165). A tenant-role filter (member/admin/owner) across all
+  // workspaces would need a member-join list and is tracked separately; this
+  // route keeps Better Auth's global user list + a display-only role enrichment.
   const result = await adminApi.listUsers({
     query: {
       limit,
@@ -2601,17 +2635,59 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
     headers: c.req.raw.headers,
   });
 
+  // #3165: surface each user's EFFECTIVE workspace `member.role` so the
+  // /platform/users role dropdown computes promotion-vs-demotion against the
+  // real role (a workspace owner would otherwise show as `member`, and an
+  // owner→admin change would skip the demotion confirm). `platform_admin` stays
+  // as-is (it is a cross-tenant user-level role, not a workspace membership).
+  // Best-effort: a failed lookup falls back to the raw `user.role` for display
+  // rather than 500-ing the whole list — the authoritative last-admin guard
+  // lives server-side on the write path, not on this label.
+  const userRows = result.users as Array<Record<string, unknown>>;
+  const effectiveRole = new Map<string, string>();
+  const userIds = userRows.map((u) => String(u.id));
+  if (userIds.length > 0 && hasInternalDB()) {
+    try {
+      const memberRows = await internalQuery<{ userId: string; role: string }>(
+        `SELECT "userId", role FROM member WHERE "userId" = ANY($1::text[])`,
+        [userIds],
+      );
+      const rolesByUser = new Map<string, string[]>();
+      for (const m of memberRows) {
+        const list = rolesByUser.get(m.userId) ?? [];
+        list.push(m.role);
+        rolesByUser.set(m.userId, list);
+      }
+      for (const [uid, roles] of rolesByUser) {
+        const hi = highestMemberRole(roles);
+        if (hi) effectiveRole.set(uid, hi);
+      }
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Failed to resolve effective workspace roles for user list — falling back to user.role",
+      );
+    }
+  }
+
   return c.json({
-    users: result.users.map((u: Record<string, unknown>) => ({
-      id: u.id,
-      email: u.email,
-      name: u.name,
-      role: u.role ?? "member",
-      banned: u.banned ?? false,
-      banReason: u.banReason ?? null,
-      banExpires: u.banExpires ?? null,
-      createdAt: u.createdAt,
-    })),
+    users: userRows.map((u) => {
+      const id = String(u.id);
+      const role =
+        u.role === "platform_admin"
+          ? "platform_admin"
+          : (effectiveRole.get(id) ?? (u.role ?? "member"));
+      return {
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role,
+        banned: u.banned ?? false,
+        banReason: u.banReason ?? null,
+        banExpires: u.banExpires ?? null,
+        createdAt: u.createdAt,
+      };
+    }),
     total: result.total,
     limit,
     offset,

@@ -18,9 +18,17 @@
  * `{ workspace_id, workspace_domain? }`, which is non-secret (the
  * customer id leaks in every Google Chat event envelope's
  * `space.customer` field once the Workspace Events subscription fires).
- * This handler writes `workspace_plugins.config` directly via
- * `internalQuery` (mirroring the Telegram / Discord handlers), so
+ * The `workspace_plugins.config` row is written by the chat-integration
+ * cap gate (`checkChatIntegrationLimitAndInstall`, mirroring the Telegram
+ * / Discord handlers), which owns the advisory-locked UPSERT, so
  * `encryptSecretFields` is not in the write path at all.
+ *
+ * Cap gate (#3143): like Telegram, Discord, and Slack, the install UPSERT
+ * runs through `checkChatIntegrationLimitAndInstall` so an over-cap
+ * net-new install is refused with `ChatIntegrationLimitError` (→ 429) and
+ * a reconnect is grandfathered. This replaced the original bare
+ * `internalQuery` UPSERT when gchat joined the unified install path under
+ * umbrella #2994.
  *
  * Reachability verification — Pub/Sub round-trip: rather than waiting
  * for the first real Workspace Event (which would silently degrade if
@@ -53,12 +61,14 @@
 import crypto from "crypto";
 import { SignJWT, importPKCS8 } from "jose";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  BillingCheckFailedError,
+  ChatIntegrationLimitError,
   GchatApiUnavailableError,
   GchatReachabilityError,
   GchatWorkspaceIdInvalidError,
 } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -374,25 +384,29 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
-    // Mirrors telegram/discord-static-bot-handler.ts: candidate id on
-    // INSERT, RETURNING id so a CONFLICT lands on the existing row's
-    // id (idempotent re-install).
+    // ── 3. Plan cap + install row — atomic (#3143, #3001) ──────────
+    // Enforce the chat-integration cap and persist the workspace_plugins row
+    // in ONE transaction guarded by a per-workspace advisory lock, so two
+    // *distinct* net-new platforms installing concurrently can't both slip
+    // past the cap. Reconnecting gchat (already installed) is never blocked
+    // — the gate excludes gchat's own row from the count, and the UPSERT
+    // collapses the duplicate. Identical schema + UPSERT shape to the rest
+    // of the static-bot family (see telegram/discord-static-bot-handler.ts
+    // for the full rationale on the NOT NULL columns from 0092/0096 and the
+    // singleton-index conflict target).
     const candidateId = this.newId();
     const configPayload: GchatInstallConfig = {
       workspace_id: routingIdentifier,
       ...extractWorkspaceDomain(extras, workspaceId),
     };
 
-    let persistedId: string;
+    let capCheck;
     try {
-      // Schema: `pillar` + `install_id` became NOT NULL in 0092 (#2739)
-      // and the auto-fill trigger was dropped in 0096 (#2744). The
-      // ON CONFLICT inference targets the `workspace_plugins_singleton`
-      // partial unique index. See telegram/discord-static-bot-handler.ts
-      // for the full rationale — identical schema, identical UPSERT shape.
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
+        workspaceId,
+        GCHAT_CATALOG_ID,
+        {
+          sql: `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
@@ -400,21 +414,9 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,
-        [candidateId, workspaceId, GCHAT_CATALOG_ID, JSON.stringify(configPayload)],
+          params: [candidateId, workspaceId, GCHAT_CATALOG_ID, JSON.stringify(configPayload)],
+        },
       );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
-        // returns the row on both insert and update. Empty here means a
-        // driver / wrapper regression — fail loudly rather than ship a
-        // stale id back to the user (on re-install the DB row has the
-        // existing id; falling back to the fresh candidateId would
-        // strand subsequent lookups).
-        throw new Error(
-          `workspace_plugins UPSERT returned no id for Google Chat install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-        );
-      }
-      persistedId = returned;
     } catch (err) {
       log.error(
         {
@@ -425,6 +427,42 @@ export class GchatStaticBotInstallHandler implements StaticBotInstallHandler {
       );
       throw err;
     }
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Count couldn't be determined — fail closed, but as a transient
+        // 503 "try again", not a misleading 429 "upgrade your plan".
+        log.error(
+          { workspaceId },
+          "Google Chat install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Google Chat install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
+      // the row on both insert and update. Empty here means a driver /
+      // wrapper regression — fail loudly rather than ship a stale id back (on
+      // re-install the DB row has the existing id; falling back to the fresh
+      // candidateId would strand subsequent lookups).
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for Google Chat install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
+      );
+    }
+    const persistedId: string = returned;
 
     log.info(
       {

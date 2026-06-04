@@ -21,9 +21,11 @@
  *   - Optional `workspace_domain` rides through `extras` analogous to
  *     Telegram's `display_name` and Discord's `guild_name`.
  *
- * `mock.module()` stubs the two module dependencies the handler reaches
- * into: `lib/db/internal` (`internalQuery`) and the global `fetch` used
- * for the Pub/Sub publish call.
+ * `mock.module()` stubs the module dependencies the handler reaches into:
+ * `lib/billing/enforcement` (`checkChatIntegrationLimitAndInstall` — the
+ * atomic cap-gate that owns the `workspace_plugins` UPSERT post-#3001, which
+ * gchat adopted in #3143) and the global `fetch` used for the Pub/Sub publish
+ * call. Each mock exports every named export it shadows.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -33,14 +35,43 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([{ id: "install-gchat-row-1" }]),
-);
-
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mockInternalQuery,
+  internalQuery: mock(() => Promise.resolve([])),
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
+}));
+
+// The chat-integration cap + the workspace_plugins UPSERT run atomically
+// through `checkChatIntegrationLimitAndInstall` (#3001) — the gate owns the
+// write and returns the RETURNING rows. We stub it to "allowed" with a scripted
+// row id so these handler tests stay focused on the install contract
+// (workspace_id validation, Pub/Sub reachability, config payload) and assert
+// the UPSERT shape via the gate's `insert` arg. The cap-enforcement decision +
+// transaction sequencing live in `billing/__tests__/enforcement.test.ts`.
+type GateResult =
+  | { allowed: true; rows: Array<Record<string, unknown>> }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimitAndInstall: Mock<
+  (
+    orgId: string | undefined,
+    catalogId: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => Promise<GateResult>
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: "install-gchat-row-1" }] }));
+
+// Mock every value export — a partial `mock.module()` causes a `SyntaxError`
+// in other files importing the missing exports (per CLAUDE.md "Mock all
+// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
 }));
 
 // ---------------------------------------------------------------------------
@@ -107,8 +138,10 @@ function setFetchNetworkError(): void {
 }
 
 beforeEach(() => {
-  mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([{ id: "install-gchat-row-1" }]));
+  mockCheckChatLimitAndInstall.mockClear();
+  mockCheckChatLimitAndInstall.mockImplementation(() =>
+    Promise.resolve({ allowed: true as const, rows: [{ id: "install-gchat-row-1" }] }),
+  );
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -261,14 +294,14 @@ describe("GchatStaticBotInstallHandler.confirmInstall — workspace_id validatio
   it("rejects empty workspace_id", async () => {
     const handler = buildHandler();
     await expect(handler.confirmInstall(wsid, "")).rejects.toThrow(/workspace_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(fetchCalls).toHaveLength(0);
   });
 
   it("rejects a pasted primary domain (common admin mistake)", async () => {
     const handler = buildHandler();
     await expect(handler.confirmInstall(wsid, "acme.com")).rejects.toThrow(/workspace_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("rejects values containing spaces or invalid chars", async () => {
@@ -326,7 +359,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/User not authorized/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws a clear error when the topic doesn't exist (NOT_FOUND)", async () => {
@@ -335,7 +368,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/Topic not found/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws when the Pub/Sub API fails at the network layer (no install row)", async () => {
@@ -344,7 +377,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/Pub\/Sub API unreachable/i);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws an unavailable error when Pub/Sub returns 2xx without messageIds (contract violation)", async () => {
@@ -353,7 +386,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/no messageIds/i);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("classifies Pub/Sub 5xx as ApiUnavailable (retryable), not Reachability (admin-correctable)", async () => {
@@ -367,7 +400,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/transient 503/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("propagates token-mint failures from accessTokenProvider as a thrown error before any DB write", async () => {
@@ -384,7 +417,66 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
     ).rejects.toThrow(/token endpoint hiccup/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+describe("GchatStaticBotInstallHandler.confirmInstall — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes no install row when at cap", async () => {
+    // The gate rolls back its UPSERT internally on a cap denial and returns
+    // `cap_reached` — the row is never committed.
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "cap_reached" as const,
+        errorMessage: "Your starter plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = buildHandler();
+
+    await expect(handler.confirmInstall(wsid, VALID_WORKSPACE_ID)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // The gate enforced the cap (after the Pub/Sub round-trip), keyed on the
+    // workspace + gchat catalog id, with the UPSERT it would have committed.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog, gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(wsid);
+    expect(gateCatalog).toBe(GCHAT_CATALOG_ID);
+    expect(gateInsert.sql).toMatch(/INSERT INTO workspace_plugins/);
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = buildHandler();
+
+    await expect(handler.confirmInstall(wsid, VALID_WORKSPACE_ID)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("grandfathers a reconnect — the gate allows an already-installed workspace and returns the existing id", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
+    );
+    const handler = buildHandler();
+    const result = await handler.confirmInstall(wsid, VALID_WORKSPACE_ID);
+    expect(result.installRecord.id).toBe("existing-install-row");
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -393,15 +485,21 @@ describe("GchatStaticBotInstallHandler.confirmInstall — reachability verificat
 // ---------------------------------------------------------------------------
 
 describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
-  it("UPSERTs workspace_plugins with the catalog id + workspace_id config payload", async () => {
+  /** Pull the gate's `insert` arg from the most recent call. */
+  function lastGateInsert(): { sql: string; params: readonly unknown[] } {
+    const calls = mockCheckChatLimitAndInstall.mock.calls;
+    return calls[calls.length - 1][2];
+  }
+
+  it("UPSERTs workspace_plugins with the catalog id + workspace_id config payload via the cap gate", async () => {
     const handler = buildHandler();
     await handler.confirmInstall(wsid, VALID_WORKSPACE_ID, undefined, {
       workspace_domain: "acme.com",
     });
 
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
-    const sqlText = String(sql);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const insert = lastGateInsert();
+    const sqlText = insert.sql;
     expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
     // Required NOT NULL columns post-0092 / 0096 — the INSERT must name
     // pillar + install_id explicitly, and chat-pillar installs target
@@ -411,8 +509,10 @@ describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
     expect(sqlText).toMatch(/pillar/);
     expect(sqlText).toMatch(/'chat'/);
     expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
+    // The gate runs the UPSERT under the lock, so RETURNING id must be present.
+    expect(sqlText).toMatch(/RETURNING id/);
 
-    const paramsArr = params as unknown[];
+    const paramsArr = insert.params as unknown[];
     expect(paramsArr).toContain(wsid);
     expect(paramsArr).toContain(GCHAT_CATALOG_ID);
     const configJson = paramsArr.find(
@@ -427,8 +527,7 @@ describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
   it("omits workspace_domain from config when extras don't supply one", async () => {
     const handler = buildHandler();
     await handler.confirmInstall(wsid, VALID_WORKSPACE_ID);
-    const [, params] = mockInternalQuery.mock.calls[0];
-    const configJson = (params as unknown[]).find(
+    const configJson = (lastGateInsert().params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("workspace_id"),
     );
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
@@ -441,17 +540,16 @@ describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
     await handler.confirmInstall(wsid, VALID_WORKSPACE_ID, undefined, {
       workspace_domain: 42 as unknown as string,
     });
-    const [, params] = mockInternalQuery.mock.calls[0];
-    const configJson = (params as unknown[]).find(
+    const configJson = (lastGateInsert().params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("workspace_id"),
     );
     const parsed = JSON.parse(configJson as string) as Record<string, unknown>;
     expect("workspace_domain" in parsed).toBe(false);
   });
 
-  it("returns the persisted install id from RETURNING (re-install idempotency)", async () => {
-    mockInternalQuery.mockImplementation(() =>
-      Promise.resolve([{ id: "existing-install-row" }]),
+  it("returns the persisted install id from the gate's RETURNING rows (re-install idempotency)", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
     );
     const handler = buildHandler();
     const result = await handler.confirmInstall(wsid, VALID_WORKSPACE_ID);
@@ -460,8 +558,10 @@ describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
     expect(result.installRecord.catalogId).toBe(GCHAT_SLUG);
   });
 
-  it("throws when RETURNING comes back empty — never ships a candidate id that doesn't match the persisted row", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  it("throws when the gate's RETURNING rows are empty — never ships a candidate id that doesn't match the persisted row", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [] }),
+    );
     const handler = buildHandler({ idGenerator: () => "candidate-id-xyz" });
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),
@@ -469,7 +569,8 @@ describe("GchatStaticBotInstallHandler.confirmInstall — persistence", () => {
   });
 
   it("surfaces DB failure rather than half-installing — no return after a throw", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB down")));
+    // The gate throws on a genuine write-path failure (after rolling back).
+    mockCheckChatLimitAndInstall.mockImplementation(() => Promise.reject(new Error("DB down")));
     const handler = buildHandler();
     await expect(
       handler.confirmInstall(wsid, VALID_WORKSPACE_ID),

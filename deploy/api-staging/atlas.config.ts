@@ -242,8 +242,17 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #2994: legacy connect route removed (cap bypass + non-functional);
-      // back to coming_soon until the cap-gated static-bot install ships (#3143).
+      // #3143 cap-gated `GchatStaticBotInstallHandler.confirmInstall`
+      // (checkChatIntegrationLimitAndInstall — over-cap → 429, reconnect
+      // grandfathered), but gchat stays coming_soon: its ownership-proven
+      // bind is the Google Workspace **Marketplace install webhook** (which
+      // delivers the customer-verified workspace_id), and that receiver isn't
+      // wired yet. Flipping available would only expose the generic
+      // `/install-form` paste path, where an admin could submit *another*
+      // customer's workspace_id before that customer connects and capture
+      // their inbound Chat events (cross-tenant) — Codex flagged this on
+      // #3153. Flip to available once the Marketplace-webhook → confirmInstall
+      // binding lands (tracked in #3154). The cap-gate is ready for that.
       implementation_status: "coming_soon",
       name: "Google Chat",
       description:
@@ -345,9 +354,13 @@ export default defineConfig({
       install_model: "static-bot",
       enabled: true,
       saas_eligible: true,
-      // #2994: legacy connect route removed (cap bypass + non-functional);
-      // back to coming_soon until the cap-gated static-bot install ships (#3144).
-      implementation_status: "coming_soon",
+      // #3144 (umbrella #2994) shipped the cap-gated static-bot install:
+      // the generic `/install-form` route captures the phone_number_id and
+      // `WhatsAppStaticBotInstallHandler.confirmInstall` persists through
+      // `checkChatIntegrationLimitAndInstall` (over-cap → 429, reconnect
+      // grandfathered). #3144 also adds whatsapp to the chatPlugin catalog
+      // below so its webhook receive route + adapter mount.
+      implementation_status: "available",
       name: "WhatsApp",
       description:
         "Chat with Atlas inside WhatsApp. The operator wires a shared Meta Business / WhatsApp Business Cloud API account (META_BUSINESS_ACCESS_TOKEN + META_BUSINESS_APP_ID); each workspace admin points Atlas at one WhatsApp Business phone number by its Meta phone_number_id. Higher plan tier — Meta charges the operator per-conversation.",
@@ -798,6 +811,22 @@ export default defineConfig({
         // `GchatStaticBotInstallHandler`).
         {
           slug: "gchat",
+          type: "chat",
+          install_model: "static-bot",
+          enabled: true,
+          saas_eligible: true,
+        },
+        // WhatsApp — 1.5.3 #2753 / cap-gated install #3144 (Phase D).
+        // #2753 shipped the @chat-adapter/whatsapp builder + the GET/POST
+        // /webhooks/whatsapp receive routes, but this plugin-local catalog
+        // never listed whatsapp — so the AdapterRegistry skipped it and the
+        // webhook routes never mounted (a non-routable install, the #2994
+        // defect). #3144 adds it here (in lockstep with the top-level
+        // catalog) so the adapter instantiates + the webhook mounts when the
+        // operator wires META_BUSINESS_ACCESS_TOKEN / WHATSAPP_APP_SECRET /
+        // WHATSAPP_VERIFY_TOKEN.
+        {
+          slug: "whatsapp",
           type: "chat",
           install_model: "static-bot",
           enabled: true,

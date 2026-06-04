@@ -265,20 +265,33 @@ Email delivery for invitations is not configured by default. Atlas logs a warnin
 
 ### Manage roles
 
+Role changes and member removals go through the Atlas admin API, keyed on the
+target **user id**. These routes enforce the workspace last-admin invariant
+atomically (you can't demote or remove the last admin/owner of a workspace), so
+the native Better Auth `organization.updateMemberRole` / `organization.removeMember`
+endpoints are intentionally **disabled** — they return `403 ATLAS_USE_ADMIN_API`.
+
 ```typescript
-// Update a member's role
-await authClient.organization.updateMemberRole({
-  memberId: "member-id",
-  role: "admin",
-  organizationId: "org-id",
+// Update a member's role (writes the per-workspace member.role).
+// A platform admin acting cross-tenant passes the target's workspace as
+// `organizationId`; an org admin/owner omits it (their active workspace is used).
+await fetch(`/api/v1/admin/users/${userId}/role`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json" },
+  credentials: "include",
+  body: JSON.stringify({ role: "admin", organizationId: "org-id" }),
 });
 
-// Remove a member
-await authClient.organization.removeMember({
-  memberId: "member-id",
-  organizationId: "org-id",
+// Remove a member from a workspace (does not delete their account).
+await fetch(`/api/v1/admin/users/${userId}/membership`, {
+  method: "DELETE",
+  credentials: "include",
 });
 ```
+
+<Callout type="info">
+Inviting members still uses `authClient.organization.inviteMember()` (above) — only the role-update and member-removal endpoints are routed through the guarded admin API.
+</Callout>
 
 ### Platform admin view
 

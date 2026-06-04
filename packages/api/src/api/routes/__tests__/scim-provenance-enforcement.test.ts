@@ -243,6 +243,13 @@ beforeEach(() => {
   // membership lookup returns a row so 404 doesn't short-circuit.
   mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
     const s = sql.toLowerCase();
+    // #3166 deleteUser's admin-membership enumeration: the target is not an
+    // admin/owner of any workspace here, so the multi-workspace last-admin
+    // guard is a no-op and the delete proceeds. This suite exercises the SCIM
+    // override path, not the last-admin guard (see admin-last-admin-pg.test.ts).
+    if (s.includes('select "organizationid"') && s.includes("role in ('admin','owner')")) {
+      return [];
+    }
     if (s.includes('from member where "userid"') && s.includes('"organizationid"')) {
       return [{ userId: "user-scim-1", role: "member" }];
     }

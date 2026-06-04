@@ -43,6 +43,23 @@ const SIGNUP_EMAIL_PATH = "/api/auth/sign-up/email";
  */
 const CLIENT_IP_HEADER = "x-atlas-client-ip";
 
+/**
+ * Better Auth admin-plugin endpoint that deletes a user GLOBALLY (cascading
+ * every `member` row across all workspaces). It is exposed through this
+ * catch-all and authorized by the admin-plugin ACL, which grants a platform
+ * admin full statements (`lib/auth/admin-permissions.ts`). Reached directly, it
+ * would bypass the multi-workspace last-admin guard in
+ * `DELETE /api/v1/admin/users/{id}` (#3166) — the same unguarded-native-path
+ * class #3164 closed for the org-plugin member endpoints (Codex P1 on #3171).
+ *
+ * We refuse the HTTP path here rather than via a Better Auth `hooks.before`:
+ * hooks run for `auth.api.*` server calls too, so a hook would also break
+ * Atlas's own guarded `deleteUserRoute`, which legitimately calls
+ * `adminApi.removeUser(...)` AFTER its advisory-lock guard. Blocking only the
+ * external HTTP path leaves that internal server-side call untouched.
+ */
+const NATIVE_ADMIN_REMOVE_USER_PATH = "/api/auth/admin/remove-user";
+
 const auth = new Hono();
 
 auth.all("/*", async (c) => {
@@ -50,6 +67,23 @@ auth.all("/*", async (c) => {
     return c.json(
       { error: "not_found", message: "Auth routes are not enabled" },
       404,
+    );
+  }
+
+  // #3164/#3166 completion: block the native global user-delete endpoint so the
+  // last-admin invariant can only be reached through Atlas's guarded route.
+  if (c.req.method === "POST" && c.req.path === NATIVE_ADMIN_REMOVE_USER_PATH) {
+    return c.json(
+      {
+        error: "forbidden",
+        code: "ATLAS_USE_ADMIN_API",
+        message:
+          "Users must be deleted through the Atlas admin API " +
+          "(DELETE /api/v1/admin/users/{id}), which enforces the workspace " +
+          "last-admin invariant atomically. The native admin remove-user " +
+          "endpoint is disabled.",
+      },
+      403,
     );
   }
 

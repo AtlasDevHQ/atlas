@@ -26,6 +26,7 @@ import { Pool } from "pg";
 import {
   _resetPool,
   withWorkspaceAdminLock,
+  withWorkspaceAdminLocks,
   type InternalPool,
 } from "@atlas/api/lib/db/internal";
 
@@ -51,7 +52,7 @@ const BOOTSTRAP_SQL = `
 
 const ADMIN_COUNT_SQL = `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`;
 
-describeIfPg("last-admin guard serialization (real Postgres, #3158)", () => {
+describeIfPg("last-admin guard serialization (real Postgres, #3158 + #3166)", () => {
   let pool: Pool;
   const schemaName = `last_admin_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   const ORIGINAL_DATABASE_URL = process.env.DATABASE_URL;
@@ -222,6 +223,187 @@ describeIfPg("last-admin guard serialization (real Postgres, #3158)", () => {
       expect(blocked).toHaveLength(1);
       // And the workspace still has at least one admin/owner.
       expect(await adminCount(org)).toBeGreaterThanOrEqual(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  // --- #3166: multi-workspace global-delete guard -------------------------
+
+  /** Seed (idempotently) one member row of `role` for `userId` in `orgId`. */
+  async function seedMember(orgId: string, userId: string, role: string): Promise<void> {
+    await pool.query(`INSERT INTO organization (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING`, [orgId]);
+    await pool.query(
+      `INSERT INTO member (id, "userId", "organizationId", role) VALUES ($1, $2, $3, $4)`,
+      [`${orgId}-${userId}`, userId, orgId, role],
+    );
+  }
+
+  /** True when `userId` still has a member row in `orgId`. */
+  async function isMember(orgId: string, userId: string): Promise<boolean> {
+    const res = await pool.query(
+      `SELECT 1 FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
+      [userId, orgId],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Global-delete guard mirroring deleteUserRoute's multi-workspace locked
+   * callback (#3166, hardened per Codex P1 on #3171): enumerate EVERY workspace
+   * the target is a member of, lock them ALL in sorted order, re-read the role
+   * per workspace UNDER the locks, refuse if removing the target would strip ANY
+   * admin/owner membership to zero, else delete the target's member rows under
+   * the locks. Locking every membership (not just admin ones) is what serializes
+   * a concurrent promotion in a workspace the target only just belongs to. The
+   * real path then runs Better Auth's `removeUser` after the locks release; this
+   * helper stops at the guarded state, which the serialization depends on.
+   */
+  async function deleteUserViaMultiLock(userId: string): Promise<"ok" | "last_admin"> {
+    const orgIds = (
+      await pool.query<{ organizationId: string }>(
+        `SELECT "organizationId" FROM member WHERE "userId" = $1`,
+        [userId],
+      )
+    ).rows.map((r) => r.organizationId);
+    if (orgIds.length === 0) return "ok";
+    return withWorkspaceAdminLocks<"ok" | "last_admin">(orgIds, async (tx) => {
+      const roleRows = await tx.query<{ organizationId: string; role: string }>(
+        `SELECT "organizationId", role FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
+        [userId, orgIds],
+      );
+      const stripped: string[] = [];
+      for (const { organizationId, role } of roleRows) {
+        if (role !== "admin" && role !== "owner") continue;
+        const others = await tx.query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner') AND "userId" != $2`,
+          [organizationId, userId],
+        );
+        if (parseInt(String(others[0]?.count ?? "0"), 10) === 0) stripped.push(organizationId);
+      }
+      if (stripped.length > 0) return "last_admin";
+      await tx.query(
+        `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
+        [userId, orgIds],
+      );
+      return "ok";
+    });
+  }
+
+  /** Guarded promotion mirroring changeUserRoleRoute's locked callback. */
+  async function promoteViaLock(orgId: string, userId: string, toRole: string): Promise<"ok"> {
+    return withWorkspaceAdminLock<"ok">(orgId, async (tx) => {
+      await tx.query(
+        `UPDATE member SET role = $3 WHERE "userId" = $1 AND "organizationId" = $2`,
+        [userId, orgId, toRole],
+      );
+      return "ok";
+    });
+  }
+
+  it(
+    "FIX (#3166) — refuses a global delete that would strip workspace B of its sole admin (active workspace A)",
+    async () => {
+      const orgA = `org-a-${Date.now()}`;
+      const orgB = `org-b-${Date.now()}`;
+      // The caller's active workspace (A) is irrelevant to the guard; the target
+      // is only the SOLE admin of a DIFFERENT workspace (B).
+      await seedMember(orgA, "actor", "admin");
+      await seedMember(orgB, "target", "admin");
+      await seedMember(orgB, "plain", "member");
+
+      expect(await deleteUserViaMultiLock("target")).toBe("last_admin");
+      // Nothing deleted — B still has its admin.
+      expect(await adminCount(orgB)).toBe(1);
+      expect(await isMember(orgB, "target")).toBe(true);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FIX (#3166) — allows the delete when every admin workspace keeps a co-admin",
+    async () => {
+      const orgB = `org-b-ok-${Date.now()}`;
+      const orgC = `org-c-ok-${Date.now()}`;
+      await seedMember(orgB, "target", "admin");
+      await seedMember(orgB, "coB", "admin");
+      await seedMember(orgC, "target", "owner");
+      await seedMember(orgC, "coC", "owner");
+
+      expect(await deleteUserViaMultiLock("target")).toBe("ok");
+      // Target removed from both; each workspace retains its co-admin/owner.
+      expect(await isMember(orgB, "target")).toBe(false);
+      expect(await isMember(orgC, "target")).toBe(false);
+      expect(await adminCount(orgB)).toBe(1);
+      expect(await adminCount(orgC)).toBe(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FIX (#3166) — refuses atomically when ANY of several workspaces would be stripped (nothing deleted)",
+    async () => {
+      const orgB = `org-b-multi-${Date.now()}`;
+      const orgC = `org-c-multi-${Date.now()}`;
+      await seedMember(orgB, "target", "admin");
+      await seedMember(orgB, "coB", "admin"); // B safe
+      await seedMember(orgC, "target", "owner"); // C: target is the sole owner
+
+      expect(await deleteUserViaMultiLock("target")).toBe("last_admin");
+      // Atomic refuse — the target is still a member of BOTH workspaces.
+      expect(await isMember(orgB, "target")).toBe(true);
+      expect(await isMember(orgC, "target")).toBe(true);
+      expect(await adminCount(orgB)).toBe(2);
+      expect(await adminCount(orgC)).toBe(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FIX (#3166) — a global delete racing a demotion in the same workspace serialize: an admin always remains",
+    async () => {
+      const orgB = `org-b-race-${Date.now()}`;
+      await seedMember(orgB, "target", "admin");
+      await seedMember(orgB, "coB", "admin");
+
+      // Multi-workspace delete of `target` races a single-workspace demotion of
+      // the co-admin `coB`. Both take the lock on B (the multi-lock helper holds
+      // exactly the B lock here), so they serialize: whichever commits second
+      // sees only one admin left and is refused.
+      const [del, dem] = await Promise.all([
+        deleteUserViaMultiLock("target"),
+        demoteViaLock(orgB, "coB"),
+      ]);
+
+      const blocked = [del, dem].filter((r) => r === "last_admin");
+      expect(blocked).toHaveLength(1);
+      expect(await adminCount(orgB)).toBeGreaterThanOrEqual(1);
+    },
+    PG_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FIX (Codex P1 on #3171) — a global delete locks a MEMBER-only workspace, serializing a concurrent promotion",
+    async () => {
+      // The target is only a plain `member` of W (where `keeper` is the sole
+      // admin). The pre-hardening guard enumerated only the target's admin/owner
+      // workspaces, so it never locked W — a concurrent promotion of the target
+      // in W could then race the global cascade. The hardened guard locks EVERY
+      // membership, so the delete and the promotion serialize on W's lock.
+      const orgW = `org-w-${Date.now()}`;
+      await seedMember(orgW, "keeper", "admin"); // sole admin of W
+      await seedMember(orgW, "target", "member"); // target is only a member here
+
+      const [del] = await Promise.all([
+        deleteUserViaMultiLock("target"),
+        promoteViaLock(orgW, "target", "admin"),
+      ]);
+
+      // Whichever ordering wins, W keeps its admin and the target ends up removed
+      // from W (never left as a promoted-but-orphaned admin), and the delete is
+      // allowed (W always had `keeper`, so it's never stripped).
+      expect(del).toBe("ok");
+      expect(await isMember(orgW, "target")).toBe(false);
+      expect(await adminCount(orgW)).toBeGreaterThanOrEqual(1);
     },
     PG_TEST_TIMEOUT_MS,
   );

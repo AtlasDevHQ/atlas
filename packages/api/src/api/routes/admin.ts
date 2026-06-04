@@ -24,6 +24,7 @@ import {
   hasInternalDB,
   internalQuery,
   withWorkspaceAdminLock,
+  withWorkspaceAdminLocks,
   getWorkspaceRegion,
   getWorkspaceDetails,
 } from "@atlas/api/lib/db/internal";
@@ -3150,63 +3151,121 @@ admin.openapi(deleteUserRoute, async (c) => {
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
   const scimOverride = scimGuard.kind === "override";
 
-  // Last-admin guard for the actor's active workspace, made atomic against
-  // concurrent demotions / removals via the per-workspace advisory lock (#3158).
-  // Two operations under the SAME lock, in this order:
-  //   1. Inside the lock: count admins/owners; if removing this admin/owner
-  //      would leave none, refuse (403, nothing deleted). Otherwise remove the
-  //      user from THIS workspace (a direct member DELETE — the same serializing
-  //      mutation removeMembershipRoute uses). Doing the removal under the lock
-  //      is what closes the count→mutate TOCTOU against a concurrent demote.
-  //   2. AFTER the lock releases: the global account delete via Better Auth's
-  //      `removeUser` (cascade-deletes the remaining member rows + account).
+  // Last-admin guard for EVERY workspace the target is an admin/owner of — not
+  // just the caller's active one (#3166). `removeUser` cascades the delete
+  // GLOBALLY (Better Auth removes the user + every `member` row across all
+  // workspaces), so guarding only `activeOrganizationId` let a delete strip the
+  // sole admin/owner of some OTHER workspace the caller isn't even in. We:
+  //   1. Enumerate the target's admin/owner memberships across all workspaces
+  //      (a plain `member` membership is never at risk — removing a non-admin
+  //      can't shrink an admin set).
+  //   2. Acquire the per-workspace advisory lock for each, in a deterministic
+  //      sorted order inside ONE transaction (#3158 lock, generalized to the
+  //      multi-workspace `withWorkspaceAdminLocks` for #3166). Sorted acquisition
+  //      is what keeps two concurrent multi-workspace deletes from deadlock-
+  //      cycling on overlapping workspace sets.
+  //   3. Re-read each guarded workspace's *other* admin/owner count UNDER the
+  //      locks; if removing the target would drop ANY of them to zero, refuse
+  //      (403, nothing deleted) and name how many.
+  //   4. Otherwise delete the target's member rows in those workspaces under the
+  //      locks — the same serializing mutation removeMembershipRoute uses, which
+  //      closes the count→mutate TOCTOU against a concurrent demote in any of
+  //      them. `removeUser` below is idempotent with these deletes.
+  //   5. AFTER the locks release: the global account delete via Better Auth's
+  //      `removeUser` (cascade-deletes any remaining member rows + the account).
   //
-  // `removeUser` runs OUTSIDE the lock deliberately. It borrows its own client
+  // `removeUser` runs OUTSIDE the locks deliberately. It borrows its own client
   // from the bounded internal pool (max 5); nesting that acquire inside the lock
   // transaction would let concurrent deletes hold every client and starve each
   // other's `removeUser` (deadlock — Codex P1 on PR #3162). Running it last also
   // keeps the irreversible global delete from being followed by a fallible
   // COMMIT (Codex P2): the only thing committed before it is the reversible,
-  // self-consistent "removed from this workspace" state.
+  // self-consistent "removed from these workspaces" state.
   //
-  // admin-ness lives in member.role (#2890), so a platform admin acting
-  // cross-tenant with no active org has no workspace to guard and deletes
+  // admin-ness lives in member.role (#2890); a target who is only ever a plain
+  // `member` (or has no memberships) has no workspace to guard and is deleted
   // directly.
-  const deleteGuardOrgId = authResult.user?.activeOrganizationId;
-  if (hasInternalDB() && deleteGuardOrgId) {
-    type DeleteGuardOutcome = { kind: "ok" } | { kind: "last_admin" };
+  if (hasInternalDB()) {
+    type DeleteGuardOutcome = { kind: "ok" } | { kind: "last_admin"; orgIds: string[] };
     let guard: DeleteGuardOutcome;
     try {
-      guard = await withWorkspaceAdminLock<DeleteGuardOutcome>(deleteGuardOrgId, async (tx) => {
-        const targetMember = await tx.query<{ role: string }>(
-          `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-          [userId, deleteGuardOrgId],
-        );
-        const targetRole = targetMember[0]?.role;
-        if (targetRole === "admin" || targetRole === "owner") {
-          const adminCount = await tx.query<{ count: string }>(
-            `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
-            [deleteGuardOrgId],
+      // Lock EVERY workspace the target is a member of — not just the ones where
+      // they're currently an admin/owner (Codex P1 on PR #3171). The role read
+      // that decides "admin/owner?" happens UNDER the locks, so a concurrent
+      // guarded promotion (changeUserRoleRoute, which locks the same workspace)
+      // can't slip a workspace into admin-status between a pre-lock snapshot and
+      // the cascade: it either commits before we read (we then see the target as
+      // admin and count) or after we delete the target's row (its UPDATE matches
+      // zero rows). Enumerating by membership rather than by admin-role is what
+      // makes that workspace appear in `guardOrgIds` to be locked at all. A
+      // brand-new workspace the target is added to mid-delete always carries its
+      // creator-owner, so the target can never be its SOLE admin — outside the
+      // membership set is safe to leave unlocked.
+      const memberships = await internalQuery<{ organizationId: string }>(
+        `SELECT "organizationId" FROM member WHERE "userId" = $1`,
+        [userId],
+      );
+      const guardOrgIds = memberships.map((m) => m.organizationId);
+      if (guardOrgIds.length === 0) {
+        guard = { kind: "ok" };
+      } else {
+        guard = await withWorkspaceAdminLocks<DeleteGuardOutcome>(guardOrgIds, async (tx) => {
+          // Re-read the target's role in every locked workspace, transaction-
+          // consistent under the locks. Only admin/owner memberships can strip a
+          // workspace; for each, count the OTHER admins/owners (excluding the
+          // target). Zero means the target is the sole admin/owner and the global
+          // delete would strip it — collect it. Counting "others" (rather than
+          // "all, then compare to 1") stays correct even if the target was
+          // concurrently demoted: a demotion of the sole admin would itself have
+          // been refused, so others==0 only ever means the target is the last one.
+          const roleRows = await tx.query<{ organizationId: string; role: string }>(
+            `SELECT "organizationId", role FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
+            [userId, guardOrgIds],
           );
-          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-            return { kind: "last_admin" };
+          const stripped: string[] = [];
+          for (const { organizationId, role } of roleRows) {
+            if (role !== "admin" && role !== "owner") continue;
+            const others = await tx.query<{ count: string }>(
+              `SELECT COUNT(*) as count FROM member
+               WHERE "organizationId" = $1 AND role IN ('admin','owner') AND "userId" != $2`,
+              [organizationId, userId],
+            );
+            if (parseInt(String(others[0]?.count ?? "0"), 10) === 0) {
+              stripped.push(organizationId);
+            }
           }
-        }
-        // Remove from the active workspace under the lock. `removeUser` below
-        // also cascade-deletes member rows, so this is idempotent with it; its
-        // purpose here is to serialize against a concurrent demote/removal.
-        await tx.query(
-          `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
-          [userId, deleteGuardOrgId],
-        );
-        return { kind: "ok" };
-      });
+          if (stripped.length > 0) {
+            return { kind: "last_admin", orgIds: stripped };
+          }
+          // Remove the target from every locked workspace under the locks.
+          // `removeUser` below also cascade-deletes member rows, so this is
+          // idempotent with it; its purpose here is to serialize against a
+          // concurrent promote/demote/removal in any of these workspaces (a
+          // racing promotion's UPDATE then matches zero rows once we commit).
+          await tx.query(
+            `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = ANY($2::text[])`,
+            [userId, guardOrgIds],
+          );
+          return { kind: "ok" };
+        });
+      }
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId, orgId: deleteGuardOrgId }, "Last admin guard failed during delete");
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Last admin guard failed during delete");
       return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
     }
     if (guard.kind === "last_admin") {
-      return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
+      log.warn({ requestId, targetUserId: userId, strippedWorkspaces: guard.orgIds }, "Refused user delete — would strip last admin/owner");
+      return c.json(
+        {
+          error: "forbidden",
+          message:
+            guard.orgIds.length === 1
+              ? "Cannot delete this user: they are the last admin/owner of a workspace. Promote another admin there first."
+              : `Cannot delete this user: they are the last admin/owner of ${guard.orgIds.length} workspaces. Promote another admin in each first.`,
+          requestId,
+        },
+        403,
+      );
     }
   }
 

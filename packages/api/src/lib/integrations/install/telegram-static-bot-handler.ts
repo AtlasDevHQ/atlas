@@ -42,6 +42,7 @@
 
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
   BillingCheckFailedError,
   ChatIntegrationLimitError,
@@ -72,6 +73,43 @@ export const TELEGRAM_SLUG: CatalogId = "telegram";
  * this constant produces FK violations at first install.
  */
 export const TELEGRAM_CATALOG_ID = "catalog:telegram";
+
+/**
+ * Cross-workspace ownership guard (#3141 / Codex #3153). `getChat` proves the
+ * operator bot is a member of the chat, not that the installing workspace owns
+ * it — and chat_ids are non-secret (they leak in every message envelope). So
+ * reject a chat_id already bound to a *different* workspace before persisting.
+ * The `workspace_id <> $3` filter excludes the installing workspace, so a
+ * reconnect (same workspace re-binding its own chat) is never blocked.
+ * Read-only pre-check: it narrows the cross-tenant window but isn't
+ * transactionally fused with the cap gate's INSERT, so the simultaneous-race
+ * case remains — tracked, with the full ownership-proof flow, in #3154.
+ */
+async function assertChatIdUnboundElsewhere(
+  chatId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'chat_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [TELEGRAM_CATALOG_ID, chatId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "Telegram install rejected — chat_id already bound to a different workspace",
+    );
+    throw new TelegramChatIdInvalidError({
+      message:
+        "This Telegram chat is already connected to a different Atlas workspace. Each chat can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Telegram chat ids are 64-bit signed integers documented as ≤52
@@ -171,6 +209,17 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
     // Throws on Bot API errors / network failures *before* any DB write,
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
+
+    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153) ────
+    // `getChat` proves the operator bot is a member of the chat, NOT that
+    // THIS workspace owns it — and chat_ids leak in every message envelope.
+    // Reject a chat_id already bound to a *different* workspace so a member
+    // of the chat can't bind it to their own workspace and intercept the
+    // chat's messages (a reconnect by the same workspace is excluded by the
+    // `workspace_id <> $3` filter). This narrows the cross-tenant window; the
+    // residual (two workspaces racing a never-before-bound id) is tracked,
+    // with the full ownership-proof flow, in #3154.
+    await assertChatIdUnboundElsewhere(routingIdentifier, workspaceId);
 
     // ── 3. Plan cap + install row — atomic (#3141, #3001) ──────────
     // Enforce the chat-integration cap and persist the workspace_plugins row

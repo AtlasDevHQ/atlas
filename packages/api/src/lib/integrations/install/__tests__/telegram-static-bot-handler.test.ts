@@ -42,8 +42,14 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
+// The handler's cross-workspace ownership guard (#3141) reads
+// `workspace_plugins` via `internalQuery` before the cap gate. Default returns
+// [] (no conflict); the guard test overrides it to a matching row.
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
+  () => Promise.resolve([]),
+);
 mock.module("@atlas/api/lib/db/internal", () => ({
-  internalQuery: mock(() => Promise.resolve([])),
+  internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
 }));
@@ -126,6 +132,8 @@ beforeEach(() => {
   mockCheckChatLimitAndInstall.mockImplementation(() =>
     Promise.resolve({ allowed: true as const, rows: [{ id: "install-tg-row-1" }] }),
   );
+  mockInternalQuery.mockClear();
+  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -243,6 +251,40 @@ describe("TelegramStaticBotInstallHandler.confirmInstall — reachability verifi
     const handler = new TelegramStaticBotInstallHandler({ botToken: "987:xyz" });
     await expect(handler.confirmInstall(wsid, "12345")).rejects.toThrow(/telegram/i);
     expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-workspace ownership guard (#3141 / Codex #3153)
+// ---------------------------------------------------------------------------
+
+describe("TelegramStaticBotInstallHandler.confirmInstall — cross-workspace guard", () => {
+  it("rejects a chat_id already bound to a different workspace, and never reaches the cap gate", async () => {
+    // getChat proves the bot is in the chat, not that THIS workspace owns it.
+    // The guard SELECT finds an existing bind in another workspace and refuses
+    // before the cap gate runs — so a chat member can't claim the chat.
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-victim" }]),
+    );
+    const handler = new TelegramStaticBotInstallHandler({ botToken: "123:abc" });
+    await expect(handler.confirmInstall(wsid, "-100999")).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+    // The guard scopes its lookup to (catalog:telegram, enabled, the chat_id,
+    // workspace_id <> self) so a reconnect by the same workspace is never caught.
+    const [sql, params] = mockInternalQuery.mock.calls[0];
+    expect(String(sql)).toMatch(/config->>'chat_id'/);
+    expect(String(sql)).toMatch(/workspace_id\s*<>\s*\$3/);
+    expect(params).toEqual([TELEGRAM_CATALOG_ID, "-100999", wsid]);
+  });
+
+  it("allows the install when the chat_id is bound only to the installing workspace (reconnect) — guard returns no conflict", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const handler = new TelegramStaticBotInstallHandler({ botToken: "123:abc" });
+    const result = await handler.confirmInstall(wsid, "-100999");
+    expect(result.installRecord.catalogId).toBe(TELEGRAM_SLUG);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
 });
 

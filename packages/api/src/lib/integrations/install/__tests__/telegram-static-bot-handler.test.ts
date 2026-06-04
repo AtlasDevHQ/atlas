@@ -286,6 +286,41 @@ describe("TelegramStaticBotInstallHandler.confirmInstall — cross-workspace gua
     expect(result.installRecord.catalogId).toBe(TELEGRAM_SLUG);
     expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
   });
+
+  it("maps a concurrent routing-id unique violation (23505) from the cap gate to the actionable conflict error (#3167)", async () => {
+    // Pre-check passes (no existing bind), but a concurrent install in another
+    // workspace claimed the chat_id first. The migration-0120 partial unique
+    // index rejects our UPSERT with a 23505 naming
+    // `workspace_plugins_chat_routing_id_unique`. The handler must surface the
+    // SAME error its pre-check returns, not leak a raw 500.
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.reject(
+        Object.assign(new Error("duplicate key value violates unique constraint"), {
+          code: "23505",
+          constraint: "workspace_plugins_chat_routing_id_unique",
+        }),
+      ),
+    );
+    const handler = new TelegramStaticBotInstallHandler({ botToken: "123:abc" });
+    await expect(handler.confirmInstall(wsid, "-100999")).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+  });
+
+  it("re-throws a 23505 on a DIFFERENT index untouched — not relabelled as a cross-workspace conflict (#3167)", async () => {
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.reject(
+        Object.assign(
+          new Error('duplicate key value violates unique constraint "workspace_plugins_id_unique"'),
+          { code: "23505", constraint: "workspace_plugins_id_unique" },
+        ),
+      ),
+    );
+    const handler = new TelegramStaticBotInstallHandler({ botToken: "123:abc" });
+    await expect(handler.confirmInstall(wsid, "-100999")).rejects.toThrow(/duplicate key value/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

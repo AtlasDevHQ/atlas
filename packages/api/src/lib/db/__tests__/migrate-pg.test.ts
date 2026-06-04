@@ -1549,6 +1549,234 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       expect(rows[0]?.pillar).toBe("action");
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // 0120 — static-bot routing-id partial unique index (#3167)
+  //
+  // Closes the concurrent-install race: two DIFFERENT workspaces binding
+  // the SAME routing id (Telegram chat_id / Discord guild_id / Teams
+  // tenant_id / WhatsApp phone_number_id / gchat workspace_id) can no longer
+  // both persist. The losing writer hits a 23505 on
+  // `workspace_plugins_chat_routing_id_unique`, which the handlers map to the
+  // actionable "already connected elsewhere" error
+  // (`isRoutingIdUniqueViolation` keys on that exact index name).
+  //
+  // Carve-outs proved here mirror the migration's intent:
+  //   - gchat `my_customer` self-install alias is exempt (NULLIF → NULL,
+  //     DISTINCT in the index);
+  //   - the SAME routing value under two different platforms does NOT collide
+  //     (the leading `catalog_id` column scopes per platform);
+  //   - a disabled install frees its routing id for reuse (partial WHERE
+  //     enabled = true);
+  //   - a same-workspace reconnect UPSERT is idempotent (lands on its own
+  //     singleton row, routing value unchanged).
+  // ─────────────────────────────────────────────────────────────────────
+  describe("0120 static-bot routing-id uniqueness (#3167)", () => {
+    // Chat catalog rows aren't seeded by migrations (catalog-seeder runs at
+    // boot, not here), so seed the three platforms these tests exercise.
+    // ON CONFLICT DO NOTHING keeps it idempotent across this schema.
+    beforeAll(async () => {
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES
+           ('catalog:telegram', 'Telegram',    'telegram', 'chat', 'chat', 'static-bot'),
+           ('catalog:discord',  'Discord',     'discord',  'chat', 'chat', 'static-bot'),
+           ('catalog:gchat',    'Google Chat', 'gchat',    'chat', 'chat', 'static-bot')
+         ON CONFLICT (id) DO NOTHING`,
+      );
+    });
+
+    /** Insert one chat install row. Throws on a routing-id unique violation. */
+    async function installChat(opts: {
+      id: string;
+      workspaceId: string;
+      catalogId: string;
+      config: Record<string, string>;
+      enabled?: boolean;
+    }): Promise<void> {
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, $5, NOW())`,
+        [
+          opts.id,
+          opts.workspaceId,
+          opts.catalogId,
+          JSON.stringify(opts.config),
+          opts.enabled ?? true,
+        ],
+      );
+    }
+
+    it("rejects a second workspace binding the same Telegram chat_id with 23505 on the routing index (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const chatId = `-1001${stamp.replace(/\D/g, "").slice(0, 9)}`;
+      await installChat({
+        id: `wp-a-${stamp}`,
+        workspaceId: `wsA-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+      });
+
+      let err: { code?: string; constraint?: string } | null = null;
+      try {
+        await installChat({
+          id: `wp-b-${stamp}`,
+          workspaceId: `wsB-${stamp}`,
+          catalogId: "catalog:telegram",
+          config: { chat_id: chatId },
+        });
+      } catch (e) {
+        err = e as { code?: string; constraint?: string };
+      }
+      expect(err?.code).toBe("23505");
+      // The handlers' `isRoutingIdUniqueViolation` keys on this exact name —
+      // a rename here without updating the helper would silently regress the
+      // error mapping back to a raw 500.
+      expect(err?.constraint).toBe("workspace_plugins_chat_routing_id_unique");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("allows a same-workspace reconnect UPSERT of its own chat_id — idempotent, no conflict (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const ws = `wsRecon-${stamp}`;
+      const chatId = `-100555${stamp.replace(/\D/g, "").slice(0, 6)}`;
+      await installChat({
+        id: `wp-r1-${stamp}`,
+        workspaceId: ws,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+      });
+      // Mirror the handler UPSERT exactly: ON CONFLICT on the singleton index
+      // lands on the existing row; the routing value is unchanged, so the
+      // routing index sees no NEW conflicting entry against another row.
+      await pool.query(
+        `INSERT INTO workspace_plugins
+           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+         VALUES ($1, $2, 'catalog:telegram', $1, 'chat', $3::jsonb, true, NOW())
+         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
+         DO UPDATE SET config = EXCLUDED.config, enabled = true`,
+        [`wp-r2-${stamp}`, ws, JSON.stringify({ chat_id: chatId, display_name: "renamed" })],
+      );
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE workspace_id = $1 AND catalog_id = 'catalog:telegram'`,
+        [ws],
+      );
+      expect(rows[0]?.c).toBe(1);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("exempts the gchat 'my_customer' self-install alias — two workspaces store it without conflict (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      await installChat({
+        id: `wp-mc-a-${stamp}`,
+        workspaceId: `wsMcA-${stamp}`,
+        catalogId: "catalog:gchat",
+        config: { workspace_id: "my_customer" },
+      });
+      // NULLIF(config->>'workspace_id', 'my_customer') => NULL, which is
+      // DISTINCT in the index, so a second self-install must NOT conflict.
+      await installChat({
+        id: `wp-mc-b-${stamp}`,
+        workspaceId: `wsMcB-${stamp}`,
+        catalogId: "catalog:gchat",
+        config: { workspace_id: "my_customer" },
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE catalog_id = 'catalog:gchat'
+            AND config->>'workspace_id' = 'my_customer'
+            AND id LIKE $1`,
+        [`wp-mc-%-${stamp}`],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("still rejects two workspaces sharing a REAL gchat customer id with 23505 (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const customerId = `C0${stamp.replace(/\D/g, "").slice(0, 7)}`;
+      await installChat({
+        id: `wp-gc-a-${stamp}`,
+        workspaceId: `wsGcA-${stamp}`,
+        catalogId: "catalog:gchat",
+        config: { workspace_id: customerId },
+      });
+      await expect(
+        installChat({
+          id: `wp-gc-b-${stamp}`,
+          workspaceId: `wsGcB-${stamp}`,
+          catalogId: "catalog:gchat",
+          config: { workspace_id: customerId },
+        }),
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "workspace_plugins_chat_routing_id_unique",
+      });
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("does NOT collide the same routing value across two different platforms (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const shared = `1234567${stamp.replace(/\D/g, "").slice(0, 8)}`;
+      await installChat({
+        id: `wp-tg-${stamp}`,
+        workspaceId: `wsTg-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: shared },
+      });
+      // Discord guild_id with the identical string — different catalog_id, so
+      // (catalog_id, value) differs and there is no conflict. The leading
+      // catalog_id column is what keeps routing values namespaced per platform.
+      await installChat({
+        id: `wp-dc-${stamp}`,
+        workspaceId: `wsDc-${stamp}`,
+        catalogId: "catalog:discord",
+        config: { guild_id: shared },
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins WHERE id IN ($1, $2)`,
+        [`wp-tg-${stamp}`, `wp-dc-${stamp}`],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("a disabled install frees its routing id — another workspace may then claim it (#3167)", async () => {
+      const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const chatId = `-100777${stamp.replace(/\D/g, "").slice(0, 6)}`;
+      // Disabled row sits OUTSIDE the partial index (WHERE enabled = true).
+      await installChat({
+        id: `wp-dis-${stamp}`,
+        workspaceId: `wsDis-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+        enabled: false,
+      });
+      // Enabled install in a different workspace with the same chat_id — no
+      // conflict, because the disabled row isn't in the index.
+      await installChat({
+        id: `wp-en-${stamp}`,
+        workspaceId: `wsEn-${stamp}`,
+        catalogId: "catalog:telegram",
+        config: { chat_id: chatId },
+        enabled: true,
+      });
+      const { rows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM workspace_plugins
+          WHERE catalog_id = 'catalog:telegram' AND config->>'chat_id' = $1`,
+        [chatId],
+      );
+      expect(rows[0]?.c).toBe(2);
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("creates the partial unique index by name — drift guard (#3167)", async () => {
+      const { rows } = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+          WHERE schemaname = current_schema() AND tablename = 'workspace_plugins'
+          ORDER BY indexname`,
+      );
+      expect(rows.map((r) => r.indexname)).toContain(
+        "workspace_plugins_chat_routing_id_unique",
+      );
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

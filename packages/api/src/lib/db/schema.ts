@@ -1547,6 +1547,38 @@ export const workspacePlugins = pgTable(
     uniqueIndex("workspace_plugins_singleton")
       .on(t.workspaceId, t.catalogId)
       .where(sql`pillar IN ('chat', 'action')`),
+    // 0120 / #3167 — closes the static-bot routing-id concurrent-install
+    // race. The five static-bot handlers' cross-workspace pre-checks
+    // (`assert*UnboundElsewhere`) aren't transactionally fused with the
+    // per-workspace-locked cap-gate UPSERT, so two DIFFERENT workspaces
+    // could both bind the SAME routing id and collapse the read-side
+    // resolver onto its `rows.length > 1` fail-closed. This partial unique
+    // index is the DB-enforced backstop: one routing key per platform.
+    //   - Leading `catalog_id` scopes the routing value per platform, so a
+    //     Telegram chat_id "123" never collides with a Discord guild_id "123".
+    //   - The CASE maps each catalog to its JSONB routing key (mirrors the
+    //     per-handler `*InstallConfig` shapes). A NULL result (Slack, any
+    //     future unmapped chat catalog, or gchat's `my_customer` self-install
+    //     alias via NULLIF) is DISTINCT in the index → exempt from the
+    //     constraint. Adding a static-bot platform means extending BOTH this
+    //     CASE and the migration 0120 expression in lockstep.
+    //   - `WHERE enabled = true` matches the pre-check filter, so a
+    //     disconnected (disabled) install frees its routing id for reuse.
+    // The handlers catch the 23505 this raises and surface the same
+    // "already connected elsewhere" error as the pre-check (see
+    // `lib/integrations/install/routing-id-conflict.ts`).
+    uniqueIndex("workspace_plugins_chat_routing_id_unique")
+      .on(
+        t.catalogId,
+        sql`(CASE catalog_id
+       WHEN 'catalog:telegram' THEN config->>'chat_id'
+       WHEN 'catalog:discord'  THEN config->>'guild_id'
+       WHEN 'catalog:teams'    THEN config->>'tenant_id'
+       WHEN 'catalog:whatsapp' THEN config->>'phone_number_id'
+       WHEN 'catalog:gchat'    THEN NULLIF(config->>'workspace_id', 'my_customer')
+     END)`,
+      )
+      .where(sql`enabled = true AND pillar = 'chat'`),
     index("idx_workspace_plugins_workspace").on(t.workspaceId),
     index("idx_workspace_plugins_catalog").on(t.catalogId),
     index("idx_workspace_plugins_status").on(t.workspaceId, t.status),

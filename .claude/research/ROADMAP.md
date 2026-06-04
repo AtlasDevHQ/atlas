@@ -28,6 +28,8 @@ Banked since `v0.0.8`:
 
 - [x] Static-bot install spine ([#3140](https://github.com/AtlasDevHQ/atlas/issues/3140) → [#3148](https://github.com/AtlasDevHQ/atlas/pull/3148), Architecture Backlog) — the cap-gated routing-identifier install path for the four form-shaped chat platforms (Telegram / Teams / Google Chat / WhatsApp): extends `/install-form` for `install_model="static-bot"`, an explicit `oauthShaped` discriminator (refuses Discord, whose `guild_id` rides on OAuth), a `coming_soon` dormancy gate (409 — the route can't reach a handler before its slice cap-gates `confirmInstall`), a declared-key `extras` whitelist, and the admin routing-id modal on a shared type-aware `<ConfigSchemaFields>` renderer. **Spine only** — per-platform enablement is the #2994 umbrella's sub-issues #3141–#3144 (+ dead-store cleanup #3145). Arch-win #81.
 
+- [x] KPI / scorecard cards ([#3137](https://github.com/AtlasDevHQ/atlas/issues/3137) → [#3149](https://github.com/AtlasDevHQ/atlas/pull/3149), milestone #60) — the #2267 slice-2 card type: a single-stat scorecard (value + label + optional comparison delta) driven by a saved query. First slice of the v0.0.9 milestone.
+
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 
 ---
@@ -36,7 +38,7 @@ Banked since `v0.0.8`:
 
 Lightweight forward-look. No committed scope; conviction firms as work begins.
 
-- **`v0.0.9` — Dashboard Primitives & Polish** ([milestone #60](https://github.com/AtlasDevHQ/atlas/milestone/60)) — takes the dashboard surface from "saved query gallery" toward Looker/Mode-class, sitting after the v0.0.8 params + text-blocks rollup. Seeded by KPI / scorecard cards ([#3137](https://github.com/AtlasDevHQ/atlas/issues/3137), the #2267 slice-2 remainder) plus findings from end-to-end prod user-testing. Candidate scope: KPI comparison/format polish, click-to-drilldown / cross-filtering, goal lines & thresholds, annotations, per-card CSV + dashboard export. Scope firms as testing notes land.
+- **`v0.0.9` — Dashboard Primitives & Polish** ([milestone #60](https://github.com/AtlasDevHQ/atlas/milestone/60)) — takes the dashboard surface from "saved query gallery" toward Looker/Mode-class, sitting after the v0.0.8 params + text-blocks rollup. Opened by the now-shipped KPI / scorecard cards ([#3137](https://github.com/AtlasDevHQ/atlas/issues/3137) → #3149, the #2267 slice-2 card) plus findings from end-to-end prod user-testing. Candidate scope: KPI comparison/format polish, click-to-drilldown / cross-filtering, goal lines & thresholds, annotations, per-card CSV + dashboard export. Scope firms as testing notes land.
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
 

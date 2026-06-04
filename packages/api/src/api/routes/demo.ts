@@ -621,6 +621,7 @@ demo.openapi(demoChatRoute, async (c) => {
             clearStreamWriter(requestId);
           },
           onError: (error) => {
+            clearStreamWriter(requestId);
             // #3202 — a provider error raised WHILE the stream is consumed (e.g.
             // ECONNREFUSED/ENOTFOUND mid-generation) lands here, not the sync
             // catch below (runAgent returns the streamText result before the

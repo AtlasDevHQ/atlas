@@ -27,10 +27,12 @@
  *     assert errors don't attach `cause: err` (preserves symmetry with
  *     the Discord / Telegram / Teams safe-by-default posture).
  *
- * `mock.module()` stubs the two module dependencies the handler reaches
- * into: `lib/db/internal` (`internalQuery`) and the global `fetch` used
- * for the Meta Graph API call. Each mock exports every named export it
- * shadows (CLAUDE.md "mock all exports" rule).
+ * `mock.module()` stubs the module dependencies the handler reaches into:
+ * `lib/billing/enforcement` (`checkChatIntegrationLimitAndInstall` — the
+ * atomic cap-gate that owns the `workspace_plugins` UPSERT post-#3001, which
+ * WhatsApp adopted in #3144) and the global `fetch` used for the Meta Graph
+ * API call. Each mock exports every named export it shadows (CLAUDE.md "mock
+ * all exports" rule).
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -40,14 +42,49 @@ import type { WorkspaceId } from "@useatlas/types";
 // Module mocks — hoist above the handler import
 // ---------------------------------------------------------------------------
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() =>
-  Promise.resolve([{ id: "install-whatsapp-row-1" }]),
+// The handler's cross-workspace ownership guard (#3144) reads
+// `workspace_plugins` via `internalQuery` before the cap gate. Default returns
+// [] (no conflict); the guard test overrides it to a matching row.
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
+  () => Promise.resolve([]),
 );
-
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),
+}));
+
+// The chat-integration cap + the workspace_plugins UPSERT run atomically
+// through `checkChatIntegrationLimitAndInstall` (#3001) — the gate owns the
+// write and returns the RETURNING rows. We stub it to "allowed" with a scripted
+// row id so these handler tests stay focused on the install contract
+// (phone_number_id validation, Meta Graph reachability, config payload) and
+// assert the UPSERT shape via the gate's `insert` arg. The cap-enforcement
+// decision + transaction sequencing live in `billing/__tests__/enforcement.test.ts`.
+type GateResult =
+  | { allowed: true; rows: Array<Record<string, unknown>> }
+  | { allowed: false; reason: "cap_reached"; errorMessage: string; limit: number }
+  | { allowed: false; reason: "check_failed"; errorMessage: string };
+const mockCheckChatLimitAndInstall: Mock<
+  (
+    orgId: string | undefined,
+    catalogId: string,
+    insert: { sql: string; params: readonly unknown[] },
+  ) => Promise<GateResult>
+> = mock(() => Promise.resolve({ allowed: true as const, rows: [{ id: "install-whatsapp-row-1" }] }));
+
+// Mock every value export — a partial `mock.module()` causes a `SyntaxError`
+// in other files importing the missing exports (per CLAUDE.md "Mock all
+// exports"). Only `checkChatIntegrationLimitAndInstall` is exercised here.
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  checkChatIntegrationLimitAndInstall: mockCheckChatLimitAndInstall,
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  checkResourceLimit: () => Promise.resolve({ allowed: true }),
+  checkPlanLimits: () => Promise.resolve({ allowed: true }),
+  getCachedWorkspace: () => Promise.resolve(null),
+  invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 0, usagePercent: 0, status: "ok" }),
+  severityOf: () => 0,
 }));
 
 // ---------------------------------------------------------------------------
@@ -116,10 +153,12 @@ function setFetchNetworkError(): void {
 }
 
 beforeEach(() => {
-  mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(() =>
-    Promise.resolve([{ id: "install-whatsapp-row-1" }]),
+  mockCheckChatLimitAndInstall.mockClear();
+  mockCheckChatLimitAndInstall.mockImplementation(() =>
+    Promise.resolve({ allowed: true as const, rows: [{ id: "install-whatsapp-row-1" }] }),
   );
+  mockInternalQuery.mockClear();
+  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   fetchCalls.length = 0;
   setFetchOk();
 });
@@ -200,7 +239,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — phone_number_id val
   it("rejects empty phone_number_id", async () => {
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await expect(handler.confirmInstall(wsid, "")).rejects.toThrow(/phone_number_id/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     // No upstream call either — format validation happens first.
     expect(fetchCalls).toHaveLength(0);
   });
@@ -213,7 +252,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — phone_number_id val
     await expect(handler.confirmInstall(wsid, "+14155550100")).rejects.toThrow(
       /phone_number_id/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
     expect(fetchCalls).toHaveLength(0);
   });
 
@@ -225,7 +264,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — phone_number_id val
     await expect(handler.confirmInstall(wsid, "12345abc")).rejects.toThrow(
       /phone_number_id/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("accepts a canonical numeric id", async () => {
@@ -273,7 +312,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /Unsupported get request/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("appends the operator-side hint for code 100 (phone not shared into Business Account)", async () => {
@@ -298,7 +337,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
       caught = err instanceof Error ? err : new Error(String(err));
     }
     expect(caught?.message).toMatch(/META_BUSINESS_ACCESS_TOKEN/);
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws WhatsAppApiUnavailableError when the Graph API call fails at the network layer (no install row)", async () => {
@@ -307,7 +346,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /Meta Graph API unreachable/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws when Meta returns a non-JSON body — upstream contract violation", async () => {
@@ -316,7 +355,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /Meta Graph API/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("throws when Meta returns 2xx but no id field — upstream contract violation, not silent success", async () => {
@@ -331,7 +370,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /unexpected response shape/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("refuses 2xx responses that ALSO carry an error envelope — silent-success defense (P0 from review)", async () => {
@@ -356,7 +395,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /unexpected response shape/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("refuses non-2xx responses with an empty error envelope — upstream contract violation", async () => {
@@ -376,7 +415,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
       /unexpected response shape/,
     );
-    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
   });
 
   it("does NOT attach the underlying fetch error as `cause` — preserves the no-leak posture on Authorization headers", async () => {
@@ -422,19 +461,121 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — reachability verifi
 });
 
 // ---------------------------------------------------------------------------
+// Cross-workspace ownership guard (#3144 / Codex #3153)
+// ---------------------------------------------------------------------------
+
+describe("WhatsAppStaticBotInstallHandler.confirmInstall — cross-workspace guard", () => {
+  it("rejects a phone_number_id already bound to a different workspace, and never reaches the cap gate", async () => {
+    // Reachability proves the number is in the operator's Meta account, not
+    // that THIS workspace owns it. The guard SELECT finds an existing bind in
+    // another workspace and refuses before the cap gate runs — so an admin
+    // can't claim another customer's number.
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ workspace_id: "org-victim" }]),
+    );
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(
+      /already connected to a different Atlas workspace/i,
+    );
+    expect(mockCheckChatLimitAndInstall).not.toHaveBeenCalled();
+    // The guard scopes its lookup to (catalog:whatsapp, enabled, the routing id,
+    // workspace_id <> self) so a reconnect by the same workspace is never caught.
+    const [sql, params] = mockInternalQuery.mock.calls[0];
+    expect(String(sql)).toMatch(/config->>'phone_number_id'/);
+    expect(String(sql)).toMatch(/workspace_id\s*<>\s*\$3/);
+    expect(params).toEqual([WHATSAPP_CATALOG_ID, SAMPLE_PHONE_NUMBER_ID, wsid]);
+  });
+
+  it("allows the install when the routing id is bound only to the installing workspace (reconnect) — guard returns no conflict", async () => {
+    // The `workspace_id <> $3` filter means a same-workspace reconnect returns
+    // no rows; the install proceeds to the cap gate (which grandfathers it).
+    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    expect(result.installRecord.catalogId).toBe(WHATSAPP_SLUG);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat-integration cap (#3144 — migrated onto the atomic gate)
+// ---------------------------------------------------------------------------
+
+describe("WhatsAppStaticBotInstallHandler.confirmInstall — chat-integration cap", () => {
+  it("throws ChatIntegrationLimitError and writes no install row when at cap", async () => {
+    // The gate rolls back its UPSERT internally on a cap denial and returns
+    // `cap_reached` — the row is never committed.
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "cap_reached" as const,
+        errorMessage: "Your business plan allows up to 1 chat integration. Upgrade to add more.",
+        limit: 1,
+      }),
+    );
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toMatchObject({
+      _tag: "ChatIntegrationLimitError",
+      limit: 1,
+    });
+
+    // The gate enforced the cap (after the Meta Graph round-trip), keyed on the
+    // workspace + WhatsApp catalog id, with the UPSERT it would have committed.
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const [gateOrg, gateCatalog, gateInsert] = mockCheckChatLimitAndInstall.mock.calls[0];
+    expect(gateOrg).toBe(wsid);
+    expect(gateCatalog).toBe(WHATSAPP_CATALOG_ID);
+    expect(gateInsert.sql).toMatch(/INSERT INTO workspace_plugins/);
+  });
+
+  it("throws BillingCheckFailedError (not the cap error) when the count check fails closed", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({
+        allowed: false as const,
+        reason: "check_failed" as const,
+        errorMessage: "Unable to verify plan limits. Please try again.",
+      }),
+    );
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+
+    await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toMatchObject({
+      _tag: "BillingCheckFailedError",
+    });
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("grandfathers a reconnect — the gate allows an already-installed workspace and returns the existing id", async () => {
+    mockCheckChatLimitAndInstall.mockImplementationOnce(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
+    );
+    const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
+    const result = await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
+    expect(result.installRecord.id).toBe("existing-install-row");
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
 describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () => {
-  it("UPSERTs workspace_plugins with the catalog id + phone_number_id config payload", async () => {
+  /** Pull the gate's `insert` arg from the most recent call. */
+  function lastGateInsert(): { sql: string; params: readonly unknown[] } {
+    const calls = mockCheckChatLimitAndInstall.mock.calls;
+    return calls[calls.length - 1][2];
+  }
+
+  it("UPSERTs workspace_plugins with the catalog id + phone_number_id config payload via the cap gate", async () => {
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID, undefined, {
       display_phone: "Acme Sales Line",
     });
 
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
-    const sqlText = String(sql);
+    expect(mockCheckChatLimitAndInstall).toHaveBeenCalledTimes(1);
+    const insert = lastGateInsert();
+    const sqlText = insert.sql;
     expect(sqlText).toMatch(/INSERT INTO workspace_plugins/);
     // Required NOT NULL columns post-0092 / 0096 — the INSERT must
     // name pillar + install_id explicitly, and chat-pillar installs
@@ -444,8 +585,10 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     expect(sqlText).toMatch(/pillar/);
     expect(sqlText).toMatch(/'chat'/);
     expect(sqlText).toMatch(/ON CONFLICT.*workspace_id.*catalog_id.*WHERE.*pillar.*DO UPDATE/s);
+    // The gate runs the UPSERT under the lock, so RETURNING id must be present.
+    expect(sqlText).toMatch(/RETURNING id/);
 
-    const paramsArr = params as unknown[];
+    const paramsArr = insert.params as unknown[];
     expect(paramsArr).toContain(wsid);
     expect(paramsArr).toContain(WHATSAPP_CATALOG_ID);
     const configJson = paramsArr.find(
@@ -462,7 +605,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     setFetchOk({ display_phone_number: "+44 20 7946 0958" });
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
@@ -481,7 +624,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     }) as unknown as typeof fetch;
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
@@ -503,7 +646,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID, undefined, {
       display_phone: 12345 as unknown as string,
     });
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
@@ -522,7 +665,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     }) as unknown as typeof fetch;
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
@@ -544,7 +687,7 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     }) as unknown as typeof fetch;
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const params = lastGateInsert().params;
     const configJson = (params as unknown[]).find(
       (p): p is string => typeof p === "string" && p.includes("phone_number_id"),
     );
@@ -552,9 +695,9 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     expect(parsed.display_phone).toBe("+1 415 555 0100");
   });
 
-  it("returns the persisted install id from RETURNING (re-install idempotency)", async () => {
-    mockInternalQuery.mockImplementation(() =>
-      Promise.resolve([{ id: "existing-install-row" }]),
+  it("returns the persisted install id from the gate's RETURNING rows (re-install idempotency)", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [{ id: "existing-install-row" }] }),
     );
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     const result = await handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID);
@@ -563,8 +706,10 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
     expect(result.installRecord.catalogId).toBe(WHATSAPP_SLUG);
   });
 
-  it("throws when RETURNING comes back empty — never ships a candidate id that doesn't match the persisted row", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  it("throws when the gate's RETURNING rows are empty — never ships a candidate id that doesn't match the persisted row", async () => {
+    mockCheckChatLimitAndInstall.mockImplementation(() =>
+      Promise.resolve({ allowed: true as const, rows: [] }),
+    );
     const handler = new WhatsAppStaticBotInstallHandler({
       accessToken: "t",
       appId: "id",
@@ -576,7 +721,8 @@ describe("WhatsAppStaticBotInstallHandler.confirmInstall — persistence", () =>
   });
 
   it("surfaces DB failure rather than half-installing — no return after a throw", async () => {
-    mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB down")));
+    // The gate throws on a genuine write-path failure (after rolling back).
+    mockCheckChatLimitAndInstall.mockImplementation(() => Promise.reject(new Error("DB down")));
     const handler = new WhatsAppStaticBotInstallHandler({ accessToken: "t", appId: "id" });
     await expect(handler.confirmInstall(wsid, SAMPLE_PHONE_NUMBER_ID)).rejects.toThrow(/DB down/);
   });

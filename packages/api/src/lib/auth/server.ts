@@ -55,7 +55,7 @@ import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
-import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
+import { adminAccessControl, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
@@ -126,58 +126,46 @@ export function canMintSCIMToken(role: unknown): boolean {
 }
 
 /**
- * Promote the org creator's user-level role to "admin" so Better Auth's
- * admin plugin APIs (list users, manage roles, etc.) work. Without this,
- * org owners have user.role="member" and Better Auth blocks admin
- * operations.
+ * Effective authorization for SCIM token generation (#2890).
  *
- * Wired into the organization plugin via
- * `organizationHooks.afterCreateOrganization` in {@link buildPlugins}.
+ * The `beforeSCIMTokenGenerated` hook only receives the user object, whose
+ * raw `user.role` post-#2890 only ever carries `platform_admin` — tenant
+ * admin-ness now lives in `member.role`. A raw-role check ({@link
+ * canMintSCIMToken}) alone would therefore deny every org owner/admin, who
+ * are exactly the people that set up SCIM. Resolve the effective grant:
+ * `platform_admin` via user.role, OR an `admin`/`owner` member row in any of
+ * the user's orgs (the same intent the `ADMIN_ROLES` triple encodes).
  *
- * Exported for direct unit testing — the org plugin closes over its
- * options, so the only way to assert this hook's contract from outside
- * the plugin is to test the function in isolation.
- *
- * @internal
+ * Fails CLOSED on a member-table lookup error — minting an IdP provisioning
+ * token is high-privilege, so a transient DB blip denies rather than grants.
+ * Without an internal DB (single-tenant self-hosted with no member table)
+ * falls back to the raw-role predicate.
  */
-export async function promoteOrgOwnerToAdmin(args: {
-  user: { id: string };
-  organization: { id: string };
-}): Promise<void> {
-  const { user, organization: org } = args;
+export async function canGenerateSCIMToken(role: unknown, userId: string | undefined): Promise<boolean> {
+  if (role === "platform_admin") return true;
+  if (!userId || !hasInternalDB()) return canMintSCIMToken(role);
   try {
-    if (!hasInternalDB()) return;
-
-    // Don't downgrade platform_admin → admin
-    const rows = await internalQuery<{ role: string | null }>(
-      `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
-      [user.id],
+    const rows = await internalQuery<{ ok: number }>(
+      `SELECT 1 AS ok FROM member WHERE "userId" = $1 AND role IN ('admin', 'owner') LIMIT 1`,
+      [userId],
     );
-    const currentRole = rows[0]?.role;
-    if (currentRole === "admin" || currentRole === "platform_admin") return;
-
-    await getInternalDB().query(
-      `UPDATE "user" SET role = 'admin' WHERE id = $1`,
-      [user.id],
-    );
-    log.info(
-      { userId: user.id, orgId: org.id },
-      "Promoted org owner to user-level admin",
-    );
+    return rows.length > 0;
   } catch (err) {
-    // Escalated to log.error so this surfaces in error-rate alarms.
-    // Failure here means the user signed up, owns an org, but
-    // user.role is stuck at "member" — they can't hit Better Auth
-    // admin APIs. Recoverable via manual UPDATE, but a sustained
-    // rate of this fire indicates a regression in the hook contract
-    // (e.g. Better Auth renamed the option and we silently no-op'd
-    // again — exactly the bug class this hook replaced).
-    log.error(
-      { err: errorMessage(err), userId: user.id, orgId: org.id },
-      "Failed to promote org owner to admin — Better Auth admin APIs will return 403",
+    log.warn(
+      { err: errorMessage(err), userId },
+      "SCIM token authorization member lookup failed — denying (fail closed)",
     );
+    return false;
   }
 }
+
+// #2890 removed `promoteOrgOwnerToAdmin`. The org plugin already inserts the
+// creator as a member with `member.role='owner'` (Better Auth `creatorRole`
+// default), which is the single source of truth for tenant admin-ness —
+// `resolveEffectiveRole` surfaces it as the effective role for both Atlas's
+// admin console and the client. Writing a redundant `user.role='admin'` on
+// org create was the exact middle state that issue dropped; the admin-plugin
+// ACL no longer even defines `admin`, so a write would be dead data.
 
 /**
  * Flip a newly-created SaaS workspace from the DB default `plan_tier='free'`
@@ -188,8 +176,8 @@ export async function promoteOrgOwnerToAdmin(args: {
  * the free-tier definition and `/admin/model-config` renders the literal
  * `"user-configured"` sentinel from `plans.ts`.
  *
- * Wired alongside {@link promoteOrgOwnerToAdmin} into
- * `organizationHooks.afterCreateOrganization` in {@link buildPlugins}.
+ * Wired into `organizationHooks.afterCreateOrganization` in
+ * {@link buildPlugins}.
  * Better Auth runs hooks sequentially via the composed `async` wrapper —
  * each hook catches its own errors so a failure in either doesn't poison
  * org creation.
@@ -236,9 +224,9 @@ export async function assignSaasTrial(args: {
       "Assigned SaaS trial to new workspace",
     );
   } catch (err) {
-    // log.error parallels promoteOrgOwnerToAdmin — sustained failures
-    // indicate a regression in the hook contract (Better Auth option
-    // rename, DB connectivity loss, etc.). Org creation continues; the
+    // log.error (not warn) — sustained failures indicate a regression in
+    // the hook contract (Better Auth option rename, DB connectivity loss,
+    // etc.). Org creation continues; the
     // workspace just stays on plan_tier='free' until the next signup
     // hook fires or an operator runs the backfill manually.
     log.error(
@@ -1327,10 +1315,13 @@ export function buildPlugins() {
     bearer(),
     apiKey(),
     admin({
+      // The admin-plugin ACL is single-valued now (#2890): `platform_admin`
+      // is the only cross-tenant user.role. `defaultRole: "member"` keeps new
+      // signups out of that ACL (a "member" caller has no admin-plugin
+      // permission); tenant admin-ness lives in the org plugin's member.role.
       defaultRole: "member",
       ac: adminAccessControl,
       roles: {
-        admin: adminUserRole,
         platform_admin: platformAdminRole,
       },
     }),
@@ -1347,7 +1338,8 @@ export function buildPlugins() {
         // its own internal context, which bypasses user-defined
         // `databaseHooks` — the previous wiring fired zero times in prod.
         afterCreateOrganization: async (args) => {
-          await promoteOrgOwnerToAdmin(args);
+          // Org creator is already member.role='owner' via the org plugin's
+          // creatorRole default — no user.role promotion needed (#2890).
           await assignSaasTrial(args);
         },
         // Defense-in-depth role gate + seat-limit. Better Auth's schema
@@ -1666,7 +1658,10 @@ export function buildPlugins() {
           // object but the SCIM plugin's hook type only includes base
           // user fields.
           const user = data.user as Record<string, unknown> | undefined;
-          if (!canMintSCIMToken(user?.role)) {
+          // #2890: resolve the EFFECTIVE grant (user.role only holds
+          // platform_admin now; org admins/owners live in member.role).
+          const userId = typeof user?.id === "string" ? user.id : undefined;
+          if (!(await canGenerateSCIMToken(user?.role, userId))) {
             throw new Error("Only admin, owner, or platform-admin users can generate SCIM tokens.");
           }
         },

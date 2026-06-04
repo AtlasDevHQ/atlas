@@ -98,8 +98,28 @@ function setWorkspaceAdmin(orgId = "org-1"): void {
   });
 }
 
-/** Set auth to a platform admin (no org boundary). */
-function setPlatformAdmin(): void {
+/** Set auth to a workspace owner in `orgId` (effectiveRole = owner). */
+function setWorkspaceOwner(orgId = "org-1"): void {
+  mocks.mockAuthenticateRequest.mockResolvedValue({
+    authenticated: true,
+    mode: "managed",
+    user: {
+      id: "owner-1",
+      mode: "managed",
+      label: "Owner",
+      role: "owner",
+      activeOrganizationId: orgId,
+      claims: { twoFactorEnabled: true },
+    },
+  });
+}
+
+/**
+ * Set auth to a platform admin. `orgId` is optional: ban/unban/delete are
+ * cross-tenant (no org needed), but role changes write `member.role` and so
+ * require an active workspace (#2890) — pass an org for those.
+ */
+function setPlatformAdmin(orgId?: string): void {
   mocks.mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
@@ -108,6 +128,7 @@ function setPlatformAdmin(): void {
       mode: "managed",
       label: "Platform Admin",
       role: "platform_admin",
+      ...(orgId ? { activeOrganizationId: orgId } : {}),
       claims: { twoFactorEnabled: true },
     },
   });
@@ -117,10 +138,18 @@ function setPlatformAdmin(): void {
  * Configure mockInternalQuery to return membership results.
  * When the member lookup query is called for `allowedUserId` in org, it returns a row.
  * All other member lookups return empty (user not in org).
+ *
+ * Covers the three member-table queries `changeUserRole` issues: the
+ * `verifyOrgMembership` SELECT and the previous-role SELECT (userId is $1),
+ * and the role-write `UPDATE member ... RETURNING "userId"` (userId is $2).
  */
 function mockMembershipFor(allowedUserId: string): void {
   mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
-    // Match the verifyOrgMembership query
+    // changeUserRole's member-role write: UPDATE member SET role=$1 WHERE userId=$2 ...
+    if (/UPDATE\s+member/i.test(sql)) {
+      return params?.[1] === allowedUserId ? [{ userId: allowedUserId }] : [];
+    }
+    // Match the verifyOrgMembership / previous-role SELECTs (userId is $1)
     if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
       const targetId = params?.[0];
       if (targetId === allowedUserId) {
@@ -131,6 +160,13 @@ function mockMembershipFor(allowedUserId: string): void {
     // Default: return empty for any other query (IP allowlist, admin count, etc.)
     return [];
   });
+}
+
+/** Calls to mockInternalQuery that performed a member-role UPDATE. */
+function memberRoleUpdateCount(): number {
+  return mocks.mockInternalQuery.mock.calls.filter(
+    (call) => typeof call[0] === "string" && /UPDATE\s+member/i.test(call[0]),
+  ).length;
 }
 
 // --- Tests ---
@@ -160,7 +196,7 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(404);
       const body = await res.json() as { error: string };
       expect(body.error).toBe("not_found");
-      expect(mockSetRole).not.toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBe(0);
     });
 
     it("allows role change when target user is in caller's org", async () => {
@@ -171,17 +207,33 @@ describe("Org-scoped user write operations (#983)", () => {
         adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "member" }),
       );
       expect(res.status).toBe(200);
-      expect(mockSetRole).toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
     });
 
-    it("platform admin can change role for any user regardless of org", async () => {
-      setPlatformAdmin();
+    it("platform admin can change role for a user in their active workspace", async () => {
+      // #2890: role changes write member.role, so even a platform admin acts
+      // within an active workspace (verifyOrgMembership still bypasses the
+      // membership check, but the write is org-scoped).
+      setPlatformAdmin("org-1");
+      mockMembershipFor("user-in-any-org");
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
       );
       expect(res.status).toBe(200);
-      expect(mockSetRole).toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("requires an active workspace — platform admin with no active org gets 400", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
+      );
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("invalid_request");
+      expect(memberRoleUpdateCount()).toBe(0);
     });
 
     // Regression test for F-10 (#1752): workspace admin cannot escalate an org
@@ -199,20 +251,22 @@ describe("Org-scoped user write operations (#983)", () => {
       const body = await res.json() as { error: string; message: string };
       expect(body.error).toBe("invalid_request");
       expect(body.message).toMatch(/platform_admin/);
-      expect(mockSetRole).not.toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBe(0);
     });
 
     it("rejects platform_admin even when caller is already platform admin (must use platform endpoint)", async () => {
-      setPlatformAdmin();
+      setPlatformAdmin("org-1");
+      mockMembershipFor("user-in-any-org");
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "platform_admin" }),
       );
       expect(res.status).toBe(400);
-      expect(mockSetRole).not.toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBe(0);
     });
 
-    for (const role of ["member", "admin", "owner"] as const) {
+    // A workspace admin may assign member/admin, but NOT owner (rank guard).
+    for (const role of ["member", "admin"] as const) {
       it(`accepts org role "${role}"`, async () => {
         setWorkspaceAdmin("org-1");
         mockMembershipFor("user-in-org-1");
@@ -221,9 +275,96 @@ describe("Org-scoped user write operations (#983)", () => {
           adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role }),
         );
         expect(res.status).toBe(200);
-        expect(mockSetRole).toHaveBeenCalled();
+        expect(memberRoleUpdateCount()).toBeGreaterThan(0);
       });
     }
+
+    // Rank guard (#2890): the direct member.role write must re-assert the org
+    // plugin's rule that only an owner can grant/modify the owner role.
+    it("workspace admin cannot assign the owner role (rank guard)", async () => {
+      setWorkspaceAdmin("org-1");
+      mockMembershipFor("user-in-org-1");
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "owner" }),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { message: string };
+      expect(body.message).toMatch(/owner/);
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("workspace owner can assign the owner role", async () => {
+      setWorkspaceOwner("org-1");
+      mockMembershipFor("user-in-org-1");
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "owner" }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("workspace admin cannot change an existing owner's role (rank guard)", async () => {
+      setWorkspaceAdmin("org-1");
+      // previousRole resolves to 'owner' for the target.
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) return [{ userId: "user-in-org-1" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-in-org-1", role: "owner" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "admin" }),
+      );
+      expect(res.status).toBe(403);
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    // Last-admin guard (#2890): demoting the workspace's final owner/admin to
+    // member is refused; a co-admin remaining allows it.
+    it("refuses to demote the last admin/owner of the workspace", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) return [{ userId: "user-in-org-1" }];
+        if (s.includes("count(*)")) return [{ count: "1" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-in-org-1", role: "admin" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "member" }),
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json() as { message: string };
+      expect(body.message).toMatch(/last admin/);
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("allows demoting an admin when another admin/owner remains", async () => {
+      setWorkspaceAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) return [{ userId: "user-in-org-1" }];
+        if (s.includes("count(*)")) return [{ count: "2" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-in-org-1", role: "admin" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: "member" }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
 
     // Case-sensitivity and off-tuple fuzz — z.enum is case-sensitive, so any
     // casing other than the literal tuple members is rejected. If someone
@@ -238,7 +379,7 @@ describe("Org-scoped user write operations (#983)", () => {
           adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", { role: badRole }),
         );
         expect(res.status).toBe(400);
-        expect(mockSetRole).not.toHaveBeenCalled();
+        expect(memberRoleUpdateCount()).toBe(0);
       });
     }
 
@@ -251,7 +392,7 @@ describe("Org-scoped user write operations (#983)", () => {
           adminRequest("PATCH", "/api/v1/admin/users/user-in-org-1/role", badPayload),
         );
         expect(res.status).toBe(400);
-        expect(mockSetRole).not.toHaveBeenCalled();
+        expect(memberRoleUpdateCount()).toBe(0);
       });
     }
   });
@@ -423,29 +564,18 @@ describe("Org-scoped user write operations (#983)", () => {
     });
   });
 
-  describe("DELETE /api/v1/admin/users/:id", () => {
-    it("returns 404 when target user is not in caller's org", async () => {
-      setWorkspaceAdmin("org-1");
-      mockMembershipFor("user-in-org-1");
-
-      const res = await app.fetch(
-        adminRequest("DELETE", "/api/v1/admin/users/user-in-org-2"),
-      );
-      expect(res.status).toBe(404);
-      const body = await res.json() as { error: string };
-      expect(body.error).toBe("not_found");
-      expect(mockRemoveUser).not.toHaveBeenCalled();
-    });
-
-    it("allows delete when target user is in caller's org", async () => {
+  describe("DELETE /api/v1/admin/users/:id (F-14/#2890: platform_admin only)", () => {
+    it("returns 403 for a workspace admin — global account delete is platform-only", async () => {
       setWorkspaceAdmin("org-1");
       mockMembershipFor("user-in-org-1");
 
       const res = await app.fetch(
         adminRequest("DELETE", "/api/v1/admin/users/user-in-org-1"),
       );
-      expect(res.status).toBe(200);
-      expect(mockRemoveUser).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("forbidden");
+      expect(mockRemoveUser).not.toHaveBeenCalled();
     });
 
     it("platform admin can delete any user", async () => {
@@ -457,31 +587,40 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
       expect(mockRemoveUser).toHaveBeenCalled();
     });
-  });
 
-  describe("POST /api/v1/admin/users/:id/revoke", () => {
-    it("returns 404 when target user is not in caller's org", async () => {
-      setWorkspaceAdmin("org-1");
-      mockMembershipFor("user-in-org-1");
+    it("blocks deleting the last admin/owner of the platform admin's active workspace", async () => {
+      setPlatformAdmin("org-1");
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (s.includes("count(*)")) return [{ count: "1" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-x", role: "owner" }];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/users/user-in-org-2/revoke"),
+        adminRequest("DELETE", "/api/v1/admin/users/user-x"),
       );
-      expect(res.status).toBe(404);
-      const body = await res.json() as { error: string };
-      expect(body.error).toBe("not_found");
-      expect(mockRevokeSessions).not.toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const body = await res.json() as { message: string };
+      expect(body.message).toMatch(/last admin/);
+      expect(mockRemoveUser).not.toHaveBeenCalled();
     });
+  });
 
-    it("allows session revocation when target user is in caller's org", async () => {
+  describe("POST /api/v1/admin/users/:id/revoke (F-14/#2890: platform_admin only)", () => {
+    it("returns 403 for a workspace admin — global session revoke is platform-only", async () => {
       setWorkspaceAdmin("org-1");
       mockMembershipFor("user-in-org-1");
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-org-1/revoke"),
       );
-      expect(res.status).toBe(200);
-      expect(mockRevokeSessions).toHaveBeenCalled();
+      expect(res.status).toBe(403);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("forbidden");
+      expect(mockRevokeSessions).not.toHaveBeenCalled();
     });
 
     it("platform admin can revoke sessions for any user", async () => {
@@ -520,9 +659,11 @@ describe("Org-scoped user write operations (#983)", () => {
     });
   });
 
-  describe("self-hosted (no org context)", () => {
-    it("allows role change without org scoping when no activeOrganizationId", async () => {
-      // Self-hosted: no org context
+  describe("no active org (per-org member.role model)", () => {
+    it("returns 400 when the caller has no active workspace (#2890)", async () => {
+      // #2890: role changes write member.role, which is per-org. A managed
+      // caller with no activeOrganizationId has no member row to target, so
+      // the endpoint rejects rather than writing a global user.role.
       mocks.mockAuthenticateRequest.mockResolvedValue({
         authenticated: true,
         mode: "managed",
@@ -532,8 +673,10 @@ describe("Org-scoped user write operations (#983)", () => {
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/any-user/role", { role: "member" }),
       );
-      expect(res.status).toBe(200);
-      expect(mockSetRole).toHaveBeenCalled();
+      expect(res.status).toBe(400);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("invalid_request");
+      expect(memberRoleUpdateCount()).toBe(0);
     });
   });
 
@@ -552,20 +695,20 @@ describe("Org-scoped user write operations (#983)", () => {
       );
       // Should fail closed — 500, not 200
       expect(res.status).toBe(500);
-      expect(mockSetRole).not.toHaveBeenCalled();
+      expect(memberRoleUpdateCount()).toBe(0);
     });
   });
 
-  describe("hasInternalDB = false bypass", () => {
-    it("bypasses membership check when no internal DB is available", async () => {
+  describe("hasInternalDB = false", () => {
+    it("returns 404 when no internal DB is available — member.role write needs it (#2890)", async () => {
       setWorkspaceAdmin("org-1");
       mocks.hasInternalDB = false;
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/any-user/role", { role: "member" }),
       );
-      expect(res.status).toBe(200);
-      expect(mockSetRole).toHaveBeenCalled();
+      expect(res.status).toBe(404);
+      expect(memberRoleUpdateCount()).toBe(0);
     });
   });
 });

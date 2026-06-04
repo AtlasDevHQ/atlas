@@ -13,11 +13,19 @@
  * Per-Workspace credential note: there isn't one. The bot's auth lives
  * with the operator (`TELEGRAM_BOT_TOKEN`). The catalog `chat_id` is a
  * routing identifier, not a secret — Telegram leaks it in `from.id` /
- * `chat.id` of every message envelope. This handler writes
- * `workspace_plugins.config` directly via `internalQuery` (mirroring
- * `slack-oauth-handler.ts`), so `encryptSecretFields` is not in the
- * write path at all; the absence of `secret: true` on the catalog row
- * is consistent but not the load-bearing reason.
+ * `chat.id` of every message envelope. The `workspace_plugins.config`
+ * row is written by the chat-integration cap gate
+ * (`checkChatIntegrationLimitAndInstall`), which owns the advisory-locked
+ * UPSERT — so `encryptSecretFields` is not in the write path at all; the
+ * absence of `secret: true` on the catalog row is consistent but not the
+ * load-bearing reason.
+ *
+ * Cap gate (#3141): like Discord and Slack, the install UPSERT runs
+ * through `checkChatIntegrationLimitAndInstall` so an over-cap net-new
+ * install is refused with `ChatIntegrationLimitError` (→ 429) and a
+ * reconnect (re-auth of an already-installed workspace) is grandfathered.
+ * This replaced the keystone's original bare `internalQuery` UPSERT when
+ * Telegram joined the unified install path under umbrella #2994.
  *
  * Reachability verification: rather than sending a real test message
  * (which would spam the channel on every install attempt), we call the
@@ -36,10 +44,13 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  BillingCheckFailedError,
+  ChatIntegrationLimitError,
   TelegramApiUnavailableError,
   TelegramChatIdInvalidError,
   TelegramReachabilityError,
 } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -62,6 +73,43 @@ export const TELEGRAM_SLUG: CatalogId = "telegram";
  * this constant produces FK violations at first install.
  */
 export const TELEGRAM_CATALOG_ID = "catalog:telegram";
+
+/**
+ * Cross-workspace ownership guard (#3141 / Codex #3153). `getChat` proves the
+ * operator bot is a member of the chat, not that the installing workspace owns
+ * it — and chat_ids are non-secret (they leak in every message envelope). So
+ * reject a chat_id already bound to a *different* workspace before persisting.
+ * The `workspace_id <> $3` filter excludes the installing workspace, so a
+ * reconnect (same workspace re-binding its own chat) is never blocked.
+ * Read-only pre-check: it narrows the cross-tenant window but isn't
+ * transactionally fused with the cap gate's INSERT, so the simultaneous-race
+ * case remains — tracked, with the full ownership-proof flow, in #3154.
+ */
+async function assertChatIdUnboundElsewhere(
+  chatId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'chat_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [TELEGRAM_CATALOG_ID, chatId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "Telegram install rejected — chat_id already bound to a different workspace",
+    );
+    throw new TelegramChatIdInvalidError({
+      message:
+        "This Telegram chat is already connected to a different Atlas workspace. Each chat can be linked to only one workspace — disconnect it there first, or contact your admin if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Telegram chat ids are 64-bit signed integers documented as ≤52
@@ -162,25 +210,39 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
     // so a failed verification never leaves a half-installed row behind.
     await this.verifyReachability(routingIdentifier);
 
-    // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
-    // Mirrors the email-form-handler pattern: candidate id on the
-    // INSERT side, RETURNING id so a CONFLICT lands on the existing
-    // row's id (idempotent re-install).
+    // ── 2b. Cross-workspace ownership guard (#3141 / Codex #3153) ────
+    // `getChat` proves the operator bot is a member of the chat, NOT that
+    // THIS workspace owns it — and chat_ids leak in every message envelope.
+    // Reject a chat_id already bound to a *different* workspace so a member
+    // of the chat can't bind it to their own workspace and intercept the
+    // chat's messages (a reconnect by the same workspace is excluded by the
+    // `workspace_id <> $3` filter). This narrows the cross-tenant window; the
+    // residual (two workspaces racing a never-before-bound id) is tracked,
+    // with the full ownership-proof flow, in #3154.
+    await assertChatIdUnboundElsewhere(routingIdentifier, workspaceId);
+
+    // ── 3. Plan cap + install row — atomic (#3141, #3001) ──────────
+    // Enforce the chat-integration cap and persist the workspace_plugins row
+    // in ONE transaction guarded by a per-workspace advisory lock, so two
+    // *distinct* net-new platforms installing concurrently can't both slip
+    // past the cap. Reconnecting Telegram (already installed) is never blocked
+    // — the gate excludes Telegram's own row from the count, and the UPSERT
+    // collapses the duplicate. Identical schema + UPSERT shape to
+    // discord-static-bot-handler.ts (see there for the full rationale on the
+    // NOT NULL columns from 0092/0096 and the singleton-index conflict target).
     const candidateId = this.newId();
     const configPayload: TelegramInstallConfig = {
       chat_id: routingIdentifier,
       ...extractDisplayName(extras, workspaceId),
     };
 
-    let persistedId: string;
+    let capCheck;
     try {
-      // Schema: `pillar` + `install_id` became NOT NULL in 0092 (#2739)
-      // and the auto-fill trigger was dropped in 0096 (#2744). The
-      // ON CONFLICT inference targets the `workspace_plugins_singleton`
-      // partial unique index. See discord-static-bot-handler.ts for the
-      // full rationale — identical schema, identical UPSERT shape.
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
+        workspaceId,
+        TELEGRAM_CATALOG_ID,
+        {
+          sql: `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
@@ -188,21 +250,9 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,
-        [candidateId, workspaceId, TELEGRAM_CATALOG_ID, JSON.stringify(configPayload)],
+          params: [candidateId, workspaceId, TELEGRAM_CATALOG_ID, JSON.stringify(configPayload)],
+        },
       );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
-        // returns the row on both insert and update. Empty here means a
-        // driver / wrapper regression — fail loudly rather than ship a
-        // stale id back to the user (on re-install the DB row has the
-        // existing id; falling back to the fresh candidateId would
-        // strand subsequent lookups).
-        throw new Error(
-          `workspace_plugins UPSERT returned no id for Telegram install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-        );
-      }
-      persistedId = returned;
     } catch (err) {
       log.error(
         {
@@ -213,6 +263,42 @@ export class TelegramStaticBotInstallHandler implements StaticBotInstallHandler 
       );
       throw err;
     }
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Count couldn't be determined — fail closed, but as a transient
+        // 503 "try again", not a misleading 429 "upgrade your plan".
+        log.error(
+          { workspaceId },
+          "Telegram install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "Telegram install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
+      // the row on both insert and update. Empty here means a driver /
+      // wrapper regression — fail loudly rather than ship a stale id back (on
+      // re-install the DB row has the existing id; falling back to the fresh
+      // candidateId would strand subsequent lookups).
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for Telegram install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
+      );
+    }
+    const persistedId: string = returned;
 
     log.info(
       {

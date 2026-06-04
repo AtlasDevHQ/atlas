@@ -16,10 +16,18 @@
  * Per-Workspace credential note: there isn't one. WhatsApp Cloud API
  * auth is keyed on the operator's System User access token; phone-number
  * IDs are routing identifiers Meta leaks in every webhook envelope's
- * `value.metadata.phone_number_id`. This handler writes
- * `workspace_plugins.config` directly via `internalQuery` (mirroring
- * `teams-static-bot-handler.ts`), so `encryptSecretFields` is not in
- * the write path at all.
+ * `value.metadata.phone_number_id`. The `workspace_plugins.config` row
+ * is written by the chat-integration cap gate
+ * (`checkChatIntegrationLimitAndInstall`, mirroring the Telegram /
+ * Discord handlers), which owns the advisory-locked UPSERT, so
+ * `encryptSecretFields` is not in the write path at all.
+ *
+ * Cap gate (#3144): like Telegram, Discord, and Slack, the install UPSERT
+ * runs through `checkChatIntegrationLimitAndInstall` so an over-cap
+ * net-new install is refused with `ChatIntegrationLimitError` (→ 429) and
+ * a reconnect is grandfathered. This replaced the original bare
+ * `internalQuery` UPSERT when WhatsApp joined the unified install path
+ * under umbrella #2994.
  *
  * Reachability verification: we call Meta Graph API
  * `GET /v21.0/{phone_number_id}` with `Authorization: Bearer <token>`.
@@ -57,10 +65,13 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import {
+  BillingCheckFailedError,
+  ChatIntegrationLimitError,
   WhatsAppApiUnavailableError,
   WhatsAppPhoneNumberIdInvalidError,
   WhatsAppReachabilityError,
 } from "@atlas/api/lib/effect/errors";
+import { checkChatIntegrationLimitAndInstall } from "@atlas/api/lib/billing/enforcement";
 import type { WorkspaceId } from "@useatlas/types";
 import type {
   CatalogId,
@@ -80,6 +91,44 @@ export const WHATSAPP_SLUG: CatalogId = "whatsapp";
  * the seeder rename rule.
  */
 export const WHATSAPP_CATALOG_ID = "catalog:whatsapp";
+
+/**
+ * Cross-workspace ownership guard (#3144 / Codex #3153). Reachability proves
+ * the phone_number_id is in the operator's WhatsApp Business Account, not that
+ * the installing workspace controls it — so reject an id already bound to a
+ * *different* workspace before persisting. The `workspace_id <> $3` filter
+ * excludes the installing workspace, so a reconnect (same workspace re-binding
+ * its own id) is never blocked. Read-only pre-check: it narrows the
+ * cross-tenant window but isn't transactionally fused with the cap gate's
+ * INSERT, so the simultaneous-race case (two workspaces binding a
+ * never-before-seen id at once) remains — tracked, with the full
+ * ownership-proof flow, in #3154.
+ */
+async function assertPhoneNumberUnboundElsewhere(
+  phoneNumberId: string,
+  workspaceId: WorkspaceId,
+): Promise<void> {
+  const rows = await internalQuery<{ workspace_id: string }>(
+    `SELECT workspace_id
+       FROM workspace_plugins
+      WHERE catalog_id = $1
+        AND enabled = true
+        AND config->>'phone_number_id' = $2
+        AND workspace_id <> $3
+      LIMIT 1`,
+    [WHATSAPP_CATALOG_ID, phoneNumberId, workspaceId],
+  );
+  if (rows.length > 0) {
+    log.warn(
+      { workspaceId, conflictingWorkspaceId: rows[0]?.workspace_id },
+      "WhatsApp install rejected — phone_number_id already bound to a different workspace",
+    );
+    throw new WhatsAppPhoneNumberIdInvalidError({
+      message:
+        "This WhatsApp number is already connected to a different Atlas workspace. Each phone number can be linked to only one workspace — disconnect it there first, or contact your operator if you believe this is an error.",
+    });
+  }
+}
 
 /**
  * Meta Graph API version used for the phone-number lookup. Pinned rather
@@ -295,6 +344,18 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
     // omitting the label entirely.
     const apiFallback = await this.verifyReachability(routingIdentifier);
 
+    // ── 2b. Cross-workspace ownership guard (#3144 / Codex #3153) ────
+    // The operator's Meta token can read any phone_number_id shared into
+    // its WhatsApp Business Account, so reachability proves the number is
+    // in the operator's account — NOT that THIS workspace controls it.
+    // Reject a phone_number_id already bound to a *different* workspace so
+    // one customer can't claim another's number and intercept its inbound
+    // messages (a reconnect by the same workspace is excluded by the
+    // `workspace_id <> $3` filter). This narrows the cross-tenant window;
+    // the residual (two workspaces racing a never-before-bound id, and the
+    // full operator-approval/ownership-proof flow) is tracked in #3154.
+    await assertPhoneNumberUnboundElsewhere(routingIdentifier, workspaceId);
+
     // ── 3. Persist install row — UPSERT keyed on (workspace, catalog) ─
     // Mirrors the email-form-handler / discord-static-bot-handler /
     // teams-static-bot-handler pattern: candidate id on INSERT,
@@ -306,7 +367,7 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
       ...extractDisplayPhone(extras, apiFallback, workspaceId),
     };
 
-    let persistedId: string;
+    let capCheck;
     try {
       // Schema notes:
       //   - `pillar` + `install_id` became NOT NULL in migration 0092
@@ -322,8 +383,15 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
       //     catalog), so `install_id` mirrors `id` — WorkspaceInstaller's
       //     datasource path uses a caller-supplied installId; static-bot
       //     chat installs don't have that surface, so we reuse the row id.
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
+      //   - The cap gate (#3144) wraps the UPSERT in a per-workspace
+      //     advisory-locked transaction so concurrent net-new installs
+      //     can't both slip past the chat-integration cap; reconnect is
+      //     grandfathered inside the gate.
+      capCheck = await checkChatIntegrationLimitAndInstall<{ id: string }>(
+        workspaceId,
+        WHATSAPP_CATALOG_ID,
+        {
+          sql: `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
          VALUES ($1, $2, $3, $1, 'chat', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
@@ -331,22 +399,9 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
            SET config = EXCLUDED.config,
                enabled = true
          RETURNING id`,
-        [candidateId, workspaceId, WHATSAPP_CATALOG_ID, JSON.stringify(configPayload)],
+          params: [candidateId, workspaceId, WHATSAPP_CATALOG_ID, JSON.stringify(configPayload)],
+        },
       );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING`
-        // returns the row on both insert and update. Empty here means
-        // a driver / wrapper regression — fail loudly rather than ship
-        // a stale id back to the user (on re-install the DB row has
-        // the existing id; falling back to the fresh candidateId would
-        // strand subsequent lookups). #2807 cemented this no-fallback
-        // posture across the static-bot family.
-        throw new Error(
-          `workspace_plugins UPSERT returned no id for WhatsApp install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
-        );
-      }
-      persistedId = returned;
     } catch (err) {
       log.error(
         {
@@ -357,6 +412,43 @@ export class WhatsAppStaticBotInstallHandler implements StaticBotInstallHandler 
       );
       throw err;
     }
+    if (!capCheck.allowed) {
+      if (capCheck.reason === "check_failed") {
+        // Count couldn't be determined — fail closed, but as a transient
+        // 503 "try again", not a misleading 429 "upgrade your plan".
+        log.error(
+          { workspaceId },
+          "WhatsApp install blocked — chat-integration count check failed (failing closed)",
+        );
+        throw new BillingCheckFailedError({
+          message: capCheck.errorMessage,
+          workspaceId,
+        });
+      }
+      log.info(
+        { workspaceId, limit: capCheck.limit },
+        "WhatsApp install blocked — workspace at chat-integration cap",
+      );
+      throw new ChatIntegrationLimitError({
+        message: capCheck.errorMessage,
+        workspaceId,
+        limit: capCheck.limit,
+      });
+    }
+
+    const returned = capCheck.rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // Postgres ≥9.5 guarantees `INSERT … ON CONFLICT … RETURNING` returns
+      // the row on both insert and update. Empty here means a driver /
+      // wrapper regression — fail loudly rather than ship a stale id back (on
+      // re-install the DB row has the existing id; falling back to the fresh
+      // candidateId would strand subsequent lookups). #2807 cemented this
+      // no-fallback posture across the static-bot family.
+      throw new Error(
+        `workspace_plugins UPSERT returned no id for WhatsApp install (workspaceId=${workspaceId}). RETURNING must always populate on PG ≥9.5; this indicates a driver regression. Aborting install.`,
+      );
+    }
+    const persistedId: string = returned;
 
     log.info(
       {

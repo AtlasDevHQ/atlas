@@ -45,7 +45,7 @@ import type { InvitationStatus } from "better-auth/plugins/organization";
 // at compile time via the `OrgErrorCode` union below.
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
-import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
+import { adminAccessControl, platformAdminRole } from "./admin-permissions";
 import type { AuthApiResult, Passkey, PasskeySignIn } from "./wire-types";
 
 function getBaseURL(): string {
@@ -65,9 +65,10 @@ const _authClient = createAuthClient({
   plugins: [
     apiKeyClient(),
     adminClient({
+      // Mirrors the server admin plugin (#2890): `platform_admin` is the
+      // only admin-plugin user.role. Tenant admins use the org plugin below.
       ac: adminAccessControl,
       roles: {
-        admin: adminRole,
         platform_admin: platformAdminRole,
       },
     }),

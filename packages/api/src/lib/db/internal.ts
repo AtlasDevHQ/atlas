@@ -879,6 +879,8 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds last_active_at column to Better Auth's "organization" table for
   // BYOT-catalog dormancy gating (#2377).
   "0115_org_last_active_at.sql",
+  // Backfills "member" + clears Better Auth's "user".role = 'admin' (#2890).
+  "0118_drop_user_admin_role.sql",
 ];
 
 /**

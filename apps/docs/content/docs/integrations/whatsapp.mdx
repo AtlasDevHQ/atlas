@@ -33,17 +33,6 @@ fresh OAuth dance.
   of the connect CTA.
 </Callout>
 
-<Callout type="warn" title="Per-workspace install not available yet">
-The per-workspace install flow described below is **not currently available**
-in the Atlas admin UI. Its legacy connect route was removed in
-[#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) because it bypassed the
-chat-integration cap and produced a non-routable install. The cap-gated
-static-bot install (routing-identifier capture, like Discord) is tracked in
-[#3144](https://github.com/AtlasDevHQ/atlas/issues/3144); until it ships the
-WhatsApp card shows **"Coming soon."** The operator setup below remains valid
-groundwork.
-</Callout>
-
 ## Operator setup (one-time, per deploy)
 
 These steps wire your deploy to a Meta Business / WhatsApp Business

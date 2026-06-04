@@ -7,8 +7,13 @@ request handlers *inside the same container*. Better Auth-owned tables follow
 the `MANAGED_AUTH_MIGRATIONS` ordering in `db/internal.ts`.
 
 Companion one-shot backfill scripts live in [`scripts/`](./scripts/README.md).
-Every `CREATE TABLE`/`ALTER TABLE` must be mirrored in `db/schema.ts` in the
-same PR — `scripts/check-schema-drift.sh` (in `/ci`) fails otherwise.
+Every schema change must be mirrored in `db/schema.ts` in the same PR. Note the
+guard's reach: `scripts/check-schema-drift.sh` (in `/ci`) only checks that each
+`CREATE TABLE` has a matching `pgTable` (table-level existence) and that dropped
+tables are removed from `schema.ts`. It does **not** inspect `ALTER TABLE` —
+added/changed columns, types, constraints, and indexes are **not** caught, so an
+unmirrored `ALTER TABLE` passes `/ci` green and a later `drizzle-kit generate`
+can then emit a migration that reverts it. Mirror column-level changes by hand.
 
 ## Two-phase drop discipline (expand–contract)
 
@@ -61,11 +66,14 @@ stays green (the same reason `mcp_tokens`, dropped by 0047, is excluded).
 ### Motivating examples
 
 - **`0119_drop_legacy_credential_tables.sql`** — `DROP TABLE ... CASCADE` of the
-  four legacy static-bot install tables. Safe **only** because the read paths
-  were removed earlier in the same release train (#3154): the inbound resolvers
-  already read exclusively from `workspace_plugins`. Had an N-1 pod still read
-  `teams_installations` during overlap, it would have 500'd. This is the
-  borderline case the rule is meant to make deliberate rather than incidental.
+  four legacy static-bot install tables, in the **same release** that removed
+  their readers (#3154). This is exactly the pattern the rule discourages:
+  although the inbound resolvers had already moved to `workspace_plugins`, a
+  draining N-1 pod still runs the *old* readers during overlap and would 500 on
+  `teams_installations`. Moving the readers was necessary but **not** sufficient —
+  it was acceptable only under the pre-launch exception below (no real overlap
+  traffic), and the migration header flags it as a deliberate exception. Once a
+  customer is live, this same drop would have needed the two-phase split.
 - **`0118_drop_user_admin_role.sql`** — unbounded `UPDATE member/user` scans plus
   the column retirement. A no-op on current data, but the advisory-lock hold
   grows with table size, so at scale the migration itself becomes the stall — a

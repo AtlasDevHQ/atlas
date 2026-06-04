@@ -130,8 +130,10 @@ workspace's admins:
 
 - **All admins have MFA** — how many **admin/owner** members have a second factor
   (an authenticator app *or* a passkey). Green at 100%, amber when partial
-  (the tile reads *"3 of 5 admins enrolled"*), red when none are enrolled, and
-  muted when the workspace has no co-admins yet.
+  (the tile reads *"3 of 5 admins enrolled"*), red when none are enrolled. The
+  count includes the owner, so a normal workspace shows green/amber/red; the
+  muted *"No admins yet"* state appears only in the edge case of zero
+  admin/owner members.
 - **Backup codes available** — a proxy tile: enrolling TOTP means Better Auth
   issued backup codes, so this reflects authenticator-app coverage rather than
   a per-user code count.

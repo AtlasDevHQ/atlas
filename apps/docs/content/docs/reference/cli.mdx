@@ -871,8 +871,8 @@ bun run atlas -- ops smoke-crm --personas <path> [--wipe-twenty] \
 | `--timeout-seconds <n>` | `60` | How long to poll `crm_outbox` for all enqueued rows to reach `done`/`dead` before failing. |
 | `--database-url <url>` | `ATLAS_TEAM_PG_URL` / `DATABASE_URL` | Explicit tenant-DB URL (same resolution as `ops wipe`). |
 
-<Callout type="warn" title="Destructive when --wipe-twenty is set">
-`--wipe-twenty` deletes data in the target Twenty workspace. It is gated by `ATLAS_SMOKE_WIPE_OK=1` exactly as `ops wipe` is gated by `ATLAS_WIPE_OK=1`. A smoke run without `--wipe-twenty` skips the wipe phase entirely and is non-destructive.
+<Callout type="warn" title="Every run writes to Twenty; --wipe-twenty also deletes">
+A smoke run is **never read-only**: it enqueues the fixture personas and the flusher creates/updates Persons + Notes in the target Twenty workspace, leaving fixture records behind. Point it at a staging/test Twenty workspace, **never production**. `--wipe-twenty` additionally **deletes** workspace data before the run and is gated by `ATLAS_SMOKE_WIPE_OK=1` exactly as `ops wipe` is gated by `ATLAS_WIPE_OK=1`; omitting it only skips that *delete* phase — it does not make the run non-mutating.
 </Callout>
 
 **Exit codes:** `0` = clean (observed matches expected); `1` = argument/fixture parse error; `2` = outbox drain timed out; `3` = diff dirty (dispatcher misbehaved or Twenty unreachable); `4` = wipe phase failed; `5` = infrastructure failure (tenant DB unreachable, enqueue insert failed, or poll query errored).

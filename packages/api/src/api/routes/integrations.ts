@@ -137,6 +137,33 @@ const INLINE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set([
 const DEDICATED_TABLE_CREDENTIAL_SLUGS: ReadonlySet<string> = new Set(["twenty"]);
 
 /**
+ * Static-bot chat slugs whose install is a single `workspace_plugins` row
+ * (routing identifier in `config`, operator-shared bot credentials in env —
+ * NO per-workspace credential store). Their disconnect teardown is therefore
+ * identical to {@link INLINE_CREDENTIAL_SLUGS}: the `workspace_plugins` DELETE
+ * that `WorkspaceInstaller.uninstall` already runs IS the teardown
+ * (`deleteCredentialStoreForSlug` is a no-op for these slugs). Admitting them
+ * to the disconnect gate is what lets the unified admin card's
+ * `DELETE /api/v1/integrations/:slug` succeed instead of returning the
+ * pre-cutover 501 `disconnect_unavailable` envelope (#3154 GAP 1).
+ *
+ * Discord is a member even though it ALSO has a `discord_installations` table:
+ * that table backs only the self-hosted BYOT bot-token path (disconnected via
+ * the legacy `DELETE /api/v1/admin/integrations/discord`). A static-bot Discord
+ * install writes solely to `workspace_plugins`, so the same no-op teardown is
+ * correct here; the card routes a BYOT-only Discord install through the legacy
+ * endpoint via its `LEGACY_DISCONNECT_SLUGS` membership instead. See
+ * #3154 / #3161.
+ */
+const STATIC_BOT_CHAT_SLUGS: ReadonlySet<string> = new Set([
+  "telegram",
+  "discord",
+  "gchat",
+  "whatsapp",
+  "teams",
+]);
+
+/**
  * OpenAPI schema for the 403 {@link PlanUpgradeRequiredBody}. Pins the
  * wire shape — both plan fields are PlanTier (the same union used
  * everywhere else) — and the `z.ZodType<PlanUpgradeRequiredBody>`
@@ -1610,18 +1637,28 @@ integrations.openapi(disconnectRoute, async (c) =>
     // The facade's `uninstall` is general but the route layer keeps
     // the "is this platform supported by this deploy" gate so the
     // pre-cutover 501 envelope (for non-wired chat/action platforms)
-    // stays stable. Three slug classes are wired:
+    // stays stable. Four slug classes are wired:
     //   - `slack` → chat_cache two-store teardown
     //   - `INTEGRATION_CREDENTIALS_SLUGS` (salesforce / jira / linear)
     //     → integration_credentials teardown
     //   - `INLINE_CREDENTIAL_SLUGS` (github / github-single-tenant /
     //     github-pat) → no separate credential store; the
     //     workspace_plugins DELETE is the credential teardown
+    //   - `STATIC_BOT_CHAT_SLUGS` (telegram / discord / gchat / whatsapp /
+    //     teams) → same no-op teardown as the inline class; the
+    //     workspace_plugins DELETE is the teardown (#3154 GAP 1)
     const isSlack = platform === "slack";
     const isIntegrationCredentials = INTEGRATION_CREDENTIALS_SLUGS.has(platform);
     const isInlineCredential = INLINE_CREDENTIAL_SLUGS.has(platform);
     const isDedicatedTable = DEDICATED_TABLE_CREDENTIAL_SLUGS.has(platform);
-    if (!isSlack && !isIntegrationCredentials && !isInlineCredential && !isDedicatedTable) {
+    const isStaticBotChat = STATIC_BOT_CHAT_SLUGS.has(platform);
+    if (
+      !isSlack &&
+      !isIntegrationCredentials &&
+      !isInlineCredential &&
+      !isDedicatedTable &&
+      !isStaticBotChat
+    ) {
       // Cheap pre-check: catalog lookup so the 404 still fires before
       // the 501. Otherwise an attacker probing unknown slugs would
       // learn whether the slug exists (501 vs 404).

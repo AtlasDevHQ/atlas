@@ -120,6 +120,31 @@ in one step and routes straight to the workspace. See
 [Passkeys → Signing In With a Passkey](./passkeys#signing-in-with-a-passkey)
 for the login-page surface.
 
+## Tracking Adoption (Admin Console)
+
+You don't have to write SQL to see whether your co-admins have actually
+enrolled. The **My Security** page (**Admin → My Security**,
+`/admin/account-security`) opens with a **Security posture** panel — three
+traffic-light tiles that aggregate MFA and trust-device adoption across the
+workspace's admins:
+
+- **MFA enrollment** — how many **admin/owner** members have a second factor
+  (an authenticator app *or* a passkey). Green at 100%, amber when partial
+  (e.g. *"3 of 5 admins enrolled"*), red when none are enrolled, and muted
+  when the workspace has no co-admins yet.
+- **Backup codes available** — a proxy tile: enrolling TOTP means Better Auth
+  issued backup codes, so this reflects authenticator-app coverage rather than
+  a per-user code count.
+- **Trust-device adoption** — informational; counts the active *Trust this
+  device for 30 days* grants held by admin/owner members.
+
+The panel is **read-only** and scoped to your active workspace. It counts
+admin-role members only — admin/owner accounts are the API-gated, highest-value
+logins (see [Scope](#scope)). It is backed by
+`GET /api/v1/admin/security/metrics` and requires the internal database, so it
+is unavailable in datasource-only deployments. Cross-workspace operators get a
+fleet-wide roll-up of the same enrollment metrics at `/platform/security`.
+
 ## Operator Reference
 
 ### What's stored

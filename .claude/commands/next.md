@@ -46,7 +46,7 @@ This prevents findings from being lost between sessions.
 
 **Step 4: Output session prompts**
 
-The user runs up to 3 Claude Code sessions in parallel — each in its own **git worktree**. The orchestrator creates the worktree + branch and removes it after merge; the prompts you emit run *inside* those worktrees. So every prompt must be worktree-safe: never instruct a session to `/reset`, `git checkout main`, or otherwise switch/reset branches (a worktree agent that does so breaks the run). Bake the **Worktree isolation** block below into every emitted prompt.
+The user runs up to 3 Claude Code sessions in parallel, **all sharing this one working tree** (same `.git`, same HEAD and index). There is **no orchestrator that pre-creates a worktree** — so each emitted prompt MUST instruct its session to **create its own `git worktree` before touching anything**. Committing on the shared checkout collides with the other sessions: a commit can land on another session's branch, and `git add -A` / `commit -a` can stage their files. So every prompt must (1) start by creating a private worktree off the latest `main`, and (2) never `/reset`, `git checkout main`, or switch/reset branches in the shared tree. Bake the **Worktree isolation** block below into every emitted prompt.
 
 **Independent prompts** — If tasks touch different files with no merge conflicts:
 ```
@@ -110,10 +110,14 @@ IMPORTANT — Docs impact:
 - Include docs updates in the same PR as the code change — don't leave them for a follow-up
 - If a code change has large docs impact (new feature page, restructured sections), note it in the PR description
 
-IMPORTANT — Worktree isolation (you are running in a dedicated git worktree):
-- Stay in your worktree on your own branch. Do NOT run `/reset`, `git checkout main`, or switch/reset branches. The orchestrator owns worktree + branch lifecycle and removes the worktree after merge — a worktree agent that checks out `main` breaks the run (git refuses to check out a branch already checked out elsewhere, or strands the worktree).
-- Commit only your explicit paths: `git commit -o <file1> <file2> -m ...`. NEVER `git add -A` / `git add .` / `git commit -a` — the index/HEAD can be shared with a parallel session.
-- After your PR merges, do nothing branch-wise (no reset, no checkout). The orchestrator removes the worktree; just report done.
+IMPORTANT — Worktree isolation (this repo is a SHARED working tree — you must CREATE YOUR OWN worktree FIRST):
+- You are NOT in a pre-made worktree. Other sessions share this exact checkout (same HEAD + index). Before making ANY change, create a dedicated worktree + branch off the latest main and do all work from there:
+    `git fetch origin && git worktree add -b <branch> ../atlas-wt-<slug> origin/main && cd ../atlas-wt-<slug>`
+    (`<slug>` = a slash-free short name; the branch name may contain slashes but the directory must not.)
+- Why: if you commit on the shared checkout, your commit can land on another session's branch (and `git add -A` can stage their files). A private worktree gives you an isolated HEAD + index.
+- Commit only your explicit paths: `git commit -o <file1> <file2> -m ...`. NEVER `git add -A` / `git add .` / `git commit -a`.
+- Do NOT run `/reset`, `git checkout main`, or switch/reset branches in the shared tree.
+- After your PR merges, remove your worktree (`git worktree remove ../atlas-wt-<slug>`) or leave it for the user; do nothing else branch-wise. Just report done.
 ]
 ```
 

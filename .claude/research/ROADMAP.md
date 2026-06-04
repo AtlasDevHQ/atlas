@@ -30,6 +30,12 @@ Banked since `v0.0.8`:
 
 - [x] KPI / scorecard cards ([#3137](https://github.com/AtlasDevHQ/atlas/issues/3137) → [#3149](https://github.com/AtlasDevHQ/atlas/pull/3149), milestone #60) — the #2267 slice-2 card type: a single-stat scorecard (value + label + optional comparison delta) driven by a saved query. First slice of the v0.0.9 milestone.
 
+- [x] Static-bot platforms enabled — the four [#2994](https://github.com/AtlasDevHQ/atlas/issues/2994) umbrella sub-issues land on the v0.0.8 spine: Telegram ([#3141](https://github.com/AtlasDevHQ/atlas/issues/3141) → [#3152](https://github.com/AtlasDevHQ/atlas/pull/3152)), Google Chat + WhatsApp ([#3143](https://github.com/AtlasDevHQ/atlas/issues/3143)/[#3144](https://github.com/AtlasDevHQ/atlas/issues/3144) → [#3153](https://github.com/AtlasDevHQ/atlas/pull/3153)), Teams ([#3142](https://github.com/AtlasDevHQ/atlas/issues/3142) → [#3156](https://github.com/AtlasDevHQ/atlas/pull/3156), with a runtime `executeQuery` branch), each cap-gated behind a cross-workspace routing-id ownership guard. Discord's residual uncapped OAuth bypass also retired ([#3145](https://github.com/AtlasDevHQ/atlas/issues/3145) → [#3160](https://github.com/AtlasDevHQ/atlas/pull/3160)); dead-store cleanup ([#3161](https://github.com/AtlasDevHQ/atlas/issues/3161)) + family-wide disconnect/auth hardening ([#3154](https://github.com/AtlasDevHQ/atlas/issues/3154)) remain open under #2994/#3145.
+
+- [x] Tenant admin role single-sourced ([#2890](https://github.com/AtlasDevHQ/atlas/issues/2890) → [#3155](https://github.com/AtlasDevHQ/atlas/pull/3155), arch-win #82) — drops the redundant `admin` value from `user.role` so `member.role` is the sole source of truth for tenant admins. Deferred follow-ups: last-admin TOCTOU [#3158](https://github.com/AtlasDevHQ/atlas/issues/3158), target-workspace resolution [#3157](https://github.com/AtlasDevHQ/atlas/issues/3157), admin-plugin removal eval [#3159](https://github.com/AtlasDevHQ/atlas/issues/3159).
+
+- [x] Deferred Group B majors landed — `fumadocs-mdx` and `syncpack` 14 → 15 ([#3132](https://github.com/AtlasDevHQ/atlas/issues/3132) → [#3150](https://github.com/AtlasDevHQ/atlas/pull/3150)/[#3151](https://github.com/AtlasDevHQ/atlas/pull/3151)), the two v0.0.7 deferrals that gate no tag.
+
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 
 ---

@@ -74448,7 +74448,7 @@
         "description": "Retired in #3145 — Discord now installs via the cap-gated flow at /api/v1/integrations/discord/install. Returns 410 Gone.",
         "responses": {
           "410": {
-            "description": "Endpoint retired — install via /api/v1/integrations/discord",
+            "description": "Endpoint retired — install via /api/v1/integrations/discord/install",
             "content": {
               "application/json": {
                 "schema": {
@@ -74517,7 +74517,7 @@
         ],
         "responses": {
           "410": {
-            "description": "Endpoint retired — install via /api/v1/integrations/discord",
+            "description": "Endpoint retired — install via /api/v1/integrations/discord/install",
             "content": {
               "application/json": {
                 "schema": {

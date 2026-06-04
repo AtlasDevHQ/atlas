@@ -671,14 +671,22 @@ See [Slack guide](/guides/slack) for the full setup.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DISCORD_CLIENT_ID` | — | Discord OAuth application client ID. Enables Discord integration routes. Required for Discord OAuth connect flow |
-| `DISCORD_CLIENT_SECRET` | — | Discord OAuth application client secret. Required for Discord OAuth token exchange |
+| `DISCORD_CLIENT_ID` | — | Discord application (client) ID. Enables the Discord install route and the admin **Connect to Discord** card. Required (with `DISCORD_BOT_TOKEN`) for the cap-gated static-bot install |
+| `DISCORD_BOT_TOKEN` | — | Discord bot token. Required (with `DISCORD_CLIENT_ID`) for the cap-gated static-bot install at `/api/v1/integrations/discord/install` and for adapter outbound calls. When unset, the install route returns `501` |
+| `DISCORD_PUBLIC_KEY` | — | Discord app public key. Required by the chat adapter to verify Ed25519 signatures on inbound Discord webhooks (the install handler itself does not need it) |
 
 ```bash
-# Discord integration for guild (server) authorization
+# Discord cap-gated static-bot install + inbound webhook verification
 DISCORD_CLIENT_ID=123456789012345678
-DISCORD_CLIENT_SECRET=your-discord-client-secret
+DISCORD_BOT_TOKEN=your-discord-bot-token
+DISCORD_PUBLIC_KEY=your-discord-app-public-key
 ```
+
+<Callout type="warn">
+  The legacy OAuth connect flow gated by `DISCORD_CLIENT_SECRET` was retired in
+  #3145 — `/api/v1/discord/install` and `/callback` now return **410 Gone**, and
+  `DISCORD_CLIENT_SECRET` is no longer read. Use the bot-install variables above.
+</Callout>
 
 ---
 

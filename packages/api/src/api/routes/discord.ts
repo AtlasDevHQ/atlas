@@ -53,7 +53,7 @@ const installRoute = createRoute({
     "/api/v1/integrations/discord/install. Returns 410 Gone.",
   responses: {
     410: {
-      description: "Endpoint retired — install via /api/v1/integrations/discord",
+      description: "Endpoint retired — install via /api/v1/integrations/discord/install",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -75,7 +75,7 @@ const callbackRoute = createRoute({
   },
   responses: {
     410: {
-      description: "Endpoint retired — install via /api/v1/integrations/discord",
+      description: "Endpoint retired — install via /api/v1/integrations/discord/install",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -84,10 +84,15 @@ const callbackRoute = createRoute({
 // ---------------------------------------------------------------------------
 // Handlers — inert; no OAuth state, no install write
 // ---------------------------------------------------------------------------
+//
+// These tombstone routes are public (no `adminAuthPreamble`, no
+// `checkRateLimit`), so anonymous bot scans hit them freely. Log at `debug`,
+// not `info`, so repeated unauthenticated hits can't flood production logs;
+// the `requestId` stays in the 410 body for correlation when debug is enabled.
 
 discord.openapi(installRoute, (c) => {
   const requestId = crypto.randomUUID();
-  log.info(
+  log.debug(
     { requestId },
     "Discord legacy /install hit after retirement — redirecting caller to the cap-gated install flow",
   );
@@ -96,7 +101,7 @@ discord.openapi(installRoute, (c) => {
 
 discord.openapi(callbackRoute, (c) => {
   const requestId = crypto.randomUUID();
-  log.info(
+  log.debug(
     { requestId },
     "Discord legacy /callback hit after retirement — no guild bound (uncapped install path removed)",
   );

@@ -148,13 +148,17 @@ Connect Discord to enable bot commands and server conversations.
 
 There are two ways to connect Discord:
 
-1. **Platform OAuth (recommended)** — Set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected, and initiates the OAuth flow to add the bot to your server.
+1. **Platform bot install (recommended)** — Set `DISCORD_BOT_TOKEN` and `DISCORD_CLIENT_ID` (plus `DISCORD_PUBLIC_KEY` to verify inbound webhook signatures) as environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected and starts the cap-gated bot-install flow at `/api/v1/integrations/discord/install`, which adds the operator's bot to the selected server and records the install through the chat-integration cap.
 
 2. **Bot credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create a [Discord application](https://discord.com/developers/applications), copy the Bot Token, Application ID, and Public Key, and enter them on the Integrations page. The bot token is validated via the Discord API.
 
+<Callout type="warn">
+The legacy OAuth connect flow — `/api/v1/discord/install` and `/callback`, gated by `DISCORD_CLIENT_SECRET` — was retired in #3145 and now returns **410 Gone**. It created uncapped installs that bypassed the chat-integration cap. Use the bot-install flow above; `DISCORD_CLIENT_SECRET` is no longer read.
+</Callout>
+
 ### SaaS Mode
 
-Workspace admins see a **Connect to Discord** button if the platform has Discord OAuth configured. If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither OAuth nor BYOT is possible.
+Workspace admins see a **Connect to Discord** button when the platform has the Discord bot install configured (`DISCORD_BOT_TOKEN` + `DISCORD_CLIENT_ID`). If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither the platform bot install nor BYOT is possible.
 
 ### Connection Details
 

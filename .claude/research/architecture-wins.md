@@ -2344,3 +2344,27 @@ Migration outcomes:
 **Bonus (build robustness, #3120):** declaring `typescript` as `webhook-publisher`'s own devDep fixed a www-staging railpack failure — its `prepare` ran `bun x tsc`, which (lacking a package-local `tsc`) ephemeral-fetched the deprecated `tsc` npm shim and raced/failed once it became the 3rd concurrent `bun x tsc` in the workspace install. A package whose build runs `tsc` should declare `typescript`, not lean on root hoisting.
 
 **Category:** Module-deepening — a narrow `deliverWebhook` + pluggable-`SignStrategy` interface over the broad, irregular surface of "sign + retry + time-out an outbound POST without breaking any consumer's wire format," collapsing three hand-rolled copies (one of which had silently lost signing + retry) into a single framework-free primitive consumed by both the Effect server and the Effect-less plugin.
+
+---
+
+## 81. The static-bot install spine — one non-OAuth route + `oauthShaped` / `coming_soon` / declared-key seams (#3140)
+
+**Date:** 2026-06-03
+**Issue:** #3140 (umbrella #2994)
+**PR:** #3148
+
+**Problem:** The four form-shaped static-bot chat platforms (Telegram `chat_id`, Teams `tenant_id`, Google Chat `workspace_id`, WhatsApp `phone_number_id`) had **no live install route** after #3146 disabled the legacy cap-bypassing connect routes. `StaticBotInstallHandler.confirmInstall` — the cap-counted `workspace_plugins(pillar='chat')` writer — had a single live caller (Discord's OAuth-shaped route). The four per-platform slices #3141–#3144 each need the same machinery (route + admin form + cap-gate seam); without a spine each would re-derive it, and a generic route would risk reaching a handler whose `confirmInstall` hadn't yet adopted the cap gate — a silent cap bypass.
+
+**Solution:** Extend the existing `POST /{platform}/install-form` route to accept `install_model = "static-bot"` rather than add a parallel route (ADR-0007 addendum). A routing-identifier capture *is* a non-OAuth form submit, so it reuses that route's entire scaffold (admin-auth preamble, F-04 SaaS-mode guard, `enabled` catalog lookup, `min_plan` plan gate, `runHandler` tagged-error→HTTP mapping). The route resolves the routing-identifier field from the catalog `config_schema` (first `required` string field), forwards its value to `confirmInstall`, and whitelists the remaining declared fields as `extras`. Three explicit seams keep it safe for the slices to build on:
+- **`oauthShaped` discriminator.** OAuth-shaped static-bots (Discord) are refused (400) so a directly-typed routing id can't skip the OAuth ownership proof. Keyed on an explicit `oauthShaped` flag on `StaticBotInstallHandler`, **not** on `applicationId` — Teams and WhatsApp populate `applicationId` (manifest / parity URLs) while remaining form-shaped, so `applicationId` is not a reliable discriminator (the trap removed here before the slices hit it).
+- **`coming_soon` dormancy gate.** The route refuses `coming_soon` static-bots (409). The four stay `coming_soon` until their slices flip them `available` *and* migrate `confirmInstall` onto `checkChatIntegrationLimitAndInstall`, so "available" is the single signal that a static-bot is fully wired — the generic route never reaches a not-yet-cap-gated handler.
+- **`extras` whitelist.** Forwarded extras are built from the declared `config_schema` keys, never cloned from the raw body, so an undeclared key can't reach persistence.
+
+The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracted from `FormInstallModal`, now used by both modals — and the extraction fixed a latent blank-`number`→`0` Zod-coercion bug along the way), submitting via `useAdminMutation`.
+
+**Impact:**
+- **One generic route + admin form backs all four per-platform slices** instead of four copies; each slice now only flips its slug `available` + migrates its `confirmInstall` onto the cap gate (Teams also adds its runtime `executeQuery` branch).
+- **Safe-by-construction** — the `coming_soon` gate ties installability to the slice having shipped the cap-gate migration, so the spine can't introduce a cap bypass ahead of the per-platform work.
+- **The cap gate stays on a single advisory-locked insert path** (`checkChatIntegrationLimitAndInstall`, inside `confirmInstall`) — the route adds no second write path.
+
+**Category:** Seam-cleaning / module-deepening — a single non-OAuth-install route plus three explicit discriminators (`oauthShaped`, `coming_soon`, declared-key whitelist) over the irregular surface of "let four operator-shared bots capture a routing identifier without a cap bypass or an ownership-proof bypass," set *before* the per-platform consumers exist so they are born reading the spine rather than retrofitted onto it (same shape as wins #72 / #73).

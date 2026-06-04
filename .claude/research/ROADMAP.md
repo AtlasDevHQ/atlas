@@ -26,6 +26,8 @@ Banked since `v0.0.8`:
 
 - [x] Text-card review hardening — blocks remote images in text-card markdown (a tracking-pixel IP-leak vector on public shared dashboards), forces full-width shared text cards, and guards the bound editor against SQL/chart edits on text cards. Bumps `@useatlas/types` → 0.1.13 (**unpublished — needs a `types-v0.1.13` tag push before the next tag**). ([#3147](https://github.com/AtlasDevHQ/atlas/pull/3147))
 
+- [x] Static-bot install spine ([#3140](https://github.com/AtlasDevHQ/atlas/issues/3140) → [#3148](https://github.com/AtlasDevHQ/atlas/pull/3148), Architecture Backlog) — the cap-gated routing-identifier install path for the four form-shaped chat platforms (Telegram / Teams / Google Chat / WhatsApp): extends `/install-form` for `install_model="static-bot"`, an explicit `oauthShaped` discriminator (refuses Discord, whose `guild_id` rides on OAuth), a `coming_soon` dormancy gate (409 — the route can't reach a handler before its slice cap-gates `confirmInstall`), a declared-key `extras` whitelist, and the admin routing-id modal on a shared type-aware `<ConfigSchemaFields>` renderer. **Spine only** — per-platform enablement is the #2994 umbrella's sub-issues #3141–#3144 (+ dead-store cleanup #3145). Arch-win #81.
+
 - [ ] Staging environment (PRD #2893) — code-complete; only the HITL provisioning slices remain (#2900–#2918). Target late June 2026.
 
 ---

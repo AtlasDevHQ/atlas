@@ -23,6 +23,7 @@ import { connections } from "@atlas/api/lib/db/connection";
 import {
   hasInternalDB,
   internalQuery,
+  withWorkspaceAdminLock,
   getWorkspaceRegion,
   getWorkspaceDetails,
 } from "@atlas/api/lib/db/internal";
@@ -236,6 +237,79 @@ async function verifyOrgMembership(
     log.error({ err: err instanceof Error ? err : new Error(String(err)), targetUserId, orgId }, "Org membership check failed");
     throw err;
   }
+}
+
+/**
+ * Resolve the workspace a `platform_admin` role change targets (#3157).
+ *
+ * The `/platform/users` page lists users cross-tenant, but the role write is
+ * `member.role` scoped to a single workspace (#2890). Resolving the caller's
+ * *active* workspace silently writes to the wrong one (or 404s) when the target
+ * isn't a member of it. Resolution order:
+ *   1. An explicit `organizationId` (the page's picker, after an ambiguous
+ *      result) wins — but only if the target is actually a member there.
+ *   2. Else the active workspace, when the target is a member of it (keeps the
+ *      switch-active-workspace path working and the common case single-trip).
+ *   3. Else the target's own membership: exactly one → use it; none → not-found;
+ *      more than one → ambiguous, surfacing the candidates so the page can offer
+ *      a picker and retry with an explicit `organizationId`.
+ *
+ * Never silently writes to the caller's active workspace for a cross-tenant
+ * target. Only ever called for a `platform_admin` caller; workspace admins keep
+ * the unchanged per-org scoping.
+ */
+type PlatformWorkspaceResolution =
+  | { kind: "ok"; orgId: string }
+  | { kind: "not_found"; message: string }
+  | { kind: "ambiguous"; workspaces: Array<{ id: string; name: string | null }> };
+
+async function resolvePlatformTargetWorkspace(opts: {
+  userId: string;
+  explicitOrgId: string | undefined;
+  activeOrgId: string | undefined;
+}): Promise<PlatformWorkspaceResolution> {
+  const { userId, explicitOrgId, activeOrgId } = opts;
+
+  if (explicitOrgId) {
+    const member = await internalQuery<{ userId: string }>(
+      `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [userId, explicitOrgId],
+    );
+    if (member.length === 0) {
+      return { kind: "not_found", message: "User is not a member of the selected workspace." };
+    }
+    return { kind: "ok", orgId: explicitOrgId };
+  }
+
+  if (activeOrgId) {
+    const inActive = await internalQuery<{ userId: string }>(
+      `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [userId, activeOrgId],
+    );
+    if (inActive.length > 0) {
+      return { kind: "ok", orgId: activeOrgId };
+    }
+  }
+
+  const memberships = await internalQuery<{ organizationId: string; name: string | null }>(
+    `SELECT m."organizationId" AS "organizationId", o.name AS name
+       FROM member m
+       LEFT JOIN organization o ON o.id = m."organizationId"
+      WHERE m."userId" = $1
+      ORDER BY o.name NULLS LAST, m."organizationId"`,
+    [userId],
+  );
+
+  if (memberships.length === 0) {
+    return { kind: "not_found", message: "User not found." };
+  }
+  if (memberships.length === 1) {
+    return { kind: "ok", orgId: memberships[0]!.organizationId };
+  }
+  return {
+    kind: "ambiguous",
+    workspaces: memberships.map((m) => ({ id: m.organizationId, name: m.name })),
+  };
 }
 
 admin.onError(eeOnError);
@@ -1176,12 +1250,33 @@ const getUserStatsRoute = createRoute({
   },
 });
 
+/**
+ * 400 body for {@link changeUserRoleRoute}. Superset of the plain error shape:
+ * the `workspace_ambiguous` arm (#3157) adds the candidate `workspaces` so the
+ * `/platform/users` page can render a picker instead of a dead-end error. All
+ * other 400s (`invalid_request`) omit `workspaces`, so it is optional.
+ */
+const ChangeRoleErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+  requestId: z.string().optional(),
+  workspaces: z
+    .array(z.object({ id: z.string(), name: z.string().nullable() }))
+    .optional(),
+});
+
 const changeUserRoleRoute = createRoute({
   method: "patch",
   path: "/users/{id}/role",
   tags: ["Admin — Users"],
   summary: "Change user role",
-  description: "Changes a user's role. Cannot change own role or demote the last admin.",
+  description:
+    "Changes a user's role (writes the org plugin's `member.role`). Cannot " +
+    "change own role or demote the workspace's last admin/owner. A " +
+    "`platform_admin` caller targeting a user from `/platform/users` may pass " +
+    "an optional `organizationId` to pick the workspace; a single-workspace " +
+    "target resolves automatically, a multi-workspace target returns 400 " +
+    "`workspace_ambiguous` with the candidate workspaces (#3157).",
   request: {
     params: z.object({
       id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "user_abc123" }),
@@ -1192,7 +1287,7 @@ const changeUserRoleRoute = createRoute({
       description: "Role changed",
       content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
     },
-    400: { description: "Invalid role", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid role or ambiguous target workspace", content: { "application/json": { schema: ChangeRoleErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
@@ -2587,35 +2682,18 @@ admin.openapi(changeUserRoleRoute, async (c) => {
   const { authResult, requestId } = await adminAuthAndContext(c, "admin:users");
 
   // #2890: tenant role changes write the org plugin's `member.role` (the
-  // single source of truth for tenant admin-ness), scoped to the actor's
-  // active workspace — not the admin-plugin `user.role` (which now only ever
-  // holds `platform_admin`). Granting cross-tenant `platform_admin` goes
-  // through a platform-admin-gated endpoint, never this per-workspace route.
+  // single source of truth for tenant admin-ness), scoped to a workspace —
+  // not the admin-plugin `user.role` (which now only ever holds
+  // `platform_admin`). Granting cross-tenant `platform_admin` goes through a
+  // platform-admin-gated endpoint, never this per-workspace route.
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "invalid_request", message: "Select an active workspace to change a member's role.", requestId }, 400);
-  }
 
-  // Org-scoping: workspace admins can only modify users in their own org
-  if (!(await verifyOrgMembership(authResult, userId))) {
-    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
-  }
-
-  // F-57 — SCIM provenance gate. SCIM declares the IdP as source of truth;
-  // strict policy blocks the role flip with 409 (the next sync would revert
-  // it anyway), override policy lets it through but stamps `scim_override`
-  // on the audit row so reconstruction shows the manual deviation.
-  const scimGuard = await evaluateSCIMGuardAsync({
-    userId,
-    orgId,
-    requestId,
-  });
-  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
-  const scimOverride = scimGuard.kind === "override";
-
+  // Parse the body up front: the new role plus an OPTIONAL target workspace.
+  // `organizationId` is honored only for a `platform_admin` caller (#3157) —
+  // the /platform/users page lists users cross-tenant, so the change must
+  // target the user's OWN workspace, not the caller's active one.
   const body = await c.req.json().catch((err) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
     return null;
@@ -2635,8 +2713,70 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return c.json({ error: "forbidden", message: "Cannot change your own role." , requestId}, 403);
   }
 
-  // Capture the target's current member.role (for the last-admin guard and
-  // audit metadata). Membership in `orgId` was just confirmed above.
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const explicitOrgId =
+    typeof body?.organizationId === "string" && body.organizationId.length > 0
+      ? body.organizationId
+      : undefined;
+
+  // Resolve the workspace whose `member.role` we write.
+  //   - Workspace admins: always their active workspace (the per-org model is
+  //     unchanged — no cross-tenant reach).
+  //   - Platform admins (cross-tenant /platform/users, #3157): resolve the
+  //     target's workspace — explicit pick wins, else active-if-member, else a
+  //     single membership auto-resolves, multiple → 400 with candidates, none
+  //     → 404. Never silently writes to the caller's active workspace.
+  let orgId: string;
+  if (isPlatformAdmin) {
+    const resolved = await resolvePlatformTargetWorkspace({
+      userId,
+      explicitOrgId,
+      activeOrgId: authResult.user?.activeOrganizationId,
+    });
+    if (resolved.kind === "not_found") {
+      return c.json({ error: "not_found", message: resolved.message, requestId }, 404);
+    }
+    if (resolved.kind === "ambiguous") {
+      return c.json(
+        {
+          error: "workspace_ambiguous",
+          message: `This user belongs to ${resolved.workspaces.length} workspaces. Specify which workspace's role to change.`,
+          requestId,
+          workspaces: resolved.workspaces,
+        },
+        400,
+      );
+    }
+    orgId = resolved.orgId;
+  } else {
+    const activeOrgId = authResult.user?.activeOrganizationId;
+    if (!activeOrgId) {
+      return c.json({ error: "invalid_request", message: "Select an active workspace to change a member's role.", requestId }, 400);
+    }
+    orgId = activeOrgId;
+  }
+
+  // Org-scoping: workspace admins can only modify users in their own org.
+  // (Platform admins bypass — the workspace was already resolved against the
+  // target's membership above.)
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
+  // F-57 — SCIM provenance gate. SCIM declares the IdP as source of truth;
+  // strict policy blocks the role flip with 409 (the next sync would revert
+  // it anyway), override policy lets it through but stamps `scim_override`
+  // on the audit row so reconstruction shows the manual deviation.
+  const scimGuard = await evaluateSCIMGuardAsync({
+    userId,
+    orgId,
+    requestId,
+  });
+  if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
+  const scimOverride = scimGuard.kind === "override";
+
+  // Capture the target's current member.role for the rank guard + audit
+  // metadata. Membership in `orgId` was just confirmed above.
   let previousRole: string | undefined;
   try {
     const roleRow = await internalQuery<{ role: string }>(
@@ -2669,48 +2809,70 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     );
   }
 
-  // Last-admin guard: don't strip a workspace of its final owner/admin by
-  // demoting the last one to member.
-  if (newRole === "member" && (previousRole === "admin" || previousRole === "owner")) {
-    try {
-      const remaining = await internalQuery<{ count: string }>(
-        `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
-        [orgId],
-      );
-      if (parseInt(String(remaining[0]?.count ?? "0"), 10) <= 1) {
-        return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
-      }
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId }, "Last admin guard check failed");
-      return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
-    }
-  }
-
+  // Last-admin guard + the role write, made atomic against concurrent
+  // demotions / removals via a per-workspace advisory lock (#3158). The count
+  // and the UPDATE both run while the lock is held — a plain count-then-update
+  // (or `UPDATE ... WHERE EXISTS(another admin)`) lets two demotions of
+  // DIFFERENT admins each see the other still present and both succeed,
+  // stripping the last admin. The role is re-read inside the lock so the
+  // decision is transaction-consistent.
+  type RoleChangeOutcome =
+    | { kind: "ok"; previousRole: string | undefined }
+    | { kind: "last_admin" }
+    | { kind: "not_found" };
+  let outcome: RoleChangeOutcome;
   try {
-    const updated = await internalQuery<{ userId: string }>(
-      `UPDATE member SET role = $1 WHERE "userId" = $2 AND "organizationId" = $3 RETURNING "userId"`,
-      [newRole, userId, orgId],
-    );
-    // Race: membership could have been revoked between the verify and the
-    // write. Treat a zero-row update as "not found" rather than a silent ok.
-    if (updated.length === 0) {
-      return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
-    }
-    log.info({ requestId, targetUserId: userId, orgId, newRole, actorId: authResult.user?.id }, "Member role changed");
-
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.user.changeRole,
-      targetType: "user",
-      targetId: userId,
-      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      metadata: { previousRole, newRole, orgId, ...(scimOverride && { scim_override: true }) },
+    outcome = await withWorkspaceAdminLock<RoleChangeOutcome>(orgId, async (tx) => {
+      // Re-read the current role under the lock. Membership existence was
+      // verified above, so an undefined role here just means "not an
+      // admin/owner" (skip the guard) — never not-found.
+      const cur = await tx.query<{ role: string }>(
+        `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+        [userId, orgId],
+      );
+      const currentRole = cur[0]?.role;
+      // Only demoting an admin/owner to member shrinks the admin set.
+      if (newRole === "member" && (currentRole === "admin" || currentRole === "owner")) {
+        const remaining = await tx.query<{ count: string }>(
+          `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
+          [orgId],
+        );
+        if (parseInt(String(remaining[0]?.count ?? "0"), 10) <= 1) {
+          return { kind: "last_admin" };
+        }
+      }
+      const updated = await tx.query<{ userId: string }>(
+        `UPDATE member SET role = $1 WHERE "userId" = $2 AND "organizationId" = $3 RETURNING "userId"`,
+        [newRole, userId, orgId],
+      );
+      // Race: membership could have been revoked between the verify and the
+      // write. Treat a zero-row update as "not found" rather than a silent ok.
+      if (updated.length === 0) return { kind: "not_found" };
+      return { kind: "ok", previousRole: currentRole ?? previousRole };
     });
-
-    return c.json({ success: true }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId, orgId }, "Failed to set member role");
     return c.json({ error: "internal_error", message: "Failed to update user role." , requestId}, 500);
   }
+
+  if (outcome.kind === "last_admin") {
+    return c.json({ error: "forbidden", message: "Cannot demote the last admin." , requestId}, 403);
+  }
+  if (outcome.kind === "not_found") {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
+  log.info({ requestId, targetUserId: userId, orgId, newRole, actorId: authResult.user?.id }, "Member role changed");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.user.changeRole,
+    targetType: "user",
+    targetId: userId,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { previousRole: outcome.previousRole, newRole, orgId, ...(scimOverride && { scim_override: true }) },
+  });
+
+  return c.json({ success: true }, 200);
 });
 
 admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
@@ -2850,42 +3012,54 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
   const scimOverride = scimGuard.kind === "override";
 
-  // Last-admin guard: if the target is an admin/owner of this workspace,
-  // removing them must leave at least one admin/owner behind. Without this,
-  // a workspace admin could strand the workspace with no remaining admins
-  // (either by removing their co-admin and getting stuck, or via a two-admin
-  // race where each removes the other). The role-change and delete-user paths
-  // have analogous guards; this mirrors them at the workspace scope.
-  const targetMembership = await internalQuery<{ role: string }>(
-    `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
-    [userId, orgId],
-  );
-  const targetRole = targetMembership[0]?.role;
-  if (targetRole === "admin" || targetRole === "owner") {
-    const remainingAdmins = await internalQuery<{ count: string }>(
-      `SELECT COUNT(*) as count FROM member
-       WHERE "organizationId" = $1 AND role IN ('admin', 'owner') AND "userId" != $2`,
-      [orgId, userId],
+  // Last-admin guard + the workspace removal, made atomic against concurrent
+  // demotions / removals via the SAME per-workspace advisory lock the
+  // role-change and delete paths take (#3158). Without it, two admins each
+  // removing the other — or a removal racing a demotion — each see the other
+  // still present and both succeed, stranding the workspace with no admin. The
+  // role re-read, the remaining-admin count, and the DELETE all run while the
+  // lock is held. The `organizationId` filter on the DELETE is what keeps this
+  // workspace-admin-safe (no cross-tenant state change). A throw here is mapped
+  // to 500 by the enclosing runHandler.
+  type RemoveOutcome =
+    | { kind: "ok"; previousRole: string | undefined }
+    | { kind: "last_admin" }
+    | { kind: "not_found" };
+  const outcome = await withWorkspaceAdminLock<RemoveOutcome>(orgId, async (tx) => {
+    const targetMembership = await tx.query<{ role: string }>(
+      `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2`,
+      [userId, orgId],
     );
-    if (parseInt(String(remainingAdmins[0]?.count ?? "0"), 10) === 0) {
-      return c.json(
-        {
-          error: "forbidden",
-          message: "Cannot remove the last admin of this workspace. Promote another member first.",
-          requestId,
-        },
-        403,
+    const targetRole = targetMembership[0]?.role;
+    if (targetRole === "admin" || targetRole === "owner") {
+      const remainingAdmins = await tx.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM member
+         WHERE "organizationId" = $1 AND role IN ('admin', 'owner') AND "userId" != $2`,
+        [orgId, userId],
       );
+      if (parseInt(String(remainingAdmins[0]?.count ?? "0"), 10) === 0) {
+        return { kind: "last_admin" };
+      }
     }
-  }
+    const deleted = await tx.query<{ id: string }>(
+      `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = $2 RETURNING id`,
+      [userId, orgId],
+    );
+    if (deleted.length === 0) return { kind: "not_found" };
+    return { kind: "ok", previousRole: targetRole };
+  });
 
-  // Scope the DELETE to the caller's active workspace — the `organizationId`
-  // filter is what makes this workspace-admin-safe (no cross-tenant state change).
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM member WHERE "userId" = $1 AND "organizationId" = $2 RETURNING id`,
-    [userId, orgId],
-  );
-  if (deleted.length === 0) {
+  if (outcome.kind === "last_admin") {
+    return c.json(
+      {
+        error: "forbidden",
+        message: "Cannot remove the last admin of this workspace. Promote another member first.",
+        requestId,
+      },
+      403,
+    );
+  }
+  if (outcome.kind === "not_found") {
     return c.json({ error: "not_found", message: "User is not a member of this workspace.", requestId }, 404);
   }
 
@@ -2895,7 +3069,7 @@ admin.openapi(removeMembershipRoute, async (c) => runHandler(c, "remove user fro
     actionType: ADMIN_ACTIONS.user.removeFromWorkspace,
     targetType: "user",
     targetId: userId,
-    metadata: { orgId, previousRole: targetRole, ...(scimOverride && { scim_override: true }) },
+    metadata: { orgId, previousRole: outcome.previousRole, ...(scimOverride && { scim_override: true }) },
     ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
   });
 
@@ -2956,52 +3130,68 @@ admin.openapi(deleteUserRoute, async (c) => {
   if (scimGuard.kind === "block") return c.json(scimGuard.body, scimGuard.status);
   const scimOverride = scimGuard.kind === "override";
 
-  // Last-admin guard: don't delete a workspace's final owner/admin. Scoped to
-  // the actor's active workspace — admin-ness lives in member.role (#2890), so
-  // a platform admin acting cross-tenant with no active org skips this guard.
+  // Last-admin guard + the global delete, made atomic against concurrent
+  // demotions / removals via the per-workspace advisory lock (#3158). The count
+  // and the `removeUser` call BOTH run while the lock is held — a concurrent
+  // demote that slipped between the count and the delete could otherwise strip
+  // the workspace's last admin. Scoped to the actor's active workspace;
+  // admin-ness lives in member.role (#2890), so a platform admin acting
+  // cross-tenant with no active org has no workspace to guard and deletes
+  // directly. `removeUser` is Better Auth's global delete on its OWN connection
+  // (cascades the member rows), so the advisory lock — not `FOR UPDATE` row
+  // locks — is what serializes it without deadlocking against the rows it
+  // cascades.
   const deleteGuardOrgId = authResult.user?.activeOrganizationId;
-  if (hasInternalDB() && deleteGuardOrgId) {
-    try {
-      const targetMember = await internalQuery<{ role: string }>(
-        `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-        [userId, deleteGuardOrgId],
-      );
-      const targetRole = targetMember[0]?.role;
-      if (targetRole === "admin" || targetRole === "owner") {
-        const adminCount = await internalQuery<{ count: string }>(
-          `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
-          [deleteGuardOrgId],
-        );
-        if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
-          return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
-        }
-      }
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: deleteGuardOrgId }, "Last admin guard check failed");
-      return c.json({ error: "internal_error", message: "Failed to verify admin count." , requestId}, 500);
-    }
-  }
-
+  type DeleteOutcome = { kind: "ok" } | { kind: "last_admin" };
+  let outcome: DeleteOutcome;
   try {
-    await adminApi.removeUser({
-      body: { userId },
-      headers: c.req.raw.headers,
-    });
-    log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
-
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.user.remove,
-      targetType: "user",
-      targetId: userId,
-      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      ...(scimOverride && { metadata: { scim_override: true } }),
-    });
-
-    return c.json({ success: true }, 200);
+    if (hasInternalDB() && deleteGuardOrgId) {
+      outcome = await withWorkspaceAdminLock<DeleteOutcome>(deleteGuardOrgId, async (tx) => {
+        const targetMember = await tx.query<{ role: string }>(
+          `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+          [userId, deleteGuardOrgId],
+        );
+        const targetRole = targetMember[0]?.role;
+        if (targetRole === "admin" || targetRole === "owner") {
+          const adminCount = await tx.query<{ count: string }>(
+            `SELECT COUNT(*) as count FROM member WHERE "organizationId" = $1 AND role IN ('admin','owner')`,
+            [deleteGuardOrgId],
+          );
+          if (parseInt(String(adminCount[0]?.count ?? "0"), 10) <= 1) {
+            return { kind: "last_admin" };
+          }
+        }
+        // Delete while still holding the lock so a concurrent demote/removal
+        // can't strip the co-admin between our count and the delete.
+        await adminApi.removeUser({ body: { userId }, headers: c.req.raw.headers });
+        return { kind: "ok" };
+      });
+    } else {
+      // No active workspace to guard (platform admin, cross-tenant) — delete
+      // directly, as before.
+      await adminApi.removeUser({ body: { userId }, headers: c.req.raw.headers });
+      outcome = { kind: "ok" };
+    }
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
     return c.json({ error: "internal_error", message: "Failed to delete user." , requestId}, 500);
   }
+
+  if (outcome.kind === "last_admin") {
+    return c.json({ error: "forbidden", message: "Cannot delete the last admin." , requestId}, 403);
+  }
+
+  log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.user.remove,
+    targetType: "user",
+    targetId: userId,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    ...(scimOverride && { metadata: { scim_override: true } }),
+  });
+
+  return c.json({ success: true }, 200);
 });
 
 admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessions", async () => {

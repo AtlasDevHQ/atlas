@@ -224,15 +224,114 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(memberRoleUpdateCount()).toBeGreaterThan(0);
     });
 
-    it("requires an active workspace — platform admin with no active org gets 400", async () => {
-      setPlatformAdmin();
+    // #3157 — a platform admin on /platform/users targets users cross-tenant,
+    // so the role write must resolve the TARGET's workspace, not the caller's
+    // active one. Before #3157 a platform admin with no active org got a 400
+    // ("select an active workspace"); now the target's membership is resolved.
+    it("platform admin with no active org auto-resolves a single-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) return [{ userId: "user-x" }];
+        // Membership resolution — exactly one workspace.
+        if (s.includes("left join organization")) return [{ organizationId: "org-7", name: "Org 7" }];
+        if (s.includes("count(*)")) return [{ count: "2" }]; // promotion, not a demotion
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "user-x", role: "member" }];
+        }
+        return [];
+      });
 
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/users/user-in-any-org/role", { role: "member" }),
+        adminRequest("PATCH", "/api/v1/admin/users/user-x/role", { role: "admin" }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("platform admin gets 404 for a target that belongs to no workspace (#3157)", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.toLowerCase().includes("left join organization")) return []; // no memberships
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/ghost/role", { role: "member" }),
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("not_found");
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("platform admin gets 400 workspace_ambiguous with candidates for a multi-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org → cannot shortcut to the active workspace
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.toLowerCase().includes("left join organization")) {
+          return [
+            { organizationId: "org-a", name: "Acme" },
+            { organizationId: "org-b", name: "Globex" },
+          ];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", { role: "admin" }),
       );
       expect(res.status).toBe(400);
+      const body = (await res.json()) as {
+        error: string;
+        workspaces: Array<{ id: string; name: string | null }>;
+      };
+      expect(body.error).toBe("workspace_ambiguous");
+      expect(body.workspaces).toEqual([
+        { id: "org-a", name: "Acme" },
+        { id: "org-b", name: "Globex" },
+      ]);
+      expect(memberRoleUpdateCount()).toBe(0);
+    });
+
+    it("platform admin honors an explicit organizationId for a multi-workspace target (#3157)", async () => {
+      setPlatformAdmin(); // no active org; the page passes the picked workspace
+      mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+        const s = sql.toLowerCase();
+        if (/update member/i.test(sql)) {
+          // The write is scoped to the EXPLICIT workspace, not the caller's.
+          expect(params).toEqual(["admin", "multi", "org-b"]);
+          return [{ userId: "multi" }];
+        }
+        if (s.includes("count(*)")) return [{ count: "2" }];
+        if (s.includes("member") && s.includes("userid") && s.includes("organizationid")) {
+          return [{ userId: "multi", role: "member" }];
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", {
+          role: "admin",
+          organizationId: "org-b",
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(memberRoleUpdateCount()).toBeGreaterThan(0);
+    });
+
+    it("platform admin gets 404 for an explicit workspace the target isn't a member of (#3157)", async () => {
+      setPlatformAdmin();
+      mocks.mockInternalQuery.mockImplementation(async () => []); // not a member anywhere
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/multi/role", {
+          role: "admin",
+          organizationId: "org-z",
+        }),
+      );
+      expect(res.status).toBe(404);
       const body = await res.json() as { error: string };
-      expect(body.error).toBe("invalid_request");
+      expect(body.error).toBe("not_found");
       expect(memberRoleUpdateCount()).toBe(0);
     });
 

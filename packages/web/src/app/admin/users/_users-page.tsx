@@ -159,6 +159,17 @@ export function UsersPage({ scope }: UsersPageProps) {
   const [error, setError] = useState<FetchError | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
 
+  // #3157 — when a platform admin changes the role of a user who belongs to
+  // more than one workspace, the backend returns 400 `workspace_ambiguous`
+  // with the candidates. We surface them here as a picker and retry with an
+  // explicit `organizationId` rather than dead-ending on the error.
+  const [workspacePick, setWorkspacePick] = useState<{
+    userId: string;
+    newRole: string;
+    workspaces: ReadonlyArray<{ id: string; name: string | null }>;
+  } | null>(null);
+  const [pickedOrgId, setPickedOrgId] = useState<string | undefined>(undefined);
+
   const [params, setParams] = useQueryStates(usersSearchParams);
   const offset = (params.page - 1) * LIMIT;
 
@@ -455,13 +466,33 @@ export function UsersPage({ scope }: UsersPageProps) {
   // dialog unconditionally on await would dismiss the operator back to a
   // list where a failure banner may be off-screen.
 
-  async function handleRoleChange(userId: string, newRole: string): Promise<boolean> {
+  async function handleRoleChange(
+    userId: string,
+    newRole: string,
+    organizationId?: string,
+  ): Promise<boolean> {
     const result = await adminAction.mutate({
       path: `/api/v1/admin/users/${userId}/role`,
       method: "PATCH",
-      body: { role: newRole },
+      body: organizationId ? { role: newRole, organizationId } : { role: newRole },
       itemId: userId,
     });
+    // #3157 — a multi-workspace target (platform scope) comes back as
+    // `workspace_ambiguous` with the candidate workspaces. Swap the error
+    // banner for a picker and retry with the chosen `organizationId`; close any
+    // role-demote confirm dialog so only the picker is shown.
+    if (
+      !result.ok &&
+      result.error.code === "workspace_ambiguous" &&
+      result.error.workspaces &&
+      result.error.workspaces.length > 0
+    ) {
+      const candidates = result.error.workspaces;
+      adminAction.clearErrorFor(userId);
+      setConfirmAction(null);
+      setPickedOrgId(candidates[0]?.id);
+      setWorkspacePick({ userId, newRole, workspaces: candidates });
+    }
     return result.ok;
   }
 
@@ -1052,6 +1083,71 @@ export function UsersPage({ scope }: UsersPageProps) {
                   confirmAction.newRole,
                 );
                 if (ok) setConfirmAction(null);
+              }}
+            >
+              Change role
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Workspace picker for a multi-workspace target (#3157). Only ever
+          opens in platform scope — the backend returns `workspace_ambiguous`
+          only for a platform_admin caller whose target belongs to more than
+          one workspace. */}
+      <AlertDialog
+        open={workspacePick !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setWorkspacePick(null);
+            setPickedOrgId(undefined);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Which workspace?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This user belongs to multiple workspaces. Pick the one whose role
+              to change to{" "}
+              <strong>{workspacePick?.newRole}</strong>.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="py-2">
+            <Label htmlFor="workspace-pick" className="sr-only">
+              Workspace
+            </Label>
+            <Select value={pickedOrgId} onValueChange={setPickedOrgId}>
+              <SelectTrigger id="workspace-pick" className="w-full">
+                <SelectValue placeholder="Select a workspace" />
+              </SelectTrigger>
+              <SelectContent>
+                {workspacePick?.workspaces.map((w) => (
+                  <SelectItem key={w.id} value={w.id}>
+                    {w.name ?? w.id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!pickedOrgId || adminAction.isMutating(workspacePick?.userId ?? "")}
+              onClick={async (e) => {
+                // Keep the dialog open if the retry fails (e.g. the target left
+                // the workspace) so the error banner stays in context.
+                e.preventDefault();
+                if (!workspacePick || !pickedOrgId) return;
+                const ok = await handleRoleChange(
+                  workspacePick.userId,
+                  workspacePick.newRole,
+                  pickedOrgId,
+                );
+                if (ok) {
+                  setWorkspacePick(null);
+                  setPickedOrgId(undefined);
+                }
               }}
             >
               Change role

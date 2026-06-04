@@ -28,6 +28,14 @@ export interface FetchError {
    * picker can offer "legacy / global" as a distinct choice.
    */
   groups?: ReadonlyArray<string | null>;
+  /**
+   * Candidate workspaces returned with a 400 `workspace_ambiguous` response
+   * (#3157) — a platform admin changing the role of a user who belongs to more
+   * than one workspace. The `/platform/users` page renders a picker from these
+   * and retries with an explicit `organizationId` instead of dead-ending on the
+   * error.
+   */
+  workspaces?: ReadonlyArray<{ id: string; name: string | null }>;
 }
 
 /**
@@ -52,6 +60,7 @@ export function buildFetchError(input: {
   requestId?: string;
   enrollmentUrl?: string;
   groups?: ReadonlyArray<string | null>;
+  workspaces?: ReadonlyArray<{ id: string; name: string | null }>;
 }): FetchError {
   const message = input.message?.trim();
   if (!message) {
@@ -72,6 +81,7 @@ export function buildFetchError(input: {
       ...(input.requestId && { requestId: input.requestId }),
       ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
       ...(input.groups && { groups: input.groups }),
+      ...(input.workspaces && { workspaces: input.workspaces }),
     };
   }
   return {
@@ -81,6 +91,7 @@ export function buildFetchError(input: {
     ...(input.requestId && { requestId: input.requestId }),
     ...(input.enrollmentUrl && { enrollmentUrl: input.enrollmentUrl }),
     ...(input.groups && { groups: input.groups }),
+    ...(input.workspaces && { workspaces: input.workspaces }),
   };
 }
 
@@ -95,6 +106,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
   let code: string | undefined;
   let enrollmentUrl: string | undefined;
   let groups: ReadonlyArray<string | null> | undefined;
+  let workspaces: ReadonlyArray<{ id: string; name: string | null }> | undefined;
   try {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {
@@ -118,6 +130,18 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       if (Array.isArray(obj.groups)) {
         groups = obj.groups.filter(
           (g): g is string | null => g === null || typeof g === "string",
+        );
+      }
+      // 400 `workspace_ambiguous` payload (#3157). Each entry is the candidate
+      // workspace `{ id, name }` for the platform-users role-change picker.
+      if (Array.isArray(obj.workspaces)) {
+        workspaces = obj.workspaces.filter(
+          (w): w is { id: string; name: string | null } =>
+            typeof w === "object" &&
+            w !== null &&
+            typeof (w as { id?: unknown }).id === "string" &&
+            ((w as { name?: unknown }).name === null ||
+              typeof (w as { name?: unknown }).name === "string"),
         );
       }
     }
@@ -144,6 +168,7 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     requestId,
     enrollmentUrl,
     groups,
+    workspaces,
   });
 }
 

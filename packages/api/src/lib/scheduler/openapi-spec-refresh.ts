@@ -32,6 +32,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { withSpan } from "@atlas/api/lib/tracing";
 import {
   refreshSharedSpecsCycle,
   type SharedRefreshCycleResult,
@@ -71,9 +72,42 @@ export function getSharedSpecRefreshIntervalMs(): number {
  * Run a single refresh cycle over the shared cache's working set. Never throws —
  * `refreshSharedSpecsCycle` isolates per-catalog failures (logged + counted) so a
  * down upstream can't stall the others or kill the scheduler loop.
+ *
+ * Span + heartbeat (#3183 L-1): the cycle was the only periodic refresh fiber
+ * without a per-tick span — its siblings `byot-catalog-refresh.ts` and
+ * `openapi-install-rediscover.ts` both emit one, so a wedged spec-refresh fiber
+ * was invisible until a catalog drift surfaced. Wrap the cycle in
+ * `atlas.scheduler.openapi_spec_refresh` (presence/absence against the cadence is
+ * the liveness signal) and emit a per-cycle `log.info` heartbeat so a hung tick
+ * is visible in logs too, not just traces. This is a `setInterval` scheduler with
+ * a Promise-native cycle, so it uses the Promise `withSpan` (not the Effect
+ * `withEffectSpan` the byot/rediscover cycles use); it self-spans here and so
+ * never slots into `SCHEDULER_WORK_SPAN_NAMES` in `effect/layers.ts`.
  */
 export async function runOpenApiSpecRefreshCycle(): Promise<SharedRefreshCycleResult> {
-  return refreshSharedSpecsCycle({ specUrlFor: specUrlForCatalog });
+  return withSpan(
+    "atlas.scheduler.openapi_spec_refresh",
+    {},
+    async () => {
+      log.info("Shared OpenAPI spec refresh cycle starting");
+      const result = await refreshSharedSpecsCycle({ specUrlFor: specUrlForCatalog });
+      // `refreshSharedSpecsCycle` already emits a detailed "cycle complete" log
+      // (with per-catalog counts) when the working set is non-empty. Emit our own
+      // completion heartbeat for the empty-cache case — the common shape on a
+      // fresh pod or low-traffic region — so the cadence is unbroken there too
+      // and the two paths each leave exactly one start + one complete log.
+      if (result.inspected === 0) {
+        log.info("Shared OpenAPI spec refresh cycle complete — empty working set (no cached specs to refresh)");
+      }
+      return result;
+    },
+    (result) => ({
+      "atlas.openapi_spec_refresh.inspected": result.inspected,
+      "atlas.openapi_spec_refresh.updated": result.updated,
+      "atlas.openapi_spec_refresh.not_modified": result.notModified,
+      "atlas.openapi_spec_refresh.failed": result.failed,
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------

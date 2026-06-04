@@ -1206,6 +1206,22 @@ export async function runAgent({
       temperature: 0.2,
       maxOutputTokens: 4096,
       stopWhen: stepCountIs(maxStepsOverride ?? getAgentMaxSteps()),
+      // Per-step AI-SDK telemetry (#3183 L-2): emit `ai.streamText` /
+      // `ai.streamText.doStream` child spans under the enclosing `atlas.agent`
+      // span so a multi-step run no longer collapses into one span — each step's
+      // finish reason, token split, and tool-call count become visible. Gated on
+      // the OTLP endpoint so it's a true no-op (zero AI-SDK span overhead) when
+      // OTel is off, matching every other span site. `recordInputs`/`recordOutputs`
+      // are OFF by intent: spans carry structural metadata only, never prompt or
+      // completion text — same security stance as `atlas.sql.execute` (which
+      // excludes SQL content). Prompts here would otherwise attach user questions
+      // + semantic-layer context + tool args to the trace.
+      experimental_telemetry: {
+        isEnabled: Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT),
+        functionId: "atlas.agent",
+        recordInputs: false,
+        recordOutputs: false,
+      },
       // totalMs: 180s for self-hosted (full agent loop budget).
       // On Vercel, maxDuration caps the serverless function at 300s (Pro plan).
       timeout: { totalMs: 180_000, stepMs: 30_000, chunkMs: 5_000 },

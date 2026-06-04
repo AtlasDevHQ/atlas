@@ -24,9 +24,9 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector's OTLP HTTP endpoint:
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
-The API server initializes the OpenTelemetry Node.js SDK on startup, registering a trace exporter that sends spans to `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`. The API is identified as `atlas-api`; the web frontend as `atlas`. Both use the package version from `package.json`.
+The API server initializes the OpenTelemetry Node.js SDK on startup, registering **both** a trace exporter (spans → `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`) and a periodic metric exporter (metrics → `{OTEL_EXPORTER_OTLP_ENDPOINT}/v1/metrics`, 60s cadence). The API is identified as `atlas-api`; the web frontend as `atlas`. Both use the package version from `package.json`. The single endpoint variable drives traces and [metrics](#metrics) together — there is no separate metrics endpoint to set.
 
-When the environment variable is absent, no SDK is initialized and all trace calls are no-ops — zero overhead.
+When the environment variable is absent, no SDK is initialized and all trace **and** metric calls are no-ops — zero overhead. This is the default for self-hosted and development. See [Production deployment](#production-deployment-railway--saas) for wiring an exporter in a hosted environment.
 
 ### What Gets Traced
 
@@ -59,6 +59,14 @@ HTTP Request (http.request)
 
 Each span records success/failure status and captures exceptions on error, making it straightforward to trace agent step failures back to specific tool calls.
 
+<Callout title="Agent per-step spans">
+When OTel is active, the agent loop also enables the Vercel AI SDK's telemetry, so each `streamText` step emits `ai.streamText` / `ai.streamText.doStream` child spans **under** `atlas.agent`. These carry per-step structure — finish reason, token split, tool-call count — so a multi-step run no longer collapses into a single span. Prompt and completion **content is deliberately not recorded** on these spans (same stance as `atlas.sql.execute`, which omits SQL text); they carry structural metadata only.
+</Callout>
+
+<Callout title="MCP span vs. counter leaf names">
+The MCP dispatch **span** is `atlas.mcp.tool.run` and the MCP dispatch **counter** is [`atlas.mcp.tool.calls`](#metrics) — the different leaf names (`.run` vs. `.calls`) are intentional, not a typo. `.run` names the per-dispatch execution span (one per tool call, with timing and nesting); `.calls` names the monotonic count of those dispatches split by outcome. They describe the same event from the trace and metric sides and are meant to be joined, not reconciled to one name. The span is emitted from `packages/mcp` (the MCP server), the counter from `@atlas/api`.
+</Callout>
+
 ### Metrics
 
 Atlas also publishes a small set of OTel metrics through the `@atlas/api` Meter for time-series the trace waterfall doesn't naturally cover:
@@ -70,7 +78,7 @@ Atlas also publishes a small set of OTel metrics through the `@atlas/api` Meter 
 | `atlas.mcp.tool.latency` | Histogram (`ms`) | Same as `atlas.mcp.tool.calls` | Raw per-dispatch latency observations — derive p50/p95/p99 in your collector. Bucket boundaries stay defaulted so dashboards aren't pinned to one set of cutoffs |
 | `atlas.mcp.activations` | Counter | `workspace.id`, `transport`, `deploy.mode` | Fires once per workspace per MCP process on the first observed tool call. Process-local dedup only — restarts and SSE replicas re-fire for the same workspace. For a true "unique workspaces" view, configure your collector to group by `workspace.id` × first-seen day |
 
-Counters use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered — wire one through your OTel collector configuration to feed dashboards and alerting.
+Counters and gauges use `@opentelemetry/api` and are no-ops until a `MeterProvider` is registered. Setting `OTEL_EXPORTER_OTLP_ENDPOINT` registers one automatically — the same SDK init that wires trace export also attaches a `PeriodicExportingMetricReader` (60s) pointed at `{endpoint}/v1/metrics`, so these series feed your collector with no extra configuration. When the endpoint is unset they stay no-ops, exactly like spans.
 
 ### Collector Setup
 
@@ -122,6 +130,29 @@ OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=your-api-key"
 <Callout>
 Atlas uses `@opentelemetry/exporter-trace-otlp-http` for trace export. Standard OpenTelemetry environment variables like `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_RESOURCE_ATTRIBUTES` are respected by the underlying SDK.
 </Callout>
+
+### Production deployment (Railway / SaaS)
+
+OpenTelemetry export is **opt-in** and off by default — including in the hosted Atlas SaaS. The instrumentation (every span and metric in the tables above) is always present in the code, but it feeds a no-op tracer/meter until `OTEL_EXPORTER_OTLP_ENDPOINT` is set. **An unset endpoint in production is expected, not a bug:** the process still boots cleanly and stays observable through the compensating controls below.
+
+To turn on traces + metrics in a hosted deployment:
+
+1. **Stand up an OTLP-HTTP collector** — Grafana Cloud / Tempo, Honeycomb, Datadog Agent, Axiom, SigNoz, or self-hosted Jaeger (see the setups above). You need a URL that accepts OTLP over HTTP and, usually, an auth header.
+
+2. **Set the endpoint (and headers) per service.** On Railway the Atlas API runs as **three regional services** sharing one image — `api`, `api-eu`, `api-apac`. Set the variables on **each** one:
+
+   ```bash
+   OTEL_EXPORTER_OTLP_ENDPOINT=https://your-collector:4318
+   OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer <token>"   # whatever your collector requires
+   ```
+
+<Callout type="warn" title="Set the endpoint on every regional service">
+Railway **shared-scope** variables and `${{ service.VAR }}` references do **not** auto-inherit onto the per-service runtime — a shared `OTEL_EXPORTER_OTLP_ENDPOINT` resolves to an empty string at runtime. Set the OTel variables as explicit **per-service** overrides on `api`, `api-eu`, **and** `api-apac`, or two of the three regions will silently keep dropping telemetry.
+</Callout>
+
+3. **Verify export.** After redeploy, confirm a span arrives in your collector (filter service `atlas-api`) and that a metric series such as `atlas.mcp.tool.calls` or `atlas.abuse.escalations` appears. Both ride the single endpoint — see [Metrics](#metrics).
+
+If you choose **not** to wire a collector, that is a valid posture: Atlas in production remains observable via **structured pino logs** (shipped to the platform's log stream — Railway, etc.), **abuse events** persisted to `abuse_events` and surfaced in the admin console, and **external uptime monitoring** (Atlas SaaS uses OpenStatus). OTel traces/metrics add request-level waterfalls and time-series dashboards on top of that; they do not replace it.
 
 ### Graceful Shutdown
 

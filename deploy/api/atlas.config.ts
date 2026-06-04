@@ -10,6 +10,19 @@
  *   - ATLAS_REGION_US_DB_URL (defaults to DATABASE_URL)
  *   - ATLAS_REGION_EU_DB_URL
  *   - ATLAS_REGION_APAC_DB_URL
+ *
+ * Observability export (optional, OFF by default). OpenTelemetry traces +
+ * metrics export only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; it gates the
+ * SDK init in `lib/telemetry.ts` (no endpoint → no-op tracer/meter, clean boot).
+ * These are per-service runtime vars, NOT application config, so they live in
+ * Railway like the region DB URLs above — and like those they must be set as
+ * explicit per-service overrides on each regional service (`api`, `api-eu`,
+ * `api-apac`); a shared-scope var resolves empty at runtime and silently drops
+ * telemetry for the regions that didn't get the override:
+ *   - OTEL_EXPORTER_OTLP_ENDPOINT  (OTLP-HTTP collector base URL)
+ *   - OTEL_EXPORTER_OTLP_HEADERS   (collector auth header(s), if required)
+ * See apps/docs/content/docs/platform-ops/observability.mdx → "Production
+ * deployment (Railway / SaaS)".
  */
 
 import { defineConfig } from "./packages/api/src/lib/config";

@@ -19,6 +19,7 @@ import {
 } from "@atlas/api/lib/bound-chat-context";
 import { screenshotDashboard, exportDashboard } from "@atlas/api/lib/dashboard-screenshot";
 import { toCsv, csvFilename } from "@atlas/api/lib/csv";
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import {
   createDashboard,
   getDashboard,
@@ -2069,6 +2070,13 @@ authed.openapi(renderCardRoute, async (c) => {
       return new Response(csv, {
         status: 200,
         headers: {
+          // A raw `Response` returned from the handler does NOT inherit the
+          // `c.header()`-set CORS headers from the `/api/*` middleware (Hono
+          // doesn't merge prepared headers onto a handler-returned Response),
+          // so spread them on explicitly — otherwise a cross-origin deploy
+          // (app.* → api.*) can't read the file or the `X-Atlas-Truncated`
+          // header. Same pattern as the chat/demo streaming responses.
+          ...corsResponseHeaders(c.req.header("Origin") ?? ""),
           "Content-Type": "text/csv; charset=utf-8",
           "Content-Disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
           // Parameter-varying, one-shot artifact — never cache.

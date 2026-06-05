@@ -1539,6 +1539,25 @@ describe("dashboard routes", () => {
       expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
     });
 
+    it("attaches CORS expose-headers to the raw CSV response (readable cross-origin)", async () => {
+      // A handler-returned raw Response does NOT inherit the middleware's
+      // `c.header()` CORS headers, so the route must spread them on. Without
+      // this, a cross-origin deploy can't read the file or X-Atlas-Truncated.
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockCardData });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "https://app.example.com" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const expose = response.headers.get("access-control-expose-headers") ?? "";
+      expect(expose).toContain("X-Atlas-Truncated");
+      expect(expose).toContain("Content-Disposition");
+    });
+
     it("enforces the same auth gate on the CSV path (401 when unauthenticated)", async () => {
       mockAuthenticateRequest.mockReset();
       mockAuthenticateRequest.mockResolvedValueOnce({

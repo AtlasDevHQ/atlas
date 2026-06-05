@@ -168,6 +168,70 @@ describe("dashboardKpiConfigSchema", () => {
       }).success,
     ).toBe(true);
   });
+
+  // #3207 — automatic period-over-period + inverse coloring.
+  test("round-trips an autoComparison config", () => {
+    const kpi = { autoComparison: true, comparisonLabel: "vs. prior period", inverse: true };
+    expect(dashboardKpiConfigSchema.parse(kpi)).toEqual(kpi);
+  });
+
+  test("accepts autoComparison with a custom comparisonDateParams pair", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        autoComparison: true,
+        comparisonDateParams: { from: "start", to: "end" },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("accepts a comparisonLabel alongside autoComparison (a comparison source exists)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        autoComparison: true,
+        comparisonLabel: "vs. prior period",
+      }).success,
+    ).toBe(true);
+  });
+
+  test("rejects comparisonSql and autoComparison together (one source of comparison)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        comparisonSql: "SELECT 1 AS n",
+        autoComparison: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects comparisonDateParams without autoComparison (only the auto path shifts a window)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        comparisonSql: "SELECT 1 AS n",
+        comparisonDateParams: { from: "date_from", to: "date_to" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects comparisonDateParams whose from equals to (binds the same window twice)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        autoComparison: true,
+        comparisonDateParams: { from: "date_from", to: "date_from" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects an invalid comparisonDateParams key (not a lower-snake identifier)", () => {
+    expect(
+      dashboardKpiConfigSchema.safeParse({
+        autoComparison: true,
+        comparisonDateParams: { from: "date from", to: "date_to" },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("accepts inverse on its own (lower-is-better, no comparison source yet)", () => {
+    expect(dashboardKpiConfigSchema.safeParse({ inverse: true }).success).toBe(true);
+  });
 });
 
 describe("dashboardChartConfigSchema", () => {

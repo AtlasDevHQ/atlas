@@ -168,11 +168,13 @@ export default function DashboardViewPage() {
   // appear to do nothing.
   const [paramError, setParamError] = useState<string | null>(null);
 
-  // #3137 — KPI comparison results keyed by cardId. A `kpi` card's delta chip
-  // is computed client-side from its primary value vs. this comparison value;
-  // both come from the `/render` endpoint (which runs `comparisonSql` through
-  // the same SQL guard). Re-fetched on parameter change so the comparison
-  // period tracks the chosen `:date_*` window.
+  // #3137 / #3207 — KPI comparison results keyed by cardId. A `kpi` card's delta
+  // chip is computed client-side from its primary value vs. this comparison
+  // value; both come from the `/render` endpoint, which runs the card's
+  // comparison through the same SQL guard — either a hand-written `comparisonSql`
+  // (#3137) or the card's own SQL against the auto-derived prior window (#3207).
+  // Re-fetched on parameter change so the comparison period tracks the chosen
+  // `:date_*` window.
   const [comparisons, setComparisons] = useState<Record<string, KpiComparisonResult | null>>({});
 
   // #2369 — creation-to-bound continuity. The chat-side

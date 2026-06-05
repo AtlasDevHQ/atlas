@@ -566,6 +566,76 @@ describe("createDashboard tool", () => {
     expect(connectCalls).toBe(0);
   });
 
+  // #3207 — autoComparison: prior-period inference without a hand-written query.
+  it("accepts a kpi card with autoComparison that filters by the declared window", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-auto", title: "KPIs", description: null, updated_at: "2026-06-04" }] },
+      { rows: [] }, // draft
+      { rows: [] }, // COMMIT
+    );
+
+    const result = await run({
+      title: "KPIs",
+      parameters: [
+        { key: "date_from", type: "date", default: "now - 30 days", label: "From" },
+        { key: "date_to", type: "date", default: "now", label: "To" },
+      ],
+      cards: [
+        {
+          title: "Revenue",
+          sql: "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "total",
+            valueColumns: ["total"],
+            kpi: { valueFormat: "currency", autoComparison: true, comparisonLabel: "vs. prior period" },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    // autoComparison adds NO second query to validate — only the primary runs
+    // through the guard.
+    expect(validateSQLMock).toHaveBeenCalledTimes(1);
+    const snapshot = JSON.parse(clientQueryCalls[2].params![2] as string);
+    expect(snapshot.cards[0].chartConfig.kpi).toMatchObject({ autoComparison: true });
+  });
+
+  it("rejects autoComparison when the card SQL does not reference the date window", async () => {
+    enableInternalDB();
+
+    const result = await run({
+      title: "KPIs",
+      parameters: [
+        { key: "date_from", type: "date", default: "now - 30 days", label: "From" },
+        { key: "date_to", type: "date", default: "now", label: "To" },
+      ],
+      cards: [
+        {
+          title: "Revenue",
+          // No :date_from / :date_to — shifting the window would be a no-op.
+          sql: "SELECT SUM(amount) AS total FROM orders",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "total",
+            valueColumns: ["total"],
+            kpi: { autoComparison: true },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("err");
+    if (result.kind === "err") {
+      expect(result.validationErrors?.[0].error).toMatch(/autoComparison/i);
+      expect(result.validationErrors?.[0].error).toContain(":date_from");
+    }
+    expect(connectCalls).toBe(0);
+  });
+
   // -------------------------------------------------------------------
   // Validation-fail rejects the whole call (no transaction)
   // -------------------------------------------------------------------

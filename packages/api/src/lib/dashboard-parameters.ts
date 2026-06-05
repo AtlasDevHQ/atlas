@@ -400,3 +400,77 @@ export function resolveDashboardParameterValues(
   }
   return resolved;
 }
+
+// ---------------------------------------------------------------------------
+// Period-over-period window derivation (#3207)
+// ---------------------------------------------------------------------------
+
+/** The pair of date parameters an automatic KPI comparison shifts by default. */
+export const DEFAULT_COMPARISON_DATE_PARAMS = { from: "date_from", to: "date_to" } as const;
+
+/** Parse a leading `YYYY-MM-DD` to a UTC-midnight Date, or null. Rejects values
+ *  that aren't strings and calendar-impossible dates (e.g. `2026-02-30`). */
+function parseIsoDateValue(value: unknown): Date | null {
+  if (typeof value !== "string") return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  // A normalized rollover (Feb 30 → Mar 2) means the literal wasn't a real date.
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) {
+    return null;
+  }
+  return d;
+}
+
+/** Whole days from `a` to `b` (both UTC midnight). */
+function daysBetweenUtc(a: Date, b: Date): number {
+  return Math.round((b.getTime() - a.getTime()) / 86_400_000);
+}
+
+/**
+ * Derive the prior-period window for an automatic KPI comparison (#3207).
+ *
+ * Given resolved parameter values holding a `[from, to)` date window (the
+ * documented half-open `created_at >= :date_from AND created_at < :date_to`
+ * pattern, inclusive `YYYY-MM-DD` bounds), shift BOTH bounds back by the
+ * window's length (`to - from` days) so the comparison covers the
+ * immediately-preceding, non-overlapping window of identical size — the prior
+ * window's `to` lands exactly on the current window's `from`:
+ *
+ *   [Jan 1, Jan 31)  (30 days)  →  [Dec 2, Jan 1)
+ *   [Mar 15, Mar 20) (5 days)   →  [Mar 10, Mar 15)
+ *
+ * Returns a NEW values map — the two window keys replaced with the shifted
+ * dates, every other parameter copied through unchanged — so the SAME primary
+ * SQL can re-run against the prior window through the normal bind pipeline (no
+ * string interpolation). Returns `null`, and the caller skips the comparison,
+ * when no sensible prior window exists: a bound is missing, non-string, or
+ * unparseable; the window is inverted (`from` after `to`); or it is zero-length
+ * (`from` equals `to`, an empty half-open range with nothing to shift).
+ */
+export function derivePriorPeriodValues(
+  values: Record<string, string | number | null>,
+  params: { from: string; to: string } = DEFAULT_COMPARISON_DATE_PARAMS,
+): Record<string, string | number | null> | null {
+  const from = parseIsoDateValue(values[params.from]);
+  const to = parseIsoDateValue(values[params.to]);
+  if (!from || !to) return null;
+
+  const spanDays = daysBetweenUtc(from, to);
+  // Inverted (< 0) or empty (= 0) windows have no meaningful prior period.
+  if (spanDays <= 0) return null;
+
+  const priorFrom = new Date(from.getTime());
+  priorFrom.setUTCDate(priorFrom.getUTCDate() - spanDays);
+  const priorTo = new Date(to.getTime());
+  priorTo.setUTCDate(priorTo.getUTCDate() - spanDays);
+
+  return {
+    ...values,
+    [params.from]: toIsoDate(priorFrom),
+    [params.to]: toIsoDate(priorTo),
+  };
+}

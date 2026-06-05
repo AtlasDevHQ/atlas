@@ -14,6 +14,8 @@ import {
   resolveDateExpression,
   resolveDashboardParameterValues,
   extractPlaceholderNames,
+  derivePriorPeriodValues,
+  DEFAULT_COMPARISON_DATE_PARAMS,
   DashboardParameterError,
   isBindableDbType,
 } from "@atlas/api/lib/dashboard-parameters";
@@ -285,5 +287,109 @@ describe("isBindableDbType", () => {
     expect(isBindableDbType("mysql")).toBe(true);
     expect(isBindableDbType("clickhouse")).toBe(false);
     expect(isBindableDbType("snowflake")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// derivePriorPeriodValues (#3207) — the automatic period-over-period window
+// shift. Pure: given resolved values with a [from, to) date window, shift BOTH
+// bounds back by the window's length so the same primary SQL runs against the
+// immediately-preceding, non-overlapping window of identical size.
+// ---------------------------------------------------------------------------
+
+describe("derivePriorPeriodValues", () => {
+  it("shifts a window back by its own length (the prior period is adjacent)", () => {
+    // [Jan 1, Jan 31) is a 30-day window; the prior 30-day window ends exactly
+    // where this one begins → [Dec 2, Jan 1).
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-01-01", date_to: "2026-01-31" }),
+    ).toEqual({ date_from: "2025-12-02", date_to: "2026-01-01" });
+  });
+
+  it("handles a short window (5 days)", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-15", date_to: "2026-03-20" }),
+    ).toEqual({ date_from: "2026-03-10", date_to: "2026-03-15" });
+  });
+
+  it("rolls correctly across a month boundary", () => {
+    // [Mar 1, Mar 8) span 7 → prior [Feb 22, Mar 1). Feb 2026 has 28 days.
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-01", date_to: "2026-03-08" }),
+    ).toEqual({ date_from: "2026-02-22", date_to: "2026-03-01" });
+  });
+
+  it("rolls correctly across a year boundary", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-01-05", date_to: "2026-01-10" }),
+    ).toEqual({ date_from: "2025-12-31", date_to: "2026-01-05" });
+  });
+
+  it("preserves non-window parameters unchanged", () => {
+    expect(
+      derivePriorPeriodValues({
+        date_from: "2026-03-15",
+        date_to: "2026-03-20",
+        region: "eu",
+        limit_n: 25,
+      }),
+    ).toEqual({
+      date_from: "2026-03-10",
+      date_to: "2026-03-15",
+      region: "eu",
+      limit_n: 25,
+    });
+  });
+
+  it("honors a custom from/to parameter pair", () => {
+    expect(
+      derivePriorPeriodValues(
+        { start: "2026-03-15", end: "2026-03-20" },
+        { from: "start", to: "end" },
+      ),
+    ).toEqual({ start: "2026-03-10", end: "2026-03-15" });
+  });
+
+  it("defaults to the date_from / date_to pair", () => {
+    expect(DEFAULT_COMPARISON_DATE_PARAMS).toEqual({ from: "date_from", to: "date_to" });
+  });
+
+  it("returns null when a bound is missing", () => {
+    expect(derivePriorPeriodValues({ date_from: "2026-03-15" })).toBeNull();
+    expect(derivePriorPeriodValues({ date_to: "2026-03-20" })).toBeNull();
+  });
+
+  it("returns null when a bound is null or non-string", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: null, date_to: "2026-03-20" }),
+    ).toBeNull();
+    expect(
+      derivePriorPeriodValues({ date_from: 20260315 as unknown as string, date_to: "2026-03-20" }),
+    ).toBeNull();
+  });
+
+  it("returns null when a bound is unparseable", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "not-a-date", date_to: "2026-03-20" }),
+    ).toBeNull();
+  });
+
+  it("returns null for an inverted window (from after to)", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-20", date_to: "2026-03-15" }),
+    ).toBeNull();
+  });
+
+  it("returns null for a zero-length window (from equals to)", () => {
+    // A half-open [from, from) window is empty; there's no period to shift.
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-15", date_to: "2026-03-15" }),
+    ).toBeNull();
+  });
+
+  it("does not mutate the input values map", () => {
+    const input = { date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" };
+    derivePriorPeriodValues(input);
+    expect(input).toEqual({ date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" });
   });
 });

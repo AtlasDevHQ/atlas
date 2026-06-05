@@ -209,7 +209,17 @@ export type DashboardKpiValueFormatWire = z.infer<typeof dashboardKpiValueFormat
 export const DASHBOARD_KPI_COMPARISON_SQL_MAX = 10_000;
 
 /**
- * KPI / scorecard config (#3137). `.strict()` so a stray field (a typo'd
+ * The two date parameters an automatic period-over-period comparison shifts
+ * (#3207). Both keys are validated as parameter keys so they line up with the
+ * dashboard's declared `:<key>` placeholders.
+ */
+export const dashboardComparisonDateParamsSchema = z.object({
+  from: dashboardParameterKeySchema,
+  to: dashboardParameterKeySchema,
+});
+
+/**
+ * KPI / scorecard config (#3137, #3207). `.strict()` so a stray field (a typo'd
  * `comparison_sql`, or a future option the client doesn't yet read) is rejected
  * at the boundary rather than persisted and silently ignored.
  */
@@ -217,18 +227,56 @@ export const dashboardKpiConfigSchema = z
   .object({
     valueFormat: dashboardKpiValueFormatSchema.optional(),
     comparisonSql: z.string().min(1).max(DASHBOARD_KPI_COMPARISON_SQL_MAX).optional(),
+    /**
+     * #3207 — request an automatic prior-period comparison instead of a
+     * hand-written `comparisonSql`. The render endpoint re-runs the card's own
+     * SQL with the bound date window shifted back one period.
+     */
+    autoComparison: z.boolean().optional(),
+    /** #3207 — override the date-param pair the auto comparison shifts. */
+    comparisonDateParams: dashboardComparisonDateParamsSchema.optional(),
     comparisonLabel: z.string().min(1).max(120).optional(),
+    /** #3207 — lower-is-better: invert the delta chip's colour. */
+    inverse: z.boolean().optional(),
   })
   .strict()
-  // `comparisonLabel` captions the delta chip, which only renders when
-  // `comparisonSql` produces a comparison value. A label with no SQL is dead
-  // config — reject it at the boundary rather than persisting a no-op.
   .superRefine((cfg, ctx) => {
-    if (cfg.comparisonLabel && !cfg.comparisonSql) {
+    // `comparisonSql` and `autoComparison` are two ways to populate the SAME
+    // delta chip. A card declares ONE comparison source, never both — having
+    // both is ambiguous about which query feeds the delta.
+    if (cfg.comparisonSql && cfg.autoComparison) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "comparisonLabel has no effect without comparisonSql.",
+        message: "Set either comparisonSql or autoComparison, not both.",
+        path: ["autoComparison"],
+      });
+    }
+    // `comparisonLabel` captions the delta chip, which only renders when a
+    // comparison value exists — from either source. A label with neither is
+    // dead config; reject it rather than persisting a no-op.
+    if (cfg.comparisonLabel && !cfg.comparisonSql && !cfg.autoComparison) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparisonLabel has no effect without comparisonSql or autoComparison.",
         path: ["comparisonLabel"],
+      });
+    }
+    // `comparisonDateParams` only drives the AUTOMATIC comparison's window
+    // shift — it's meaningless for a hand-written `comparisonSql`.
+    if (cfg.comparisonDateParams && !cfg.autoComparison) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparisonDateParams only applies to autoComparison.",
+        path: ["comparisonDateParams"],
+      });
+    }
+    // The window's two bounds must be distinct parameters — shifting a window
+    // whose start and end are the same key would bind one date twice.
+    if (cfg.comparisonDateParams && cfg.comparisonDateParams.from === cfg.comparisonDateParams.to) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "comparisonDateParams.from and .to must be different parameters.",
+        path: ["comparisonDateParams"],
       });
     }
   });

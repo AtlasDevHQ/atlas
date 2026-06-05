@@ -58,7 +58,11 @@ import {
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
 import { dashboardParametersSchema, renderCardRequestSchema, dashboardChartConfigSchema } from "@useatlas/schemas";
-import { resolveDashboardParameterValues, extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
+import {
+  resolveDashboardParameterValues,
+  extractPlaceholderNames,
+  derivePriorPeriodValues,
+} from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import { validationHook } from "./validation-hook";
@@ -1899,14 +1903,39 @@ authed.openapi(renderCardRoute, async (c) => {
       throw err;
     }
 
-    // #3137 — a KPI card's optional `comparisonSql` runs as a SECOND query
+    // #3137 / #3207 — a KPI card's optional comparison runs as a SECOND query
     // through the SAME pipeline (validation + auto-LIMIT + statement timeout +
-    // RLS + audit), binding the SAME parameter values. Both queries run in
-    // parallel — no waterfall. The comparison is NEVER string-interpolated;
-    // the UI computes the delta from the two numbers.
+    // RLS + audit). Both queries run in parallel — no waterfall. The comparison
+    // is NEVER string-interpolated; the UI computes the delta from the two
+    // numbers. There are two ways to source the comparison, never both:
+    //   - `comparisonSql` (#3137): a hand-written second query, bound to the
+    //     SAME parameter values as the primary.
+    //   - `autoComparison` (#3207): re-run the card's OWN sql with the bound
+    //     date window shifted back one period (derived server-side; the prior
+    //     window binds through the same parameter protocol).
     const chartConfig = cardResult.data.chartConfig;
-    const comparisonSql =
-      chartConfig?.type === "kpi" ? chartConfig.kpi?.comparisonSql : undefined;
+    const kpi = chartConfig?.type === "kpi" ? chartConfig.kpi : undefined;
+    const comparisonSql = kpi?.comparisonSql;
+
+    // Resolve the effective comparison query + its bind values. Default: the
+    // hand-written `comparisonSql` against the primary param values.
+    let comparisonRunSql = comparisonSql;
+    let comparisonParamValues = paramValues;
+    if (!comparisonSql && kpi?.autoComparison) {
+      const priorValues = derivePriorPeriodValues(paramValues, kpi.comparisonDateParams);
+      if (priorValues) {
+        comparisonRunSql = cardResult.data.sql;
+        comparisonParamValues = priorValues;
+      } else {
+        // No derivable prior window (a bound is missing/unparseable, or the
+        // range is inverted/empty). Render the headline number with no delta
+        // chip rather than failing — but say why (never silently swallowed).
+        log.warn(
+          { cardId, requestId },
+          "KPI autoComparison requested but no prior-period window could be derived — delta chip omitted",
+        );
+      }
+    }
 
     const { runUserQueryPipeline } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const [outcome, comparisonOutcome] = yield* Effect.promise(() =>
@@ -1923,12 +1952,12 @@ authed.openapi(renderCardRoute, async (c) => {
         // the whole `Promise.all` and 500 the primary render. Degrade an
         // unexpected throw to `null` so a broken comparison never breaks the
         // headline number — but log it (never silently swallowed).
-        comparisonSql
+        comparisonRunSql
           ? runUserQueryPipeline({
-              sql: comparisonSql,
+              sql: comparisonRunSql,
               ...(resolvedConnectionId && { connectionId: resolvedConnectionId }),
               explanation: `Dashboard KPI comparison: ${cardResult.data.title}`,
-              parameters: paramValues,
+              parameters: comparisonParamValues,
             }).catch((err) => {
               log.warn(
                 { cardId, requestId, err: err instanceof Error ? err.message : String(err) },
@@ -1941,11 +1970,11 @@ authed.openapi(renderCardRoute, async (c) => {
     );
 
     const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
-    // Attach the comparison only when the primary succeeded AND a comparisonSql
-    // is configured. A failed comparison degrades to `null` (the delta chip is
-    // dropped) rather than failing the whole KPI render — but it's logged, never
-    // silently swallowed.
-    if (outcome.kind === "ok" && comparisonSql) {
+    // Attach the comparison only when the primary succeeded AND a comparison
+    // query was configured/derived. A failed comparison degrades to `null` (the
+    // delta chip is dropped) rather than failing the whole KPI render — but it's
+    // logged, never silently swallowed.
+    if (outcome.kind === "ok" && comparisonRunSql) {
       if (comparisonOutcome && comparisonOutcome.kind === "ok") {
         (body as Record<string, unknown>).comparison = {
           columns: comparisonOutcome.columns,

@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { rowToCard, CardLayoutSchema } from "@atlas/api/lib/dashboards";
+import type { DashboardChartConfig } from "@atlas/api/lib/dashboard-types";
 
 const baseRow = {
   id: "card-1",
@@ -55,6 +56,38 @@ describe("rowToCard layout parsing", () => {
   test("treats null layout as not-yet-placed", () => {
     expect(rowToCard({ ...baseRow, layout: null }).layout).toBeNull();
     expect(rowToCard({ ...baseRow }).layout).toBeNull();
+  });
+});
+
+describe("rowToCard chart_config / KPI round-trip (#3137, #3207)", () => {
+  test("round-trips a KPI auto-comparison config (object form)", () => {
+    const chartConfig: DashboardChartConfig = {
+      type: "kpi",
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: {
+        valueFormat: "percent",
+        autoComparison: true,
+        comparisonDateParams: { from: "start", to: "end" },
+        comparisonLabel: "vs. prior period",
+        inverse: true,
+      },
+    };
+    const card = rowToCard({ ...baseRow, chart_config: chartConfig });
+    // The new #3207 fields survive the read path unchanged (no field-by-field
+    // mapping strips them — chart_config is carried through as a whole).
+    expect(card.chartConfig).toEqual(chartConfig);
+  });
+
+  test("round-trips a KPI auto-comparison config (JSON string form)", () => {
+    const chartConfig: DashboardChartConfig = {
+      type: "kpi",
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: { autoComparison: true, inverse: true },
+    };
+    const card = rowToCard({ ...baseRow, chart_config: JSON.stringify(chartConfig) });
+    expect(card.chartConfig).toEqual(chartConfig);
   });
 });
 

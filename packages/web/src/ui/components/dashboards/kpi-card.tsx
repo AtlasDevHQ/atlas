@@ -68,6 +68,23 @@ export function computeKpiDelta(current: number | null, prior: number | null): K
   return { pct, direction: current > prior ? "up" : "down" };
 }
 
+/** Colour intent of a delta chip — independent of the arrow direction. */
+export type DeltaTone = "positive" | "negative" | "neutral";
+
+/**
+ * Map a delta direction to a colour tone (#3207). For a normal
+ * higher-is-better metric an INCREASE is positive (green) and a decrease
+ * negative (red). When `inverse` is set — a lower-is-better metric like churn,
+ * latency, or cost — the mapping flips: a DECREASE is the good outcome. `flat`
+ * is always neutral. The direction arrow always tracks the real change; only
+ * the tone responds to `inverse`.
+ */
+export function deltaTone(direction: KpiDelta["direction"], inverse = false): DeltaTone {
+  if (direction === "flat") return "neutral";
+  const improved = inverse ? direction === "down" : direction === "up";
+  return improved ? "positive" : "negative";
+}
+
 /** Render `seconds` as a compact two-unit duration (`1h 1m`, `3m 4s`, `45s`). */
 function formatDuration(seconds: number): string {
   const total = Math.round(Math.abs(seconds));
@@ -112,69 +129,125 @@ export function formatKpiValue(value: number | null, format?: DashboardKpiValueF
   }
 }
 
-/** True when a card is a KPI card that declares a comparison query (#3137).
- *  A text card (`chartConfig: null`) or a non-KPI chart card is never a match. */
+/** True when a card is a KPI card that produces a comparison delta — either a
+ *  hand-written `comparisonSql` (#3137) or an automatic period-over-period
+ *  comparison (#3207). A text card (`chartConfig: null`) or a non-KPI chart
+ *  card is never a match. The dashboard page uses this to decide which cards
+ *  need a comparison fetched at view time. */
 export function hasKpiComparison(card: Pick<DashboardCard, "chartConfig">): boolean {
-  return card.chartConfig?.type === "kpi" && !!card.chartConfig?.kpi?.comparisonSql;
+  if (card.chartConfig?.type !== "kpi") return false;
+  const kpi = card.chartConfig.kpi;
+  return !!kpi && (!!kpi.comparisonSql || kpi.autoComparison === true);
+}
+
+/** The fetch-affecting comparison config of a KPI card — what the `/render`
+ *  endpoint actually runs. The client-only `inverse` (colour) is excluded: it
+ *  changes how the delta is painted, not what's fetched, so toggling it must NOT
+ *  refetch.
+ *
+ *  For `autoComparison` the prior-period query IS the card's OWN `sql` (run
+ *  against the shifted window), so the primary SQL is part of the key — editing
+ *  it must move the signature and re-fetch, or the delta would keep comparing
+ *  against the stale prior-period result. For a hand-written `comparisonSql` the
+ *  query is captured directly. */
+function comparisonKey(card: Pick<DashboardCard, "chartConfig" | "sql">): unknown {
+  const kpi = card.chartConfig?.kpi;
+  return {
+    sql: kpi?.comparisonSql ?? "",
+    autoSql: kpi?.autoComparison ? card.sql : "",
+    params: kpi?.comparisonDateParams ?? null,
+  };
 }
 
 /**
- * Stable signature of a dashboard's KPI-comparison set — one `[id, sql]` tuple
- * per KPI card that has a comparison query. The dashboard page keys its
+ * Stable signature of a dashboard's KPI-comparison set — one `[id, key]` tuple
+ * per KPI card that produces a comparison delta. The dashboard page keys its
  * default-comparison fetch effect on this so it re-runs ONLY when a KPI card's
- * comparison query is added, removed, or edited — an unrelated refetch (a stage
- * change, a layout save) leaves the signature unchanged and doesn't re-fire
- * every comparison query.
+ * comparison config (or, for auto cards, its primary SQL) is added, removed, or
+ * edited — an unrelated refetch (a stage change, a layout save) leaves the
+ * signature unchanged and doesn't re-fire every comparison query.
  *
  * Sorted by id and JSON-serialized so the signature is order-INDEPENDENT (a
  * card reorder must not refetch) and collision-safe: SQL can legally contain
  * the `:`/`|` characters a naive delimiter-join would conflate.
  */
 export function kpiComparisonSignature(
-  cards: Array<Pick<DashboardCard, "id" | "chartConfig">>,
+  cards: Array<Pick<DashboardCard, "id" | "chartConfig" | "sql">>,
 ): string {
   return JSON.stringify(
     cards
       .filter(hasKpiComparison)
-      .map((c) => [c.id, c.chartConfig?.kpi?.comparisonSql ?? ""] as const)
+      .map((c) => [c.id, comparisonKey(c)] as const)
       .toSorted(([leftId], [rightId]) => leftId.localeCompare(rightId)),
   );
 }
 
-/** Inline SVG sparkline — a single polyline over the series, normalized to the
- *  viewBox. Decorative (`aria-hidden`); the headline number carries the value. */
-function Sparkline({ values, className }: { values: number[]; className?: string }) {
-  const W = 100;
-  const H = 28;
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const step = values.length > 1 ? W / (values.length - 1) : W;
-  const points = values
+/**
+ * Pure geometry for the sparkline (#3207): project a numeric series onto a
+ * `W × H` viewBox, returning the polyline `points` string. Y is inverted so
+ * larger values sit higher, with `pad`px of head/foot room.
+ *
+ * Returns `null` when there's no line to draw (fewer than two FINITE points —
+ * a single-row scorecard, or a series of nulls/NaNs). A FLAT series (every
+ * value equal) is centred vertically rather than pinned to the bottom edge,
+ * which is what the naive `(v - min) / (max - min || 1)` produced.
+ */
+export function sparklineGeometry(values: number[], w = 100, h = 28): string | null {
+  const finite = values.filter((v) => Number.isFinite(v));
+  if (finite.length < 2) return null;
+  const pad = 2;
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const span = max - min;
+  const step = w / (finite.length - 1);
+  return finite
     .map((v, i) => {
       const x = i * step;
-      // Invert Y so larger values sit higher; pad 2px top/bottom.
-      const y = H - 2 - ((v - min) / span) * (H - 4);
+      // Flat series → centre line (t = 0.5); otherwise normalize into [0, 1].
+      const t = span === 0 ? 0.5 : (v - min) / span;
+      const y = h - pad - t * (h - 2 * pad);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
+}
+
+/** Stroke colour of the sparkline by delta tone — muted so it reads as
+ *  decoration, not a second metric. Falls back to a neutral slate. */
+const SPARKLINE_TONE: Record<DeltaTone, string> = {
+  positive: "text-emerald-500/70 dark:text-emerald-400/70",
+  negative: "text-red-500/70 dark:text-red-400/70",
+  neutral: "text-zinc-400/80 dark:text-zinc-500/80",
+};
+
+/** Inline SVG sparkline — a single polyline over the series, tinted by delta
+ *  tone. Decorative (`aria-hidden`); the headline number carries the value.
+ *  `preserveAspectRatio="none"` stretches the line to fill the card width, so a
+ *  non-scaling stroke keeps the line weight constant (and we avoid point
+ *  markers, which the non-uniform scale would distort into ellipses). Renders
+ *  nothing when {@link sparklineGeometry} has no line to draw. */
+function Sparkline({ values, tone = "neutral", className }: { values: number[]; tone?: DeltaTone; className?: string }) {
+  const W = 100;
+  const H = 28;
+  const points = sparklineGeometry(values, W, H);
+  if (!points) return null;
   return (
     <svg
       data-testid="kpi-sparkline"
       aria-hidden="true"
       viewBox={`0 0 ${W} ${H}`}
       preserveAspectRatio="none"
-      className={cn("h-7 w-full text-emerald-500/70 dark:text-emerald-400/70", className)}
+      className={cn("h-7 w-full", SPARKLINE_TONE[tone], className)}
     >
       <polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
 
-const DELTA_STYLES: Record<KpiDelta["direction"], string> = {
-  up: "text-emerald-600 dark:text-emerald-400",
-  down: "text-red-600 dark:text-red-400",
-  flat: "text-zinc-500 dark:text-zinc-400",
+/** Delta-chip text colour by tone (#3207). */
+const TONE_STYLES: Record<DeltaTone, string> = {
+  positive: "text-emerald-600 dark:text-emerald-400",
+  negative: "text-red-600 dark:text-red-400",
+  neutral: "text-zinc-500 dark:text-zinc-400",
 };
 
 const DELTA_ICON: Record<KpiDelta["direction"], typeof ArrowUp> = {
@@ -213,13 +286,14 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
 
   const valueFormat = config?.kpi?.valueFormat;
   const comparisonLabel = config?.kpi?.comparisonLabel;
+  const inverse = config?.kpi?.inverse ?? false;
+  const tone: DeltaTone = delta ? deltaTone(delta.direction, inverse) : "neutral";
 
-  // Sparkline series: the value column across every row, in order. Only shown
-  // when the primary query returns a trend (≥2 finite points).
+  // Sparkline series: the value column across every row, in order. The geometry
+  // helper (below) hides it when there's no trend (a single-row scorecard).
   const series = rows
     .map((r) => extractKpiNumber(columns, [r], valueColumn))
     .filter((n): n is number => n !== null);
-  const showSparkline = series.length >= 2;
 
   const DeltaIcon = delta ? DELTA_ICON[delta.direction] : null;
 
@@ -238,9 +312,10 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
           <span
             data-testid="kpi-delta"
             data-direction={delta.direction}
+            data-tone={tone}
             className={cn(
               "inline-flex items-center gap-0.5 text-sm font-medium tabular-nums",
-              DELTA_STYLES[delta.direction],
+              TONE_STYLES[tone],
             )}
             aria-label={`${delta.direction === "up" ? "Up" : delta.direction === "down" ? "Down" : "No change"} ${PERCENT_NUMBER.format(Math.abs(delta.pct))} percent`}
           >
@@ -253,7 +328,7 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
         </div>
       )}
 
-      {showSparkline && <Sparkline values={series} />}
+      <Sparkline values={series} tone={tone} />
     </div>
   );
 }

@@ -14,6 +14,9 @@ import {
   resolveDateExpression,
   resolveDashboardParameterValues,
   extractPlaceholderNames,
+  derivePriorPeriodValues,
+  validateAutoComparison,
+  DEFAULT_COMPARISON_DATE_PARAMS,
   DashboardParameterError,
   isBindableDbType,
 } from "@atlas/api/lib/dashboard-parameters";
@@ -285,5 +288,177 @@ describe("isBindableDbType", () => {
     expect(isBindableDbType("mysql")).toBe(true);
     expect(isBindableDbType("clickhouse")).toBe(false);
     expect(isBindableDbType("snowflake")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// derivePriorPeriodValues (#3207) — the automatic period-over-period window
+// shift. Pure: given resolved values with a [from, to) date window, shift BOTH
+// bounds back by the window's length so the same primary SQL runs against the
+// immediately-preceding, non-overlapping window of identical size.
+// ---------------------------------------------------------------------------
+
+describe("derivePriorPeriodValues", () => {
+  it("shifts a window back by its own length (the prior period is adjacent)", () => {
+    // [Jan 1, Jan 31) is a 30-day window; the prior 30-day window ends exactly
+    // where this one begins → [Dec 2, Jan 1).
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-01-01", date_to: "2026-01-31" }),
+    ).toEqual({ date_from: "2025-12-02", date_to: "2026-01-01" });
+  });
+
+  it("handles a short window (5 days)", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-15", date_to: "2026-03-20" }),
+    ).toEqual({ date_from: "2026-03-10", date_to: "2026-03-15" });
+  });
+
+  it("rolls correctly across a month boundary", () => {
+    // [Mar 1, Mar 8) span 7 → prior [Feb 22, Mar 1). Feb 2026 has 28 days.
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-01", date_to: "2026-03-08" }),
+    ).toEqual({ date_from: "2026-02-22", date_to: "2026-03-01" });
+  });
+
+  it("rolls correctly across a year boundary", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-01-05", date_to: "2026-01-10" }),
+    ).toEqual({ date_from: "2025-12-31", date_to: "2026-01-05" });
+  });
+
+  it("preserves non-window parameters unchanged", () => {
+    expect(
+      derivePriorPeriodValues({
+        date_from: "2026-03-15",
+        date_to: "2026-03-20",
+        region: "eu",
+        limit_n: 25,
+      }),
+    ).toEqual({
+      date_from: "2026-03-10",
+      date_to: "2026-03-15",
+      region: "eu",
+      limit_n: 25,
+    });
+  });
+
+  it("honors a custom from/to parameter pair", () => {
+    expect(
+      derivePriorPeriodValues(
+        { start: "2026-03-15", end: "2026-03-20" },
+        { from: "start", to: "end" },
+      ),
+    ).toEqual({ start: "2026-03-10", end: "2026-03-15" });
+  });
+
+  it("defaults to the date_from / date_to pair", () => {
+    expect(DEFAULT_COMPARISON_DATE_PARAMS).toEqual({ from: "date_from", to: "date_to" });
+  });
+
+  it("returns null when a bound is missing", () => {
+    expect(derivePriorPeriodValues({ date_from: "2026-03-15" })).toBeNull();
+    expect(derivePriorPeriodValues({ date_to: "2026-03-20" })).toBeNull();
+  });
+
+  it("returns null when a bound is null or non-string", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: null, date_to: "2026-03-20" }),
+    ).toBeNull();
+    expect(
+      derivePriorPeriodValues({ date_from: 20260315 as unknown as string, date_to: "2026-03-20" }),
+    ).toBeNull();
+  });
+
+  it("returns null when a bound is unparseable", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "not-a-date", date_to: "2026-03-20" }),
+    ).toBeNull();
+  });
+
+  it("returns null for an inverted window (from after to)", () => {
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-20", date_to: "2026-03-15" }),
+    ).toBeNull();
+  });
+
+  it("returns null for a zero-length window (from equals to)", () => {
+    // A half-open [from, from) window is empty; there's no period to shift.
+    expect(
+      derivePriorPeriodValues({ date_from: "2026-03-15", date_to: "2026-03-15" }),
+    ).toBeNull();
+  });
+
+  it("does not mutate the input values map", () => {
+    const input = { date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" };
+    derivePriorPeriodValues(input);
+    expect(input).toEqual({ date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateAutoComparison (#3207) — the shared persistence-path guard: a card
+// requesting an automatic prior-period comparison must filter by both window
+// params, declared as `date`.
+// ---------------------------------------------------------------------------
+
+describe("validateAutoComparison", () => {
+  const sql = "SELECT sum(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to";
+  const dateParams = [
+    { key: "date_from", type: "date" as const, default: "now - 30 days", label: "From" },
+    { key: "date_to", type: "date" as const, default: "now", label: "To" },
+  ];
+
+  it("returns null when autoComparison is not set (nothing to validate)", () => {
+    expect(validateAutoComparison(sql, undefined)).toBeNull();
+    expect(validateAutoComparison(sql, { comparisonSql: "SELECT 1 AS total" })).toBeNull();
+    expect(validateAutoComparison(sql, { autoComparison: false })).toBeNull();
+  });
+
+  it("accepts a card that filters by both date-typed window params", () => {
+    expect(validateAutoComparison(sql, { autoComparison: true }, dateParams)).toBeNull();
+  });
+
+  it("rejects when the SQL does not reference both window params", () => {
+    const err = validateAutoComparison("SELECT sum(amount) AS total FROM orders", { autoComparison: true }, dateParams);
+    expect(err).toMatch(/autoComparison/i);
+    expect(err).toContain(":date_from");
+    expect(err).toContain(":date_to");
+  });
+
+  it("rejects when only one window bound is referenced", () => {
+    const err = validateAutoComparison(
+      "SELECT sum(amount) AS total FROM orders WHERE created_at >= :date_from",
+      { autoComparison: true },
+      dateParams,
+    );
+    // The missing bound (date_to) is named; date_from also appears in the
+    // example clause, so we only assert the genuinely-missing one is flagged.
+    expect(err).toMatch(/does not reference :date_to\b/);
+  });
+
+  it("rejects when a window param is not declared as a date", () => {
+    const err = validateAutoComparison(sql, { autoComparison: true }, [
+      { key: "date_from", type: "number", default: 0, label: "From" },
+      { key: "date_to", type: "date", default: "now", label: "To" },
+    ]);
+    expect(err).toMatch(/date parameter/i);
+    expect(err).toContain(":date_from");
+  });
+
+  it("honours a custom comparisonDateParams pair", () => {
+    const customSql = "SELECT sum(amount) AS total FROM orders WHERE created_at >= :start AND created_at < :end";
+    const params = [
+      { key: "start", type: "date" as const, default: "now - 7 days", label: "Start" },
+      { key: "end", type: "date" as const, default: "now", label: "End" },
+    ];
+    expect(
+      validateAutoComparison(customSql, { autoComparison: true, comparisonDateParams: { from: "start", to: "end" } }, params),
+    ).toBeNull();
+  });
+
+  it("skips the date-type check when no parameter definitions are supplied (reference check only)", () => {
+    // Bound-editor path: SQL is available, parameter defs are not.
+    expect(validateAutoComparison(sql, { autoComparison: true })).toBeNull();
+    expect(validateAutoComparison("SELECT 1", { autoComparison: true })).toMatch(/autoComparison/i);
   });
 });

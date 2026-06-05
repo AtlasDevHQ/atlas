@@ -709,6 +709,31 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(404);
     });
 
+    it("returns 400 for an autoComparison KPI card whose SQL omits the date window (#3207)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Revenue",
+            // No :date_from / :date_to — the prior-period shift would be a no-op.
+            sql: "SELECT SUM(amount) AS total FROM orders",
+            chartConfig: {
+              type: "kpi",
+              categoryColumn: "total",
+              valueColumns: ["total"],
+              kpi: { autoComparison: true },
+            },
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toMatch(/autoComparison/i);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
     it("returns 400 when connectionGroupId belongs to a different org (#2424)", async () => {
       // The route looks up the dashboard's org, then verifies the supplied
       // connection_group_id is owned by that org. A "not_found" verdict from
@@ -1158,6 +1183,99 @@ describe("dashboard routes", () => {
       );
       expect(comparisonCall?.[0].sql).toContain("< :date_from");
       expect(comparisonCall?.[0].parameters).toMatchObject({ date_from: "2026-01-01" });
+    });
+
+    // #3207 — autoComparison re-runs the card's OWN sql with the date window
+    // shifted back one period (no hand-written comparisonSql).
+    const autoKpiDashboard = {
+      ...mockDashboardData,
+      parameters: [
+        { key: "date_from", type: "date", default: "now - 30 days", label: "From" },
+        { key: "date_to", type: "date", default: "now", label: "To" },
+      ],
+      cards: [],
+    };
+    const autoKpiCard = {
+      ...mockCardData,
+      sql: "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to",
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "label",
+        valueColumns: ["total"],
+        kpi: { valueFormat: "currency", autoComparison: true, comparisonLabel: "vs. prior period" },
+      },
+    };
+
+    it("runs the card's own sql against the shifted prior window for autoComparison", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      // Dispatch on the bound date_from: prior window starts earlier.
+      mockRunUserQueryPipeline.mockImplementation(async (opts) => {
+        const total = opts.parameters?.date_from === "2026-01-04" ? 1000000 : 1200000;
+        return {
+          kind: "ok" as const,
+          columns: ["total"],
+          rows: [{ total }],
+          rowCount: 1,
+          executionMs: 4,
+          truncated: false,
+          maskingApplied: false,
+        };
+      });
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: autoKpiDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: autoKpiCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // [Feb 1, Mar 1) is a 28-day window → prior [Jan 4, Feb 1).
+          body: JSON.stringify({ parameters: { date_from: "2026-02-01", date_to: "2026-03-01" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        rows: { total: number }[];
+        comparison: { rows: { total: number }[] } | null;
+      };
+      expect(body.rows[0].total).toBe(1200000);
+      expect(body.comparison?.rows[0].total).toBe(1000000);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(2);
+      const comparisonCall = mockRunUserQueryPipeline.mock.calls.find(
+        (c) => c[0].parameters?.date_from === "2026-01-04",
+      );
+      // Same SQL as the primary; only the bound window moved.
+      expect(comparisonCall?.[0].sql).toBe(autoKpiCard.sql);
+      expect(comparisonCall?.[0].parameters).toMatchObject({ date_from: "2026-01-04", date_to: "2026-02-01" });
+    });
+
+    it("omits `comparison` for autoComparison when the window can't be derived (inverted range)", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      mockRunUserQueryPipeline.mockImplementation(async () => ({
+        kind: "ok" as const,
+        columns: ["total"],
+        rows: [{ total: 1200000 }],
+        rowCount: 1,
+        executionMs: 4,
+        truncated: false,
+        maskingApplied: false,
+      }));
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: autoKpiDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: autoKpiCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // from after to → no derivable prior period.
+          body: JSON.stringify({ parameters: { date_from: "2026-03-01", date_to: "2026-02-01" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect("comparison" in body).toBe(false);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
     });
 
     it("omits `comparison` for a KPI card with no comparisonSql", async () => {

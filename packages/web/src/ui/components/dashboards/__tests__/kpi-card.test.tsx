@@ -4,10 +4,12 @@ import type { DashboardCard } from "@/ui/lib/types";
 import {
   KpiCard,
   computeKpiDelta,
+  deltaTone,
   extractKpiNumber,
   formatKpiValue,
   hasKpiComparison,
   kpiComparisonSignature,
+  sparklineGeometry,
 } from "../kpi-card";
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,88 @@ describe("formatKpiValue", () => {
   test("renders an em-dash for a null / non-finite value", () => {
     expect(formatKpiValue(null, "currency")).toBe("—");
     expect(formatKpiValue(Number.NaN, "number")).toBe("—");
+    expect(formatKpiValue(Number.POSITIVE_INFINITY, "currency")).toBe("—");
+  });
+
+  // #3207 — formatter hardening: negative + very-large + zero across formats.
+  test("formats a negative currency in compact notation with its sign", () => {
+    expect(formatKpiValue(-1200000, "currency")).toBe("-$1.2M");
+  });
+
+  test("formats a negative compact number with its sign", () => {
+    expect(formatKpiValue(-1234, "number")).toBe("-1.2K");
+  });
+
+  test("compacts billions", () => {
+    expect(formatKpiValue(2_400_000_000, "number")).toBe("2.4B");
+    expect(formatKpiValue(2_400_000_000, "currency")).toBe("$2.4B");
+  });
+
+  test("formats zero cleanly across formats (no NaN / divide artifacts)", () => {
+    expect(formatKpiValue(0, "number")).toBe("0");
+    expect(formatKpiValue(0, "currency")).toBe("$0");
+    expect(formatKpiValue(0, "percent")).toBe("0%");
+    expect(formatKpiValue(0, "duration")).toBe("0s");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deltaTone (#3207) — maps a delta direction to a colour tone, honouring the
+// `inverse` (lower-is-better) flag. The arrow still follows direction; only the
+// colour tone flips.
+// ---------------------------------------------------------------------------
+
+describe("deltaTone", () => {
+  test("higher-is-better: up is positive, down is negative", () => {
+    expect(deltaTone("up", false)).toBe("positive");
+    expect(deltaTone("down", false)).toBe("negative");
+  });
+
+  test("lower-is-better (inverse): down is positive, up is negative", () => {
+    expect(deltaTone("down", true)).toBe("positive");
+    expect(deltaTone("up", true)).toBe("negative");
+  });
+
+  test("flat is always neutral regardless of inverse", () => {
+    expect(deltaTone("flat", false)).toBe("neutral");
+    expect(deltaTone("flat", true)).toBe("neutral");
+  });
+
+  test("defaults to higher-is-better when inverse is omitted", () => {
+    expect(deltaTone("up")).toBe("positive");
+    expect(deltaTone("down")).toBe("negative");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sparklineGeometry (#3207) — the pure geometry behind the sparkline. A flat
+// series must sit at the vertical centre (not glued to an edge), and a series
+// with <2 finite points has no line to draw.
+// ---------------------------------------------------------------------------
+
+describe("sparklineGeometry", () => {
+  test("returns null for fewer than two finite points", () => {
+    expect(sparklineGeometry([])).toBeNull();
+    expect(sparklineGeometry([5])).toBeNull();
+    expect(sparklineGeometry([Number.NaN, Number.POSITIVE_INFINITY])).toBeNull();
+  });
+
+  test("centres a flat series vertically instead of pinning it to an edge", () => {
+    const points = sparklineGeometry([10, 10, 10], 100, 28);
+    expect(points).not.toBeNull();
+    // pad = 2 → centre y = 28 - 2 - 0.5 * (28 - 4) = 14.
+    for (const pair of points!.split(" ")) {
+      expect(pair.split(",")[1]).toBe("14.0");
+    }
+  });
+
+  test("spans the full width and reflects the latest value at the right edge", () => {
+    const points = sparklineGeometry([0, 5, 10], 100, 28)!.split(" ");
+    // Last x is the full width; ascending series → last point is the highest
+    // (smallest y, near the top padding).
+    const [lastX, lastY] = points[points.length - 1].split(",").map(Number);
+    expect(lastX).toBeCloseTo(100, 5);
+    expect(lastY).toBeCloseTo(2, 5);
   });
 });
 
@@ -151,18 +235,32 @@ describe("hasKpiComparison", () => {
     expect(hasKpiComparison({ chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } })).toBe(false);
     expect(hasKpiComparison({ chartConfig: null })).toBe(false);
   });
+
+  // #3207 — an autoComparison card produces a delta too, even without comparisonSql.
+  test("true for a kpi card with autoComparison and no comparisonSql", () => {
+    expect(
+      hasKpiComparison({ chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { autoComparison: true } } }),
+    ).toBe(true);
+  });
+
+  test("false for a kpi card with autoComparison explicitly false", () => {
+    expect(
+      hasKpiComparison({ chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { autoComparison: false, inverse: true } } }),
+    ).toBe(false);
+  });
 });
 
 describe("kpiComparisonSignature", () => {
-  const kpiWith = (id: string, sql: string) => ({
+  const kpiWith = (id: string, comparisonSql: string) => ({
     id,
-    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: sql } },
+    sql: "SELECT 1 AS v",
+    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql } },
   });
 
   test("includes only KPI cards with a comparison query", () => {
     const withChart = kpiComparisonSignature([
       kpiWith("a", "SELECT 1 AS v"),
-      { id: "b", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
+      { id: "b", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
       kpiWith("c", "SELECT 2 AS v"),
     ]);
     const onlyKpi = kpiComparisonSignature([kpiWith("a", "SELECT 1 AS v"), kpiWith("c", "SELECT 2 AS v")]);
@@ -188,10 +286,59 @@ describe("kpiComparisonSignature", () => {
     const editedSql = kpiComparisonSignature([kpiWith("a", "SELECT 99 AS v")]);
     const unrelated = kpiComparisonSignature([
       kpiWith("a", "SELECT 1 AS v"),
-      { id: "z", chartConfig: { type: "line", categoryColumn: "l", valueColumns: ["v"] } },
+      { id: "z", sql: "SELECT 1", chartConfig: { type: "line", categoryColumn: "l", valueColumns: ["v"] } },
     ]);
     expect(editedSql).not.toBe(before);
     expect(unrelated).toBe(before); // a non-comparison card doesn't move the signature
+  });
+
+  // #3207 — autoComparison cards belong in the signature; toggling the
+  // client-only `inverse` colour must NOT move it (it doesn't change the fetch).
+  const AUTO_SQL = "SELECT sum(v) AS v FROM t WHERE d >= :date_from AND d < :date_to";
+  const kpiAuto = (id: string, kpi: Record<string, unknown>, sql: string = AUTO_SQL) => ({
+    id,
+    sql,
+    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi },
+  });
+
+  test("includes an autoComparison card", () => {
+    const withAuto = kpiComparisonSignature([kpiAuto("a", { autoComparison: true })]);
+    const empty = kpiComparisonSignature([
+      { id: "a", sql: AUTO_SQL, chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { valueFormat: "number" } } },
+    ]);
+    expect(withAuto).not.toBe(empty);
+  });
+
+  test("does not move when only the inverse colour flips", () => {
+    const off = kpiComparisonSignature([kpiAuto("a", { autoComparison: true, inverse: false })]);
+    const on = kpiComparisonSignature([kpiAuto("a", { autoComparison: true, inverse: true })]);
+    expect(on).toBe(off);
+  });
+
+  test("moves when the comparison date-param pair changes", () => {
+    const a = kpiComparisonSignature([kpiAuto("a", { autoComparison: true })]);
+    const b = kpiComparisonSignature([kpiAuto("a", { autoComparison: true, comparisonDateParams: { from: "s", to: "e" } })]);
+    expect(b).not.toBe(a);
+  });
+
+  // #3207 (Codex P2) — for an auto card the prior-period query IS the primary
+  // SQL, so editing it must move the signature (else the page keeps the stale
+  // delta). A hand-written comparisonSql card is keyed on its explicit query,
+  // so its primary SQL is irrelevant to the fetch.
+  test("moves when an autoComparison card's primary SQL changes", () => {
+    const before = kpiComparisonSignature([kpiAuto("a", { autoComparison: true }, "SELECT sum(x) FROM t WHERE d >= :date_from AND d < :date_to")]);
+    const after = kpiComparisonSignature([kpiAuto("a", { autoComparison: true }, "SELECT avg(x) FROM t WHERE d >= :date_from AND d < :date_to")]);
+    expect(after).not.toBe(before);
+  });
+
+  test("a comparisonSql card's signature ignores its primary SQL", () => {
+    const a = kpiComparisonSignature([
+      { id: "a", sql: "SELECT 1", chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: "SELECT 9 AS v" } } },
+    ]);
+    const b = kpiComparisonSignature([
+      { id: "a", sql: "SELECT 2", chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: "SELECT 9 AS v" } } },
+    ]);
+    expect(b).toBe(a);
   });
 });
 
@@ -269,6 +416,54 @@ describe("<KpiCard>", () => {
       <KpiCard card={kpiCard} comparison={{ columns: ["total"], rows: [{ total: 1200000 }] }} />,
     );
     expect(screen.getByTestId("kpi-delta").getAttribute("data-direction")).toBe("flat");
+  });
+
+  // #3207 — colour tone. Direction (the arrow) reflects the actual change; the
+  // tone (colour) is what the `inverse` flag flips.
+  test("a default (higher-is-better) increase reads as a positive tone", () => {
+    render(
+      <KpiCard card={kpiCard} comparison={{ columns: ["total"], rows: [{ total: 1000000 }] }} />,
+    );
+    const chip = screen.getByTestId("kpi-delta");
+    expect(chip.getAttribute("data-direction")).toBe("up");
+    expect(chip.getAttribute("data-tone")).toBe("positive");
+  });
+
+  test("a lower-is-better (inverse) DECREASE reads as a positive tone, arrow still down", () => {
+    const churnCard: DashboardCard = {
+      ...kpiCard,
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "label",
+        valueColumns: ["total"],
+        kpi: { valueFormat: "percent", autoComparison: true, inverse: true },
+      },
+    };
+    render(
+      <KpiCard card={churnCard} comparison={{ columns: ["total"], rows: [{ total: 1500000 }] }} />,
+    );
+    const chip = screen.getByTestId("kpi-delta");
+    // current 1.2M < prior 1.5M → direction down, but inverse → positive tone.
+    expect(chip.getAttribute("data-direction")).toBe("down");
+    expect(chip.getAttribute("data-tone")).toBe("positive");
+  });
+
+  test("a lower-is-better (inverse) INCREASE reads as a negative tone", () => {
+    const churnCard: DashboardCard = {
+      ...kpiCard,
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "label",
+        valueColumns: ["total"],
+        kpi: { valueFormat: "percent", autoComparison: true, inverse: true },
+      },
+    };
+    render(
+      <KpiCard card={churnCard} comparison={{ columns: ["total"], rows: [{ total: 1000000 }] }} />,
+    );
+    const chip = screen.getByTestId("kpi-delta");
+    expect(chip.getAttribute("data-direction")).toBe("up");
+    expect(chip.getAttribute("data-tone")).toBe("negative");
   });
 
   test("renders an em-dash and no chip/sparkline when there is no cached data", () => {

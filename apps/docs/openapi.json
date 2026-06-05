@@ -6583,10 +6583,37 @@
                             "minLength": 1,
                             "maxLength": 10000
                           },
+                          "autoComparison": {
+                            "type": "boolean"
+                          },
+                          "comparisonDateParams": {
+                            "type": "object",
+                            "properties": {
+                              "from": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "pattern": "^[a-z_][a-z0-9_]*$"
+                              },
+                              "to": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "pattern": "^[a-z_][a-z0-9_]*$"
+                              }
+                            },
+                            "required": [
+                              "from",
+                              "to"
+                            ]
+                          },
                           "comparisonLabel": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 120
+                          },
+                          "inverse": {
+                            "type": "boolean"
                           }
                         },
                         "additionalProperties": false
@@ -6893,10 +6920,37 @@
                             "minLength": 1,
                             "maxLength": 10000
                           },
+                          "autoComparison": {
+                            "type": "boolean"
+                          },
+                          "comparisonDateParams": {
+                            "type": "object",
+                            "properties": {
+                              "from": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "pattern": "^[a-z_][a-z0-9_]*$"
+                              },
+                              "to": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "pattern": "^[a-z_][a-z0-9_]*$"
+                              }
+                            },
+                            "required": [
+                              "from",
+                              "to"
+                            ]
+                          },
                           "comparisonLabel": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 120
+                          },
+                          "inverse": {
+                            "type": "boolean"
                           }
                         },
                         "additionalProperties": false

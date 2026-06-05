@@ -33,11 +33,36 @@ export interface DashboardKpiConfig {
   /**
    * Second single-number query for the delta chip. Runs through the same SQL
    * guard as the primary query — never string-interpolated. Omit for a KPI
-   * card with no comparison (big number only).
+   * card with no comparison (big number only). Mutually exclusive with
+   * {@link autoComparison}.
    */
   comparisonSql?: string;
+  /**
+   * Request an AUTOMATIC period-over-period comparison (#3207) without a
+   * hand-written {@link comparisonSql}. When true, the render endpoint re-runs
+   * the card's OWN `sql` with the bound date window shifted back exactly one
+   * period — a `[date_from, date_to)` window of length N days is compared
+   * against the immediately-preceding N-day window — through the same SQL guard
+   * (parameterized, auto-LIMIT, timeout). Requires the card to bind the
+   * dashboard's `:date_from` / `:date_to` params (or the pair named in
+   * {@link comparisonDateParams}). Mutually exclusive with `comparisonSql`.
+   */
+  autoComparison?: boolean;
+  /**
+   * Override the two date parameters the automatic comparison shifts. Defaults
+   * to `{ from: "date_from", to: "date_to" }`. Only meaningful with
+   * {@link autoComparison}.
+   */
+  comparisonDateParams?: { from: string; to: string };
   /** Caption under the delta chip, e.g. "vs. last month". */
   comparisonLabel?: string;
+  /**
+   * Lower-is-better metric (#3207). Inverts the delta chip's colour so a
+   * DECREASE renders green and an INCREASE red — for churn, latency, error
+   * rate, cost. The direction arrow still follows the actual change; only the
+   * colour flips. Defaults to false (higher-is-better).
+   */
+  inverse?: boolean;
 }
 
 export interface DashboardChartConfig {

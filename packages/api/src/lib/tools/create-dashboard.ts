@@ -52,7 +52,7 @@ import {
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
-import { extractPlaceholderNames } from "@atlas/api/lib/dashboard-parameters";
+import { extractPlaceholderNames, validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
 import { CardLayoutSchema } from "@atlas/api/lib/dashboards";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/dashboard-versioning";
@@ -163,9 +163,11 @@ Layout is optional — the dashboard auto-arranges cards if you omit it. Grid is
 
 KPI / SCORECARD CARDS: a \`kpi\` card is a big-number scorecard — the first thing a reader looks at. Lead a dashboard with 2-3 KPI cards summarizing the top metrics (revenue, active users, conversion), then put the trend charts below them. A KPI card's \`sql\` returns either a SINGLE headline row or a time-ordered multi-row trend (which also draws a compact sparkline under the number); either way \`chartConfig.categoryColumn\` names the label/time column and \`chartConfig.valueColumns[0]\` the metric column (the last row is the headline). Add \`chartConfig.kpi\` to control it:
   - \`valueFormat\`: "currency" | "number" | "percent" | "duration" (how the big number renders; "percent" expects a ready figure like 12.3, not 0.12; "duration" expects seconds).
-  - \`comparisonSql\`: an OPTIONAL second single-number query for the ▲/▼ delta chip — typically the same metric over the PRIOR period (e.g. \`... WHERE created_at < :date_from\`). It runs through the same SQL guard and binds the same \`:<param>\` placeholders; the UI computes the percentage change vs the primary value. Omit it for a plain big number.
+  - \`autoComparison\`: true → an AUTOMATIC period-over-period delta chip. PREFER this whenever the dashboard has \`:date_from\` / \`:date_to\` parameters and the card filters by them: it re-runs the card's OWN sql with the date window shifted back one period (no second query to write). The card MUST reference both window params (e.g. \`WHERE created_at >= :date_from AND created_at < :date_to\`) or the call is rejected. Pair with \`comparisonLabel: "vs. prior period"\`.
+  - \`comparisonSql\`: the MANUAL alternative — an OPTIONAL second single-number query for the delta chip when the prior period isn't a simple window shift (e.g. same week last year). Runs through the same SQL guard and binds the same \`:<param>\` placeholders. Mutually exclusive with \`autoComparison\`. Omit both for a plain big number.
   - \`comparisonLabel\`: caption under the chip, e.g. "vs. last month".
-Example: { title: "Revenue", sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from", chartConfig: { type: "kpi", categoryColumn: "label", valueColumns: ["total"], kpi: { valueFormat: "currency", comparisonSql: "SELECT SUM(amount) AS total FROM orders WHERE created_at >= :prev_from AND created_at < :date_from", comparisonLabel: "vs. prior period" } } }. Every \`:placeholder\` — INCLUDING those in \`comparisonSql\` (here \`:prev_from\` and \`:date_from\`) — must be declared in \`parameters\`, or the whole call is rejected.
+  - \`inverse\`: true → lower-is-better. The delta chip turns GREEN on a DECREASE (and red on an increase) — set it for churn, latency, error rate, cost, refunds. Leave it off (default) for higher-is-better metrics like revenue or signups.
+Example (preferred — automatic comparison): { title: "Revenue", sql: "SELECT 'Revenue' AS label, SUM(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to", chartConfig: { type: "kpi", categoryColumn: "label", valueColumns: ["total"], kpi: { valueFormat: "currency", autoComparison: true, comparisonLabel: "vs. prior period" } } }. Every \`:placeholder\` — INCLUDING those in a manual \`comparisonSql\` — must be declared in \`parameters\`, or the whole call is rejected.
 
 SECTION HEADERS (text cards): a card can be a markdown text block instead of a chart — pass { kind: "text", content: "## Top of funnel", layout: { x: 0, y: <row>, w: 24, h: 4 } }. A text card has NO sql/chartConfig and fetches no data; it just renders a sanitized-markdown header or explainer to organize the grid. For ANY dashboard with 4+ cards, group them under section headers — emit a full-width text card (w: 24) above each cluster of related charts ("Top of funnel", "Conversion", "Cohorts"). Keep content short — a heading and at most a sentence.
 
@@ -311,6 +313,17 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
             cardTitle: card.title,
             error: `references undeclared parameter(s): ${undeclared.map((n) => `:${n}`).join(", ")}. Add them to the dashboard's parameters.`,
           });
+        }
+
+        // #3207 — autoComparison shifts the card's bound date window back one
+        // period and re-runs the SAME sql. Validate (via the shared helper used
+        // by every persistence path) that the card filters by both window params
+        // AND that those params are declared as `date` — otherwise the
+        // prior-period query is a no-op or can't be shifted, and the promised
+        // delta silently vanishes.
+        const autoErr = validateAutoComparison(card.sql, card.chartConfig.kpi, parameters);
+        if (autoErr) {
+          placeholderErrors.push({ cardIndex: idx, cardTitle: card.title, error: autoErr });
         }
       }
       if (placeholderErrors.length > 0) {

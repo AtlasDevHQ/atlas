@@ -9,7 +9,6 @@
  * break.
  */
 import { afterEach, describe, expect, test, mock } from "bun:test";
-import { useState } from "react";
 import { useQueryState } from "nuqs";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { render, cleanup, fireEvent, waitFor, screen } from "@testing-library/react";
@@ -40,18 +39,16 @@ function Harness({ onChange }: { onChange: (o: ParameterValues) => void }) {
 }
 
 /**
- * A self-updating testing adapter: it feeds its captured URL updates straight
- * back in as `searchParams`. That reproduces the real-app round-trip — in
- * Next.js a `useQueryState` write updates the URL, which re-renders every hook
- * subscribed to that key — which the bare testing adapter doesn't do on its own.
+ * A real-app round-trip adapter for the shared key. `hasMemory` makes
+ * NuqsTestingAdapter retain each write in an internal synchronous ref (its
+ * built-in stand-in for a real URL), so a `useQueryState` write re-renders every
+ * hook subscribed to that key — the Next.js round-trip the bare adapter (frozen
+ * to its initial value) doesn't reproduce. The synchronous ref also means each
+ * write composes on the latest value, avoiding the optimistic-cache-vs-prop
+ * desync a hand-rolled `useState`-fed adapter hits under back-to-back writes.
  */
-function SyncingAdapter({ children }: { children: React.ReactNode }) {
-  const [search, setSearch] = useState(() => new URLSearchParams());
-  return (
-    <NuqsTestingAdapter searchParams={search} onUrlUpdate={(e) => setSearch(e.searchParams)}>
-      {children}
-    </NuqsTestingAdapter>
-  );
+function MemoryAdapter({ children }: { children: React.ReactNode }) {
+  return <NuqsTestingAdapter hasMemory>{children}</NuqsTestingAdapter>;
 }
 
 describe("drilldown ↔ parameter bar URL sync", () => {
@@ -61,7 +58,7 @@ describe("drilldown ↔ parameter bar URL sync", () => {
   test("a drilldown write reflects in the bar, emits the bound value, and Reset clears it", async () => {
     const onChange = mock((_: ParameterValues) => {});
 
-    render(<Harness onChange={onChange} />, { wrapper: SyncingAdapter });
+    render(<Harness onChange={onChange} />, { wrapper: MemoryAdapter });
 
     // On mount the bar reports "no overrides" (use defaults).
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});

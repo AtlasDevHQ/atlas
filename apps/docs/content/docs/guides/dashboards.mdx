@@ -113,6 +113,32 @@ A KPI card binds [parameters](#parameters) exactly like any other card, and the 
 `comparisonSql` is executed as a second query through the **identical** SQL pipeline as the primary — SELECT-only, AST-validated, table-whitelisted, auto-LIMITed, statement-timed-out — and it binds the dashboard's parameters the same way (server-side, never interpolated). A comparison query that fails validation simply drops the delta chip; it never breaks the headline number.
 </Callout>
 
+### Goal lines & thresholds
+
+Metrics with a **target** — a revenue goal, an error-rate budget, an SLA — read better with the target drawn in. Add a `chartConfig.thresholds` array (up to five per card); each entry is `{ value, color?, label? }` where `value` is required and `color` (any CSS colour — hex, `rgb()`, or a named colour) and `label` are optional:
+
+- On a **bar / line / area** card, each threshold draws a horizontal dashed reference line at `value`, with the optional `label` captioned at the line. A target above the current data still shows — the axis stretches to fit it.
+- On a **KPI card**, the **first** threshold is the goal: it colours the headline number green/red for above/below target and adds a small "Target: … · above/below" callout. Pair it with `kpi.inverse: true` for a lower-is-better metric (error rate, latency, cost), so being **below** target reads as the good (green) outcome.
+
+```json
+{
+  "title": "Revenue by month",
+  "sql": "SELECT month, SUM(amount) AS revenue FROM orders GROUP BY month",
+  "chartConfig": {
+    "type": "bar",
+    "categoryColumn": "month",
+    "valueColumns": ["revenue"],
+    "thresholds": [{ "value": 1000000, "label": "Target", "color": "#f59e0b" }]
+  }
+}
+```
+
+Just ask in chat — the agent sets a target line whenever you name a goal:
+
+> "Add our $1M monthly revenue target as a goal line, and flag error rate red when it goes above 2%."
+
+A card with no `thresholds` renders exactly as before, so adding one is always opt-in.
+
 ---
 
 ## Parameters

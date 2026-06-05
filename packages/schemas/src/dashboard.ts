@@ -297,12 +297,56 @@ export const dashboardDrilldownConfigSchema = z
 export type DashboardDrilldownConfigWire = z.infer<typeof dashboardDrilldownConfigSchema>;
 
 /**
+ * Goal lines / thresholds (#3208).
+ *
+ * Upper bound on how many goal lines one card carries. A handful of reference
+ * lines reads as "targets"; a dozen turns the chart into a ruled page. Bounded
+ * here at the persist boundary so neither the agent surface nor the REST route
+ * can stack an unreadable number. Mirrors `MAX_THRESHOLD_LINES` in the web
+ * renderer (`chart-detection.ts`), which caps the rendered set as a second line
+ * of defence over loosely-parsed cached config.
+ */
+export const DASHBOARD_THRESHOLDS_MAX = 5;
+
+/**
+ * Conservative CSS-colour validation for a threshold's `color`. Accepts a hex
+ * colour, an `rgb()/rgba()/hsl()/hsla()` function, or a bare-alphabetic named
+ * colour. The value lands in an SVG `stroke` / `fill` attribute — React escapes
+ * attribute values so this isn't an injection gate. It rejects structurally-
+ * malformed values (stray punctuation, embedded spaces); it does NOT validate a
+ * named colour against the CSS keyword set, so a typo'd-but-well-formed name
+ * (`bleu`) still passes. Length-bounded to a sane colour.
+ */
+const CSS_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\([\d\s.,%/]+\)|[a-zA-Z]+)$/;
+
+/**
+ * A single goal line / threshold. `value` is required + finite (the Y-axis
+ * position); `color` / `label` are optional. `.strict()` so a stray field is
+ * rejected at the boundary rather than persisted and silently ignored — same
+ * discipline as `dashboardKpiConfigSchema` / `dashboardDrilldownConfigSchema`.
+ */
+export const dashboardThresholdSchema = z
+  .object({
+    value: z.number().finite(),
+    color: z
+      .string()
+      .min(1)
+      .max(40)
+      .regex(CSS_COLOR_RE, "color must be a hex, rgb()/hsl(), or named CSS colour")
+      .optional(),
+    label: z.string().min(1).max(80).optional(),
+  })
+  .strict();
+export type DashboardThresholdWire = z.infer<typeof dashboardThresholdSchema>;
+
+/**
  * Full chart-config schema. `kpi` is optional and only meaningful when
  * `type === "kpi"`; the agent surface + REST routes carry it through as-is.
  * `categoryColumn` allows the empty string (a `table`/`kpi` card may not set a
  * label) — `valueColumns` must hold at least one column so a card always has a
  * metric to plot. `drilldown` is optional + back-compatible (#3212); absent →
- * the card is inert on click.
+ * the card is inert on click. `thresholds` is optional + back-compatible
+ * (#3208); absent → the card renders exactly as before.
  */
 export const dashboardChartConfigSchema = z.object({
   type: dashboardChartTypeSchema,
@@ -310,5 +354,6 @@ export const dashboardChartConfigSchema = z.object({
   valueColumns: z.array(z.string().min(1)).min(1),
   kpi: dashboardKpiConfigSchema.optional(),
   drilldown: dashboardDrilldownConfigSchema.optional(),
+  thresholds: z.array(dashboardThresholdSchema).max(DASHBOARD_THRESHOLDS_MAX).optional(),
 });
 export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema>;

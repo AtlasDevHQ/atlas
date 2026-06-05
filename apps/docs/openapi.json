@@ -6632,6 +6632,33 @@
                           "targetParam"
                         ],
                         "additionalProperties": false
+                      },
+                      "thresholds": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "number"
+                            },
+                            "color": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 40,
+                              "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                            },
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 80
+                            }
+                          },
+                          "required": [
+                            "value"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "maxItems": 5
                       }
                     },
                     "required": [
@@ -6984,6 +7011,33 @@
                           "targetParam"
                         ],
                         "additionalProperties": false
+                      },
+                      "thresholds": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "value": {
+                              "type": "number"
+                            },
+                            "color": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 40,
+                              "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                            },
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 80
+                            }
+                          },
+                          "required": [
+                            "value"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "maxItems": 5
                       }
                     },
                     "required": [

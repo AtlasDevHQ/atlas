@@ -10,6 +10,8 @@ import {
   dashboardKpiConfigSchema,
   dashboardChartConfigSchema,
   dashboardDrilldownConfigSchema,
+  dashboardThresholdSchema,
+  DASHBOARD_THRESHOLDS_MAX,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -291,6 +293,73 @@ describe("dashboardChartConfigSchema", () => {
         valueColumns: ["revenue"],
         drilldown: { targetParam: "Region Filter" },
       }).success,
+    ).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Goal lines / thresholds (#3208)
+  // ---------------------------------------------------------------------------
+
+  test("round-trips a chart config with thresholds unchanged", () => {
+    const config = {
+      type: "bar" as const,
+      categoryColumn: "month",
+      valueColumns: ["revenue"],
+      thresholds: [
+        { value: 1_000_000, color: "#f59e0b", label: "Target" },
+        { value: 500_000 },
+      ],
+    };
+    expect(dashboardChartConfigSchema.parse(config)).toEqual(config);
+  });
+
+  test("a chart config without thresholds stays back-compatible (field absent)", () => {
+    const config = { type: "line" as const, categoryColumn: "day", valueColumns: ["count"] };
+    const parsed = dashboardChartConfigSchema.parse(config);
+    expect(parsed).toEqual(config);
+    expect("thresholds" in parsed).toBe(false);
+  });
+
+  test("rejects more thresholds than the readable bound", () => {
+    const tooMany = Array.from({ length: DASHBOARD_THRESHOLDS_MAX + 1 }, (_, i) => ({ value: i }));
+    expect(
+      dashboardChartConfigSchema.safeParse({
+        type: "bar",
+        categoryColumn: "m",
+        valueColumns: ["v"],
+        thresholds: tooMany,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardThresholdSchema", () => {
+  test("accepts a bare value (colour + label optional)", () => {
+    expect(dashboardThresholdSchema.safeParse({ value: 100 }).success).toBe(true);
+  });
+
+  test("accepts hex, rgb(), and named colours", () => {
+    expect(dashboardThresholdSchema.safeParse({ value: 1, color: "#10b981" }).success).toBe(true);
+    expect(dashboardThresholdSchema.safeParse({ value: 1, color: "rgb(16, 185, 129)" }).success).toBe(true);
+    expect(dashboardThresholdSchema.safeParse({ value: 1, color: "tomato" }).success).toBe(true);
+  });
+
+  test("rejects a non-finite value (NaN / Infinity can't position a line)", () => {
+    expect(dashboardThresholdSchema.safeParse({ value: Number.NaN }).success).toBe(false);
+    expect(dashboardThresholdSchema.safeParse({ value: Number.POSITIVE_INFINITY }).success).toBe(false);
+  });
+
+  test("rejects a missing value (the line has no position without it)", () => {
+    expect(dashboardThresholdSchema.safeParse({ label: "Target" }).success).toBe(false);
+  });
+
+  test("rejects a junk colour string", () => {
+    expect(dashboardThresholdSchema.safeParse({ value: 1, color: "not a color;" }).success).toBe(false);
+  });
+
+  test("rejects unknown keys (strict — no stray config rides along)", () => {
+    expect(
+      dashboardThresholdSchema.safeParse({ value: 1, fillArea: true }).success,
     ).toBe(false);
   });
 });

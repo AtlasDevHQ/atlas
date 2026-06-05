@@ -66,6 +66,79 @@ export const CHART_COLORS_DARK = [
 ];
 
 /* ------------------------------------------------------------------ */
+/*  Goal lines / thresholds (#3208)                                     */
+/*  Pure: resolve a card's raw thresholds into render-ready reference-   */
+/*  line specs. The recharts <ReferenceLine> mapping lives in            */
+/*  result-chart.tsx; keeping this here makes it unit-testable without   */
+/*  booting recharts in jsdom (same split as the rest of this module).   */
+/* ------------------------------------------------------------------ */
+
+/** Default goal-line stroke when a threshold sets no explicit colour. Amber
+ *  reads as a "target" marker and, dashed, stays distinct from the gridlines. */
+export const THRESHOLD_LINE_LIGHT = "#d97706"; // amber-600
+export const THRESHOLD_LINE_DARK = "#fbbf24"; // amber-400
+
+/**
+ * Max goal lines rendered on a single chart — keeps it readable. A deliberately
+ * duplicated literal, kept in lockstep with `DASHBOARD_THRESHOLDS_MAX` in
+ * `@useatlas/schemas` (the persist-time bound) rather than imported, so this
+ * pure module stays runtime-dependency-free. Re-capping here is defence-in-depth
+ * over loosely-parsed cached config, which `rowToCard` JSON-parses without
+ * re-running the Zod schema.
+ */
+export const MAX_THRESHOLD_LINES = 5;
+
+/**
+ * Render-side CSS-colour sanity check. Structural mirror of `CSS_COLOR_RE` in
+ * `@useatlas/schemas` (the persist-time gate) — re-checked here because
+ * `rowToCard` JSON-parses cached `chart_config` WITHOUT re-running Zod, so a
+ * structurally-malformed colour from an older schema or a direct DB edit would
+ * otherwise reach the SVG `stroke` and render an INVISIBLE line. It accepts a
+ * hex / `rgb()`-family / bare-alphabetic colour; it does NOT validate a named
+ * colour against the CSS keyword set, so a typo'd-but-well-formed name (`bleu`)
+ * still passes — same behaviour as the persist gate, so the two stay symmetric.
+ */
+const THRESHOLD_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\([\d\s.,%/]+\)|[a-zA-Z]+)$/;
+
+/** Structural mirror of `DashboardThreshold` (`@useatlas/types`) — the LOOSE,
+ *  pre-validation wire shape (this data arrives via the un-validated `rowToCard`
+ *  read path, so `resolveThresholdLines` re-asserts the schema's invariants).
+ *  Re-declared locally so this pure module stays free of cross-package imports,
+ *  the same approach the rest of chart-detection takes for its shapes. */
+export type ThresholdInput = { value: number; color?: string; label?: string };
+
+/** Render-ready goal line: a Y position, a resolved stroke, and a trimmed
+ *  label (or null when there's nothing to caption). */
+export type ThresholdLine = { y: number; stroke: string; label: string | null };
+
+/**
+ * Resolve a card's raw thresholds into reference-line specs: drop non-finite
+ * values, cap the count, fall back to a theme stroke for an absent OR
+ * structurally-malformed colour, and trim the label. Returns `[]` for an absent
+ * / empty list so a chart with no thresholds renders exactly as before (#3208
+ * back-compat). Every output field is resolved, so the renderer is a plain map.
+ */
+export function resolveThresholdLines(
+  thresholds: readonly ThresholdInput[] | undefined,
+  dark: boolean,
+): ThresholdLine[] {
+  if (!thresholds || thresholds.length === 0) return [];
+  const fallback = dark ? THRESHOLD_LINE_DARK : THRESHOLD_LINE_LIGHT;
+  return thresholds
+    .filter((t) => Number.isFinite(t.value))
+    .slice(0, MAX_THRESHOLD_LINES)
+    .map((t) => {
+      const color = t.color?.trim();
+      const label = t.label?.trim();
+      return {
+        y: t.value,
+        stroke: color && THRESHOLD_COLOR_RE.test(color) ? color : fallback,
+        label: label ? label : null,
+      };
+    });
+}
+
+/* ------------------------------------------------------------------ */
 /*  Column classification                                               */
 /* ------------------------------------------------------------------ */
 

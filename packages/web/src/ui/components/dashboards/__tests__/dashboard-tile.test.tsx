@@ -6,12 +6,25 @@ import type { DashboardCard } from "@/ui/lib/types";
 // recharts. Bypass next/dynamic entirely so the sentinel renders synchronously
 // — the dynamic loader otherwise suspends past the test's render() call. The
 // stub forwards `onCategoryClick` (#3212) so a click can exercise the tile→chart
-// drilldown plumbing without a real recharts chart.
+// drilldown plumbing, and surfaces `thresholds` (#3208) via a data-attribute so
+// a test can assert the goal-line prop is wired through the tile — both without
+// a real recharts chart.
 mock.module("@/ui/components/chart/result-chart", () => ({
-  ResultChart: ({ onCategoryClick }: { onCategoryClick?: (value: string, categoryKey: string) => void }) => (
+  ResultChart: ({
+    onCategoryClick,
+    thresholds,
+  }: {
+    onCategoryClick?: (value: string, categoryKey: string) => void;
+    thresholds?: { value: number; color?: string; label?: string }[];
+  }) => (
     <>
       {/* Fires with the card's configured category column ("stage") — matches. */}
-      <button type="button" data-testid="result-chart" onClick={() => onCategoryClick?.("Discovery", "stage")}>
+      <button
+        type="button"
+        data-testid="result-chart"
+        data-thresholds={JSON.stringify(thresholds ?? null)}
+        onClick={() => onCategoryClick?.("Discovery", "stage")}
+      >
         chart
       </button>
       {/* Fires with a DIFFERENT detected column — the tile must reject this. */}
@@ -116,6 +129,23 @@ describe("DashboardTile", () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId("result-chart")).toBeTruthy();
+    restore();
+  });
+
+  test("forwards the card's goal-line thresholds (#3208) through to ResultChart", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const thresholds = [{ value: 1_500_000, label: "Target" }];
+    const card: DashboardCard = {
+      ...baseCard,
+      chartConfig: { type: "bar", categoryColumn: "stage", valueColumns: ["amount"], thresholds },
+    };
+    render(<DashboardTile {...baseProps} card={card} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const chart = screen.getByTestId("result-chart");
+    expect(JSON.parse(chart.getAttribute("data-thresholds") ?? "null")).toEqual(thresholds);
     restore();
   });
 

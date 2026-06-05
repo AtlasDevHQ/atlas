@@ -28,7 +28,7 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { DashboardParameterBar, type ParameterValues } from "@/ui/components/dashboards/dashboard-parameter-bar";
-import { DASHBOARD_PARAMS_KEY, dashboardParamsParser, withOverride } from "./search-params";
+import { DASHBOARD_PARAMS_KEY, dashboardParamsParser, withOverride, normalizeDrilldownValue } from "./search-params";
 import { renderDashboardCards } from "./dashboard-card-render";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
@@ -580,13 +580,18 @@ export default function DashboardViewPage() {
     // Ignore a target that names no declared parameter — the render endpoint
     // binds declared parameters only, so an unknown key would set dead URL
     // state that no card reads. (A misconfigured card, not an expected path.)
-    if (!dashboard.parameters.some((p) => p.key === targetParam)) {
+    const param = dashboard.parameters.find((p) => p.key === targetParam);
+    if (!param) {
       console.debug("[dashboard] drilldown target is not a declared parameter; ignoring", {
         targetParam,
       });
       return;
     }
-    void setDparamsRaw(withOverride(dparamsRaw, targetParam, value));
+    // Normalize for the target type — e.g. a `date` param's DatePicker only
+    // reads YYYY-MM-DD, so a timestamp category must be sliced or the bar shows
+    // a blank date even though the filter applied.
+    const normalized = normalizeDrilldownValue(param.type, value);
+    void setDparamsRaw(withOverride(dparamsRaw, targetParam, normalized));
   }
 
   // #3137 — fetch KPI comparison values against the parameter DEFAULTS. Used on

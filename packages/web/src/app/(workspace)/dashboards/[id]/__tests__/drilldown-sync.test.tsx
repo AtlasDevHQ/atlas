@@ -55,7 +55,10 @@ function SyncingAdapter({ children }: { children: React.ReactNode }) {
 }
 
 describe("drilldown ↔ parameter bar URL sync", () => {
-  test("a drilldown write lands in the shared key; the bar reflects it and emits the bound value", async () => {
+  // One continuous lifecycle (drill → reflect → reset). Kept as a single test so
+  // the nuqs `dparams` cache — module-level and keyed by name — can't leak from a
+  // prior test's mount and make the next one non-deterministic.
+  test("a drilldown write reflects in the bar, emits the bound value, and Reset clears it", async () => {
     const onChange = mock((_: ParameterValues) => {});
 
     render(<Harness onChange={onChange} />, { wrapper: SyncingAdapter });
@@ -74,18 +77,8 @@ describe("drilldown ↔ parameter bar URL sync", () => {
     // ...and emitted the bound override — the signal the page turns into a
     // single batched re-render of every card.
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual({ region: "us" });
-  });
 
-  test("the bar can clear a drilldown-set value (Reset)", async () => {
-    const onChange = mock((_: ParameterValues) => {});
-    render(<Harness onChange={onChange} />, { wrapper: SyncingAdapter });
-
-    fireEvent.click(screen.getByText("drill"));
-    await waitFor(() => {
-      expect((screen.getByLabelText("Region") as HTMLInputElement).value).toBe("us");
-    });
-
-    // Reset appears once an override is present; clicking it clears back to defaults.
+    // Reset appears once an override is present; clicking it clears to defaults.
     fireEvent.click(screen.getByRole("button", { name: /reset/i }));
     await waitFor(() => {
       expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});

@@ -8,7 +8,12 @@
  * contract, and the drilldown merge/clear path.
  */
 import { describe, expect, test } from "bun:test";
-import { parseOverrides, serializeOverrides, withOverride } from "../search-params";
+import {
+  parseOverrides,
+  serializeOverrides,
+  withOverride,
+  normalizeDrilldownValue,
+} from "../search-params";
 
 describe("parseOverrides", () => {
   test("returns an empty map for null / empty / malformed input", () => {
@@ -73,5 +78,26 @@ describe("withOverride (drilldown merge)", () => {
   test("round-trips through parse → serialize", () => {
     const raw = withOverride(withOverride(null, "region", "us"), "limit_n", 10);
     expect(serializeOverrides(parseOverrides(raw))).toBe(raw);
+  });
+});
+
+describe("normalizeDrilldownValue", () => {
+  test("slices a date param's ISO timestamp category to YYYY-MM-DD (DatePicker shape)", () => {
+    expect(normalizeDrilldownValue("date", "2026-06-04T12:00:00Z")).toBe("2026-06-04");
+    expect(normalizeDrilldownValue("date", "2026-06-04 12:00:00")).toBe("2026-06-04");
+  });
+
+  test("leaves a plain YYYY-MM-DD date untouched", () => {
+    expect(normalizeDrilldownValue("date", "2026-06-04")).toBe("2026-06-04");
+  });
+
+  test("leaves non-ISO date labels (month/quarter) untouched", () => {
+    expect(normalizeDrilldownValue("date", "Jun 2026")).toBe("Jun 2026");
+    expect(normalizeDrilldownValue("date", "Q1 2026")).toBe("Q1 2026");
+  });
+
+  test("passes text/number param values through unchanged", () => {
+    expect(normalizeDrilldownValue("text", "2026-06-04T12:00:00Z")).toBe("2026-06-04T12:00:00Z");
+    expect(normalizeDrilldownValue("number", "42")).toBe("42");
   });
 });

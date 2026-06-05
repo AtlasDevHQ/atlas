@@ -8,10 +8,21 @@ import type { DashboardCard } from "@/ui/lib/types";
 // stub forwards `onCategoryClick` (#3212) so a click can exercise the tile→chart
 // drilldown plumbing without a real recharts chart.
 mock.module("@/ui/components/chart/result-chart", () => ({
-  ResultChart: ({ onCategoryClick }: { onCategoryClick?: (value: string) => void }) => (
-    <button type="button" data-testid="result-chart" onClick={() => onCategoryClick?.("Discovery")}>
-      chart
-    </button>
+  ResultChart: ({ onCategoryClick }: { onCategoryClick?: (value: string, categoryKey: string) => void }) => (
+    <>
+      {/* Fires with the card's configured category column ("stage") — matches. */}
+      <button type="button" data-testid="result-chart" onClick={() => onCategoryClick?.("Discovery", "stage")}>
+        chart
+      </button>
+      {/* Fires with a DIFFERENT detected column — the tile must reject this. */}
+      <button
+        type="button"
+        data-testid="result-chart-other-col"
+        onClick={() => onCategoryClick?.("Discovery", "other_col")}
+      >
+        chart-other
+      </button>
+    </>
   ),
 }));
 mock.module("next/dynamic", () => ({
@@ -305,10 +316,25 @@ describe("DashboardTile — drilldown (#3212)", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    // The stubbed ResultChart forwards onCategoryClick("Discovery") on click.
+    // The stubbed ResultChart forwards onCategoryClick("Discovery", "stage").
     fireEvent.click(screen.getByTestId("result-chart"));
     expect(onDrilldown).toHaveBeenCalledTimes(1);
     expect(onDrilldown.mock.calls[0]).toEqual(["stage", "Discovery"]);
+    restore();
+  });
+
+  test("a chart click from a column other than the configured categoryColumn is rejected", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    // Card's drilldown column is "stage"; the stub's second button fires with
+    // "other_col" (a divergent detected axis) — the tile must not bind it.
+    render(<DashboardTile {...baseProps} card={barDrillCard} onDrilldown={onDrilldown} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByTestId("result-chart-other-col"));
+    expect(onDrilldown).not.toHaveBeenCalled();
     restore();
   });
 

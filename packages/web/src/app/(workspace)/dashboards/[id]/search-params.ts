@@ -68,3 +68,21 @@ export function withOverride(
 ): string | null {
   return serializeOverrides({ ...parseOverrides(raw), [key]: value });
 }
+
+/**
+ * Normalize a clicked category value for its target parameter's type (#3212).
+ *
+ * A `date` parameter's control (DatePicker) only renders `YYYY-MM-DD`, so a
+ * timestamp category like `2026-06-04T12:00:00Z` (or `2026-06-04 12:00:00`)
+ * would filter correctly server-side but show a BLANK date in the bar — the
+ * drilldown would look like it did nothing. Slice the date portion off an ISO
+ * timestamp so the bar reflects the active value. Non-timestamp values (plain
+ * `YYYY-MM-DD`, month/quarter labels, text, numbers) pass through unchanged.
+ */
+export function normalizeDrilldownValue(paramType: string, value: string): string {
+  if (paramType === "date") {
+    const match = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(value);
+    if (match) return match[1];
+  }
+  return value;
+}

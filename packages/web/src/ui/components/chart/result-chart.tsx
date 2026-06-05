@@ -42,21 +42,25 @@ import {
 /*  unit-testable without importing recharts into jsdom).               */
 /* ------------------------------------------------------------------ */
 
-/** Build a categorical-chart `onClick` that forwards the clicked category value,
- *  or `undefined` when drilldown is off (so recharts attaches no handler). */
+/** Build a categorical-chart `onClick` that forwards the clicked category value
+ *  plus the chart's category-axis column (`categoryKey`, the detected header),
+ *  or `undefined` when drilldown is off (so recharts attaches no handler). The
+ *  consumer gates on `categoryKey` so a parameter is only ever set from the
+ *  card's configured drilldown column (#3212). */
 function chartClickHandler(
-  onCategoryClick: ((value: string) => void) | undefined,
+  onCategoryClick: ((value: string, categoryKey: string) => void) | undefined,
+  categoryKey: string,
 ): ((state: MouseHandlerDataParam) => void) | undefined {
   if (!onCategoryClick) return undefined;
   return (state) => {
     const value = categoryFromChartClick(state);
-    if (value != null) onCategoryClick(value);
+    if (value != null) onCategoryClick(value, categoryKey);
   };
 }
 
 /** Pointer cursor on the chart wrapper signals a card is drillable. */
 function drilldownCursor(
-  onCategoryClick: ((value: string) => void) | undefined,
+  onCategoryClick: ((value: string, categoryKey: string) => void) | undefined,
 ): React.CSSProperties | undefined {
   return onCategoryClick ? { cursor: "pointer" } : undefined;
 }
@@ -153,13 +157,13 @@ function BarChartView({
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
-  const onClick = chartClickHandler(onCategoryClick);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
     <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
@@ -203,13 +207,13 @@ function LineChartView({
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
-  const onClick = chartClickHandler(onCategoryClick);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
     <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
@@ -256,7 +260,7 @@ function PieChartView({
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -277,7 +281,7 @@ function PieChartView({
   const onPieClick = onCategoryClick
     ? (sector: { payload?: unknown }) => {
         const value = categoryFromPieClick(sector, catKey);
-        if (value != null) onCategoryClick(value);
+        if (value != null) onCategoryClick(value, catKey);
       }
     : undefined;
 
@@ -324,14 +328,14 @@ function AreaChartView({
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const chartId = useId();
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
-  const onClick = chartClickHandler(onCategoryClick);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
     <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
@@ -389,13 +393,13 @@ function StackedBarChartView({
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
   const catKey = rec.categoryColumn.header;
   const valKeys = rec.valueColumns.map((c) => c.header);
-  const onClick = chartClickHandler(onCategoryClick);
+  const onClick = chartClickHandler(onCategoryClick, catKey);
 
   return (
     <div className="aspect-[4/3] sm:aspect-[16/9]" style={drilldownCursor(onCategoryClick)}>
@@ -552,7 +556,7 @@ function ChartRenderer({
   defaultData: RechartsRow[];
   defaultRec: ChartRecommendation;
   dark: boolean;
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   // Re-transform data when switching chart type (category axis may differ)
   const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
@@ -589,10 +593,12 @@ export function ResultChart({
   detectionResult?: ChartDetectionResult;
   /**
    * #3212 — click-to-drilldown. When provided, clicking a bar / line / area
-   * point or pie slice forwards the clicked category-axis value. Omitted on
-   * the chat surface and on non-drillable dashboard cards (no-op click).
+   * point or pie slice forwards the clicked category-axis value AND the chart's
+   * category-axis column header (so the consumer can confirm it matches the
+   * card's configured drilldown column before binding). Omitted on the chat
+   * surface and on non-drillable dashboard cards (no-op click).
    */
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),

@@ -143,7 +143,16 @@ function ChartTile({
   const drillEnabled = !editing && !isKpi;
   const onCategoryClick =
     drillEnabled && drilldownParam !== null && onDrilldown
-      ? (value: string) => onDrilldown(drilldownParam, value)
+      ? (value: string, categoryKey: string) => {
+          // Only bind when the clicked chart axis IS the card's configured
+          // drilldown column. ResultChart re-detects the chart from the data, so
+          // a divergent category axis would otherwise set the parameter from the
+          // wrong column; gating keeps the chart path consistent with the table
+          // path (which reads `categoryColumn` directly). (#3212, Codex review.)
+          if (categoryColumn && categoryKey === categoryColumn) {
+            onDrilldown(drilldownParam, value);
+          }
+        }
       : undefined;
   const onRowClick =
     drillEnabled && drilldownParam !== null && onDrilldown && categoryColumn
@@ -476,7 +485,7 @@ function ChartSlot({
   stringRows: string[][];
   dark: boolean;
   /** #3212 — forwarded to ResultChart; undefined → chart is inert on click. */
-  onCategoryClick?: (value: string) => void;
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);

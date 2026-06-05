@@ -2308,6 +2308,24 @@ describe("dashboard routes", () => {
       expect(bytes[1]).toBe(0x50);
     });
 
+    it("attaches CORS headers to the raw screenshot response (readable cross-origin)", async () => {
+      // A handler-returned raw Response does NOT inherit the middleware's
+      // `c.header()` CORS headers, so the route must spread them on. Without
+      // Access-Control-Allow-Origin a cross-origin browser blocks the image
+      // download entirely (the screenshot's own X-Atlas-* headers aren't in
+      // the expose list, so Allow-Origin is the load-bearing one here) (#3222).
+      mockScreenshotDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`, {
+          headers: { Origin: "https://app.example.com" },
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).not.toBeNull();
+      expect(response.headers.get("access-control-expose-headers")).not.toBeNull();
+    });
+
     it("returns 404 when the dashboard is not in the caller's org", async () => {
       mockScreenshotDashboard.mockResolvedValueOnce({
         ok: false,
@@ -2498,6 +2516,35 @@ describe("dashboard routes", () => {
       );
       expect(response.status).toBe(200);
       expect(response.headers.get("x-atlas-export-partial")).toBe("1");
+    });
+
+    it("attaches CORS expose-headers to the raw export response (readable cross-origin)", async () => {
+      // A handler-returned raw Response does NOT inherit the middleware's
+      // `c.header()` CORS headers, so the route must spread them on. Without
+      // this, a cross-origin deploy can't read the file, and the browser never
+      // exposes X-Atlas-Export-Partial / Content-Disposition to JS (#3222).
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: true,
+        format: "pdf",
+        bytes: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d]),
+        contentType: "application/pdf",
+        filename: "demo-20260604-120000.pdf",
+        title: "Demo",
+        partial: false,
+        durationMs: 30,
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "https://app.example.com" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const expose = response.headers.get("access-control-expose-headers") ?? "";
+      expect(expose).toContain("X-Atlas-Export-Partial");
+      expect(expose).toContain("Content-Disposition");
     });
 
     it("returns 404 when the dashboard is not in the caller's org", async () => {

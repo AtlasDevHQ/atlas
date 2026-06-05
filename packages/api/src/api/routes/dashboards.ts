@@ -2624,6 +2624,13 @@ authed.openapi(screenshotDashboardRoute, async (c) => {
     return new Response(new Uint8Array(result.png), {
       status: 200,
       headers: {
+        // A raw `Response` returned from the handler does NOT inherit the
+        // `c.header()`-set CORS headers from the `/api/*` middleware (Hono
+        // doesn't merge prepared headers onto a handler-returned Response),
+        // so spread them on explicitly — otherwise a cross-origin deploy
+        // (app.* → api.*) can't read the image. Same pattern as the CSV
+        // export branch and the chat/demo streaming responses (#3222).
+        ...corsResponseHeaders(c.req.header("Origin") ?? ""),
         "Content-Type": "image/png",
         "Content-Length": String(result.png.length),
         // Short caller-side cache; the server-side LRU is the primary
@@ -2730,6 +2737,14 @@ authed.openapi(exportDashboardRoute, async (c) => {
     return new Response(new Uint8Array(result.bytes), {
       status: 200,
       headers: {
+        // A raw `Response` returned from the handler does NOT inherit the
+        // `c.header()`-set CORS headers from the `/api/*` middleware (Hono
+        // doesn't merge prepared headers onto a handler-returned Response),
+        // so spread them on explicitly — otherwise a cross-origin deploy
+        // (app.* → api.*) can't read the file, and `X-Atlas-Export-Partial`
+        // / `Content-Disposition` aren't exposed to JS. Same pattern as the
+        // CSV export branch and the chat/demo streaming responses (#3222).
+        ...corsResponseHeaders(c.req.header("Origin") ?? ""),
         "Content-Type": result.contentType,
         "Content-Length": String(result.bytes.length),
         // Filename is an ASCII slug + UTC stamp (see buildExportFilename), so a

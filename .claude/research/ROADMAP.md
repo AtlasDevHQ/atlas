@@ -23,12 +23,12 @@ The codebase is Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun, o
 **`v0.0.10` — Dashboard Primitives & Polish** ([milestone #60](https://github.com/AtlasDevHQ/atlas/milestone/60)) is the next tag, taking the dashboard surface from "saved query gallery" toward Looker/Mode-class. Its first slice already shipped under v0.0.9 — the KPI / scorecard card ([#3137](https://github.com/AtlasDevHQ/atlas/issues/3137)). The remaining seven slices (kicked off 2026-06-04) are the "Lower tier — track but defer" list from the [#2267](https://github.com/AtlasDevHQ/atlas/issues/2267) design pass, now firmed into issues:
 
 - [x] KPI comparison & format polish — period-over-period delta + value formats + sparkline ([#3207](https://github.com/AtlasDevHQ/atlas/issues/3207) → [#3215](https://github.com/AtlasDevHQ/atlas/pull/3215))
-- [ ] Goal lines & thresholds on chart + KPI cards ([#3208](https://github.com/AtlasDevHQ/atlas/issues/3208))
+- [x] Goal lines & thresholds on chart + KPI cards ([#3208](https://github.com/AtlasDevHQ/atlas/issues/3208) → [#3218](https://github.com/AtlasDevHQ/atlas/pull/3218))
 - [ ] Event annotations on time-series cards (`annotations` JSONB, migration 0121) ([#3209](https://github.com/AtlasDevHQ/atlas/issues/3209))
-- [ ] Per-card CSV export ([#3210](https://github.com/AtlasDevHQ/atlas/issues/3210))
+- [x] Per-card CSV export ([#3210](https://github.com/AtlasDevHQ/atlas/issues/3210) → [#3220](https://github.com/AtlasDevHQ/atlas/pull/3220))
 - [x] Whole-dashboard PDF / image export ([#3211](https://github.com/AtlasDevHQ/atlas/issues/3211) → [#3214](https://github.com/AtlasDevHQ/atlas/pull/3214))
 - [x] Drilldown foundation — click a data point → set a dashboard parameter → refetch ([#3212](https://github.com/AtlasDevHQ/atlas/issues/3212) → [#3216](https://github.com/AtlasDevHQ/atlas/pull/3216))
-- [ ] Cross-filtering — card-to-card filters + chips + clear-all ([#3213](https://github.com/AtlasDevHQ/atlas/issues/3213), depends on #3212)
+- [x] Cross-filtering — card-to-card filters + chips + clear-all ([#3213](https://github.com/AtlasDevHQ/atlas/issues/3213) → [#3219](https://github.com/AtlasDevHQ/atlas/pull/3219), depends on #3212)
 
 Drilldown ships as the full cross-filter feature (split foundation → UI); #3208 and #3209 soft-couple on `result-chart.tsx` `<ReferenceLine>` rendering (second to land rebases). All others are independently parallelizable.
 

@@ -156,8 +156,10 @@ export const ANNOTATION_LINE_DARK = "#a78bfa"; // violet-400
  * deliberately duplicated literal, kept in lockstep with
  * `DASHBOARD_ANNOTATIONS_MAX` in `@useatlas/schemas` (the persist-time bound)
  * rather than imported, so this pure module stays runtime-dependency-free.
- * Re-capping here is defence-in-depth over loosely-parsed cached config, which
- * `rowToCard` re-validates but a direct DB edit could still bloat.
+ * Re-capping here is defence-in-depth over a read path that bypasses the
+ * persist gate: `rowToCard` re-validates and discards an over-cap list wholesale
+ * (degrade-to-`[]`), but a direct DB edit could still feed a bloated array
+ * straight to the renderer.
  */
 export const MAX_ANNOTATION_LINES = 20;
 

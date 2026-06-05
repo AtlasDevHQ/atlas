@@ -1674,7 +1674,7 @@ authed.openapi(
         title: parsed.title,
         sql: parsed.sql,
         chartConfig: parsed.chartConfig ?? null,
-        annotations: parsed.annotations ?? null,
+        annotations: parsed.annotations ?? [],
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
         connectionGroupId: parsed.connectionGroupId ?? null,

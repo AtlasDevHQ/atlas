@@ -499,8 +499,8 @@ export async function addCard(opts: {
   sql: string;
   chartConfig?: DashboardChartConfig | null;
   /** Event annotations (#3209) — dated markers on a time-series card. Defaults
-   *  to none (empty array) when omitted. */
-  annotations?: DashboardCardAnnotation[] | null;
+   *  to none (empty array) when omitted; never null (the column is NOT NULL). */
+  annotations?: DashboardCardAnnotation[];
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
   /** Group-scoped execution target (1.4.4). */

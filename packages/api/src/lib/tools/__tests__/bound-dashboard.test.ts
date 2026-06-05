@@ -325,6 +325,22 @@ describe("createBoundDashboardTools", () => {
     expect(queryCalls[0].sql).toMatch(/UPDATE dashboard_cards/);
   });
 
+  // #3209 — the bound-chat edit path can author event annotations.
+  it("updateCard persists supplied event annotations", async () => {
+    enableInternalDB();
+    setResults({ rows: [{ id: "card-1" }] });
+    const tools = createBoundDashboardTools(ctx);
+    const annotations = [{ x: "2026-01-15", label: "Launch" }];
+    const result = await runTool<{ kind: "ok"; cardId: string; updated: string[] }>(
+      tools.updateCard,
+      { cardId: "card-1", annotations },
+    );
+    expect(result.kind).toBe("ok");
+    expect(result.updated).toContain("annotations");
+    // The SET clause is emitted, so the markers actually reach the column.
+    expect(queryCalls[0].sql).toMatch(/annotations =/);
+  });
+
   // -------------------------------------------------------------------
   // updateLayout
   // -------------------------------------------------------------------

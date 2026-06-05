@@ -438,6 +438,38 @@ describe("createDashboard tool", () => {
     expect(snapshot.cards[0].chartConfig.thresholds).toEqual(thresholds);
   });
 
+  it("carries a card's event annotations through into the draft snapshot (#3209)", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-anno", title: "Signups", description: null, updated_at: "2026-06-05" }] },
+      { rows: [] }, // draft
+      { rows: [] }, // COMMIT
+    );
+
+    const annotations = [
+      { x: "2026-01-15", label: "Launch", color: "#10b981" },
+      { x: "2026-03-01", label: "Campaign" },
+    ];
+    const result = await run({
+      title: "Signups",
+      cards: [
+        {
+          title: "Weekly signups",
+          sql: "SELECT week, COUNT(*) AS signups FROM users GROUP BY week",
+          chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["signups"] },
+          annotations,
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    const draftParams = clientQueryCalls[2].params!;
+    const snapshot = JSON.parse(draftParams[2] as string);
+    // Annotations survive the strict schema + draft persistence unchanged.
+    expect(snapshot.cards[0].annotations).toEqual(annotations);
+  });
+
   it("a text card never triggers SQL validation or the undeclared-parameter check", async () => {
     enableInternalDB();
     setClientResults(

@@ -775,6 +775,58 @@ describe("dashboard routes", () => {
       expect(mockAddCard).not.toHaveBeenCalled();
     });
 
+    it("forwards event annotations to addCard (#3209)", async () => {
+      const annotations = [
+        { x: "2026-01-15", label: "Launch", color: "#10b981" },
+        { x: "2026-03-01", label: "Campaign" },
+      ];
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Weekly signups",
+            sql: "SELECT week, COUNT(*) AS signups FROM users GROUP BY week",
+            chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["signups"] },
+            annotations,
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const addArgs = mockAddCard.mock.calls[0] as unknown as [{ annotations?: unknown }];
+      expect(addArgs[0].annotations).toEqual(annotations);
+    });
+
+    it("returns 422 for a malformed annotations body and never calls addCard (#3209)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Weekly signups",
+            sql: "SELECT 1",
+            // Each annotation requires a non-empty `label`; this one omits it.
+            annotations: [{ x: "2026-01-15" }],
+          }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
+    it("returns 422 when annotations exceed the bounded count and never calls addCard (#3209)", async () => {
+      const tooMany = Array.from({ length: 21 }, (_, i) => ({ x: `${i}`, label: `e${i}` }));
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "T", sql: "SELECT 1", annotations: tooMany }),
+        }),
+      );
+      expect(response.status).toBe(422);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
     it("returns 400 when connectionGroupId belongs to a different org (#2424)", async () => {
       // The route looks up the dashboard's org, then verifies the supplied
       // connection_group_id is owned by that org. A "not_found" verdict from
@@ -825,6 +877,32 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(404);
+    });
+
+    it("forwards event annotations to updateCard, incl. [] to clear (#3209)", async () => {
+      const annotations = [{ x: "2026-01-15", label: "Launch" }];
+      const setResp = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ annotations }),
+        }),
+      );
+      expect(setResp.status).toBe(200);
+      const setArgs = mockUpdateCard.mock.calls[0] as unknown as [string, string, { annotations?: unknown }];
+      expect(setArgs[2].annotations).toEqual(annotations);
+
+      mockUpdateCard.mockClear();
+      const clearResp = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ annotations: [] }),
+        }),
+      );
+      expect(clearResp.status).toBe(200);
+      const clearArgs = mockUpdateCard.mock.calls[0] as unknown as [string, string, { annotations?: unknown }];
+      expect(clearArgs[2].annotations).toEqual([]);
     });
   });
 

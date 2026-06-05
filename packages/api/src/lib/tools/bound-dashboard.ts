@@ -312,7 +312,7 @@ export function createBoundDashboardTools(
   });
 
   const updateCardTool = tool({
-    description: `Update a card's title, chart type, or layout. Pass only the fields you want to change. Does NOT support changing the SQL — that is a destructive op and arrives as a staged ghost change in a later slice. To change the SQL today, ask the user to remove and re-add the card.`,
+    description: `Update a card's title, chart type, layout, or event annotations. Pass only the fields you want to change. Does NOT support changing the SQL — that is a destructive op and arrives as a staged ghost change in a later slice. To change the SQL today, ask the user to remove and re-add the card.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id"),
       title: z.string().min(1).max(200).optional(),

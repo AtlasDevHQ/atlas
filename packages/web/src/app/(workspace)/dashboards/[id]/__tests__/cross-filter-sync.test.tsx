@@ -15,7 +15,6 @@
  * we pin the URL-state contract those two build on.
  */
 import { afterEach, describe, expect, test, mock } from "bun:test";
-import { useState } from "react";
 import { useQueryState } from "nuqs";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { render, cleanup, fireEvent, waitFor, screen } from "@testing-library/react";
@@ -66,21 +65,21 @@ function Harness({ onChange }: { onChange: (o: ParameterValues) => void }) {
 }
 
 /**
- * A self-updating testing adapter: it feeds its captured URL updates straight
- * back in as `searchParams`, reproducing the real-app round-trip where a
- * `useQueryState` write updates the URL and re-renders every hook subscribed to
- * that key. `initial` seeds the URL — used to simulate a reload of a shared link.
+ * A real-app round-trip adapter for the shared `dparams` key. `hasMemory` makes
+ * NuqsTestingAdapter retain each write in an internal synchronous ref (its
+ * built-in stand-in for a real URL): every write composes on the latest value
+ * and re-renders every hook subscribed to the key — the Next.js round-trip where
+ * a `useQueryState` write updates the URL and re-renders its subscribers.
+ * `initial` seeds the params — used to simulate a reload of a shared link.
+ *
+ * A hand-rolled `useState`-fed adapter desyncs nuqs's optimistic cache from the
+ * `searchParams` prop under back-to-back writes (the snapshot the next write
+ * composes on lags a React commit), which made this suite flake ~17%; the
+ * synchronous `hasMemory` ref closes that race.
  */
-function SyncingAdapter({
-  children,
-  initial,
-}: {
-  children: React.ReactNode;
-  initial?: string;
-}) {
-  const [search, setSearch] = useState(() => new URLSearchParams(initial));
+function MemoryAdapter({ children, initial }: { children: React.ReactNode; initial?: string }) {
   return (
-    <NuqsTestingAdapter searchParams={search} onUrlUpdate={(e) => setSearch(e.searchParams)}>
+    <NuqsTestingAdapter searchParams={initial} hasMemory>
       {children}
     </NuqsTestingAdapter>
   );
@@ -92,7 +91,7 @@ describe("cross-filter ↔ bar ↔ chips URL sync (#3213)", () => {
   // mounts and make assertions non-deterministic — same guard as drilldown-sync.
   test("drill applies a filter, a second composes (AND), chip-remove + re-click deselect clear them", async () => {
     const onChange = mock((_: ParameterValues) => {});
-    render(<Harness onChange={onChange} />, { wrapper: SyncingAdapter });
+    render(<Harness onChange={onChange} />, { wrapper: MemoryAdapter });
 
     // Mount: no overrides (use defaults), no chips.
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});
@@ -131,7 +130,7 @@ describe("cross-filter ↔ bar ↔ chips URL sync (#3213)", () => {
 
   test("Clear all removes every active cross-filter in one action", async () => {
     const onChange = mock((_: ParameterValues) => {});
-    render(<Harness onChange={onChange} />, { wrapper: SyncingAdapter });
+    render(<Harness onChange={onChange} />, { wrapper: MemoryAdapter });
 
     fireEvent.click(screen.getByText("drill-region"));
     fireEvent.click(screen.getByText("drill-stage"));
@@ -149,9 +148,9 @@ describe("cross-filter ↔ bar ↔ chips URL sync (#3213)", () => {
   test("reload of a shared link reflects the URL filters on mount", async () => {
     const onChange = mock((_: ParameterValues) => {});
     render(
-      <SyncingAdapter initial={`${DASHBOARD_PARAMS_KEY}=${encodeURIComponent('{"region":"eu"}')}`}>
+      <MemoryAdapter initial={`${DASHBOARD_PARAMS_KEY}=${encodeURIComponent('{"region":"eu"}')}`}>
         <Harness onChange={onChange} />
-      </SyncingAdapter>,
+      </MemoryAdapter>,
     );
 
     // The chip + bar reflect the persisted state with no interaction, and the bar

@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.9",
+    title: "Production Hardening",
+    date: "2026-06-04",
+    summary:
+      "A production-hardening release focused on security, reliability, and operability ahead of launch. The headline change is internal: Atlas removes a legacy admin-authorization path and now treats workspace membership as the single source of truth for who is an admin, with the last-admin protections made atomic so an organization can never accidentally lock itself out of admin access. The four form-based chat platforms — Telegram, Microsoft Teams, Google Chat, and WhatsApp — graduate from stubbed to functional, workspace-scoped installs. The rest of the release is the output of a production-readiness audit: request tracing and metrics now export to a collector in production, the hosted service fails fast with a clear health signal when a model-provider key is missing or misconfigured instead of silently failing later, and a batch of resilience fixes harden the explore sandbox fallback, orphaned scheduled tasks, plugin health checks, and provider error reporting. Documentation and the marketing site were swept for accuracy.",
+    highlights: [
+      "Single-sourced admin roles — workspace membership is now the sole source of truth for tenant admins, removing a legacy raw-role authorization path; last-admin guards are atomic so an org can't lock itself out of admin access (#3159, #2890)",
+      "Chat platforms go live — Telegram, Microsoft Teams, Google Chat, and WhatsApp graduate to functional, workspace-scoped installs, and a residual uncapped Discord install path was retired (#2994)",
+      "Fail-fast provider validation — the hosted service now validates model-provider configuration at boot and surfaces a clear health signal when a key is missing or misconfigured, instead of accepting chats that fail later (#3178)",
+      "Production observability — request traces and metrics now export to a collector in production, with consistent span naming across the API and the standalone MCP server (#3175, #3199)",
+      "Resilience hardening — explore-sandbox backend fallback, orphaned scheduled-task guarding, plugin health checks, and clearer provider-vs-datasource error classification (#3177, #3180, #3179, #3186)",
+      "Docs & site accuracy — environment-variable and error-code references, the security/compliance statement, and site navigation were swept for accuracy (#3193, #3173, #3205)",
+    ],
+  },
+  {
     version: "v0.0.8",
     title: "Dashboard Parameters & Text Blocks",
     date: "2026-06-03",

@@ -2308,6 +2308,24 @@ describe("dashboard routes", () => {
       expect(bytes[1]).toBe(0x50);
     });
 
+    it("attaches CORS headers to the raw screenshot response (readable cross-origin)", async () => {
+      // A handler-returned raw Response does NOT inherit the middleware's
+      // `c.header()` CORS headers, so the route must spread them on. Without
+      // Access-Control-Allow-Origin a cross-origin browser blocks the image
+      // download entirely (the screenshot's own X-Atlas-* headers aren't in
+      // the expose list, so Allow-Origin is the load-bearing one here) (#3222).
+      mockScreenshotDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/screenshot`, {
+          headers: { Origin: "https://app.example.com" },
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).not.toBeNull();
+      expect(response.headers.get("access-control-expose-headers")).not.toBeNull();
+    });
+
     it("returns 404 when the dashboard is not in the caller's org", async () => {
       mockScreenshotDashboard.mockResolvedValueOnce({
         ok: false,

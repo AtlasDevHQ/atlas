@@ -106,6 +106,27 @@ describe("exportDashboard", () => {
     expect(typeof lastArgs!.generatedAt).toBe("string");
   });
 
+  it("threads the API origin + timeout budget to the renderer (cross-origin cookies + budget)", async () => {
+    await exportDashboard({
+      dashboardId: "dash-1",
+      userId: "user-1",
+      orgId: "org-1",
+      format: "pdf",
+      baseUrl: "https://app.useatlas.dev",
+      apiBaseUrl: "https://api.useatlas.dev",
+      timeoutMs: 30_000,
+      now: FIXED_NOW,
+    });
+    expect(lastArgs).not.toBeNull();
+    // apiBaseUrl reaches the renderer so the forwarded session cookie can be
+    // seeded for the API host too (not just the web host).
+    expect(lastArgs!.apiBaseUrl).toBe("https://api.useatlas.dev");
+    expect(lastArgs!.baseUrl).toBe("https://app.useatlas.dev");
+    // The overall budget is handed to the renderer so its staged waits can
+    // self-bound and never starve the capture into a 504.
+    expect(lastArgs!.timeoutMs).toBe(30_000);
+  });
+
   it("propagates a partial render from the renderer", async () => {
     _setExportRenderFn(async () => ({ bytes: FAKE_PDF, contentType: "application/pdf", partial: true }));
     const result = await exportDashboard({

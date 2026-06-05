@@ -2559,6 +2559,17 @@ authed.openapi(exportDashboardRoute, async (c) => {
     };
     const format = body.format ?? "pdf";
 
+    // The request's own origin is the public API host the rendered page's
+    // credentialed fetches target — forward it so cross-origin deploys seed the
+    // session cookie for the API host too (not just the web host).
+    let apiBaseUrl: string | undefined;
+    try {
+      apiBaseUrl = new URL(c.req.url).origin;
+    } catch {
+      // Unparseable request URL — fall back to web-host-only cookie seeding.
+      apiBaseUrl = undefined;
+    }
+
     const result = yield* Effect.promise(() =>
       exportDashboard({
         dashboardId: id,
@@ -2567,6 +2578,7 @@ authed.openapi(exportDashboardRoute, async (c) => {
         format,
         parameters: body.parameters ?? null,
         cookieHeader: c.req.raw.headers.get("cookie"),
+        apiBaseUrl,
       }),
     );
 

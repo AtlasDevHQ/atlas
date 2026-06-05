@@ -556,6 +556,13 @@ export interface ExportOpts {
   parameters?: Record<string, string | number | null> | null;
   cookieHeader?: string | null;
   baseUrl?: string;
+  /**
+   * Public origin of the API the export request hit (e.g. the request's own
+   * origin). In a cross-origin deploy the page's data fetches go here, so the
+   * forwarded session cookie is also seeded for this host. Defaults to none
+   * (same-origin: the web host alone suffices).
+   */
+  apiBaseUrl?: string;
   /** Overall render timeout; defaults to `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS`. */
   timeoutMs?: number;
   /** Injectable clock so the generated filename + header stamp are testable. */
@@ -569,11 +576,15 @@ export interface ExportRenderArgs {
   orgId: string | null | undefined;
   cookieHeader: string | null;
   baseUrl: string;
+  /** API origin to also seed cookies for (cross-origin deploys). */
+  apiBaseUrl?: string;
   format: ExportFormat;
   parameters: Record<string, string | number | null> | null;
   title: string;
   /** Human-readable UTC stamp rendered into the PDF header. */
   generatedAt: string;
+  /** Overall wall-clock budget; staged waits self-bound so capture always runs. */
+  timeoutMs: number;
 }
 
 export interface ExportRenderOutput {
@@ -595,9 +606,15 @@ export function _setExportRenderFn(fn: ExportRenderFn | null): void {
   exportRenderImpl = fn;
 }
 
-const EXPORT_TIMEOUT_DEFAULT_MS = 45_000;
+// Default budget exceeds the worst-case sum of the staged render waits (nav +
+// grid + param + tile, ~50s) plus the capture reserve, so a slow-but-expected
+// parameterized export returns the documented partial artifact instead of a
+// 504. Each staged wait is additionally bounded by the remaining budget (see
+// `defaultExportRender`), so a lower operator override degrades to a partial
+// capture rather than a timeout.
+const EXPORT_TIMEOUT_DEFAULT_MS = 60_000;
 const EXPORT_TIMEOUT_MIN_MS = 5_000;
-const EXPORT_TIMEOUT_MAX_MS = 120_000;
+const EXPORT_TIMEOUT_MAX_MS = 180_000;
 /** Sentinel error message used to distinguish a timeout from a render failure. */
 const EXPORT_TIMEOUT_SENTINEL = "atlas_export_timed_out";
 
@@ -760,10 +777,12 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
         orgId: opts.orgId,
         cookieHeader: opts.cookieHeader ?? null,
         baseUrl,
+        apiBaseUrl: opts.apiBaseUrl,
         format: opts.format,
         parameters: opts.parameters ?? null,
         title,
         generatedAt: formatDisplayStamp(now),
+        timeoutMs,
       }),
       timeoutMs,
     );
@@ -844,9 +863,13 @@ interface ExportBrowser {
 const EXPORT_VIEWPORT_WIDTH = 1600;
 const EXPORT_VIEWPORT_HEIGHT = 2000;
 const EXPORT_NAV_TIMEOUT_MS = 20_000;
-const EXPORT_GRID_WAIT_TIMEOUT_MS = 12_000;
-const EXPORT_PARAM_WAIT_TIMEOUT_MS = 12_000;
+const EXPORT_GRID_WAIT_TIMEOUT_MS = 10_000;
+const EXPORT_PARAM_WAIT_TIMEOUT_MS = 10_000;
 const EXPORT_TILE_WAIT_TIMEOUT_MS = 8_000;
+/** Wall-clock kept in reserve for the screenshot + PDF capture itself. */
+const EXPORT_CAPTURE_RESERVE_MS = 8_000;
+/** Below this, a staged wait is skipped (Playwright treats `timeout: 0` as "wait forever"). */
+const EXPORT_MIN_WAIT_MS = 500;
 
 // Predicate run inside the page: every grid tile's BODY has finished rendering.
 // We inspect `.dash-tile-body` (not the wrapper) so the always-present
@@ -882,13 +905,27 @@ async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRender
   try {
     const cookieValues = args.cookieHeader ?? process.env.ATLAS_INTERNAL_SCREENSHOT_COOKIE ?? "";
     if (cookieValues.length > 0) {
-      const url = new URL(args.baseUrl);
-      const cookies = parseCookieHeader(cookieValues).map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: url.hostname,
-        path: "/",
-      }));
+      const parsed = parseCookieHeader(cookieValues);
+      // Seed the forwarded session cookies for BOTH the web host (where the
+      // page is served) AND the API host (where the page's credentialed
+      // `/cards/:id/render` + dashboard fetches go). In a cross-origin deploy
+      // (`ATLAS_WEB_BASE_URL` = app host, data API on a separate host) the
+      // forwarded cookie belongs to the API origin — scoping it only to the web
+      // host would leave Playwright's jar without an API cookie, so the page's
+      // fetches render an unauthenticated/error board. De-duped so a same-origin
+      // deploy seeds each host once.
+      const hosts = new Set<string>();
+      for (const base of [args.baseUrl, args.apiBaseUrl]) {
+        if (!base) continue;
+        try {
+          hosts.add(new URL(base).hostname);
+        } catch (err) {
+          log.debug({ base, err: errorMessage(err) }, "exportRender: unparseable cookie host — skipping");
+        }
+      }
+      const cookies = [...hosts].flatMap((hostname) =>
+        parsed.map((c) => ({ name: c.name, value: c.value, domain: hostname, path: "/" })),
+      );
       if (cookies.length > 0) await context.addCookies(cookies);
     }
 
@@ -897,22 +934,39 @@ async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRender
       const target = new URL(`/dashboards/${args.dashboardId}`, args.baseUrl);
       const dparams = serializeDparams(args.parameters);
       if (dparams) target.searchParams.set("dparams", dparams);
-      await page.goto(target.toString(), { waitUntil: "networkidle", timeout: EXPORT_NAV_TIMEOUT_MS });
 
-      // Best-effort render wait. No stage aborts the export: a missing grid
-      // (empty board / slow shell), unsettled parameter renders, or a single
-      // stuck tile only flip the `partial` flag so the caller can warn that the
-      // file may be incomplete.
+      // Bound every staged wait by the remaining wall-clock budget (minus a
+      // capture reserve) so the staged waits can never starve the screenshot/PDF
+      // capture and 504 the whole export. A stage whose budget is exhausted is
+      // skipped and flips `partial` — a slow board degrades to the documented
+      // partial artifact rather than a timeout.
       let partial = false;
-      try {
-        await page.waitForSelector(".dashboard-app", { timeout: EXPORT_GRID_WAIT_TIMEOUT_MS });
-      } catch (err) {
-        log.debug(
-          { dashboardId: args.dashboardId, err: errorMessage(err) },
-          "exportRender: grid container not found within timeout — capturing as-is",
-        );
+      const deadline = Date.now() + args.timeoutMs;
+      // Budget for a pre-capture wait: the smaller of its cap and the time left
+      // before the capture reserve must begin. Can go non-positive (→ skipped).
+      const stageBudget = (cap: number): number =>
+        Math.min(cap, deadline - EXPORT_CAPTURE_RESERVE_MS - Date.now());
+
+      // Navigation must complete to capture anything; bound it by the remaining
+      // budget (never below 1s so a tiny budget still attempts the nav).
+      const navTimeout = Math.max(1_000, Math.min(EXPORT_NAV_TIMEOUT_MS, deadline - Date.now()));
+      await page.goto(target.toString(), { waitUntil: "networkidle", timeout: navTimeout });
+
+      const gridBudget = stageBudget(EXPORT_GRID_WAIT_TIMEOUT_MS);
+      if (gridBudget < EXPORT_MIN_WAIT_MS) {
         partial = true;
+      } else {
+        try {
+          await page.waitForSelector(".dashboard-app", { timeout: gridBudget });
+        } catch (err) {
+          log.debug(
+            { dashboardId: args.dashboardId, err: errorMessage(err) },
+            "exportRender: grid container not found within budget — capturing as-is",
+          );
+          partial = true;
+        }
       }
+
       // When parameter overrides are present, the page re-renders each card via
       // async `/cards/:id/render` calls AFTER mount — the board initially shows
       // its cached DEFAULT rows. Wait for the page's readiness signal
@@ -920,32 +974,38 @@ async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRender
       // and any parameter batch has settled) so we never capture the
       // default-parameter board for a parameterized request.
       if (dparams) {
+        const paramBudget = stageBudget(EXPORT_PARAM_WAIT_TIMEOUT_MS);
+        if (paramBudget < EXPORT_MIN_WAIT_MS) {
+          partial = true;
+        } else {
+          try {
+            await page.waitForSelector('[data-dashboard-export-ready="1"]', { timeout: paramBudget });
+          } catch (err) {
+            log.debug(
+              { dashboardId: args.dashboardId, err: errorMessage(err) },
+              "exportRender: parameter renders did not settle within budget — exporting partial board",
+            );
+            partial = true;
+          }
+        }
+      }
+
+      const tileBudget = stageBudget(EXPORT_TILE_WAIT_TIMEOUT_MS);
+      if (tileBudget < EXPORT_MIN_WAIT_MS) {
+        partial = true;
+      } else {
         try {
-          await page.waitForSelector('[data-dashboard-export-ready="1"]', {
-            timeout: EXPORT_PARAM_WAIT_TIMEOUT_MS,
-          });
+          // Playwright signature is waitForFunction(pageFunction, arg?, options?)
+          // — the timeout MUST be the third arg. Passing it as the second
+          // (`arg`) position silently falls back to the 30s default.
+          await page.waitForFunction(EXPORT_TILE_CONTENT_PREDICATE, undefined, { timeout: tileBudget });
         } catch (err) {
           log.debug(
             { dashboardId: args.dashboardId, err: errorMessage(err) },
-            "exportRender: parameter renders did not settle within timeout — exporting partial board",
+            "exportRender: not every tile rendered content within budget — exporting partial board",
           );
           partial = true;
         }
-      }
-      try {
-        // Playwright signature is waitForFunction(pageFunction, arg?, options?)
-        // — the timeout MUST be the third arg. Passing it as the second
-        // (`arg`) position silently falls back to the 30s default, which would
-        // turn an intended best-effort partial into a 504 under the export timer.
-        await page.waitForFunction(EXPORT_TILE_CONTENT_PREDICATE, undefined, {
-          timeout: EXPORT_TILE_WAIT_TIMEOUT_MS,
-        });
-      } catch (err) {
-        log.debug(
-          { dashboardId: args.dashboardId, err: errorMessage(err) },
-          "exportRender: not every tile rendered content within timeout — exporting partial board",
-        );
-        partial = true;
       }
 
       // Capture the grid element so app chrome (sidebar/topbar) is excluded and

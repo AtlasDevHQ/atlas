@@ -46,6 +46,11 @@ describe("resolveAnnotationLines", () => {
     expect(line.label).toBe("Launch");
   });
 
+  test("trims a whitespace-padded x so it matches the chart's axis domain", () => {
+    const [line] = resolveAnnotationLines([{ x: "  2026-01-15  ", label: "Launch" }], false);
+    expect(line.x).toBe("2026-01-15");
+  });
+
   test("falls back to the theme stroke for a structurally-malformed colour", () => {
     const [line] = resolveAnnotationLines([{ x: "Jan", label: "A", color: "not a color;" }], false);
     expect(line.stroke).toBe(ANNOTATION_LINE_LIGHT);

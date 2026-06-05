@@ -193,10 +193,14 @@ export function resolveAnnotationLines(
     .filter((a) => typeof a.x === "string" && a.x.trim().length > 0)
     .slice(0, MAX_ANNOTATION_LINES)
     .map((a) => {
+      // Trim `x` to match what the axis renders — a whitespace-padded value
+      // passes the non-empty filter above but wouldn't match the chart domain,
+      // so the marker would silently fail to draw.
+      const x = a.x.trim();
       const color = a.color?.trim();
       const label = a.label?.trim();
       return {
-        x: a.x,
+        x,
         stroke: color && THRESHOLD_COLOR_RE.test(color) ? color : fallback,
         label: label ? label : null,
       };

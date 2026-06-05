@@ -192,6 +192,10 @@ export function createBoundDashboardTools(
           title: card.data.title,
           sql: card.data.sql,
           chartConfig: card.data.chartConfig,
+          // #3209 — annotations is a REPLACE-ALL field on updateCard, so the
+          // agent must see the current markers here to add/rename one without
+          // dropping the rest.
+          annotations: card.data.annotations,
           layout: card.data.layout,
           position: card.data.position,
           cachedColumns: card.data.cachedColumns,

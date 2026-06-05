@@ -145,7 +145,7 @@ A card with no `thresholds` renders exactly as before, so adding one is always o
 Where goal lines are **horizontal** targets, event annotations are **vertical** markers — they call out *when* something happened on a time-series chart: a product launch, a campaign start, a pricing change. Add an `annotations` array on the card (up to 20 per card); each entry is `{ x, label, color? }` where `x` and `label` are required and `color` (any CSS colour — hex, `rgb()`, or a named colour) is optional:
 
 - On a **line / area** card, each annotation draws a vertical dashed reference line at `x`, captioned with `label`. `x` must match a value on the card's time/category axis (e.g. the ISO date `"2026-01-15"` or a month label `"Jan"`) — a marker for a date outside the chart's window simply doesn't draw.
-- **Bar, pie, KPI, and table** cards ignore annotations — a categorical or numeric axis has no time context to mark. The field is carried through unchanged, so switching a card's chart type never loses it.
+- **Bar, pie, scatter, KPI, and table** cards ignore annotations — a categorical or numeric axis has no time context to mark. The field is carried through unchanged, so switching a card's chart type never loses it.
 
 Unlike `thresholds` (which live inside `chartConfig`), `annotations` is a **card-level** field — it survives a chart-type change and belongs to the card's time context rather than a specific visualization:
 

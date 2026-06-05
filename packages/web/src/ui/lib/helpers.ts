@@ -92,6 +92,45 @@ export function downloadCSV(csv: string, filename = "atlas-results.csv") {
   }
 }
 
+/** Trigger a download for an already-fetched Blob (e.g. a dashboard export). */
+export function downloadBlob(blob: Blob, filename: string) {
+  let url: string | null = null;
+  try {
+    url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+  } catch (err) {
+    console.error("Download failed:", err instanceof Error ? err.message : String(err));
+    window.alert("Download failed");
+  } finally {
+    if (url) {
+      const blobUrl = url;
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10_000);
+    }
+  }
+}
+
+/**
+ * Pull the `filename` out of a `Content-Disposition` header. Handles both
+ * `filename="x"` and the RFC 5987 `filename*=UTF-8''x` forms; returns null
+ * when the header is absent or carries no filename.
+ */
+export function parseAttachmentFilename(header: string | null): string | null {
+  if (!header) return null;
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (star?.[1]) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      // Malformed percent-encoding — fall through to the plain form.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain?.[1]?.trim() ?? null;
+}
+
 /** Strict ISO date pattern: YYYY-MM-DD with optional time component. */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
 

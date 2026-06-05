@@ -17,7 +17,7 @@ import {
   listSessionsForDashboard,
   getSessionTranscript,
 } from "@atlas/api/lib/bound-chat-context";
-import { screenshotDashboard } from "@atlas/api/lib/dashboard-screenshot";
+import { screenshotDashboard, exportDashboard } from "@atlas/api/lib/dashboard-screenshot";
 import {
   createDashboard,
   getDashboard,
@@ -124,6 +124,19 @@ const UpdateCardSchema = z.object({
 const ShareSchema = z.object({
   expiresIn: z.enum(["1h", "24h", "7d", "30d", "never"]).nullable().optional(),
   shareMode: z.enum(SHARE_MODES).optional(),
+});
+
+/**
+ * Whole-dashboard export request (#3211). `format` selects the artifact
+ * (defaults to PDF in the handler when omitted); `parameters` carries the
+ * caller's current override map, forwarded to the headless render via the
+ * `dparams` URL key so the export reproduces the viewer's parameter values.
+ */
+const ExportDashboardSchema = z.object({
+  format: z.enum(["png", "pdf"]).optional(),
+  parameters: z
+    .record(z.string(), z.union([z.string(), z.number(), z.null()]))
+    .optional(),
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -897,6 +910,37 @@ const screenshotDashboardRoute = createRoute({
     404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Headless browser unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const exportDashboardRoute = createRoute({
+  method: "post",
+  path: "/{id}/export",
+  tags: ["Dashboards"],
+  summary: "Export the whole dashboard as PNG or PDF",
+  description:
+    "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires admin role.",
+  request: {
+    params: z.object({
+      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
+    }),
+    body: { content: { "application/json": { schema: ExportDashboardSchema } }, required: false },
+  },
+  responses: {
+    200: {
+      description: "Rendered dashboard artifact (PNG or PDF) as a download attachment",
+      content: {
+        "image/png": { schema: z.string().openapi({ format: "binary" }) },
+        "application/pdf": { schema: z.string().openapi({ format: "binary" }) },
+      },
+    },
+    400: { description: "Invalid dashboard ID or request body", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error (render failed)", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or headless browser unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    504: { description: "Export timed out", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -2540,6 +2584,115 @@ authed.openapi(screenshotDashboardRoute, async (c) => {
       },
     });
   }), { label: "screenshot dashboard" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/export — whole-dashboard PNG / PDF export (#3211)
+// ---------------------------------------------------------------------------
+
+authed.openapi(exportDashboardRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId, user } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+    if (!user?.id) {
+      // Defence-in-depth — `authed` already blocks anonymous access, but the
+      // headless render forwards the caller's identity/cookie, so refuse
+      // explicitly rather than rendering under an undefined user.
+      return c.json({ error: "auth_required", message: "Authentication required for dashboard export.", requestId }, 401);
+    }
+
+    // Body is optional (export with parameter defaults when omitted); coalesce
+    // so a bodyless request resolves to a PDF of the default-parameter board.
+    const body = (c.req.valid("json") ?? {}) as {
+      format?: "png" | "pdf";
+      parameters?: Record<string, string | number | null>;
+    };
+    const format = body.format ?? "pdf";
+
+    // The request's own origin is the public API host the rendered page's
+    // credentialed fetches target — forward it so cross-origin deploys seed the
+    // session cookie for the API host too (not just the web host).
+    let apiBaseUrl: string | undefined;
+    try {
+      apiBaseUrl = new URL(c.req.url).origin;
+    } catch {
+      // Unparseable request URL — fall back to web-host-only cookie seeding.
+      apiBaseUrl = undefined;
+    }
+
+    const result = yield* Effect.promise(() =>
+      exportDashboard({
+        dashboardId: id,
+        userId: user.id,
+        orgId,
+        format,
+        parameters: body.parameters ?? null,
+        cookieHeader: c.req.raw.headers.get("cookie"),
+        apiBaseUrl,
+      }),
+    );
+
+    if (!result.ok) {
+      switch (result.reason) {
+        case "no_db":
+          return c.json(
+            { error: "not_available", message: result.message, requestId },
+            503,
+            { "Retry-After": "5" },
+          );
+        case "dashboard_not_found":
+          return c.json({ error: "not_found", message: result.message, requestId }, 404);
+        case "dashboard_unavailable":
+          return c.json(
+            { error: "dashboard_unavailable", message: result.message, requestId },
+            503,
+            { "Retry-After": "5" },
+          );
+        case "invalid_parameters":
+          // Supplied an override that fails its declared parameter's type
+          // (e.g. a non-date for a date param). Fail closed with a 400 rather
+          // than silently exporting the default-parameter board.
+          return c.json({ error: "invalid_parameters", message: result.message, requestId }, 400);
+        case "browser_unavailable":
+          return c.json({ error: "browser_unavailable", message: result.message, requestId }, 503);
+        case "export_timeout":
+          // Distinct from render_failed — the render was simply too slow, so
+          // 504 + Retry-After invites a retry rather than signalling a bug.
+          return c.json(
+            { error: "export_timeout", message: result.message, requestId },
+            504,
+            { "Retry-After": "5" },
+          );
+        case "render_failed":
+          return c.json({ error: "render_failed", message: result.message, requestId }, 500);
+        default: {
+          const _exhaustive: never = result.reason;
+          return c.json({ error: "internal_error", message: `Unhandled: ${_exhaustive}`, requestId }, 500);
+        }
+      }
+    }
+
+    return new Response(new Uint8Array(result.bytes), {
+      status: 200,
+      headers: {
+        "Content-Type": result.contentType,
+        "Content-Length": String(result.bytes.length),
+        // Filename is an ASCII slug + UTC stamp (see buildExportFilename), so a
+        // plain `filename=` is safe — no RFC 5987 encoding needed.
+        "Content-Disposition": `attachment; filename="${result.filename}"`,
+        // Exports are one-shot, parameter-varying artifacts — never cache.
+        "Cache-Control": "no-store",
+        // Surface partial renders so the client can warn the file may be
+        // incomplete (a stuck tile doesn't fail the whole export).
+        "X-Atlas-Export-Partial": result.partial ? "1" : "0",
+        "X-Atlas-Export-Duration-Ms": String(result.durationMs),
+      },
+    });
+  }), { label: "export dashboard" });
 });
 
 // Mount authenticated routes

@@ -58,7 +58,7 @@ export function corsResponseHeaders(requestOrigin: string): Record<string, strin
   const configured = resolveCorsOrigin();
   const headers: Record<string, string> = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Expose-Headers": "Retry-After, x-conversation-id",
+    "Access-Control-Expose-Headers": "Retry-After, x-conversation-id, X-Atlas-Export-Partial, Content-Disposition",
   };
 
   if (configured === "*") {

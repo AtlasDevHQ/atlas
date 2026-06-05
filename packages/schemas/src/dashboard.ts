@@ -310,10 +310,12 @@ export const DASHBOARD_THRESHOLDS_MAX = 5;
 
 /**
  * Conservative CSS-colour validation for a threshold's `color`. Accepts a hex
- * colour, an `rgb()/rgba()/hsl()/hsla()` function, or a named colour. The value
- * lands in an SVG `stroke` / `fill` attribute — React escapes attribute values
- * so this isn't an injection gate, but rejecting junk keeps a typo'd colour
- * from silently rendering an invisible line. Length-bounded to a sane colour.
+ * colour, an `rgb()/rgba()/hsl()/hsla()` function, or a bare-alphabetic named
+ * colour. The value lands in an SVG `stroke` / `fill` attribute — React escapes
+ * attribute values so this isn't an injection gate. It rejects structurally-
+ * malformed values (stray punctuation, embedded spaces); it does NOT validate a
+ * named colour against the CSS keyword set, so a typo'd-but-well-formed name
+ * (`bleu`) still passes. Length-bounded to a sane colour.
  */
 const CSS_COLOR_RE = /^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\([\d\s.,%/]+\)|[a-zA-Z]+)$/;
 

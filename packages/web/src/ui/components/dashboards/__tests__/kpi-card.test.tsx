@@ -204,6 +204,11 @@ describe("kpiTargetStatus", () => {
     expect(kpiTargetStatus(100, undefined)).toBeNull();
     expect(kpiTargetStatus(100, Number.NaN)).toBeNull();
   });
+
+  test("returns null for a non-finite value (undeterminable, not 'at')", () => {
+    expect(kpiTargetStatus(Number.NaN, 100)).toBeNull();
+    expect(kpiTargetStatus(Number.POSITIVE_INFINITY, 100)).toBeNull();
+  });
 });
 
 describe("kpiTargetTone", () => {
@@ -587,5 +592,38 @@ describe("<KpiCard>", () => {
     const valueEl = screen.getByTestId("kpi-value");
     expect(valueEl.getAttribute("data-target-tone")).toBeNull();
     expect(valueEl.getAttribute("data-target-status")).toBeNull();
+  });
+
+  test("a threshold with no cached value shows the target but no verdict word or tint", () => {
+    const card: DashboardCard = { ...withTarget({ value: 1_000_000, label: "Goal" }), cachedColumns: null, cachedRows: null };
+    render(<KpiCard card={card} />);
+    // Headline is an em-dash and uncoloured (no determinable status).
+    expect(screen.getByTestId("kpi-value").textContent).toBe("—");
+    expect(screen.getByTestId("kpi-value").getAttribute("data-target-tone")).toBeNull();
+    // The target row still shows the goal, but no above/below/on-target word.
+    const callout = screen.getByTestId("kpi-target");
+    expect(callout.textContent).toContain("Goal");
+    expect(callout.textContent).not.toContain("above");
+    expect(callout.textContent).not.toContain("below");
+    expect(callout.textContent).not.toContain("on target");
+  });
+
+  test("a KPI card keys off the FIRST threshold only (a scorecard shows one target)", () => {
+    // value 1.2M. First threshold 1M → above (positive). A second threshold at
+    // 2M (which alone would read 'below') must be ignored.
+    const card: DashboardCard = {
+      ...kpiCard,
+      chartConfig: {
+        type: "kpi",
+        categoryColumn: "label",
+        valueColumns: ["total"],
+        kpi: { valueFormat: "currency" },
+        thresholds: [{ value: 1_000_000 }, { value: 2_000_000 }],
+      },
+    };
+    render(<KpiCard card={card} />);
+    const valueEl = screen.getByTestId("kpi-value");
+    expect(valueEl.getAttribute("data-target-status")).toBe("above");
+    expect(valueEl.getAttribute("data-target-tone")).toBe("positive");
   });
 });

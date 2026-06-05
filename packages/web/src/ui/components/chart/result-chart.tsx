@@ -74,16 +74,17 @@ function drilldownCursor(
 
 /**
  * Build the horizontal goal-line `<ReferenceLine>`s for a cartesian (Y-axis)
- * chart. Returns an ARRAY of elements rendered inline as a direct child of the
- * chart — recharts detects reference lines by element type among its children,
- * so an array (not a wrapper component) is what keeps them visible. Returns `[]`
- * when there are no thresholds, so a card without them renders exactly as today.
+ * chart. Returns an array of `<ReferenceLine>` elements rendered inline as
+ * children of the chart — the same pattern as the `<Bar>` / `<Line>` series maps
+ * in each view. Returns `[]` when there are no thresholds, so a card without them
+ * renders exactly as today.
  *
  * `ifOverflow="extendDomain"` so a target beyond the current data range (the
  * "Revenue below $1M target" case) still shows — the axis stretches to fit it.
  *
- * Factored as a standalone helper so #3209 (annotations / vertical reference
- * lines) can add a sibling for vertical lines without reworking each view.
+ * Factored as a standalone helper so a future annotations / reference-line
+ * feature (#3209) can add a sibling for vertical lines without reworking each
+ * view.
  */
 function thresholdLineElements(
   thresholds: ThresholdInput[] | undefined,

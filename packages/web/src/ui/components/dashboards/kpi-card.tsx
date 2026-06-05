@@ -100,7 +100,16 @@ export function kpiTargetStatus(
   value: number | null,
   thresholdValue: number | undefined,
 ): KpiTargetStatus | null {
-  if (value === null || thresholdValue === undefined || !Number.isFinite(thresholdValue)) {
+  // Guard BOTH operands for finiteness — the sole call site feeds a value from
+  // `extractKpiNumber` (already finite-or-null), but as an exported helper this
+  // must be correct for any caller: `kpiTargetStatus(NaN, 100)` is undeterminable,
+  // not "at".
+  if (
+    value === null ||
+    !Number.isFinite(value) ||
+    thresholdValue === undefined ||
+    !Number.isFinite(thresholdValue)
+  ) {
     return null;
   }
   if (value > thresholdValue) return "above";
@@ -300,6 +309,15 @@ const TARGET_VALUE_STYLES: Record<DeltaTone, string> = {
   neutral: KPI_VALUE_DEFAULT,
 };
 
+/** Verdict word for the target callout by status (#3208). `above`/`below` map
+ *  to themselves; only `at` is reworded. A lookup (vs. a nested ternary) matches
+ *  the `TONE_STYLES` / `DELTA_ICON` maps in this file. */
+const TARGET_STATUS_LABEL: Record<KpiTargetStatus, string> = {
+  above: "above",
+  below: "below",
+  at: "on target",
+};
+
 const DELTA_ICON: Record<KpiDelta["direction"], typeof ArrowUp> = {
   up: ArrowUp,
   down: ArrowDown,
@@ -384,7 +402,7 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
           </span>
           {targetStatus && targetTone && (
             <span className={cn("font-medium", TONE_STYLES[targetTone])}>
-              {targetStatus === "above" ? "above" : targetStatus === "below" ? "below" : "on target"}
+              {TARGET_STATUS_LABEL[targetStatus]}
             </span>
           )}
         </div>

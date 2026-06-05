@@ -41,6 +41,17 @@ describe("resolveThresholdLines", () => {
     expect(line.label).toBe("Target");
   });
 
+  test("falls back to the theme stroke for a structurally-malformed cached colour (no invisible line)", () => {
+    // `rowToCard` JSON-parses cached config without Zod, so a junk colour can
+    // reach the renderer; it must degrade to a visible theme stroke, not an
+    // invisible SVG stroke.
+    expect(resolveThresholdLines([{ value: 1, color: "not-a-color;" }], false)[0].stroke).toBe(
+      THRESHOLD_LINE_LIGHT,
+    );
+    expect(resolveThresholdLines([{ value: 1, color: "" }], true)[0].stroke).toBe(THRESHOLD_LINE_DARK);
+    expect(resolveThresholdLines([{ value: 1, color: "   " }], false)[0].stroke).toBe(THRESHOLD_LINE_LIGHT);
+  });
+
   test("a threshold with no label yields a null label (no caption drawn)", () => {
     expect(resolveThresholdLines([{ value: 1 }], false)[0].label).toBeNull();
   });

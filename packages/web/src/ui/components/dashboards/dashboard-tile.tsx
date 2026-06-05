@@ -63,11 +63,34 @@ interface DashboardTileProps {
    * Ignored by non-KPI tiles.
    */
   comparison?: KpiComparisonResult | null;
+  /**
+   * #3212 — click-to-drilldown. Called with the card's drilldown target
+   * parameter key + the clicked category value when a data point (bar / line /
+   * area / pie slice, or a table row) is clicked on a card that declares
+   * `chartConfig.drilldown`. Omitted / unset → the card is inert on click.
+   */
+  onDrilldown?: (targetParam: string, value: string) => void;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
   onDelete: (card: DashboardCard) => void;
   onUpdateTitle: (cardId: string, title: string) => void;
+}
+
+/**
+ * #3212 — pull the drilldown value out of a clicked table row: the cell in the
+ * card's configured `categoryColumn`. Returns null when the column is unset or
+ * the cell is empty (the row is then inert), so a table card without a usable
+ * category column can't fire a no-op drilldown.
+ */
+function drilldownValueFromRow(
+  row: Record<string, unknown> | unknown[],
+  categoryColumn: string,
+): string | null {
+  if (!categoryColumn || Array.isArray(row)) return null;
+  const value = row[categoryColumn];
+  if (value == null || value === "") return null;
+  return String(value);
 }
 
 /**
@@ -87,6 +110,7 @@ function ChartTile({
   isRefreshing,
   stage,
   comparison,
+  onDrilldown,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -107,6 +131,36 @@ function ChartTile({
   const rows = (card.cachedRows ?? []) as Record<string, unknown>[];
   const hasData = columns.length > 0 && rows.length > 0;
   const stringRows = hasData ? toStringRows(columns, rows) : [];
+
+  // #3212 — click-to-drilldown. A card that declares `chartConfig.drilldown`
+  // forwards the clicked category value to its target parameter. Disabled while
+  // editing (the chart body is a drag surface then) and on KPI cards (a single
+  // number has no category to drill into). The inline `drilldownParam !== null`
+  // and `onDrilldown` checks narrow both — `const` narrowing flows into the
+  // handler closures, so no non-null assertions are needed.
+  const drilldownParam = card.chartConfig?.drilldown?.targetParam ?? null;
+  const categoryColumn = card.chartConfig?.categoryColumn ?? "";
+  const drillEnabled = !editing && !isKpi;
+  const onCategoryClick =
+    drillEnabled && drilldownParam !== null && onDrilldown
+      ? (value: string, categoryKey: string) => {
+          // Only bind when the clicked chart axis IS the card's configured
+          // drilldown column. ResultChart re-detects the chart from the data, so
+          // a divergent category axis would otherwise set the parameter from the
+          // wrong column; gating keeps the chart path consistent with the table
+          // path (which reads `categoryColumn` directly). (#3212, Codex review.)
+          if (categoryColumn && categoryKey === categoryColumn) {
+            onDrilldown(drilldownParam, value);
+          }
+        }
+      : undefined;
+  const onRowClick =
+    drillEnabled && drilldownParam !== null && onDrilldown && categoryColumn
+      ? (row: Record<string, unknown> | unknown[]) => {
+          const value = drilldownValueFromRow(row, categoryColumn);
+          if (value != null) onDrilldown(drilldownParam, value);
+        }
+      : undefined;
 
   function commitTitle() {
     const next = titleDraft.trim();
@@ -288,10 +342,11 @@ function ChartTile({
               columns={columns}
               stringRows={stringRows}
               dark={dark}
+              onCategoryClick={onCategoryClick}
             />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
-              <DataTable columns={columns} rows={rows} />
+              <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />
             </div>
           )
         ) : (
@@ -423,11 +478,14 @@ function ChartSlot({
   columns,
   stringRows,
   dark,
+  onCategoryClick,
 }: {
   cardId: string;
   columns: string[];
   stringRows: string[][];
   dark: boolean;
+  /** #3212 — forwarded to ResultChart; undefined → chart is inert on click. */
+  onCategoryClick?: (value: string, categoryKey: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -466,6 +524,7 @@ function ChartSlot({
           headers={columns}
           rows={stringRows}
           dark={dark}
+          onCategoryClick={onCategoryClick}
         />
       )}
     </div>

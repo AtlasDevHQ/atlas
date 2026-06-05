@@ -1,12 +1,29 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { DashboardCard } from "@/ui/lib/types";
 
 // Stub the dynamic ResultChart import so jsdom doesn't try to evaluate
 // recharts. Bypass next/dynamic entirely so the sentinel renders synchronously
-// — the dynamic loader otherwise suspends past the test's render() call.
+// — the dynamic loader otherwise suspends past the test's render() call. The
+// stub forwards `onCategoryClick` (#3212) so a click can exercise the tile→chart
+// drilldown plumbing without a real recharts chart.
 mock.module("@/ui/components/chart/result-chart", () => ({
-  ResultChart: () => <div data-testid="result-chart">chart</div>,
+  ResultChart: ({ onCategoryClick }: { onCategoryClick?: (value: string, categoryKey: string) => void }) => (
+    <>
+      {/* Fires with the card's configured category column ("stage") — matches. */}
+      <button type="button" data-testid="result-chart" onClick={() => onCategoryClick?.("Discovery", "stage")}>
+        chart
+      </button>
+      {/* Fires with a DIFFERENT detected column — the tile must reject this. */}
+      <button
+        type="button"
+        data-testid="result-chart-other-col"
+        onClick={() => onCategoryClick?.("Discovery", "other_col")}
+      >
+        chart-other
+      </button>
+    </>
+  ),
 }));
 mock.module("next/dynamic", () => ({
   default: (loader: () => Promise<{ default: React.ComponentType }>) => {
@@ -237,5 +254,101 @@ describe("DashboardTile — KPI cards", () => {
     expect(screen.getByRole("button", { name: "Refresh tile" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Fullscreen" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Tile actions" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Click-to-drilldown (#3212)
+// ---------------------------------------------------------------------------
+
+// A table-type card renders the DataTable view immediately (no chart mount /
+// recharts), so the table drilldown path is exercisable synchronously.
+const tableCard: DashboardCard = {
+  ...baseCard,
+  id: "card-table",
+  chartConfig: { type: "table", categoryColumn: "stage", valueColumns: ["amount"] },
+};
+
+const tableDrillCard: DashboardCard = {
+  ...tableCard,
+  chartConfig: { ...tableCard.chartConfig!, drilldown: { targetParam: "stage" } },
+};
+
+const barDrillCard: DashboardCard = {
+  ...baseCard,
+  id: "card-bar-drill",
+  chartConfig: { type: "bar", categoryColumn: "stage", valueColumns: ["amount"], drilldown: { targetParam: "stage" } },
+};
+
+describe("DashboardTile — drilldown (#3212)", () => {
+  afterEach(cleanup);
+
+  test("clicking a table row on a drilldown card fires onDrilldown(targetParam, categoryValue)", () => {
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    const { container } = render(
+      <DashboardTile {...baseProps} card={tableDrillCard} onDrilldown={onDrilldown} />,
+    );
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.getAttribute("role")).toBe("button");
+    fireEvent.click(firstRow!);
+    expect(onDrilldown).toHaveBeenCalledTimes(1);
+    // categoryColumn is "stage"; first cached row's stage is "Discovery".
+    expect(onDrilldown.mock.calls[0]).toEqual(["stage", "Discovery"]);
+  });
+
+  test("a card without a drilldown target is inert on row click (no regression)", () => {
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    const { container } = render(
+      <DashboardTile {...baseProps} card={tableCard} onDrilldown={onDrilldown} />,
+    );
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.getAttribute("role")).toBeNull();
+    fireEvent.click(firstRow!);
+    expect(onDrilldown).not.toHaveBeenCalled();
+  });
+
+  test("clicking a chart data point on a drilldown card fires onDrilldown with the clicked category", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    render(<DashboardTile {...baseProps} card={barDrillCard} onDrilldown={onDrilldown} />);
+    // Flush the readiness gate + dynamic ResultChart load.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The stubbed ResultChart forwards onCategoryClick("Discovery", "stage").
+    fireEvent.click(screen.getByTestId("result-chart"));
+    expect(onDrilldown).toHaveBeenCalledTimes(1);
+    expect(onDrilldown.mock.calls[0]).toEqual(["stage", "Discovery"]);
+    restore();
+  });
+
+  test("a chart click from a column other than the configured categoryColumn is rejected", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    // Card's drilldown column is "stage"; the stub's second button fires with
+    // "other_col" (a divergent detected axis) — the tile must not bind it.
+    render(<DashboardTile {...baseProps} card={barDrillCard} onDrilldown={onDrilldown} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByTestId("result-chart-other-col"));
+    expect(onDrilldown).not.toHaveBeenCalled();
+    restore();
+  });
+
+  test("drilldown is disabled while editing (chart body is a drag surface)", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onDrilldown = mock((_param: string, _value: string) => {});
+    render(<DashboardTile {...baseProps} card={barDrillCard} editing={true} onDrilldown={onDrilldown} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // onCategoryClick is undefined while editing → the stub's click is a no-op.
+    fireEvent.click(screen.getByTestId("result-chart"));
+    expect(onDrilldown).not.toHaveBeenCalled();
+    restore();
   });
 });

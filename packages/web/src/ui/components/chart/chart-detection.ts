@@ -1,5 +1,10 @@
 /* Chart detection — pure functions, zero React deps. Kept framework-agnostic for direct unit testing. */
 
+// `MouseHandlerDataParam` is a recharts TYPE only (erased at runtime) — importing
+// it here keeps this module free of any recharts runtime dependency, so the
+// click extractors below stay unit-testable without evaluating recharts in jsdom.
+import type { MouseHandlerDataParam } from "recharts";
+
 type ColumnType = "numeric" | "date" | "categorical" | "unknown";
 
 export type ClassifiedColumn = {
@@ -110,6 +115,40 @@ export function classifyColumn(header: string, values: string[]): ColumnType {
   if (unique.size < 50) return "categorical";
 
   return "unknown";
+}
+
+/* ------------------------------------------------------------------ */
+/*  Click-to-drilldown value extractors (#3212)                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Pull the clicked category-axis value out of a Recharts categorical chart
+ * click (bar / line / area). `activeLabel` is the category/domain value at the
+ * clicked tick; `null` means the click landed off any category (empty plot
+ * area). Pure — the recharts click itself is not reproducible in jsdom, so this
+ * is the unit-tested seam.
+ */
+export function categoryFromChartClick(
+  state: MouseHandlerDataParam | null | undefined,
+): string | null {
+  const label = state?.activeLabel;
+  if (label == null || label === "") return null;
+  return String(label);
+}
+
+/**
+ * Pull the clicked slice's category value out of a Recharts Pie click. The
+ * sector carries the original {@link RechartsRow} on `payload`, keyed by header,
+ * so we read the category column off it. Pure + unit-tested.
+ */
+export function categoryFromPieClick(
+  data: { payload?: unknown } | null | undefined,
+  categoryKey: string,
+): string | null {
+  const payload = (data?.payload ?? null) as Record<string, unknown> | null;
+  const value = payload?.[categoryKey];
+  if (value == null || value === "") return null;
+  return String(value);
 }
 
 /* ------------------------------------------------------------------ */

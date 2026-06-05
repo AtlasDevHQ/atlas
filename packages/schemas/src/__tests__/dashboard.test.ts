@@ -9,6 +9,7 @@ import {
   dashboardChartTypeSchema,
   dashboardKpiConfigSchema,
   dashboardChartConfigSchema,
+  dashboardDrilldownConfigSchema,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -258,6 +259,56 @@ describe("dashboardChartConfigSchema", () => {
   test("rejects a config missing valueColumns", () => {
     expect(
       dashboardChartConfigSchema.safeParse({ type: "kpi", categoryColumn: "label", valueColumns: [] }).success,
+    ).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Click-to-drilldown (#3212)
+  // ---------------------------------------------------------------------------
+
+  test("round-trips a chart config with a drilldown target", () => {
+    const config = {
+      type: "bar" as const,
+      categoryColumn: "region",
+      valueColumns: ["revenue"],
+      drilldown: { targetParam: "region" },
+    };
+    expect(dashboardChartConfigSchema.parse(config)).toEqual(config);
+  });
+
+  test("a chart config without drilldown stays back-compatible (field absent)", () => {
+    const config = { type: "bar" as const, categoryColumn: "stage", valueColumns: ["amount"] };
+    const parsed = dashboardChartConfigSchema.parse(config);
+    expect(parsed).toEqual(config);
+    expect("drilldown" in parsed).toBe(false);
+  });
+
+  test("rejects a drilldown target that isn't a lower-snake parameter key", () => {
+    expect(
+      dashboardChartConfigSchema.safeParse({
+        type: "bar",
+        categoryColumn: "region",
+        valueColumns: ["revenue"],
+        drilldown: { targetParam: "Region Filter" },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardDrilldownConfigSchema", () => {
+  test("accepts a valid parameter-key target", () => {
+    expect(dashboardDrilldownConfigSchema.safeParse({ targetParam: "region" }).success).toBe(true);
+    expect(dashboardDrilldownConfigSchema.safeParse({ targetParam: "date_from" }).success).toBe(true);
+  });
+
+  test("rejects a non-identifier target (would not match the :placeholder scanner)", () => {
+    expect(dashboardDrilldownConfigSchema.safeParse({ targetParam: "9region" }).success).toBe(false);
+    expect(dashboardDrilldownConfigSchema.safeParse({ targetParam: "" }).success).toBe(false);
+  });
+
+  test("rejects unknown keys (strict — no stray config rides along)", () => {
+    expect(
+      dashboardDrilldownConfigSchema.safeParse({ targetParam: "region", crossFilter: true }).success,
     ).toBe(false);
   });
 });

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useQueryState } from "nuqs";
 import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +29,8 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { DashboardParameterBar, type ParameterValues } from "@/ui/components/dashboards/dashboard-parameter-bar";
+import { DASHBOARD_PARAMS_KEY, dashboardParamsParser, withOverride, normalizeDrilldownValue } from "./search-params";
+import { renderDashboardCards } from "./dashboard-card-render";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
 import { diffDashboards, type DashboardDiff } from "@/ui/components/dashboards/dashboard-diff";
@@ -161,6 +164,13 @@ export default function DashboardViewPage() {
   // of that pattern cascaded into React #185 once refetches started landing
   // fast enough during multi-drag sessions.
   const [optimisticLayouts, setOptimisticLayouts] = useState<Record<string, DashboardCardLayout>>({});
+
+  // #3212 — page-level handle on the SAME `dparams` URL key the parameter bar
+  // owns. Click-to-drilldown WRITES here; the bar — subscribed to the same nuqs
+  // key — observes the change and fires the single batched re-render via its
+  // onChange effect (so the bar stays the sole render trigger). Read access lets
+  // us merge a drilldown value into the current override map.
+  const [dparamsRaw, setDparamsRaw] = useQueryState(DASHBOARD_PARAMS_KEY, dashboardParamsParser);
 
   // #2267 — parameter bar state. `paramResults` holds ephemeral, per-viewer
   // rendered rows keyed by cardId (NOT persisted to the card cache); when set,
@@ -601,78 +611,17 @@ export default function DashboardViewPage() {
     // concurrently in-flight loadDefaultComparisons (from mount or a prior
     // reset) can't land afterward and overwrite this batch's delta chips.
     const cSeq = ++comparisonReqSeq.current;
-    // #3138: text / section-block cards have no SQL — the /render endpoint
-    // short-circuits them to an empty result, and the tile ignores cached
-    // data, so skip them client-side rather than firing a redundant request
-    // per text card on every parameter change.
-    const cards = dashboard.cards.filter((c) => c.kind !== "text");
     setParamLoading(true);
     setParamError(null);
     try {
-      type RenderEntry =
-        | {
-            cardId: string;
-            ok: true;
-            columns: string[];
-            rows: Record<string, unknown>[];
-            // #3137 — present (possibly null) only for KPI cards; drives the delta chip.
-            comparison?: KpiComparisonResult | null;
-          }
-        | { cardId: string; ok: false; error: string };
-      const entries = await Promise.all(
-        cards.map(async (card): Promise<RenderEntry> => {
-          try {
-            const res = await fetch(
-              `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render`,
-              {
-                method: "POST",
-                credentials: isCrossOrigin ? "include" : "same-origin",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ parameters: overrides }),
-              },
-            );
-            if (!res.ok) {
-              // Surface the backend reason (approval required, connection
-              // unavailable, invalid parameters, …) instead of dropping it.
-              let message = `Request failed (${res.status})`;
-              try {
-                const body = (await res.json()) as { message?: string; error?: string };
-                message = body.message ?? body.error ?? message;
-              } catch (parseError) {
-                // Non-JSON error body — keep the status-based message, but
-                // surface the parse failure for debugging rather than dropping it.
-                console.debug("[dashboard] failed to parse render error body", {
-                  cardId: card.id,
-                  status: res.status,
-                  parseError: parseError instanceof Error ? parseError.message : String(parseError),
-                });
-              }
-              return { cardId: card.id, ok: false, error: message };
-            }
-            const json = (await res.json()) as {
-              columns: string[];
-              rows: Record<string, unknown>[];
-              comparison?: KpiComparisonResult | null;
-            };
-            return {
-              cardId: card.id,
-              ok: true,
-              columns: json.columns,
-              rows: json.rows,
-              // Left undefined for a non-KPI card (the render endpoint omits the
-              // field); a KPI card carries the block or `null`. The map-build
-              // below uses this to record comparisons for KPI cards only.
-              comparison: json.comparison,
-            };
-          } catch (err) {
-            return {
-              cardId: card.id,
-              ok: false,
-              error: err instanceof Error ? err.message : String(err),
-            };
-          }
-        }),
-      );
+      // #3138: text cards are skipped inside renderDashboardCards (no SQL).
+      // One POST per chart card, binding `overrides` server-side (#3212 drilldown
+      // and #2267 manual changes flow through the same batch).
+      const entries = await renderDashboardCards(dashboard.cards, overrides, {
+        apiUrl,
+        dashboardId: id,
+        isCrossOrigin,
+      });
       // A newer change superseded this batch — discard its results.
       if (seq !== paramReqSeq.current) return;
       const next: Record<string, { columns: string[]; rows: Record<string, unknown>[] }> = {};
@@ -706,6 +655,31 @@ export default function DashboardViewPage() {
         setParamSettledOnce(true);
       }
     }
+  }
+
+  // #3212 — click-to-drilldown. Sets the card's drilldown target parameter to
+  // the clicked category value by merging it into the shared `dparams` URL key.
+  // We don't refetch here: writing the key updates the parameter bar (which
+  // reflects the value and lets the user clear/override it) and the bar's
+  // onChange effect issues the single batched /render of every card with the
+  // bound value — server-side parameterized, never string-interpolated.
+  function handleDrilldown(targetParam: string, value: string) {
+    if (!dashboard) return;
+    // Ignore a target that names no declared parameter — the render endpoint
+    // binds declared parameters only, so an unknown key would set dead URL
+    // state that no card reads. (A misconfigured card, not an expected path.)
+    const param = dashboard.parameters.find((p) => p.key === targetParam);
+    if (!param) {
+      console.debug("[dashboard] drilldown target is not a declared parameter; ignoring", {
+        targetParam,
+      });
+      return;
+    }
+    // Normalize for the target type — e.g. a `date` param's DatePicker only
+    // reads YYYY-MM-DD, so a timestamp category must be sliced or the bar shows
+    // a blank date even though the filter applied.
+    const normalized = normalizeDrilldownValue(param.type, value);
+    void setDparamsRaw(withOverride(dparamsRaw, targetParam, normalized));
   }
 
   // #3137 — fetch KPI comparison values against the parameter DEFAULTS. Used on
@@ -1004,6 +978,7 @@ export default function DashboardViewPage() {
                   refreshingId={refreshingCardId}
                   stages={stages}
                   comparisons={comparisons}
+                  onDrilldown={handleDrilldown}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}

@@ -14,13 +14,23 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { parseAsString, useQueryState } from "nuqs";
+import { useQueryState } from "nuqs";
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
 import type { DashboardParameter } from "@/ui/lib/types";
+// The override map is shared with click-to-drilldown (#3212) — both read/write
+// the same nuqs key via these helpers, so the key + (de)serialization stay
+// single-sourced. (App-local URL helpers; ui→app is the same direction as
+// `view-all-modal` importing `select-recent`.)
+import {
+  DASHBOARD_PARAMS_KEY,
+  dashboardParamsParser,
+  parseOverrides,
+  serializeOverrides,
+} from "@/app/(workspace)/dashboards/[id]/search-params";
 
 export type ParameterValues = Record<string, string | number | null>;
 
@@ -34,20 +44,6 @@ interface DashboardParameterBarProps {
   onChange: (overrides: ParameterValues) => void;
   /** True while card renders triggered by a change are in flight. */
   loading?: boolean;
-}
-
-/** Parse the URL-encoded override map defensively (drop anything unusable). */
-function parseOverrides(raw: string | null): ParameterValues {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as ParameterValues;
-    }
-  } catch {
-    // Malformed URL state — fall back to defaults rather than throwing.
-  }
-  return {};
 }
 
 /** Local `YYYY-MM-DD` formatting (matches the server's ISO date bind shape). */
@@ -66,7 +62,7 @@ function fromIsoDate(s: string | number | null | undefined): Date | undefined {
 }
 
 export function DashboardParameterBar({ parameters, onChange, loading }: DashboardParameterBarProps) {
-  const [raw, setRaw] = useQueryState("dparams", parseAsString);
+  const [raw, setRaw] = useQueryState(DASHBOARD_PARAMS_KEY, dashboardParamsParser);
   const overrides = useMemo(() => parseOverrides(raw), [raw]);
 
   // Notify the page whenever the committed override map changes (incl. mount).
@@ -78,16 +74,9 @@ export function DashboardParameterBar({ parameters, onChange, loading }: Dashboa
   }, [serialized]);
 
   const commit = useCallback(
-    (next: ParameterValues) => {
-      // Drop null/empty entries so the URL stays clean and "no overrides"
-      // serialises to nothing.
-      const cleaned: ParameterValues = {};
-      for (const [k, v] of Object.entries(next)) {
-        if (v === null || v === "") continue;
-        cleaned[k] = v;
-      }
-      void setRaw(Object.keys(cleaned).length === 0 ? null : JSON.stringify(cleaned));
-    },
+    // `serializeOverrides` drops null/empty entries (clean URL) and returns null
+    // when nothing remains, so "no overrides" clears the param.
+    (next: ParameterValues) => void setRaw(serializeOverrides(next)),
     [setRaw],
   );
 

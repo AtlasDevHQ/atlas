@@ -283,16 +283,32 @@ export const dashboardKpiConfigSchema = z
 export type DashboardKpiConfigWire = z.infer<typeof dashboardKpiConfigSchema>;
 
 /**
+ * Click-to-drilldown config (#3212). `.strict()` so a stray field is rejected
+ * at the boundary rather than persisted and silently ignored — same discipline
+ * as `dashboardKpiConfigSchema`. `targetParam` reuses the parameter-key schema:
+ * it names a declared {@link dashboardParameterSchema} `key`, so it must be the
+ * same lower-snake identifier the `:placeholder` scanner matches.
+ */
+export const dashboardDrilldownConfigSchema = z
+  .object({
+    targetParam: dashboardParameterKeySchema,
+  })
+  .strict();
+export type DashboardDrilldownConfigWire = z.infer<typeof dashboardDrilldownConfigSchema>;
+
+/**
  * Full chart-config schema. `kpi` is optional and only meaningful when
  * `type === "kpi"`; the agent surface + REST routes carry it through as-is.
  * `categoryColumn` allows the empty string (a `table`/`kpi` card may not set a
  * label) — `valueColumns` must hold at least one column so a card always has a
- * metric to plot.
+ * metric to plot. `drilldown` is optional + back-compatible (#3212); absent →
+ * the card is inert on click.
  */
 export const dashboardChartConfigSchema = z.object({
   type: dashboardChartTypeSchema,
   categoryColumn: z.string(),
   valueColumns: z.array(z.string().min(1)).min(1),
   kpi: dashboardKpiConfigSchema.optional(),
+  drilldown: dashboardDrilldownConfigSchema.optional(),
 });
 export type DashboardChartConfigWire = z.infer<typeof dashboardChartConfigSchema>;

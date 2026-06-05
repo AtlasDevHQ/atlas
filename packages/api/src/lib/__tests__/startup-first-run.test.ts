@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { mockIsSupportedProvider, mockGetMissingProviderConfig } from "./provider-config-mock";
 
 // ---------------------------------------------------------------------------
 // Control variables for mocks — mutated per-test in beforeEach
@@ -36,8 +37,12 @@ mock.module("@atlas/api/lib/db/connection", () =>
 
 mock.module("@atlas/api/lib/providers", () => ({
   getDefaultProvider: () => "anthropic",
-  // PROVIDER_KEY_MAP moved here from startup.ts (#3178). startup.ts
-  // imports it, so mock.module must provide it (mock-all-exports).
+  // Required-config SSOT (#3200) — startup.ts's checkProviderApiKey consumes
+  // the set-based check (not PROVIDER_KEY_MAP); shared fixture mirrors the real
+  // providers.ts semantics (Bedrock all-or-none, openai-compatible base URL).
+  isSupportedProvider: mockIsSupportedProvider,
+  getMissingProviderConfig: mockGetMissingProviderConfig,
+  // PROVIDER_KEY_MAP retained for the display/signup-URL mirror (#3178).
   PROVIDER_KEY_MAP: {
     anthropic: "ANTHROPIC_API_KEY",
     openai: "OPENAI_API_KEY",
@@ -115,7 +120,8 @@ const MANAGED_VARS = [
   "BETTER_AUTH_TRUSTED_ORIGINS", "ATLAS_AUTH_JWKS_URL", "ATLAS_AUTH_ISSUER",
   "ATLAS_AUTH_AUDIENCE", "ATLAS_SANDBOX", "ATLAS_SANDBOX_URL",
   "ATLAS_RUNTIME", "VERCEL", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-  "AWS_ACCESS_KEY_ID", "AI_GATEWAY_API_KEY", "ATLAS_DEMO_DATA",
+  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "OPENAI_COMPATIBLE_BASE_URL",
+  "ATLAS_MODEL", "AI_GATEWAY_API_KEY", "ATLAS_DEMO_DATA",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -185,21 +191,66 @@ describe("first-run: missing LLM provider API key", () => {
     expect(err!.message).toContain("vercel.com");
   });
 
-  it("includes env var name without signup URL for bedrock", async () => {
+  // #3200 — Bedrock models the static-credentials pair as all-or-none: only one
+  // key set is a partial config that boots green then throws at first chat. The
+  // diagnostic now flags the missing partner (here AWS_SECRET_ACCESS_KEY).
+  it("flags the missing partner key for partial bedrock static creds (#3200)", async () => {
     process.env.ATLAS_PROVIDER = "bedrock";
-    delete process.env.AWS_ACCESS_KEY_ID;
+    process.env.AWS_ACCESS_KEY_ID = "AKIA-test";
+    delete process.env.AWS_SECRET_ACCESS_KEY;
 
     const errors = await validateEnvironment();
     const err = errors.find((e) => e.code === "MISSING_API_KEY");
     expect(err).toBeDefined();
-    expect(err!.message).toContain("AWS_ACCESS_KEY_ID");
+    expect(err!.message).toContain("AWS_SECRET_ACCESS_KEY");
     expect(err!.message).toContain(".env");
+  });
+
+  // #3200 — Bedrock with NEITHER static key set must NOT false-fail: that's the
+  // AWS credential-provider chain (instance profile / SSO / web-identity).
+  it("no error for bedrock with no static creds (credential-provider chain, #3200)", async () => {
+    process.env.ATLAS_PROVIDER = "bedrock";
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+
+    const errors = await validateEnvironment();
+    expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
+  });
+
+  // #3200/#3206 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL
+  // (no PROVIDER_KEY_MAP entry) and needs ATLAS_MODEL (no default model); the old
+  // single-key check skipped the provider entirely.
+  it("flags the missing base URL and model for openai-compatible (#3200/#3206)", async () => {
+    process.env.ATLAS_PROVIDER = "openai-compatible";
+    delete process.env.OPENAI_COMPATIBLE_BASE_URL;
+    delete process.env.ATLAS_MODEL;
+
+    const errors = await validateEnvironment();
+    const err = errors.find((e) => e.code === "MISSING_API_KEY");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("OPENAI_COMPATIBLE_BASE_URL");
+    expect(err!.message).toContain("ATLAS_MODEL");
   });
 
   it("no error when using ollama (no key required)", async () => {
     process.env.ATLAS_PROVIDER = "ollama";
 
     const errors = await validateEnvironment();
+    expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
+  });
+
+  // #3206 (CodeRabbit) — a typo'd / unsupported provider must surface a
+  // diagnostic so /health flags it; resolveSelection() would otherwise throw on
+  // every request while /health stays green.
+  it("flags an unsupported ATLAS_PROVIDER with an INVALID_CONFIG diagnostic (#3206)", async () => {
+    process.env.ATLAS_PROVIDER = "anthropc"; // typo
+
+    const errors = await validateEnvironment();
+    const err = errors.find((e) => e.code === "INVALID_CONFIG");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("anthropc");
+    expect(err!.message).toContain("not a supported provider");
+    // ...and no misleading MISSING_API_KEY for the unknown provider.
     expect(errors.find((e) => e.code === "MISSING_API_KEY")).toBeUndefined();
   });
 

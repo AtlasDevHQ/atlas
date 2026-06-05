@@ -34,11 +34,33 @@ mock.module("@atlas/api/lib/logger", () => ({
   getRequestContext: () => undefined,
 }));
 
+// Controls what the (dynamic-imported) settings module returns to
+// `ProviderKeyGuardLive` for the proactive (settings-backed) provider (#3203).
+// Defaults to `undefined` so the settings-backed provider resolves identically
+// to the env provider — no divergence — keeping every pre-#3203 case unaffected.
+// Individual tests set it (and reset to undefined in `finally`) to exercise the
+// settings-only-misconfig path. Full export surface mocked per mock-all-exports.
+let mockSettingProvider: string | undefined;
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingAuto: (key: string) => (key === "ATLAS_PROVIDER" ? mockSettingProvider : undefined),
+  getSetting: () => undefined,
+  getSettingLive: async () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  getAllSettingOverrides: async () => [],
+  loadSettings: async () => 0,
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  refreshSettingsTick: async () => {},
+  _resetSettingsCache: () => {},
+}));
+
 // Type-only imports for the tagged error classes and the `Config` Tag
 // type — needed because the runtime values are pulled in via dynamic
 // `await import(...)` after the logger mock is installed, which gives
 // us values but not types.
-import type { Config as TConfig, ConfigShape } from "../layers";
+import type { Config as TConfig, ConfigShape, Settings as TSettings, SettingsShape } from "../layers";
 import type {
   EnterpriseRequiredError as TEnterpriseRequiredError,
   EncryptionKeyMissingError as TEncryptionKeyMissingError,
@@ -62,6 +84,7 @@ const {
   RateLimitGuardLive,
   RateLimitRequiredError,
   ProviderKeyGuardLive,
+  ProactiveProviderKeyGuardLive,
   ProviderKeyMissingError,
   ProviderUnsupportedError,
   RegionGuardLive,
@@ -69,7 +92,7 @@ const {
   ChatAdapterEnvGuardLive,
   ChatAdapterEnvMissingError,
 } = await import("../saas-guards");
-const { Config } = await import("../layers");
+const { Config, Settings } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
 
 // ── Test helpers ────────────────────────────────────────────────────
@@ -80,6 +103,13 @@ function makeTestConfigLayer(
   return Layer.succeed(Config, {
     config: config as unknown as ConfigShape["config"],
   });
+}
+
+// `ProviderKeyGuardLive` depends on `Settings` for ordering (#3203) — provide a
+// stub Tag so the guard's `yield* Settings` resolves without running the real
+// `SettingsLive` (the settings VALUES come from the mocked module above).
+function makeTestSettingsLayer(): Layer.Layer<TSettings> {
+  return Layer.succeed(Settings, { loaded: 0 } satisfies SettingsShape);
 }
 
 // Source of truth lives in `effect/saas-env.ts :: SAAS_ENV_KEYS` (#2226).
@@ -612,12 +642,65 @@ describe("ProviderKeyGuardLive", () => {
     });
   }
 
-  function runGuard(): Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>> {
+  // Non-SAAS_ENV_KEYS provider env vars that `withCleanEnv` does NOT clear —
+  // `getMissingProviderConfig` reads them dynamically (same pattern as the
+  // ANTHROPIC_API_KEY carve-out). Cleared + overridden here so a dev machine's
+  // stray AWS creds can't make a "fails when partial" case pass for the wrong
+  // reason.
+  const NON_SAAS_PROVIDER_KEYS = [
+    "ANTHROPIC_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "OPENAI_COMPATIBLE_BASE_URL",
+    "ATLAS_MODEL",
+  ] as const;
+  function withProviderEnv<T>(overrides: Record<string, string>, run: () => Promise<T>): Promise<T> {
+    const saved: Record<string, string | undefined> = {};
+    for (const key of NON_SAAS_PROVIDER_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    for (const [k, v] of Object.entries(overrides)) process.env[k] = v;
+    return run().finally(() => {
+      for (const key of NON_SAAS_PROVIDER_KEYS) {
+        if (saved[key] !== undefined) process.env[key] = saved[key];
+        else delete process.env[key];
+      }
+    });
+  }
+
+  // Drive what the mocked settings module returns for the proactive
+  // (settings-backed) provider resolution (#3203); reset in `finally`.
+  function withSettingProvider<T>(provider: string | undefined, run: () => Promise<T>): Promise<T> {
+    const saved = mockSettingProvider;
+    mockSettingProvider = provider;
+    return run().finally(() => {
+      mockSettingProvider = saved;
+    });
+  }
+
+  // The env-only main-chat guard (#3178/#3200) — Config-only.
+  function runGuard(
+    deployMode: "saas" | "self-hosted" = "saas",
+  ): Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>> {
     return Effect.runPromiseExit(
       Effect.void.pipe(
         Effect.provide(
-          ProviderKeyGuardLive.pipe(
-            Layer.provide(makeTestConfigLayer({ deployMode: "saas" })),
+          ProviderKeyGuardLive.pipe(Layer.provide(makeTestConfigLayer({ deployMode }))),
+        ),
+      ),
+    ) as Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>>;
+  }
+
+  // The settings-backed proactive guard (#3203) — Config + Settings.
+  function runProactiveGuard(
+    deployMode: "saas" | "self-hosted" = "saas",
+  ): Promise<Exit.Exit<void, TProviderKeyMissingError | TProviderUnsupportedError>> {
+    return Effect.runPromiseExit(
+      Effect.void.pipe(
+        Effect.provide(
+          ProactiveProviderKeyGuardLive.pipe(
+            Layer.provide(Layer.merge(makeTestConfigLayer({ deployMode }), makeTestSettingsLayer())),
           ),
         ),
       ),
@@ -637,7 +720,8 @@ describe("ProviderKeyGuardLive", () => {
       expect(failure).toBeInstanceOf(ProviderKeyMissingError);
       expect((failure as TProviderKeyMissingError)._tag).toBe("ProviderKeyMissingError");
       expect((failure as TProviderKeyMissingError).provider).toBe("gateway");
-      expect((failure as TProviderKeyMissingError).requiredKey).toBe("AI_GATEWAY_API_KEY");
+      expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["AI_GATEWAY_API_KEY"]);
+      expect((failure as TProviderKeyMissingError).source).toBe("main-chat (env)");
       expect((failure as TProviderKeyMissingError).message).toContain("#3178");
     });
   });
@@ -651,7 +735,7 @@ describe("ProviderKeyGuardLive", () => {
         const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
         expect(failure).toBeInstanceOf(ProviderKeyMissingError);
         expect((failure as TProviderKeyMissingError).provider).toBe("anthropic");
-        expect((failure as TProviderKeyMissingError).requiredKey).toBe("ANTHROPIC_API_KEY");
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["ANTHROPIC_API_KEY"]);
       }),
     );
   });
@@ -678,8 +762,8 @@ describe("ProviderKeyGuardLive", () => {
     });
   });
 
-  // ollama runs locally and needs no key — PROVIDER_KEY_MAP maps it to "",
-  // which the guard treats as "no key required" and skips.
+  // ollama runs locally and needs no key — getMissingProviderConfig returns []
+  // for it, which the guard treats as "fully configured" and skips.
   test("succeeds in SaaS with ATLAS_PROVIDER=ollama (no key required)", async () => {
     await withCleanEnv(async () => {
       process.env.ATLAS_PROVIDER = "ollama";
@@ -688,22 +772,101 @@ describe("ProviderKeyGuardLive", () => {
     });
   });
 
-  // openai-compatible authenticates via a base URL, not a fixed key var, so
-  // PROVIDER_KEY_MAP has no entry — but it IS a supported provider, so the guard
-  // skips the key check rather than treating it as unknown.
-  test("succeeds in SaaS for a valid keyless provider (openai-compatible)", async () => {
-    await withCleanEnv(async () => {
-      process.env.ATLAS_PROVIDER = "openai-compatible";
-      const exit = await runGuard();
-      expect(Exit.isSuccess(exit)).toBe(true);
-    });
+  // #3200 — openai-compatible authenticates via OPENAI_COMPATIBLE_BASE_URL (no
+  // PROVIDER_KEY_MAP entry) AND needs ATLAS_MODEL (it has no default model, so
+  // resolveSelection() throws without one — #3206 Codex). The old single-key
+  // guard skipped it entirely; the set-based check now requires both.
+  test("fails boot in SaaS for openai-compatible with neither base URL nor model (#3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({}, async () => {
+        process.env.ATLAS_PROVIDER = "openai-compatible";
+        const exit = await runGuard();
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+        expect((failure as TProviderKeyMissingError).provider).toBe("openai-compatible");
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual([
+          "OPENAI_COMPATIBLE_BASE_URL",
+          "ATLAS_MODEL",
+        ]);
+      }),
+    );
+  });
+
+  // Base URL set but no model → still incomplete (openai-compatible has no
+  // default model). Pins the ATLAS_MODEL half of the required set.
+  test("fails boot in SaaS for openai-compatible with base URL but no ATLAS_MODEL (#3206)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({ OPENAI_COMPATIBLE_BASE_URL: "http://localhost:8000/v1" }, async () => {
+        process.env.ATLAS_PROVIDER = "openai-compatible";
+        const exit = await runGuard();
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["ATLAS_MODEL"]);
+      }),
+    );
+  });
+
+  test("succeeds in SaaS for openai-compatible once base URL AND model are set (#3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv(
+        { OPENAI_COMPATIBLE_BASE_URL: "http://localhost:8000/v1", ATLAS_MODEL: "my-model" },
+        async () => {
+          process.env.ATLAS_PROVIDER = "openai-compatible";
+          const exit = await runGuard();
+          expect(Exit.isSuccess(exit)).toBe(true);
+        },
+      ),
+    );
+  });
+
+  // #3200 — Bedrock's static-credentials path needs BOTH the access key AND the
+  // secret. The old single-key guard passed on AWS_ACCESS_KEY_ID alone, then the
+  // first chat threw. The set-based check flags the missing partner.
+  test("fails boot in SaaS for bedrock with only AWS_ACCESS_KEY_ID set (#3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({ AWS_ACCESS_KEY_ID: "AKIA-test" }, async () => {
+        process.env.ATLAS_PROVIDER = "bedrock";
+        const exit = await runGuard();
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+        expect((failure as TProviderKeyMissingError).provider).toBe("bedrock");
+        expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["AWS_SECRET_ACCESS_KEY"]);
+      }),
+    );
+  });
+
+  // #3200 — Bedrock with BOTH static keys present is fully configured.
+  test("succeeds in SaaS for bedrock with both static credentials set (#3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({ AWS_ACCESS_KEY_ID: "AKIA-test", AWS_SECRET_ACCESS_KEY: "secret-test" }, async () => {
+        process.env.ATLAS_PROVIDER = "bedrock";
+        const exit = await runGuard();
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
+  });
+
+  // #3200 — Bedrock with NEITHER static key set must NOT false-fail: that's the
+  // AWS credential-provider chain (EC2/ECS instance profile, SSO, web-identity),
+  // a legitimate keyless deploy. The all-or-none rule requires nothing here.
+  test("succeeds in SaaS for bedrock with no static creds (credential-provider chain, #3200)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({}, async () => {
+        process.env.ATLAS_PROVIDER = "bedrock";
+        const exit = await runGuard();
+        expect(Exit.isSuccess(exit)).toBe(true);
+      }),
+    );
   });
 
   // #3198 Codex (round 4) — a typo / unsupported ATLAS_PROVIDER would make
   // resolveSelection() throw on every chat at first I/O while boot/health stay
   // green. Fail boot with the distinct ProviderUnsupportedError instead of
-  // skipping (an unknown provider also yields PROVIDER_KEY_MAP[x] === undefined,
-  // so it must be distinguished from a valid keyless provider).
+  // skipping (an unknown provider also yields an empty missing-config set, so it
+  // must be distinguished from a valid keyless provider).
   test("fails boot in SaaS when ATLAS_PROVIDER is an unsupported value (#3198)", async () => {
     await withCleanEnv(async () => {
       process.env.ATLAS_PROVIDER = "anthrop"; // typo
@@ -713,25 +876,74 @@ describe("ProviderKeyGuardLive", () => {
       expect(failure).toBeInstanceOf(ProviderUnsupportedError);
       expect((failure as TProviderUnsupportedError)._tag).toBe("ProviderUnsupportedError");
       expect((failure as TProviderUnsupportedError).provider).toBe("anthrop");
+      expect((failure as TProviderUnsupportedError).source).toBe("main-chat (env)");
       expect((failure as TProviderUnsupportedError).message).toContain("#3178");
     });
   });
 
+  // ── #3203 — settings-backed proactive provider (ProactiveProviderKeyGuardLive) ──
+  //
+  // The SaaS proactive runtime resolves its provider via
+  // getSettingAuto("ATLAS_PROVIDER") (DB setting → env → default), NOT the
+  // env-only path the main chat uses. A persisted provider whose key is absent
+  // passes ProviderKeyGuardLive's env-only check yet fails every proactive answer
+  // at model init — so the sibling guard validates the settings resolution too.
+
+  test("fails boot when the settings-backed proactive provider is missing its key (#3203)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({}, () =>
+        // Env path resolves to gateway (with its key set) → passes. The DB-backed
+        // ATLAS_PROVIDER=anthropic has no ANTHROPIC_API_KEY → proactive would fail.
+        withSettingProvider("anthropic", async () => {
+          process.env.ATLAS_DEPLOY_MODE = "saas"; // env → gateway default
+          process.env.AI_GATEWAY_API_KEY = "test-gateway-key";
+          const exit = await runProactiveGuard();
+          expect(Exit.isFailure(exit)).toBe(true);
+          const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+          expect(failure).toBeInstanceOf(ProviderKeyMissingError);
+          expect((failure as TProviderKeyMissingError).provider).toBe("anthropic");
+          expect((failure as TProviderKeyMissingError).missingKeys).toEqual(["ANTHROPIC_API_KEY"]);
+          expect((failure as TProviderKeyMissingError).source).toBe("proactive (settings)");
+        }),
+      ),
+    );
+  });
+
+  test("proactive guard no-ops when env and settings resolve to the same provider (#3203 no false-fail)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({}, () =>
+        // Both paths resolve to gateway (key set) — the proactive guard must
+        // short-circuit the no-divergence case rather than double-validate.
+        withSettingProvider("gateway", async () => {
+          process.env.ATLAS_DEPLOY_MODE = "saas";
+          process.env.AI_GATEWAY_API_KEY = "test-gateway-key";
+          const exit = await runProactiveGuard();
+          expect(Exit.isSuccess(exit)).toBe(true);
+        }),
+      ),
+    );
+  });
+
+  test("proactive guard short-circuits on self-hosted (#3203)", async () => {
+    await withCleanEnv(() =>
+      withProviderEnv({}, () =>
+        withSettingProvider("anthropic", async () => {
+          process.env.ATLAS_PROVIDER = "ollama";
+          const exit = await runProactiveGuard("self-hosted");
+          expect(Exit.isSuccess(exit)).toBe(true);
+        }),
+      ),
+    );
+  });
+
   // The self-hosted counterpart of the test pair the issue calls for:
-  // a keyless dev loop must still boot (it keeps the per-request 503).
+  // a keyless dev loop must still boot (it keeps the per-request 503). The guard
+  // short-circuits on deployMode before touching providers/settings.
   test("succeeds on self-hosted with no provider key (per-request 503 preserved)", async () => {
     await withCleanEnv(() =>
       withoutAnthropicKey(async () => {
         process.env.ATLAS_PROVIDER = "anthropic";
-        const exit = await Effect.runPromiseExit(
-          Effect.void.pipe(
-            Effect.provide(
-              ProviderKeyGuardLive.pipe(
-                Layer.provide(makeTestConfigLayer({ deployMode: "self-hosted" })),
-              ),
-            ),
-          ),
-        );
+        const exit = await runGuard("self-hosted");
         expect(Exit.isSuccess(exit)).toBe(true);
       }),
     );

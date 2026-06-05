@@ -52,6 +52,7 @@ import {
   InternalDbGuardLive,
   RateLimitGuardLive,
   ProviderKeyGuardLive,
+  ProactiveProviderKeyGuardLive,
   RegionGuardLive,
   PluginConfigGuardLive,
   ChatAdapterEnvGuardLive,
@@ -2824,12 +2825,19 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   const encryptionKeyGuardLayer = EncryptionKeyGuardLive.pipe(Layer.provide(configLayer));
   const internalDbGuardLayer = InternalDbGuardLive.pipe(Layer.provide(configLayer));
   const rateLimitGuardLayer = RateLimitGuardLive.pipe(Layer.provide(configLayer));
-  // #3178 — fails boot when the configured provider's API key is missing in
-  // SaaS (boot-green-then-503 otherwise). Depends only on `Config`; it resolves
-  // the provider env-only (matching getModel()/resolveProvider, the path the
-  // main chat uses — #3198) and reads its key from env, so it runs as a peer of
-  // the other env-checking guards.
+  // #3178/#3200 — fails boot when the env-only MAIN-CHAT provider's required
+  // config is incomplete in SaaS (boot-green-then-503 otherwise). Validates
+  // required env as a SET (`getMissingProviderConfig`). `Config`-only and reads
+  // env directly, so it fails fast as a peer of the other env-checking guards.
   const providerKeyGuardLayer = ProviderKeyGuardLive.pipe(Layer.provide(configLayer));
+  // #3203 — sibling guard for the settings-backed PROACTIVE provider. Depends on
+  // `Config` + `Settings` (like `DpaGuardLive`): the `Settings` edge sequences it
+  // after `loadSettings()` warms the cache so `getSettingAuto("ATLAS_PROVIDER")`
+  // sees DB overrides. Kept separate from the env guard above so that guard stays
+  // `Config`-only and fast-failing.
+  const proactiveProviderKeyGuardLayer = ProactiveProviderKeyGuardLive.pipe(
+    Layer.provide(Layer.merge(configLayer, settingsLayer)),
+  );
   // #2672 — walks the chat catalog and fails boot when an oauth+enabled
   // entry's adapter-builder requiredEnv keys are missing in SaaS. Depends
   // only on `Config` and reads env directly, so it runs in parallel with
@@ -2875,6 +2883,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     internalDbGuardLayer,
     rateLimitGuardLayer,
     providerKeyGuardLayer,
+    proactiveProviderKeyGuardLayer,
     regionGuardLayer,
     pluginConfigGuardLayer,
     chatAdapterEnvGuardLayer,

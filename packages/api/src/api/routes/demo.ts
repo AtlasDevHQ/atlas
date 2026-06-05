@@ -60,6 +60,136 @@ const log = createLogger("demo");
 const DemoErrorSchema = z.record(z.string(), z.unknown());
 
 // ---------------------------------------------------------------------------
+// Error classification (#3197 + #3202)
+// ---------------------------------------------------------------------------
+
+/** Codes the demo classifier emits — a subset of `ChatErrorCode`. */
+type DemoErrorCode =
+  | "provider_model_not_found"
+  | "provider_auth_error"
+  | "provider_rate_limit"
+  | "provider_timeout"
+  | "provider_error"
+  | "provider_unreachable"
+  | "rate_limited"
+  | "internal_error";
+
+/** 1:1 code→HTTP status for the synchronous catch path. Mirror of chat.ts's
+ * `CLASSIFIER_STATUS_MAP` + reference/error-codes.mdx — a provider outage must
+ * surface as 503/504, not a misleading 500. */
+const DEMO_STATUS_BY_CODE = {
+  provider_model_not_found: 400,
+  provider_auth_error: 503,
+  provider_rate_limit: 503,
+  provider_timeout: 504,
+  provider_error: 502,
+  provider_unreachable: 503,
+  rate_limited: 429,
+  internal_error: 500,
+} as const satisfies Record<DemoErrorCode, 400 | 429 | 500 | 502 | 503 | 504>;
+
+interface DemoErrorClassification {
+  readonly code: DemoErrorCode;
+  readonly message: string;
+}
+
+/**
+ * Flatten an error + its `cause` chain into one string. `matchError` inspects
+ * only `error.message`, but the AI SDK wraps a transport failure (ECONNREFUSED /
+ * ENOTFOUND / "fetch failed") in an `APICallError` whose connection detail lives
+ * on `.cause`, not the top-level message — so without this a mid-stream provider
+ * outage would miss the `provider_unreachable` match (#3202/#3206 Codex).
+ */
+function flattenErrorMessage(err: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = err;
+  for (let depth = 0; current instanceof Error && depth < 5; depth++) {
+    parts.push(current.message);
+    current = (current as { cause?: unknown }).cause;
+  }
+  if (typeof current === "string" && current.length > 0) parts.push(current);
+  return parts.join(" | ");
+}
+
+/**
+ * Classify a demo agent-loop error. Single source of truth for the demo surface,
+ * invoked by BOTH the synchronous catch (which builds the JSON HTTP response) and
+ * the mid-stream `createUIMessageStream` `onError` path (which serializes the SSE
+ * error frame). One classifier guarantees a provider outage carries the same
+ * `code` whether it surfaces before the stream is returned (runAgent throwing) or
+ * WHILE the stream is consumed (#3202) — exactly the gap chat.ts's
+ * `classifyChatError` already closes for the main chat route.
+ *
+ * The agent loop's exceptions are the LLM provider (executeSQL errors are caught
+ * as tool results), so the non-SDK-typed fallback passes `subsystem: "provider"`
+ * — `matchError` then labels a connection failure (ECONNREFUSED/ENOTFOUND)
+ * `provider_unreachable` rather than the datasource-framed `internal_error`.
+ */
+export function classifyDemoError(err: unknown, requestId: string): DemoErrorClassification {
+  const message = err instanceof Error ? err.message : String(err);
+  if (GatewayModelNotFoundError.isInstance(err)) {
+    return { code: "provider_model_not_found", message: "Model not found on the AI Gateway." };
+  }
+  if (NoSuchModelError.isInstance(err)) {
+    return { code: "provider_model_not_found", message: "The configured model was not found." };
+  }
+  if (LoadAPIKeyError.isInstance(err)) {
+    return { code: "provider_auth_error", message: "LLM provider API key could not be loaded." };
+  }
+  if (APICallError.isInstance(err)) {
+    const status = err.statusCode;
+    if (status === 401 || status === 403) {
+      return { code: "provider_auth_error", message: "LLM provider authentication failed." };
+    }
+    if (status === 429) {
+      return { code: "provider_rate_limit", message: "LLM provider rate limit reached." };
+    }
+    if (status === 408 || /timeout/i.test(message)) {
+      return { code: "provider_timeout", message: "The request timed out." };
+    }
+    if (typeof status === "number") {
+      return { code: "provider_error", message: `LLM provider error (HTTP ${status}).` };
+    }
+    // No HTTP status → the SDK wrapped a transport/connection failure (e.g.
+    // ECONNREFUSED/ENOTFOUND/"fetch failed" on `.cause`). Fall through to the
+    // connection-aware matchError below so it maps to provider_unreachable
+    // rather than a misleading `provider_error (HTTP undefined)` (#3206 Codex).
+  }
+  // Inspect the message AND the cause chain so a connection failure the SDK
+  // buried on `APICallError.cause` still maps to provider_unreachable.
+  const matched = matchError(new Error(flattenErrorMessage(err)), { subsystem: "provider" });
+  if (
+    matched &&
+    (matched.code === "provider_unreachable" ||
+      matched.code === "provider_timeout" ||
+      matched.code === "rate_limited")
+  ) {
+    return { code: matched.code, message: matched.message };
+  }
+  return {
+    code: "internal_error",
+    message: `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting.`,
+  };
+}
+
+/**
+ * Serialize a demo classification into the SSE error frame the AI SDK carries as
+ * `errorText`. Same `{ error, message, retryable, requestId }` shape as the
+ * synchronous JSON response (and chat.ts's `buildMidStreamErrorFrame`), so a
+ * provider outage raised mid-stream is no longer indistinguishable from a normal
+ * response error — the client gets a structured frame either way (#3202).
+ */
+export function buildDemoMidStreamErrorFrame(err: unknown, requestId: string): string {
+  const cls = classifyDemoError(err, requestId);
+  return JSON.stringify({
+    error: cls.code,
+    message: cls.message,
+    retryable: isRetryableError(cls.code),
+    requestId,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
@@ -518,11 +648,21 @@ demo.openapi(demoChatRoute, async (c) => {
           },
           onError: (error) => {
             clearStreamWriter(requestId);
-            log.error(
-              { err: error instanceof Error ? error : new Error(String(error)), requestId },
-              "Demo stream error",
+            // #3202 — a provider error raised WHILE the stream is consumed (e.g.
+            // ECONNREFUSED/ENOTFOUND mid-generation) lands here, not the sync
+            // catch below (runAgent returns the streamText result before the
+            // stream is read). Classify it the same way so the client gets a
+            // structured `provider_unreachable`/503-equivalent frame rather than
+            // a generic string — matching chat.ts's mid-stream contract.
+            const cls = classifyDemoError(error, requestId);
+            const logFn = cls.code === "rate_limited" || cls.code === "provider_rate_limit" ? log.warn : log.error;
+            logFn.call(
+              log,
+              { err: error instanceof Error ? error : new Error(String(error)), category: cls.code, requestId },
+              "Demo stream error (mid-stream): %s",
+              cls.code,
             );
-            return `An error occurred while generating a response (ref: ${requestId.slice(0, 8)}). Try sending your message again.`;
+            return buildDemoMidStreamErrorFrame(error, requestId);
           },
         });
 
@@ -548,100 +688,26 @@ demo.openapi(demoChatRoute, async (c) => {
         // Streaming response bypasses OpenAPI typed returns via HTTPException + res
         throw new HTTPException(200, { res: streamResponse });
       } catch (err) {
-        // Re-throw HTTPException (stream response) — handled by global onError
+        // Re-throw HTTPException (stream response) — handled by global onError.
         if (err instanceof HTTPException) throw err;
 
-        // Error handling mirrors main chat route
+        // Early-throw path: runAgent threw synchronously, before the stream was
+        // returned. Classified by the same `classifyDemoError` the mid-stream
+        // onError uses (#3202), so the response is identical whether the failure
+        // surfaces before or after the first byte. Provider outages map to
+        // 503/504 via DEMO_STATUS_BY_CODE, not a misleading 500 (#3197).
         const errObj = err instanceof Error ? err : new Error(String(err));
-        const message = errObj.message;
-
-        if (GatewayModelNotFoundError.isInstance(err)) {
-          log.error({ err: errObj, category: "provider_model_not_found" }, "Gateway model not found");
-          return c.json(
-            { error: "provider_model_not_found", message: "Model not found on the AI Gateway.", retryable: false, requestId },
-            400,
-          );
+        const cls = classifyDemoError(err, requestId);
+        const httpStatus = DEMO_STATUS_BY_CODE[cls.code];
+        const retryable = isRetryableError(cls.code);
+        if (cls.code === "rate_limited" || cls.code === "provider_rate_limit") {
+          log.warn({ err: errObj, category: cls.code, statusCode: httpStatus, requestId }, "Demo error: %s", cls.code);
+        } else {
+          log.error({ err: errObj, category: cls.code, statusCode: httpStatus, requestId }, "Demo error: %s", cls.code);
         }
-
-        if (NoSuchModelError.isInstance(err)) {
-          log.error({ err: errObj, category: "provider_model_not_found" }, "Model not found");
-          return c.json(
-            { error: "provider_model_not_found", message: "The configured model was not found.", retryable: false, requestId },
-            400,
-          );
-        }
-
-        if (LoadAPIKeyError.isInstance(err)) {
-          log.error({ err: errObj, category: "provider_auth_error" }, "API key not loaded");
-          return c.json(
-            { error: "provider_auth_error", message: "LLM provider API key could not be loaded.", retryable: false, requestId },
-            503,
-          );
-        }
-
-        if (APICallError.isInstance(err)) {
-          const status = err.statusCode;
-          if (status === 401 || status === 403) {
-            log.error({ err: errObj, category: "provider_auth_error", statusCode: status, requestId }, "Provider auth error");
-            return c.json({ error: "provider_auth_error", message: "LLM provider authentication failed.", retryable: false, requestId }, 503);
-          }
-          if (status === 429) {
-            log.warn({ err: errObj, category: "provider_rate_limit", statusCode: status, requestId }, "Provider rate limit");
-            return c.json({ error: "provider_rate_limit", message: "LLM provider rate limit reached.", retryable: true, requestId }, 503);
-          }
-          if (status === 408 || /timeout/i.test(message)) {
-            log.error({ err: errObj, category: "provider_timeout", statusCode: status, requestId }, "Provider timeout");
-            return c.json({ error: "provider_timeout", message: "The request timed out.", retryable: true, requestId }, 504);
-          }
-          log.error({ err: errObj, category: "provider_error", statusCode: status, requestId }, "Provider error (HTTP %s)", String(status));
-          return c.json({ error: "provider_error", message: `LLM provider error (HTTP ${status}).`, retryable: true, requestId }, 502);
-        }
-
-        // Like the chat route, the demo runs the agent loop — an exception
-        // reaching here is the LLM provider, not the datasource (executeSQL
-        // errors are caught as tool results). Pass `subsystem: "provider"` so
-        // an unreachable host is labeled `provider_unreachable`, not the
-        // datasource-framed `internal_error`.
-        //
-        // NOTE: this only covers errors thrown *before* the stream is returned
-        // (runAgent throwing synchronously). A provider error raised mid-stream
-        // hits the `createUIMessageStream` onError above, which still returns a
-        // generic string — classifying that path (as chat.ts does) is tracked
-        // by #3202.
-        const matched = matchError(err, { subsystem: "provider" });
-        if (matched) {
-          // Honor the canonical code→HTTP contract (mirror of
-          // CLASSIFIER_STATUS_MAP in chat.ts + reference/error-codes.mdx): a
-          // provider outage must surface as 503/504, not a misleading 500.
-          // matchError returns one of rate_limited / provider_unreachable /
-          // provider_timeout / internal_error here.
-          const STATUS_BY_CODE: Record<string, 429 | 500 | 503 | 504> = {
-            rate_limited: 429,
-            provider_unreachable: 503,
-            provider_timeout: 504,
-            internal_error: 500,
-          };
-          const httpStatus = STATUS_BY_CODE[matched.code] ?? 500;
-          if (matched.code === "rate_limited") {
-            log.warn({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
-          } else {
-            log.error({ err: errObj, category: matched.code, requestId }, "Matched error: %s", matched.code);
-          }
-          return c.json(
-            { error: matched.code, message: matched.message, retryable: isRetryableError(matched.code), requestId },
-            httpStatus as 500,
-          );
-        }
-
-        log.error({ err: errObj, category: "internal_error" }, "Unclassified demo error");
         return c.json(
-          {
-            error: "internal_error",
-            message: `An unexpected error occurred. Quote ref ${requestId.slice(0, 8)} when reporting.`,
-            retryable: false,
-            requestId,
-          },
-          500,
+          { error: cls.code, message: cls.message, retryable, requestId },
+          httpStatus as 500,
         );
       }
     },

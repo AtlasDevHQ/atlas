@@ -95,6 +95,12 @@ export function getDefaultProvider(): ConfigProvider {
  * - `openai-compatible` is intentionally absent: it authenticates via a base
  *   URL, not a fixed key var, so neither the diagnostic nor the guard asserts
  *   a key for it (lookup is `undefined` → skipped).
+ *
+ * This map answers "which single *primary* key" — kept for display / signup-URL
+ * lookups. The authoritative "is this provider fully configured" check is
+ * {@link getMissingProviderConfig}, which models each provider's required env as
+ * a SET (Bedrock needs an access key AND a secret; openai-compatible needs its
+ * base URL) so a partial config can't boot green then fail the first chat (#3200).
  */
 export const PROVIDER_KEY_MAP: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -103,6 +109,82 @@ export const PROVIDER_KEY_MAP: Record<string, string> = {
   ollama: "", // Ollama runs locally, no API key required
   gateway: "AI_GATEWAY_API_KEY",
 };
+
+/** An env var is "set" only when present AND non-empty (mirrors the truthy
+ * `!process.env[key]` check the per-request diagnostic has always used). */
+function isProviderEnvSet(key: string): boolean {
+  const value = process.env[key];
+  return value !== undefined && value !== "";
+}
+
+/**
+ * Bedrock static-credentials all-or-none rule (#3200).
+ *
+ * The static-credentials path needs BOTH `AWS_ACCESS_KEY_ID` and
+ * `AWS_SECRET_ACCESS_KEY`. But a naive "require both" would false-fail the
+ * deploys that set NEITHER and instead rely on the AWS credential-provider
+ * chain (EC2/ECS instance profile, SSO, `~/.aws/credentials`, web-identity).
+ * So the pair is treated as all-or-none: if NEITHER is set, require nothing
+ * (chain-backed deploy); if EITHER is set, the deploy is using static creds and
+ * the partner is required — a half-configured pair throws at first model init.
+ *
+ * Region is intentionally NOT asserted — it has its own chain fallbacks
+ * (`AWS_REGION` / `AWS_DEFAULT_REGION` / instance metadata), so a missing region
+ * env var is not necessarily a misconfig.
+ */
+function missingBedrockStaticCreds(): string[] {
+  const pair = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] as const;
+  const anySet = pair.some(isProviderEnvSet);
+  if (!anySet) return []; // credential-provider chain — nothing statically required
+  return pair.filter((key) => !isProviderEnvSet(key));
+}
+
+/**
+ * Required-config SSOT (#3200): the env vars that MUST be set for `provider` to
+ * initialize but currently are not — `[]` when the provider's required config is
+ * complete, when it needs none (`ollama`), or for an unknown provider (the
+ * unsupported-provider decision is the caller's, via {@link isSupportedProvider}).
+ *
+ * Consumed by BOTH `ProviderKeyGuardLive` (the SaaS boot guard) and
+ * `startup.ts:checkProviderApiKey` (the per-request 503 diagnostic) so the two
+ * agree on exactly what "configured" means for every provider — including the
+ * multi-key providers a single `PROVIDER_KEY_MAP` lookup silently passed:
+ *
+ *   - `bedrock` — `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (all-or-none;
+ *     see {@link missingBedrockStaticCreds}).
+ *   - `openai-compatible` — `OPENAI_COMPATIBLE_BASE_URL` (no `PROVIDER_KEY_MAP`
+ *     entry; `buildModel()` throws without it).
+ */
+export function getMissingProviderConfig(provider: string): string[] {
+  switch (provider) {
+    case "anthropic":
+      return isProviderEnvSet("ANTHROPIC_API_KEY") ? [] : ["ANTHROPIC_API_KEY"];
+    case "openai":
+      return isProviderEnvSet("OPENAI_API_KEY") ? [] : ["OPENAI_API_KEY"];
+    case "gateway":
+      return isProviderEnvSet("AI_GATEWAY_API_KEY") ? [] : ["AI_GATEWAY_API_KEY"];
+    case "openai-compatible": {
+      // Needs its base URL AND a model id: openai-compatible is the only
+      // provider with no `PROVIDER_DEFAULTS` model, so `resolveSelection()`
+      // throws "ATLAS_MODEL is required" without one — the same
+      // boot-green-then-first-I/O failure the guard exists to prevent. The
+      // model is resolved from `ATLAS_MODEL` on the env path this check covers
+      // (resolveSelection: `modelOverride ?? process.env.ATLAS_MODEL ??
+      // PROVIDER_DEFAULTS[provider]`).
+      const missing: string[] = [];
+      if (!isProviderEnvSet("OPENAI_COMPATIBLE_BASE_URL")) missing.push("OPENAI_COMPATIBLE_BASE_URL");
+      if (!isProviderEnvSet("ATLAS_MODEL")) missing.push("ATLAS_MODEL");
+      return missing;
+    }
+    case "bedrock":
+      return missingBedrockStaticCreds();
+    case "ollama":
+      return []; // runs locally, no key
+    default:
+      // Unknown provider — not this function's concern (see isSupportedProvider).
+      return [];
+  }
+}
 
 /** Anthropic-family model ids contain "anthropic" or "claude". */
 function isAnthropicFamilyModelId(modelId: string): boolean {

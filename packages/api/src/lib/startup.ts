@@ -10,7 +10,7 @@ import * as path from "path";
 import { matchError } from "@useatlas/types";
 import { detectDBType, resolveDatasourceUrl } from "./db/connection";
 import { maskConnectionUrl } from "./security";
-import { getDefaultProvider, PROVIDER_KEY_MAP } from "./providers";
+import { getDefaultProvider, getMissingProviderConfig, isSupportedProvider } from "./providers";
 import { detectAuthMode, getAuthModeSource } from "./auth/detect";
 import { resolvePasskeyRpId } from "./auth/rpid";
 import { getWebOrigin } from "./web-origin";
@@ -34,9 +34,10 @@ export interface DiagnosticError {
   message: string;
 }
 
-// PROVIDER_KEY_MAP moved to ./providers (#3178) so the SaaS boot guard
-// (`ProviderKeyGuardLive`) can share it without importing this module's
-// heavy request-path graph. Imported above.
+// The provider required-config SSOT lives in ./providers (#3178/#3200) so the
+// SaaS boot guard (`ProviderKeyGuardLive`) and this per-request diagnostic agree
+// on what "configured" means without this module's heavy request-path graph.
+// Imported above: `getMissingProviderConfig` (set-based) + `isSupportedProvider`.
 
 const PROVIDER_SIGNUP_URL: Record<string, string> = {
   anthropic: "https://console.anthropic.com/settings/keys",
@@ -170,19 +171,40 @@ function checkDatasourceUrlPresence(
 
 function checkProviderApiKey(errors: DiagnosticError[]): void {
   const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
-  const requiredKey = PROVIDER_KEY_MAP[provider];
 
-  if (requiredKey === undefined) {
-    // Unknown provider — providers.ts will throw a descriptive error at model init,
-    // so we don't duplicate that check here.
-  } else if (requiredKey && !process.env[requiredKey]) {
-    let message = `${requiredKey} is not set. Atlas needs an API key for the "${provider}" provider. Set it in your .env file.`;
-    const signupUrl = PROVIDER_SIGNUP_URL[provider];
-    if (signupUrl) {
-      message += ` Get one at ${signupUrl}`;
-    }
-    errors.push({ code: "MISSING_API_KEY", message });
+  // Unknown provider (typo / unsupported vendor): `resolveSelection()` throws at
+  // model init on every chat/query, so without a diagnostic `/health` would stay
+  // green while the agent is dead. Surface it (#3206 CodeRabbit) — the SaaS boot
+  // guard already hard-fails this via `ProviderUnsupportedError`; self-hosted
+  // keeps booting but the diagnostic flags the misconfig. `getMissingProviderConfig`
+  // returns `[]` for an unknown provider, so the set check below cannot catch it.
+  if (!isSupportedProvider(provider)) {
+    errors.push({
+      code: "INVALID_CONFIG",
+      message:
+        `ATLAS_PROVIDER="${provider}" is not a supported provider — model initialization will fail on ` +
+        `every chat/query. Set ATLAS_PROVIDER to one of: anthropic, openai, bedrock, ollama, ` +
+        `openai-compatible, gateway.`,
+    });
+    return;
   }
+
+  // Required-config as a SET (#3200): Bedrock needs an access key AND a secret
+  // (all-or-none with the AWS credential-provider chain); openai-compatible
+  // needs its base URL. A single-key check passed these then 503'd at first chat.
+  const missing = getMissingProviderConfig(provider);
+  if (missing.length === 0) return;
+
+  const isPlural = missing.length > 1;
+  let message =
+    `${missing.join(", ")} ${isPlural ? "are" : "is"} not set. ` +
+    `Atlas needs ${isPlural ? "these" : "this"} for the "${provider}" provider. ` +
+    `Set ${isPlural ? "them" : "it"} in your .env file.`;
+  const signupUrl = PROVIDER_SIGNUP_URL[provider];
+  if (signupUrl) {
+    message += ` Get an API key at ${signupUrl}`;
+  }
+  errors.push({ code: "MISSING_API_KEY", message });
 }
 
 function checkSemanticLayerPresence(errors: DiagnosticError[]): void {

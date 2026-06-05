@@ -314,6 +314,7 @@
       "devDependencies": {
         "ai": "^6.0.193",
         "hono": "^4.12.23",
+        "typescript": "^6.0.3",
         "zod": "^4.4.3",
       },
       "peerDependencies": {
@@ -403,6 +404,7 @@
       },
       "devDependencies": {
         "@atlas/oauth-helper": "workspace:*",
+        "typescript": "^6.0.3",
       },
     },
     "packages/types": {

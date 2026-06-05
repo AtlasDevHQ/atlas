@@ -91,9 +91,9 @@ export interface DashboardDrilldownConfig {
 
 /**
  * A goal line / threshold on a chart card (#3208). Rendered as a horizontal
- * Recharts `<ReferenceLine>` on bar / line / area cards, and as an above/below
- * target callout on a KPI card (the first threshold only — a scorecard shows
- * one target). `value` is a data-space number on the chart's value axis;
+ * Recharts `<ReferenceLine>` on bar / line / area / stacked-bar cards, and as an
+ * above/below target callout on a KPI card (the first threshold only — a
+ * scorecard shows one target). `value` is a data-space number on the chart's value axis;
  * `color` overrides the default goal-line stroke (a CSS colour — hex, `rgb()`,
  * or a named colour); `label` is an optional caption drawn at the line.
  *
@@ -124,9 +124,9 @@ export interface DashboardChartConfig {
   drilldown?: DashboardDrilldownConfig;
   /**
    * Goal lines / thresholds (#3208). Each renders as a horizontal reference
-   * line on bar / line / area cards; on a KPI card the first threshold drives
-   * an above/below-target callout + colours the headline number. Absent →
-   * the card renders exactly as before (back-compat). See
+   * line on bar / line / area / stacked-bar cards; on a KPI card the first
+   * threshold drives an above/below-target callout + colours the headline
+   * number. Absent → the card renders exactly as before (back-compat). See
    * {@link DashboardThreshold}.
    */
   thresholds?: DashboardThreshold[];

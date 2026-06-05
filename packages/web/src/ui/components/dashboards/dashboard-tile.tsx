@@ -396,6 +396,7 @@ function ChartTile({
               onCategoryClick={onCategoryClick}
               selectedCategory={selectedValue}
               thresholds={card.chartConfig?.thresholds}
+              annotations={card.annotations}
             />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
@@ -540,6 +541,7 @@ function ChartSlot({
   onCategoryClick,
   selectedCategory,
   thresholds,
+  annotations,
 }: {
   cardId: string;
   columns: string[];
@@ -551,6 +553,8 @@ function ChartSlot({
   selectedCategory?: string;
   /** #3208 — goal lines from the card's chartConfig; undefined → none drawn. */
   thresholds?: DashboardChartConfig["thresholds"];
+  /** #3209 — event annotations from the card; vertical markers on line/area only. */
+  annotations?: DashboardCard["annotations"];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -592,6 +596,7 @@ function ChartSlot({
           onCategoryClick={onCategoryClick}
           selectedCategory={selectedCategory}
           thresholds={thresholds}
+          annotations={annotations}
         />
       )}
     </div>

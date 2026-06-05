@@ -21,6 +21,7 @@ const textCard: SharedCard = {
   sql: "",
   chartConfig: null,
   content: "## Top of funnel\n\nLeads entering the pipeline.",
+  annotations: [],
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,

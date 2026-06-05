@@ -366,6 +366,7 @@ describe("migrateAuthTables", () => {
             { name: "0118_drop_user_admin_role.sql" },
             { name: "0119_drop_legacy_credential_tables.sql" },
             { name: "0120_static_bot_routing_id_unique.sql" },
+            { name: "0121_dashboard_card_annotations.sql" },
           ],
         };
       }

@@ -21,7 +21,7 @@
 import * as crypto from "crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { dashboardChartConfigSchema } from "@useatlas/schemas";
+import { dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
@@ -206,9 +206,14 @@ export function createBoundDashboardTools(
       title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
       sql: z.string().min(1).describe("Read-only SELECT query"),
       chartConfig: ChartConfigSchema.describe("Chart type + column mapping"),
+      annotations: dashboardCardAnnotationsSchema
+        .optional()
+        .describe(
+          "Optional dated event markers ({ x, label, color? }) — vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
+        ),
       layout: CardLayoutSchema.optional().describe("Optional grid placement {x, y, w, h}"),
     }),
-    execute: async ({ title, sql, chartConfig, layout }) => {
+    execute: async ({ title, sql, chartConfig, annotations, layout }) => {
       try {
         // #3137 — a KPI card's comparisonSql runs through the SAME guard at
         // render time; validate it up front alongside the primary so the bound
@@ -258,6 +263,7 @@ export function createBoundDashboardTools(
           title,
           sql,
           chartConfig,
+          annotations: annotations ?? [],
           connectionGroupId: null,
           layout: layout ?? null,
         };
@@ -281,6 +287,7 @@ export function createBoundDashboardTools(
           title,
           sql,
           chartConfig,
+          ...(annotations && { annotations }),
           ...(layout && { layout }),
         });
         if (!result.ok) {
@@ -310,24 +317,31 @@ export function createBoundDashboardTools(
       cardId: z.string().min(1).describe("Card id"),
       title: z.string().min(1).max(200).optional(),
       chartConfig: ChartConfigSchema.nullable().optional(),
+      annotations: dashboardCardAnnotationsSchema
+        .optional()
+        .describe(
+          "Replace the card's dated event markers ({ x, label, color? }). Pass [] to clear them. Vertical reference lines on a line/area card.",
+        ),
       layout: CardLayoutSchema.nullable().optional(),
       position: z.number().int().min(0).optional(),
     }),
-    execute: async ({ cardId, title, chartConfig, layout, position }) => {
+    execute: async ({ cardId, title, chartConfig, annotations, layout, position }) => {
       try {
         const updates: {
           title?: string;
           chartConfig?: z.infer<typeof ChartConfigSchema> | null;
+          annotations?: z.infer<typeof dashboardCardAnnotationsSchema>;
           layout?: DashboardCardLayout | null;
           position?: number;
         } = {};
         if (title !== undefined) updates.title = title;
         if (chartConfig !== undefined) updates.chartConfig = chartConfig;
+        if (annotations !== undefined) updates.annotations = annotations;
         if (layout !== undefined) updates.layout = layout;
         if (position !== undefined) updates.position = position;
 
         if (Object.keys(updates).length === 0) {
-          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, layout, position." };
+          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, annotations, layout, position." };
         }
 
         // #3138: a text / section-block card has no chart. Reject a chartConfig

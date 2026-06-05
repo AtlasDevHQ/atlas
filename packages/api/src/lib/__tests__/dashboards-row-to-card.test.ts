@@ -117,6 +117,40 @@ describe("rowToCard kind / content derivation (#3138)", () => {
   });
 });
 
+describe("rowToCard annotations round-trip (#3209)", () => {
+  test("defaults to [] when the column is absent (pre-#3209 row)", () => {
+    expect(rowToCard({ ...baseRow }).annotations).toEqual([]);
+  });
+
+  test("defaults to [] when the column is null", () => {
+    expect(rowToCard({ ...baseRow, annotations: null }).annotations).toEqual([]);
+  });
+
+  test("round-trips a valid annotation list (object form)", () => {
+    const annotations = [
+      { x: "2026-01-15", label: "Launch", color: "#10b981" },
+      { x: "2026-03-01", label: "Campaign" },
+    ];
+    const card = rowToCard({ ...baseRow, annotations });
+    expect(card.annotations).toEqual(annotations);
+  });
+
+  test("round-trips a valid annotation list (JSON string form — JSONB may surface as text)", () => {
+    const annotations = [{ x: "Jan", label: "Launch" }];
+    const card = rowToCard({ ...baseRow, annotations: JSON.stringify(annotations) });
+    expect(card.annotations).toEqual(annotations);
+  });
+
+  test("degrades a malformed annotations payload to [] (a bad row never 500s the fetch)", () => {
+    // Missing the required `label` — the read-time schema discards the whole list.
+    expect(rowToCard({ ...baseRow, annotations: [{ x: "Jan" }] }).annotations).toEqual([]);
+    // Not an array at all.
+    expect(rowToCard({ ...baseRow, annotations: { x: "Jan", label: "A" } }).annotations).toEqual([]);
+    // Malformed JSON string.
+    expect(rowToCard({ ...baseRow, annotations: "not json" }).annotations).toEqual([]);
+  });
+});
+
 describe("CardLayoutSchema bounds", () => {
   test("accepts a typical layout", () => {
     expect(CardLayoutSchema.safeParse({ x: 0, y: 0, w: 12, h: 10 }).success).toBe(true);

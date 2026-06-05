@@ -1,4 +1,4 @@
-import type { DashboardCardKind, DashboardCardLayout, DashboardChartConfig } from "@/ui/lib/types";
+import type { DashboardCardAnnotation, DashboardCardKind, DashboardCardLayout, DashboardChartConfig } from "@/ui/lib/types";
 
 export interface SharedCard {
   id: string;
@@ -9,6 +9,8 @@ export interface SharedCard {
   chartConfig: DashboardChartConfig | null;
   /** Markdown body for a `text` card (#3138); `null` for a chart card. */
   content: string | null;
+  /** #3209 — event annotations rendered as vertical reference lines on line/area cards. */
+  annotations: DashboardCardAnnotation[];
   cachedColumns: string[] | null;
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;

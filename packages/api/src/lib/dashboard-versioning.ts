@@ -62,6 +62,7 @@ import { rowToCard } from "@atlas/api/lib/dashboards";
 import type {
   Dashboard,
   DashboardCard,
+  DashboardCardAnnotation,
   DashboardWithCards,
   DashboardChartConfig,
   DashboardCardLayout,
@@ -124,6 +125,14 @@ export interface DashboardSnapshotCard {
    * key) deserialize as chart cards without a migration.
    */
   content?: string | null;
+  /**
+   * Event annotations (#3209) — dated markers carried through the draft →
+   * publish round-trip so a bound-chat edit never silently drops them. Optional
+   * so drafts persisted before #3209 (their JSONB has no `annotations` key)
+   * deserialize with no markers without a migration; the publish path coerces
+   * the absent value to `[]`.
+   */
+  annotations?: DashboardCardAnnotation[];
   connectionGroupId: string | null;
   layout: DashboardCardLayout | null;
 }
@@ -148,6 +157,7 @@ export function toSnapshot(dash: DashboardWithCards): DashboardSnapshot {
       sql: c.sql,
       chartConfig: c.chartConfig,
       content: c.content,
+      annotations: c.annotations,
       connectionGroupId: c.connectionGroupId,
       layout: c.layout,
     })),
@@ -190,6 +200,9 @@ export type DraftChange =
       updates: {
         title?: string;
         chartConfig?: DashboardChartConfig | null;
+        /** #3209 — replace the card's event markers. Undefined leaves them
+         *  unchanged (the draft card keeps its current annotations). */
+        annotations?: DashboardCardAnnotation[];
         layout?: DashboardCardLayout | null;
         position?: number;
       };
@@ -233,6 +246,7 @@ export function applyChangeToDraft(
               ...c,
               ...(change.updates.title !== undefined && { title: change.updates.title }),
               ...(change.updates.chartConfig !== undefined && { chartConfig: change.updates.chartConfig }),
+              ...(change.updates.annotations !== undefined && { annotations: change.updates.annotations }),
               ...(change.updates.layout !== undefined && { layout: change.updates.layout }),
               ...(change.updates.position !== undefined && { position: change.updates.position }),
             }
@@ -477,6 +491,11 @@ function cardEquals(a: DashboardSnapshotCard, b: DashboardSnapshotCard): boolean
   } else {
     if (a.sql !== b.sql) return false;
     if (!jsonEquals(a.chartConfig, b.chartConfig)) return false;
+    // #3209 — event annotations are part of a chart card's identity, so a
+    // change to them surfaces as an updateCard op on publish. Normalize the
+    // absent value to `[]` so a pre-#3209 draft (no `annotations` key) doesn't
+    // read as different from a freshly-forked one that carries `[]`.
+    if (!jsonEquals(a.annotations ?? [], b.annotations ?? [])) return false;
   }
   return true;
 }
@@ -893,8 +912,8 @@ export async function publishDraft(opts: {
           // so subsequent updates in the same publish still resolve.
           await client.query(
             `INSERT INTO dashboard_cards
-               (id, dashboard_id, position, title, sql, chart_config, content, connection_group_id, layout)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               (id, dashboard_id, position, title, sql, chart_config, content, annotations, connection_group_id, layout)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (id) DO NOTHING`,
             [
               op.card.id,
@@ -908,6 +927,10 @@ export async function publishDraft(opts: {
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
               // #3138: NULL for a chart card; markdown for a text card.
               op.card.content ?? null,
+              // #3209: event annotations. NOT NULL DEFAULT '[]' — coerce an
+              // absent value (pre-#3209 draft JSONB) to '[]' so the insert never
+              // violates the column constraint and the card persists no markers.
+              JSON.stringify(op.card.annotations ?? []),
               op.card.connectionGroupId,
               op.card.layout ? JSON.stringify(op.card.layout) : null,
             ],
@@ -922,10 +945,11 @@ export async function publishDraft(opts: {
                     sql = $2,
                     chart_config = $3,
                     content = $4,
-                    layout = $5,
-                    position = $6,
+                    annotations = $5,
+                    layout = $6,
+                    position = $7,
                     updated_at = now()
-              WHERE id = $7 AND dashboard_id = $8`,
+              WHERE id = $8 AND dashboard_id = $9`,
             [
               op.card.title,
               // An accepted `editSql` stage rewrites the draft card's SQL
@@ -937,6 +961,9 @@ export async function publishDraft(opts: {
               op.card.chartConfig ? JSON.stringify(op.card.chartConfig) : null,
               // #3138: keep content in sync on edit (e.g. a text card's markdown changed).
               op.card.content ?? null,
+              // #3209: keep annotations in sync on edit (a changed marker set
+              // surfaces via cardEquals); NOT NULL — coerce absent → '[]'.
+              JSON.stringify(op.card.annotations ?? []),
               op.card.layout ? JSON.stringify(op.card.layout) : null,
               op.card.position,
               op.cardId,
@@ -1119,6 +1146,9 @@ function snapshotCardToDashboardCard(
     chart_config: c.chartConfig,
     // #3138: drives `rowToCard`'s kind derivation for the draft overlay.
     content: c.content ?? null,
+    // #3209: carry the draft's event annotations into the overlay so the
+    // editor preview renders the same vertical markers the publish will persist.
+    annotations: c.annotations ?? [],
     cached_columns: publishedCard?.cachedColumns ?? null,
     cached_rows: publishedCard?.cachedRows ?? null,
     cached_at: publishedCard?.cachedAt ?? null,

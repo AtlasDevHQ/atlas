@@ -31,6 +31,7 @@ import {
   categoryFromChartClick,
   categoryFromPieClick,
   resolveThresholdLines,
+  resolveAnnotationLines,
   CHART_COLORS_LIGHT,
   CHART_COLORS_DARK,
   type ChartRecommendation,
@@ -38,6 +39,7 @@ import {
   type RechartsRow,
   type ChartDetectionResult,
   type ThresholdInput,
+  type AnnotationInput,
 } from "./chart-detection";
 
 /* ------------------------------------------------------------------ */
@@ -131,6 +133,46 @@ function thresholdLineElements(
       strokeDasharray="6 4"
       strokeWidth={1.5}
       ifOverflow="extendDomain"
+      label={
+        line.label
+          ? { value: line.label, position: "insideTopRight", fill: line.stroke, fontSize: 11 }
+          : undefined
+      }
+    />
+  ));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Event annotations (#3209)                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the VERTICAL event-marker `<ReferenceLine>`s for a time-series chart —
+ * the vertical sibling of {@link thresholdLineElements}. Each marker positions
+ * on the category (X) axis at the annotation's `x` value (the same string the
+ * axis renders). Returns `[]` when there are no annotations, so a card without
+ * them renders exactly as today.
+ *
+ * Unlike thresholds, there is NO `ifOverflow="extendDomain"`: an annotation
+ * whose `x` matches no rendered category is silently dropped by recharts (the
+ * default category-axis behaviour) rather than stretching the axis to fit a
+ * phantom point — a marker for an event outside the chart's window simply
+ * doesn't draw, which is the graceful no-op the issue calls for.
+ *
+ * Only mounted by the line / area views — bar / pie / scatter ignore
+ * annotations (a categorical or numeric X axis has no time context to mark).
+ */
+function annotationLineElements(
+  annotations: AnnotationInput[] | undefined,
+  dark: boolean,
+): React.ReactElement[] {
+  return resolveAnnotationLines(annotations, dark).map((line, i) => (
+    <ReferenceLine
+      key={`annotation-${i}`}
+      x={line.x}
+      stroke={line.stroke}
+      strokeDasharray="4 3"
+      strokeWidth={1.5}
       label={
         line.label
           ? { value: line.label, position: "insideTopRight", fill: line.stroke, fontSize: 11 }
@@ -292,12 +334,14 @@ function LineChartView({
   dark,
   onCategoryClick,
   thresholds,
+  annotations,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
   thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -336,6 +380,7 @@ function LineChartView({
             />
           ))}
           {thresholdLineElements(thresholds, dark)}
+          {annotationLineElements(annotations, dark)}
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -424,12 +469,14 @@ function AreaChartView({
   dark,
   onCategoryClick,
   thresholds,
+  annotations,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
   thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   const chartId = useId();
   const colors = getColors(dark);
@@ -476,6 +523,7 @@ function AreaChartView({
             />
           ))}
           {thresholdLineElements(thresholds, dark)}
+          {annotationLineElements(annotations, dark)}
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -667,6 +715,7 @@ function ChartRenderer({
   onCategoryClick,
   selectedCategory,
   thresholds,
+  annotations,
 }: {
   rows: string[][];
   rec: ChartRecommendation;
@@ -676,6 +725,7 @@ function ChartRenderer({
   onCategoryClick?: (value: string, categoryKey: string) => void;
   selectedCategory?: string;
   thresholds?: ThresholdInput[];
+  annotations?: AnnotationInput[];
 }) {
   // Re-transform data when switching chart type (category axis may differ)
   const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
@@ -686,12 +736,15 @@ function ChartRenderer({
   // `selectedCategory` (#3213) only styles the categorical views (bar / stacked /
   // pie); line/area trends have no discrete element to mark. Goal lines (#3208)
   // are horizontal Y-axis references, so they apply to the cartesian views (bar /
-  // line / area / stacked-bar) — not pie (no Y axis) or scatter (numeric Y).
+  // line / area / stacked-bar) — not pie (no Y axis) or scatter (numeric Y). Event
+  // annotations (#3209) are VERTICAL X-axis markers for dated events, so they
+  // apply ONLY to the time-series views (line / area) — bar/stacked/pie/scatter
+  // ignore them (a categorical or numeric X axis has no time context to mark).
   return (
     <div className="p-2">
       {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
-        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
-        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
+        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} annotations={annotations} />
+        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} annotations={annotations} />
         : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
         : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
         : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />}
@@ -711,6 +764,7 @@ export function ResultChart({
   onCategoryClick,
   selectedCategory,
   thresholds,
+  annotations,
 }: {
   headers: string[];
   rows: string[][];
@@ -738,6 +792,13 @@ export function ResultChart({
    * thresholds, so the chart renders exactly as before.
    */
   thresholds?: ThresholdInput[];
+  /**
+   * #3209 — event annotations from the card's `annotations` column. Each renders
+   * as a VERTICAL `<ReferenceLine>` on the line / area views ONLY (a dated event
+   * marker on the time axis); bar / pie / scatter ignore them. Omitted on the
+   * chat surface and on cards with none, so the chart renders exactly as before.
+   */
+  annotations?: AnnotationInput[];
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),
@@ -778,6 +839,7 @@ export function ResultChart({
           onCategoryClick={onCategoryClick}
           selectedCategory={selectedCategory}
           thresholds={thresholds}
+          annotations={annotations}
         />
       </ErrorBoundary>
     </div>

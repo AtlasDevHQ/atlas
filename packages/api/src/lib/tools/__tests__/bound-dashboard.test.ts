@@ -211,17 +211,22 @@ describe("createBoundDashboardTools", () => {
   // getCardDetail
   // -------------------------------------------------------------------
 
-  it("getCardDetail returns the full card row including SQL", async () => {
+  it("getCardDetail returns the full card row including SQL + annotations (#3209)", async () => {
     enableInternalDB();
-    setResults({ rows: [cardRow] });
+    // getCardDetail loads via getDashboard (dashboard + cards) so it can overlay
+    // the draft view; drafts are off here, so it resolves from the published cards.
+    const annotations = [{ x: "2026-01-15", label: "Launch" }];
+    setResults({ rows: [dashboardRow] }, { rows: [{ ...cardRow, annotations }] });
     const tools = createBoundDashboardTools(ctx);
-    const result = await runTool<{ kind: "ok"; card: { id: string; sql: string } }>(
+    const result = await runTool<{ kind: "ok"; card: { id: string; sql: string; annotations: unknown } }>(
       tools.getCardDetail,
       { cardId: "card-1" },
     );
     expect(result.kind).toBe("ok");
     expect(result.card.id).toBe("card-1");
     expect(result.card.sql).toBe("SELECT 1");
+    // #3209 — exposed so the agent can preserve markers on a replace-all edit.
+    expect(result.card.annotations).toEqual(annotations);
   });
 
   // -------------------------------------------------------------------

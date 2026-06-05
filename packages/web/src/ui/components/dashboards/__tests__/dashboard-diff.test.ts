@@ -9,6 +9,7 @@ const BASE_CARD: Omit<DashboardCard, "id" | "position"> = {
   sql: "SELECT 1",
   chartConfig: null,
   content: null,
+  annotations: [],
   cachedColumns: null,
   cachedRows: null,
   cachedAt: null,
@@ -119,6 +120,26 @@ describe("diffDashboards", () => {
     const d = dashboard([card({ id: "a", layout: null })]);
     const diff = diffDashboards(p, d);
     expect(diff.empty).toBe(true);
+  });
+
+  // #3209 — an annotations-only edit must NOT read as empty, or the Publish gate
+  // would disable the button and an annotations-only draft change could never
+  // ship (keeps the client gate aligned with the server's cardEquals).
+  test("detects an annotations-only change so Publish stays enabled", () => {
+    const p = dashboard([card({ id: "a", annotations: [] })]);
+    const d = dashboard([card({ id: "a", annotations: [{ x: "2026-01-15", label: "Launch" }] })]);
+    const diff = diffDashboards(p, d);
+    expect(diff.empty).toBe(false);
+    expect(diff.changed).toHaveLength(1);
+    expect(diff.changed[0].changes.map((c) => c.field)).toEqual(["annotations"]);
+    expect(describeFieldChange(diff.changed[0].changes[0])).toBe("Event annotations updated");
+  });
+
+  test("identical annotations on both sides is not a change", () => {
+    const anns = [{ x: "2026-01-15", label: "Launch" }];
+    const p = dashboard([card({ id: "a", annotations: anns })]);
+    const d = dashboard([card({ id: "a", annotations: [...anns] })]);
+    expect(diffDashboards(p, d).empty).toBe(true);
   });
 
   test("detects meta title and description changes independently", () => {

@@ -34,7 +34,7 @@ import {
   getDashboard,
   CardLayoutSchema,
 } from "@atlas/api/lib/dashboards";
-import type { DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
+import type { DashboardCard, DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
 import {
   screenshotDashboard,
@@ -181,24 +181,41 @@ export function createBoundDashboardTools(
       cardId: z.string().min(1).describe("Card id (from the compact summary)"),
     }),
     execute: async ({ cardId }) => {
-      const card = await getCard(cardId, dashboardId);
-      if (!card.ok) {
-        return { kind: "err" as const, error: `Could not read card ${cardId}: ${card.reason}` };
+      // Draft view overlay (same as getDashboardState): when drafts are on and
+      // the user has a draft, a card's CURRENT state lives in the draft
+      // snapshot, not the published row. This matters most for `annotations` —
+      // it's REPLACE-ALL on updateCard, so returning the published markers here
+      // would let the agent fetch a stale set and drop staged ones when it
+      // sends back a "merged" array.
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      if (!dash.ok) {
+        return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
+      }
+      let card: DashboardCard | undefined;
+      if (isDashboardDraftsEnabled() && ctx.userId) {
+        const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
+        if (draftRow) {
+          card = materializeDraftView(dash.data, draftRow.snapshot).cards.find((c) => c.id === cardId);
+        }
+      }
+      card ??= dash.data.cards.find((c) => c.id === cardId);
+      if (!card) {
+        return { kind: "err" as const, error: `Could not read card ${cardId}: not_found` };
       }
       return {
         kind: "ok" as const,
         card: {
-          id: card.data.id,
-          title: card.data.title,
-          sql: card.data.sql,
-          chartConfig: card.data.chartConfig,
+          id: card.id,
+          title: card.title,
+          sql: card.sql,
+          chartConfig: card.chartConfig,
           // #3209 — annotations is a REPLACE-ALL field on updateCard, so the
-          // agent must see the current markers here to add/rename one without
-          // dropping the rest.
-          annotations: card.data.annotations,
-          layout: card.data.layout,
-          position: card.data.position,
-          cachedColumns: card.data.cachedColumns,
+          // agent must see the current (draft) markers here to add/rename one
+          // without dropping the rest.
+          annotations: card.annotations,
+          layout: card.layout,
+          position: card.position,
+          cachedColumns: card.cachedColumns,
         },
       };
     },

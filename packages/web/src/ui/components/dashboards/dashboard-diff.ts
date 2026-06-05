@@ -27,6 +27,8 @@ export type CardFieldChange =
   | { field: "chartType"; before: string | null; after: string | null }
   // #3138 — a text / section-block card's markdown body.
   | { field: "content"; before: string; after: string }
+  // #3209 — event annotations (stringified for a stable equality check).
+  | { field: "annotations"; before: string; after: string }
   | { field: "connectionGroup"; before: string | null; after: string | null }
   | { field: "layout"; before: string; after: string };
 
@@ -124,6 +126,16 @@ function diffCard(before: DashboardCard, after: DashboardCard): CardFieldChange[
   if ((before.content ?? "") !== (after.content ?? "")) {
     changes.push({ field: "content", before: before.content ?? "", after: after.content ?? "" });
   }
+  // #3209 — event annotations. Without this arm an annotations-only edit
+  // produces zero changes, so the Publish gate marks the draft `empty` and
+  // blocks a change the server's `cardEquals` (dashboard-versioning.ts) does
+  // treat as real. Stringify (normalizing absent → []) for a stable check,
+  // mirroring the server-side `jsonEquals(a.annotations ?? [], ...)`.
+  const beforeAnnotations = JSON.stringify(before.annotations ?? []);
+  const afterAnnotations = JSON.stringify(after.annotations ?? []);
+  if (beforeAnnotations !== afterAnnotations) {
+    changes.push({ field: "annotations", before: beforeAnnotations, after: afterAnnotations });
+  }
   if ((before.connectionGroupId ?? null) !== (after.connectionGroupId ?? null)) {
     changes.push({
       field: "connectionGroup",
@@ -153,6 +165,8 @@ export function describeFieldChange(change: CardFieldChange): string {
       return `Chart type: ${change.before ?? "none"} → ${change.after ?? "none"}`;
     case "content":
       return "Section text updated";
+    case "annotations":
+      return "Event annotations updated";
     case "connectionGroup":
       return change.after
         ? `Connection group changed`

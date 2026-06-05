@@ -20,6 +20,21 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.10",
+    title: "Dashboard Primitives & Polish",
+    date: "2026-06-05",
+    summary:
+      "This release builds the dashboard surface out from a saved-query gallery toward a full BI tool. KPI cards gain period-over-period deltas, value formatting, and inline sparklines; charts and KPIs can carry goal lines and thresholds; and time-series cards support event annotations to mark releases, incidents, or campaigns on the timeline. Dashboards also become explorable and shareable: click a data point to drill down by setting a dashboard parameter, filter every card from one with cross-filtering chips, export any single card to CSV, and export a whole dashboard to PDF or image. Together these turn static dashboards into interactive, presentation-ready views.",
+    highlights: [
+      "KPI polish — period-over-period deltas, value formatting, and inline sparklines on KPI cards (#3207)",
+      "Goal lines & thresholds — reference lines and threshold bands on chart and KPI cards (#3208)",
+      "Event annotations — mark releases, incidents, or campaigns directly on time-series cards (#3209)",
+      "Click-to-drilldown & cross-filtering — click a data point to set a dashboard parameter and refetch, or filter every card from one with chips and clear-all (#3212, #3213)",
+      "Per-card CSV export — download the underlying data of any single card (#3210)",
+      "Whole-dashboard PDF / image export — export an entire dashboard for sharing or reporting (#3211)",
+    ],
+  },
+  {
     version: "v0.0.9",
     title: "Production Hardening",
     date: "2026-06-04",

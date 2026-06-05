@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ComponentProps } from "react";
-import { formatCell } from "../../lib/helpers";
+import { categoryMatchesSelection, formatCell } from "../../lib/helpers";
 import { ErrorBoundary } from "../error-boundary";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -124,12 +124,14 @@ function DataTableInner({
         <tbody>
           {display.map((row, i) => {
             const clickable = onRowClick !== undefined;
-            // #3213 — does this row carry the active cross-filter value?
+            // #3213 — does this row carry the active cross-filter value? The
+            // comparison normalizes date/timestamp cells (#3219 Codex review) so a
+            // timestamp-backed `date` filter still highlights its row.
             const selected =
               selectedColumn != null &&
               selectedValue != null &&
               !Array.isArray(row) &&
-              String((row as Record<string, unknown>)[selectedColumn] ?? "") === selectedValue;
+              categoryMatchesSelection((row as Record<string, unknown>)[selectedColumn], selectedValue);
             return (
               <tr
                 key={i}

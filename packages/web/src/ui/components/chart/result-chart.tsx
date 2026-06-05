@@ -2,6 +2,7 @@
 
 import { useMemo, useId, useState } from "react";
 import { ErrorBoundary } from "../error-boundary";
+import { categoryMatchesSelection } from "../../lib/helpers";
 import {
   ResponsiveContainer,
   BarChart,
@@ -73,10 +74,31 @@ function drilldownCursor(
  * its bar / slice stays solid and the rest dim, so the clicked element reads as
  * selected (re-clicking it deselects, via the page's toggle). Returns the per-
  * cell `fillOpacity`. The caller only renders `<Cell>` children when a selection
- * is active, so the default (unselected) render is untouched.
+ * is active, so the default (unselected) render is untouched. Matching is
+ * date-aware (#3219 Codex review) so a timestamp axis still highlights under a
+ * normalized `YYYY-MM-DD` date filter.
  */
 function selectedFillOpacity(category: unknown, selectedCategory: string): number {
-  return String(category) === selectedCategory ? 1 : 0.25;
+  return categoryMatchesSelection(category, selectedCategory) ? 1 : 0.25;
+}
+
+/**
+ * #3219 (Codex review) — should the "selected" dim/highlight paint on THIS axis?
+ * `ResultChart` re-detects its category axis from the data, which can diverge
+ * from the card's configured drilldown column. The active filter value belongs
+ * to that configured column, so we only style when the value is actually present
+ * on the rendered axis — otherwise a filter on `region` could dim unrelated
+ * `segment` bars. This mirrors the click handler's `categoryKey === categoryColumn`
+ * gate without threading the configured column through every view, and also drops
+ * the dimming entirely when the selected value was filtered out of this card's
+ * current data (nothing to highlight).
+ */
+function selectionOnAxis(
+  data: RechartsRow[],
+  catKey: string,
+  selectedCategory: string | undefined,
+): selectedCategory is string {
+  return selectedCategory != null && data.some((d) => categoryMatchesSelection(d[catKey], selectedCategory));
 }
 
 /* ------------------------------------------------------------------ */
@@ -248,8 +270,10 @@ function BarChartView({
               fill={colors[i % colors.length]}
               radius={[4, 4, 0, 0]}
             >
-              {/* #3213 — dim non-selected categories when a cross-filter is active. */}
-              {selectedCategory != null &&
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
                 data.map((d, ci) => (
                   <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
                 ))}
@@ -377,8 +401,9 @@ function PieChartView({
               <Cell
                 key={i}
                 fill={colors[i % colors.length]}
-                // #3213 — dim non-selected slices when a cross-filter is active.
-                fillOpacity={selectedCategory != null ? selectedFillOpacity(d[catKey], selectedCategory) : undefined}
+                // #3213 — dim non-selected slices when a cross-filter is active;
+                // gated on `selectionOnAxis` (#3219) like the bar views.
+                fillOpacity={selectionOnAxis(data, catKey, selectedCategory) ? selectedFillOpacity(d[catKey], selectedCategory) : undefined}
               />
             ))}
           </Pie>
@@ -507,8 +532,10 @@ function StackedBarChartView({
               fill={colors[i % colors.length]}
               radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
             >
-              {/* #3213 — dim non-selected categories when a cross-filter is active. */}
-              {selectedCategory != null &&
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
                 data.map((d, ci) => (
                   <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
                 ))}

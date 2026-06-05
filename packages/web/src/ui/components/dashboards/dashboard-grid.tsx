@@ -43,6 +43,11 @@ interface DashboardGridProps {
   onDuplicate: (cardId: string) => void;
   onDelete: (card: DashboardCard) => void;
   onUpdateTitle: (cardId: string, title: string) => void;
+  /**
+   * #3210 — export a card's current parameter-bound result as CSV. Forwarded to
+   * each SQL-backed tile's menu; text tiles never surface it.
+   */
+  onExportCsv?: (card: DashboardCard) => void;
 }
 
 export function DashboardGrid({
@@ -57,6 +62,7 @@ export function DashboardGrid({
   onDuplicate,
   onDelete,
   onUpdateTitle,
+  onExportCsv,
 }: DashboardGridProps) {
   const { width, containerRef, mounted } = useContainerWidth();
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
@@ -159,6 +165,7 @@ export function DashboardGrid({
                 onDuplicate={onDuplicate}
                 onDelete={onDelete}
                 onUpdateTitle={onUpdateTitle}
+                onExportCsv={onExportCsv}
               />
             </div>
           ))}
@@ -207,6 +214,7 @@ export function DashboardGrid({
                 onDuplicate={onDuplicate}
                 onDelete={onDelete}
                 onUpdateTitle={onUpdateTitle}
+                onExportCsv={onExportCsv}
               />
             </div>
           ))}

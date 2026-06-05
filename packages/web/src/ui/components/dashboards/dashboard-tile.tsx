@@ -14,6 +14,7 @@ import {
   Check,
   X,
   Clock,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +76,12 @@ interface DashboardTileProps {
   onDuplicate: (cardId: string) => void;
   onDelete: (card: DashboardCard) => void;
   onUpdateTitle: (cardId: string, title: string) => void;
+  /**
+   * #3210 — export this card's current parameter-bound result as CSV. Wired
+   * only on SQL-backed tiles (chart / table / kpi); a text card never receives
+   * it (it has no tabular data). Undefined → the menu item is hidden.
+   */
+  onExportCsv?: (card: DashboardCard) => void;
 }
 
 /**
@@ -116,6 +123,7 @@ function ChartTile({
   onDuplicate,
   onDelete,
   onUpdateTitle,
+  onExportCsv,
 }: DashboardTileProps) {
   const dark = useDarkMode();
   const [titleEditing, setTitleEditing] = useState(false);
@@ -318,6 +326,14 @@ function ChartTile({
                   <Copy className="mr-2 size-3.5" />
                   Duplicate
                 </DropdownMenuItem>
+                {/* #3210 — export the card's current parameter-bound result as
+                    CSV. Disabled until the tile has rendered rows to export. */}
+                {onExportCsv && (
+                  <DropdownMenuItem onSelect={() => onExportCsv(card)} disabled={!hasData}>
+                    <Download className="mr-2 size-3.5" />
+                    Download CSV
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={() => onDelete(card)}

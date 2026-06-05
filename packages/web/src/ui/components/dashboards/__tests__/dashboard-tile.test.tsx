@@ -382,3 +382,56 @@ describe("DashboardTile — drilldown (#3212)", () => {
     restore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-card CSV export (#3210)
+// ---------------------------------------------------------------------------
+
+describe("DashboardTile — CSV export (#3210)", () => {
+  afterEach(cleanup);
+
+  // Radix DropdownMenu opens on a real PointerEvent — JSDOM swallows
+  // fireEvent.click on the trigger. Activate via keyboard (Enter on the focused
+  // trigger), the same pattern the dashboard-switcher test uses.
+  function openTileMenu() {
+    const trigger = screen.getByRole("button", { name: "Tile actions" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+
+  test("a chart card with data offers Download CSV, firing onExportCsv with the card", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={baseCard} onExportCsv={onExportCsv} />);
+    openTileMenu();
+    const item = await screen.findByRole("menuitem", { name: /Download CSV/ });
+    fireEvent.click(item);
+    expect(onExportCsv).toHaveBeenCalledTimes(1);
+    expect(onExportCsv.mock.calls[0][0].id).toBe(baseCard.id);
+  });
+
+  test("a KPI card also offers Download CSV (chart / table / kpi all do)", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={kpiCard} onExportCsv={onExportCsv} />);
+    openTileMenu();
+    expect(await screen.findByRole("menuitem", { name: /Download CSV/ })).toBeTruthy();
+  });
+
+  test("the item is hidden when no onExportCsv handler is wired", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} />);
+    openTileMenu();
+    // The menu still opens (Rename is always present) — only the CSV item is gone.
+    await screen.findByRole("menuitem", { name: /Rename/ });
+    expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
+  });
+
+  test("a text card has no actions menu, so no CSV affordance", () => {
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={textCard} onExportCsv={onExportCsv} />);
+    // Text tiles render no tile-actions menu at all — the affordance can't appear.
+    expect(screen.queryByRole("button", { name: "Tile actions" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
+  });
+});

@@ -54,6 +54,7 @@ Single-environment workspaces don't see the picker — cards run against the wor
 | **Reorder** | Drag the grip handle (⠿) to rearrange cards |
 | **Refresh** | Click the refresh icon on a single card |
 | **Edit title** | Click the pencil icon |
+| **Download CSV** | Open the card menu (**⋯**) → **Download CSV** — exports the card's current result at your parameter values (see [Exporting](#exporting)) |
 | **Remove** | Click the trash icon (removes the card, not the underlying query) |
 
 ### Section headers (text cards)
@@ -205,6 +206,27 @@ Auto-refresh uses the scheduler tick engine. The next refresh time is computed f
 <Callout type="info">
 Auto-refresh requires `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
 </Callout>
+
+---
+
+## Exporting
+
+### A single card to CSV
+
+Every chart, table, and KPI card has a **Download CSV** action in its card menu (the **⋯** button in the tile header). It exports the card's **current result at your parameter values** — the same rows you see, with the dashboard's [parameters](#parameters) bound exactly as on screen.
+
+- The export runs through the **same query pipeline** as the on-screen render — SQL validation, parameter **binding** (values are never spliced into the query text), and the row cap. It never opens a second query path.
+- It respects the auto-LIMIT (`ATLAS_ROW_LIMIT`, default 1000). If the result was capped, Atlas warns you the export is **truncated** — narrow the query or tighten the parameters to export the full set.
+- Cells are escaped per RFC 4180, and any cell beginning with `=`, `+`, `-`, or `@` is neutralized so a spreadsheet won't execute it as a formula ([CSV injection](https://owasp.org/www-community/attacks/CSV_Injection)). Genuine numbers are left intact.
+- The filename derives from the card title plus a UTC timestamp, e.g. `monthly-revenue-20260605-123045.csv`.
+
+Text cards carry no data, so they have **no** Download CSV action.
+
+Under the hood this is `POST /api/v1/dashboards/:id/cards/:cardId/render?format=csv` with the same `{ "parameters": … }` body as the [render endpoint](#rendering-with-parameters-api). It streams `text/csv` as an attachment and sets `X-Atlas-Truncated: 1` (plus `X-Atlas-Row-Count`) when the row cap was hit.
+
+### The whole dashboard to PDF or PNG
+
+Use **Export** in the dashboard header to render the entire board — at your current parameter values — to a PDF or PNG.
 
 ---
 

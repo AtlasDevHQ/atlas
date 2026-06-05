@@ -18,6 +18,8 @@ import {
   getSessionTranscript,
 } from "@atlas/api/lib/bound-chat-context";
 import { screenshotDashboard, exportDashboard } from "@atlas/api/lib/dashboard-screenshot";
+import { toCsv, csvFilename } from "@atlas/api/lib/csv";
+import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import {
   createDashboard,
   getDashboard,
@@ -57,7 +59,7 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema, dashboardChartConfigSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, dashboardChartConfigSchema } from "@useatlas/schemas";
 import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
@@ -734,16 +736,23 @@ const renderCardRoute = createRoute({
   tags: ["Dashboards"],
   summary: "Render a card with parameters",
   description:
-    "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. Requires admin role.",
+    "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires admin role.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
       cardId: z.string().openapi({ param: { name: "cardId", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
     }),
+    query: renderCardQuerySchema,
     body: { content: { "application/json": { schema: renderCardRequestSchema } } },
   },
   responses: {
-    200: { description: "Rendered rows for the supplied parameters", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    200: {
+      description: "Rendered rows for the supplied parameters (JSON), or a CSV attachment when `format=csv`",
+      content: {
+        "application/json": { schema: z.record(z.string(), z.unknown()) },
+        "text/csv": { schema: z.string().openapi({ format: "binary" }) },
+      },
+    },
     400: { description: "Invalid ID/parameters, SQL validation failure, plugin rejection, or query failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden or blocked by RLS", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -1912,6 +1921,8 @@ authed.openapi(renderCardRoute, async (c) => {
     if (!UUID_RE.test(id) || !UUID_RE.test(cardId)) {
       return c.json({ error: "invalid_request", message: "Invalid ID format." }, 400);
     }
+    const { format } = c.req.valid("query");
+    const asCsv = format === "csv";
     const { parameters: suppliedParameters } = c.req.valid("json");
 
     const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
@@ -1929,6 +1940,15 @@ authed.openapi(renderCardRoute, async (c) => {
     // (no parameters bind, no SQL runs). The tile renders its markdown, not
     // this payload.
     if (cardResult.data.kind === "text") {
+      // #3210 — a text card has no tabular data to export. The UI never offers
+      // the affordance on text tiles; reject here too (defence in depth) rather
+      // than streaming an empty CSV.
+      if (asCsv) {
+        return c.json(
+          { error: "not_exportable", message: "Text cards have no tabular data to export.", requestId },
+          400,
+        );
+      }
       return c.json({ columns: [], rows: [], truncated: false, rowCount: 0, executionMs: 0 }, 200);
     }
 
@@ -2037,6 +2057,37 @@ authed.openapi(renderCardRoute, async (c) => {
           : Promise.resolve(null),
       ]),
     );
+
+    // #3210 — CSV export. Reuses the IDENTICAL parameter-bound pipeline result
+    // above (validation + auto-LIMIT + statement timeout + RLS + audit); it
+    // never opens a second SQL path. On success, stream the rows as a `text/csv`
+    // attachment with a title-derived filename. Any non-`ok` outcome falls
+    // through to the shared JSON error response below so the client can read the
+    // `{ error, message, requestId }` envelope regardless of `format`.
+    if (asCsv && outcome.kind === "ok") {
+      const csv = toCsv(outcome.columns, outcome.rows);
+      const filename = csvFilename(cardResult.data.title, new Date());
+      return new Response(csv, {
+        status: 200,
+        headers: {
+          // A raw `Response` returned from the handler does NOT inherit the
+          // `c.header()`-set CORS headers from the `/api/*` middleware (Hono
+          // doesn't merge prepared headers onto a handler-returned Response),
+          // so spread them on explicitly — otherwise a cross-origin deploy
+          // (app.* → api.*) can't read the file or the `X-Atlas-Truncated`
+          // header. Same pattern as the chat/demo streaming responses.
+          ...corsResponseHeaders(c.req.header("Origin") ?? ""),
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          // Parameter-varying, one-shot artifact — never cache.
+          "Cache-Control": "no-store",
+          // Surface auto-LIMIT truncation so the client can warn the export is
+          // capped (the same row cap as the on-screen render — no unbounded dump).
+          "X-Atlas-Truncated": outcome.truncated ? "1" : "0",
+          "X-Atlas-Row-Count": String(outcome.rowCount),
+        },
+      });
+    }
 
     const { body, status } = userQueryOutcomeToResponse(outcome, requestId);
     // Attach the comparison only when the primary succeeded AND a comparison

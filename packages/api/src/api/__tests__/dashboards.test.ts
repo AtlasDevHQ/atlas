@@ -2179,6 +2179,48 @@ describe("dashboard routes", () => {
       expect(typeof body.requestId).toBe("string");
     });
 
+    it("returns 503 not_available + Retry-After when the internal DB is unavailable", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "no_db",
+        message: "Dashboard export requires an internal database.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("5");
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("not_available");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 503 dashboard_unavailable + Retry-After when the lookup fails (not a 404)", async () => {
+      // Load-bearing: an infra outage during lookup must NOT masquerade as a
+      // 404 (missing dashboard) or a 500 (render bug).
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "dashboard_unavailable",
+        message: "Could not load the dashboard for export. The database may be temporarily unavailable — try again.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("5");
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("dashboard_unavailable");
+      expect(typeof body.requestId).toBe("string");
+    });
+
     it("returns 503 when the headless browser is not installed", async () => {
       mockExportDashboard.mockResolvedValueOnce({
         ok: false,
@@ -2193,12 +2235,15 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(503);
+      // browser_unavailable is a permanent deploy-config condition — unlike the
+      // transient 503s it must NOT carry Retry-After.
+      expect(response.headers.get("retry-after")).toBeNull();
       const body = (await response.json()) as { error: string; requestId?: string };
       expect(body.error).toBe("browser_unavailable");
       expect(typeof body.requestId).toBe("string");
     });
 
-    it("returns 504 with requestId when the export times out", async () => {
+    it("returns 504 with requestId + Retry-After when the export times out", async () => {
       mockExportDashboard.mockResolvedValueOnce({
         ok: false,
         reason: "export_timeout",
@@ -2212,6 +2257,7 @@ describe("dashboard routes", () => {
         }),
       );
       expect(response.status).toBe(504);
+      expect(response.headers.get("retry-after")).toBe("5");
       const body = (await response.json()) as { error: string; requestId?: string };
       expect(body.error).toBe("export_timeout");
       expect(typeof body.requestId).toBe("string");

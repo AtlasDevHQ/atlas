@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import {
   exportDashboard,
   buildExportFilename,
+  serializeDparams,
   _setExportRenderFn,
   type ExportRenderArgs,
 } from "../dashboard-screenshot";
@@ -182,5 +183,22 @@ describe("exportDashboard", () => {
     expect(buildExportFilename("", "png", FIXED_NOW)).toBe("dashboard-20260604-123045.png");
     expect(buildExportFilename("  ", "pdf", FIXED_NOW)).toBe("dashboard-20260604-123045.pdf");
     expect(buildExportFilename("Q2 / Sales — North!", "pdf", FIXED_NOW)).toBe("q2-sales-north-20260604-123045.pdf");
+  });
+
+  describe("serializeDparams (parameter forwarding)", () => {
+    it("serializes a non-empty override map to a JSON string", () => {
+      expect(serializeDparams({ region: "us", min: 5 })).toBe('{"region":"us","min":5}');
+    });
+
+    it("drops null + empty-string entries (mirrors the parameter bar)", () => {
+      expect(serializeDparams({ region: "us", blank: null, empty: "" })).toBe('{"region":"us"}');
+    });
+
+    it("returns null when the map is null, empty, or fully cleaned away", () => {
+      expect(serializeDparams(null)).toBeNull();
+      expect(serializeDparams(undefined)).toBeNull();
+      expect(serializeDparams({})).toBeNull();
+      expect(serializeDparams({ blank: null, empty: "" })).toBeNull();
+    });
   });
 });

@@ -280,7 +280,14 @@ export default function DashboardViewPage() {
           : null,
       );
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : String(err));
+      // A fetch-level reject (offline, DNS, CORS) surfaces a cryptic
+      // `TypeError: Failed to fetch` — log the detail for debugging and show
+      // an actionable message with retry guidance instead of the raw string.
+      console.error(
+        "[dashboard] export request failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      setExportError("Could not reach the server to export this dashboard. Check your connection and try again.");
     } finally {
       setExporting(false);
     }

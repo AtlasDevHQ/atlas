@@ -628,8 +628,11 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  * Serialize the override map to the `dparams` URL value the parameter bar
  * writes — dropping null/empty entries so "no overrides" serializes to nothing
  * (mirrors `DashboardParameterBar`'s commit-cleaning).
+ *
+ * @internal — exported only so the parameter-forwarding logic is unit-testable
+ * without driving the Playwright render path.
  */
-function serializeDparams(
+export function serializeDparams(
   parameters: Record<string, string | number | null> | null | undefined,
 ): string | null {
   if (!parameters) return null;

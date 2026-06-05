@@ -7758,7 +7758,7 @@
           "Dashboards"
         ],
         "summary": "Render a card with parameters",
-        "description": "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. Requires admin role.",
+        "description": "Executes the card's SQL through the full Atlas pipeline with the supplied dashboard parameter values bound server-side (#2267). Values reach SQL only via parameterized queries — never string-interpolated. Omitted parameters fall back to their server-resolved defaults. The result is NOT persisted to the card cache; it's an ephemeral, per-viewer render for the parameter bar. With `?format=csv` (#3210) the SAME parameter-bound result is streamed as a `text/csv` attachment (auto-LIMIT still applies; truncation is surfaced via the `X-Atlas-Truncated` header). Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -7777,6 +7777,18 @@
             "required": true,
             "name": "cardId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "json",
+                "csv"
+              ]
+            },
+            "required": false,
+            "name": "format",
+            "in": "query"
           }
         ],
         "requestBody": {
@@ -7808,12 +7820,18 @@
         },
         "responses": {
           "200": {
-            "description": "Rendered rows for the supplied parameters",
+            "description": "Rendered rows for the supplied parameters (JSON), or a CSV attachment when `format=csv`",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              },
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
                 }
               }
             }

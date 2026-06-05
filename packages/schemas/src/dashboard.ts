@@ -133,6 +133,17 @@ export const renderCardRequestSchema = z.object({
 });
 export type RenderCardRequestWire = z.infer<typeof renderCardRequestSchema>;
 
+/**
+ * Render-request query. `format=csv` (#3210) streams the SAME parameter-bound
+ * result as `text/csv` (attachment) instead of JSON; omitted/`json` keeps the
+ * JSON render used by the parameter bar. The CSV path reuses the identical
+ * query-execution + param-binding pipeline — it never opens a second SQL path.
+ */
+export const renderCardQuerySchema = z.object({
+  format: z.enum(["json", "csv"]).optional(),
+});
+export type RenderCardQueryWire = z.infer<typeof renderCardQuerySchema>;
+
 // ---------------------------------------------------------------------------
 // Text / section cards (#3138 — text blocks slice)
 //

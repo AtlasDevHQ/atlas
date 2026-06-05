@@ -14,8 +14,10 @@ import {
   Check,
   X,
   Clock,
+  FilterX,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
@@ -70,6 +72,17 @@ interface DashboardTileProps {
    * `chartConfig.drilldown`. Omitted / unset → the card is inert on click.
    */
   onDrilldown?: (targetParam: string, value: string) => void;
+  /**
+   * #3213 — cross-filter affordances.
+   *   - `incompatible`: an active cross-filter binds none of this card's SQL
+   *     params, so the filter can't change it — the tile is marked "Not filtered"
+   *     and dimmed so the unchanged result reads as intentional.
+   *   - `selectedValue`: the active value of THIS card's drilldown target param,
+   *     so the matching bar / slice / row renders "selected" (re-clicking it
+   *     deselects). Undefined → nothing is marked.
+   */
+  incompatible?: boolean;
+  selectedValue?: string;
   onFullscreen: (cardId: string) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -111,6 +124,8 @@ function ChartTile({
   stage,
   comparison,
   onDrilldown,
+  incompatible,
+  selectedValue,
   onFullscreen,
   onRefresh,
   onDuplicate,
@@ -186,6 +201,7 @@ function ChartTile({
       )}
       data-stage-kind={stage?.kind ?? undefined}
       data-stage-id={stage?.id ?? undefined}
+      data-filter-incompatible={incompatible ? "true" : undefined}
     >
       <div
         className={cn(
@@ -245,6 +261,18 @@ function ChartTile({
           >
             {card.title}
           </h3>
+        )}
+
+        {incompatible && !titleEditing && (
+          <Badge
+            variant="outline"
+            data-testid="tile-not-filtered"
+            className="shrink-0 gap-1 border-zinc-200 px-1.5 py-0 text-[10px] font-normal text-zinc-400 dark:border-zinc-700 dark:text-zinc-500"
+            title="No active filter binds this card's query"
+          >
+            <FilterX className="size-3" aria-hidden="true" />
+            Not filtered
+          </Badge>
         )}
 
         {hasChartConfig && hasData && !titleEditing && (
@@ -332,7 +360,14 @@ function ChartTile({
         )}
       </div>
 
-      <div className="dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5">
+      <div
+        className={cn(
+          "dash-tile-body flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2.5",
+          // #3213 — an active cross-filter that can't touch this card dims it so
+          // the unchanged result reads as intentional, not stale.
+          incompatible && "opacity-60",
+        )}
+      >
         {hasData ? (
           isKpi ? (
             <KpiCard card={card} comparison={comparison} />
@@ -343,10 +378,17 @@ function ChartTile({
               stringRows={stringRows}
               dark={dark}
               onCategoryClick={onCategoryClick}
+              selectedCategory={selectedValue}
             />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
-              <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />
+              <DataTable
+                columns={columns}
+                rows={rows}
+                onRowClick={onRowClick}
+                selectedColumn={categoryColumn || undefined}
+                selectedValue={selectedValue}
+              />
             </div>
           )
         ) : (
@@ -479,6 +521,7 @@ function ChartSlot({
   stringRows,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   cardId: string;
   columns: string[];
@@ -486,6 +529,8 @@ function ChartSlot({
   dark: boolean;
   /** #3212 — forwarded to ResultChart; undefined → chart is inert on click. */
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  /** #3213 — forwarded to ResultChart; the active cross-filter's category value. */
+  selectedCategory?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -525,6 +570,7 @@ function ChartSlot({
           rows={stringRows}
           dark={dark}
           onCategoryClick={onCategoryClick}
+          selectedCategory={selectedCategory}
         />
       )}
     </div>

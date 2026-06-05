@@ -12,6 +12,7 @@ import {
   parseOverrides,
   serializeOverrides,
   withOverride,
+  toggleOverride,
   normalizeDrilldownValue,
 } from "../search-params";
 
@@ -78,6 +79,44 @@ describe("withOverride (drilldown merge)", () => {
   test("round-trips through parse → serialize", () => {
     const raw = withOverride(withOverride(null, "region", "us"), "limit_n", 10);
     expect(serializeOverrides(parseOverrides(raw))).toBe(raw);
+  });
+});
+
+describe("toggleOverride (cross-filter select/deselect)", () => {
+  test("sets a value into empty URL state (first selection)", () => {
+    expect(toggleOverride(null, "stage", "Discovery")).toBe('{"stage":"Discovery"}');
+  });
+
+  test("re-selecting the SAME value clears it (deselect)", () => {
+    expect(toggleOverride('{"stage":"Discovery"}', "stage", "Discovery")).toBeNull();
+  });
+
+  test("selecting a DIFFERENT value replaces it (no deselect)", () => {
+    expect(parseOverrides(toggleOverride('{"stage":"Discovery"}', "stage", "Closed Won"))).toEqual({
+      stage: "Closed Won",
+    });
+  });
+
+  test("deselecting one filter keeps the other active filters", () => {
+    const next = toggleOverride('{"stage":"Discovery","region":"us"}', "stage", "Discovery");
+    expect(parseOverrides(next)).toEqual({ region: "us" });
+  });
+
+  test("toggles consistently across number/string forms of the same value", () => {
+    // URL holds a coerced number; the click surfaces its string form → deselect.
+    expect(toggleOverride('{"limit_n":5}', "limit_n", "5")).toBeNull();
+  });
+
+  test("a null/empty value always clears the key", () => {
+    expect(toggleOverride('{"stage":"Discovery"}', "stage", null)).toBeNull();
+    expect(toggleOverride('{"stage":"Discovery"}', "stage", "")).toBeNull();
+  });
+
+  test("URL round-trips: select → reload (parse) → re-select deselects", () => {
+    const afterSelect = toggleOverride(null, "stage", "Discovery");
+    // Simulate a reload: the raw string is what the URL carried.
+    expect(parseOverrides(afterSelect)).toEqual({ stage: "Discovery" });
+    expect(toggleOverride(afterSelect, "stage", "Discovery")).toBeNull();
   });
 });
 

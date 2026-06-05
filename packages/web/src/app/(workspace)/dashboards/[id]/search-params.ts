@@ -70,6 +70,28 @@ export function withOverride(
 }
 
 /**
+ * Toggle a cross-filter value into the override map (#3213). Selecting the value
+ * already bound to `key` CLEARS it — so re-clicking a selected chart element /
+ * table row deselects it — while any other value replaces it. A `null`/empty
+ * incoming value always clears, matching {@link withOverride}. Returns the
+ * serialized URL value for the nuqs setter.
+ *
+ * Comparison is by string form so a `number` override (`5`) and the clicked
+ * value's string (`"5"`) toggle consistently — chart/table clicks always
+ * surface a string category, but the URL may hold a coerced number.
+ */
+export function toggleOverride(
+  raw: string | null,
+  key: string,
+  value: string | number | null,
+): string | null {
+  if (value === null || value === "") return withOverride(raw, key, null);
+  const current = parseOverrides(raw)[key];
+  const alreadySelected = current != null && String(current) === String(value);
+  return withOverride(raw, key, alreadySelected ? null : value);
+}
+
+/**
  * Normalize a clicked category value for its target parameter's type (#3212).
  *
  * A `date` parameter's control (DatePicker) only renders `YYYY-MM-DD`, so a

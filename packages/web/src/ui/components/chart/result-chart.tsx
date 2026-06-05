@@ -65,6 +65,17 @@ function drilldownCursor(
   return onCategoryClick ? { cursor: "pointer" } : undefined;
 }
 
+/**
+ * #3213 — cross-filter "selected" state. When a category is the active filter,
+ * its bar / slice stays solid and the rest dim, so the clicked element reads as
+ * selected (re-clicking it deselects, via the page's toggle). Returns the per-
+ * cell `fillOpacity`. The caller only renders `<Cell>` children when a selection
+ * is active, so the default (unselected) render is untouched.
+ */
+function selectedFillOpacity(category: unknown, selectedCategory: string): number {
+  return String(category) === selectedCategory ? 1 : 0.25;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Theme helpers                                                       */
 /* ------------------------------------------------------------------ */
@@ -153,11 +164,13 @@ function BarChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -190,7 +203,13 @@ function BarChartView({
               dataKey={key}
               fill={colors[i % colors.length]}
               radius={[4, 4, 0, 0]}
-            />
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active. */}
+              {selectedCategory != null &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -256,11 +275,13 @@ function PieChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -304,8 +325,13 @@ function PieChartView({
             labelLine={{ stroke: t.axis }}
             fontSize={11}
           >
-            {data.map((_, i) => (
-              <Cell key={i} fill={colors[i % colors.length]} />
+            {data.map((d, i) => (
+              <Cell
+                key={i}
+                fill={colors[i % colors.length]}
+                // #3213 — dim non-selected slices when a cross-filter is active.
+                fillOpacity={selectedCategory != null ? selectedFillOpacity(d[catKey], selectedCategory) : undefined}
+              />
             ))}
           </Pie>
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -389,11 +415,13 @@ function StackedBarChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -425,7 +453,13 @@ function StackedBarChartView({
               stackId="a"
               fill={colors[i % colors.length]}
               radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
-            />
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active. */}
+              {selectedCategory != null &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -550,6 +584,7 @@ function ChartRenderer({
   defaultRec,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   rows: string[][];
   rec: ChartRecommendation;
@@ -557,6 +592,7 @@ function ChartRenderer({
   defaultRec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   // Re-transform data when switching chart type (category axis may differ)
   const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
@@ -564,14 +600,16 @@ function ChartRenderer({
 
   // Scatter is intentionally not drillable (#3212): both axes are numeric — it
   // has no category to bind a parameter to. Every other view forwards clicks.
+  // `selectedCategory` (#3213) only styles the categorical views (bar / stacked /
+  // pie); line/area trends have no discrete element to mark.
   return (
     <div className="p-2">
-      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
+      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />
         : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
         : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
-        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
+        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />
         : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
-        : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />}
+        : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />}
     </div>
   );
 }
@@ -586,6 +624,7 @@ export function ResultChart({
   dark,
   detectionResult,
   onCategoryClick,
+  selectedCategory,
 }: {
   headers: string[];
   rows: string[][];
@@ -599,6 +638,13 @@ export function ResultChart({
    * surface and on non-drillable dashboard cards (no-op click).
    */
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  /**
+   * #3213 — cross-filter "selected" state. The active filter's category value;
+   * its bar / slice renders solid while the rest dim, so the clicked element
+   * reads as selected. Only the categorical views (bar / stacked / pie) honor it.
+   * Omitted → no element is marked.
+   */
+  selectedCategory?: string;
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),
@@ -637,6 +683,7 @@ export function ResultChart({
           defaultRec={result.recommendations[0]}
           dark={dark}
           onCategoryClick={onCategoryClick}
+          selectedCategory={selectedCategory}
         />
       </ErrorBoundary>
     </div>

@@ -166,6 +166,39 @@ Omitted parameters fall back to their defaults. Invalid values (a malformed date
 
 ---
 
+## Drilldown & cross-filtering
+
+Parameters don't have to be driven from the bar — you can drive them by **clicking the data**. Give a card a drilldown target and clicking a bar, slice, or table row sets that parameter to the clicked category, refiltering every other card that binds it. This turns a dashboard into an interactive cross-filter: click "EMEA" in a region chart and the revenue trend, the funnel, and the table all narrow to EMEA.
+
+### Setting a drilldown target
+
+A card opts in by naming a target parameter on its chart config:
+
+```ts
+chartConfig: {
+  type: "bar",
+  categoryColumn: "region",
+  valueColumns: ["revenue"],
+  drilldown: { targetParam: "region" }, // clicking a bar sets :region
+}
+```
+
+The target must be a declared dashboard parameter, and the card's `categoryColumn` is the value that gets bound (a click on any other detected axis is ignored). A card with no `drilldown` is inert on click — existing view and interaction are unchanged. Cards built from chat inherit this automatically when the agent declares a matching parameter.
+
+### Cross-filter chips
+
+Active cross-filters show as a **chips bar** above the grid — one chip per filter (`Region: EMEA`), each with a remove (×), plus **Clear all**. Like the parameter bar, the selection lives in the URL (`?dparams=...`), so a shared or bookmarked link reproduces the filtered view and it survives a reload.
+
+- **Re-click to deselect.** The clicked bar / slice / row renders **selected** (the rest dim); clicking the same element again clears that filter.
+- **Compatible vs. incompatible cards.** A filter only changes cards whose SQL binds the relevant `:param`. Cards that don't are left untouched and visibly marked **"Not filtered"** (dimmed), so an unchanged tile reads as intentional rather than broken.
+- **Filters compose.** Multiple active filters combine with **AND** — region *and* date range *and* segment — and a single click triggers one batched refetch of every card, never a request per card.
+
+<Callout type="warn" title="Bound, never interpolated">
+A drilldown sets a dashboard parameter and the value flows through the **exact same parameterized render path** as the bar (`$1`/`?` positional binds, full SELECT-only + AST + whitelist pipeline). Clicking a category never string-interpolates it into SQL — the injection surface stays closed.
+</Callout>
+
+---
+
 ## Refreshing Data
 
 Cards store cached results. To update them:

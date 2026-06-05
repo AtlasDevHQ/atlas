@@ -497,3 +497,469 @@ export async function screenshotDashboard(opts: ScreenshotOpts): Promise<Screens
     durationMs: Date.now() - startedAt,
   };
 }
+
+// ===========================================================================
+// Whole-dashboard export (#3211 — PNG / PDF of the full board)
+// ===========================================================================
+//
+// Reuses the same long-lived Chromium + cookie-forwarding machinery as the
+// vision screenshot above — NOT a second headless path. The differences:
+//
+//   - **Full board, not a fixed clip.** We capture the `.dashboard-app` grid
+//     element directly, so a board taller than the viewport is captured whole
+//     and the multi-card layout is preserved without scroll-stitching.
+//   - **Current parameter values.** The caller's override map is forwarded via
+//     the same `dparams` URL key the parameter bar writes (#2267), so the
+//     headless render reproduces the viewer's current parameters.
+//   - **Partial-tolerant.** A single tile that never finishes rendering must
+//     NOT abort the export — the tile-content wait is best-effort; on timeout
+//     we mark the result `partial` and capture whatever rendered.
+//   - **PDF without a new dependency.** For PDF we wrap the captured PNG in a
+//     tiny print document (title + timestamp header) and let the SAME headless
+//     page emit the PDF via `page.pdf()`. No PDF library, no second render.
+//   - **Uncached.** Exports are explicit, parameter-varying, one-shot user
+//     actions — caching them would mostly miss and risk serving a stale board.
+
+export type ExportFormat = "png" | "pdf";
+
+export type ExportFailReason =
+  | "no_db"
+  | "dashboard_not_found"
+  | "dashboard_unavailable"
+  | "render_failed"
+  | "export_timeout"
+  | "browser_unavailable";
+
+export type ExportResult =
+  | {
+      ok: true;
+      format: ExportFormat;
+      bytes: Buffer;
+      contentType: string;
+      /** `<slug-title>-<utc-stamp>.<ext>` — safe for `Content-Disposition`. */
+      filename: string;
+      title: string;
+      /** True when one or more tiles did not finish rendering in time. */
+      partial: boolean;
+      durationMs: number;
+    }
+  | { ok: false; reason: ExportFailReason; message: string };
+
+export interface ExportOpts {
+  dashboardId: string;
+  userId: string;
+  orgId: string | null | undefined;
+  format: ExportFormat;
+  /** Caller's current parameter override map; serialized to the `dparams` URL key. */
+  parameters?: Record<string, string | number | null> | null;
+  cookieHeader?: string | null;
+  baseUrl?: string;
+  /** Overall render timeout; defaults to `ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS`. */
+  timeoutMs?: number;
+  /** Injectable clock so the generated filename + header stamp are testable. */
+  now?: Date;
+}
+
+/** Args handed to the (overridable) export renderer. */
+export interface ExportRenderArgs {
+  dashboardId: string;
+  userId: string;
+  orgId: string | null | undefined;
+  cookieHeader: string | null;
+  baseUrl: string;
+  format: ExportFormat;
+  parameters: Record<string, string | number | null> | null;
+  title: string;
+  /** Human-readable UTC stamp rendered into the PDF header. */
+  generatedAt: string;
+}
+
+export interface ExportRenderOutput {
+  bytes: Buffer;
+  contentType: string;
+  partial: boolean;
+}
+
+export type ExportRenderFn = (args: ExportRenderArgs) => Promise<ExportRenderOutput>;
+
+let exportRenderImpl: ExportRenderFn | null = null;
+
+/**
+ * @internal — test seam. Swap in a stub export renderer that returns canned
+ * bytes without touching Playwright. The route + lib tests use this to stay
+ * fast; the real Playwright path is exercised by the smoke spec.
+ */
+export function _setExportRenderFn(fn: ExportRenderFn | null): void {
+  exportRenderImpl = fn;
+}
+
+const EXPORT_TIMEOUT_DEFAULT_MS = 45_000;
+const EXPORT_TIMEOUT_MIN_MS = 5_000;
+const EXPORT_TIMEOUT_MAX_MS = 120_000;
+/** Sentinel error message used to distinguish a timeout from a render failure. */
+const EXPORT_TIMEOUT_SENTINEL = "atlas_export_timed_out";
+
+function getExportTimeoutMs(): number {
+  const raw = process.env.ATLAS_DASHBOARD_EXPORT_TIMEOUT_MS;
+  if (!raw) return EXPORT_TIMEOUT_DEFAULT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return EXPORT_TIMEOUT_DEFAULT_MS;
+  return Math.min(EXPORT_TIMEOUT_MAX_MS, Math.max(EXPORT_TIMEOUT_MIN_MS, Math.trunc(parsed)));
+}
+
+/** Reject with the timeout sentinel if `p` doesn't settle within `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(EXPORT_TIMEOUT_SENTINEL)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Serialize the override map to the `dparams` URL value the parameter bar
+ * writes — dropping null/empty entries so "no overrides" serializes to nothing
+ * (mirrors `DashboardParameterBar`'s commit-cleaning).
+ */
+function serializeDparams(
+  parameters: Record<string, string | number | null> | null | undefined,
+): string | null {
+  if (!parameters) return null;
+  const cleaned: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(parameters)) {
+    if (v === null || v === "") continue;
+    cleaned[k] = v;
+  }
+  if (Object.keys(cleaned).length === 0) return null;
+  return JSON.stringify(cleaned);
+}
+
+function pad(n: number, width = 2): string {
+  return String(n).padStart(width, "0");
+}
+
+/** Filename-safe UTC stamp: `YYYYMMDD-HHmmss`. */
+function filenameStamp(now: Date): string {
+  return (
+    `${pad(now.getUTCFullYear(), 4)}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}` +
+    `-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`
+  );
+}
+
+/** Human-readable UTC stamp for the PDF header, e.g. `2026-06-04 12:30 UTC`. */
+function formatDisplayStamp(now: Date): string {
+  return (
+    `${pad(now.getUTCFullYear(), 4)}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())}` +
+    ` ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())} UTC`
+  );
+}
+
+/** ASCII slug for the download filename. Falls back to `dashboard` when empty. */
+function slugifyTitle(title: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase()
+    .slice(0, 80)
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "dashboard";
+}
+
+/** `<slug>-<stamp>.<ext>` — exported for the route's `Content-Disposition`. */
+export function buildExportFilename(title: string, format: ExportFormat, now: Date): string {
+  return `${slugifyTitle(title)}-${filenameStamp(now)}.${format}`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Export the whole dashboard at the caller's current parameter values to PNG
+ * or PDF. Returns a typed failure (never throws) so the route layer can map
+ * each reason to an HTTP status with a `requestId`.
+ */
+export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
+  const startedAt = Date.now();
+  const now = opts.now ?? new Date();
+
+  // Resolve the dashboard for its title + an existence/org gate. Same
+  // reason-mapping discipline as the screenshot path: a non-not_found lookup
+  // failure is infra (`dashboard_unavailable` → 503), never a 404.
+  const dash = await getDashboard(opts.dashboardId, { orgId: opts.orgId ?? undefined });
+  if (!dash.ok) {
+    if (dash.reason === "no_db") {
+      return { ok: false, reason: "no_db", message: "Dashboard export requires an internal database." };
+    }
+    if (dash.reason === "not_found") {
+      return { ok: false, reason: "dashboard_not_found", message: "Dashboard not found." };
+    }
+    log.warn(
+      { dashboardId: opts.dashboardId, reason: dash.reason },
+      "exportDashboard: dashboard lookup failed with non-not_found reason",
+    );
+    return {
+      ok: false,
+      reason: "dashboard_unavailable",
+      message:
+        "Could not load the dashboard for export. The database may be temporarily unavailable — try again.",
+    };
+  }
+
+  const title = dash.data.title?.trim() ? dash.data.title : "Dashboard";
+  const baseUrl = opts.baseUrl ?? process.env.ATLAS_WEB_BASE_URL ?? "http://localhost:3000";
+  const timeoutMs = opts.timeoutMs ?? getExportTimeoutMs();
+
+  let rendered: ExportRenderOutput;
+  try {
+    const fn = exportRenderImpl ?? defaultExportRender;
+    rendered = await withTimeout(
+      fn({
+        dashboardId: opts.dashboardId,
+        userId: opts.userId,
+        orgId: opts.orgId,
+        cookieHeader: opts.cookieHeader ?? null,
+        baseUrl,
+        format: opts.format,
+        parameters: opts.parameters ?? null,
+        title,
+        generatedAt: formatDisplayStamp(now),
+      }),
+      timeoutMs,
+    );
+  } catch (err) {
+    const msg = errorMessage(err);
+    if (msg === "playwright_not_installed") {
+      return {
+        ok: false,
+        reason: "browser_unavailable",
+        message: "Headless browser is not installed in this deployment. Dashboard export is disabled.",
+      };
+    }
+    if (msg === EXPORT_TIMEOUT_SENTINEL) {
+      log.warn({ dashboardId: opts.dashboardId, timeoutMs }, "exportDashboard timed out");
+      return {
+        ok: false,
+        reason: "export_timeout",
+        message:
+          "Dashboard export timed out. Try again, or reduce the number of tiles on the dashboard.",
+      };
+    }
+    log.warn({ err: msg, dashboardId: opts.dashboardId }, "exportDashboard render failed");
+    return {
+      ok: false,
+      reason: "render_failed",
+      message: "Could not render the dashboard for export. Try again or simplify the dashboard.",
+    };
+  }
+
+  return {
+    ok: true,
+    format: opts.format,
+    bytes: rendered.bytes,
+    contentType: rendered.contentType,
+    filename: buildExportFilename(title, opts.format, now),
+    title,
+    partial: rendered.partial,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Default Playwright export renderer
+// ---------------------------------------------------------------------------
+
+// Richer page/element surface than the screenshot path uses (adds pdf /
+// setContent / emulateMedia / element query). Loosely typed because Playwright
+// is lazy-imported; `getBrowser()` returns the same launched instance.
+interface ExportElementHandle {
+  screenshot: (opts?: Record<string, unknown>) => Promise<Buffer>;
+  boundingBox: () => Promise<{ x: number; y: number; width: number; height: number } | null>;
+}
+interface ExportPage {
+  goto: (url: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  waitForSelector: (sel: string, opts?: Record<string, unknown>) => Promise<unknown>;
+  waitForFunction: (fn: string | (() => boolean), opts?: Record<string, unknown>) => Promise<unknown>;
+  evaluate: <T>(fn: string | (() => T)) => Promise<T>;
+  screenshot: (opts?: Record<string, unknown>) => Promise<Buffer>;
+  setContent: (html: string, opts?: Record<string, unknown>) => Promise<void>;
+  emulateMedia: (opts?: Record<string, unknown>) => Promise<void>;
+  pdf: (opts?: Record<string, unknown>) => Promise<Buffer>;
+  $: (sel: string) => Promise<ExportElementHandle | null>;
+  close: () => Promise<void>;
+}
+interface ExportContext {
+  newPage: () => Promise<ExportPage>;
+  addCookies: (cookies: unknown[]) => Promise<void>;
+  close: () => Promise<void>;
+}
+interface ExportBrowser {
+  newContext: (opts?: Record<string, unknown>) => Promise<ExportContext>;
+}
+
+const EXPORT_VIEWPORT_WIDTH = 1600;
+const EXPORT_VIEWPORT_HEIGHT = 2000;
+const EXPORT_NAV_TIMEOUT_MS = 20_000;
+const EXPORT_GRID_WAIT_TIMEOUT_MS = 12_000;
+const EXPORT_TILE_WAIT_TIMEOUT_MS = 8_000;
+
+// Predicate run inside the page: every grid tile carries visible content (an
+// SVG chart, a table, or some text). Passed as a string so the api/ package
+// stays off the `dom` lib. An empty board (no tiles) passes immediately — the
+// "empty canvas" state has nothing to wait for.
+const EXPORT_TILE_CONTENT_PREDICATE = `(() => {
+  const tiles = Array.from(document.querySelectorAll('.dash-tile-wrapper, .dash-mobile-tile'));
+  if (tiles.length === 0) return true;
+  return tiles.every((tile) => {
+    const hasSvg = tile.querySelector('svg');
+    const hasTable = tile.querySelector('table');
+    const text = (tile.textContent || '').trim();
+    return Boolean(hasSvg || hasTable || text.length > 0);
+  });
+})()`;
+
+async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRenderOutput> {
+  const browser = (await getBrowser()) as ExportBrowser;
+  const context = await browser.newContext({
+    viewport: { width: EXPORT_VIEWPORT_WIDTH, height: EXPORT_VIEWPORT_HEIGHT },
+    // 2× for a crisp export — embedded into the PDF at width:100% so the page
+    // size stays in CSS pixels regardless.
+    deviceScaleFactor: 2,
+  });
+
+  try {
+    const cookieValues = args.cookieHeader ?? process.env.ATLAS_INTERNAL_SCREENSHOT_COOKIE ?? "";
+    if (cookieValues.length > 0) {
+      const url = new URL(args.baseUrl);
+      const cookies = parseCookieHeader(cookieValues).map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: url.hostname,
+        path: "/",
+      }));
+      if (cookies.length > 0) await context.addCookies(cookies);
+    }
+
+    const page = await context.newPage();
+    try {
+      const target = new URL(`/dashboards/${args.dashboardId}`, args.baseUrl);
+      const dparams = serializeDparams(args.parameters);
+      if (dparams) target.searchParams.set("dparams", dparams);
+      await page.goto(target.toString(), { waitUntil: "networkidle", timeout: EXPORT_NAV_TIMEOUT_MS });
+
+      // Best-effort render wait. Neither stage aborts the export: a missing
+      // grid (empty board / slow shell) or a single stuck tile only flips the
+      // `partial` flag so the caller can warn that the file may be incomplete.
+      let partial = false;
+      try {
+        await page.waitForSelector(".dashboard-app", { timeout: EXPORT_GRID_WAIT_TIMEOUT_MS });
+      } catch (err) {
+        log.debug(
+          { dashboardId: args.dashboardId, err: errorMessage(err) },
+          "exportRender: grid container not found within timeout — capturing as-is",
+        );
+        partial = true;
+      }
+      try {
+        await page.waitForFunction(EXPORT_TILE_CONTENT_PREDICATE, { timeout: EXPORT_TILE_WAIT_TIMEOUT_MS });
+      } catch (err) {
+        log.debug(
+          { dashboardId: args.dashboardId, err: errorMessage(err) },
+          "exportRender: not every tile rendered content within timeout — exporting partial board",
+        );
+        partial = true;
+      }
+
+      // Capture the grid element so app chrome (sidebar/topbar) is excluded and
+      // a board taller than the viewport is captured whole. Fall back to a
+      // full-page shot if the grid never mounted (e.g. the empty-canvas state).
+      const gridHandle = await page.$(".dashboard-app");
+      const png = gridHandle
+        ? await gridHandle.screenshot({ type: "png" })
+        : await page.screenshot({ type: "png", fullPage: true });
+
+      if (args.format === "png") {
+        return { bytes: png, contentType: "image/png", partial };
+      }
+
+      const box = gridHandle ? await gridHandle.boundingBox() : null;
+      const cssWidth = box && box.width > 0 ? Math.round(box.width) : EXPORT_VIEWPORT_WIDTH;
+      const pdf = await renderPdfFromPng(page, png, {
+        title: args.title,
+        generatedAt: args.generatedAt,
+        partial,
+        cssWidth,
+      });
+      return { bytes: pdf, contentType: "application/pdf", partial };
+    } finally {
+      await page.close();
+    }
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * Wrap a captured board PNG in a one-page print document (title + timestamp
+ * header) and let the SAME headless page emit a PDF. Sizing the single page to
+ * the rendered content keeps the multi-card layout intact — no card is split
+ * across a page break.
+ */
+async function renderPdfFromPng(
+  page: ExportPage,
+  png: Buffer,
+  meta: { title: string; generatedAt: string; partial: boolean; cssWidth: number },
+): Promise<Buffer> {
+  const b64 = png.toString("base64");
+  const partialNote = meta.partial
+    ? ' &middot; <span style="color:#b45309">partial export — some tiles did not finish rendering</span>'
+    : "";
+  const html =
+    `<!doctype html><html><head><meta charset="utf-8"><style>` +
+    `@page { margin: 0; }` +
+    `html, body { margin: 0; padding: 0; background: #ffffff; }` +
+    `body { width: ${meta.cssWidth}px; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #18181b; }` +
+    `.hdr { padding: 20px 24px 14px; border-bottom: 1px solid #e4e4e7; }` +
+    `.title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }` +
+    `.meta { margin-top: 3px; font-size: 11px; color: #71717a; }` +
+    `.board { display: block; width: 100%; height: auto; }` +
+    `</style></head><body>` +
+    `<div class="hdr"><div class="title">${escapeHtml(meta.title)}</div>` +
+    `<div class="meta">Generated ${escapeHtml(meta.generatedAt)}${partialNote}</div></div>` +
+    `<img class="board" src="data:image/png;base64,${b64}" />` +
+    `</body></html>`;
+
+  await page.setContent(html, { waitUntil: "load" });
+  // The wrapper doc has no print-specific styles; keep screen rendering so the
+  // header + image lay out exactly as authored.
+  await page.emulateMedia({ media: "screen" });
+
+  const dims = (await page.evaluate(
+    `(() => ({ w: document.body.scrollWidth, h: document.body.scrollHeight }))()`,
+  )) as { w: number; h: number };
+  const width = Math.max(1, Math.round(dims.w || meta.cssWidth));
+  const height = Math.max(1, Math.round(dims.h || EXPORT_VIEWPORT_HEIGHT));
+
+  return page.pdf({
+    width: `${width}px`,
+    height: `${height}px`,
+    printBackground: true,
+    pageRanges: "1",
+  });
+}

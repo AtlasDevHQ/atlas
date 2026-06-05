@@ -266,13 +266,54 @@ const mockScreenshotDashboard = mock(
       durationMs: 7,
     }),
 );
+// #3211 — whole-dashboard export pipeline mock. Surface-complete; individual
+// tests override `mockExportDashboard` per case.
+type ExportOptsMock = {
+  dashboardId: string;
+  userId: string;
+  orgId: string | null | undefined;
+  format: "png" | "pdf";
+  parameters?: Record<string, string | number | null> | null;
+  cookieHeader?: string | null;
+};
+const mockExportDashboard = mock(
+  (
+    opts: ExportOptsMock,
+  ): Promise<import("@atlas/api/lib/dashboard-screenshot").ExportResult> =>
+    Promise.resolve(
+      opts.format === "png"
+        ? {
+            ok: true as const,
+            format: "png" as const,
+            bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // PNG magic
+            contentType: "image/png",
+            filename: "revenue-overview-20260604-120000.png",
+            title: "Revenue overview",
+            partial: false,
+            durationMs: 9,
+          }
+        : {
+            ok: true as const,
+            format: "pdf" as const,
+            bytes: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d]), // "%PDF-"
+            contentType: "application/pdf",
+            filename: "revenue-overview-20260604-120000.pdf",
+            title: "Revenue overview",
+            partial: false,
+            durationMs: 12,
+          },
+    ),
+);
 mock.module("@atlas/api/lib/dashboard-screenshot", () => ({
   screenshotDashboard: mockScreenshotDashboard,
+  exportDashboard: mockExportDashboard,
   invalidateDashboardScreenshot: () => {},
   closeScreenshotBrowser: async () => {},
+  buildExportFilename: (title: string, format: "png" | "pdf") => `${title}.${format}`,
   _resetScreenshotCache: () => {},
   _screenshotCacheSize: () => 0,
   _setRenderFn: () => {},
+  _setExportRenderFn: () => {},
 }));
 
 // --- Other mocks required by app index.ts ---
@@ -2026,6 +2067,187 @@ describe("dashboard routes", () => {
       const body = (await response.json()) as { error: string; requestId?: string };
       expect(body.error).toBe("render_failed");
       expect(typeof body.requestId).toBe("string");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/v1/dashboards/:id/export  (#3211 — whole-dashboard PNG/PDF)
+  // -------------------------------------------------------------------------
+
+  describe("POST /api/v1/dashboards/:id/export", () => {
+    it("returns 400 for an invalid dashboard id (renderer never reached)", async () => {
+      mockExportDashboard.mockClear();
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/dashboards/not-a-uuid/export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(mockExportDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns a PDF attachment with the partial header on success (default format)", async () => {
+      mockExportDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", cookie: "atlas-session=abc" },
+          // No `format` field — handler defaults to PDF.
+          body: JSON.stringify({ parameters: { region: "us" } }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("application/pdf");
+      expect(response.headers.get("content-disposition")).toContain("attachment");
+      expect(response.headers.get("content-disposition")).toContain(".pdf");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-atlas-export-partial")).toBe("0");
+
+      // Forwards identity + cookie + format + the caller's current parameters.
+      const call = mockExportDashboard.mock.calls[0]![0]!;
+      expect(call).toMatchObject({
+        dashboardId: VALID_ID,
+        userId: "u1",
+        orgId: "org-1",
+        format: "pdf",
+        parameters: { region: "us" },
+        cookieHeader: "atlas-session=abc",
+      });
+
+      const body = new Uint8Array(await response.arrayBuffer());
+      // "%PDF-" magic
+      expect(body[0]).toBe(0x25);
+      expect(body[1]).toBe(0x50);
+    });
+
+    it("returns a PNG attachment when format=png is requested", async () => {
+      mockExportDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "png" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(response.headers.get("content-disposition")).toContain(".png");
+      const call = mockExportDashboard.mock.calls[0]![0]!;
+      expect(call.format).toBe("png");
+    });
+
+    it("surfaces a partial render via the X-Atlas-Export-Partial header", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: true,
+        format: "pdf",
+        bytes: Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d]),
+        contentType: "application/pdf",
+        filename: "demo-20260604-120000.pdf",
+        title: "Demo",
+        partial: true,
+        durationMs: 30,
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-atlas-export-partial")).toBe("1");
+    });
+
+    it("returns 404 when the dashboard is not in the caller's org", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "dashboard_not_found",
+        message: "Dashboard not found.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(404);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("not_found");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 503 when the headless browser is not installed", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "browser_unavailable",
+        message: "Headless browser is not installed in this deployment. Dashboard export is disabled.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(503);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("browser_unavailable");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 504 with requestId when the export times out", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "export_timeout",
+        message: "Dashboard export timed out. Try again, or reduce the number of tiles on the dashboard.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(504);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("export_timeout");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 500 with requestId when render_failed bubbles up", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "render_failed",
+        message: "Could not render the dashboard for export. Try again or simplify the dashboard.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("render_failed");
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("rejects an unknown format with a 422 (schema validation)", async () => {
+      mockExportDashboard.mockClear();
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "svg" }),
+        }),
+      );
+      // Body fails the `z.enum(["png","pdf"])` schema → validationHook → 422.
+      expect(response.status).toBe(422);
+      expect(mockExportDashboard).not.toHaveBeenCalled();
     });
   });
 });

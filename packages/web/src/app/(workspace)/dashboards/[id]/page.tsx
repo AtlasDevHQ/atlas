@@ -23,6 +23,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useAtlasConfig } from "@/ui/context";
 import { friendlyError } from "@/ui/lib/fetch-error";
+import { downloadBlob, parseAttachmentFilename } from "@/ui/lib/helpers";
 import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
@@ -107,6 +108,11 @@ export default function DashboardViewPage() {
 
   const [editing, setEditing] = useState(false);
   const [density, setDensity] = useState<Density>("comfortable");
+  // #3211 — whole-dashboard export state. `exportError` surfaces a failed
+  // render (or a partial-render warning) in the same banner family as the
+  // parameter / mutation errors below.
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   // #2363 — bound chat drawer state
   const [chatOpen, setChatOpen] = useState(false);
 
@@ -215,6 +221,69 @@ export default function DashboardViewPage() {
     setRefreshingAll(true);
     await mutate({ path: `/api/v1/dashboards/${id}/refresh`, method: "POST" });
     setRefreshingAll(false);
+  }
+
+  // #3211 — export the whole board at the viewer's CURRENT parameter values.
+  // The override map lives in the URL (`dparams`, written by the parameter
+  // bar), so reading it here is the single source of truth — no extra state to
+  // keep in sync. We fetch the binary, then trigger a browser download.
+  async function handleExport(format: "png" | "pdf") {
+    if (!dashboard) return;
+    setExporting(true);
+    setExportError(null);
+    try {
+      let parameters: Record<string, string | number | null> = {};
+      const raw = searchParams.get("dparams");
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            parameters = parsed as Record<string, string | number | null>;
+          }
+        } catch {
+          // Malformed URL state — export with the parameter defaults.
+        }
+      }
+
+      const res = await fetch(`${apiUrl}/api/v1/dashboards/${id}/export`, {
+        method: "POST",
+        credentials: isCrossOrigin ? "include" : "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ format, parameters }),
+      });
+
+      if (!res.ok) {
+        let message = `Export failed (${res.status}). Please try again.`;
+        try {
+          const body = (await res.json()) as { message?: string; requestId?: string };
+          if (body.message) {
+            message = body.requestId ? `${body.message} (request ${body.requestId})` : body.message;
+          }
+        } catch {
+          // Non-JSON error body — keep the status-based message.
+        }
+        setExportError(message);
+        return;
+      }
+
+      const blob = await res.blob();
+      const filename =
+        parseAttachmentFilename(res.headers.get("content-disposition")) ??
+        `${dashboard.title || "dashboard"}.${format}`;
+      downloadBlob(blob, filename);
+
+      // A partial render still downloads — warn that the file may be incomplete
+      // rather than silently shipping a board with a blank tile.
+      setExportError(
+        res.headers.get("x-atlas-export-partial") === "1"
+          ? "Some tiles did not finish rendering — the exported file may be incomplete."
+          : null,
+      );
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
   }
 
   async function handleDeleteCard() {
@@ -730,6 +799,8 @@ export default function DashboardViewPage() {
               onRefreshAll={handleRefreshAll}
               onSuggest={handleSuggestCards}
               suggesting={suggestingCards}
+              onExport={handleExport}
+              exporting={exporting}
               onDelete={() => setDeleteDashboard(true)}
               shareSlot={<DashboardShareDialog dashboardId={id} />}
               chatSlot={
@@ -789,6 +860,20 @@ export default function DashboardViewPage() {
             {mutationError && (
               <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50/60 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400 sm:mx-6">
                 {friendlyError(mutationError)}
+              </div>
+            )}
+
+            {exportError && (
+              <div className="mx-4 mt-3 flex items-start justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:mx-6 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
+                <span>{exportError}</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 text-xs"
+                  onClick={() => setExportError(null)}
+                >
+                  Dismiss
+                </Button>
               </div>
             )}
 

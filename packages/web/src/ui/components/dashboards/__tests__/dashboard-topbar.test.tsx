@@ -47,6 +47,8 @@ const baseProps = {
   onRefreshAll: unexpected("onRefreshAll"),
   onSuggest: unexpected("onSuggest"),
   suggesting: false,
+  onExport: unexpected("onExport") as (format: "png" | "pdf") => void,
+  exporting: false,
   onDelete: unexpected("onDelete"),
   shareSlot: <button type="button">Share</button>,
   editing: false,
@@ -146,6 +148,21 @@ describe("DashboardTopBar", () => {
     fireEvent.keyDown(input, { key: "Escape" });
     expect(screen.queryByDisplayValue("Different")).toBeNull();
     expect(screen.getByText("Revenue overview")).toBeTruthy();
+  });
+
+  test("Export trigger renders and is disabled when there are no tiles", () => {
+    const { rerender } = render(<DashboardTopBar {...baseProps} cardCount={0} />, { wrapper });
+    const exportBtn = screen.getByRole("button", { name: "Export dashboard" });
+    expect((exportBtn as HTMLButtonElement).disabled).toBe(true);
+    rerender(<DashboardTopBar {...baseProps} cardCount={3} />);
+    expect((screen.getByRole("button", { name: "Export dashboard" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("Export trigger is disabled while an export is in flight", () => {
+    render(<DashboardTopBar {...baseProps} exporting={true} />, { wrapper });
+    const exportBtn = screen.getByRole("button", { name: "Export dashboard" });
+    expect((exportBtn as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Exporting/)).toBeTruthy();
   });
 
   test("Delete button calls onDelete on click", () => {

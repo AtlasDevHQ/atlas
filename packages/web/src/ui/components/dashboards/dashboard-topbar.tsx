@@ -15,6 +15,9 @@ import {
   Rows3,
   Rows,
   StretchHorizontal,
+  Download,
+  FileImage,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +28,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { DashboardSwitcher } from "./dashboard-switcher";
 import type { Density } from "./grid-constants";
@@ -41,6 +50,10 @@ interface DashboardTopBarProps {
   onRefreshAll: () => void;
   onSuggest: () => void;
   suggesting: boolean;
+  /** #3211 — render the whole board to a downloadable PNG or PDF. */
+  onExport: (format: "png" | "pdf") => void;
+  /** True while an export render is in flight (disables the action). */
+  exporting: boolean;
   onDelete: () => void;
   shareSlot: React.ReactNode;
   /**
@@ -67,6 +80,8 @@ export function DashboardTopBar({
   onRefreshAll,
   onSuggest,
   suggesting,
+  onExport,
+  exporting,
   onDelete,
   shareSlot,
   chatSlot,
@@ -214,6 +229,31 @@ export function DashboardTopBar({
           <RefreshCw className={cn("mr-1.5 size-3.5", refreshing && "animate-spin")} />
           Refresh
         </Button>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={exporting || cardCount === 0}
+              aria-label="Export dashboard"
+              className="hidden sm:inline-flex"
+            >
+              <Download className={cn("mr-1.5 size-3.5", exporting && "animate-pulse")} />
+              {exporting ? "Exporting…" : "Export"}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => onExport("pdf")}>
+              <FileText className="mr-2 size-4" />
+              Export as PDF
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onExport("png")}>
+              <FileImage className="mr-2 size-4" />
+              Export as PNG
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <Select value={refreshSchedule ?? "off"} onValueChange={onScheduleChange}>
           <SelectTrigger

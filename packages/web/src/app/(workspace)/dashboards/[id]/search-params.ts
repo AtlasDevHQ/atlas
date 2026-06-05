@@ -37,7 +37,7 @@ export function parseOverrides(raw: string | null): ParameterValues {
       return parsed as ParameterValues;
     }
   } catch {
-    // Malformed URL state — fall back to defaults rather than throwing.
+    // intentionally ignored: malformed URL state — fall back to defaults rather than throwing.
   }
   return {};
 }

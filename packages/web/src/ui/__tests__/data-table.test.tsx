@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
 import { DataTable } from "../components/chat/data-table";
 
@@ -121,5 +121,37 @@ describe("DataTable", () => {
     expect(container.querySelector("table")).toBeNull();
     expect(container.textContent).toContain("Query returned no results");
     expect(container.textContent).toContain("Try adjusting your query filters or criteria");
+  });
+
+  // -------------------------------------------------------------------------
+  // Row click-to-drilldown (#3212) — opt-in via onRowClick
+  // -------------------------------------------------------------------------
+
+  test("rows are inert (no button role) when onRowClick is omitted", () => {
+    const { container } = render(<DataTable columns={columns} rows={rows} />);
+    expect(container.querySelectorAll("tbody tr[role='button']").length).toBe(0);
+  });
+
+  test("clicking a row forwards the row object when onRowClick is provided", () => {
+    const onRowClick = mock((_row: Record<string, unknown> | unknown[]) => {});
+    const { container } = render(
+      <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />,
+    );
+    const firstRow = container.querySelector("tbody tr");
+    expect(firstRow?.getAttribute("role")).toBe("button");
+    fireEvent.click(firstRow!);
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+    expect(onRowClick.mock.calls[0]?.[0]).toEqual(rows[0]);
+  });
+
+  test("Enter/Space on a focused row activates it (keyboard a11y)", () => {
+    const onRowClick = mock((_row: Record<string, unknown> | unknown[]) => {});
+    const { container } = render(
+      <DataTable columns={columns} rows={rows} onRowClick={onRowClick} />,
+    );
+    const firstRow = container.querySelector("tbody tr")!;
+    fireEvent.keyDown(firstRow, { key: "Enter" });
+    fireEvent.keyDown(firstRow, { key: " " });
+    expect(onRowClick).toHaveBeenCalledTimes(2);
   });
 });

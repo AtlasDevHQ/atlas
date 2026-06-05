@@ -4,15 +4,24 @@ import { useState, type ComponentProps } from "react";
 import { formatCell } from "../../lib/helpers";
 import { ErrorBoundary } from "../error-boundary";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 function DataTableInner({
   columns,
   rows,
   maxRows = 10,
+  onRowClick,
 }: {
   columns: string[];
   rows: (Record<string, unknown> | unknown[])[];
   maxRows?: number;
+  /**
+   * #3212 — click-to-drilldown. When provided, each row becomes an activatable
+   * button (pointer cursor + Enter/Space) that forwards the clicked row object.
+   * Omitted on the chat surface (rows stay inert), so this is opt-in and
+   * back-compatible. The consumer decides which column's value to read.
+   */
+  onRowClick?: (row: Record<string, unknown> | unknown[]) => void;
 }) {
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -103,18 +112,38 @@ function DataTableInner({
           </tr>
         </thead>
         <tbody>
-          {display.map((row, i) => (
-            <tr
-              key={i}
-              className={i % 2 === 0 ? "bg-zinc-100/60 dark:bg-zinc-900/60" : "bg-zinc-50/30 dark:bg-zinc-900/30"}
-            >
-              {columns.map((_, j) => (
-                <td key={j} className="whitespace-nowrap px-3 py-1.5 text-zinc-700 dark:text-zinc-300">
-                  {formatCell(cell(row, j))}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {display.map((row, i) => {
+            const clickable = onRowClick !== undefined;
+            return (
+              <tr
+                key={i}
+                className={cn(
+                  i % 2 === 0 ? "bg-zinc-100/60 dark:bg-zinc-900/60" : "bg-zinc-50/30 dark:bg-zinc-900/30",
+                  clickable &&
+                    "cursor-pointer transition-colors hover:bg-blue-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:hover:bg-blue-950/30",
+                )}
+                role={clickable ? "button" : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onClick={clickable ? () => onRowClick?.(row) : undefined}
+                onKeyDown={
+                  clickable
+                    ? (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onRowClick?.(row);
+                        }
+                      }
+                    : undefined
+                }
+              >
+                {columns.map((_, j) => (
+                  <td key={j} className="whitespace-nowrap px-3 py-1.5 text-zinc-700 dark:text-zinc-300">
+                    {formatCell(cell(row, j))}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       </div>

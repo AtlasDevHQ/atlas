@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { classifyColumn, detectCharts, transformData, type ChartRecommendation, type ClassifiedColumn } from "../components/chart/chart-detection";
+import {
+  classifyColumn,
+  detectCharts,
+  transformData,
+  categoryFromChartClick,
+  categoryFromPieClick,
+  type ChartRecommendation,
+  type ClassifiedColumn,
+} from "../components/chart/chart-detection";
 
 /* ------------------------------------------------------------------ */
 /*  classifyColumn                                                      */
@@ -560,5 +568,40 @@ describe("transformData", () => {
     expect(data[0].score).toBe(100);
     expect(data[1].score).toBe(0);
     expect(data[1].name).toBe("Bob");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Click-to-drilldown value extractors (#3212)                         */
+/* ------------------------------------------------------------------ */
+
+describe("categoryFromChartClick", () => {
+  test("returns the active category label of the clicked tick", () => {
+    expect(categoryFromChartClick({ activeLabel: "Discovery" } as never)).toBe("Discovery");
+  });
+
+  test("coerces a numeric/date activeLabel to a string", () => {
+    expect(categoryFromChartClick({ activeLabel: 2026 } as never)).toBe("2026");
+  });
+
+  test("returns null when the click lands off any category", () => {
+    expect(categoryFromChartClick(null)).toBeNull();
+    expect(categoryFromChartClick(undefined)).toBeNull();
+    expect(categoryFromChartClick({ activeLabel: undefined } as never)).toBeNull();
+    expect(categoryFromChartClick({ activeLabel: "" } as never)).toBeNull();
+  });
+});
+
+describe("categoryFromPieClick", () => {
+  test("reads the category column off the sector's original-row payload", () => {
+    const sector = { payload: { region: "EMEA", revenue: 1200 } };
+    expect(categoryFromPieClick(sector, "region")).toBe("EMEA");
+  });
+
+  test("returns null when the payload is missing or the cell is empty", () => {
+    expect(categoryFromPieClick(null, "region")).toBeNull();
+    expect(categoryFromPieClick({}, "region")).toBeNull();
+    expect(categoryFromPieClick({ payload: { region: "" } }, "region")).toBeNull();
+    expect(categoryFromPieClick({ payload: { region: null } }, "region")).toBeNull();
   });
 });

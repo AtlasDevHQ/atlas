@@ -32,6 +32,12 @@ interface DashboardGridProps {
    * `kpi` tile so it can render the delta chip. Non-KPI cards ignore it.
    */
   comparisons?: Record<string, KpiComparisonResult | null>;
+  /**
+   * #3212 — click-to-drilldown. Forwarded to each tile; called with a card's
+   * drilldown target parameter key + the clicked category value. Undefined →
+   * cards are inert on click.
+   */
+  onDrilldown?: (targetParam: string, value: string) => void;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -45,6 +51,7 @@ export function DashboardGrid({
   refreshingId,
   stages,
   comparisons,
+  onDrilldown,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -146,6 +153,7 @@ export function DashboardGrid({
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
+                onDrilldown={onDrilldown}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}
@@ -193,6 +201,7 @@ export function DashboardGrid({
                 isRefreshing={refreshingId === card.id}
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
+                onDrilldown={onDrilldown}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}

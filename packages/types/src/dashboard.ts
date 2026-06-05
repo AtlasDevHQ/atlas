@@ -40,12 +40,41 @@ export interface DashboardKpiConfig {
   comparisonLabel?: string;
 }
 
+/**
+ * Click-to-drilldown target (#3212 — drilldown foundation). When set, clicking
+ * a data point (bar / line / area / pie slice, or a table row) on this card
+ * sets the named dashboard parameter to the clicked CATEGORY value and refetches
+ * every card through the render path (server-side parameterized binding — never
+ * string-interpolated). The clicked value is the chart's category-axis value
+ * for chart views, or the row's `categoryColumn` cell for the table view.
+ *
+ * Optional + back-compatible: a card with no `drilldown` is inert on click (no
+ * regression to existing view/interaction). The cross-filter UX (filter chips,
+ * card-A-filters-B..N) is the follow-up (#3213) — this is the plumbing layer.
+ *
+ * Wire-type mirror of `dashboardDrilldownConfigSchema` in `@useatlas/schemas`.
+ */
+export interface DashboardDrilldownConfig {
+  /**
+   * Key of the dashboard parameter a click populates. References a declared
+   * {@link DashboardParameter.key} (same lower-snake identifier constraint).
+   * A target that names no declared parameter is ignored at click time — the
+   * render endpoint binds declared parameters only.
+   */
+  targetParam: string;
+}
+
 export interface DashboardChartConfig {
   type: ChartType;
   categoryColumn: string;
   valueColumns: string[];
   /** Present only when `type === "kpi"` (#3137). */
   kpi?: DashboardKpiConfig;
+  /**
+   * Click-to-drilldown target (#3212). Absent → the card is inert on click.
+   * See {@link DashboardDrilldownConfig}.
+   */
+  drilldown?: DashboardDrilldownConfig;
 }
 
 /**

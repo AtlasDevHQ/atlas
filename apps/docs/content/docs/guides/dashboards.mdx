@@ -54,6 +54,7 @@ Single-environment workspaces don't see the picker — cards run against the wor
 | **Reorder** | Drag the grip handle (⠿) to rearrange cards |
 | **Refresh** | Click the refresh icon on a single card |
 | **Edit title** | Click the pencil icon |
+| **Download CSV** | Open the card menu (**⋯**) → **Download CSV** — exports the card's current result at your parameter values (see [Exporting](#exporting)) |
 | **Remove** | Click the trash icon (removes the card, not the underlying query) |
 
 ### Section headers (text cards)
@@ -112,6 +113,32 @@ A KPI card binds [parameters](#parameters) exactly like any other card, and the 
 <Callout type="warn" title="The comparison query runs through the same guard">
 `comparisonSql` is executed as a second query through the **identical** SQL pipeline as the primary — SELECT-only, AST-validated, table-whitelisted, auto-LIMITed, statement-timed-out — and it binds the dashboard's parameters the same way (server-side, never interpolated). A comparison query that fails validation simply drops the delta chip; it never breaks the headline number.
 </Callout>
+
+### Goal lines & thresholds
+
+Metrics with a **target** — a revenue goal, an error-rate budget, an SLA — read better with the target drawn in. Add a `chartConfig.thresholds` array (up to five per card); each entry is `{ value, color?, label? }` where `value` is required and `color` (any CSS colour — hex, `rgb()`, or a named colour) and `label` are optional:
+
+- On a **bar / line / area** card, each threshold draws a horizontal dashed reference line at `value`, with the optional `label` captioned at the line. A target above the current data still shows — the axis stretches to fit it.
+- On a **KPI card**, the **first** threshold is the goal: it colours the headline number green/red for above/below target and adds a small "Target: … · above/below" callout. Pair it with `kpi.inverse: true` for a lower-is-better metric (error rate, latency, cost), so being **below** target reads as the good (green) outcome.
+
+```json
+{
+  "title": "Revenue by month",
+  "sql": "SELECT month, SUM(amount) AS revenue FROM orders GROUP BY month",
+  "chartConfig": {
+    "type": "bar",
+    "categoryColumn": "month",
+    "valueColumns": ["revenue"],
+    "thresholds": [{ "value": 1000000, "label": "Target", "color": "#f59e0b" }]
+  }
+}
+```
+
+Just ask in chat — the agent sets a target line whenever you name a goal:
+
+> "Add our $1M monthly revenue target as a goal line, and flag error rate red when it goes above 2%."
+
+A card with no `thresholds` renders exactly as before, so adding one is always opt-in.
 
 ---
 
@@ -212,6 +239,27 @@ Auto-refresh uses the scheduler tick engine. The next refresh time is computed f
 <Callout type="info">
 Auto-refresh requires `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
 </Callout>
+
+---
+
+## Exporting
+
+### A single card to CSV
+
+Every chart, table, and KPI card has a **Download CSV** action in its card menu (the **⋯** button in the tile header). It exports the card's **current result at your parameter values** — the same rows you see, with the dashboard's [parameters](#parameters) bound exactly as on screen.
+
+- The export runs through the **same query pipeline** as the on-screen render — SQL validation, parameter **binding** (values are never spliced into the query text), and the row cap. It never opens a second query path.
+- It respects the auto-LIMIT (`ATLAS_ROW_LIMIT`, default 1000). If the result was capped, Atlas warns you the export is **truncated** — narrow the query or tighten the parameters to export the full set.
+- Cells are escaped per RFC 4180, and any cell beginning with `=`, `+`, `-`, or `@` is neutralized so a spreadsheet won't execute it as a formula ([CSV injection](https://owasp.org/www-community/attacks/CSV_Injection)). Genuine numbers are left intact.
+- The filename derives from the card title plus a UTC timestamp, e.g. `monthly-revenue-20260605-123045.csv`.
+
+Text cards carry no data, so they have **no** Download CSV action.
+
+Under the hood this is `POST /api/v1/dashboards/:id/cards/:cardId/render?format=csv` with the same `{ "parameters": … }` body as the [render endpoint](#rendering-with-parameters-api). It streams `text/csv` as an attachment and sets `X-Atlas-Truncated: 1` (plus `X-Atlas-Row-Count`) when the row cap was hit.
+
+### The whole dashboard to PDF or PNG
+
+Use **Export** in the dashboard header to render the entire board — at your current parameter values — to a PDF or PNG.
 
 ---
 

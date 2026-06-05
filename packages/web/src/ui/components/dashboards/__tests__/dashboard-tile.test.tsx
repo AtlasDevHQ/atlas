@@ -6,12 +6,25 @@ import type { DashboardCard } from "@/ui/lib/types";
 // recharts. Bypass next/dynamic entirely so the sentinel renders synchronously
 // — the dynamic loader otherwise suspends past the test's render() call. The
 // stub forwards `onCategoryClick` (#3212) so a click can exercise the tile→chart
-// drilldown plumbing without a real recharts chart.
+// drilldown plumbing, and surfaces `thresholds` (#3208) via a data-attribute so
+// a test can assert the goal-line prop is wired through the tile — both without
+// a real recharts chart.
 mock.module("@/ui/components/chart/result-chart", () => ({
-  ResultChart: ({ onCategoryClick }: { onCategoryClick?: (value: string, categoryKey: string) => void }) => (
+  ResultChart: ({
+    onCategoryClick,
+    thresholds,
+  }: {
+    onCategoryClick?: (value: string, categoryKey: string) => void;
+    thresholds?: { value: number; color?: string; label?: string }[];
+  }) => (
     <>
       {/* Fires with the card's configured category column ("stage") — matches. */}
-      <button type="button" data-testid="result-chart" onClick={() => onCategoryClick?.("Discovery", "stage")}>
+      <button
+        type="button"
+        data-testid="result-chart"
+        data-thresholds={JSON.stringify(thresholds ?? null)}
+        onClick={() => onCategoryClick?.("Discovery", "stage")}
+      >
         chart
       </button>
       {/* Fires with a DIFFERENT detected column — the tile must reject this. */}
@@ -116,6 +129,23 @@ describe("DashboardTile", () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId("result-chart")).toBeTruthy();
+    restore();
+  });
+
+  test("forwards the card's goal-line thresholds (#3208) through to ResultChart", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const thresholds = [{ value: 1_500_000, label: "Target" }];
+    const card: DashboardCard = {
+      ...baseCard,
+      chartConfig: { type: "bar", categoryColumn: "stage", valueColumns: ["amount"], thresholds },
+    };
+    render(<DashboardTile {...baseProps} card={card} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const chart = screen.getByTestId("result-chart");
+    expect(JSON.parse(chart.getAttribute("data-thresholds") ?? "null")).toEqual(thresholds);
     restore();
   });
 
@@ -350,5 +380,58 @@ describe("DashboardTile — drilldown (#3212)", () => {
     fireEvent.click(screen.getByTestId("result-chart"));
     expect(onDrilldown).not.toHaveBeenCalled();
     restore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-card CSV export (#3210)
+// ---------------------------------------------------------------------------
+
+describe("DashboardTile — CSV export (#3210)", () => {
+  afterEach(cleanup);
+
+  // Radix DropdownMenu opens on a real PointerEvent — JSDOM swallows
+  // fireEvent.click on the trigger. Activate via keyboard (Enter on the focused
+  // trigger), the same pattern the dashboard-switcher test uses.
+  function openTileMenu() {
+    const trigger = screen.getByRole("button", { name: "Tile actions" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+  }
+
+  test("a chart card with data offers Download CSV, firing onExportCsv with the card", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={baseCard} onExportCsv={onExportCsv} />);
+    openTileMenu();
+    const item = await screen.findByRole("menuitem", { name: /Download CSV/ });
+    fireEvent.click(item);
+    expect(onExportCsv).toHaveBeenCalledTimes(1);
+    expect(onExportCsv.mock.calls[0][0].id).toBe(baseCard.id);
+  });
+
+  test("a KPI card also offers Download CSV (chart / table / kpi all do)", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={kpiCard} onExportCsv={onExportCsv} />);
+    openTileMenu();
+    expect(await screen.findByRole("menuitem", { name: /Download CSV/ })).toBeTruthy();
+  });
+
+  test("the item is hidden when no onExportCsv handler is wired", async () => {
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    render(<DashboardTile {...baseProps} card={baseCard} />);
+    openTileMenu();
+    // The menu still opens (Rename is always present) — only the CSV item is gone.
+    await screen.findByRole("menuitem", { name: /Rename/ });
+    expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
+  });
+
+  test("a text card has no actions menu, so no CSV affordance", () => {
+    const onExportCsv = mock((_card: DashboardCard) => {});
+    render(<DashboardTile {...baseProps} card={textCard} onExportCsv={onExportCsv} />);
+    // Text tiles render no tile-actions menu at all — the affordance can't appear.
+    expect(screen.queryByRole("button", { name: "Tile actions" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Download CSV/ })).toBeNull();
   });
 });

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useQueryState } from "nuqs";
+import { toast } from "sonner";
 import Link from "next/link";
 import { MessagesSquare, Plus, Sparkles, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -317,6 +318,82 @@ export default function DashboardViewPage() {
       setExportError("Could not reach the server to export this dashboard. Check your connection and try again.");
     } finally {
       setExporting(false);
+    }
+  }
+
+  // #3210 — export a single card's CURRENT parameter-bound result as CSV. The
+  // override map in the URL (`dparams`) is the same source of truth the whole-
+  // board export reads, so the file reflects exactly what the viewer sees. The
+  // server reuses the render pipeline (validation + auto-LIMIT + binding) — this
+  // never opens a second SQL path.
+  async function handleExportCardCsv(card: DashboardCard) {
+    let parameters: Record<string, string | number | null> = {};
+    const raw = searchParams.get("dparams");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          parameters = parsed as Record<string, string | number | null>;
+        }
+      } catch {
+        // Malformed URL state — export with the parameter defaults.
+      }
+    }
+
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/dashboards/${id}/cards/${card.id}/render?format=csv`,
+        {
+          method: "POST",
+          credentials: isCrossOrigin ? "include" : "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters }),
+        },
+      );
+
+      if (!res.ok) {
+        let message = `Couldn't export "${card.title}" (${res.status}). Please try again.`;
+        try {
+          const body = (await res.json()) as { message?: string; requestId?: string };
+          if (body.message) {
+            message = body.requestId ? `${body.message} (request ${body.requestId})` : body.message;
+          }
+        } catch {
+          // Non-JSON error body — keep the status-based message.
+        }
+        toast.error("CSV export failed", { description: message });
+        return;
+      }
+
+      const blob = await res.blob();
+      const filename =
+        parseAttachmentFilename(res.headers.get("content-disposition")) ??
+        `${card.title || "card"}.csv`;
+      downloadBlob(blob, filename);
+
+      // Auto-LIMIT capped the export — surface it rather than implying the file
+      // is the complete result set.
+      if (res.headers.get("x-atlas-truncated") === "1") {
+        const rowCount = res.headers.get("x-atlas-row-count");
+        toast.warning("Export truncated", {
+          description: rowCount
+            ? `Capped at the ${rowCount}-row limit — narrow the query to export everything.`
+            : "The export was capped at the row limit.",
+        });
+      } else {
+        toast.success(`Exported "${card.title}" as CSV`);
+      }
+    } catch (err) {
+      // A fetch-level reject (offline, DNS, CORS) surfaces a cryptic
+      // `TypeError: Failed to fetch` — log the detail and show an actionable
+      // message rather than the raw string.
+      console.error(
+        "[dashboard] CSV export request failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+      toast.error("CSV export failed", {
+        description: "Could not reach the server. Check your connection and try again.",
+      });
     }
   }
 
@@ -1044,6 +1121,7 @@ export default function DashboardViewPage() {
                   onDuplicate={handleDuplicate}
                   onDelete={setDeleteCardTarget}
                   onUpdateTitle={handleUpdateCardTitle}
+                  onExportCsv={handleExportCardCsv}
                 />
               </div>
             )}

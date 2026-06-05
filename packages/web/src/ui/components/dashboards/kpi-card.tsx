@@ -85,6 +85,51 @@ export function deltaTone(direction: KpiDelta["direction"], inverse = false): De
   return improved ? "positive" : "negative";
 }
 
+/**
+ * Where a KPI's headline value sits relative to its goal threshold (#3208).
+ * A KPI card shows ONE target, so this reads the first threshold only.
+ */
+export type KpiTargetStatus = "above" | "below" | "at";
+
+/**
+ * Resolve a KPI card's single goal threshold against the headline value.
+ * Returns `null` when there's no value or no usable (finite) threshold, so a
+ * card with no threshold renders exactly as before (#3208 back-compat).
+ */
+export function kpiTargetStatus(
+  value: number | null,
+  thresholdValue: number | undefined,
+): KpiTargetStatus | null {
+  // Guard BOTH operands for finiteness — the sole call site feeds a value from
+  // `extractKpiNumber` (already finite-or-null), but as an exported helper this
+  // must be correct for any caller: `kpiTargetStatus(NaN, 100)` is undeterminable,
+  // not "at".
+  if (
+    value === null ||
+    !Number.isFinite(value) ||
+    thresholdValue === undefined ||
+    !Number.isFinite(thresholdValue)
+  ) {
+    return null;
+  }
+  if (value > thresholdValue) return "above";
+  if (value < thresholdValue) return "below";
+  return "at";
+}
+
+/**
+ * Colour tone for a KPI target callout (#3208). For a normal higher-is-better
+ * metric, ABOVE target is the good outcome (green) and below is bad (red).
+ * `inverse` (lower-is-better — cost, churn, latency) flips it: BELOW target is
+ * good. `at` target is always neutral. Mirrors {@link deltaTone}'s `inverse`
+ * handling so the target callout and the delta chip agree on direction.
+ */
+export function kpiTargetTone(status: KpiTargetStatus, inverse = false): DeltaTone {
+  if (status === "at") return "neutral";
+  const good = inverse ? status === "below" : status === "above";
+  return good ? "positive" : "negative";
+}
+
 /** Render `seconds` as a compact two-unit duration (`1h 1m`, `3m 4s`, `45s`). */
 function formatDuration(seconds: number): string {
   const total = Math.round(Math.abs(seconds));
@@ -250,6 +295,29 @@ const TONE_STYLES: Record<DeltaTone, string> = {
   neutral: "text-zinc-500 dark:text-zinc-400",
 };
 
+/** Default headline colour — used when a KPI card has no goal threshold (#3208). */
+const KPI_VALUE_DEFAULT = "text-zinc-900 dark:text-zinc-50";
+
+/**
+ * Headline-number colour by target tone (#3208). A positive/negative tone tints
+ * the big number green/red; `neutral` (value sits AT the target) keeps the
+ * default headline colour so an on-target metric reads normally.
+ */
+const TARGET_VALUE_STYLES: Record<DeltaTone, string> = {
+  positive: "text-emerald-600 dark:text-emerald-400",
+  negative: "text-red-600 dark:text-red-400",
+  neutral: KPI_VALUE_DEFAULT,
+};
+
+/** Verdict word for the target callout by status (#3208). `above`/`below` map
+ *  to themselves; only `at` is reworded. A lookup (vs. a nested ternary) matches
+ *  the `TONE_STYLES` / `DELTA_ICON` maps in this file. */
+const TARGET_STATUS_LABEL: Record<KpiTargetStatus, string> = {
+  above: "above",
+  below: "below",
+  at: "on target",
+};
+
 const DELTA_ICON: Record<KpiDelta["direction"], typeof ArrowUp> = {
   up: ArrowUp,
   down: ArrowDown,
@@ -289,6 +357,16 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
   const inverse = config?.kpi?.inverse ?? false;
   const tone: DeltaTone = delta ? deltaTone(delta.direction, inverse) : "neutral";
 
+  // #3208 — goal line / target. A KPI card shows ONE target (the first
+  // threshold); when present, it colours the headline number above/below target
+  // and renders a target callout. Absent → the number keeps its default colour
+  // and no callout shows (back-compat). The `inverse` flag flips which side is
+  // "good", exactly as it does for the delta chip.
+  const target = config?.thresholds?.[0];
+  const targetStatus = target ? kpiTargetStatus(value, target.value) : null;
+  const targetTone: DeltaTone | null = targetStatus ? kpiTargetTone(targetStatus, inverse) : null;
+  const valueClass = targetTone ? TARGET_VALUE_STYLES[targetTone] : KPI_VALUE_DEFAULT;
+
   // Sparkline series: the value column across every row, in order. The geometry
   // helper (below) hides it when there's no trend (a single-row scorecard).
   const series = rows
@@ -301,11 +379,34 @@ export function KpiCard({ card, comparison }: KpiCardProps) {
     <div className="flex min-h-0 flex-1 flex-col justify-center gap-2 px-1 py-1">
       <div
         data-testid="kpi-value"
-        className="text-3xl font-semibold leading-none tracking-tight tabular-nums text-zinc-900 dark:text-zinc-50"
+        data-target-status={targetStatus ?? undefined}
+        data-target-tone={targetTone ?? undefined}
+        className={cn(
+          "text-3xl font-semibold leading-none tracking-tight tabular-nums",
+          valueClass,
+        )}
         title={value === null ? undefined : String(value)}
       >
         {formatKpiValue(value, valueFormat)}
       </div>
+
+      {target && (
+        <div
+          data-testid="kpi-target"
+          data-target-status={targetStatus ?? undefined}
+          className="flex flex-wrap items-baseline gap-x-1.5 text-xs"
+        >
+          <span className="text-zinc-500 dark:text-zinc-400">
+            {target.label?.trim() ? target.label.trim() : "Target"}:{" "}
+            <span className="tabular-nums">{formatKpiValue(target.value, valueFormat)}</span>
+          </span>
+          {targetStatus && targetTone && (
+            <span className={cn("font-medium", TONE_STYLES[targetTone])}>
+              {TARGET_STATUS_LABEL[targetStatus]}
+            </span>
+          )}
+        </div>
+      )}
 
       {delta && DeltaIcon && (
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">

@@ -407,6 +407,37 @@ describe("createDashboard tool", () => {
     expect(chartCard.position).toBe(1);
   });
 
+  it("carries a card's goal-line thresholds through into the draft snapshot (#3208)", async () => {
+    enableInternalDB();
+    setClientResults(
+      { rows: [] }, // BEGIN
+      { rows: [{ id: "dash-goal", title: "Revenue", description: null, updated_at: "2026-06-05" }] },
+      { rows: [] }, // draft
+      { rows: [] }, // COMMIT
+    );
+
+    const thresholds = [
+      { value: 1_000_000, color: "#f59e0b", label: "Target" },
+      { value: 500_000 },
+    ];
+    const result = await run({
+      title: "Revenue",
+      cards: [
+        {
+          title: "Revenue by month",
+          sql: "SELECT month, SUM(amount) AS revenue FROM orders GROUP BY month",
+          chartConfig: { type: "bar", categoryColumn: "month", valueColumns: ["revenue"], thresholds },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("ok");
+    const draftParams = clientQueryCalls[2].params!;
+    const snapshot = JSON.parse(draftParams[2] as string);
+    // Thresholds survive the strict schema + draft persistence unchanged.
+    expect(snapshot.cards[0].chartConfig.thresholds).toEqual(thresholds);
+  });
+
   it("a text card never triggers SQL validation or the undeclared-parameter check", async () => {
     enableInternalDB();
     setClientResults(

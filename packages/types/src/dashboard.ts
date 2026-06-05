@@ -89,6 +89,28 @@ export interface DashboardDrilldownConfig {
   targetParam: string;
 }
 
+/**
+ * A goal line / threshold on a chart card (#3208). Rendered as a horizontal
+ * Recharts `<ReferenceLine>` on bar / line / area / stacked-bar cards, and as an
+ * above/below target callout on a KPI card (the first threshold only — a
+ * scorecard shows one target). `value` is a data-space number on the chart's value axis;
+ * `color` overrides the default goal-line stroke (a CSS colour — hex, `rgb()`,
+ * or a named colour); `label` is an optional caption drawn at the line.
+ *
+ * Wire-type mirror of `dashboardThresholdSchema` in `@useatlas/schemas`. The
+ * count is bounded there (`DASHBOARD_THRESHOLDS_MAX`) so a card can't stack so
+ * many goal lines that the chart stops being readable.
+ */
+export interface DashboardThreshold {
+  /** Position of the line on the value (Y) axis, in the chart's data space. */
+  value: number;
+  /** Stroke colour for the line / callout. Defaults to a theme goal-line
+   *  colour when omitted. */
+  color?: string;
+  /** Optional caption rendered at the line (e.g. "Target", "$1M goal"). */
+  label?: string;
+}
+
 export interface DashboardChartConfig {
   type: ChartType;
   categoryColumn: string;
@@ -100,6 +122,14 @@ export interface DashboardChartConfig {
    * See {@link DashboardDrilldownConfig}.
    */
   drilldown?: DashboardDrilldownConfig;
+  /**
+   * Goal lines / thresholds (#3208). Each renders as a horizontal reference
+   * line on bar / line / area / stacked-bar cards; on a KPI card the first
+   * threshold drives an above/below-target callout + colours the headline
+   * number. Absent → the card renders exactly as before (back-compat). See
+   * {@link DashboardThreshold}.
+   */
+  thresholds?: DashboardThreshold[];
 }
 
 /**

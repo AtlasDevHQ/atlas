@@ -15,6 +15,7 @@ import {
   X,
   Clock,
   FilterX,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,7 +33,7 @@ import { KpiCard } from "./kpi-card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
-import type { DashboardCard, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
+import type { DashboardCard, DashboardChartConfig, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
   () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -88,6 +89,12 @@ interface DashboardTileProps {
   onDuplicate: (cardId: string) => void;
   onDelete: (card: DashboardCard) => void;
   onUpdateTitle: (cardId: string, title: string) => void;
+  /**
+   * #3210 — export this card's current parameter-bound result as CSV. Wired
+   * only on SQL-backed tiles (chart / table / kpi); a text card never receives
+   * it (it has no tabular data). Undefined → the menu item is hidden.
+   */
+  onExportCsv?: (card: DashboardCard) => void;
 }
 
 /**
@@ -131,6 +138,7 @@ function ChartTile({
   onDuplicate,
   onDelete,
   onUpdateTitle,
+  onExportCsv,
 }: DashboardTileProps) {
   const dark = useDarkMode();
   const [titleEditing, setTitleEditing] = useState(false);
@@ -346,6 +354,14 @@ function ChartTile({
                   <Copy className="mr-2 size-3.5" />
                   Duplicate
                 </DropdownMenuItem>
+                {/* #3210 — export the card's current parameter-bound result as
+                    CSV. Disabled until the tile has rendered rows to export. */}
+                {onExportCsv && (
+                  <DropdownMenuItem onSelect={() => onExportCsv(card)} disabled={!hasData}>
+                    <Download className="mr-2 size-3.5" />
+                    Download CSV
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onSelect={() => onDelete(card)}
@@ -379,6 +395,7 @@ function ChartTile({
               dark={dark}
               onCategoryClick={onCategoryClick}
               selectedCategory={selectedValue}
+              thresholds={card.chartConfig?.thresholds}
             />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
@@ -522,6 +539,7 @@ function ChartSlot({
   dark,
   onCategoryClick,
   selectedCategory,
+  thresholds,
 }: {
   cardId: string;
   columns: string[];
@@ -531,6 +549,8 @@ function ChartSlot({
   onCategoryClick?: (value: string, categoryKey: string) => void;
   /** #3213 — forwarded to ResultChart; the active cross-filter's category value. */
   selectedCategory?: string;
+  /** #3208 — goal lines from the card's chartConfig; undefined → none drawn. */
+  thresholds?: DashboardChartConfig["thresholds"];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -571,6 +591,7 @@ function ChartSlot({
           dark={dark}
           onCategoryClick={onCategoryClick}
           selectedCategory={selectedCategory}
+          thresholds={thresholds}
         />
       )}
     </div>

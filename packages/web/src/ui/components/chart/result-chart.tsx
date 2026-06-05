@@ -21,6 +21,7 @@ import {
   YAxis,
   Tooltip,
   Legend,
+  ReferenceLine,
 } from "recharts";
 import type { MouseHandlerDataParam } from "recharts";
 import {
@@ -28,12 +29,14 @@ import {
   transformData,
   categoryFromChartClick,
   categoryFromPieClick,
+  resolveThresholdLines,
   CHART_COLORS_LIGHT,
   CHART_COLORS_DARK,
   type ChartRecommendation,
   type ChartType,
   type RechartsRow,
   type ChartDetectionResult,
+  type ThresholdInput,
 } from "./chart-detection";
 
 /* ------------------------------------------------------------------ */
@@ -74,6 +77,45 @@ function drilldownCursor(
  */
 function selectedFillOpacity(category: unknown, selectedCategory: string): number {
   return String(category) === selectedCategory ? 1 : 0.25;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Goal lines / thresholds (#3208)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Build the horizontal goal-line `<ReferenceLine>`s for a cartesian (Y-axis)
+ * chart. Returns an array of `<ReferenceLine>` elements rendered inline as
+ * children of the chart — the same pattern as the `<Bar>` / `<Line>` series maps
+ * in each view. Returns `[]` when there are no thresholds, so a card without them
+ * renders exactly as today.
+ *
+ * `ifOverflow="extendDomain"` so a target beyond the current data range (the
+ * "Revenue below $1M target" case) still shows — the axis stretches to fit it.
+ *
+ * Factored as a standalone helper so a future annotations / reference-line
+ * feature (#3209) can add a sibling for vertical lines without reworking each
+ * view.
+ */
+function thresholdLineElements(
+  thresholds: ThresholdInput[] | undefined,
+  dark: boolean,
+): React.ReactElement[] {
+  return resolveThresholdLines(thresholds, dark).map((line, i) => (
+    <ReferenceLine
+      key={`threshold-${i}`}
+      y={line.y}
+      stroke={line.stroke}
+      strokeDasharray="6 4"
+      strokeWidth={1.5}
+      ifOverflow="extendDomain"
+      label={
+        line.label
+          ? { value: line.label, position: "insideTopRight", fill: line.stroke, fontSize: 11 }
+          : undefined
+      }
+    />
+  ));
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,12 +207,14 @@ function BarChartView({
   dark,
   onCategoryClick,
   selectedCategory,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
   selectedCategory?: string;
+  thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -211,6 +255,7 @@ function BarChartView({
                 ))}
             </Bar>
           ))}
+          {thresholdLineElements(thresholds, dark)}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -222,11 +267,13 @@ function LineChartView({
   rec,
   dark,
   onCategoryClick,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -264,6 +311,7 @@ function LineChartView({
               activeDot={{ r: 5 }}
             />
           ))}
+          {thresholdLineElements(thresholds, dark)}
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -350,11 +398,13 @@ function AreaChartView({
   rec,
   dark,
   onCategoryClick,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  thresholds?: ThresholdInput[];
 }) {
   const chartId = useId();
   const colors = getColors(dark);
@@ -400,6 +450,7 @@ function AreaChartView({
               fill={`url(#area-grad-${chartId}-${i})`}
             />
           ))}
+          {thresholdLineElements(thresholds, dark)}
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -416,12 +467,14 @@ function StackedBarChartView({
   dark,
   onCategoryClick,
   selectedCategory,
+  thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
   selectedCategory?: string;
+  thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -461,6 +514,7 @@ function StackedBarChartView({
                 ))}
             </Bar>
           ))}
+          {thresholdLineElements(thresholds, dark)}
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -585,6 +639,7 @@ function ChartRenderer({
   dark,
   onCategoryClick,
   selectedCategory,
+  thresholds,
 }: {
   rows: string[][];
   rec: ChartRecommendation;
@@ -593,6 +648,7 @@ function ChartRenderer({
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
   selectedCategory?: string;
+  thresholds?: ThresholdInput[];
 }) {
   // Re-transform data when switching chart type (category axis may differ)
   const chartData = rec === defaultRec ? defaultData : transformData(rows, rec);
@@ -601,13 +657,15 @@ function ChartRenderer({
   // Scatter is intentionally not drillable (#3212): both axes are numeric — it
   // has no category to bind a parameter to. Every other view forwards clicks.
   // `selectedCategory` (#3213) only styles the categorical views (bar / stacked /
-  // pie); line/area trends have no discrete element to mark.
+  // pie); line/area trends have no discrete element to mark. Goal lines (#3208)
+  // are horizontal Y-axis references, so they apply to the cartesian views (bar /
+  // line / area / stacked-bar) — not pie (no Y axis) or scatter (numeric Y).
   return (
     <div className="p-2">
-      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />
-        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
-        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />
-        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />
+      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
+        : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
+        : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
+        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
         : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
         : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />}
     </div>
@@ -625,6 +683,7 @@ export function ResultChart({
   detectionResult,
   onCategoryClick,
   selectedCategory,
+  thresholds,
 }: {
   headers: string[];
   rows: string[][];
@@ -645,6 +704,13 @@ export function ResultChart({
    * Omitted → no element is marked.
    */
   selectedCategory?: string;
+  /**
+   * #3208 — goal lines / thresholds from the card's `chartConfig.thresholds`.
+   * Each renders as a horizontal `<ReferenceLine>` on the bar / line / area /
+   * stacked-bar views. Omitted on the chat surface and on cards with no
+   * thresholds, so the chart renders exactly as before.
+   */
+  thresholds?: ThresholdInput[];
 }) {
   const result = useMemo(
     () => detectionResult ?? detectCharts(headers, rows),
@@ -684,6 +750,7 @@ export function ResultChart({
           dark={dark}
           onCategoryClick={onCategoryClick}
           selectedCategory={selectedCategory}
+          thresholds={thresholds}
         />
       </ErrorBoundary>
     </div>

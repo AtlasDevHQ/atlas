@@ -1413,6 +1413,170 @@ describe("dashboard routes", () => {
       expect(body.rows[0].total).toBe(1200000);
       expect(body.comparison).toBeNull();
     });
+
+    // -----------------------------------------------------------------------
+    // #3210 — `?format=csv` streams the SAME parameter-bound result as a CSV
+    // attachment. It reuses the identical pipeline (no second SQL path), so
+    // auto-LIMIT + param binding + auth all still apply.
+    // -----------------------------------------------------------------------
+
+    it("streams the rendered rows as a text/csv attachment for format=csv", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01", q: "paid" } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/csv");
+      const disposition = response.headers.get("content-disposition") ?? "";
+      expect(disposition).toContain("attachment");
+      // Filename derives from the card title ("Total Revenue") + a UTC stamp.
+      expect(disposition).toMatch(/filename="total-revenue-\d{8}-\d{6}\.csv"/);
+      // Header row + one data row, CRLF-separated (matches the default mock outcome).
+      expect(await response.text()).toBe("month,total\r\nJan,1000");
+    });
+
+    it("binds the supplied parameters on the CSV path (never string-interpolated)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: paramDashboard });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: paramCard });
+      const malicious = "x'; DROP TABLE orders; --";
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: { date_from: "2026-01-01", q: malicious } }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(mockRunUserQueryPipeline).toHaveBeenCalledTimes(1);
+      const callArgs = mockRunUserQueryPipeline.mock.calls[0][0];
+      expect(callArgs.sql).toContain(":q");
+      expect(callArgs.sql).not.toContain("DROP TABLE");
+      expect(callArgs.parameters).toMatchObject({ date_from: "2026-01-01", q: malicious });
+    });
+
+    it("surfaces auto-LIMIT truncation via the X-Atlas-Truncated header", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "ok",
+        columns: ["month", "total"],
+        rows: [{ month: "Jan", total: 1000 }],
+        rowCount: 1000,
+        executionMs: 5,
+        truncated: true,
+        maskingApplied: false,
+      });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockCardData });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-atlas-truncated")).toBe("1");
+      expect(response.headers.get("x-atlas-row-count")).toBe("1000");
+    });
+
+    it("neutralizes formula-injection cells in the streamed CSV", async () => {
+      mockRunUserQueryPipeline.mockReset();
+      mockRunUserQueryPipeline.mockResolvedValueOnce({
+        kind: "ok",
+        columns: ["label", "amount"],
+        // A spreadsheet would execute `=HYPERLINK(...)` on open — it must be
+        // emitted as text (`'=…`). The negative number stays a real number.
+        rows: [{ label: "=HYPERLINK(\"http://evil\")", amount: -5 }],
+        rowCount: 1,
+        executionMs: 5,
+        truncated: false,
+        maskingApplied: false,
+      });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockCardData });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      // The dangerous cell is force-text-quoted (`'` prefix), the number isn't.
+      expect(text).toBe("label,amount\r\n\"'=HYPERLINK(\"\"http://evil\"\")\",-5");
+    });
+
+    it("rejects format=csv for a text card with 400 (no tabular data)", async () => {
+      mockRunUserQueryPipeline.mockClear();
+      mockGetDashboard.mockResolvedValueOnce({ ok: true, data: { ...mockDashboardData, cards: [] } });
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockTextCardData });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("not_exportable");
+      expect(mockRunUserQueryPipeline).not.toHaveBeenCalled();
+    });
+
+    it("attaches CORS expose-headers to the raw CSV response (readable cross-origin)", async () => {
+      // A handler-returned raw Response does NOT inherit the middleware's
+      // `c.header()` CORS headers, so the route must spread them on. Without
+      // this, a cross-origin deploy can't read the file or X-Atlas-Truncated.
+      mockGetCard.mockResolvedValueOnce({ ok: true, data: mockCardData });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: "https://app.example.com" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const expose = response.headers.get("access-control-expose-headers") ?? "";
+      expect(expose).toContain("X-Atlas-Truncated");
+      expect(expose).toContain("Content-Disposition");
+    });
+
+    it("enforces the same auth gate on the CSV path (401 when unauthenticated)", async () => {
+      mockAuthenticateRequest.mockReset();
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "simple-key" as const,
+        status: 401 as const,
+        error: "API key required",
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards/${VALID_CARD_ID}/render?format=csv`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ parameters: {} }),
+        }),
+      );
+
+      expect(response.status).toBe(401);
+    });
   });
 
   // -------------------------------------------------------------------------

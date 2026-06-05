@@ -251,15 +251,16 @@ describe("hasKpiComparison", () => {
 });
 
 describe("kpiComparisonSignature", () => {
-  const kpiWith = (id: string, sql: string) => ({
+  const kpiWith = (id: string, comparisonSql: string) => ({
     id,
-    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: sql } },
+    sql: "SELECT 1 AS v",
+    chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql } },
   });
 
   test("includes only KPI cards with a comparison query", () => {
     const withChart = kpiComparisonSignature([
       kpiWith("a", "SELECT 1 AS v"),
-      { id: "b", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
+      { id: "b", sql: "SELECT 1", chartConfig: { type: "bar", categoryColumn: "l", valueColumns: ["v"] } },
       kpiWith("c", "SELECT 2 AS v"),
     ]);
     const onlyKpi = kpiComparisonSignature([kpiWith("a", "SELECT 1 AS v"), kpiWith("c", "SELECT 2 AS v")]);
@@ -285,7 +286,7 @@ describe("kpiComparisonSignature", () => {
     const editedSql = kpiComparisonSignature([kpiWith("a", "SELECT 99 AS v")]);
     const unrelated = kpiComparisonSignature([
       kpiWith("a", "SELECT 1 AS v"),
-      { id: "z", chartConfig: { type: "line", categoryColumn: "l", valueColumns: ["v"] } },
+      { id: "z", sql: "SELECT 1", chartConfig: { type: "line", categoryColumn: "l", valueColumns: ["v"] } },
     ]);
     expect(editedSql).not.toBe(before);
     expect(unrelated).toBe(before); // a non-comparison card doesn't move the signature
@@ -293,15 +294,17 @@ describe("kpiComparisonSignature", () => {
 
   // #3207 — autoComparison cards belong in the signature; toggling the
   // client-only `inverse` colour must NOT move it (it doesn't change the fetch).
-  const kpiAuto = (id: string, kpi: Record<string, unknown>) => ({
+  const AUTO_SQL = "SELECT sum(v) AS v FROM t WHERE d >= :date_from AND d < :date_to";
+  const kpiAuto = (id: string, kpi: Record<string, unknown>, sql: string = AUTO_SQL) => ({
     id,
+    sql,
     chartConfig: { type: "kpi" as const, categoryColumn: "l", valueColumns: ["v"], kpi },
   });
 
   test("includes an autoComparison card", () => {
     const withAuto = kpiComparisonSignature([kpiAuto("a", { autoComparison: true })]);
     const empty = kpiComparisonSignature([
-      { id: "a", chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { valueFormat: "number" } } },
+      { id: "a", sql: AUTO_SQL, chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { valueFormat: "number" } } },
     ]);
     expect(withAuto).not.toBe(empty);
   });
@@ -316,6 +319,26 @@ describe("kpiComparisonSignature", () => {
     const a = kpiComparisonSignature([kpiAuto("a", { autoComparison: true })]);
     const b = kpiComparisonSignature([kpiAuto("a", { autoComparison: true, comparisonDateParams: { from: "s", to: "e" } })]);
     expect(b).not.toBe(a);
+  });
+
+  // #3207 (Codex P2) — for an auto card the prior-period query IS the primary
+  // SQL, so editing it must move the signature (else the page keeps the stale
+  // delta). A hand-written comparisonSql card is keyed on its explicit query,
+  // so its primary SQL is irrelevant to the fetch.
+  test("moves when an autoComparison card's primary SQL changes", () => {
+    const before = kpiComparisonSignature([kpiAuto("a", { autoComparison: true }, "SELECT sum(x) FROM t WHERE d >= :date_from AND d < :date_to")]);
+    const after = kpiComparisonSignature([kpiAuto("a", { autoComparison: true }, "SELECT avg(x) FROM t WHERE d >= :date_from AND d < :date_to")]);
+    expect(after).not.toBe(before);
+  });
+
+  test("a comparisonSql card's signature ignores its primary SQL", () => {
+    const a = kpiComparisonSignature([
+      { id: "a", sql: "SELECT 1", chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: "SELECT 9 AS v" } } },
+    ]);
+    const b = kpiComparisonSignature([
+      { id: "a", sql: "SELECT 2", chartConfig: { type: "kpi", categoryColumn: "l", valueColumns: ["v"], kpi: { comparisonSql: "SELECT 9 AS v" } } },
+    ]);
+    expect(b).toBe(a);
   });
 });
 

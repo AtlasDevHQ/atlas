@@ -636,6 +636,38 @@ describe("createDashboard tool", () => {
     expect(connectCalls).toBe(0);
   });
 
+  it("rejects autoComparison when a window param is not declared as a date", async () => {
+    enableInternalDB();
+
+    const result = await run({
+      title: "KPIs",
+      parameters: [
+        // date_from is a NUMBER — derivePriorPeriodValues can't shift it.
+        { key: "date_from", type: "number", default: 0, label: "From" },
+        { key: "date_to", type: "date", default: "now", label: "To" },
+      ],
+      cards: [
+        {
+          title: "Revenue",
+          sql: "SELECT SUM(amount) AS total FROM orders WHERE rank >= :date_from AND created_at < :date_to",
+          chartConfig: {
+            type: "kpi",
+            categoryColumn: "total",
+            valueColumns: ["total"],
+            kpi: { autoComparison: true },
+          },
+        },
+      ],
+    });
+
+    expect(result.kind).toBe("err");
+    if (result.kind === "err") {
+      expect(result.validationErrors?.[0].error).toMatch(/date parameter/i);
+      expect(result.validationErrors?.[0].error).toContain(":date_from");
+    }
+    expect(connectCalls).toBe(0);
+  });
+
   // -------------------------------------------------------------------
   // Validation-fail rejects the whole call (no transaction)
   // -------------------------------------------------------------------

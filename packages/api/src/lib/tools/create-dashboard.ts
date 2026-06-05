@@ -52,7 +52,7 @@ import {
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
-import { extractPlaceholderNames, DEFAULT_COMPARISON_DATE_PARAMS } from "@atlas/api/lib/dashboard-parameters";
+import { extractPlaceholderNames, validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
 import { CardLayoutSchema } from "@atlas/api/lib/dashboards";
 import { hasInternalDB, getInternalDB } from "@atlas/api/lib/db/internal";
 import type { DashboardSnapshot, DashboardSnapshotCard } from "@atlas/api/lib/dashboard-versioning";
@@ -316,23 +316,14 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
         }
 
         // #3207 — autoComparison shifts the card's bound date window back one
-        // period and re-runs the SAME sql. That only produces a meaningful
-        // delta if the card actually FILTERS by both window params — otherwise
-        // the prior-period query is identical to the primary (a no-op delta).
-        // (The window params being undeclared is already caught above, since a
-        // referenced-but-undeclared param fails the check; this catches the
-        // distinct "autoComparison but the SQL ignores the window" mistake.)
-        const kpi = card.chartConfig.kpi;
-        if (kpi?.autoComparison) {
-          const { from, to } = kpi.comparisonDateParams ?? DEFAULT_COMPARISON_DATE_PARAMS;
-          const missingRef = [from, to].filter((name) => !referenced.has(name));
-          if (missingRef.length > 0) {
-            placeholderErrors.push({
-              cardIndex: idx,
-              cardTitle: card.title,
-              error: `has autoComparison but its SQL does not reference ${missingRef.map((n) => `:${n}`).join(" and ")}. Filter the query by the dashboard date window (e.g. \`WHERE created_at >= :date_from AND created_at < :date_to\`) so the prior-period comparison can shift it.`,
-            });
-          }
+        // period and re-runs the SAME sql. Validate (via the shared helper used
+        // by every persistence path) that the card filters by both window params
+        // AND that those params are declared as `date` — otherwise the
+        // prior-period query is a no-op or can't be shifted, and the promised
+        // delta silently vanishes.
+        const autoErr = validateAutoComparison(card.sql, card.chartConfig.kpi, parameters);
+        if (autoErr) {
+          placeholderErrors.push({ cardIndex: idx, cardTitle: card.title, error: autoErr });
         }
       }
       if (placeholderErrors.length > 0) {

@@ -141,14 +141,20 @@ export function hasKpiComparison(card: Pick<DashboardCard, "chartConfig">): bool
 }
 
 /** The fetch-affecting comparison config of a KPI card — what the `/render`
- *  endpoint actually runs: the hand-written query, or the auto period-over-period
- *  window. The client-only `inverse` (colour) is excluded: it changes how the
- *  delta is painted, not what's fetched, so toggling it must NOT refetch. */
-function comparisonKey(card: Pick<DashboardCard, "chartConfig">): unknown {
+ *  endpoint actually runs. The client-only `inverse` (colour) is excluded: it
+ *  changes how the delta is painted, not what's fetched, so toggling it must NOT
+ *  refetch.
+ *
+ *  For `autoComparison` the prior-period query IS the card's OWN `sql` (run
+ *  against the shifted window), so the primary SQL is part of the key — editing
+ *  it must move the signature and re-fetch, or the delta would keep comparing
+ *  against the stale prior-period result. For a hand-written `comparisonSql` the
+ *  query is captured directly. */
+function comparisonKey(card: Pick<DashboardCard, "chartConfig" | "sql">): unknown {
   const kpi = card.chartConfig?.kpi;
   return {
     sql: kpi?.comparisonSql ?? "",
-    auto: kpi?.autoComparison === true,
+    autoSql: kpi?.autoComparison ? card.sql : "",
     params: kpi?.comparisonDateParams ?? null,
   };
 }
@@ -157,16 +163,16 @@ function comparisonKey(card: Pick<DashboardCard, "chartConfig">): unknown {
  * Stable signature of a dashboard's KPI-comparison set — one `[id, key]` tuple
  * per KPI card that produces a comparison delta. The dashboard page keys its
  * default-comparison fetch effect on this so it re-runs ONLY when a KPI card's
- * comparison config is added, removed, or edited — an unrelated refetch (a stage
- * change, a layout save) leaves the signature unchanged and doesn't re-fire
- * every comparison query.
+ * comparison config (or, for auto cards, its primary SQL) is added, removed, or
+ * edited — an unrelated refetch (a stage change, a layout save) leaves the
+ * signature unchanged and doesn't re-fire every comparison query.
  *
  * Sorted by id and JSON-serialized so the signature is order-INDEPENDENT (a
  * card reorder must not refetch) and collision-safe: SQL can legally contain
  * the `:`/`|` characters a naive delimiter-join would conflate.
  */
 export function kpiComparisonSignature(
-  cards: Array<Pick<DashboardCard, "id" | "chartConfig">>,
+  cards: Array<Pick<DashboardCard, "id" | "chartConfig" | "sql">>,
 ): string {
   return JSON.stringify(
     cards

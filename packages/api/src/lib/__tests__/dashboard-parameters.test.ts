@@ -15,6 +15,7 @@ import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
   derivePriorPeriodValues,
+  validateAutoComparison,
   DEFAULT_COMPARISON_DATE_PARAMS,
   DashboardParameterError,
   isBindableDbType,
@@ -391,5 +392,73 @@ describe("derivePriorPeriodValues", () => {
     const input = { date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" };
     derivePriorPeriodValues(input);
     expect(input).toEqual({ date_from: "2026-03-15", date_to: "2026-03-20", region: "eu" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateAutoComparison (#3207) — the shared persistence-path guard: a card
+// requesting an automatic prior-period comparison must filter by both window
+// params, declared as `date`.
+// ---------------------------------------------------------------------------
+
+describe("validateAutoComparison", () => {
+  const sql = "SELECT sum(amount) AS total FROM orders WHERE created_at >= :date_from AND created_at < :date_to";
+  const dateParams = [
+    { key: "date_from", type: "date" as const, default: "now - 30 days", label: "From" },
+    { key: "date_to", type: "date" as const, default: "now", label: "To" },
+  ];
+
+  it("returns null when autoComparison is not set (nothing to validate)", () => {
+    expect(validateAutoComparison(sql, undefined)).toBeNull();
+    expect(validateAutoComparison(sql, { comparisonSql: "SELECT 1 AS total" })).toBeNull();
+    expect(validateAutoComparison(sql, { autoComparison: false })).toBeNull();
+  });
+
+  it("accepts a card that filters by both date-typed window params", () => {
+    expect(validateAutoComparison(sql, { autoComparison: true }, dateParams)).toBeNull();
+  });
+
+  it("rejects when the SQL does not reference both window params", () => {
+    const err = validateAutoComparison("SELECT sum(amount) AS total FROM orders", { autoComparison: true }, dateParams);
+    expect(err).toMatch(/autoComparison/i);
+    expect(err).toContain(":date_from");
+    expect(err).toContain(":date_to");
+  });
+
+  it("rejects when only one window bound is referenced", () => {
+    const err = validateAutoComparison(
+      "SELECT sum(amount) AS total FROM orders WHERE created_at >= :date_from",
+      { autoComparison: true },
+      dateParams,
+    );
+    // The missing bound (date_to) is named; date_from also appears in the
+    // example clause, so we only assert the genuinely-missing one is flagged.
+    expect(err).toMatch(/does not reference :date_to\b/);
+  });
+
+  it("rejects when a window param is not declared as a date", () => {
+    const err = validateAutoComparison(sql, { autoComparison: true }, [
+      { key: "date_from", type: "number", default: 0, label: "From" },
+      { key: "date_to", type: "date", default: "now", label: "To" },
+    ]);
+    expect(err).toMatch(/date parameter/i);
+    expect(err).toContain(":date_from");
+  });
+
+  it("honours a custom comparisonDateParams pair", () => {
+    const customSql = "SELECT sum(amount) AS total FROM orders WHERE created_at >= :start AND created_at < :end";
+    const params = [
+      { key: "start", type: "date" as const, default: "now - 7 days", label: "Start" },
+      { key: "end", type: "date" as const, default: "now", label: "End" },
+    ];
+    expect(
+      validateAutoComparison(customSql, { autoComparison: true, comparisonDateParams: { from: "start", to: "end" } }, params),
+    ).toBeNull();
+  });
+
+  it("skips the date-type check when no parameter definitions are supplied (reference check only)", () => {
+    // Bound-editor path: SQL is available, parameter defs are not.
+    expect(validateAutoComparison(sql, { autoComparison: true })).toBeNull();
+    expect(validateAutoComparison("SELECT 1", { autoComparison: true })).toMatch(/autoComparison/i);
   });
 });

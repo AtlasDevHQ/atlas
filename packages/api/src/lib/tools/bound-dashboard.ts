@@ -25,6 +25,7 @@ import { dashboardChartConfigSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
+import { validateAutoComparison } from "@atlas/api/lib/dashboard-parameters";
 import {
   addCard,
   updateCard,
@@ -231,6 +232,14 @@ export function createBoundDashboardTools(
             error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
           };
         }
+        // #3207 — an autoComparison card must filter by both window params, or
+        // the prior-period shift is a no-op. (Date-typing of the params is
+        // enforced where the dashboard's parameter defs are loaded — the REST
+        // routes + createDashboard; here we have the card SQL only.)
+        const addAutoErr = validateAutoComparison(sql, chartConfig.kpi);
+        if (addAutoErr) {
+          return { kind: "err" as const, error: addAutoErr };
+        }
         // Drafts path: when on, mint a UUID for the new card and stage
         // it in the draft snapshot rather than INSERTing into
         // dashboard_cards. The id flows back to the agent so subsequent
@@ -343,6 +352,15 @@ export function createBoundDashboardTools(
                 kind: "err" as const,
                 error: `KPI comparison SQL validation failed: ${comparisonValidation.error}. Fix the query and retry.`,
               };
+            }
+          }
+          // #3207 — turning on autoComparison must agree with the card's
+          // EXISTING sql (updateCard never changes the query): it has to filter
+          // by both window params.
+          if (updates.chartConfig?.kpi?.autoComparison && current.ok) {
+            const updateAutoErr = validateAutoComparison(current.sql, updates.chartConfig.kpi);
+            if (updateAutoErr) {
+              return { kind: "err" as const, error: updateAutoErr };
             }
           }
         }

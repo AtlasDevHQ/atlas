@@ -709,6 +709,31 @@ describe("dashboard routes", () => {
       expect(response.status).toBe(404);
     });
 
+    it("returns 400 for an autoComparison KPI card whose SQL omits the date window (#3207)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "Revenue",
+            // No :date_from / :date_to — the prior-period shift would be a no-op.
+            sql: "SELECT SUM(amount) AS total FROM orders",
+            chartConfig: {
+              type: "kpi",
+              categoryColumn: "total",
+              valueColumns: ["total"],
+              kpi: { autoComparison: true },
+            },
+          }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; message: string };
+      expect(body.error).toBe("invalid_request");
+      expect(body.message).toMatch(/autoComparison/i);
+      expect(mockAddCard).not.toHaveBeenCalled();
+    });
+
     it("returns 400 when connectionGroupId belongs to a different org (#2424)", async () => {
       // The route looks up the dashboard's org, then verifies the supplied
       // connection_group_id is owned by that org. A "not_found" verdict from

@@ -62,6 +62,7 @@ import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
   derivePriorPeriodValues,
+  validateAutoComparison,
 } from "@atlas/api/lib/dashboard-parameters";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -1582,6 +1583,13 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
+      // #3207 — a KPI card requesting an automatic prior-period comparison must
+      // filter by both window params, declared as `date`. Reject up front so a
+      // misconfigured card can't persist a delta the render path can't produce.
+      const addAutoErr = validateAutoComparison(parsed.sql, parsed.chartConfig?.kpi, dash.data.parameters);
+      if (addAutoErr) {
+        return c.json({ error: "invalid_request", message: addAutoErr, requestId }, 400);
+      }
       // #2424 — same gate as chat.ts: verify the supplied connectionGroupId
       // is owned by the caller's org before persisting it onto the card.
       // Migration 0066's comment explicitly defers org enforcement here.
@@ -1650,6 +1658,23 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
+      // #3207 — if this update turns on autoComparison, validate it against the
+      // card's EXISTING sql (updateCard never changes the query) + the
+      // dashboard's params, the same as the add path. getCard is only needed
+      // when the flag is actually being set.
+      if (parsed.chartConfig?.kpi?.autoComparison) {
+        const existing = yield* Effect.promise(() => getCard(cardId, id));
+        if (existing.ok) {
+          const updateAutoErr = validateAutoComparison(
+            existing.data.sql,
+            parsed.chartConfig.kpi,
+            dash.data.parameters,
+          );
+          if (updateAutoErr) {
+            return c.json({ error: "invalid_request", message: updateAutoErr, requestId }, 400);
+          }
+        }
+      }
       const result = yield* Effect.promise(() => updateCard(cardId, id, parsed));
       if (!result.ok) {
         const fail = crudFailResponse(result.reason, requestId);

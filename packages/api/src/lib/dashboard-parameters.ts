@@ -24,7 +24,7 @@
  * datasources rather than risk an unbound placeholder or a silent fallback.
  */
 
-import type { DashboardParameter, DashboardParameterType } from "@useatlas/types";
+import type { DashboardParameter, DashboardParameterType, DashboardKpiConfig } from "@useatlas/types";
 
 export type { DashboardParameter, DashboardParameterType };
 
@@ -451,6 +451,55 @@ function daysBetweenUtc(a: Date, b: Date): number {
  * unparseable; the window is inverted (`from` after `to`); or it is zero-length
  * (`from` equals `to`, an empty half-open range with nothing to shift).
  */
+/**
+ * Validate a KPI card's automatic period-over-period config (#3207) against the
+ * card's own SQL and (optionally) the dashboard's parameter definitions. Shared
+ * by every persistence path — the createDashboard tool, the REST add/update-card
+ * routes, and the bound editor — so a card can never be saved with
+ * `autoComparison: true` that the render endpoint then can't act on.
+ *
+ * Two checks, both fail-closed with an actionable message:
+ *   1. The card's SQL must reference BOTH window params (default
+ *      `:date_from`/`:date_to`, or the {@link DashboardKpiConfig.comparisonDateParams}
+ *      pair). Otherwise shifting the window is a no-op — the prior-period query
+ *      is identical to the primary and the delta is always flat.
+ *   2. When `parameters` is supplied, both window params must be declared as
+ *      `type: "date"`. A `number`/`text` parameter can't be shifted as a date,
+ *      so `derivePriorPeriodValues` would return null and the promised delta
+ *      would silently vanish.
+ *
+ * Returns `null` when the config is fine, or when `autoComparison` isn't set
+ * (nothing to validate). Callers surface the string as a 400 / tool error.
+ */
+export function validateAutoComparison(
+  sql: string,
+  kpi: DashboardKpiConfig | null | undefined,
+  parameters?: DashboardParameter[] | null,
+): string | null {
+  if (!kpi?.autoComparison) return null;
+  const { from, to } = kpi.comparisonDateParams ?? DEFAULT_COMPARISON_DATE_PARAMS;
+
+  const referenced = new Set(extractPlaceholderNames(sql));
+  const missingRef = [from, to].filter((name) => !referenced.has(name));
+  if (missingRef.length > 0) {
+    return `autoComparison is set but the card SQL does not reference ${missingRef
+      .map((n) => `:${n}`)
+      .join(" and ")}. Filter the query by the dashboard date window (e.g. \`WHERE created_at >= :date_from AND created_at < :date_to\`) so the prior-period comparison can shift it.`;
+  }
+
+  if (parameters) {
+    const dateKeys = new Set(parameters.filter((p) => p.type === "date").map((p) => p.key));
+    const notDate = [from, to].filter((name) => !dateKeys.has(name));
+    if (notDate.length > 0) {
+      return `autoComparison requires ${notDate
+        .map((n) => `:${n}`)
+        .join(" and ")} to be declared as date parameter(s) so the prior-period window can be shifted.`;
+    }
+  }
+
+  return null;
+}
+
 export function derivePriorPeriodValues(
   values: Record<string, string | number | null>,
   params: { from: string; to: string } = DEFAULT_COMPARISON_DATE_PARAMS,

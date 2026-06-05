@@ -95,7 +95,12 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
             {showChart && (
               <ResultCardErrorBoundary label="Chart">
                 <div className="px-4 py-3">
-                  <ResultChart headers={columns} rows={stringRows} dark={dark} />
+                  <ResultChart
+                    headers={columns}
+                    rows={stringRows}
+                    dark={dark}
+                    thresholds={card.chartConfig?.thresholds}
+                  />
                 </div>
               </ResultCardErrorBoundary>
             )}

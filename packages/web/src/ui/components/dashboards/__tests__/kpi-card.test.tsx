@@ -9,6 +9,8 @@ import {
   formatKpiValue,
   hasKpiComparison,
   kpiComparisonSignature,
+  kpiTargetStatus,
+  kpiTargetTone,
   sparklineGeometry,
 } from "../kpi-card";
 
@@ -181,6 +183,43 @@ describe("deltaTone", () => {
   test("defaults to higher-is-better when inverse is omitted", () => {
     expect(deltaTone("up")).toBe("positive");
     expect(deltaTone("down")).toBe("negative");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// kpiTargetStatus / kpiTargetTone (#3208) — the goal-line callout logic. Status
+// reads the headline value against the target; tone maps it to a colour,
+// honouring `inverse` (lower-is-better) exactly like deltaTone.
+// ---------------------------------------------------------------------------
+
+describe("kpiTargetStatus", () => {
+  test("above / below / at the target", () => {
+    expect(kpiTargetStatus(120, 100)).toBe("above");
+    expect(kpiTargetStatus(80, 100)).toBe("below");
+    expect(kpiTargetStatus(100, 100)).toBe("at");
+  });
+
+  test("returns null when there's no value or no usable threshold (back-compat)", () => {
+    expect(kpiTargetStatus(null, 100)).toBeNull();
+    expect(kpiTargetStatus(100, undefined)).toBeNull();
+    expect(kpiTargetStatus(100, Number.NaN)).toBeNull();
+  });
+});
+
+describe("kpiTargetTone", () => {
+  test("higher-is-better: above is positive, below is negative", () => {
+    expect(kpiTargetTone("above", false)).toBe("positive");
+    expect(kpiTargetTone("below", false)).toBe("negative");
+  });
+
+  test("lower-is-better (inverse): below is positive, above is negative", () => {
+    expect(kpiTargetTone("below", true)).toBe("positive");
+    expect(kpiTargetTone("above", true)).toBe("negative");
+  });
+
+  test("at target is always neutral", () => {
+    expect(kpiTargetTone("at", false)).toBe("neutral");
+    expect(kpiTargetTone("at", true)).toBe("neutral");
   });
 });
 
@@ -492,5 +531,61 @@ describe("<KpiCard>", () => {
   test("omits the sparkline for a single-row KPI", () => {
     render(<KpiCard card={kpiCard} />);
     expect(screen.queryByTestId("kpi-sparkline")).toBeNull();
+  });
+
+  // #3208 — goal line / target callout + above/below colouring.
+  const withTarget = (threshold: { value: number; color?: string; label?: string }, inverse = false): DashboardCard => ({
+    ...kpiCard,
+    chartConfig: {
+      type: "kpi",
+      categoryColumn: "label",
+      valueColumns: ["total"],
+      kpi: { valueFormat: "currency", inverse },
+      thresholds: [threshold],
+    },
+  });
+
+  test("colours the headline positive and shows an 'above' callout when over target", () => {
+    // value 1.2M (cached) > target 1M → above → positive (higher-is-better).
+    render(<KpiCard card={withTarget({ value: 1_000_000, label: "Goal" })} />);
+    const valueEl = screen.getByTestId("kpi-value");
+    expect(valueEl.getAttribute("data-target-status")).toBe("above");
+    expect(valueEl.getAttribute("data-target-tone")).toBe("positive");
+    const callout = screen.getByTestId("kpi-target");
+    expect(callout.textContent).toContain("Goal");
+    expect(callout.textContent).toContain("$1M");
+    expect(callout.textContent).toContain("above");
+  });
+
+  test("colours the headline negative when below target", () => {
+    // value 1.2M < target 2M → below → negative (higher-is-better).
+    render(<KpiCard card={withTarget({ value: 2_000_000 })} />);
+    const valueEl = screen.getByTestId("kpi-value");
+    expect(valueEl.getAttribute("data-target-status")).toBe("below");
+    expect(valueEl.getAttribute("data-target-tone")).toBe("negative");
+    // No explicit label → the callout falls back to "Target".
+    expect(screen.getByTestId("kpi-target").textContent).toContain("Target");
+  });
+
+  test("inverse (lower-is-better): below target reads as a positive tone", () => {
+    // value 1.2M < target 2M, inverse → below is the good outcome → positive.
+    render(<KpiCard card={withTarget({ value: 2_000_000 }, true)} />);
+    expect(screen.getByTestId("kpi-value").getAttribute("data-target-tone")).toBe("positive");
+  });
+
+  test("at target reads as a neutral 'on target' callout", () => {
+    render(<KpiCard card={withTarget({ value: 1_200_000 })} />);
+    const valueEl = screen.getByTestId("kpi-value");
+    expect(valueEl.getAttribute("data-target-status")).toBe("at");
+    expect(valueEl.getAttribute("data-target-tone")).toBe("neutral");
+    expect(screen.getByTestId("kpi-target").textContent).toContain("on target");
+  });
+
+  test("no threshold → no target callout and the headline keeps its default colour (back-compat)", () => {
+    render(<KpiCard card={kpiCard} />);
+    expect(screen.queryByTestId("kpi-target")).toBeNull();
+    const valueEl = screen.getByTestId("kpi-value");
+    expect(valueEl.getAttribute("data-target-tone")).toBeNull();
+    expect(valueEl.getAttribute("data-target-status")).toBeNull();
   });
 });

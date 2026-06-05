@@ -66,6 +66,58 @@ export const CHART_COLORS_DARK = [
 ];
 
 /* ------------------------------------------------------------------ */
+/*  Goal lines / thresholds (#3208)                                     */
+/*  Pure: resolve a card's raw thresholds into render-ready reference-   */
+/*  line specs. The recharts <ReferenceLine> mapping lives in            */
+/*  result-chart.tsx; keeping this here makes it unit-testable without   */
+/*  booting recharts in jsdom (same split as the rest of this module).   */
+/* ------------------------------------------------------------------ */
+
+/** Default goal-line stroke when a threshold sets no explicit colour. Amber
+ *  reads as a "target" marker and, dashed, stays distinct from the gridlines. */
+export const THRESHOLD_LINE_LIGHT = "#d97706"; // amber-600
+export const THRESHOLD_LINE_DARK = "#fbbf24"; // amber-400
+
+/**
+ * Max goal lines rendered on a single chart — keeps it readable. Mirrors
+ * `DASHBOARD_THRESHOLDS_MAX` in `@useatlas/schemas` (the persist-time bound);
+ * re-capping here is defence-in-depth over loosely-parsed cached config, which
+ * `rowToCard` JSON-parses without re-running the Zod schema.
+ */
+export const MAX_THRESHOLD_LINES = 5;
+
+/** Structural mirror of `DashboardThreshold` (`@useatlas/types`). Re-declared
+ *  locally so this pure module stays free of cross-package imports — the same
+ *  approach the rest of chart-detection takes for its shapes. */
+export type ThresholdInput = { value: number; color?: string; label?: string };
+
+/** Render-ready goal line: a Y position, a resolved stroke, and a trimmed
+ *  label (or null when there's nothing to caption). */
+export type ThresholdLine = { y: number; stroke: string; label: string | null };
+
+/**
+ * Resolve a card's raw thresholds into reference-line specs: drop non-finite
+ * values, cap the count, and resolve a theme default stroke when a threshold
+ * sets no explicit colour. Returns `[]` for an absent / empty list so a chart
+ * with no thresholds renders exactly as before (#3208 back-compat).
+ */
+export function resolveThresholdLines(
+  thresholds: readonly ThresholdInput[] | undefined,
+  dark: boolean,
+): ThresholdLine[] {
+  if (!thresholds || thresholds.length === 0) return [];
+  const fallback = dark ? THRESHOLD_LINE_DARK : THRESHOLD_LINE_LIGHT;
+  return thresholds
+    .filter((t) => Number.isFinite(t.value))
+    .slice(0, MAX_THRESHOLD_LINES)
+    .map((t) => ({
+      y: t.value,
+      stroke: t.color && t.color.trim() ? t.color.trim() : fallback,
+      label: t.label && t.label.trim() ? t.label.trim() : null,
+    }));
+}
+
+/* ------------------------------------------------------------------ */
 /*  Column classification                                               */
 /* ------------------------------------------------------------------ */
 

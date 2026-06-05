@@ -30,7 +30,7 @@ import { KpiCard } from "./kpi-card";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "./time-ago";
-import type { DashboardCard, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
+import type { DashboardCard, DashboardChartConfig, KpiComparisonResult, StagedChange } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
   () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -343,6 +343,7 @@ function ChartTile({
               stringRows={stringRows}
               dark={dark}
               onCategoryClick={onCategoryClick}
+              thresholds={card.chartConfig?.thresholds}
             />
           ) : (
             <div className="min-h-0 flex-1 overflow-auto">
@@ -479,6 +480,7 @@ function ChartSlot({
   stringRows,
   dark,
   onCategoryClick,
+  thresholds,
 }: {
   cardId: string;
   columns: string[];
@@ -486,6 +488,8 @@ function ChartSlot({
   dark: boolean;
   /** #3212 — forwarded to ResultChart; undefined → chart is inert on click. */
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  /** #3208 — goal lines from the card's chartConfig; undefined → none drawn. */
+  thresholds?: DashboardChartConfig["thresholds"];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
@@ -525,6 +529,7 @@ function ChartSlot({
           rows={stringRows}
           dark={dark}
           onCategoryClick={onCategoryClick}
+          thresholds={thresholds}
         />
       )}
     </div>

@@ -2,6 +2,7 @@
 
 import { useMemo, useId, useState } from "react";
 import { ErrorBoundary } from "../error-boundary";
+import { categoryMatchesSelection } from "../../lib/helpers";
 import {
   ResponsiveContainer,
   BarChart,
@@ -66,6 +67,38 @@ function drilldownCursor(
   onCategoryClick: ((value: string, categoryKey: string) => void) | undefined,
 ): React.CSSProperties | undefined {
   return onCategoryClick ? { cursor: "pointer" } : undefined;
+}
+
+/**
+ * #3213 — cross-filter "selected" state. When a category is the active filter,
+ * its bar / slice stays solid and the rest dim, so the clicked element reads as
+ * selected (re-clicking it deselects, via the page's toggle). Returns the per-
+ * cell `fillOpacity`. The caller only renders `<Cell>` children when a selection
+ * is active, so the default (unselected) render is untouched. Matching is
+ * date-aware (#3219 Codex review) so a timestamp axis still highlights under a
+ * normalized `YYYY-MM-DD` date filter.
+ */
+function selectedFillOpacity(category: unknown, selectedCategory: string): number {
+  return categoryMatchesSelection(category, selectedCategory) ? 1 : 0.25;
+}
+
+/**
+ * #3219 (Codex review) — should the "selected" dim/highlight paint on THIS axis?
+ * `ResultChart` re-detects its category axis from the data, which can diverge
+ * from the card's configured drilldown column. The active filter value belongs
+ * to that configured column, so we only style when the value is actually present
+ * on the rendered axis — otherwise a filter on `region` could dim unrelated
+ * `segment` bars. This mirrors the click handler's `categoryKey === categoryColumn`
+ * gate without threading the configured column through every view, and also drops
+ * the dimming entirely when the selected value was filtered out of this card's
+ * current data (nothing to highlight).
+ */
+function selectionOnAxis(
+  data: RechartsRow[],
+  catKey: string,
+  selectedCategory: string | undefined,
+): selectedCategory is string {
+  return selectedCategory != null && data.some((d) => categoryMatchesSelection(d[catKey], selectedCategory));
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,12 +228,14 @@ function BarChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
   thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
   thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
@@ -234,7 +269,15 @@ function BarChartView({
               dataKey={key}
               fill={colors[i % colors.length]}
               radius={[4, 4, 0, 0]}
-            />
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
           ))}
           {thresholdLineElements(thresholds, dark)}
         </BarChart>
@@ -304,11 +347,13 @@ function PieChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
 }) {
   const colors = getColors(dark);
   const t = themeTokens(dark);
@@ -352,8 +397,14 @@ function PieChartView({
             labelLine={{ stroke: t.axis }}
             fontSize={11}
           >
-            {data.map((_, i) => (
-              <Cell key={i} fill={colors[i % colors.length]} />
+            {data.map((d, i) => (
+              <Cell
+                key={i}
+                fill={colors[i % colors.length]}
+                // #3213 — dim non-selected slices when a cross-filter is active;
+                // gated on `selectionOnAxis` (#3219) like the bar views.
+                fillOpacity={selectionOnAxis(data, catKey, selectedCategory) ? selectedFillOpacity(d[catKey], selectedCategory) : undefined}
+              />
             ))}
           </Pie>
           <Tooltip content={<ChartTooltip dark={dark} />} />
@@ -440,12 +491,14 @@ function StackedBarChartView({
   rec,
   dark,
   onCategoryClick,
+  selectedCategory,
   thresholds,
 }: {
   data: RechartsRow[];
   rec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
   thresholds?: ThresholdInput[];
 }) {
   const colors = getColors(dark);
@@ -478,7 +531,15 @@ function StackedBarChartView({
               stackId="a"
               fill={colors[i % colors.length]}
               radius={i === valKeys.length - 1 ? [4, 4, 0, 0] : undefined}
-            />
+            >
+              {/* #3213 — dim non-selected categories when a cross-filter is active.
+                  Gated on `selectionOnAxis` (#3219) so a divergent detected axis
+                  isn't dimmed by a filter that belongs to another column. */}
+              {selectionOnAxis(data, catKey, selectedCategory) &&
+                data.map((d, ci) => (
+                  <Cell key={ci} fillOpacity={selectedFillOpacity(d[catKey], selectedCategory)} />
+                ))}
+            </Bar>
           ))}
           {thresholdLineElements(thresholds, dark)}
         </BarChart>
@@ -604,6 +665,7 @@ function ChartRenderer({
   defaultRec,
   dark,
   onCategoryClick,
+  selectedCategory,
   thresholds,
 }: {
   rows: string[][];
@@ -612,6 +674,7 @@ function ChartRenderer({
   defaultRec: ChartRecommendation;
   dark: boolean;
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  selectedCategory?: string;
   thresholds?: ThresholdInput[];
 }) {
   // Re-transform data when switching chart type (category axis may differ)
@@ -620,17 +683,18 @@ function ChartRenderer({
 
   // Scatter is intentionally not drillable (#3212): both axes are numeric — it
   // has no category to bind a parameter to. Every other view forwards clicks.
-  // Goal lines (#3208) are horizontal Y-axis references, so they apply to the
-  // cartesian views (bar / line / area / stacked-bar) — not pie (no Y axis) or
-  // scatter (numeric Y, a different shape).
+  // `selectedCategory` (#3213) only styles the categorical views (bar / stacked /
+  // pie); line/area trends have no discrete element to mark. Goal lines (#3208)
+  // are horizontal Y-axis references, so they apply to the cartesian views (bar /
+  // line / area / stacked-bar) — not pie (no Y axis) or scatter (numeric Y).
   return (
     <div className="p-2">
-      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
+      {type === "bar" ? <BarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
         : type === "line" ? <LineChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
         : type === "area" ? <AreaChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
-        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} thresholds={thresholds} />
+        : type === "stacked-bar" ? <StackedBarChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} thresholds={thresholds} />
         : type === "scatter" ? <ScatterChartView data={chartData} rec={rec} dark={dark} />
-        : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} />}
+        : <PieChartView data={chartData} rec={rec} dark={dark} onCategoryClick={onCategoryClick} selectedCategory={selectedCategory} />}
     </div>
   );
 }
@@ -645,6 +709,7 @@ export function ResultChart({
   dark,
   detectionResult,
   onCategoryClick,
+  selectedCategory,
   thresholds,
 }: {
   headers: string[];
@@ -659,6 +724,13 @@ export function ResultChart({
    * surface and on non-drillable dashboard cards (no-op click).
    */
   onCategoryClick?: (value: string, categoryKey: string) => void;
+  /**
+   * #3213 — cross-filter "selected" state. The active filter's category value;
+   * its bar / slice renders solid while the rest dim, so the clicked element
+   * reads as selected. Only the categorical views (bar / stacked / pie) honor it.
+   * Omitted → no element is marked.
+   */
+  selectedCategory?: string;
   /**
    * #3208 — goal lines / thresholds from the card's `chartConfig.thresholds`.
    * Each renders as a horizontal `<ReferenceLine>` on the bar / line / area /
@@ -704,6 +776,7 @@ export function ResultChart({
           defaultRec={result.recommendations[0]}
           dark={dark}
           onCategoryClick={onCategoryClick}
+          selectedCategory={selectedCategory}
           thresholds={thresholds}
         />
       </ErrorBoundary>

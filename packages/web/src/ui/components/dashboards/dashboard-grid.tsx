@@ -38,6 +38,15 @@ interface DashboardGridProps {
    * cards are inert on click.
    */
   onDrilldown?: (targetParam: string, value: string) => void;
+  /**
+   * #3213 — cross-filter affordances forwarded per card:
+   *   - `incompatibleCardIds`: cards an active filter can't touch — rendered
+   *     "Not filtered" + dimmed.
+   *   - `selectedValues`: cardId → the active value of that card's drilldown
+   *     param, so its matching bar / slice / row renders "selected".
+   */
+  incompatibleCardIds?: Set<string>;
+  selectedValues?: Record<string, string>;
   onLayoutChange: (cardId: string, layout: DashboardCardLayout) => void;
   onRefresh: (cardId: string) => void;
   onDuplicate: (cardId: string) => void;
@@ -57,6 +66,8 @@ export function DashboardGrid({
   stages,
   comparisons,
   onDrilldown,
+  incompatibleCardIds,
+  selectedValues,
   onLayoutChange,
   onRefresh,
   onDuplicate,
@@ -160,6 +171,8 @@ export function DashboardGrid({
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
+                incompatible={incompatibleCardIds?.has(card.id)}
+                selectedValue={selectedValues?.[card.id]}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}
@@ -209,6 +222,8 @@ export function DashboardGrid({
                 stage={stagesByCardId.get(card.id) ?? null}
                 comparison={comparisons?.[card.id] ?? null}
                 onDrilldown={onDrilldown}
+                incompatible={incompatibleCardIds?.has(card.id)}
+                selectedValue={selectedValues?.[card.id]}
                 onFullscreen={(id) => setFullscreenId((prev) => (prev === id ? null : id))}
                 onRefresh={onRefresh}
                 onDuplicate={onDuplicate}

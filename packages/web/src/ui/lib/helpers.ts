@@ -224,6 +224,22 @@ export function normalizeList<T>(
   return Object.entries(data).map(([key, value]) => ({ ...value, [keyName]: key }));
 }
 
+/**
+ * #3219 (Codex review) \u2014 does a chart / table category value match the active
+ * cross-filter selection? A `date` drilldown stores its value normalized to
+ * `YYYY-MM-DD` (see `normalizeDrilldownValue`), but the underlying cell can be a
+ * full timestamp (`2026-06-04T12:00:00Z` / `2026-06-04 12:00:00`). Compare by
+ * exact string first, then fall back to the date prefix so a timestamp-backed
+ * date filter still highlights its row / bar. Non-timestamp values only ever
+ * match exactly, so text / number categories never produce a false positive.
+ */
+export function categoryMatchesSelection(cellValue: unknown, selectedValue: string): boolean {
+  const s = String(cellValue ?? "");
+  if (s === selectedValue) return true;
+  const datePrefix = /^(\d{4}-\d{2}-\d{2})[T ]/.exec(s);
+  return datePrefix !== null && datePrefix[1] === selectedValue;
+}
+
 /** Format a cell value: null as em-dash, numbers with locale formatting, else stringified. */
 export function formatCell(value: unknown): string {
   if (value == null) return "\u2014";

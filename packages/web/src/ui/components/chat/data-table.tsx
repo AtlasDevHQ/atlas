@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ComponentProps } from "react";
-import { formatCell } from "../../lib/helpers";
+import { categoryMatchesSelection, formatCell } from "../../lib/helpers";
 import { ErrorBoundary } from "../error-boundary";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,8 @@ function DataTableInner({
   rows,
   maxRows = 10,
   onRowClick,
+  selectedColumn,
+  selectedValue,
 }: {
   columns: string[];
   rows: (Record<string, unknown> | unknown[])[];
@@ -22,6 +24,14 @@ function DataTableInner({
    * back-compatible. The consumer decides which column's value to read.
    */
   onRowClick?: (row: Record<string, unknown> | unknown[]) => void;
+  /**
+   * #3213 — cross-filter "selected" state. When the row's `selectedColumn` cell
+   * equals `selectedValue`, the row renders highlighted + `aria-selected`, so a
+   * drilldown row reads as the active filter (re-clicking it deselects, via the
+   * page's toggle). Both must be set; omitted → no row is highlighted.
+   */
+  selectedColumn?: string;
+  selectedValue?: string;
 }) {
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
@@ -114,6 +124,14 @@ function DataTableInner({
         <tbody>
           {display.map((row, i) => {
             const clickable = onRowClick !== undefined;
+            // #3213 — does this row carry the active cross-filter value? The
+            // comparison normalizes date/timestamp cells (#3219 Codex review) so a
+            // timestamp-backed `date` filter still highlights its row.
+            const selected =
+              selectedColumn != null &&
+              selectedValue != null &&
+              !Array.isArray(row) &&
+              categoryMatchesSelection((row as Record<string, unknown>)[selectedColumn], selectedValue);
             return (
               <tr
                 key={i}
@@ -121,8 +139,11 @@ function DataTableInner({
                   i % 2 === 0 ? "bg-zinc-100/60 dark:bg-zinc-900/60" : "bg-zinc-50/30 dark:bg-zinc-900/30",
                   clickable &&
                     "cursor-pointer transition-colors hover:bg-blue-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 dark:hover:bg-blue-950/30",
+                  selected &&
+                    "bg-blue-100/80 ring-1 ring-inset ring-blue-400 dark:bg-blue-900/40 dark:ring-blue-500",
                 )}
                 role={clickable ? "button" : undefined}
+                aria-selected={selected || undefined}
                 tabIndex={clickable ? 0 : undefined}
                 onClick={clickable ? () => onRowClick?.(row) : undefined}
                 onKeyDown={

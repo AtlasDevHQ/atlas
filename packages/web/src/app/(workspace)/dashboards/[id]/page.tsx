@@ -30,7 +30,16 @@ import { DashboardShareDialog } from "./share-dialog";
 import { DashboardGrid } from "@/ui/components/dashboards/dashboard-grid";
 import { DashboardTopBar } from "@/ui/components/dashboards/dashboard-topbar";
 import { DashboardParameterBar, type ParameterValues } from "@/ui/components/dashboards/dashboard-parameter-bar";
-import { DASHBOARD_PARAMS_KEY, dashboardParamsParser, withOverride, normalizeDrilldownValue } from "./search-params";
+import { DashboardFilterChips } from "@/ui/components/dashboards/dashboard-filter-chips";
+import {
+  DASHBOARD_PARAMS_KEY,
+  dashboardParamsParser,
+  parseOverrides,
+  withOverride,
+  toggleOverride,
+  normalizeDrilldownValue,
+} from "./search-params";
+import { activeFilters, incompatibleCardIds } from "./cross-filter";
 import { renderDashboardCards } from "./dashboard-card-render";
 import { DraftStatusBanner } from "@/ui/components/dashboards/draft-status-banner";
 import { PublishDiffModal } from "@/ui/components/dashboards/publish-diff-modal";
@@ -647,6 +656,32 @@ export default function DashboardViewPage() {
       })
     : [];
 
+  // #3213 — cross-filter derivations from the shared `dparams` override map.
+  // `activeFilters` keeps only overrides that map to a declared parameter and
+  // carry a non-empty value, so the chips, the per-card incompatibility marking,
+  // and the per-card "selected" element all read from one source consistent with
+  // what the render path actually binds. (React Compiler memoizes these pure
+  // derives — no manual useMemo per CLAUDE.md.)
+  const overrides = parseOverrides(dparamsRaw);
+  const filters = dashboard ? activeFilters(overrides, dashboard.parameters) : [];
+  const activeFilterKeys = filters.map((f) => f.key);
+  const incompatIds = dashboard
+    ? incompatibleCardIds(dashboard.cards, activeFilterKeys)
+    : new Set<string>();
+  // cardId → the active value of THAT card's own drilldown target param, so its
+  // matching bar / slice / row renders "selected" (re-clicking it deselects).
+  const selectedValues: Record<string, string> = {};
+  if (dashboard) {
+    for (const card of dashboard.cards) {
+      const targetParam = card.chartConfig?.drilldown?.targetParam;
+      if (!targetParam) continue;
+      const value = overrides[targetParam];
+      if (value !== null && value !== undefined && value !== "") {
+        selectedValues[card.id] = String(value);
+      }
+    }
+  }
+
   // The stage handler fires when the user clicks Accept / Discard in the
   // bound chat drawer. We refetch BOTH the dashboard (the draft cards
   // changed after an accept) AND the stage list (the row is no longer
@@ -734,12 +769,15 @@ export default function DashboardViewPage() {
     }
   }
 
-  // #3212 — click-to-drilldown. Sets the card's drilldown target parameter to
-  // the clicked category value by merging it into the shared `dparams` URL key.
-  // We don't refetch here: writing the key updates the parameter bar (which
-  // reflects the value and lets the user clear/override it) and the bar's
-  // onChange effect issues the single batched /render of every card with the
-  // bound value — server-side parameterized, never string-interpolated.
+  // #3212 drilldown + #3213 cross-filter. Clicking a chart element / table row
+  // sets the card's drilldown target parameter to the clicked category value by
+  // merging it into the shared `dparams` URL key. We don't refetch here: writing
+  // the key updates the parameter bar (which reflects the value and lets the user
+  // clear/override it) and the bar's onChange effect issues the SINGLE batched
+  // /render of every card with the bound value — server-side parameterized, never
+  // string-interpolated, one click → one batched refetch (no waterfall). The
+  // value binds to EVERY card whose SQL references `:targetParam` (cross-card
+  // filtering); cards that don't are visibly marked incompatible below.
   function handleDrilldown(targetParam: string, value: string) {
     if (!dashboard) return;
     // Ignore a target that names no declared parameter — the render endpoint
@@ -756,7 +794,20 @@ export default function DashboardViewPage() {
     // reads YYYY-MM-DD, so a timestamp category must be sliced or the bar shows
     // a blank date even though the filter applied.
     const normalized = normalizeDrilldownValue(param.type, value);
-    void setDparamsRaw(withOverride(dparamsRaw, targetParam, normalized));
+    // #3213 — toggle: re-clicking the already-selected value clears it (deselect).
+    void setDparamsRaw(toggleOverride(dparamsRaw, targetParam, normalized));
+  }
+
+  // #3213 — filter-chips handlers. Both write the shared `dparams` key, so the
+  // parameter bar (same key) observes the change and fires the single batched
+  // re-render — chip removal / clear-all go through the same one-refetch path as
+  // a drilldown click, never N sequential requests.
+  function handleRemoveFilter(key: string) {
+    void setDparamsRaw(withOverride(dparamsRaw, key, null));
+  }
+  function handleClearAllFilters() {
+    // null clears the whole key — nuqs drops the param entirely.
+    void setDparamsRaw(null);
   }
 
   // #3137 — fetch KPI comparison values against the parameter DEFAULTS. Used on
@@ -925,6 +976,13 @@ export default function DashboardViewPage() {
               />
             )}
 
+            {/* #3213 — active cross-filter chips (self-hides when none are set). */}
+            <DashboardFilterChips
+              filters={filters}
+              onRemove={handleRemoveFilter}
+              onClearAll={handleClearAllFilters}
+            />
+
             {paramError && (
               <div className="mx-4 mt-3 flex items-start justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 sm:mx-6 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
                 <span>{paramError}</span>
@@ -1056,6 +1114,8 @@ export default function DashboardViewPage() {
                   stages={stages}
                   comparisons={comparisons}
                   onDrilldown={handleDrilldown}
+                  incompatibleCardIds={incompatIds}
+                  selectedValues={selectedValues}
                   onLayoutChange={handleLayoutChange}
                   onRefresh={handleRefreshCard}
                   onDuplicate={handleDuplicate}

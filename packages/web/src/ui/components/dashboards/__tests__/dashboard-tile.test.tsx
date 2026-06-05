@@ -13,9 +13,11 @@ mock.module("@/ui/components/chart/result-chart", () => ({
   ResultChart: ({
     onCategoryClick,
     thresholds,
+    annotations,
   }: {
     onCategoryClick?: (value: string, categoryKey: string) => void;
     thresholds?: { value: number; color?: string; label?: string }[];
+    annotations?: { x: string; label: string; color?: string }[];
   }) => (
     <>
       {/* Fires with the card's configured category column ("stage") — matches. */}
@@ -23,6 +25,7 @@ mock.module("@/ui/components/chart/result-chart", () => ({
         type="button"
         data-testid="result-chart"
         data-thresholds={JSON.stringify(thresholds ?? null)}
+        data-annotations={JSON.stringify(annotations ?? null)}
         onClick={() => onCategoryClick?.("Discovery", "stage")}
       >
         chart
@@ -67,6 +70,7 @@ const baseCard: DashboardCard = {
   sql: "SELECT 1",
   chartConfig: { type: "bar", categoryColumn: "stage", valueColumns: ["amount"] },
   content: null,
+  annotations: [],
   cachedColumns: ["stage", "amount"],
   cachedRows: [
     { stage: "Discovery", amount: 1240000 },
@@ -146,6 +150,27 @@ describe("DashboardTile", () => {
     });
     const chart = screen.getByTestId("result-chart");
     expect(JSON.parse(chart.getAttribute("data-thresholds") ?? "null")).toEqual(thresholds);
+    restore();
+  });
+
+  test("forwards the card's event annotations (#3209) through to ResultChart", async () => {
+    const restore = setBoundingRect(600, 300);
+    (globalThis as unknown as { ResizeObserver: typeof StubResizeObserver }).ResizeObserver = StubResizeObserver;
+    const annotations = [
+      { x: "2026-01-15", label: "Launch", color: "#10b981" },
+      { x: "2026-03-01", label: "Campaign" },
+    ];
+    const card: DashboardCard = {
+      ...baseCard,
+      chartConfig: { type: "line", categoryColumn: "week", valueColumns: ["signups"] },
+      annotations,
+    };
+    render(<DashboardTile {...baseProps} card={card} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const chart = screen.getByTestId("result-chart");
+    expect(JSON.parse(chart.getAttribute("data-annotations") ?? "null")).toEqual(annotations);
     restore();
   });
 

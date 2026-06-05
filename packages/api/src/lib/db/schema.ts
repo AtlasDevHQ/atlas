@@ -1663,6 +1663,14 @@ export const dashboardCards = pgTable(
     // `rowToCard` (no `kind` column). A text card stores sql = '' and
     // chart_config = NULL and never reaches the SQL pipeline.
     content: text("content"),
+    // 0121: event annotations (#3209) — a JSONB array of dated markers
+    // [{ x, label, color? }] rendered as VERTICAL `<ReferenceLine>`s on a
+    // line / area card (the read-side sibling of the HORIZONTAL goal-line
+    // `chart_config.thresholds` from #3208). Lives in its OWN card-level
+    // column rather than inside `chart_config` so it survives a chart-type
+    // re-detection. NOT NULL DEFAULT '[]' — `rowToCard` always sees an array;
+    // the shape is re-validated on read via `dashboardCardAnnotationsSchema`.
+    annotations: jsonb("annotations").notNull().default(sql`'[]'`),
     cachedColumns: jsonb("cached_columns"),
     cachedRows: jsonb("cached_rows"),
     cachedAt: timestamp("cached_at", { withTimezone: true }),

@@ -100,6 +100,7 @@ export function SharedTile({ card, spanClass, cachedLabel, cachedIso }: SharedTi
                     rows={stringRows}
                     dark={dark}
                     thresholds={card.chartConfig?.thresholds}
+                    annotations={card.annotations}
                   />
                 </div>
               </ResultCardErrorBoundary>

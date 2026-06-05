@@ -469,6 +469,9 @@ export default function DashboardViewPage() {
         title: `${card.title} (copy)`,
         sql: card.sql,
         chartConfig: card.chartConfig,
+        // #3209 — copy the source card's event annotations so a duplicated
+        // annotated card keeps its markers instead of silently losing them.
+        annotations: card.annotations,
         cachedColumns: card.cachedColumns,
         cachedRows: card.cachedRows,
         connectionGroupId: card.connectionGroupId,

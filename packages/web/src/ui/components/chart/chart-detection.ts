@@ -139,6 +139,75 @@ export function resolveThresholdLines(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Event annotations (#3209)                                           */
+/*  Pure: resolve a card's raw annotations into render-ready vertical-  */
+/*  reference-line specs — the vertical sibling of resolveThresholdLines.*/
+/*  The recharts <ReferenceLine x=...> mapping lives in result-chart.tsx.*/
+/* ------------------------------------------------------------------ */
+
+/** Default annotation stroke when a marker sets no explicit colour. Violet
+ *  reads as an "event" marker and stays distinct from the amber goal lines
+ *  (#3208) and the categorical data-series palette. */
+export const ANNOTATION_LINE_LIGHT = "#7c3aed"; // violet-600
+export const ANNOTATION_LINE_DARK = "#a78bfa"; // violet-400
+
+/**
+ * Max event markers rendered on a single chart — keeps it readable. A
+ * deliberately duplicated literal, kept in lockstep with
+ * `DASHBOARD_ANNOTATIONS_MAX` in `@useatlas/schemas` (the persist-time bound)
+ * rather than imported, so this pure module stays runtime-dependency-free.
+ * Re-capping here is defence-in-depth over a read path that bypasses the
+ * persist gate: `rowToCard` re-validates and discards an over-cap list wholesale
+ * (degrade-to-`[]`), but a direct DB edit could still feed a bloated array
+ * straight to the renderer.
+ */
+export const MAX_ANNOTATION_LINES = 20;
+
+/** Structural mirror of `DashboardCardAnnotation` (`@useatlas/types`) — the
+ *  LOOSE, pre-validation wire shape (this data arrives via the un-validated
+ *  `rowToCard` read path, so `resolveAnnotationLines` re-asserts the schema's
+ *  invariants). Re-declared locally so this pure module stays free of
+ *  cross-package imports, the same approach the rest of chart-detection takes. */
+export type AnnotationInput = { x: string; label: string; color?: string };
+
+/** Render-ready event marker: an X position, a resolved stroke, and a trimmed
+ *  label (or null when there's nothing to caption). */
+export type AnnotationLine = { x: string; stroke: string; label: string | null };
+
+/**
+ * Resolve a card's raw annotations into vertical reference-line specs: drop
+ * markers with no X position (can't be placed on the axis), cap the count, fall
+ * back to a theme stroke for an absent OR structurally-malformed colour, and
+ * trim the label. Returns `[]` for an absent / empty list so a chart with no
+ * annotations renders exactly as before (#3209 back-compat). Every output field
+ * is resolved, so the renderer is a plain map — the vertical sibling of
+ * `resolveThresholdLines`.
+ */
+export function resolveAnnotationLines(
+  annotations: readonly AnnotationInput[] | undefined,
+  dark: boolean,
+): AnnotationLine[] {
+  if (!annotations || annotations.length === 0) return [];
+  const fallback = dark ? ANNOTATION_LINE_DARK : ANNOTATION_LINE_LIGHT;
+  return annotations
+    .filter((a) => typeof a.x === "string" && a.x.trim().length > 0)
+    .slice(0, MAX_ANNOTATION_LINES)
+    .map((a) => {
+      // Trim `x` to match what the axis renders — a whitespace-padded value
+      // passes the non-empty filter above but wouldn't match the chart domain,
+      // so the marker would silently fail to draw.
+      const x = a.x.trim();
+      const color = a.color?.trim();
+      const label = a.label?.trim();
+      return {
+        x,
+        stroke: color && THRESHOLD_COLOR_RE.test(color) ? color : fallback,
+        label: label ? label : null,
+      };
+    });
+}
+
+/* ------------------------------------------------------------------ */
 /*  Column classification                                               */
 /* ------------------------------------------------------------------ */
 

@@ -95,6 +95,7 @@ function dashboardWithCards(
       sql: c.sql,
       chartConfig: c.chartConfig,
       content: c.content ?? null,
+      annotations: c.annotations ?? [],
       cachedColumns: null,
       cachedRows: null,
       cachedAt: null,
@@ -299,6 +300,75 @@ describe("applyChangeToDraft", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("unknown_card");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event annotations (#3209) — persist through propose/save/publish + bound edit
+// ---------------------------------------------------------------------------
+
+describe("event annotations (#3209)", () => {
+  const annotations = [
+    { x: "2026-01-15", label: "Launch", color: "#10b981" },
+    { x: "2026-03-01", label: "Campaign" },
+  ];
+
+  it("toSnapshot carries a card's annotations (propose/save round-trip)", () => {
+    const dash = dashboardWithCards([card("c1")], {});
+    dash.cards[0].annotations = annotations;
+    expect(toSnapshot(dash).cards[0].annotations).toEqual(annotations);
+  });
+
+  it("applyChangeToDraft updateCard SETS annotations (bound-chat edit authoring)", () => {
+    const base = snapshot([card("c1")]);
+    const result = applyChangeToDraft(base, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { annotations },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards[0].annotations).toEqual(annotations);
+  });
+
+  it("applyChangeToDraft updateCard PRESERVES annotations when the patch omits them", () => {
+    // A bound edit that only renames the card must not drop its markers.
+    const base = snapshot([card("c1", { annotations })]);
+    const result = applyChangeToDraft(base, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { title: "Renamed" },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.cards[0].title).toBe("Renamed");
+    expect(result.snapshot.cards[0].annotations).toEqual(annotations);
+  });
+
+  it("publishDraftMerge emits an updateCard op when only annotations changed (publish persists them)", () => {
+    const baseline = snapshot([card("c1")]);
+    const draft = applyChangeToDraft(baseline, {
+      kind: "updateCard",
+      cardId: "c1",
+      updates: { annotations },
+    });
+    expect(draft.ok).toBe(true);
+    if (!draft.ok) return;
+    const result = publishDraftMerge(draft.snapshot, baseline, baseline);
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.ops).toEqual([{ kind: "updateCard", cardId: "c1", card: draft.snapshot.cards[0] }]);
+  });
+
+  it("an unchanged annotated card produces no ops (empty array == today; undefined↔[] normalized)", () => {
+    const withMarkers = snapshot([card("c1", { annotations })]);
+    expect((publishDraftMerge(withMarkers, withMarkers, withMarkers) as { ops: unknown[] }).ops).toHaveLength(0);
+
+    // A card with no `annotations` key (pre-#3209 draft) vs one carrying `[]`
+    // must NOT read as a spurious change.
+    const noKey = snapshot([card("c1")]);
+    const emptyKey = snapshot([card("c1", { annotations: [] })]);
+    expect((publishDraftMerge(emptyKey, noKey, noKey) as { ops: unknown[] }).ops).toHaveLength(0);
   });
 });
 
@@ -622,6 +692,7 @@ describe("materializeDraftView", () => {
       sql: baseCard.sql,
       chartConfig: baseCard.chartConfig,
       content: null,
+      annotations: [],
       cachedColumns: ["a", "b"],
       cachedRows: [{ a: 1, b: 2 }],
       cachedAt: "2026-05-01T00:00:00.000Z",

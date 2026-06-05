@@ -350,6 +350,62 @@ export const dashboardThresholdSchema = z
   .strict();
 export type DashboardThresholdWire = z.infer<typeof dashboardThresholdSchema>;
 
+// ---------------------------------------------------------------------------
+// Event annotations (#3209 — the last #2267-deferred slice)
+//
+// A card carries a list of dated event markers ({ x, label, color? }) rendered
+// as VERTICAL `<ReferenceLine>`s on line / area cards — the read-side sibling of
+// the HORIZONTAL goal-line `thresholds` (#3208). Unlike thresholds (nested in
+// `chartConfig`), annotations live in their OWN card-level column
+// (`dashboard_cards.annotations`, migration 0121) and validate as a standalone
+// array. Mirror of `DashboardCardAnnotation` / the `annotations` field on
+// `DashboardCard` in `@useatlas/types`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on how many event markers one card carries. A handful of dated
+ * events reads as a timeline; dozens turn the chart into a picket fence. Bounded
+ * here at the persist boundary so neither the agent surface nor the REST route
+ * can stack an unreadable number. Mirrors `MAX_ANNOTATION_LINES` in the web
+ * renderer (`chart-detection.ts`), which re-caps the rendered set as a second
+ * line of defence over loosely-parsed cached config. Higher than
+ * `DASHBOARD_THRESHOLDS_MAX` (5) because a time window legitimately spans more
+ * events (a year of monthly launches) than a chart has goal lines.
+ */
+export const DASHBOARD_ANNOTATIONS_MAX = 20;
+
+/**
+ * A single event annotation. `x` (the category-axis position) and `label` are
+ * required + non-empty; `color` is optional. `.strict()` so a stray field is
+ * rejected at the boundary rather than persisted and silently ignored — same
+ * discipline as `dashboardThresholdSchema`. `color` reuses `CSS_COLOR_RE` (the
+ * same conservative gate the threshold colour uses).
+ */
+export const dashboardCardAnnotationSchema = z
+  .object({
+    x: z.string().min(1).max(120),
+    label: z.string().min(1).max(80),
+    color: z
+      .string()
+      .min(1)
+      .max(40)
+      .regex(CSS_COLOR_RE, "color must be a hex, rgb()/hsl(), or named CSS colour")
+      .optional(),
+  })
+  .strict();
+export type DashboardCardAnnotationWire = z.infer<typeof dashboardCardAnnotationSchema>;
+
+/**
+ * The full annotation list for a card — bounded by {@link DASHBOARD_ANNOTATIONS_MAX}.
+ * SSOT for validating the `dashboard_cards.annotations` JSONB column (read-time
+ * in `rowToCard`) and every authoring surface (the REST add/update-card routes,
+ * the bound editor tools, the `createDashboard` agent tool).
+ */
+export const dashboardCardAnnotationsSchema = z
+  .array(dashboardCardAnnotationSchema)
+  .max(DASHBOARD_ANNOTATIONS_MAX);
+export type DashboardCardAnnotationsWire = z.infer<typeof dashboardCardAnnotationsSchema>;
+
 /**
  * Full chart-config schema. `kpi` is optional and only meaningful when
  * `type === "kpi"`; the agent surface + REST routes carry it through as-is.

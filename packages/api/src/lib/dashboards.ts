@@ -17,6 +17,7 @@ import {
 import type {
   Dashboard,
   DashboardCard,
+  DashboardCardAnnotation,
   DashboardCardKind,
   DashboardCardLayout,
   DashboardWithCards,
@@ -24,7 +25,7 @@ import type {
   DashboardParameter,
 } from "@atlas/api/lib/dashboard-types";
 import { DASHBOARD_GRID } from "@atlas/api/lib/dashboard-types";
-import { dashboardParametersSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
 import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
 import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
@@ -74,6 +75,30 @@ function parseParameters(raw: unknown, dashboardId: unknown): DashboardParameter
     );
   } catch (err) {
     log.warn({ dashboardId, err: errorMessage(err) }, "Failed to parse parameters JSONB");
+  }
+  return [];
+}
+
+/**
+ * Parse the `dashboard_cards.annotations` JSONB into validated event markers
+ * (#3209). A malformed row degrades to `[]` with a logged warning rather than
+ * throwing — a single bad row should not 500 the whole dashboard fetch (mirrors
+ * `parseParameters` + the chart_config / layout handling in `rowToCard`). This
+ * is the read-side re-validation the renderer relies on, since `rowToCard`
+ * otherwise hands cached JSONB to the client un-checked.
+ */
+function parseAnnotations(raw: unknown, cardId: unknown): DashboardCardAnnotation[] {
+  if (raw == null) return [];
+  try {
+    const value = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const parsed = dashboardCardAnnotationsSchema.safeParse(value);
+    if (parsed.success) return parsed.data as DashboardCardAnnotation[];
+    log.warn(
+      { cardId, issues: parsed.error.issues },
+      "Discarding malformed dashboard_cards.annotations JSONB",
+    );
+  } catch (err) {
+    log.warn({ cardId, err: errorMessage(err) }, "Failed to parse annotations JSONB");
   }
   return [];
 }
@@ -166,6 +191,7 @@ export function rowToCard(r: Record<string, unknown>): DashboardCard {
     sql: r.sql as string,
     chartConfig,
     content,
+    annotations: parseAnnotations(r.annotations, r.id),
     cachedColumns,
     cachedRows,
     cachedAt: r.cached_at ? String(r.cached_at) : null,
@@ -472,6 +498,9 @@ export async function addCard(opts: {
   title: string;
   sql: string;
   chartConfig?: DashboardChartConfig | null;
+  /** Event annotations (#3209) — dated markers on a time-series card. Defaults
+   *  to none (empty array) when omitted; never null (the column is NOT NULL). */
+  annotations?: DashboardCardAnnotation[];
   cachedColumns?: string[] | null;
   cachedRows?: Record<string, unknown>[] | null;
   /** Group-scoped execution target (1.4.4). */
@@ -488,8 +517,8 @@ export async function addCard(opts: {
     const nextPos = (posRows[0]?.next_pos as number) ?? 0;
 
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_group_id, layout)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, annotations, cached_columns, cached_rows, cached_at, connection_group_id, layout)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         opts.dashboardId,
@@ -497,6 +526,9 @@ export async function addCard(opts: {
         opts.title,
         opts.sql,
         opts.chartConfig ? JSON.stringify(opts.chartConfig) : null,
+        // 0121 — the column is NOT NULL DEFAULT '[]'; pass the explicit array
+        // (or '[]' when absent) so a card always persists a defined value.
+        JSON.stringify(opts.annotations ?? []),
         opts.cachedColumns ? JSON.stringify(opts.cachedColumns) : null,
         opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
         opts.cachedRows ? new Date().toISOString() : null,
@@ -522,6 +554,9 @@ export async function updateCard(
   updates: {
     title?: string;
     chartConfig?: DashboardChartConfig | null;
+    /** Event annotations (#3209). `null` / omitted leaves them unchanged; an
+     *  explicit array (including `[]`) replaces the card's markers. */
+    annotations?: DashboardCardAnnotation[] | null;
     position?: number;
     layout?: DashboardCardLayout | null;
   },
@@ -539,6 +574,13 @@ export async function updateCard(
   if (updates.chartConfig !== undefined) {
     setClauses.push(`chart_config = $${paramIdx++}`);
     params.push(updates.chartConfig ? JSON.stringify(updates.chartConfig) : null);
+  }
+  // 0121 — replace the card's event markers. A `null` means "leave unchanged"
+  // (the field wasn't in the patch); an explicit array (including `[]` to clear
+  // all markers) is persisted. The column is NOT NULL, so a clear writes '[]'.
+  if (updates.annotations !== undefined && updates.annotations !== null) {
+    setClauses.push(`annotations = $${paramIdx++}`);
+    params.push(JSON.stringify(updates.annotations));
   }
   if (updates.position !== undefined) {
     setClauses.push(`position = $${paramIdx++}`);

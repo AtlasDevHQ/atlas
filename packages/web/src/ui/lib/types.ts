@@ -173,6 +173,7 @@ export type {
 export type {
   Dashboard,
   DashboardCard,
+  DashboardCardAnnotation,
   DashboardCardKind,
   DashboardCardLayout,
   DashboardWithCards,

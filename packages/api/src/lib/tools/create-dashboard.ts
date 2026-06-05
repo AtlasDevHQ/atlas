@@ -48,6 +48,7 @@ import {
   dashboardParametersSchema,
   dashboardTextCardContentSchema,
   dashboardChartConfigSchema,
+  dashboardCardAnnotationsSchema,
 } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
@@ -73,6 +74,11 @@ const ChartCardSchema = z
     title: z.string().min(1).max(200),
     sql: z.string().min(1),
     chartConfig: ChartConfigSchema,
+    annotations: dashboardCardAnnotationsSchema
+      .optional()
+      .describe(
+        "Optional dated event markers ({ x, label, color? }) drawn as vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
+      ),
     layout: CardLayoutSchema.optional(),
     connectionId: z
       .string()
@@ -395,6 +401,8 @@ If any card has invalid SQL or references an undeclared parameter, the whole cal
             sql: card.sql,
             chartConfig: card.chartConfig,
             content: null,
+            // #3209 — carry dated event markers through to the draft snapshot.
+            annotations: card.annotations ?? [],
             connectionGroupId: conversationGroupId,
             layout: card.layout ?? null,
           };

@@ -12,6 +12,9 @@ import {
   dashboardDrilldownConfigSchema,
   dashboardThresholdSchema,
   DASHBOARD_THRESHOLDS_MAX,
+  dashboardCardAnnotationSchema,
+  dashboardCardAnnotationsSchema,
+  DASHBOARD_ANNOTATIONS_MAX,
 } from "../dashboard";
 
 describe("dashboardParameterSchema", () => {
@@ -361,6 +364,55 @@ describe("dashboardThresholdSchema", () => {
     expect(
       dashboardThresholdSchema.safeParse({ value: 1, fillArea: true }).success,
     ).toBe(false);
+  });
+});
+
+describe("dashboardCardAnnotationSchema (#3209)", () => {
+  test("accepts a bare { x, label } (colour optional)", () => {
+    expect(
+      dashboardCardAnnotationSchema.safeParse({ x: "2026-01-15", label: "Launch" }).success,
+    ).toBe(true);
+  });
+
+  test("accepts hex, rgb(), and named colours", () => {
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "Jan", label: "A", color: "#10b981" }).success).toBe(true);
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "Jan", label: "A", color: "rgb(16, 185, 129)" }).success).toBe(true);
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "Jan", label: "A", color: "tomato" }).success).toBe(true);
+  });
+
+  test("rejects an empty x (a marker with no axis position)", () => {
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "", label: "Launch" }).success).toBe(false);
+  });
+
+  test("rejects an empty / missing label (the line has nothing to caption)", () => {
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "2026-01-15", label: "" }).success).toBe(false);
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "2026-01-15" }).success).toBe(false);
+  });
+
+  test("rejects a junk colour string", () => {
+    expect(dashboardCardAnnotationSchema.safeParse({ x: "Jan", label: "A", color: "not a color;" }).success).toBe(false);
+  });
+
+  test("rejects unknown keys (strict — no stray config rides along)", () => {
+    expect(
+      dashboardCardAnnotationSchema.safeParse({ x: "Jan", label: "A", y: 5 }).success,
+    ).toBe(false);
+  });
+});
+
+describe("dashboardCardAnnotationsSchema (#3209)", () => {
+  test("accepts an empty list (the default — renders as today)", () => {
+    expect(dashboardCardAnnotationsSchema.safeParse([]).success).toBe(true);
+  });
+
+  test("accepts a list at the cap", () => {
+    const atCap = Array.from({ length: DASHBOARD_ANNOTATIONS_MAX }, (_, i) => ({ x: `${i}`, label: `e${i}` }));
+    expect(dashboardCardAnnotationsSchema.safeParse(atCap).success).toBe(true);
+  });
+
+  test("rejects more than the cap (keeps the chart readable)", () => {
+    const tooMany = Array.from({ length: DASHBOARD_ANNOTATIONS_MAX + 1 }, (_, i) => ({ x: `${i}`, label: `e${i}` }));
+    expect(dashboardCardAnnotationsSchema.safeParse(tooMany).success).toBe(false);
   });
 });
 

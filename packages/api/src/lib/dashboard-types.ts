@@ -7,6 +7,7 @@
 export type {
   ChartType,
   DashboardChartConfig,
+  DashboardCardAnnotation,
   DashboardCardKind,
   DashboardCardLayout,
   Dashboard,

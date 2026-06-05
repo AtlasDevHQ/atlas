@@ -21,7 +21,7 @@
 import * as crypto from "crypto";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { dashboardChartConfigSchema } from "@useatlas/schemas";
+import { dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
@@ -34,7 +34,7 @@ import {
   getDashboard,
   CardLayoutSchema,
 } from "@atlas/api/lib/dashboards";
-import type { DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
+import type { DashboardCard, DashboardCardKind, DashboardCardLayout } from "@atlas/api/lib/dashboard-types";
 import { buildCardSummary } from "@atlas/api/lib/bound-chat-context";
 import {
   screenshotDashboard,
@@ -181,20 +181,41 @@ export function createBoundDashboardTools(
       cardId: z.string().min(1).describe("Card id (from the compact summary)"),
     }),
     execute: async ({ cardId }) => {
-      const card = await getCard(cardId, dashboardId);
-      if (!card.ok) {
-        return { kind: "err" as const, error: `Could not read card ${cardId}: ${card.reason}` };
+      // Draft view overlay (same as getDashboardState): when drafts are on and
+      // the user has a draft, a card's CURRENT state lives in the draft
+      // snapshot, not the published row. This matters most for `annotations` —
+      // it's REPLACE-ALL on updateCard, so returning the published markers here
+      // would let the agent fetch a stale set and drop staged ones when it
+      // sends back a "merged" array.
+      const dash = await getDashboard(dashboardId, { orgId: orgId ?? undefined });
+      if (!dash.ok) {
+        return { kind: "err" as const, error: `Could not read dashboard: ${dash.reason}` };
+      }
+      let card: DashboardCard | undefined;
+      if (isDashboardDraftsEnabled() && ctx.userId) {
+        const draftRow = await forkOrLoadDraft(ctx.userId, dash.data);
+        if (draftRow) {
+          card = materializeDraftView(dash.data, draftRow.snapshot).cards.find((c) => c.id === cardId);
+        }
+      }
+      card ??= dash.data.cards.find((c) => c.id === cardId);
+      if (!card) {
+        return { kind: "err" as const, error: `Could not read card ${cardId}: not_found` };
       }
       return {
         kind: "ok" as const,
         card: {
-          id: card.data.id,
-          title: card.data.title,
-          sql: card.data.sql,
-          chartConfig: card.data.chartConfig,
-          layout: card.data.layout,
-          position: card.data.position,
-          cachedColumns: card.data.cachedColumns,
+          id: card.id,
+          title: card.title,
+          sql: card.sql,
+          chartConfig: card.chartConfig,
+          // #3209 — annotations is a REPLACE-ALL field on updateCard, so the
+          // agent must see the current (draft) markers here to add/rename one
+          // without dropping the rest.
+          annotations: card.annotations,
+          layout: card.layout,
+          position: card.position,
+          cachedColumns: card.cachedColumns,
         },
       };
     },
@@ -206,9 +227,14 @@ export function createBoundDashboardTools(
       title: z.string().min(1).max(200).describe("Card title (visible to the user)"),
       sql: z.string().min(1).describe("Read-only SELECT query"),
       chartConfig: ChartConfigSchema.describe("Chart type + column mapping"),
+      annotations: dashboardCardAnnotationsSchema
+        .optional()
+        .describe(
+          "Optional dated event markers ({ x, label, color? }) — vertical reference lines on a line/area card (e.g. a product launch). `x` must match a value on the card's time/category axis.",
+        ),
       layout: CardLayoutSchema.optional().describe("Optional grid placement {x, y, w, h}"),
     }),
-    execute: async ({ title, sql, chartConfig, layout }) => {
+    execute: async ({ title, sql, chartConfig, annotations, layout }) => {
       try {
         // #3137 — a KPI card's comparisonSql runs through the SAME guard at
         // render time; validate it up front alongside the primary so the bound
@@ -258,6 +284,7 @@ export function createBoundDashboardTools(
           title,
           sql,
           chartConfig,
+          annotations: annotations ?? [],
           connectionGroupId: null,
           layout: layout ?? null,
         };
@@ -281,6 +308,7 @@ export function createBoundDashboardTools(
           title,
           sql,
           chartConfig,
+          ...(annotations && { annotations }),
           ...(layout && { layout }),
         });
         if (!result.ok) {
@@ -305,29 +333,36 @@ export function createBoundDashboardTools(
   });
 
   const updateCardTool = tool({
-    description: `Update a card's title, chart type, or layout. Pass only the fields you want to change. Does NOT support changing the SQL — that is a destructive op and arrives as a staged ghost change in a later slice. To change the SQL today, ask the user to remove and re-add the card.`,
+    description: `Update a card's title, chart type, layout, or event annotations. Pass only the fields you want to change. Does NOT support changing the SQL — that is a destructive op and arrives as a staged ghost change in a later slice. To change the SQL today, ask the user to remove and re-add the card.`,
     inputSchema: z.object({
       cardId: z.string().min(1).describe("Card id"),
       title: z.string().min(1).max(200).optional(),
       chartConfig: ChartConfigSchema.nullable().optional(),
+      annotations: dashboardCardAnnotationsSchema
+        .optional()
+        .describe(
+          "Replace the card's dated event markers ({ x, label, color? }). Pass [] to clear them. Vertical reference lines on a line/area card.",
+        ),
       layout: CardLayoutSchema.nullable().optional(),
       position: z.number().int().min(0).optional(),
     }),
-    execute: async ({ cardId, title, chartConfig, layout, position }) => {
+    execute: async ({ cardId, title, chartConfig, annotations, layout, position }) => {
       try {
         const updates: {
           title?: string;
           chartConfig?: z.infer<typeof ChartConfigSchema> | null;
+          annotations?: z.infer<typeof dashboardCardAnnotationsSchema>;
           layout?: DashboardCardLayout | null;
           position?: number;
         } = {};
         if (title !== undefined) updates.title = title;
         if (chartConfig !== undefined) updates.chartConfig = chartConfig;
+        if (annotations !== undefined) updates.annotations = annotations;
         if (layout !== undefined) updates.layout = layout;
         if (position !== undefined) updates.position = position;
 
         if (Object.keys(updates).length === 0) {
-          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, layout, position." };
+          return { kind: "err" as const, error: "No fields supplied — pass at least one of title, chartConfig, annotations, layout, position." };
         }
 
         // #3138: a text / section-block card has no chart. Reject a chartConfig

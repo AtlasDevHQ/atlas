@@ -139,7 +139,8 @@ describe("runMigrations", () => {
     //   Plus 0118 (clear user.role='admin' + member backfill, #2890) = 119.
     //   Plus 0119 (drop legacy teams/telegram/gchat/whatsapp_installations, #3161) = 120.
     //   Plus 0120 (static-bot routing-id partial unique index, #3167) = 121.
-    expect(count).toBe(121);
+    //   Plus 0121 (dashboard_cards.annotations for event annotations, #3209) = 122.
+    expect(count).toBe(122);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -289,6 +290,7 @@ describe("runMigrations", () => {
         "0118_drop_user_admin_role.sql",
         "0119_drop_legacy_credential_tables.sql",
         "0120_static_bot_routing_id_unique.sql",
+        "0121_dashboard_card_annotations.sql",
       ],
     });
 

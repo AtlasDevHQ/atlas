@@ -111,6 +111,39 @@ export interface DashboardThreshold {
   label?: string;
 }
 
+/**
+ * A dated event marker on a time-series card (#3209). Rendered as a VERTICAL
+ * Recharts `<ReferenceLine>` on line / area cards — marking when a product
+ * launch, campaign start, or other event happened on the time axis. The
+ * vertical sibling of {@link DashboardThreshold} (horizontal goal lines, #3208):
+ * thresholds position on the value (Y) axis, annotations on the category (X)
+ * axis.
+ *
+ * Unlike thresholds (which live inside {@link DashboardChartConfig}), annotations
+ * live in their OWN card-level column (`dashboard_cards.annotations`, migration
+ * 0121) and surface as {@link DashboardCard.annotations} — so they survive a
+ * chart-type re-detection and belong to the card's time context rather than a
+ * specific viz. Bar / pie / KPI / table cards ignore them gracefully.
+ *
+ * Wire-type mirror of `dashboardCardAnnotationSchema` in `@useatlas/schemas`.
+ * The count is bounded there (`DASHBOARD_ANNOTATIONS_MAX`) so a card can't stack
+ * so many markers that the chart stops being readable.
+ */
+export interface DashboardCardAnnotation {
+  /**
+   * Position of the line on the category (X) axis. Matched against the chart's
+   * rendered category-axis value (e.g. an ISO date `"2026-01-15"` or a month
+   * label `"Jan"`) — the marker draws where that value sits on the axis. A
+   * value that matches no data point renders no line (Recharts no-op).
+   */
+  x: string;
+  /** Caption rendered at the line (e.g. "Product launch", "Campaign start"). */
+  label: string;
+  /** Stroke colour for the line. A CSS colour (hex, `rgb()`, or a named colour);
+   *  defaults to a theme annotation colour when omitted. */
+  color?: string;
+}
+
 export interface DashboardChartConfig {
   type: ChartType;
   categoryColumn: string;
@@ -242,6 +275,13 @@ export interface DashboardCard {
    * SQL-guard involvement.
    */
   content: string | null;
+  /**
+   * Event annotations (#3209) — dated markers rendered as vertical reference
+   * lines on a line / area card. Always present on the wire (empty array when
+   * the card has none); a card-level field rather than part of `chartConfig`
+   * so it survives a chart-type re-detection. See {@link DashboardCardAnnotation}.
+   */
+  annotations: DashboardCardAnnotation[];
   cachedColumns: string[] | null;
   cachedRows: Record<string, unknown>[] | null;
   cachedAt: string | null;
@@ -279,6 +319,9 @@ export interface ProposedCard {
   title: string;
   sql: string;
   chartConfig: DashboardChartConfig;
+  /** Event annotations (#3209) carried through the propose/save flow. Omitted →
+   *  the saved card has no markers. See {@link DashboardCardAnnotation}. */
+  annotations?: DashboardCardAnnotation[];
   layout?: DashboardCardLayout;
   connectionId?: string;
 }

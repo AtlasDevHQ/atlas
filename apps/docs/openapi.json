@@ -6667,6 +6667,36 @@
                       "valueColumns"
                     ]
                   },
+                  "annotations": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "x": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80
+                        },
+                        "color": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40,
+                          "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                        }
+                      },
+                      "required": [
+                        "x",
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 20
+                  },
                   "cachedColumns": {
                     "type": [
                       "array",
@@ -7045,6 +7075,36 @@
                       "categoryColumn",
                       "valueColumns"
                     ]
+                  },
+                  "annotations": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "x": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 120
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 80
+                        },
+                        "color": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 40,
+                          "pattern": "^(#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\\([\\d\\s.,%/]+\\)|[a-zA-Z]+)$"
+                        }
+                      },
+                      "required": [
+                        "x",
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 20
                   },
                   "position": {
                     "type": "integer",

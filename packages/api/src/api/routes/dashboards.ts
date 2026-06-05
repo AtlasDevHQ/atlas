@@ -59,7 +59,7 @@ import {
   listStagedChangesForUser,
 } from "@atlas/api/lib/stage-tracker";
 import { SHARE_MODES } from "@useatlas/types/share";
-import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, dashboardChartConfigSchema } from "@useatlas/schemas";
+import { dashboardParametersSchema, renderCardRequestSchema, renderCardQuerySchema, dashboardChartConfigSchema, dashboardCardAnnotationsSchema } from "@useatlas/schemas";
 import {
   resolveDashboardParameterValues,
   extractPlaceholderNames,
@@ -108,6 +108,9 @@ const AddCardSchema = z.object({
   title: z.string().min(1).max(200),
   sql: z.string().min(1),
   chartConfig: ChartConfigSchema.nullable().optional(),
+  /** Event annotations (#3209) — dated markers rendered as vertical reference
+   *  lines on a line / area card. Omitted → the card has none. */
+  annotations: dashboardCardAnnotationsSchema.optional(),
   cachedColumns: z.array(z.string()).nullable().optional(),
   cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
   /** Group-scoped execution target (1.4.4). Resolved to a physical
@@ -119,6 +122,9 @@ const AddCardSchema = z.object({
 const UpdateCardSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   chartConfig: ChartConfigSchema.nullable().optional(),
+  /** Replace the card's event annotations (#3209). Omitted → unchanged; an
+   *  explicit array (including `[]` to clear) replaces them. */
+  annotations: dashboardCardAnnotationsSchema.optional(),
   position: z.number().int().min(0).optional(),
   layout: CardLayoutSchema.nullable().optional(),
 });
@@ -1668,6 +1674,7 @@ authed.openapi(
         title: parsed.title,
         sql: parsed.sql,
         chartConfig: parsed.chartConfig ?? null,
+        annotations: parsed.annotations ?? [],
         cachedColumns: parsed.cachedColumns ?? null,
         cachedRows: parsed.cachedRows ?? null,
         connectionGroupId: parsed.connectionGroupId ?? null,

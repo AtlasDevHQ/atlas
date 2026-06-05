@@ -35,6 +35,7 @@ import { createHash } from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getDashboard } from "@atlas/api/lib/dashboards";
+import { resolveDashboardParameterValues } from "@atlas/api/lib/dashboard-parameters";
 
 const log = createLogger("dashboard-screenshot");
 
@@ -526,6 +527,7 @@ export type ExportFailReason =
   | "no_db"
   | "dashboard_not_found"
   | "dashboard_unavailable"
+  | "invalid_parameters"
   | "render_failed"
   | "export_timeout"
   | "browser_unavailable";
@@ -726,6 +728,25 @@ export async function exportDashboard(opts: ExportOpts): Promise<ExportResult> {
   }
 
   const title = dash.data.title?.trim() ? dash.data.title : "Dashboard";
+
+  // Validate the supplied overrides against the dashboard's declared parameters
+  // BEFORE rendering — the same coercion `/cards/:cardId/render` runs. Without
+  // this, an invalid override (e.g. a date param set to "not-a-date") would be
+  // forwarded raw; the page's per-card renders 400, the grid keeps its cached
+  // DEFAULT rows, and the export would still return 200 with a default-parameter
+  // artifact for a non-default request. Fail closed instead.
+  if (opts.parameters && Object.keys(opts.parameters).length > 0) {
+    try {
+      resolveDashboardParameterValues(dash.data.parameters, opts.parameters);
+    } catch (err) {
+      return {
+        ok: false,
+        reason: "invalid_parameters",
+        message: err instanceof Error ? err.message : "Invalid dashboard parameters.",
+      };
+    }
+  }
+
   const baseUrl = opts.baseUrl ?? process.env.ATLAS_WEB_BASE_URL ?? "http://localhost:3000";
   const timeoutMs = opts.timeoutMs ?? getExportTimeoutMs();
 
@@ -798,7 +819,11 @@ interface ExportElementHandle {
 interface ExportPage {
   goto: (url: string, opts?: Record<string, unknown>) => Promise<unknown>;
   waitForSelector: (sel: string, opts?: Record<string, unknown>) => Promise<unknown>;
-  waitForFunction: (fn: string | (() => boolean), opts?: Record<string, unknown>) => Promise<unknown>;
+  waitForFunction: (
+    fn: string | (() => boolean),
+    arg?: unknown,
+    opts?: Record<string, unknown>,
+  ) => Promise<unknown>;
   evaluate: <T>(fn: string | (() => T)) => Promise<T>;
   screenshot: (opts?: Record<string, unknown>) => Promise<Buffer>;
   setContent: (html: string, opts?: Record<string, unknown>) => Promise<void>;
@@ -820,19 +845,27 @@ const EXPORT_VIEWPORT_WIDTH = 1600;
 const EXPORT_VIEWPORT_HEIGHT = 2000;
 const EXPORT_NAV_TIMEOUT_MS = 20_000;
 const EXPORT_GRID_WAIT_TIMEOUT_MS = 12_000;
+const EXPORT_PARAM_WAIT_TIMEOUT_MS = 12_000;
 const EXPORT_TILE_WAIT_TIMEOUT_MS = 8_000;
 
-// Predicate run inside the page: every grid tile carries visible content (an
-// SVG chart, a table, or some text). Passed as a string so the api/ package
-// stays off the `dom` lib. An empty board (no tiles) passes immediately — the
-// "empty canvas" state has nothing to wait for.
+// Predicate run inside the page: every grid tile's BODY has finished rendering.
+// We inspect `.dash-tile-body` (not the wrapper) so the always-present
+// title/footer text can't satisfy the check before a chart paints, and we treat
+// the dynamic-import loading skeleton (`.animate-pulse`) as "not ready" — so a
+// first-load chart export waits for the SVG instead of capturing a blank tile.
+// A tile body is ready when it has no loading skeleton AND carries an SVG
+// (chart), a table, or some text (KPI/markdown/"no data"). Passed as a string
+// so the api/ package stays off the `dom` lib. An empty board passes
+// immediately — the "empty canvas" state has nothing to wait for.
 const EXPORT_TILE_CONTENT_PREDICATE = `(() => {
   const tiles = Array.from(document.querySelectorAll('.dash-tile-wrapper, .dash-mobile-tile'));
   if (tiles.length === 0) return true;
   return tiles.every((tile) => {
-    const hasSvg = tile.querySelector('svg');
-    const hasTable = tile.querySelector('table');
-    const text = (tile.textContent || '').trim();
+    const body = tile.querySelector('.dash-tile-body') || tile;
+    if (body.querySelector('.animate-pulse')) return false;
+    const hasSvg = body.querySelector('svg');
+    const hasTable = body.querySelector('table');
+    const text = (body.textContent || '').trim();
     return Boolean(hasSvg || hasTable || text.length > 0);
   });
 })()`;
@@ -866,9 +899,10 @@ async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRender
       if (dparams) target.searchParams.set("dparams", dparams);
       await page.goto(target.toString(), { waitUntil: "networkidle", timeout: EXPORT_NAV_TIMEOUT_MS });
 
-      // Best-effort render wait. Neither stage aborts the export: a missing
-      // grid (empty board / slow shell) or a single stuck tile only flips the
-      // `partial` flag so the caller can warn that the file may be incomplete.
+      // Best-effort render wait. No stage aborts the export: a missing grid
+      // (empty board / slow shell), unsettled parameter renders, or a single
+      // stuck tile only flip the `partial` flag so the caller can warn that the
+      // file may be incomplete.
       let partial = false;
       try {
         await page.waitForSelector(".dashboard-app", { timeout: EXPORT_GRID_WAIT_TIMEOUT_MS });
@@ -879,8 +913,33 @@ async function defaultExportRender(args: ExportRenderArgs): Promise<ExportRender
         );
         partial = true;
       }
+      // When parameter overrides are present, the page re-renders each card via
+      // async `/cards/:id/render` calls AFTER mount — the board initially shows
+      // its cached DEFAULT rows. Wait for the page's readiness signal
+      // (`data-dashboard-export-ready="1"`, set once the dashboard has loaded
+      // and any parameter batch has settled) so we never capture the
+      // default-parameter board for a parameterized request.
+      if (dparams) {
+        try {
+          await page.waitForSelector('[data-dashboard-export-ready="1"]', {
+            timeout: EXPORT_PARAM_WAIT_TIMEOUT_MS,
+          });
+        } catch (err) {
+          log.debug(
+            { dashboardId: args.dashboardId, err: errorMessage(err) },
+            "exportRender: parameter renders did not settle within timeout — exporting partial board",
+          );
+          partial = true;
+        }
+      }
       try {
-        await page.waitForFunction(EXPORT_TILE_CONTENT_PREDICATE, { timeout: EXPORT_TILE_WAIT_TIMEOUT_MS });
+        // Playwright signature is waitForFunction(pageFunction, arg?, options?)
+        // — the timeout MUST be the third arg. Passing it as the second
+        // (`arg`) position silently falls back to the 30s default, which would
+        // turn an intended best-effort partial into a 504 under the export timer.
+        await page.waitForFunction(EXPORT_TILE_CONTENT_PREDICATE, undefined, {
+          timeout: EXPORT_TILE_WAIT_TIMEOUT_MS,
+        });
       } catch (err) {
         log.debug(
           { dashboardId: args.dashboardId, err: errorMessage(err) },

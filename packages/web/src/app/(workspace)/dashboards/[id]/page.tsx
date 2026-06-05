@@ -168,6 +168,12 @@ export default function DashboardViewPage() {
   // cached snapshot (rendered server-side with the parameters' defaults).
   const [paramResults, setParamResults] = useState<Record<string, { columns: string[]; rows: Record<string, unknown>[] }>>({});
   const [paramLoading, setParamLoading] = useState(false);
+  // #3211 — flips true once the first parameter batch (fired by the parameter
+  // bar on mount with the URL's overrides) has settled. The whole-dashboard
+  // export's headless render waits on the `data-dashboard-export-ready` signal
+  // below so it never captures the cached default board before parameterized
+  // renders land.
+  const [paramSettledOnce, setParamSettledOnce] = useState(false);
   // Surfaced when one or more cards fail to render with the chosen parameters
   // (e.g. 409 approval_required, 503 connection unavailable) — otherwise the
   // grid would silently fall back to the cached snapshot and the filter would
@@ -585,6 +591,7 @@ export default function DashboardViewPage() {
       setParamResults({});
       setParamError(null);
       setParamLoading(false);
+      setParamSettledOnce(true);
       void loadDefaultComparisons();
       return;
     }
@@ -692,7 +699,10 @@ export default function DashboardViewPage() {
         setParamError(null);
       }
     } finally {
-      if (seq === paramReqSeq.current) setParamLoading(false);
+      if (seq === paramReqSeq.current) {
+        setParamLoading(false);
+        setParamSettledOnce(true);
+      }
     }
   }
 
@@ -767,9 +777,21 @@ export default function DashboardViewPage() {
     void loadDefaultComparisons();
   }, [kpiSignature]);
 
+  // #3211 — readiness signal the whole-dashboard export's headless render waits
+  // on. "1" once the dashboard has loaded AND, when parameter overrides are
+  // active in the URL, the first parameter batch has settled — so a
+  // parameterized export never captures the cached default board. A param-less
+  // dashboard (or one with no active overrides) is ready as soon as it loads.
+  const dparamsActive = (dashboard?.parameters.length ?? 0) > 0 && Boolean(searchParams.get("dparams"));
+  const exportReady =
+    !loading && !error && Boolean(dashboard) && !paramLoading && (!dparamsActive || paramSettledOnce);
+
   return (
     <StageProvider value={{ dashboardId: id, onStagesChanged: handleStagesChanged }}>
-      <div className="flex h-full flex-1 flex-col overflow-auto">
+      <div
+        className="flex h-full flex-1 flex-col overflow-auto"
+        data-dashboard-export-ready={exportReady ? "1" : "0"}
+      >
         {loading && (
           <div className="space-y-4 px-4 py-6 sm:px-6">
             <Skeleton className="h-8 w-1/3" />

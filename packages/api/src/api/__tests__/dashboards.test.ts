@@ -2088,6 +2088,62 @@ describe("dashboard routes", () => {
       expect(mockExportDashboard).not.toHaveBeenCalled();
     });
 
+    it("returns 401 when unauthenticated (admin-gated)", async () => {
+      mockExportDashboard.mockClear();
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: false as const,
+        mode: "none" as const,
+        status: 401 as const,
+        error: "Authentication required.",
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(401);
+      expect(mockExportDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 when authenticated but not admin", async () => {
+      mockExportDashboard.mockClear();
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        authenticated: true as const,
+        mode: "simple-key" as const,
+        user: { id: "u1", label: "test@test.com", mode: "simple-key" as const, role: "member" as const, activeOrganizationId: "org-1" },
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf" }),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(mockExportDashboard).not.toHaveBeenCalled();
+    });
+
+    it("returns 400 invalid_parameters when an override fails its declared type", async () => {
+      mockExportDashboard.mockResolvedValueOnce({
+        ok: false,
+        reason: "invalid_parameters",
+        message: 'Parameter "since" expects a date (YYYY-MM-DD), got "not-a-date".',
+      });
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/dashboards/${VALID_ID}/export`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ format: "pdf", parameters: { since: "not-a-date" } }),
+        }),
+      );
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string; requestId?: string };
+      expect(body.error).toBe("invalid_parameters");
+      expect(typeof body.requestId).toBe("string");
+    });
+
     it("returns a PDF attachment with the partial header on success (default format)", async () => {
       mockExportDashboard.mockClear();
       const response = await app.fetch(
@@ -2104,6 +2160,8 @@ describe("dashboard routes", () => {
       expect(response.headers.get("content-disposition")).toContain(".pdf");
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(response.headers.get("x-atlas-export-partial")).toBe("0");
+      // Observability metadata — the mock reports durationMs: 12 for PDF.
+      expect(response.headers.get("x-atlas-export-duration-ms")).toBe("12");
 
       // Forwards identity + cookie + format + the caller's current parameters.
       const call = mockExportDashboard.mock.calls[0]![0]!;

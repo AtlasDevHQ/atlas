@@ -914,7 +914,7 @@ const exportDashboardRoute = createRoute({
   tags: ["Dashboards"],
   summary: "Export the whole dashboard as PNG or PDF",
   description:
-    "Renders the full dashboard board at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires admin role.",
+    "Renders the full dashboard at the caller's current parameter values in a headless Chromium and returns the artifact as a downloadable attachment (filename = dashboard title + UTC timestamp). Reuses the screenshot pipeline (#2367) rather than a second headless path. A single tile that fails to render does NOT abort the export — the response carries `X-Atlas-Export-Partial: 1` and the partial board is still returned. `format` defaults to `pdf`. Requires admin role.",
   request: {
     params: z.object({
       id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
@@ -2586,6 +2586,11 @@ authed.openapi(exportDashboardRoute, async (c) => {
             503,
             { "Retry-After": "5" },
           );
+        case "invalid_parameters":
+          // Supplied an override that fails its declared parameter's type
+          // (e.g. a non-date for a date param). Fail closed with a 400 rather
+          // than silently exporting the default-parameter board.
+          return c.json({ error: "invalid_parameters", message: result.message, requestId }, 400);
         case "browser_unavailable":
           return c.json({ error: "browser_unavailable", message: result.message, requestId }, 503);
         case "export_timeout":

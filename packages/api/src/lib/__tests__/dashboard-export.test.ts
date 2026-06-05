@@ -119,6 +119,37 @@ describe("exportDashboard", () => {
     expect(result.partial).toBe(true);
   });
 
+  it("rejects an override that fails its declared parameter type (invalid_parameters)", async () => {
+    dashboardResult = {
+      ok: true,
+      data: {
+        id: "dash-1",
+        title: "Revenue overview",
+        description: null,
+        updatedAt: "2026-06-04",
+        cards: [],
+        parameters: [{ key: "since", label: "Since", type: "date" }],
+      },
+    };
+    let rendered = false;
+    _setExportRenderFn(async () => {
+      rendered = true;
+      return { bytes: FAKE_PDF, contentType: "application/pdf", partial: false };
+    });
+    const result = await exportDashboard({
+      dashboardId: "dash-1",
+      userId: "u",
+      orgId: "o",
+      format: "pdf",
+      parameters: { since: "not-a-date" },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected fail");
+    expect(result.reason).toBe("invalid_parameters");
+    // Validation fails closed BEFORE the headless render is ever invoked.
+    expect(rendered).toBe(false);
+  });
+
   it("maps a not_found dashboard to dashboard_not_found", async () => {
     dashboardResult = { ok: false, reason: "not_found" };
     const result = await exportDashboard({ dashboardId: "missing", userId: "u", orgId: "o", format: "pdf" });

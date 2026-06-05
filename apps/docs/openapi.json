@@ -6590,6 +6590,21 @@
                           }
                         },
                         "additionalProperties": false
+                      },
+                      "drilldown": {
+                        "type": "object",
+                        "properties": {
+                          "targetParam": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "pattern": "^[a-z_][a-z0-9_]*$"
+                          }
+                        },
+                        "required": [
+                          "targetParam"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -6899,6 +6914,21 @@
                             "maxLength": 120
                           }
                         },
+                        "additionalProperties": false
+                      },
+                      "drilldown": {
+                        "type": "object",
+                        "properties": {
+                          "targetParam": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64,
+                            "pattern": "^[a-z_][a-z0-9_]*$"
+                          }
+                        },
+                        "required": [
+                          "targetParam"
+                        ],
                         "additionalProperties": false
                       }
                     },

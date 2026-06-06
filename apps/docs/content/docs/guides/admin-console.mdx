@@ -124,6 +124,10 @@ In **Pretty** mode, entities show parsed dimensions, joins, measures, and query 
 
 Browse entities by clicking them in the sidebar. The catalog shows `use_for` tags and `common_questions`. The glossary highlights ambiguous terms. Metrics display SQL, aggregation type, and objectives.
 
+**Grouped by Connection group.** When a workspace has more than one [Connection group](/semantic-layer/multi-env), entities cluster under collapsible per-group sections in the file tree (mirroring the `semantic/groups/<group>/` disk layout, [ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)) instead of a flat list with per-row badges. Each section header carries the group's datasource type and member count. A single-DB workspace (only the default group) keeps the flat `entities` folder with no group chrome.
+
+**No layer yet?** When a group has no entities, the empty state offers a **Generate semantic layer** button that launches the [setup wizard](/guides/semantic-layer-wizard) for that group — the in-product path that replaces the old "Run `atlas init`" instruction.
+
 In **SaaS mode**, admins can create, edit, and delete entities directly from the UI with schema-aware autocomplete and full version history. See [Semantic Editor](/guides/semantic-editor) for the full guide.
 
 ### Drift drawer

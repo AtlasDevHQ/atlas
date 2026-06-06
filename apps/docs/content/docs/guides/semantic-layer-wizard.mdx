@@ -6,7 +6,9 @@ icon: Wand2
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The setup wizard is a browser-based alternative to `atlas init`. It walks you through profiling your database, selecting tables, reviewing generated entity YAML, and saving everything to your workspace — all from `/wizard`.
+The setup wizard is a browser-based alternative to `atlas init`. It walks you through profiling your database, selecting tables, reviewing and optionally enriching the generated entity YAML, and saving everything to your workspace — all from `/wizard`.
+
+The wizard is the **one shared generation flow** for a [Connection group](/semantic-layer/multi-env). Several in-product doors launch it ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)): the first-run onboarding wizard, an inline prompt after adding a connection in **Admin → Connections**, and the **Generate semantic layer** empty state in the [Semantic Layer browser](/guides/admin-console#semantic-layer-browser). They all run the same code path — the experience is identical whether this is your first database or your tenth. See [Entry points](#entry-points) below.
 
 <Callout title="Prerequisites">
 - An **admin** or **owner** role in your Atlas workspace
@@ -24,11 +26,11 @@ The wizard is a five-step flow at `/wizard`:
 |------|-------------|
 | 1. **Select datasource** | Choose a configured database connection |
 | 2. **Select tables** | Browse discovered tables and views, filter by name, select which to include |
-| 3. **Review entities** | Inspect profiling results — columns, types, relationships, flags — and edit generated YAML |
+| 3. **Review & enrich** | Inspect the **mechanical baseline** (columns, types, relationships, flags), edit YAML, and optionally run **LLM enrichment** per table — see [Two-phase generation](#two-phase-generation) |
 | 4. **Preview** | Ask a test question to see how the agent would use your semantic layer (optional) |
-| 5. **Done** | Entities saved to your workspace, ready to query |
+| 5. **Done** | Entities saved to the resolved Connection group, ready to query |
 
-The wizard calls the same profiler that powers `atlas init`, so you get identical heuristics: foreign key inference, enum detection, abandoned table flags, and denormalization warnings.
+The wizard calls the same profiler and the same shared generation engine that powers `atlas init`, so you get identical heuristics: foreign key inference, enum detection, abandoned table flags, and denormalization warnings — and identical enrichment output. Generated entities save into the connection's Connection group (the default group flat at `semantic/`, a non-default group under `semantic/groups/<group>/`); see [Group scoping](#group-scoping).
 
 ---
 
@@ -50,9 +52,9 @@ The wizard queries your database and lists all tables and views (plus materializ
 
 Click **Generate Entities** to proceed. The wizard will profile each selected table — inspecting columns, data types, cardinality, sample values, primary keys, and foreign keys.
 
-### 3. Review Entities
+### 3. Review & Enrich
 
-For each profiled table, the wizard generates an entity YAML file. Click any table row to expand it and see:
+For each profiled table, the wizard generates a **mechanical baseline** entity YAML file — names, types, sample values, cardinality, PKs/FKs. This baseline is a complete, queryable semantic layer on its own; nothing here costs money or waits on a model. Click any table row to expand it and see:
 
 - **Columns** — name, data type, flags (PK, FK, enum-like, nullable), and sample values
 - **Relationships** — declared foreign keys (from constraints) and inferred foreign keys (from naming conventions)
@@ -60,7 +62,7 @@ For each profiled table, the wizard generates an entity YAML file. Click any tab
 - **Entity YAML** — editable in-place so you can refine descriptions, adjust column types, or add custom measures before saving
 - **Profiler notes** — additional observations from the heuristic analysis
 
-Review the generated YAML and make any adjustments. Click **Preview** to continue.
+Optionally run **LLM enrichment** here to deepen the baseline with business descriptions, use cases, query patterns, and virtual dimensions — see [Two-phase generation](#two-phase-generation). Enrichment never fires automatically; the baseline is saveable as-is. When you're done, click **Preview** to continue.
 
 ### 4. Preview (Optional)
 
@@ -72,7 +74,7 @@ This step is optional — you can skip straight to **Save & Finish**.
 
 Click **Save & Finish** in the preview step. The wizard persists your entities to the workspace's org-scoped semantic layer. Once saved:
 
-- Entity YAML files are written to disk under the org-scoped `semantic/` directory
+- Entity YAML files are written to disk under the org-scoped semantic layer, in the resolved [group's directory](#group-scoping) (`semantic/entities/` for the default group, `semantic/groups/<group>/entities/` otherwise)
 - The semantic layer whitelist cache is flushed, so new tables are queryable immediately
 
 You'll see a confirmation screen with links to **View Entities** in the admin console or **Start Chatting**.
@@ -83,13 +85,54 @@ The wizard generates entity YAML files only. For a complete semantic layer scaff
 
 ---
 
+## Two-phase generation
+
+Generation is deliberately split into two phases so the LLM **never fires by accident**:
+
+**Phase 1 — Mechanical baseline (automatic, free, instant).** Profiling produces a complete YAML template for every selected table from names, types, sample values, cardinality, and keys. No model call, no spend, no wait. This baseline is a usable, queryable semantic layer on its own — you can save and start querying without ever enriching.
+
+**Phase 2 — Enrichment (explicit, per-table, cost-gated).** An LLM round-trip re-profiles one table for fresh database grounding, then adds business descriptions, use cases, query patterns, and virtual dimensions on top of its baseline. Controls in the Review step:
+
+- **Enrich all** — one deliberate action, gated behind a confirmation dialog that states the table count (e.g. "Enrich 24 tables?") so the spend is never a surprise.
+- **Enrich selected** — a per-table selector to enrich only the tables you care about.
+- **Ignore** — exclude tables you don't need (dead/legacy, junction, cache) from both enrichment and the final save. The ignore list is **pre-seeded** from the profiler's `possibly_abandoned` flag, so you confirm rather than hunt.
+
+Enrichment runs one request per chosen table with bounded concurrency and upgrades each row in place the instant it settles. Partial completion is safe — each table is independent.
+
+<Callout type="warn">
+Enrichment requires a configured LLM provider. On a key-less self-host the **Enrich** actions return `503` with one actionable banner (instead of N per-table auth errors), and the mechanical baseline stays fully saveable.
+</Callout>
+
+---
+
+## Group scoping
+
+Generated entities save into the connection's **Connection group**, not a raw connection id ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)). The wizard resolves the group server-side, so the entry-point doors stay group-unaware:
+
+- The **default group** writes flat at `semantic/entities/` (`connection_group_id = NULL`) — a single-DB workspace sees no extra nesting.
+- A **non-default group** writes under `semantic/groups/<group>/` — one directory per group, so multi-DB workspaces stay legible on disk and in the [grouped tree](/guides/admin-console#semantic-layer-browser).
+- Adding a **member to an already-populated group** (e.g. `eu-prod` into `prod`) reuses that group's existing entities rather than generating a second copy — members of a group share one schema and one set of entities.
+
+---
+
+## Entry points
+
+The wizard is one shared flow with several doors — all DB-count-agnostic, all landing in the correct Connection group:
+
+1. **Inline-on-add (Admin → Connections).** Adding a SQL connection that forms a **new** group surfaces an inline "Generate semantic layer?" prompt. Adding a member to an already-populated group stays silent — that group already has its schema. The prompt deep-links into `/wizard` at the table-picker step for the new connection.
+2. **Per-group empty state (Semantic Layer browser).** A group with no entities shows a **Generate semantic layer** button (replacing the old "Run `atlas init`" instruction). Always-available way back in.
+3. **Onboarding wizard.** The first-run `/wizard` is just another caller of the same flow — skipping it costs nothing; you pick the thread up later via (1) or (2).
+
+---
+
 ## What Gets Generated
 
-The wizard generates entity YAML files — one per profiled table:
+The wizard generates entity YAML files — one per profiled (non-ignored) table — written into the resolved [Connection group's directory](#group-scoping):
 
 | File | Description |
 |------|-------------|
-| `entities/<table>.yml` | Dimensions, measures, joins, and query patterns for each table |
+| `entities/<table>.yml` | Dimensions, measures, joins, and query patterns for each table (default group) |
+| `groups/<group>/entities/<table>.yml` | Same, for a non-default group |
 
 All files are stored scoped to your organization. In a multi-tenant deployment, each workspace gets its own isolated semantic layer. For a complete scaffold including `catalog.yml`, `glossary.yml`, and `metrics/*.yml`, use `atlas init` from the CLI.
 
@@ -101,14 +144,15 @@ All files are stored scoped to your organization. In a multi-tenant deployment, 
 |---|---|---|
 | **Interface** | Browser UI — point and click | Terminal — command line |
 | **Auth** | Requires admin session | Uses `ATLAS_DATASOURCE_URL` directly |
-| **Storage** | Org-scoped (disk) | Local `semantic/` directory |
+| **Storage** | Org-scoped, in the [group's directory](#group-scoping) | Local `semantic/` (group via `--connection`) |
 | **Table selection** | Visual checklist with filter | `--tables` flag or interactive prompt |
 | **YAML editing** | In-place editor before save | Edit files after generation |
+| **Enrichment** | Per-table, in the Review step (Enrich all / selected) | `atlas init --enrich` |
 | **Preview** | Built-in question preview step | N/A — run `atlas query` separately |
 | **Best for** | SaaS deployments, non-technical admins | Self-hosted, CI pipelines, version-controlled semantic layers |
 
 <Callout type="info">
-Both tools use the same profiler engine. The generated entity YAML is identical — the difference is where it's stored and how you interact with it. The CLI additionally generates catalog, glossary, and metric files.
+Both tools use the same [shared generation engine](https://github.com/AtlasDevHQ/atlas/blob/main/docs/design/semantic-onboarding.md) — same profiler heuristics, same enrichment prompt and merge rules — so the generated entity YAML is identical. The difference is where it's stored and how you interact with it. The CLI additionally generates catalog, glossary, and metric files.
 </Callout>
 
 ---
@@ -158,9 +202,10 @@ The wizard API is mounted at `/api/v1/wizard`. All endpoints require admin authe
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `POST` | `/profile` | Admin session | List tables and views from a connected datasource |
-| `POST` | `/generate` | Admin session | Profile selected tables and generate entity YAML |
+| `POST` | `/generate` | Admin session | Profile selected tables and generate the mechanical baseline entity YAML (Phase 1) |
+| `POST` | `/enrich` | Admin session | LLM-enrich a single table's entity YAML (Phase 2); `503` when no LLM provider is configured |
 | `POST` | `/preview` | Admin session | Preview agent behavior with generated entities |
-| `POST` | `/save` | Admin session | Persist entities to the org-scoped semantic layer |
+| `POST` | `/save` | Admin session | Persist entities to the resolved Connection group |
 
 ---
 

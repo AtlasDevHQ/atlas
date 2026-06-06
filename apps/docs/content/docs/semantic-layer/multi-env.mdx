@@ -90,13 +90,16 @@ Vocabulary: code calls these **connection groups**. The UI says **environments**
 Semantic entities, dashboards, scheduled tasks, approvals, and PII classifications resolve through the group, not the individual connection. A `users` entity scoped to `prod` is queryable on every member of the `prod` group. You write the YAML once; the agent serves all replicas.
 
 ```yaml
-# semantic/entities/users.yml
+# semantic/groups/prod/entities/users.yml — the canonical per-group directory (ADR-0012)
 table: users
-connection_group: prod          # ← new, replaces `connection`
+group: prod          # ← canonical scope field; the directory is authoritative,
+                     #   this field is an optional override (replaces the deprecated `connection:`)
 dimensions:
   - { name: id,   sql: id,   type: number, description: "User ID" }
   - { name: email, sql: email, type: string, description: "Login email" }
 ```
+
+The Connection group is the canonical scope unit, surfaced everywhere as **`group`** ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)). On disk, each non-default group lives in its own directory under `semantic/groups/<group>/` — the loader infers the group from the directory, so a per-group file needs no `group:` field at all. The default group stays flat at `semantic/entities/` (a single-DB workspace sees no extra nesting). The older `connection:` field and `--source` CLI flag still resolve for back-compat but are deprecated in favor of `group:` / `--connection`.
 
 A draft entity in developer mode propagates through the same machinery: the publish flow promotes it once for the whole group rather than once per replica.
 

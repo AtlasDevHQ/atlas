@@ -263,10 +263,15 @@ export async function loadEntitiesForOrg(
  * Load all entity YAML files from disk across every on-disk layout (ADR-0012):
  * the flat default root `entities/`, the canonical `groups/<group>/entities/`
  * namespace, and legacy `<source>/entities/`. Routed through the shared
- * `scanEntities` traversal the discovery read paths use (#3240), so the
- * self-hosted (no internal DB) expert context sees every group's entities, not
- * just the root's (#3273). Root-only before, it silently dropped per-group
- * entities on a multi-group deployment.
+ * `scanEntities` traversal the discovery read paths use (the entity group
+ * namespace landed in #3241), so the self-hosted (no internal DB) expert context
+ * sees every group's entities, not just the root's (#3273). Root-only before, it
+ * silently dropped per-group entities on a multi-group deployment.
+ *
+ * Like the other entity discovery surfaces this is `.yml`-only (via
+ * `scanEntities`); the prior loader's extra `.yaml` acceptance was the odd one
+ * out and never produced a queryable entity (the whitelist/file-tree are
+ * `.yml`-only too).
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
   const root = getSemanticRoot();
@@ -277,17 +282,21 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
 
   const entities: ParsedEntity[] = [];
   // `scanEntities` parses every layout's YAML and logs+skips unreadable files
-  // (matching this loader's prior per-file `try/catch`).
+  // and namespace-enumeration failures internally (scanner.ts), so a partial
+  // read is already traced — re-logging its `warnings` here would double-count
+  // the per-file parse failures it already emitted.
   for (const { raw, filePath, sourceName, origin } of scanEntities(root).entities) {
     // Attribution matches the discovery read paths (ADR-0012): the directory is
-    // canonical in the `groups/<group>/` namespace; a top-level `group:`/
-    // `connection:` field overrides on the flat + legacy layouts. The flat
-    // default group maps to the null connection (`undefined`), keeping parity
-    // with the DB loaders above.
+    // canonical in the `groups/<group>/` namespace — a disagreeing field loses
+    // (`resolveEntityGroup`'s `mismatch` flag is intentionally not surfaced here,
+    // mirroring the lookup/catalog read paths); a top-level `group:`/`connection:`
+    // field overrides on the flat + legacy layouts. The flat default group maps
+    // to the null connection (`undefined`), keeping parity with the DB loaders
+    // above.
     const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
     entities.push({
       ...projectParsedEntity(raw, {
-        fallbackName: path.basename(filePath).replace(/\.ya?ml$/, ""),
+        fallbackName: path.basename(filePath).replace(/\.yml$/, ""),
       }),
       connection: group === "default" ? undefined : group,
     });
@@ -310,17 +319,31 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
  * loader parsed the array form *only*, so it returned nothing for the object
  * form the bundled glossaries actually use — a second drift point this closes.
  *
- * The expert `GlossaryTerm` carries no group label — the scheduled analyzer
- * reasons at global scope and dedups terms by name (`categories.ts`) — so the
- * loader returns a flat union of every group's terms; per-group attribution is
- * the entity loader's concern.
+ * The expert `GlossaryTerm` carries no group label, so the loader returns a flat
+ * union of every group's terms (per-group attribution is the entity loader's
+ * concern). It does NOT dedup: the gap detector keys off term name via a Set
+ * (`categories.ts`), so a name defined in two groups won't spawn spurious gap
+ * proposals; the health count uses the raw list length (`health.ts`), so a name
+ * repeated across groups is counted once per group.
  */
 export async function loadGlossaryFromDisk(): Promise<GlossaryTerm[]> {
   const { getGroupDirs } = await import("@atlas/api/lib/semantic/scanner");
 
   const terms: GlossaryTerm[] = [];
-  for (const { dir } of getGroupDirs(getSemanticRoot(), null).dirs) {
+  const { dirs, failedScans } = getGroupDirs(getSemanticRoot(), null);
+  for (const { dir } of dirs) {
     loadGlossaryFile(path.join(dir, "glossary.yml"), terms);
+  }
+  // The interactive lookup/search read paths surface scan failures to the user
+  // through the response; the expert tick runs unattended, so re-log a failed
+  // namespace enumeration against the expert context — otherwise a quietly
+  // partial glossary leaves only a low-level scanner warn (#3243 fail-closed
+  // semantics).
+  if (failedScans.length > 0) {
+    log.warn(
+      { failedScans },
+      "Expert glossary context is partial — a semantic namespace failed to enumerate",
+    );
   }
   return terms;
 }

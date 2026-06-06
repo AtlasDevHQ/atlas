@@ -64,8 +64,16 @@ describe("loadGlossaryFromDisk (layout-aware, #3273)", () => {
       "terms:\n  arr:\n    status: ambiguous\n    note: ARR appears in multiple tables\n",
     );
     const terms = await loadGlossaryFromDisk();
-    expect(terms.map((t) => t.term)).toEqual(["arr"]);
-    expect(terms[0].ambiguous).toBe(true);
+    // `definition` falls back to "" when the object-form entry has only `note:`
+    // (the analyzer reads `term`/length, not `definition`, but the fallback is a
+    // contract the `GlossaryTerm` shape depends on — never `undefined`).
+    expect(terms).toEqual([{ term: "arr", definition: "", ambiguous: true }]);
+  });
+
+  it("extracts the object-form definition field when present", async () => {
+    writeSemanticFile("glossary.yml", "terms:\n  arr:\n    definition: Annual recurring revenue\n");
+    const terms = await loadGlossaryFromDisk();
+    expect(terms).toEqual([{ term: "arr", definition: "Annual recurring revenue", ambiguous: false }]);
   });
 
   it("discovers groups/<group>/glossary.yml and merges with the root (PRIMARY GAP)", async () => {
@@ -92,6 +100,48 @@ describe("loadGlossaryFromDisk (layout-aware, #3273)", () => {
     const terms = await loadGlossaryFromDisk();
     expect(terms).toHaveLength(1);
     expect(terms[0]).toEqual({ term: "mrr", definition: "Monthly recurring revenue", ambiguous: true });
+  });
+
+  it("derives `ambiguous` from either marker, in either shape, else false", async () => {
+    // `ambiguous = (ambiguous === true) || (status === "ambiguous")` — the
+    // crossed cells the headline tests don't reach: array-form `status:`,
+    // object-form `ambiguous:`, and the negative (neither marker → false).
+    writeSemanticFile(
+      "glossary.yml",
+      [
+        "terms:",
+        "  - term: status_arr", // array-form, status marker
+        "    status: ambiguous",
+        "  - term: plain", // array-form, no marker
+        "    definition: nothing special",
+      ].join("\n") + "\n",
+    );
+    writeSemanticFile(
+      "groups/g/glossary.yml",
+      "terms:\n  flag_obj:\n    ambiguous: true\n", // object-form, ambiguous flag
+    );
+    const terms = await loadGlossaryFromDisk();
+    const byTerm = Object.fromEntries(terms.map((t) => [t.term, t.ambiguous]));
+    expect(byTerm).toEqual({ status_arr: true, plain: false, flag_obj: true });
+  });
+
+  it("emits a duplicate when the same term name appears in two layouts (no dedup at this layer)", async () => {
+    // The loader intentionally does NOT dedup — `categories.ts` keys off the
+    // term name via a Set, so duplicates are harmless there; pinning this keeps
+    // a future dedup from silently shifting the count `health.ts` sees.
+    writeSemanticFile("glossary.yml", "terms:\n  arr:\n    definition: root\n");
+    writeSemanticFile("groups/eu_prod/glossary.yml", "terms:\n  arr:\n    definition: eu\n");
+    const terms = await loadGlossaryFromDisk();
+    expect(terms.filter((t) => t.term === "arr")).toHaveLength(2);
+  });
+
+  it("one corrupt group glossary does not blank the rest of the union", async () => {
+    writeSemanticFile("glossary.yml", "terms:\n  arr:\n    definition: ok\n");
+    writeSemanticFile("groups/broken/glossary.yml", "terms: [unclosed\n"); // malformed YAML
+    writeSemanticFile("groups/good/glossary.yml", "terms:\n  ltv:\n    definition: fine\n");
+    const terms = await loadGlossaryFromDisk();
+    // The corrupt file is logged + skipped; the valid root + group terms survive.
+    expect(terms.map((t) => t.term).toSorted()).toEqual(["arr", "ltv"]);
   });
 
   it("returns empty when no glossary exists in any layout", async () => {
@@ -134,6 +184,21 @@ describe("loadEntitiesFromDisk (layout-aware, #3273)", () => {
     writeSemanticFile("entities/orders.yml", "table: orders\nconnection: legacy_grp\n");
     const entities = await loadEntitiesFromDisk();
     expect(entities[0].connection).toBe("legacy_grp");
+  });
+
+  it("honors the canonical `group:` field override on the flat layout", async () => {
+    // `group:` is the canonical field (ADR-0012); `connection:` is the
+    // deprecated alias. The override test above used the alias — pin the
+    // canonical field new authors will actually write.
+    writeSemanticFile("entities/orders.yml", "table: orders\ngroup: us_prod\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities[0].connection).toBe("us_prod");
+  });
+
+  it("the canonical `group:` field wins over the deprecated `connection:` alias", async () => {
+    writeSemanticFile("entities/orders.yml", "table: orders\ngroup: canonical_grp\nconnection: alias_grp\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities[0].connection).toBe("canonical_grp");
   });
 
   it("returns empty when the semantic root has no entities", async () => {

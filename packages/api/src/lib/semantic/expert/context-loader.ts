@@ -294,10 +294,19 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
     // to the null connection (`undefined`), keeping parity with the DB loaders
     // above.
     const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
+    const projected = projectParsedEntity(raw, {
+      fallbackName: path.basename(filePath).replace(/\.yml$/, ""),
+    });
     entities.push({
-      ...projectParsedEntity(raw, {
-        fallbackName: path.basename(filePath).replace(/\.yml$/, ""),
-      }),
+      ...projected,
+      // The scheduled-tick analyzer stamps each proposal with `entity.name`, and
+      // the apply path (`apply.ts` → `getEntity`/`upsertEntity`/`syncEntityToDisk`)
+      // resolves the target by that key — which is the STORAGE name (table / file
+      // stem), never a display `name:`. Mirror `loadEntitiesFromDB`, which also
+      // ignores `parsed.name`, so an auto-approved amendment still finds its
+      // entity; honoring a display `name:` here would make apply look up a key
+      // that doesn't exist (#3280 review).
+      name: projected.table,
       connection: group === "default" ? undefined : group,
     });
   }

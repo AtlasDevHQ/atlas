@@ -201,6 +201,24 @@ describe("loadEntitiesFromDisk (layout-aware, #3273)", () => {
     expect(entities[0].connection).toBe("canonical_grp");
   });
 
+  it("honors a connection: override on the legacy layout", async () => {
+    // Legacy `<source>/entities/` retains field-wins precedence (ADR-0012):
+    // the source dir is "marketing" but the field reassigns the group.
+    writeSemanticFile("marketing/entities/campaigns.yml", "table: campaigns\nconnection: override_grp\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities[0].connection).toBe("override_grp");
+  });
+
+  it("keys entity.name to the storage key (table/file stem), not a display `name:`", async () => {
+    // The scheduled-tick apply path (`apply.ts`) looks the entity up by
+    // `proposal.entityName` (= entity.name), which must be the storage key the
+    // DB/disk is keyed by — never a display label. Mirrors `loadEntitiesFromDB`.
+    writeSemanticFile("entities/orders.yml", "table: orders\nname: Orders Display Label\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities[0].name).toBe("orders"); // storage key, not "Orders Display Label"
+    expect(entities[0].table).toBe("orders");
+  });
+
   it("returns empty when the semantic root has no entities", async () => {
     const entities = await loadEntitiesFromDisk();
     expect(entities).toEqual([]);

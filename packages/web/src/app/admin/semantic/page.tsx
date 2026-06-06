@@ -44,6 +44,10 @@ import {
   type SemanticGroupMeta,
 } from "@/ui/components/admin/semantic-file-tree";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
+import {
+  wizardGenerateHref,
+  generateLaunchConnectionId,
+} from "../../wizard/wizard-generate-entry";
 import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 import { type ConnectionInfo } from "@/ui/lib/types";
 import { normalizeDrift } from "./normalize-drift";
@@ -119,14 +123,32 @@ interface CatalogMeta {
 
 // ── Content viewers ───────────────────────────────────────────────
 
+/**
+ * Empty-state hint shared by the catalog / glossary / metrics viewers (#3237):
+ * point at the in-product generate flow instead of "Run `atlas init`" (a
+ * terminal). The manual-YAML fallback stays for power users editing files
+ * directly.
+ */
+function GenerateHint({ manualPath }: { manualPath: string }) {
+  return (
+    <p className="mt-1 text-xs">
+      <Link
+        href={wizardGenerateHref()}
+        className="font-medium text-primary underline-offset-2 hover:underline"
+      >
+        Generate the semantic layer
+      </Link>{" "}
+      from your database, or create{" "}
+      <code className="rounded bg-muted px-1 py-0.5">{manualPath}</code> manually.
+    </p>
+  );
+}
+
 function CatalogViewer({ catalog }: { catalog: CatalogMeta | null }) {
   if (!catalog) {
     return (
       <EmptyState icon={FileText} message="No catalog metadata found">
-        <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a catalog,
-          or create <code className="rounded bg-muted px-1 py-0.5">semantic/catalog.yml</code> manually.
-        </p>
+        <GenerateHint manualPath="semantic/catalog.yml" />
       </EmptyState>
     );
   }
@@ -172,10 +194,7 @@ function GlossaryViewer({ glossary }: { glossary: GlossaryTerm[] }) {
   if (glossary.length === 0) {
     return (
       <EmptyState icon={BookOpen} message="No glossary terms found">
-        <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate a glossary,
-          or create <code className="rounded bg-muted px-1 py-0.5">semantic/glossary.yml</code> manually.
-        </p>
+        <GenerateHint manualPath="semantic/glossary.yml" />
       </EmptyState>
     );
   }
@@ -216,10 +235,7 @@ function MetricsViewer({ metrics }: { metrics: MetricEntry[] }) {
   if (metrics.length === 0) {
     return (
       <EmptyState icon={BarChart3} message="No metrics found">
-        <p className="mt-1 text-xs">
-          Run <code className="rounded bg-muted px-1 py-0.5">atlas init</code> to generate metrics,
-          or add YAML files to <code className="rounded bg-muted px-1 py-0.5">semantic/metrics/</code>.
-        </p>
+        <GenerateHint manualPath="semantic/metrics/" />
       </EmptyState>
     );
   }
@@ -914,18 +930,31 @@ export default function SemanticPage() {
         <div className="p-6" data-testid="semantic-empty-state">
           <EmptyState
             icon={BookOpen}
-            title="No semantic entities yet"
-            description="Atlas reads semantic/entities/*.yml from the deployment image. Use this to populate the editor from disk."
+            title="No semantic layer yet"
+            description="Generate one from a connected database — Atlas profiles your schema and builds editable YAML the agent can query."
           >
-            <Button
-              variant="link"
-              size="xs"
-              onClick={runImport}
-              disabled={importing}
-              className="mt-3"
-            >
-              {importing ? "Syncing..." : "Sync from disk"}
-            </Button>
+            {/* Door 2 (#3237): lead with the in-product generate flow, scoped
+                to the sole connection when there's exactly one. "Sync from
+                disk" stays as the recovery path for image-shipped YAML. */}
+            <div className="mt-3 flex flex-col items-center gap-2">
+              <Button asChild size="sm" className="gap-1.5">
+                <Link
+                  href={wizardGenerateHref(generateLaunchConnectionId(connections))}
+                  data-testid="semantic-generate-cta"
+                >
+                  <Sparkles className="size-4" />
+                  Generate semantic layer
+                </Link>
+              </Button>
+              <Button
+                variant="link"
+                size="xs"
+                onClick={runImport}
+                disabled={importing}
+              >
+                {importing ? "Syncing..." : "Sync from disk"}
+              </Button>
+            </div>
           </EmptyState>
         </div>
       ) : (

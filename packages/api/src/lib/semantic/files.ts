@@ -82,6 +82,15 @@ export interface EntitySummary {
   connection: string | null;
   type: string | null;
   source: string;
+  /**
+   * Absolute path to the entity's YAML file as discovered by the scanner.
+   * Threaded out of `scanEntities` so consumers (e.g. the drift snapshot
+   * reader) can locate the file from the layout-aware traversal instead of
+   * reconstructing a path from `source`/`table` — which silently skipped
+   * the canonical `groups/<group>/entities/` namespace and broke whenever a
+   * YAML's filename differed from its `table` (#3245, ADR-0012).
+   */
+  filePath: string;
 }
 
 /**
@@ -127,6 +136,7 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
       connection: typeof raw.connection === "string" ? raw.connection : null,
       type: typeof raw.type === "string" ? raw.type : null,
       source: sourceName,
+      filePath,
     });
   }
 

@@ -507,6 +507,33 @@ describe("reconcileAllOrgs", () => {
     expect((calledEntities as unknown[]).length).toBeGreaterThan(0);
   });
 
+  it("first-boot: no DB orgs + ONLY grouped disk entities → triggers auto-import (#3245)", async () => {
+    // A purely-grouped org (groups/<group>/entities/ with no flat entities/)
+    // must still be detected for first-boot auto-import — the flat-only
+    // detection skipped it, so its grouped entities never reached the DB.
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    fs.mkdirSync(path.join(root, "groups", "prod", "entities"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "groups", "prod", "entities", "sales.yml"),
+      "table: sales\nname: sales\n",
+    );
+
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementationOnce(() => Promise.resolve([]));
+    mockBulkUpsertEntities.mockClear();
+
+    await reconcileAllOrgs();
+
+    expect(mockBulkUpsertEntities).toHaveBeenCalled();
+    const [calledOrgId, calledEntities] = mockBulkUpsertEntities.mock.calls[0] ?? [];
+    expect(calledOrgId).toBe(orgId);
+    const ents = calledEntities as Array<{ name: string; connectionGroupId?: string | null }>;
+    const sales = ents.find((e) => e.name === "sales");
+    expect(sales).toBeDefined();
+    expect(sales!.connectionGroupId).toBe("prod");
+  });
+
   it("end-to-end: rename apikey → ApiKey in DB, then reconcile + list shows only ApiKey", async () => {
     // The two coupled changes in #2561 (admin reads DB-only when DB is
     // present, sync GC removes orphan files) together produce the
@@ -627,5 +654,138 @@ describe("importFromDisk", () => {
     expect(result.imported).toBe(1);
     // The mock bulkUpsertEntities doesn't check connectionId,
     // but we verify it doesn't error
+  });
+});
+
+// ---------------------------------------------------------------------------
+// importFromDisk — group-scoped layout traversal (#3245, ADR-0012)
+// ---------------------------------------------------------------------------
+
+describe("importFromDisk — group namespace traversal (#3245)", () => {
+  /** Source roots created during these tests — cleaned up in afterEach. */
+  const sourceDirs: string[] = [];
+
+  function makeSourceRoot(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-import-groups-"));
+    sourceDirs.push(dir);
+    return dir;
+  }
+
+  function writeEntityFile(root: string, content: string, file: string, ...segments: string[]) {
+    const dir = path.join(root, ...segments, "entities");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, file), content);
+  }
+
+  const entityYaml = (table: string, extra = "") => `${extra}table: ${table}\n`;
+
+  /** Entities handed to bulkUpsertEntities during the most recent import. */
+  type Collected = { entityType: string; name: string; connectionId?: string; connectionGroupId?: string | null };
+  function lastUpsertedEntities(): Collected[] {
+    const calls = mockBulkUpsertEntities.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return calls[calls.length - 1][1] as unknown as Collected[];
+  }
+
+  beforeEach(() => {
+    mockBulkUpsertEntities.mockClear();
+  });
+
+  afterEach(() => {
+    for (const dir of sourceDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best-effort
+      }
+    }
+    sourceDirs.length = 0;
+  });
+
+  it("discovers grouped entities and imports them under their directory group", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("sales"), "sales.yml", "groups", "prod");
+
+    const result = await importFromDisk("org-1", { sourceDir: root });
+
+    expect(result.imported).toBe(1);
+    const ent = lastUpsertedEntities().find((e) => e.name === "sales");
+    expect(ent).toBeDefined();
+    expect(ent!.connectionGroupId).toBe("prod");
+  });
+
+  it("scopes each group's entities to its own directory group", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("orders_us"), "orders.yml", "groups", "us");
+    writeEntityFile(root, entityYaml("orders_eu"), "orders.yml", "groups", "eu");
+
+    await importFromDisk("org-1", { sourceDir: root });
+
+    const upserted = lastUpsertedEntities();
+    const groups = upserted
+      .filter((e) => e.entityType === "entity")
+      .map((e) => e.connectionGroupId)
+      .sort();
+    expect(groups).toEqual(["eu", "us"]);
+  });
+
+  it("honors the directory group when a grouped entity's field disagrees (ADR-0012)", async () => {
+    const root = makeSourceRoot();
+    // `connection:` field claims a different group than the directory.
+    writeEntityFile(root, entityYaml("sales", "connection: staging\n"), "sales.yml", "groups", "prod");
+
+    await importFromDisk("org-1", { sourceDir: root });
+
+    const ent = lastUpsertedEntities().find((e) => e.name === "sales");
+    expect(ent!.connectionGroupId).toBe("prod");
+  });
+
+  it("imports legacy <source>/entities/ under the source group (connectionGroupId)", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("events"), "events.yml", "warehouse");
+
+    const result = await importFromDisk("org-1", { sourceDir: root });
+
+    expect(result.imported).toBe(1);
+    const ent = lastUpsertedEntities().find((e) => e.name === "events");
+    expect(ent!.connectionGroupId).toBe("warehouse");
+  });
+
+  it("keeps flat default entities on the install-id path (connectionId, no group)", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("users"), "users.yml");
+
+    await importFromDisk("org-1", { sourceDir: root, connectionId: "__demo__" });
+
+    const ent = lastUpsertedEntities().find((e) => e.name === "users");
+    expect(ent!.connectionId).toBe("__demo__");
+    expect(ent!.connectionGroupId).toBeUndefined();
+  });
+
+  it("imports flat + grouped entities together, each scoped correctly", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("users"), "users.yml"); // flat default
+    writeEntityFile(root, entityYaml("sales"), "sales.yml", "groups", "prod"); // grouped
+
+    const result = await importFromDisk("org-1", { sourceDir: root, connectionId: "wh" });
+
+    expect(result.imported).toBe(2);
+    const upserted = lastUpsertedEntities();
+    const flat = upserted.find((e) => e.name === "users");
+    const grouped = upserted.find((e) => e.name === "sales");
+    expect(flat!.connectionId).toBe("wh");
+    expect(flat!.connectionGroupId).toBeUndefined();
+    expect(grouped!.connectionGroupId).toBe("prod");
+    expect(grouped!.connectionId).toBeUndefined();
+  });
+
+  it("reports a per-file error for a grouped entity missing the table field", async () => {
+    const root = makeSourceRoot();
+    writeEntityFile(root, "description: no table\n", "bad.yml", "groups", "prod");
+
+    const result = await importFromDisk("org-1", { sourceDir: root });
+
+    expect(result.imported).toBe(0);
+    expect(result.errors.some((e) => e.file === "bad.yml" && e.reason.includes("table"))).toBe(true);
   });
 });

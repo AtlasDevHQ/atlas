@@ -6,7 +6,6 @@
  */
 
 import * as fs from "fs";
-import * as path from "path";
 import type { SemanticTableDiff, SemanticDiffResponse } from "@useatlas/types";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -309,11 +308,12 @@ export function getYAMLSnapshots(
     const effectiveConnection = entityConnection === "default" ? "default" : entityConnection;
     if (effectiveConnection !== connectionId) continue;
 
-    // Resolve entity file path
-    const entitiesDir = entity.source === "default"
-      ? path.join(root, "entities")
-      : path.join(root, entity.source, "entities");
-    const filePath = path.join(entitiesDir, `${entity.table}.yml`);
+    // Locate the entity's YAML via the layout-aware path the scanner already
+    // discovered. Reconstructing `<root>/<source>/entities/<table>.yml` (the
+    // legacy layout, keyed on `table`) silently skipped the canonical
+    // `groups/<group>/entities/<name>.yml` namespace and broke whenever a
+    // YAML's filename (`name`) differed from its `table` (#3245, ADR-0012).
+    const filePath = entity.filePath;
 
     if (!fs.existsSync(filePath)) continue;
 
@@ -323,7 +323,7 @@ export function getYAMLSnapshots(
       const snapshot = parseEntityYAML(doc);
       snapshots.set(snapshot.table, snapshot);
     } catch (err) {
-      const msg = `Failed to parse ${entity.table}.yml: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = `Failed to parse ${entity.name}.yml: ${err instanceof Error ? err.message : String(err)}`;
       log.warn({ err: err instanceof Error ? err : new Error(String(err)), filePath }, msg);
       warnings.push(msg);
     }

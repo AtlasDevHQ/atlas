@@ -481,6 +481,21 @@ interface ImportResult {
 }
 
 /**
+ * A row staged for `bulkUpsertEntities`. Exactly one of `connectionId` /
+ * `connectionGroupId` carries the scope: flat default + metrics/glossary use
+ * `connectionId` (resolved to a group via the install-id lookup), while
+ * group-scoped entities (`groups/<group>/`, legacy `<source>/`) carry their
+ * directory group directly in `connectionGroupId` (#3245, ADR-0012).
+ */
+type CollectedEntity = {
+  entityType: SemanticEntityType;
+  name: string;
+  yamlContent: string;
+  connectionId?: string;
+  connectionGroupId?: string | null;
+};
+
+/**
  * Import YAML files from an org's disk directory into the DB.
  *
  * Scans `{orgRoot}/entities/*.yml`, `metrics/*.yml`, and
@@ -501,13 +516,17 @@ export async function importFromDisk(
 
   const root = options?.sourceDir ?? getSemanticRoot(orgId);
   const errors: ImportError[] = [];
-  const entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string }> = [];
+  const entities: CollectedEntity[] = [];
 
-  // Scan entities/*.yml
-  const entitiesDir = path.join(root, "entities");
-  await _scanYamlDir(entitiesDir, "entity", entities, errors, yaml, options?.connectionId);
+  // Scan entities across the full group-scoped layout (ADR-0012): the flat
+  // default `entities/`, the canonical `groups/<group>/entities/` namespace,
+  // and legacy `<source>/entities/`. Hardcoding `root/entities` skipped grouped
+  // entities entirely, so the DB-backed whitelist/admin view was empty for
+  // those groups even though the file-based whitelist read them (#3245).
+  await _scanEntityDirs(root, entities, errors, yaml, options?.connectionId);
 
-  // Scan metrics/*.yml
+  // Scan metrics/*.yml — metrics group-namespace traversal is out of scope
+  // here (#3240), so metrics stay flat + scoped by the install id.
   const metricsDir = path.join(root, "metrics");
   await _scanYamlDir(metricsDir, "metric", entities, errors, yaml, options?.connectionId);
 
@@ -572,7 +591,7 @@ export async function importFromDisk(
 async function _scanYamlDir(
   dir: string,
   entityType: SemanticEntityType,
-  out: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string }>,
+  out: CollectedEntity[],
   errors: ImportError[],
   yaml: typeof import("js-yaml"),
   connectionId?: string,
@@ -604,6 +623,86 @@ async function _scanYamlDir(
       out.push({ entityType, name, yamlContent: content, connectionId });
     } catch (err) {
       errors.push({ file, reason: errorMessage(err) });
+    }
+  }
+}
+
+/**
+ * Scan every entity directory under a semantic root — the flat default
+ * `entities/`, the canonical `groups/<group>/entities/` namespace, and legacy
+ * `<source>/entities/` (ADR-0012) — collecting valid entity rows for import.
+ *
+ * Uses the same shared traversal (`getEntityDirs`) as the file-based whitelist
+ * and entity loader so the DB-backed whitelist can't drift from the on-disk
+ * one. The directory's group (resolved via {@link resolveEntityGroup}, with the
+ * canonical directory authoritative and a disagreeing `group:`/`connection:`
+ * field flagged) is carried into `connection_group_id` for group/legacy dirs.
+ *
+ * The flat default dir keeps the legacy install-id resolution path: its rows
+ * carry `defaultConnectionId` (e.g. demo's `__demo__`) so existing demo/wizard
+ * scoping is unchanged (#3245).
+ */
+async function _scanEntityDirs(
+  root: string,
+  out: CollectedEntity[],
+  errors: ImportError[],
+  yaml: typeof import("js-yaml"),
+  defaultConnectionId?: string,
+): Promise<void> {
+  const { getEntityDirs, resolveEntityGroup, readGroupField } = await import("./scanner");
+  const { dirs, failedScans } = getEntityDirs(root);
+  if (failedScans.length > 0) {
+    // Surface a partial-scan failure as a per-namespace import error rather
+    // than silently importing a subset — a failed groups/ scan means some
+    // grouped entities may be missing from the DB whitelist.
+    errors.push({
+      file: root,
+      reason: `Failed to scan semantic directory namespace(s): ${failedScans.join(", ")}`,
+    });
+  }
+
+  for (const { dir, sourceName, origin } of dirs) {
+    let files: string[];
+    try {
+      files = (await fs.promises.readdir(dir)).filter((f) => f.endsWith(".yml"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // dir vanished — fine
+      errors.push({ file: dir, reason: errorMessage(err) });
+      continue;
+    }
+
+    for (const file of files) {
+      const filePath = path.join(dir, file);
+      const name = file.replace(/\.yml$/, "");
+      try {
+        const content = await fs.promises.readFile(filePath, "utf-8");
+        const parsed = yaml.load(content);
+
+        if (!parsed || typeof parsed !== "object" || !("table" in (parsed as Record<string, unknown>))) {
+          errors.push({ file, reason: "Entity YAML must contain a 'table' field" });
+          continue;
+        }
+
+        if (origin === "flat") {
+          // Flat default group — preserve the install-id resolution path so
+          // demo/wizard scoping is unchanged.
+          out.push({ entityType: "entity", name, yamlContent: content, connectionId: defaultConnectionId });
+        } else {
+          // Group-scoped (canonical `groups/<group>/` or legacy `<source>/`):
+          // the directory is the group, set connection_group_id directly.
+          const fieldGroup = readGroupField(parsed as { group?: unknown; connection?: unknown });
+          const { group, mismatch } = resolveEntityGroup(sourceName, origin, fieldGroup);
+          if (mismatch) {
+            log.warn(
+              { file, dir, directoryGroup: sourceName, declaredGroup: fieldGroup },
+              "Import: entity declares a group that differs from its directory — honoring the directory (ADR-0012)",
+            );
+          }
+          out.push({ entityType: "entity", name, yamlContent: content, connectionGroupId: group });
+        }
+      } catch (err) {
+        errors.push({ file, reason: errorMessage(err) });
+      }
     }
   }
 }
@@ -711,23 +810,34 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
   }
 
   const { countEntities } = await import("@atlas/api/lib/semantic/entities");
+  const { getEntityDirs } = await import("./scanner");
 
   for (const orgId of orgDirs) {
-    const entitiesDir = path.join(orgsDir, orgId, "entities");
-    let entries: string[];
-    try {
-      entries = await fs.promises.readdir(entitiesDir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        log.warn(
-          { orgId, err: errorMessage(err) },
-          "Cannot read entities dir for auto-import — skipping org",
-        );
+    // Detect importable disk files across the full group-scoped layout, not
+    // just the flat `entities/` dir — otherwise a purely-grouped org
+    // (`groups/<group>/entities/` with no flat entities) would never trigger
+    // the import and its grouped entities would stay missing from the DB
+    // whitelist (#3245, ADR-0012).
+    const orgRoot = path.join(orgsDir, orgId);
+    let hasDiskEntities = false;
+    for (const { dir } of getEntityDirs(orgRoot).dirs) {
+      try {
+        if ((await fs.promises.readdir(dir)).some((e) => e.endsWith(".yml"))) {
+          hasDiskEntities = true;
+          break;
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          log.warn(
+            { orgId, dir, err: errorMessage(err) },
+            "Cannot read entities dir for auto-import — skipping dir",
+          );
+        }
+        // ENOENT or read failure on one dir — keep checking the others.
       }
-      continue;
     }
 
-    if (!entries.some((e) => e.endsWith(".yml"))) continue;
+    if (!hasDiskEntities) continue;
     const dbCount = await countEntities(orgId);
     if (dbCount > 0) continue; // already imported
 

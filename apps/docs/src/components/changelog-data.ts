@@ -20,6 +20,18 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.11",
+    title: "Connections Console Redesign",
+    date: "2026-06-05",
+    summary:
+      "The /admin/connections page is rebuilt for workspaces that connect more than a handful of datasources. Every connected database and REST API is now a dense, one-line row that expands in place to its details and Test / Edit / Delete actions, instead of an always-open card — so a long list stays scannable. Connections are organized into three labelled sections — Databases, REST APIs, and Apps & CRM — each showing how many are connected and how many are live, and a single \"Add connection\" picker replaces the old always-listed provider rows, gathering database tiles, a custom REST option, and curated APIs in one place. Frontend-only; no change to how connections are stored or queried.",
+    highlights: [
+      "Collapsible rows — each connection collapses to a one-line summary (identity, type, health, latency) and expands in place to its detail sheet and Test / Edit / Delete actions, replacing the always-open cards (#3230)",
+      "Grouped sections — connections are split into Databases, REST APIs, and Apps & CRM, each with a \"N connected · M live\" count that matches the row states",
+      "Single Add picker — one \"Add connection\" entry point offering database tiles, a custom REST (OpenAPI) option, and curated APIs, replacing the always-listed unused-provider rows that padded the page",
+    ],
+  },
+  {
     version: "v0.0.10",
     title: "Dashboard Primitives & Polish",
     date: "2026-06-05",

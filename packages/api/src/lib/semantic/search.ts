@@ -95,6 +95,19 @@ interface GlossaryTerm {
   definition?: string;
   status?: string;
   disambiguation?: string;
+  /**
+   * Free-text disambiguation guidance (e.g. "Appears in multiple tables — ASK
+   * the user."). Object-form glossaries carry their "ask the user" guidance
+   * here rather than in `disambiguation`; the lookup layer (`GlossaryTermLookup`)
+   * mirrors this field. See #3277.
+   */
+  note?: string;
+  /**
+   * Candidate column mappings for an ambiguous term (e.g.
+   * `["orders.status", "users.status"]`), used to spell out the choices the
+   * agent should ask the user about. Mirrors `GlossaryTermLookup`. See #3277.
+   */
+  possible_mappings?: string[];
   /** Display group — set only for the canonical `groups/<group>/` namespace (see {@link ParsedMetric.group}). */
   group?: string;
 }
@@ -408,8 +421,16 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
   const disambig = term.disambiguation
     ? ` → ${term.disambiguation}`
     : "";
+  // Object-form ambiguous terms carry their guidance in `note`/`possible_mappings`
+  // rather than `disambiguation`; surface both so the index matches what the
+  // searchGlossary tool returns (#3277).
+  const note = term.note ? ` → ${term.note}` : "";
+  const mappings =
+    Array.isArray(term.possible_mappings) && term.possible_mappings.length > 0
+      ? ` (maps to: ${term.possible_mappings.filter((m) => typeof m === "string").join(", ")})`
+      : "";
   const group = term.group ? ` [${term.group}]` : "";
-  return `- **${name}**${status}${def}${disambig}${group}`;
+  return `- **${name}**${status}${def}${disambig}${note}${mappings}${group}`;
 }
 
 // --- Loaders ---

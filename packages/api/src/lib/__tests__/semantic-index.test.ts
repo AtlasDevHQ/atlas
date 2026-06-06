@@ -290,6 +290,44 @@ describe("buildSemanticIndex", () => {
     expect(index).toContain("**size**");
     expect(index).toContain("[AMBIGUOUS]");
     expect(index).toContain("Ask the user which size they mean");
+    // Array-form terms without note/possible_mappings carry no mapping noise.
+    expect(index).not.toContain("maps to:");
+  });
+
+  it("renders note and possible_mappings for object-form ambiguous terms (#3277)", () => {
+    const root = ensureDir(`glossary-mappings-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", {
+        dimensions: [{ name: "id", type: "integer" }],
+      }),
+    );
+
+    // Object-form glossary — the term carries its disambiguation guidance in
+    // `note` + `possible_mappings` (the shape the lookup layer uses), not in
+    // `definition`/`disambiguation`. The prompt index must surface both.
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  status:",
+        "    status: ambiguous",
+        '    note: "Appears in multiple tables — ASK the user."',
+        "    possible_mappings: [orders.status, users.status]",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+
+    expect(index).toContain("### Glossary");
+    expect(index).toContain("**status**");
+    expect(index).toContain("[AMBIGUOUS]");
+    // The "ask the user" guidance and the candidate columns both surface.
+    expect(index).toContain("Appears in multiple tables — ASK the user.");
+    expect(index).toContain("orders.status");
+    expect(index).toContain("users.status");
   });
 
   it("discovers groups/<group>/metrics, glossary, and catalog in the index (#3240)", () => {

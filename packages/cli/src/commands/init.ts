@@ -20,15 +20,19 @@ import {
   isView,
   isMatView,
   isViewLike,
+  outputDirForDatasource,
+  listPostgresObjects,
+  listMySQLObjects,
+} from "@atlas/api/lib/profiler";
+// Mechanical generation runs through the shared semantic engine (issue #3233)
+// so the CLI and the web wizard emit identical YAML.
+import {
   analyzeTableProfiles,
   generateEntityYAML,
   generateCatalogYAML,
   generateMetricYAML,
   generateGlossaryYAML,
-  outputDirForDatasource,
-  listPostgresObjects,
-  listMySQLObjects,
-} from "@atlas/api/lib/profiler";
+} from "@atlas/api/lib/semantic/generate";
 import {
   createProgressTracker,
   formatDuration,
@@ -637,7 +641,7 @@ async function profileDatasource(
   let enrichmentSucceeded = false;
   if (shouldEnrich) {
     try {
-      const { enrichSemanticLayer } = await import("../../bin/enrich.js");
+      const { enrichSemanticLayer } = await import("@atlas/api/lib/semantic/enrich");
       console.log(
         `\nEnriching with LLM (${process.env.ATLAS_PROVIDER ?? "anthropic"})...\n`,
       );

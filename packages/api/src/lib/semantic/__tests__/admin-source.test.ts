@@ -34,6 +34,8 @@ const diskSummary = (over: Partial<EntitySummary> & Pick<EntitySummary, "table">
   connection: over.connection ?? null,
   type: over.type ?? null,
   source: over.source ?? "default",
+  group: over.group ?? over.source ?? "default",
+  filePath: over.filePath ?? `/semantic/entities/${over.name ?? over.table}.yml`,
 });
 
 describe("parseRowToAdminSummary", () => {

@@ -256,6 +256,41 @@ export async function upsertDraftEntity(
 }
 
 /**
+ * Upsert a draft entity, setting `connection_group_id` DIRECTLY rather than
+ * resolving it from an install/connection id via {@link inlineConnectionGroupSql}.
+ *
+ * Used by the disk → DB importer for the canonical `groups/<group>/entities/`
+ * namespace (and legacy `<source>/entities/`), where the directory *is* the
+ * group (ADR-0012) — the group is the on-disk directory name, not an install
+ * id that would resolve through `workspace_plugins`. Mirrors
+ * {@link upsertTombstoneForGroup}, which already keys on a direct
+ * `connection_group_id`. The flat default `entities/` dir keeps using
+ * {@link upsertDraftEntity} so demo/wizard install-id resolution is unchanged
+ * (#3245).
+ */
+export async function upsertDraftEntityForGroup(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  yamlContent: string,
+  connectionGroupId?: string | null,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for org-scoped semantic entities");
+  }
+  await internalQuery(
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, $5, 'draft')
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'draft'
+     DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
+                   entity_type = EXCLUDED.entity_type,
+                   connection_group_id = EXCLUDED.connection_group_id,
+                   updated_at = now()`,
+    [orgId, entityType, name, yamlContent, connectionGroupId ?? null],
+  );
+}
+
+/**
  * Insert a draft_delete tombstone for an entity.
  *
  * Used for developer-mode deletes where a published row exists — the
@@ -1464,7 +1499,7 @@ export async function restoreSingleConnection(
  */
 export async function bulkUpsertEntities(
   orgId: string,
-  entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string }>,
+  entities: Array<{ entityType: SemanticEntityType; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
 ): Promise<number> {
   if (!hasInternalDB()) {
     throw new Error("Internal DB required for org-scoped semantic entities");
@@ -1474,7 +1509,14 @@ export async function bulkUpsertEntities(
   let upserted = 0;
   for (const e of entities) {
     try {
-      await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
+      // A group-scoped row (canonical `groups/<group>/` or legacy `<source>/`)
+      // carries its group directly; the flat default dir keeps resolving the
+      // connection/install id through `inlineConnectionGroupSql` (#3245).
+      if (e.connectionGroupId !== undefined) {
+        await upsertDraftEntityForGroup(orgId, e.entityType, e.name, e.yamlContent, e.connectionGroupId);
+      } else {
+        await upsertDraftEntity(orgId, e.entityType, e.name, e.yamlContent, e.connectionId);
+      }
       upserted++;
     } catch (err) {
       // log.error (not log.warn) because a row-level upsert failure means

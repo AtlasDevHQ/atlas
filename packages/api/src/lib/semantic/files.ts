@@ -8,7 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
-import { scanEntities, getEntityDirs } from "./scanner";
+import { scanEntities, getEntityDirs, resolveEntityGroup, readGroupField } from "./scanner";
 
 // ---------------------------------------------------------------------------
 // Semantic layer root
@@ -82,6 +82,29 @@ export interface EntitySummary {
   connection: string | null;
   type: string | null;
   source: string;
+  /**
+   * Effective Connection group resolved via {@link resolveEntityGroup}
+   * (ADR-0012): the canonical `groups/<group>/` directory is authoritative
+   * (a disagreeing `group:`/`connection:` field is ignored and warned on by
+   * the whitelist), while the flat default root and legacy `<source>/` layout
+   * let the field assign the group. This is the SAME key the file-based
+   * whitelist scopes by (and the importer's group/legacy path), so consumers
+   * (e.g. the drift snapshot reader) match entities to a connection by group
+   * here rather than the raw `connection`/`source` fields, which let a stale
+   * field win over the directory (#3245). NOTE: the importer's flat default
+   * path still scopes by install id, not this group, so for flat entities this
+   * resolves the group but the DB row's scope comes from the install lookup.
+   */
+  group: string;
+  /**
+   * Absolute path to the entity's YAML file as discovered by the scanner.
+   * Threaded out of `scanEntities` so consumers (e.g. the drift snapshot
+   * reader) can locate the file from the layout-aware traversal instead of
+   * reconstructing a path from `source`/`table` — which silently skipped
+   * the canonical `groups/<group>/entities/` namespace and broke whenever a
+   * YAML's filename differed from its `table` (#3245, ADR-0012).
+   */
+  filePath: string;
 }
 
 /**
@@ -101,7 +124,7 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
   const { entities: scanned, warnings } = scanEntities(root);
   const entities: EntitySummary[] = [];
 
-  for (const { sourceName, raw, filePath } of scanned) {
+  for (const { sourceName, origin, raw, filePath } of scanned) {
     if (!raw.table) {
       warnings.push(`Entity file missing required 'table' field: ${path.relative(root, filePath)}`);
       continue;
@@ -116,6 +139,10 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
     const fileStem = path.basename(filePath, ".yml");
     const displayName =
       typeof raw.name === "string" && raw.name ? raw.name : String(raw.table);
+    // Resolve the effective group directory-canonically (ADR-0012) so it
+    // matches the importer + file-based whitelist; the raw `connection`/`source`
+    // fields are kept for display/back-compat but must not drive scoping.
+    const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
     entities.push({
       name: fileStem,
       displayName,
@@ -127,6 +154,8 @@ export function discoverEntities(root: string): DiscoverEntitiesResult {
       connection: typeof raw.connection === "string" ? raw.connection : null,
       type: typeof raw.type === "string" ? raw.type : null,
       source: sourceName,
+      group,
+      filePath,
     });
   }
 

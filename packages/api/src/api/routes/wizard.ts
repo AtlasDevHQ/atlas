@@ -197,6 +197,11 @@ const SaveRequestSchema = z.object({
   connectionId: z.string().min(1),
   entities: z.array(z.object({ tableName: z.string(), yaml: z.string() })).min(1),
   schema: z.string().optional(),
+  // Datasource dbType for the server-side metric branch (raw `profiles`
+  // submissions). Drives dbType-aware `main` qualification so metric `FROM`
+  // matches the pre-generated entity `table:` (issue #3252). Omitted by the
+  // wizard frontend, which never sends `profiles`; defaults to "postgres".
+  dbType: z.string().optional(),
   profiles: z.array(TableProfileSchema).optional(),
 });
 
@@ -799,10 +804,16 @@ wizard.openapi(saveRoute, async (c) => {
       // sends pre-generated entity YAML via { connectionId, entities }; this
       // branch is for callers (e.g. future CLI integrations) that submit
       // raw TableProfile[] for server-side generation.
-      const { schema: bodySchema, profiles: profileData } = body;
+      const { schema: bodySchema, dbType: bodyDbType, profiles: profileData } = body;
       if (profileData && profileData.length > 0) {
         const profiles = profileData;
         const resolvedSchema = bodySchema ?? "public";
+        // Keep metric `FROM` qualification in lockstep with the entity
+        // `table:` the frontend already generated (issue #3252). Defaults to
+        // "postgres" — the only dbType where a custom schema named `main` is
+        // reachable; "main" stays unqualified for DuckDB/SQLite callers that
+        // pass dbType explicitly.
+        const resolvedDbType = bodyDbType ?? "postgres";
 
         const catalogYaml = generateCatalogYAML(profiles);
         const catalogPath = path.join(outputBase, "catalog.yml");
@@ -816,7 +827,7 @@ wizard.openapi(saveRoute, async (c) => {
 
         for (const profile of profiles) {
           if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
-          const metricYaml = generateMetricYAML(profile, resolvedSchema);
+          const metricYaml = generateMetricYAML(profile, resolvedSchema, resolvedDbType);
           if (metricYaml) {
             const safeMetricName = path.basename(profile.table_name);
             const filePath = path.join(metricsDir, `${safeMetricName}.yml`);

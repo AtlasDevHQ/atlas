@@ -14318,6 +14318,9 @@
                   "schema": {
                     "type": "string"
                   },
+                  "dbType": {
+                    "type": "string"
+                  },
                   "profiles": {
                     "type": "array",
                     "items": {

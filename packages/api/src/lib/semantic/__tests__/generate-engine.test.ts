@@ -122,37 +122,75 @@ describe("shared generate engine (direct ../generate path)", () => {
   });
 });
 
-describe("generateMetricYAML schema qualification (issue #3244)", () => {
-  // Every metric's SQL uses `FROM <table>`; pull the table ref out of each clause.
-  function fromTables(metricYaml: string): string[] {
-    const parsed = yaml.load(metricYaml) as { metrics: { sql: string }[] };
-    return parsed.metrics
-      .map((m) => m.sql.match(/FROM\s+(\S+)/)?.[1])
-      .filter((t): t is string => Boolean(t));
-  }
+// Every metric's SQL uses `FROM <table>`; pull the table ref out of each clause.
+function metricFromTables(metricYaml: string): string[] {
+  const parsed = yaml.load(metricYaml) as { metrics: { sql: string }[] };
+  return parsed.metrics
+    .map((m) => m.sql.match(/FROM\s+(\S+)/)?.[1])
+    .filter((t): t is string => Boolean(t));
+}
 
+describe("generateMetricYAML schema qualification (issue #3244)", () => {
   it('treats schema="public" as unqualified (FROM orders)', () => {
-    const out = generateMetricYAML(orders, "public");
+    const out = generateMetricYAML(orders, "public", "postgres");
     expect(out).not.toBeNull();
-    const tables = fromTables(out!);
+    const tables = metricFromTables(out!);
     expect(tables.length).toBeGreaterThan(0);
     expect(tables.every((t) => t === "orders")).toBe(true);
   });
 
-  it('treats schema="main" (DuckDB/SQLite) as unqualified, matching generateEntityYAML', () => {
-    const out = generateMetricYAML(orders, "main");
+  it('treats schema="main" as unqualified for DuckDB/SQLite, matching generateEntityYAML', () => {
+    const out = generateMetricYAML(orders, "main", "duckdb");
     expect(out).not.toBeNull();
-    const tables = fromTables(out!);
+    const tables = metricFromTables(out!);
     expect(tables.length).toBeGreaterThan(0);
     expect(tables.every((t) => t === "orders")).toBe(true);
     expect(out!).not.toContain("main.orders");
   });
 
   it("qualifies a custom schema (FROM analytics.orders)", () => {
-    const out = generateMetricYAML(orders, "analytics");
+    const out = generateMetricYAML(orders, "analytics", "postgres");
     expect(out).not.toBeNull();
-    const tables = fromTables(out!);
+    const tables = metricFromTables(out!);
     expect(tables.length).toBeGreaterThan(0);
     expect(tables.every((t) => t === "analytics.orders")).toBe(true);
   });
+});
+
+// #3252: `main` is the DuckDB/SQLite default schema (correct to unqualify
+// there), but `--schema` is Postgres-only, so a Postgres datasource can be
+// profiled with a *custom* schema literally named `main` — which MUST stay
+// qualified or resolution silently falls back to `search_path`. The entity
+// `table:` field and metric `FROM` must AGREE in every case, because the SQL
+// whitelist is built from `entity.table` — a divergent metric ref fails
+// table-whitelist validation. So both generators are checked in lockstep.
+describe("dbType-aware 'main' qualification (issue #3252)", () => {
+  function entityTable(entityYaml: string): string {
+    const parsed = yaml.load(entityYaml) as { table: string };
+    return parsed.table;
+  }
+
+  const cases: { name: string; dbType: string; schema: string; expected: string }[] = [
+    { name: "DuckDB main → unqualified", dbType: "duckdb", schema: "main", expected: "orders" },
+    { name: "Postgres custom main → qualified", dbType: "postgres", schema: "main", expected: "main.orders" },
+    { name: "Postgres public → unqualified", dbType: "postgres", schema: "public", expected: "orders" },
+    { name: "Postgres custom analytics → qualified", dbType: "postgres", schema: "analytics", expected: "analytics.orders" },
+  ];
+
+  for (const { name, dbType, schema, expected } of cases) {
+    it(`${name} — entity table: and metric FROM agree`, () => {
+      const entity = generateEntityYAML(orders, [orders], dbType, schema);
+      const metric = generateMetricYAML(orders, schema, dbType);
+      expect(metric).not.toBeNull();
+
+      const table = entityTable(entity);
+      const fromTables = metricFromTables(metric!);
+
+      expect(table).toBe(expected);
+      expect(fromTables.length).toBeGreaterThan(0);
+      expect(fromTables.every((t) => t === expected)).toBe(true);
+      // Entity `table:` and every metric `FROM` reference the same qualifier.
+      expect(fromTables.every((t) => t === table)).toBe(true);
+    });
+  }
 });

@@ -7,10 +7,20 @@
  * re-renders every card with the bound value). This drives the REAL bar + REAL
  * `withOverride` through a real nuqs adapter, so the linchpin can't silently
  * break.
+ *
+ * Each test seeds the prior state via the URL and drives exactly ONE live write,
+ * then asserts — never two back-to-back writes in one mount. nuqs's update queue
+ * can drop the second of two rapid synthetic writes before the first has flushed
+ * (the compose step then sees only the first), so the original single-test
+ * drill→Reset form flaked ~17% on slow CI for exactly that reason — and was NOT
+ * locally reproducible. `withNuqsTestingAdapter`'s `resetUrlUpdateQueueOnMount`
+ * (on by default) clears the shared queue per mount, so the separate seeded
+ * mounts don't leak into each other. Mirrors the sibling cross-filter-sync
+ * .test.tsx (de-flaked the same way in #3228).
  */
 import { afterEach, describe, expect, test, mock } from "bun:test";
 import { useQueryState } from "nuqs";
-import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import { render, cleanup, fireEvent, waitFor, screen } from "@testing-library/react";
 import { DashboardParameterBar, type ParameterValues } from "@/ui/components/dashboards/dashboard-parameter-bar";
 import { DASHBOARD_PARAMS_KEY, dashboardParamsParser, withOverride } from "../search-params";
@@ -39,32 +49,31 @@ function Harness({ onChange }: { onChange: (o: ParameterValues) => void }) {
 }
 
 /**
- * A real-app round-trip adapter for the shared key. `hasMemory` makes
- * NuqsTestingAdapter retain each write in an internal synchronous ref (its
- * built-in stand-in for a real URL), so a `useQueryState` write re-renders every
- * hook subscribed to that key — the Next.js round-trip the bare adapter (frozen
- * to its initial value) doesn't reproduce. The synchronous ref also means each
- * write composes on the latest value, avoiding the optimistic-cache-vs-prop
- * desync a hand-rolled `useState`-fed adapter hits under back-to-back writes.
+ * Seeds the shared `dparams` key in the URL and drives a faithful round-trip via
+ * NuqsTestingAdapter's `hasMemory` — writes land in nuqs's own synchronous store
+ * and re-render every hook subscribed to the key (the Next.js round-trip a bare
+ * initial-frozen adapter doesn't reproduce). `resetUrlUpdateQueueOnMount` (on by
+ * default) clears the shared queue per mount, so separate seeded mounts stay
+ * independent.
  */
-function MemoryAdapter({ children }: { children: React.ReactNode }) {
-  return <NuqsTestingAdapter hasMemory>{children}</NuqsTestingAdapter>;
-}
+const seeded = (overrides: Record<string, string> = {}) =>
+  withNuqsTestingAdapter({
+    searchParams: Object.keys(overrides).length
+      ? `${DASHBOARD_PARAMS_KEY}=${encodeURIComponent(JSON.stringify(overrides))}`
+      : "",
+    hasMemory: true,
+  });
 
-describe("drilldown ↔ parameter bar URL sync", () => {
-  // One continuous lifecycle (drill → reflect → reset). Kept as a single test so
-  // the nuqs `dparams` cache — module-level and keyed by name — can't leak from a
-  // prior test's mount and make the next one non-deterministic.
-  test("a drilldown write reflects in the bar, emits the bound value, and Reset clears it", async () => {
+describe("drilldown ↔ parameter bar URL sync (#3212)", () => {
+  test("a drilldown write reflects in the bar and emits the bound override", async () => {
     const onChange = mock((_: ParameterValues) => {});
-
-    render(<Harness onChange={onChange} />, { wrapper: MemoryAdapter });
+    render(<Harness onChange={onChange} />, { wrapper: seeded() });
 
     // On mount the bar reports "no overrides" (use defaults).
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});
     expect((screen.getByLabelText("Region") as HTMLInputElement).value).toBe("");
 
-    // Simulate the drilldown click → page-side write of the shared key.
+    // Simulate the drilldown click → page-side write of the shared key (one write).
     fireEvent.click(screen.getByText("drill"));
 
     // The bar (same key) now reflects the drilldown value...
@@ -74,8 +83,21 @@ describe("drilldown ↔ parameter bar URL sync", () => {
     // ...and emitted the bound override — the signal the page turns into a
     // single batched re-render of every card.
     expect(onChange.mock.calls.at(-1)?.[0]).toEqual({ region: "us" });
+  });
 
-    // Reset appears once an override is present; clicking it clears to defaults.
+  test("Reset clears the active override back to defaults", async () => {
+    const onChange = mock((_: ParameterValues) => {});
+    // Seed the prior override via the URL (a reloaded / drilled-in state) so the
+    // single live write under test is the Reset itself — never two back-to-back.
+    render(<Harness onChange={onChange} />, { wrapper: seeded({ region: "us" }) });
+
+    // Mount reflects the seeded override on both the bar and the emitted map.
+    await waitFor(() => {
+      expect((screen.getByLabelText("Region") as HTMLInputElement).value).toBe("us");
+    });
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual({ region: "us" });
+
+    // Reset appears once an override is present; clicking it clears to defaults (one write).
     fireEvent.click(screen.getByRole("button", { name: /reset/i }));
     await waitFor(() => {
       expect(onChange.mock.calls.at(-1)?.[0]).toEqual({});

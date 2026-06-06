@@ -68,12 +68,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  CompactRow,
   DetailList,
   DetailRow,
   InlineError,
-  Shell,
 } from "@/ui/components/admin/compact";
+import { CollapsibleRow } from "@/ui/components/admin/collapsible-row";
+import {
+  AddDatasourceButton,
+  countLine,
+  DEMO_ADD_TOOLTIP,
+  SectionEmpty,
+  SectionHeader,
+} from "./section-header";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
@@ -277,90 +283,78 @@ function formatBreakingReasons(reasons: ReadonlyArray<{ detail: string }>, total
 
 interface OpenApiProviderBlockProps {
   readonly demoReadOnly: boolean;
-  /** Fires after an install/uninstall so the parent page can refresh too. */
+  /** Opens the Add picker (the REST install dialogs are hosted by the page). */
+  readonly onAdd: () => void;
+  /** Fires after a per-row mutation (rediscover/delete) so the page refetches. */
   readonly onChange: () => void;
 }
 
-/** Block for the OpenAPI (generic REST) datasources on `/admin/connections`. */
-export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProviderBlockProps) {
+/** The "REST APIs" section on `/admin/connections` — OpenAPI/generic +
+ *  curated candidates (Stripe, Notion, …) once installed. The install flow
+ *  lives in the page's Add picker; this block renders the section + rows and
+ *  owns per-row lifecycle (rediscover / representation / disconnect). */
+export function OpenApiProviderBlock({ demoReadOnly, onAdd, onChange }: OpenApiProviderBlockProps) {
   const listQuery = useAdminFetch("/api/v1/admin/openapi-datasources", { schema: ListSchema });
   // #3044 — connection groups for the per-datasource environment picker. A
   // failure degrades to "no groups" (the picker offers only Workspace-global).
   const groupsQuery = useAdminFetch("/api/v1/me/connection-groups", {
     schema: ConnectionGroupsSchema,
   });
-  const [installOpen, setInstallOpen] = useState(false);
 
   const refresh = () => {
     listQuery.refetch();
     onChange();
   };
 
-  if (listQuery.loading) {
-    return (
-      <CompactRow
-        icon={Network}
-        title="OpenAPI (Generic REST)"
-        description="Loading…"
-        status="disconnected"
-        action={
-          <Button size="sm" variant="outline" disabled>
-            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-            Add
-          </Button>
-        }
-      />
-    );
-  }
-
-  if (listQuery.error) {
-    return (
-      <CompactRow
-        icon={Network}
-        title="OpenAPI (Generic REST)"
-        description={friendlyErrorOrNull(listQuery.error) ?? "Failed to load REST datasources."}
-        status="unhealthy"
-        action={
-          <Button size="sm" variant="outline" onClick={() => listQuery.refetch()}>
-            Retry
-          </Button>
-        }
-      />
-    );
-  }
-
   const datasources = listQuery.data?.datasources ?? [];
-  const addButton = (
-    <Button
-      size="sm"
-      variant={datasources.length === 0 ? "default" : "outline"}
-      disabled={demoReadOnly}
-      onClick={() => setInstallOpen(true)}
-      data-testid="openapi-add"
-    >
-      <Plus className="mr-1.5 size-3.5" />
-      Add REST datasource
-    </Button>
+  const addAction = (
+    <AddDatasourceButton
+      label="Add REST API"
+      onClick={onAdd}
+      demoReadOnly={demoReadOnly}
+      demoTooltip={DEMO_ADD_TOOLTIP}
+      testId="openapi-add"
+    />
   );
 
   return (
-    <div className="space-y-2">
-      {datasources.length === 0 ? (
-        <CompactRow
+    <section>
+      <SectionHeader
+        title="REST APIs"
+        count={listQuery.loading || listQuery.error ? undefined : countLine(datasources.length)}
+        action={addAction}
+      />
+
+      {listQuery.loading ? (
+        <div className="flex items-center gap-2 rounded-xl border bg-card/40 px-3.5 py-3 text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" />
+          Loading REST datasources…
+        </div>
+      ) : listQuery.error ? (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-destructive/25 bg-card/40 px-3.5 py-3">
+          <span className="text-xs text-destructive">
+            {friendlyErrorOrNull(listQuery.error) ?? "Failed to load REST datasources."}
+          </span>
+          <Button size="sm" variant="outline" onClick={() => listQuery.refetch()}>
+            Retry
+          </Button>
+        </div>
+      ) : datasources.length === 0 ? (
+        <SectionEmpty
           icon={Network}
-          title="OpenAPI (Generic REST)"
-          description="Connect any REST API with an OpenAPI 3.x spec — Twenty, Stripe, an internal service."
-          status="disconnected"
-          action={addButton}
+          title="No REST APIs connected"
+          description="Connect Stripe, Notion, or any service with an OpenAPI 3.x spec."
+          action={
+            demoReadOnly ? null : (
+              <Button size="sm" variant="outline" onClick={onAdd} data-testid="openapi-add-empty">
+                <Plus className="mr-1.5 size-3.5" />
+                Add REST API
+              </Button>
+            )
+          }
         />
       ) : (
-        <>
-          <div className="flex items-center justify-between px-1">
-            <span className="text-xs font-medium text-muted-foreground">
-              OpenAPI (Generic REST) — {datasources.length} connected
-            </span>
-            {addButton}
-          </div>
+        <div className="space-y-2">
           {datasources.map((ds) => (
             <OpenApiInstallCard
               key={ds.id}
@@ -369,18 +363,9 @@ export function OpenApiProviderBlock({ demoReadOnly, onChange }: OpenApiProvider
               onChange={refresh}
             />
           ))}
-        </>
+        </div>
       )}
-
-      <InstallDialog
-        open={installOpen}
-        onOpenChange={setInstallOpen}
-        onInstalled={() => {
-          setInstallOpen(false);
-          refresh();
-        }}
-      />
-    </div>
+    </section>
   );
 }
 
@@ -540,13 +525,17 @@ function OpenApiInstallCard({
 
   return (
     <>
-      <Shell
+      <CollapsibleRow
         icon={Network}
         title={<span className="font-mono">{ds.displayName}</span>}
         titleText={ds.displayName}
-        description={host ? `REST API · ${host}` : "REST API"}
-        status="connected"
-        statusLabel="Connected"
+        meta={host ? host : "REST API"}
+        // A standing breaking-change alert flips the row amber + "Drift" so it's
+        // visible while collapsed; a clean datasource reads as a teal "Connected".
+        status={breakingAlert ? "transitioning" : "connected"}
+        statusLabel={breakingAlert ? "Drift" : "Connected"}
+        summary={ds.snapshot ? `${ds.snapshot.operationCount} ops` : undefined}
+        dataTestId={`openapi-row-${ds.id}`}
         titleBadge={
           ds.status === "draft" ? (
             <Badge variant="outline" className="text-[10px]">
@@ -728,7 +717,7 @@ function OpenApiInstallCard({
         {rediscover.error ? (
           <InlineError>{friendlyErrorOrNull(rediscover.error) ?? "Rediscover failed."}</InlineError>
         ) : null}
-      </Shell>
+      </CollapsibleRow>
 
       <OperationsDialog
         installId={ds.id}
@@ -817,7 +806,9 @@ function OperationsDialog({
 
 // ── Install dialog ───────────────────────────────────────────────────────────
 
-function InstallDialog({
+/** The freeform "Custom REST API" install dialog (OpenAPI spec URL + auth).
+ *  Hosted by the connections page and opened from the Add picker. */
+export function RestInstallDialog({
   open,
   onOpenChange,
   onInstalled,

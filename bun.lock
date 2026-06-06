@@ -606,6 +606,19 @@
         "e2b",
       ],
     },
+    "plugins/elasticsearch": {
+      "name": "@useatlas/elasticsearch",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.193",
+        "hono": "^4.12.23",
+        "zod": "^4.4.3",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+      },
+    },
     "plugins/email": {
       "name": "@useatlas/email",
       "version": "0.0.6",
@@ -2151,6 +2164,8 @@
     "@useatlas/duckdb": ["@useatlas/duckdb@workspace:plugins/duckdb"],
 
     "@useatlas/e2b": ["@useatlas/e2b@workspace:plugins/e2b"],
+
+    "@useatlas/elasticsearch": ["@useatlas/elasticsearch@workspace:plugins/elasticsearch"],
 
     "@useatlas/email": ["@useatlas/email@workspace:plugins/email"],
 

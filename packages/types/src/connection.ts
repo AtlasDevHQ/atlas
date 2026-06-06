@@ -6,6 +6,8 @@ export const DB_TYPES = [
   { value: "snowflake", label: "Snowflake" },
   { value: "duckdb", label: "DuckDB" },
   { value: "salesforce", label: "Salesforce" },
+  { value: "elasticsearch", label: "Elasticsearch" },
+  { value: "opensearch", label: "OpenSearch" },
 ] as const;
 
 /** Database type — closed union derived from DB_TYPES. The backend's internal DBType in @atlas/api/lib/db/connection.ts is wider to accommodate plugin-registered databases. */

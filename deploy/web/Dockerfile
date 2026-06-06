@@ -41,6 +41,7 @@ COPY plugins/obsidian-reader/package.json plugins/obsidian-reader/package.json
 COPY plugins/sidecar/package.json plugins/sidecar/package.json
 COPY plugins/snowflake/package.json plugins/snowflake/package.json
 COPY plugins/salesforce/package.json plugins/salesforce/package.json
+COPY plugins/elasticsearch/package.json plugins/elasticsearch/package.json
 COPY plugins/vercel-sandbox/package.json plugins/vercel-sandbox/package.json
 COPY plugins/bigquery/package.json plugins/bigquery/package.json
 COPY plugins/chat/package.json plugins/chat/package.json

@@ -290,6 +290,122 @@ describe("buildSemanticIndex", () => {
     expect(index).toContain("**size**");
     expect(index).toContain("[AMBIGUOUS]");
     expect(index).toContain("Ask the user which size they mean");
+    // Array-form terms without note/possible_mappings carry no mapping noise.
+    expect(index).not.toContain("maps to:");
+  });
+
+  it("renders note and possible_mappings for object-form ambiguous terms (#3277)", () => {
+    const root = ensureDir(`glossary-mappings-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", {
+        dimensions: [{ name: "id", type: "integer" }],
+      }),
+    );
+
+    // Object-form glossary — the term carries its disambiguation guidance in
+    // `note` + `possible_mappings` (the shape the lookup layer uses), not in
+    // `definition`/`disambiguation`. The prompt index must surface both.
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  status:",
+        "    status: ambiguous",
+        '    note: "Appears in multiple tables — ASK the user."',
+        "    possible_mappings: [orders.status, users.status]",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+
+    expect(index).toContain("### Glossary");
+    expect(index).toContain("**status**");
+    expect(index).toContain("[AMBIGUOUS]");
+    // The "ask the user" guidance and the candidate columns both surface.
+    expect(index).toContain("Appears in multiple tables — ASK the user.");
+    expect(index).toContain("orders.status");
+    expect(index).toContain("users.status");
+  });
+
+  it("renders note and possible_mappings independently across object-form terms (#3277)", () => {
+    const root = ensureDir(`glossary-independent-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    // The two render branches are independent ternaries — exercise each on its
+    // own: note-only, possible_mappings-only, and an empty mappings array.
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  note_only:",
+        "    status: ambiguous",
+        '    note: "Guidance with no candidate columns."',
+        "  mappings_only:",
+        "    status: ambiguous",
+        "    possible_mappings: [orders.id, orders.total]",
+        "  empty_mappings:",
+        "    status: ambiguous",
+        "    possible_mappings: []",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+    const lineOf = (term: string) =>
+      index.split("\n").find((l) => l.includes(`**${term}**`)) ?? "";
+
+    // note-only → renders the note, no "(maps to:" suffix.
+    expect(lineOf("note_only")).toContain("→ Guidance with no candidate columns.");
+    expect(lineOf("note_only")).not.toContain("maps to:");
+
+    // possible_mappings-only → renders the mappings, no note arrow.
+    expect(lineOf("mappings_only")).toContain("(maps to: orders.id, orders.total)");
+    expect(lineOf("mappings_only")).not.toContain("→");
+
+    // empty possible_mappings array → the `.length > 0` guard suppresses the suffix.
+    expect(lineOf("empty_mappings")).not.toContain("maps to:");
+  });
+
+  it("filters non-string possible_mappings entries (#3277)", () => {
+    const root = ensureDir(`glossary-filter-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    // Hand-written YAML can carry non-string or blank entries; the formatter
+    // drops them, preserves the order of the survivors, and emits no clause at
+    // all when nothing survives (never a bare "(maps to: )").
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  mixed:",
+        "    status: ambiguous",
+        "    possible_mappings: [orders.status, 42, users.status]",
+        "  all_invalid:",
+        "    status: ambiguous",
+        "    possible_mappings: [1, 2, 3]",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+    const lineOf = (term: string) =>
+      index.split("\n").find((l) => l.includes(`**${term}**`)) ?? "";
+
+    // Survivors render in order; the non-string entry is dropped.
+    expect(lineOf("mixed")).toContain("(maps to: orders.status, users.status)");
+    expect(lineOf("mixed")).not.toContain("42");
+
+    // No surviving strings → no "maps to" clause (not an empty one).
+    expect(lineOf("all_invalid")).not.toContain("maps to:");
   });
 
   it("discovers groups/<group>/metrics, glossary, and catalog in the index (#3240)", () => {

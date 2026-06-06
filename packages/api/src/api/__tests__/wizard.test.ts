@@ -325,6 +325,51 @@ mock.module("@atlas/api/lib/profiler", () => ({
   profileMySQL: mockProfileMySQL,
 }));
 
+// Providers — control enrichment availability + stub the model. Spread the real
+// module so unrelated exports survive; the wizard route only consumes getModel +
+// getMissingModelConfig from here (the /enrich Phase-2 path, #3236).
+import * as _providersActual from "@atlas/api/lib/providers";
+const mockGetMissingModelConfig: Mock<() => { provider: string; missing: string[] }> = mock(
+  () => ({ provider: "anthropic", missing: [] }),
+);
+mock.module("@atlas/api/lib/providers", () => ({
+  ..._providersActual,
+  getModel: () => ({ modelId: "test-model" }),
+  getModelFromWorkspaceConfig: () => ({ modelId: "workspace-model" }),
+  getMissingModelConfig: mockGetMissingModelConfig,
+}));
+
+// Enterprise layer — the /enrich route resolves per-workspace BYOT via
+// `runEnterprise(ModelRouter…)` before the env provider (#3236 P1, mirrors the
+// agent loop). Spread the real module so `runEffect`'s EnterpriseLayer stays
+// real; override only runEnterprise. Default: null = no workspace config →
+// route falls through to the env-based getMissingModelConfig path.
+import * as _enterpriseLayerActual from "@atlas/api/lib/effect/enterprise-layer";
+const mockRunEnterprise: Mock<(program: unknown) => Promise<unknown>> = mock(async () => null);
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  ..._enterpriseLayerActual,
+  runEnterprise: mockRunEnterprise,
+}));
+
+// Enrich engine — stub the in-memory per-table LLM pass so /enrich makes no real
+// model call. Default: a successful merge that appends a marker field.
+const mockEnrichEntityYaml: Mock<
+  (
+    content: string,
+    profile: unknown,
+    model: unknown,
+    usage?: unknown,
+    dbType?: string,
+  ) => Promise<{ yaml: string; enriched: boolean }>
+> = mock(async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }));
+mock.module("@atlas/api/lib/semantic/enrich", () => ({
+  enrichEntityYaml: mockEnrichEntityYaml,
+  enrichEntity: async () => {},
+  enrichGlossary: async () => {},
+  enrichMetric: async () => {},
+  enrichSemanticLayer: async () => {},
+}));
+
 // --- Import after mocks ---
 
 const { wizard } = await import("../routes/wizard");
@@ -406,6 +451,15 @@ beforeEach(() => {
   mockProfilePostgres.mockImplementation(async () => ({ profiles: [mockUserProfile], errors: [] }));
   mockProfileMySQL.mockReset();
   mockProfileMySQL.mockImplementation(async () => ({ profiles: [], errors: [] }));
+
+  mockGetMissingModelConfig.mockReset();
+  mockGetMissingModelConfig.mockImplementation(() => ({ provider: "anthropic", missing: [] }));
+  mockEnrichEntityYaml.mockReset();
+  mockEnrichEntityYaml.mockImplementation(
+    async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }),
+  );
+  mockRunEnterprise.mockReset();
+  mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
 });
 
 // =====================================================================
@@ -551,6 +605,153 @@ describe("POST /api/v1/wizard/generate", () => {
     const data = await json(res);
     expect(data.error).toBe("generate_failed");
     expect(data.requestId).toBeDefined();
+  });
+});
+
+// =====================================================================
+// POST /api/v1/wizard/enrich (Phase 2 — issue #3236)
+// =====================================================================
+
+describe("POST /api/v1/wizard/enrich", () => {
+  it("returns 422 when required fields are missing", async () => {
+    // No yaml → Zod rejects (yaml is the baseline the LLM merges into).
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+    });
+    expect(res.status).toBe(422);
+  });
+
+  it("enriches one table and returns the upgraded YAML", async () => {
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.tableName).toBe("users");
+    expect(data.enriched).toBe(true);
+    expect(String(data.yaml)).toContain("Enriched by AI.");
+    // The engine got the submitted baseline + the freshly-profiled table profile
+    // (DB-grounded enrichment — § D) + the datasource dialect so query_patterns
+    // match the connection (#3236 review: dbType threaded, 5th arg).
+    expect(mockEnrichEntityYaml).toHaveBeenCalledTimes(1);
+    const call = mockEnrichEntityYaml.mock.calls[0];
+    expect(call[0]).toBe("table: users\n");
+    expect((call[1] as { table_name: string }).table_name).toBe("users");
+    expect(call[4]).toBe("postgres");
+  });
+
+  it("uses an admin-configured workspace provider even when no platform env key is set", async () => {
+    // BYOT (#3236 P1): a workspace whose provider lives in settings must enrich
+    // even if the platform env has no provider — so the env preflight is skipped
+    // when the ModelRouter returns a workspace config.
+    // runEnterprise is a shared seam: adminAuth's IP-allowlist check
+    // (expects `{ allowed }`) AND resolveEnrichModel's ModelRouter both flow
+    // through it. The mock return must satisfy both — `allowed: true` keeps the
+    // IP check green; the model fields are the workspace BYOT config (consumed
+    // by the mocked getModelFromWorkspaceConfig, which ignores their values).
+    mockRunEnterprise.mockImplementation(async () => ({
+      allowed: true,
+      provider: "anthropic",
+      model: "claude-x",
+      baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "anthropic", apiKey: "sk-test" },
+    }));
+    mockGetMissingModelConfig.mockImplementation(() => ({
+      provider: "anthropic",
+      missing: ["ANTHROPIC_API_KEY"], // platform env is empty, but workspace BYOT wins
+    }));
+
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.enriched).toBe(true);
+    expect(mockEnrichEntityYaml).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the baseline through unchanged when the model returns no usable output", async () => {
+    mockEnrichEntityYaml.mockImplementationOnce(async (content: string) => ({
+      yaml: content,
+      enriched: false,
+    }));
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.enriched).toBe(false);
+    expect(data.yaml).toBe("table: users\n");
+  });
+
+  it("returns 503 and never enriches when no LLM provider is configured", async () => {
+    mockGetMissingModelConfig.mockImplementation(() => ({
+      provider: "anthropic",
+      missing: ["ANTHROPIC_API_KEY"],
+    }));
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(503);
+    const data = await json(res);
+    expect(data.error).toBe("enrichment_unavailable");
+    // Fail-fast BEFORE any profiling or model call.
+    expect(mockEnrichEntityYaml).not.toHaveBeenCalled();
+    expect(mockProfilePostgres).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the connection is not found", async () => {
+    mockConnectionHas.mockImplementation(() => false);
+    mockHasInternalDB.mockImplementation(() => false);
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "nonexistent",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(404);
+    const data = await json(res);
+    expect(data.error).toBe("not_found");
+  });
+
+  it("returns 500 enrich_failed when profiling throws", async () => {
+    mockProfilePostgres.mockImplementation(async () => {
+      throw new Error("statement timeout");
+    });
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("enrich_failed");
+    expect(data.requestId).toBeDefined();
+  });
+
+  it("returns 403 for non-admin users", async () => {
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-2", mode: "managed", label: "user@test.com", role: "member" },
+      }),
+    );
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(403);
   });
 });
 

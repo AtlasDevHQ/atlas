@@ -41,7 +41,7 @@ const mockGenerateText = mock(async ({ prompt }: GenArgs) => {
 mock.module("ai", () => ({ ...aiActual, generateText: mockGenerateText }));
 mock.module("@atlas/api/lib/providers", () => ({ ...providersActual, getModel: () => ({ modelId: "test-model" }) }));
 
-const { enrichSemanticLayer, enrichEntity } = await import("../enrich");
+const { enrichSemanticLayer, enrichEntity, enrichEntityYaml } = await import("../enrich");
 
 // --- fixtures ----------------------------------------------------------------
 
@@ -146,6 +146,71 @@ describe("enrichSemanticLayer (shared engine, file-based)", () => {
     expect(fs.readFileSync(path.join(tmpDir, "entities", "ghost.yml"), "utf-8")).toBe("name: Ghost\ntable: ghost\n");
     // Only entity(orders) + glossary + metric(orders) → exactly 3 LLM calls.
     expect(mockGenerateText).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
+  // The API/web two-phase generate path enriches a YAML string per table without
+  // touching disk. These pin the three outcomes the route depends on.
+
+  it("merges LLM fields and reports enriched: true, preserving structural fields", async () => {
+    const { yaml: out, enriched } = await enrichEntityYaml(
+      ENTITY_YAML,
+      ordersProfile,
+      { modelId: "x" } as never,
+    );
+    expect(enriched).toBe(true);
+    const parsed = yaml.load(out) as Record<string, unknown>;
+    expect(String(parsed.description)).toContain("Enriched: orders placed by a customer.");
+    expect(parsed.name).toBe("Orders"); // deepMerge keeps the mechanical structure
+    expect(Array.isArray(parsed.dimensions)).toBe(true);
+  });
+
+  it("returns the baseline unchanged with enriched: false on an unparseable response", async () => {
+    // Successful call, unusable output → soft skip (NOT a throw): the row keeps
+    // its mechanical baseline and the route returns it as-is.
+    mockGenerateText.mockImplementationOnce(async () => ({
+      text: "Sorry, I cannot help with that.",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    }));
+    const { yaml: out, enriched } = await enrichEntityYaml(
+      ENTITY_YAML,
+      ordersProfile,
+      { modelId: "x" } as never,
+    );
+    expect(enriched).toBe(false);
+    expect(out).toBe(ENTITY_YAML);
+  });
+
+  it("throws when the model call fails so the API can map it to a per-table error", async () => {
+    // Unlike enrichEntity (file-based, swallows + logs), the in-memory variant
+    // propagates the provider error — the route turns it into a 500/per-row error.
+    mockGenerateText.mockImplementationOnce(async () => {
+      throw new Error("provider 401 unauthorized");
+    });
+    await expect(
+      enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never),
+    ).rejects.toThrow(/provider 401/);
+  });
+
+  it("accumulates token usage when an accumulator is passed", async () => {
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, usage);
+    expect(usage.totalTokens).toBe(33); // from the mocked generateText usage
+  });
+
+  it("asks for the datasource dialect (MySQL) so query_patterns aren't PostgreSQL-only", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, undefined, "mysql");
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("valid MySQL");
+    expect(prompt).not.toContain("valid PostgreSQL");
+  });
+
+  it("defaults to PostgreSQL dialect when dbType is omitted (CLI parity)", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("valid PostgreSQL");
+    expect(prompt).not.toContain("valid MySQL");
   });
 });
 

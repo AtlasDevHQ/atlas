@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryStates } from "nuqs";
 import { useAtlasConfig } from "@/ui/context";
@@ -31,8 +31,23 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
-import type { ConnectionInfo, WizardTableEntry, WizardEntityResult } from "@/ui/lib/types";
+import type {
+  ConnectionInfo,
+  WizardTableEntry,
+  WizardEntityResult,
+  WizardEnrichResult,
+} from "@/ui/lib/types";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { OnboardingShell } from "@/ui/components/onboarding/onboarding-shell";
 import { StepTrack } from "@/ui/components/onboarding/step-track";
@@ -45,8 +60,17 @@ import {
   userMessageFor,
 } from "./wizard-helpers";
 import {
+  ENRICH_CONCURRENCY,
+  type EnrichRowStatus,
+  seedIgnoredTables,
+  enrichableTables,
+  excludeIgnored,
+  runWithConcurrency,
+} from "./wizard-enrich";
+import {
   AlertCircle,
   ArrowRight,
+  Ban,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -54,9 +78,11 @@ import {
   FileCode,
   Loader2,
   MessageSquare,
+  RotateCcw,
   Sparkles,
   Table as TableLucide,
   TableIcon,
+  XCircle,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -560,6 +586,16 @@ function StepTables({
 // Step 3: Review entities
 // ---------------------------------------------------------------------------
 
+/**
+ * Outcome of one table's enrichment request. The fetch helper never throws —
+ * it maps every failure into an `error` outcome — so the concurrency runner's
+ * onSettled gets a single, exhaustive shape per row.
+ */
+type EnrichOutcome =
+  | { kind: "ok"; yaml: string; enriched: boolean }
+  | { kind: "skipped" }
+  | { kind: "error"; message: string; requestId?: string; unavailable: boolean };
+
 function StepReview({
   connectionId,
   selectedTables,
@@ -569,6 +605,8 @@ function StepReview({
   onBack,
   entities,
   setEntities,
+  ignored,
+  setIgnored,
   saving,
   saveError,
 }: {
@@ -579,7 +617,9 @@ function StepReview({
   onNext: () => void;
   onBack: () => void;
   entities: WizardEntityResult[];
-  setEntities: (e: WizardEntityResult[]) => void;
+  setEntities: Dispatch<SetStateAction<WizardEntityResult[]>>;
+  ignored: Set<string>;
+  setIgnored: Dispatch<SetStateAction<Set<string>>>;
   saving: boolean;
   saveError: WizardError | null;
 }) {
@@ -587,6 +627,15 @@ function StepReview({
   const [error, setError] = useState<WizardError | null>(null);
   const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
   const [editingYaml, setEditingYaml] = useState<Record<string, string>>({});
+
+  // Phase-2 enrichment state. All transient (rebuilt per visit): the durable
+  // result of enrichment is the upgraded YAML in `entities`, not these badges.
+  const [enrichStatus, setEnrichStatus] = useState<Record<string, EnrichRowStatus>>({});
+  const [enrichRowError, setEnrichRowError] = useState<Record<string, string>>({});
+  const [enriching, setEnriching] = useState(false);
+  const [enrichError, setEnrichError] = useState<WizardError | null>(null);
+  const [selectedForEnrich, setSelectedForEnrich] = useState<Set<string>>(new Set());
+  const [confirmAllOpen, setConfirmAllOpen] = useState(false);
 
   useEffect(() => {
     if (entities.length > 0) return;
@@ -617,6 +666,9 @@ function StepReview({
         const yamlMap: Record<string, string> = {};
         for (const entity of generated) yamlMap[entity.tableName] = entity.yaml;
         setEditingYaml(yamlMap);
+        // Pre-seed the ignore list from the profiler's possibly-abandoned signal
+        // (§ D) so the user confirms exclusions rather than hunting for them.
+        setIgnored(new Set(seedIgnoredTables(generated)));
       } catch (err) {
         if (!cancelled) {
           console.warn(
@@ -638,8 +690,190 @@ function StepReview({
 
   function handleYamlChange(tableName: string, yaml: string) {
     setEditingYaml((prev) => ({ ...prev, [tableName]: yaml }));
-    setEntities(entities.map((e) => (e.tableName === tableName ? { ...e, yaml } : e)));
+    // Functional update so concurrent enrichment settles don't clobber each
+    // other via a stale `entities` closure.
+    setEntities((prev) => prev.map((e) => (e.tableName === tableName ? { ...e, yaml } : e)));
   }
+
+  /**
+   * Apply an enrichment result, but only if the row still holds the exact YAML
+   * we sent (`snapshot`). If the user hand-edited the row while the request was
+   * in flight, their edit wins — the stale enrichment is dropped rather than
+   * silently overwriting their work.
+   */
+  function applyEnrichedYaml(tableName: string, yaml: string, snapshot: string | undefined) {
+    setEntities((prev) =>
+      prev.map((e) =>
+        e.tableName === tableName && (snapshot === undefined || e.yaml === snapshot)
+          ? { ...e, yaml }
+          : e,
+      ),
+    );
+    setEditingYaml((prev) => {
+      const cur = prev[tableName];
+      if (snapshot !== undefined && cur !== undefined && cur !== snapshot) return prev;
+      return { ...prev, [tableName]: yaml };
+    });
+  }
+
+  function toggleIgnore(tableName: string) {
+    setIgnored((prev) => {
+      const next = new Set(prev);
+      if (next.has(tableName)) next.delete(tableName);
+      else next.add(tableName);
+      return next;
+    });
+    // An ignored table can't be a target — drop it from the enrich selection.
+    setSelectedForEnrich((prev) => {
+      if (!prev.has(tableName)) return prev;
+      const next = new Set(prev);
+      next.delete(tableName);
+      return next;
+    });
+  }
+
+  function toggleEnrichSelect(tableName: string) {
+    setSelectedForEnrich((prev) => {
+      const next = new Set(prev);
+      if (next.has(tableName)) next.delete(tableName);
+      else next.add(tableName);
+      return next;
+    });
+  }
+
+  /**
+   * Fetch enrichment for one table. Never throws: every failure becomes an
+   * `error` outcome so the runner can settle the row uniformly. A 503 is the
+   * "no provider configured" signal — flagged `unavailable` so the caller can
+   * abort the rest of the batch and show one banner.
+   */
+  async function enrichOne(tableName: string, yaml: string): Promise<EnrichOutcome> {
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/wizard/enrich`, {
+        method: "POST",
+        credentials,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId, tableName, yaml }),
+      });
+      if (!res.ok) {
+        const body = await readErrorBody(res, "enrich");
+        console.warn("[wizard] enrich failed:", {
+          table: tableName,
+          status: res.status,
+          requestId: body.requestId,
+          message: body.message,
+        });
+        // 503 = no provider configured. The server's message is deployment
+        // guidance (path/secret-free) — show it verbatim rather than collapsing
+        // it to the generic fallback via userMessageFor.
+        if (res.status === 503) {
+          const message =
+            typeof body.message === "string" && body.message
+              ? body.message
+              : "Enrichment needs a configured LLM provider. Save the mechanical baseline as-is, or configure a provider in admin.";
+          const requestId = typeof body.requestId === "string" ? body.requestId : undefined;
+          return { kind: "error", message, requestId, unavailable: true };
+        }
+        const mapped = errorFromResponse(res, body, "Couldn't enrich this table.");
+        return { kind: "error", message: mapped.message, requestId: mapped.requestId, unavailable: false };
+      }
+      const data = (await res.json()) as WizardEnrichResult;
+      return { kind: "ok", yaml: data.yaml, enriched: data.enriched };
+    } catch (err) {
+      console.warn(
+        "[wizard] enrich error:",
+        tableName,
+        err instanceof Error ? err.message : String(err),
+      );
+      return {
+        kind: "error",
+        message: userMessageFor(err, "Couldn't enrich this table."),
+        unavailable: false,
+      };
+    }
+  }
+
+  /**
+   * Enrich a set of tables with bounded concurrency, upgrading each row in
+   * place as its result settles (§ D streaming). Each table is independent, so
+   * partial completion is safe — a failure (or the whole-batch abort on a
+   * missing provider) leaves the rest of the rows on their mechanical baseline.
+   */
+  async function runEnrich(targets: string[]) {
+    if (enriching || targets.length === 0) return;
+    setEnriching(true);
+    setEnrichError(null);
+    setEnrichStatus((prev) => {
+      const next = { ...prev };
+      for (const t of targets) next[t] = "enriching";
+      return next;
+    });
+    setEnrichRowError((prev) => {
+      const next = { ...prev };
+      for (const t of targets) delete next[t];
+      return next;
+    });
+
+    // Snapshot the YAML to send now so concurrent settles don't read mutated
+    // state, and so a hand-edit made mid-run isn't silently sent.
+    const yamlByTable = new Map(entities.map((e) => [e.tableName, e.yaml]));
+    // Once a 503 proves the provider is unconfigured, skip the remaining
+    // tables rather than firing N doomed requests.
+    const aborted = { current: false };
+
+    await runWithConcurrency(
+      targets,
+      ENRICH_CONCURRENCY,
+      async (tableName): Promise<EnrichOutcome> => {
+        if (aborted.current) return { kind: "skipped" };
+        const outcome = await enrichOne(tableName, yamlByTable.get(tableName) ?? "");
+        if (outcome.kind === "error" && outcome.unavailable) aborted.current = true;
+        return outcome;
+      },
+      (tableName, outcome, workerError) => {
+        // The task catches its own errors, so workerError should be undefined —
+        // but never silently swallow an unexpected throw (CLAUDE.md error rule).
+        if (workerError) {
+          const message =
+            workerError instanceof Error ? workerError.message : String(workerError);
+          console.warn("[wizard] enrich worker error:", tableName, message);
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "error" }));
+          setEnrichRowError((prev) => ({
+            ...prev,
+            [tableName]: userMessageFor(workerError, "Couldn't enrich this table."),
+          }));
+          return;
+        }
+        if (!outcome || outcome.kind === "skipped") {
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "idle" }));
+          return;
+        }
+        if (outcome.kind === "error") {
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "error" }));
+          setEnrichRowError((prev) => ({ ...prev, [tableName]: outcome.message }));
+          if (outcome.unavailable) {
+            setEnrichError({ message: outcome.message, requestId: outcome.requestId });
+          }
+          return;
+        }
+        // Model ran but returned nothing usable → keep the baseline, don't badge
+        // it "enriched" (would mislead which rows still need attention).
+        if (!outcome.enriched) {
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "unchanged" }));
+          return;
+        }
+        setEnrichStatus((prev) => ({ ...prev, [tableName]: "enriched" }));
+        // Apply only if the row still matches the YAML we sent — a manual edit
+        // made mid-flight wins over the stale enrichment (no silent clobber).
+        applyEnrichedYaml(tableName, outcome.yaml, yamlByTable.get(tableName));
+      },
+    );
+
+    setEnriching(false);
+  }
+
+  const enrichAllTargets = enrichableTables(entities, ignored);
+  const selectedTargets = excludeIgnored([...selectedForEnrich], ignored);
 
   if (loading) {
     return (
@@ -692,30 +926,161 @@ function StepReview({
       </CardHeader>
       <CardContent className="space-y-3">
         {saveError && <ErrorBanner error={saveError} />}
+        {enrichError && <ErrorBanner error={enrichError} />}
+
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/20 p-3">
+          <div className="min-w-0 space-y-0.5">
+            <p className="flex items-center gap-1.5 text-sm font-medium">
+              <Sparkles className="size-4 text-primary" aria-hidden="true" />
+              Enrich with AI
+              <span className="font-normal text-muted-foreground">· optional</span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              The baseline below is ready to save now. Enrichment runs an LLM per table to add
+              descriptions, use cases, and query patterns — it reads your database to ground the
+              output and may incur model costs.
+              {ignored.size > 0 &&
+                ` ${ignored.size} low-signal ${ignored.size === 1 ? "table is" : "tables are"} pre-ignored.`}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => runEnrich(selectedTargets)}
+              disabled={enriching || selectedTargets.length === 0}
+            >
+              {enriching ? (
+                <Loader2 className="mr-1 size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Sparkles className="mr-1 size-4" aria-hidden="true" />
+              )}
+              Enrich selected{selectedTargets.length > 0 ? ` (${selectedTargets.length})` : ""}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => setConfirmAllOpen(true)}
+              disabled={enriching || enrichAllTargets.length === 0}
+            >
+              <Sparkles className="mr-1 size-4" aria-hidden="true" />
+              Enrich all ({enrichAllTargets.length})
+            </Button>
+          </div>
+        </div>
+
+        <AlertDialog open={confirmAllOpen} onOpenChange={setConfirmAllOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Enrich {enrichAllTargets.length}{" "}
+                {enrichAllTargets.length === 1 ? "table" : "tables"}?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                This runs an LLM over{" "}
+                {enrichAllTargets.length === 1
+                  ? "this table"
+                  : `each of these ${enrichAllTargets.length} tables`}{" "}
+                to add descriptions, use cases, query patterns, and metrics. It reads from your
+                database to ground the output and may incur model costs. Ignored tables are skipped.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirmAllOpen(false);
+                  runEnrich(enrichAllTargets);
+                }}
+              >
+                Enrich {enrichAllTargets.length}{" "}
+                {enrichAllTargets.length === 1 ? "table" : "tables"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <ul className="max-h-[600px] space-y-2 overflow-auto pr-1">
           {entities.map((entity) => {
             const isExpanded = expandedEntity === entity.tableName;
             const profile = entity.profile;
+            const isIgnored = ignored.has(entity.tableName);
+            const status: EnrichRowStatus = enrichStatus[entity.tableName] ?? "idle";
+            const rowError = enrichRowError[entity.tableName];
+            const toggleExpand = () =>
+              setExpandedEntity(isExpanded ? null : entity.tableName);
             return (
-              <li key={entity.tableName} className="overflow-hidden rounded-lg border">
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-                  onClick={() => setExpandedEntity(isExpanded ? null : entity.tableName)}
-                  aria-expanded={isExpanded}
-                  aria-controls={`entity-${entity.tableName}`}
-                >
-                  <div className="flex min-w-0 items-center gap-3">
+              <li
+                key={entity.tableName}
+                className={cn("overflow-hidden rounded-lg border", isIgnored && "opacity-60")}
+              >
+                <div className="flex w-full items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/50">
+                  <Checkbox
+                    checked={selectedForEnrich.has(entity.tableName)}
+                    onCheckedChange={() => toggleEnrichSelect(entity.tableName)}
+                    disabled={isIgnored || enriching}
+                    aria-label={`Select ${entity.tableName} for enrichment`}
+                  />
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-3 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={toggleExpand}
+                    aria-expanded={isExpanded}
+                    aria-controls={`entity-${entity.tableName}`}
+                  >
                     <TableIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                     <span className="truncate font-mono text-sm font-medium">
                       {entity.tableName}
                     </span>
-                  </div>
+                    {isIgnored && (
+                      <Badge variant="outline" className="shrink-0 text-[10px] text-muted-foreground">
+                        Ignored
+                      </Badge>
+                    )}
+                  </button>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {entity.rowCount.toLocaleString()} rows · {entity.columnCount} cols
-                    </span>
+                    {status === "enriching" && (
+                      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                        Enriching…
+                      </span>
+                    )}
+                    {status === "enriched" && (
+                      <Badge variant="secondary" className="gap-1 text-[10px]">
+                        <Sparkles className="size-3" aria-hidden="true" />
+                        Enriched
+                      </Badge>
+                    )}
+                    {status === "unchanged" && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              No changes
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            The model returned nothing usable — this row kept its mechanical baseline. You can retry.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+                    {status === "error" && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="destructive" className="gap-1 text-[10px]">
+                              <XCircle className="size-3" aria-hidden="true" />
+                              Couldn&apos;t enrich
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {rowError ?? "Enrichment failed. The baseline is unchanged — try again."}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                     {profile.flags.possiblyAbandoned && (
                       <TooltipProvider>
                         <Tooltip>
@@ -723,7 +1088,7 @@ function StepReview({
                             <Badge variant="destructive" className="text-[10px]">low signal</Badge>
                           </TooltipTrigger>
                           <TooltipContent>
-                            Looks abandoned — last write activity was old or row count is low.
+                            Looks abandoned — last write activity was old or row count is low. Pre-ignored; restore it to keep it.
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -740,15 +1105,45 @@ function StepReview({
                         </Tooltip>
                       </TooltipProvider>
                     )}
-                    <ChevronRight
-                      className={cn(
-                        "size-4 text-muted-foreground transition-transform",
-                        isExpanded && "rotate-90",
+                    <span className="text-xs text-muted-foreground">
+                      {entity.rowCount.toLocaleString()} rows · {entity.columnCount} cols
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => toggleIgnore(entity.tableName)}
+                      disabled={enriching}
+                    >
+                      {isIgnored ? (
+                        <>
+                          <RotateCcw className="mr-1 size-3" aria-hidden="true" />
+                          Restore
+                        </>
+                      ) : (
+                        <>
+                          <Ban className="mr-1 size-3" aria-hidden="true" />
+                          Ignore
+                        </>
                       )}
-                      aria-hidden="true"
-                    />
+                    </Button>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={toggleExpand}
+                      aria-label={isExpanded ? `Collapse ${entity.tableName}` : `Expand ${entity.tableName}`}
+                    >
+                      <ChevronRight
+                        className={cn(
+                          "size-4 text-muted-foreground transition-transform",
+                          isExpanded && "rotate-90",
+                        )}
+                        aria-hidden="true"
+                      />
+                    </button>
                   </div>
-                </button>
+                </div>
 
                 {isExpanded && (
                   <div
@@ -852,7 +1247,15 @@ function StepReview({
                           onChange={(e) => handleYamlChange(entity.tableName, e.target.value)}
                           className="font-mono text-xs"
                           rows={12}
+                          // Locked while this row is enriching so an in-flight
+                          // edit can't be clobbered by the returning YAML.
+                          disabled={status === "enriching"}
                         />
+                        {status === "enriching" && (
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            Locked while enriching — editable again when the result lands.
+                          </p>
+                        )}
                       </div>
                     </details>
                   </div>
@@ -863,11 +1266,11 @@ function StepReview({
         </ul>
 
         <div className="flex justify-between pt-2">
-          <Button variant="outline" onClick={onBack} disabled={saving}>
+          <Button variant="outline" onClick={onBack} disabled={saving || enriching}>
             <ChevronLeft className="mr-1 size-4" aria-hidden="true" />
             Back
           </Button>
-          <Button onClick={onNext} disabled={entities.length === 0 || saving}>
+          <Button onClick={onNext} disabled={enrichAllTargets.length === 0 || saving || enriching}>
             {saving ? (
               <>
                 <Loader2 className="mr-2 size-4 animate-spin" aria-hidden="true" />
@@ -875,7 +1278,8 @@ function StepReview({
               </>
             ) : (
               <>
-                Save semantic layer
+                Save {enrichAllTargets.length}{" "}
+                {enrichAllTargets.length === 1 ? "entity" : "entities"}
                 <CheckCircle2 className="ml-1 size-4" aria-hidden="true" />
               </>
             )}
@@ -983,7 +1387,11 @@ export default function WizardPage() {
   const [connectionId, setConnectionId] = useState(params.connectionId || "");
   const [selectedTables, setSelectedTables] = useState<string[]>([]);
   const [entities, setEntities] = useState<WizardEntityResult[]>([]);
+  // Tables excluded from enrichment AND from the final save (§ D). Pre-seeded in
+  // StepReview from the profiler's possibly-abandoned signal; user-adjustable.
+  const [ignored, setIgnored] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [savedCount, setSavedCount] = useState(0);
   const [saveError, setSaveError] = useState<WizardError | null>(null);
 
   function goTo(nextStep: number) {
@@ -992,14 +1400,18 @@ export default function WizardPage() {
 
   // Going back from Review invalidates cached entities — the user may change
   // their table selection, and the regenerate run must reflect the new set.
+  // The ignore list is regenerated from the fresh profile, so clear it too.
   function goBackFromReview() {
     setEntities([]);
+    setIgnored(new Set());
     goTo(2);
   }
 
   async function handleSave() {
     setSaving(true);
     setSaveError(null);
+    // Ignored tables are excluded from the saved layer (§ D, acceptance C3).
+    const entitiesToSave = entities.filter((e) => !ignored.has(e.tableName));
     try {
       const res = await fetch(`${apiUrl}/api/v1/wizard/save`, {
         method: "POST",
@@ -1007,7 +1419,7 @@ export default function WizardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           connectionId,
-          entities: entities.map((e) => ({ tableName: e.tableName, yaml: e.yaml })),
+          entities: entitiesToSave.map((e) => ({ tableName: e.tableName, yaml: e.yaml })),
         }),
       });
       if (!res.ok) {
@@ -1020,6 +1432,7 @@ export default function WizardPage() {
         setSaveError(errorFromResponse(res, body, "Couldn't save the semantic layer."));
         return;
       }
+      setSavedCount(entitiesToSave.length);
       goTo(4);
     } catch (err) {
       console.warn(
@@ -1068,6 +1481,8 @@ export default function WizardPage() {
           credentials={credentials}
           entities={entities}
           setEntities={setEntities}
+          ignored={ignored}
+          setIgnored={setIgnored}
           onNext={() => {
             if (!saving) handleSave();
           }}
@@ -1079,7 +1494,7 @@ export default function WizardPage() {
 
       {stepId === "done" && (
         <StepDone
-          entityCount={entities.length}
+          entityCount={savedCount}
           isDemoConnection={connectionId === DEMO_CONNECTION_ID}
         />
       )}

@@ -186,6 +186,32 @@ export function getMissingProviderConfig(provider: string): string[] {
   }
 }
 
+/**
+ * Resolve the provider the env-based model path ({@link getModel}) would select,
+ * then report any env vars it still needs to make a call.
+ *
+ * `missing` empty ⇒ {@link getModel}'s provider is fully configured and a
+ * one-shot `generateText` would succeed (modulo network/key validity). Mirrors
+ * `resolveSelection`'s no-override provider resolution
+ * (`ATLAS_PROVIDER ?? getDefaultProvider()`) so the answer matches what
+ * {@link getModel} actually does at call time.
+ *
+ * Used by the wizard's two-phase generate enrich endpoint (issue #3236) to
+ * fail fast with one actionable "configure a provider" message instead of
+ * letting every per-table enrichment hit the same provider-auth error.
+ */
+export function getMissingModelConfig(): { provider: string; missing: string[] } {
+  const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (!isSupportedProvider(provider)) {
+    // An unknown/typo provider would otherwise fall through to
+    // getMissingProviderConfig's default `[]` (reads as "configured") and then
+    // throw at getModel()/resolveSelection() time — defeating the fail-fast this
+    // function exists for. Report it as missing so callers gate up front.
+    return { provider, missing: [`ATLAS_PROVIDER (unsupported: "${provider}")`] };
+  }
+  return { provider, missing: getMissingProviderConfig(provider) };
+}
+
 /** Anthropic-family model ids contain "anthropic" or "claude". */
 function isAnthropicFamilyModelId(modelId: string): boolean {
   return modelId.includes("anthropic") || modelId.includes("claude");

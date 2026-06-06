@@ -330,6 +330,75 @@ describe("buildSemanticIndex", () => {
     expect(index).toContain("users.status");
   });
 
+  it("renders note and possible_mappings independently across object-form terms (#3277)", () => {
+    const root = ensureDir(`glossary-independent-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    // The two render branches are independent ternaries — exercise each on its
+    // own: note-only, possible_mappings-only, and an empty mappings array.
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  note_only:",
+        "    status: ambiguous",
+        '    note: "Guidance with no candidate columns."',
+        "  mappings_only:",
+        "    status: ambiguous",
+        "    possible_mappings: [orders.id, orders.total]",
+        "  empty_mappings:",
+        "    status: ambiguous",
+        "    possible_mappings: []",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+    const lineOf = (term: string) =>
+      index.split("\n").find((l) => l.includes(`**${term}**`)) ?? "";
+
+    // note-only → renders the note, no "(maps to:" suffix.
+    expect(lineOf("note_only")).toContain("→ Guidance with no candidate columns.");
+    expect(lineOf("note_only")).not.toContain("maps to:");
+
+    // possible_mappings-only → renders the mappings, no note arrow.
+    expect(lineOf("mappings_only")).toContain("(maps to: orders.id, orders.total)");
+    expect(lineOf("mappings_only")).not.toContain("→");
+
+    // empty possible_mappings array → the `.length > 0` guard suppresses the suffix.
+    expect(lineOf("empty_mappings")).not.toContain("maps to:");
+  });
+
+  it("filters non-string possible_mappings entries (#3277)", () => {
+    const root = ensureDir(`glossary-filter-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    // Hand-written YAML can carry non-string entries (e.g. a bare number); the
+    // formatter drops them rather than rendering a coerced value, and preserves
+    // the order of the surviving strings.
+    writeFileSync(
+      join(root, "glossary.yml"),
+      [
+        "terms:",
+        "  status:",
+        "    status: ambiguous",
+        "    possible_mappings: [orders.status, 42, users.status]",
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+
+    expect(index).toContain("(maps to: orders.status, users.status)");
+    expect(index).not.toContain("42");
+  });
+
   it("discovers groups/<group>/metrics, glossary, and catalog in the index (#3240)", () => {
     const root = ensureDir(`group-discovery-${testCounter}`);
     mkdirSync(join(root, "entities"), { recursive: true });

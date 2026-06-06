@@ -421,9 +421,12 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
   const disambig = term.disambiguation
     ? ` → ${term.disambiguation}`
     : "";
-  // Object-form ambiguous terms carry their guidance in `note`/`possible_mappings`
-  // rather than `disambiguation`; surface both so the index matches what the
-  // searchGlossary tool returns (#3277).
+  // Object-form glossaries carry their disambiguation guidance in
+  // `note`/`possible_mappings` rather than `disambiguation`; surface both so the
+  // index carries the same disambiguation fields the searchGlossary tool returns
+  // (#3277). The runtime Array.isArray + string filter guards malformed input:
+  // these fields are spread untyped from yaml.load, so the static `string[]`
+  // type can't be trusted here (mirrors parseGlossaryTerm in lookups.ts).
   const note = term.note ? ` → ${term.note}` : "";
   const mappings =
     Array.isArray(term.possible_mappings) && term.possible_mappings.length > 0

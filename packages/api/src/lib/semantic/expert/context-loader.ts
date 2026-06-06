@@ -497,9 +497,10 @@ export async function loadRejectedKeys(): Promise<Set<string>> {
 
     const rows = await internalQuery<{
       source_entity: string;
+      connection_group_id: string | null;
       amendment_payload: string | Record<string, unknown> | null;
     }>(
-      `SELECT source_entity, amendment_payload FROM learned_patterns
+      `SELECT source_entity, connection_group_id, amendment_payload FROM learned_patterns
        WHERE type = 'semantic_amendment' AND status = 'rejected'
        AND reviewed_at >= now() - interval '30 days'`,
       [],
@@ -511,7 +512,11 @@ export async function loadRejectedKeys(): Promise<Set<string>> {
           ? JSON.parse(row.amendment_payload)
           : row.amendment_payload;
         if (payload && payload.amendmentType) {
-          keys.add(`${row.source_entity}:${payload.amendmentType}:${payload.amendment?.name ?? ""}`);
+          // Group-scoped key (#3284): NULL `connection_group_id` → "default",
+          // matching `entity.group` in `categories.ts` so one group's rejection
+          // doesn't mark another group's same-named amendment stale.
+          const group = row.connection_group_id ?? "default";
+          keys.add(`${group}:${row.source_entity}:${payload.amendmentType}:${payload.amendment?.name ?? ""}`);
         }
       } catch {
         // intentionally ignored: malformed payload

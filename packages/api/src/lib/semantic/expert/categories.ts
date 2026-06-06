@@ -11,16 +11,16 @@ import { createAnalysisResult, tableFrequencyImpact } from "./scoring";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-function rejectionKey(entity: string, type: string, name?: string): string {
-  return `${entity}:${type}${name ? `:${name}` : ""}`;
+// Rejection/staleness keys are group-scoped (#3284): a review decision in one
+// Connection group must not suppress the same-named amendment in another group.
+// `loadRejectedKeys` builds the matching key from each rejected row's
+// `connection_group_id` (NULL → "default").
+function rejectionKey(group: string, entity: string, type: string, name?: string): string {
+  return `${group}:${entity}:${type}${name ? `:${name}` : ""}`;
 }
 
-function stalenessFactor(entity: string, type: string, name: string | undefined, rejectedKeys: Set<string>): number {
-  return rejectedKeys.has(rejectionKey(entity, type, name)) ? 0.8 : 0;
-}
-
-function findEntityForTable(entities: ParsedEntity[], tableName: string): ParsedEntity | undefined {
-  return entities.find((e) => e.table === tableName || e.name === tableName);
+function stalenessFactor(group: string, entity: string, type: string, name: string | undefined, rejectedKeys: Set<string>): number {
+  return rejectedKeys.has(rejectionKey(group, entity, type, name)) ? 0.8 : 0;
 }
 
 /**
@@ -28,8 +28,8 @@ function findEntityForTable(entities: ParsedEntity[], tableName: string): Parsed
  * The loader now returns one entity per group for a shared table (e.g.
  * `groups/us/entities/orders.yml` + `groups/eu/entities/orders.yml`), so the
  * profile-driven analyzers must visit ALL of them — keying off only the first
- * match (`findEntityForTable`) would generate amendments for one group and
- * silently skip the others, even though the apply path is now group-aware.
+ * match would generate amendments for one group and silently skip the others,
+ * even though the apply path is now group-aware.
  */
 function findEntitiesForTable(entities: ParsedEntity[], tableName: string): ParsedEntity[] {
   return entities.filter((e) => e.table === tableName || e.name === tableName);
@@ -57,7 +57,7 @@ export function findCoverageGaps(ctx: AnalysisContext): AnalysisResult[] {
         if (col.is_primary_key) continue; // PKs are usually not needed as dimensions
         if (dimNames.has(col.name.toLowerCase())) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_dimension", col.name, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_dimension", col.name, ctx.rejectedKeys);
         const impact = 0.6;
         const confidence = col.null_count !== null && col.unique_count !== null ? 0.7 : 0.5;
 
@@ -93,7 +93,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
   for (const entity of ctx.entities) {
     // Table-level description
     if (!entity.description || AUTO_DESC_PATTERN.test(entity.description)) {
-      const staleness = stalenessFactor(entity.name, "update_description", "table", ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_description", "table", ctx.rejectedKeys);
       const impact = 0.5;
       const confidence = 0.6;
 
@@ -115,7 +115,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
     // Dimension-level descriptions
     for (const dim of entity.dimensions) {
       if (!dim.description || AUTO_DESC_PATTERN.test(dim.description)) {
-        const staleness = stalenessFactor(entity.name, "update_description", dim.name, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_description", dim.name, ctx.rejectedKeys);
         const impact = 0.4;
         const confidence = 0.6;
 
@@ -153,7 +153,7 @@ export function findTypeInaccuracies(ctx: AnalysisContext): AnalysisResult[] {
 
         const inferredType = mapSQLType(col.type);
         if (inferredType !== dim.type && inferredType !== "string") {
-          const staleness = stalenessFactor(entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
+          const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
           const impact = 0.7;
           const confidence = 0.8;
 
@@ -206,7 +206,7 @@ export function findMissingMeasures(ctx: AnalysisContext): AnalysisResult[] {
 
         if (existingMeasureSqls.has(col.name.toLowerCase())) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_measure", measureName, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_measure", measureName, ctx.rejectedKeys);
         const impact = tableFrequencyImpact(profile.table_name, ctx.auditPatterns);
         const confidence = 0.65;
         const desc = describeMeasure(col, aggType);
@@ -262,12 +262,18 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
       for (const fk of [...profile.foreign_keys, ...profile.inferred_foreign_keys]) {
         if (existingJoinTables.has(fk.to_table.toLowerCase())) continue;
 
-        // Verify target table has an entity
-        const targetEntity = findEntityForTable(ctx.entities, fk.to_table);
-        if (!targetEntity) continue;
+        // Verify the target table has an entity IN THE SAME GROUP. The SQL
+        // whitelist keys tables by `connection_group_id` (whitelist.ts), so a
+        // group-scoped `orders → customers` join is invalid (and unapplyable)
+        // when `customers` only exists in a different group — propose it only
+        // when the target lives in this entity's group (#3284, Codex review).
+        const targetInGroup = ctx.entities.some(
+          (e) => (e.table === fk.to_table || e.name === fk.to_table) && e.group === entity.group,
+        );
+        if (!targetInGroup) continue;
 
         const joinSql = `${profile.table_name}.${fk.from_column} = ${fk.to_table}.${fk.to_column}`;
-        const staleness = stalenessFactor(entity.name, "add_join", fk.to_table, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_join", fk.to_table, ctx.rejectedKeys);
         const impact = 0.8;
         const confidence = fk.source === "constraint" ? 0.95 : 0.6;
 
@@ -311,7 +317,7 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
       const abbrev = matches[1].toLowerCase();
       if (glossaryTerms.has(abbrev)) continue;
 
-      const staleness = stalenessFactor(entity.name, "add_glossary_term", abbrev, ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_glossary_term", abbrev, ctx.rejectedKeys);
       const impact = 0.5;
       const confidence = 0.5;
 
@@ -354,7 +360,7 @@ export function findStaleSampleValues(ctx: AnalysisContext): AnalysisResult[] {
 
         if (staleValues.length === 0) continue;
 
-        const staleness = stalenessFactor(entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
         const impact = 0.3;
         const confidence = 0.85;
 
@@ -399,7 +405,7 @@ export function findQueryPatternGaps(ctx: AnalysisContext): AnalysisResult[] {
       .filter((p) => !existingPatternSqls.has(p.sql.trim().toLowerCase()));
 
     for (const pattern of relevantPatterns.slice(0, 3)) {
-      const staleness = stalenessFactor(entity.name, "add_query_pattern", undefined, ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_query_pattern", undefined, ctx.rejectedKeys);
       const impact = Math.min(1, pattern.count / 20); // 20+ queries = max impact
       const confidence = 0.7;
 
@@ -456,7 +462,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         );
         if (exists) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 
@@ -497,7 +503,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         );
         if (exists) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 

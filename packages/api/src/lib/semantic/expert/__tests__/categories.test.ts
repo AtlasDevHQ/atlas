@@ -113,6 +113,29 @@ describe("findCoverageGaps", () => {
     });
     expect(findCoverageGaps(ctx)).toEqual([]);
   });
+
+  test("analyzes every group's copy of a shared table; rejection keys are group-scoped (#3284)", () => {
+    // `orders` exists in two groups; a rejected `add_dimension:region` for EU
+    // must mark ONLY the EU proposal stale, not the US one (group-scoped key).
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        columns: [makeColumn({ name: "region" })],
+      })],
+      entities: [
+        makeEntity({ name: "orders", group: "eu" }),
+        makeEntity({ name: "orders", group: "us" }),
+      ],
+      rejectedKeys: new Set(["eu:orders:add_dimension:region"]),
+    });
+
+    const results = findCoverageGaps(ctx);
+    // Both groups get a proposal (profile-driven analyzer visits all copies)…
+    expect(results.map((r) => r.group).toSorted()).toEqual(["eu", "us"]);
+    // …but only EU's is marked stale by the EU-scoped rejection.
+    expect(results.find((r) => r.group === "eu")?.staleness).toBe(0.8);
+    expect(results.find((r) => r.group === "us")?.staleness).toBe(0);
+  });
 });
 
 describe("findDescriptionIssues", () => {
@@ -324,6 +347,38 @@ describe("findMissingJoins", () => {
 
     const results = findMissingJoins(ctx);
     expect(results.length).toBe(1);
+  });
+
+  test("does NOT suggest a join when the target table is only in another group (#3284)", () => {
+    // The SQL whitelist keys tables by connection_group_id, so an `eu` orders →
+    // customers join is unapplyable when `customers` lives only in `us`.
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{ from_column: "customer_id", to_table: "customers", to_column: "id", source: "constraint" }],
+      })],
+      entities: [
+        makeEntity({ name: "orders", group: "eu" }),
+        makeEntity({ name: "customers", group: "us" }),
+      ],
+    });
+    expect(findMissingJoins(ctx)).toEqual([]);
+  });
+
+  test("suggests a join when the target table is in the SAME group (#3284)", () => {
+    const ctx = makeContext({
+      profiles: [makeProfile({
+        table_name: "orders",
+        foreign_keys: [{ from_column: "customer_id", to_table: "customers", to_column: "id", source: "constraint" }],
+      })],
+      entities: [
+        makeEntity({ name: "orders", group: "eu" }),
+        makeEntity({ name: "customers", group: "eu" }),
+      ],
+    });
+    const results = findMissingJoins(ctx);
+    expect(results.length).toBe(1);
+    expect(results[0].group).toBe("eu");
   });
 });
 

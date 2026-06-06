@@ -15,7 +15,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
-import { RESERVED_DIRS, scanEntities } from "./scanner";
+import { RESERVED_DIRS, scanEntities, resolveEntityGroup, readGroupField } from "./scanner";
 
 const log = createLogger("semantic-index");
 
@@ -393,18 +393,25 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
 
   return scanned
     .filter(({ raw }) => raw.table)
-    .map(({ sourceName, raw }) => ({
-      name: raw.name as string | undefined,
-      table: raw.table as string,
-      type: raw.type as string | undefined,
-      connection: (raw.connection as string | undefined) ?? (sourceName !== "default" ? sourceName : undefined),
-      grain: raw.grain as string | undefined,
-      description: raw.description as string | undefined,
-      dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
-      measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
-      joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
-      query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
-    }));
+    .map(({ sourceName, origin, raw }) => {
+      // Label the prompt-index scope with the resolved Connection group
+      // (ADR-0012), so the agent's view matches how the whitelist partitions
+      // — e.g. a flat-root entity with `group: crm` is shown as `[crm]`,
+      // never unscoped. The default group stays unlabeled.
+      const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
+      return {
+        name: raw.name as string | undefined,
+        table: raw.table as string,
+        type: raw.type as string | undefined,
+        connection: group !== "default" ? group : undefined,
+        grain: raw.grain as string | undefined,
+        description: raw.description as string | undefined,
+        dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
+        measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
+        joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
+        query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
+      };
+    });
 }
 
 function loadMetrics(semanticRoot: string): ParsedMetric[] {

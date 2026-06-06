@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronRight, File, Folder } from "lucide-react";
+import { ChevronRight, Database, File, Folder } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 
 export type SemanticSelection =
   | { type: "catalog" }
@@ -67,11 +68,39 @@ export interface SemanticTreeEntity {
   readonly drift?: SemanticTreeDrift | null;
 }
 
+/**
+ * Display metadata for a Connection group, keyed by `id` (#3235). Joined in
+ * from the admin connections list (`groupId` / `groupName` / `dbType`) so a
+ * group header can read "warehouse · Snowflake · 2 members" without the
+ * entities endpoint having to carry datasource type. Presence of a group in
+ * the tree is driven by the entities themselves — this only enriches the
+ * header — so a group with no matching connection row still renders (with
+ * just its label) and the file-based mode degrades gracefully.
+ */
+export interface SemanticGroupMeta {
+  /** `connection_group_id`; `null` is the default / unscoped group. */
+  readonly id: string | null;
+  /** Human label for the section header. The default group renders as "default". */
+  readonly label: string;
+  /** Humanized datasource type (e.g. "Postgres"), already resolved by the page. */
+  readonly dbTypeLabel?: string;
+  /** Number of connections in the group; omitted when unknown. */
+  readonly memberCount?: number;
+}
+
 interface SemanticFileTreeProps {
   entities: ReadonlyArray<SemanticTreeEntity>;
   metricFileNames: string[];
   hasCatalog: boolean;
   hasGlossary: boolean;
+  /**
+   * Per-group display metadata (#3235). Optional: when omitted (or missing a
+   * present group), the tree still groups entities by `connectionGroupId` and
+   * synthesizes a label from the id. Multi-group orgs render one collapsible
+   * section per group; a single-DB workspace (only the default group) renders
+   * the flat layout with no group chrome.
+   */
+  groups?: ReadonlyArray<SemanticGroupMeta>;
   selection: SemanticSelection;
   onSelect: (selection: SemanticSelection) => void;
   className?: string;
@@ -121,7 +150,6 @@ function FileItem({
   onClick,
   indent = 0,
   draft = false,
-  source,
   drift,
 }: {
   name: string;
@@ -130,14 +158,6 @@ function FileItem({
   indent?: number;
   /** Quiet amber accent to signal "this is a draft" without shouting. */
   draft?: boolean;
-  /**
-   * Optional environment label rendered as a trailing badge (#2340).
-   * Group IDs from the connection-groups admin are passed in as-is —
-   * stripping the `g_` prefix keeps the badge concise so multi-
-   * environment orgs read "users.yml [prod]" instead of "users.yml
-   * [g_prod]".
-   */
-  source?: string;
   /**
    * Optional drift signal (#2459). Renders a quiet blue 2px left border
    * for `removed` / `changed` rows — informational, not a call to action.
@@ -148,13 +168,11 @@ function FileItem({
    */
   drift?: SemanticTreeDrift | null;
 }) {
-  const sourceLabel = source?.startsWith("g_") ? source.slice(2) : source;
   const driftFragment = driftAriaFragment(drift);
   const hasDriftBorder = !draft && driftFragment !== null;
   const ariaParts: string[] = [];
   if (draft) ariaParts.push("draft");
   if (driftFragment) ariaParts.push(driftFragment);
-  if (sourceLabel) ariaParts.push(`environment: ${sourceLabel}`);
   const ariaLabel = ariaParts.length > 0 ? `${name} (${ariaParts.join(", ")})` : undefined;
   return (
     <button
@@ -178,14 +196,6 @@ function FileItem({
     >
       <File className="size-4 shrink-0 opacity-60" />
       <span className="truncate">{name}</span>
-      {sourceLabel ? (
-        <span
-          data-testid="entity-env-badge"
-          className="ml-auto shrink-0 rounded-sm bg-muted/70 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
-        >
-          {sourceLabel}
-        </span>
-      ) : null}
     </button>
   );
 }
@@ -220,15 +230,146 @@ function FolderSection({
   );
 }
 
+/**
+ * A collapsible Connection-group section (#3235). Distinct from
+ * {@link FolderSection} by the `Database` icon and the muted metadata suffix
+ * ("Postgres · 2 members"), which makes "which entities belong to which
+ * database" legible at a glance — replacing the per-row environment badge.
+ */
+function GroupSection({
+  meta,
+  children,
+  defaultOpen = true,
+}: {
+  meta: SemanticGroupMeta;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const suffix = formatGroupMeta(meta);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium hover:bg-muted transition-colors"
+        style={{ paddingLeft: "8px" }}
+        data-testid="semantic-group-section"
+        data-group-id={meta.id ?? ""}
+      >
+        <ChevronRight
+          className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")}
+        />
+        <Database className="size-4 shrink-0 opacity-60" />
+        <span className="truncate">{meta.label}</span>
+        {suffix ? (
+          <span className="ml-1 shrink-0 truncate text-xs font-normal text-muted-foreground">
+            {suffix}
+          </span>
+        ) : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent>{children}</CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/** Format the "· Postgres · 2 members" header suffix; empty when nothing is known. */
+function formatGroupMeta(meta: SemanticGroupMeta): string {
+  const parts: string[] = [];
+  if (meta.dbTypeLabel) parts.push(meta.dbTypeLabel);
+  if (typeof meta.memberCount === "number" && meta.memberCount > 0) {
+    parts.push(`${meta.memberCount} member${meta.memberCount === 1 ? "" : "s"}`);
+  }
+  return parts.length > 0 ? `· ${parts.join(" · ")}` : "";
+}
+
+/**
+ * Stable key for a `connectionGroupId` (null = default group). Used to bucket
+ * entities and to dedupe/order the rendered group sections.
+ */
+const DEFAULT_GROUP_KEY = " default";
+function groupKey(id: string | null | undefined): string {
+  return id == null ? DEFAULT_GROUP_KEY : id;
+}
+
+/**
+ * True when every entity is unscoped (the default group only) — the
+ * single-DB case that renders flat, with no group chrome (#3235). Zero
+ * entities also reads as "flat" so the empty "entities" folder shows as today.
+ */
+function isSingleDefaultGroup(entities: ReadonlyArray<SemanticTreeEntity>): boolean {
+  return !entities.some((e) => e.connectionGroupId != null);
+}
+
+/**
+ * Order the groups present among `entities`: the default group first, then by
+ * label. `groups` supplies display metadata; a present group with no metadata
+ * entry is synthesized from its id so file-based-mode groups still render.
+ */
+function orderedGroups(
+  entities: ReadonlyArray<SemanticTreeEntity>,
+  groups: ReadonlyArray<SemanticGroupMeta> | undefined,
+): SemanticGroupMeta[] {
+  const metaByKey = new Map<string, SemanticGroupMeta>();
+  for (const g of groups ?? []) metaByKey.set(groupKey(g.id), g);
+
+  const presentKeys = new Set<string>();
+  const idByKey = new Map<string, string | null>();
+  for (const e of entities) {
+    const key = groupKey(e.connectionGroupId);
+    presentKeys.add(key);
+    if (!idByKey.has(key)) idByKey.set(key, e.connectionGroupId ?? null);
+  }
+
+  const resolved: SemanticGroupMeta[] = [];
+  for (const key of presentKeys) {
+    const id = idByKey.get(key) ?? null;
+    const meta = metaByKey.get(key);
+    resolved.push(
+      meta ?? { id, label: id == null ? "default" : stripGroupPrefix(id) },
+    );
+  }
+
+  return resolved.toSorted((a, b) => {
+    if (a.id == null) return b.id == null ? 0 : -1;
+    if (b.id == null) return 1;
+    return a.label.localeCompare(b.label);
+  });
+}
+
 export function SemanticFileTree({
   entities,
   metricFileNames,
   hasCatalog,
   hasGlossary,
+  groups,
   selection,
   onSelect,
   className,
 }: SemanticFileTreeProps) {
+  // #2891: render display label, route by storage key.
+  const renderEntityRow = (entry: SemanticTreeEntity, indent: number) => {
+    const target: SemanticSelection = {
+      type: "entity",
+      name: entry.name,
+      connectionGroupId: entry.connectionGroupId,
+    };
+    return (
+      <FileItem
+        key={`${entry.name}|${entry.connectionGroupId ?? ""}`}
+        name={`${entry.displayName ?? entry.name}.yml`}
+        selected={isSelected(selection, target)}
+        onClick={() => onSelect(target)}
+        indent={indent}
+        draft={entry.draft ?? false}
+        drift={entry.drift}
+      />
+    );
+  };
+
+  // Single-DB (only the default group) keeps the flat "entities" folder so a
+  // standalone workspace sees no added nesting; multi-group orgs split into
+  // collapsible per-group sections (#3235, ADR-0012).
+  const flat = isSingleDefaultGroup(entities);
+
   return (
     <div className={cn("flex flex-col", className)}>
       <div className="flex h-[41px] items-center border-b px-4">
@@ -254,36 +395,28 @@ export function SemanticFileTree({
             />
           )}
 
-          <FolderSection name="entities">
-            {entities.length === 0 ? (
-              <p className="py-2 text-xs text-muted-foreground" style={{ paddingLeft: "40px" }}>
-                No entities
-              </p>
-            ) : (
-              entities.map((entry) => {
-                const key = `${entry.name}|${entry.connectionGroupId ?? ""}`;
-                const target: SemanticSelection = {
-                  type: "entity",
-                  name: entry.name,
-                  connectionGroupId: entry.connectionGroupId,
-                };
-                // #2891: render display label, route by storage key.
-                const label = entry.displayName ?? entry.name;
-                return (
-                  <FileItem
-                    key={key}
-                    name={`${label}.yml`}
-                    selected={isSelected(selection, target)}
-                    onClick={() => onSelect(target)}
-                    indent={1}
-                    draft={entry.draft ?? false}
-                    source={entry.connectionGroupId ?? undefined}
-                    drift={entry.drift}
-                  />
-                );
-              })
-            )}
-          </FolderSection>
+          {flat ? (
+            <FolderSection name="entities">
+              {entities.length === 0 ? (
+                <p className="py-2 text-xs text-muted-foreground" style={{ paddingLeft: "40px" }}>
+                  No entities
+                </p>
+              ) : (
+                entities.map((entry) => renderEntityRow(entry, 1))
+              )}
+            </FolderSection>
+          ) : (
+            orderedGroups(entities, groups).map((meta) => {
+              const members = entities.filter(
+                (e) => groupKey(e.connectionGroupId) === groupKey(meta.id),
+              );
+              return (
+                <GroupSection key={groupKey(meta.id)} meta={meta}>
+                  {members.map((entry) => renderEntityRow(entry, 1))}
+                </GroupSection>
+              );
+            })
+          )}
 
           {metricFileNames.length > 0 && (
             <FolderSection name="metrics">

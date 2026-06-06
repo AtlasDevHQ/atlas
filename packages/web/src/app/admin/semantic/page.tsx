@@ -41,8 +41,12 @@ import {
   SemanticFileTree,
   type SemanticSelection,
   type SemanticTreeDrift,
+  type SemanticGroupMeta,
 } from "@/ui/components/admin/semantic-file-tree";
+import { labelForDbType } from "@/app/admin/connections/provider-meta";
+import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
 import { normalizeDrift } from "./normalize-drift";
+import { normalizeMetrics, type MetricEntry } from "./normalize-metrics";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull, buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
@@ -104,20 +108,25 @@ interface GlossaryTerm {
   tables?: string[];
 }
 
-interface MetricEntry {
-  name: string;
-  description?: string;
-  sql: string;
-  entity?: string;
-  type?: string;
-  file?: string;
-}
-
 interface CatalogMeta {
   name?: string;
   description?: string;
   use_for?: string[];
   common_questions?: string[];
+}
+
+/**
+ * Minimal connection fields the grouped tree needs to label its Connection-
+ * group sections with a datasource type + member count (#3235). Sourced from
+ * the admin connections list (`/api/v1/admin/connections`); the semantic
+ * entities endpoint only carries the group id, not its datasource type.
+ */
+interface ConnectionMeta {
+  dbType: string;
+  /** `connection_group_id`; `null` = unassigned → folds into the default group. */
+  groupId: string | null;
+  /** Denormalized group display name from the connections endpoint. */
+  groupName: string | null;
 }
 
 // ── Content viewers ───────────────────────────────────────────────
@@ -235,6 +244,14 @@ function MetricsViewer({ metrics }: { metrics: MetricEntry[] }) {
               {metric.name}
               {metric.entity && <Badge variant="secondary" className="text-[10px]">{metric.entity}</Badge>}
               {metric.type && <Badge variant="outline" className="text-[10px]">{metric.type}</Badge>}
+              {/* #3235: surface the Connection group for non-default metrics so
+                  group-scoped metric files (groups/<group>/metrics/<id>.yml) read
+                  legibly. The default/root group is left unlabeled to avoid noise. */}
+              {metric.source && metric.source !== "default" && (
+                <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                  {stripGroupPrefix(metric.source)}
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="py-2">
@@ -283,48 +300,6 @@ function normalizeGlossary(raw: unknown): GlossaryTerm[] {
     }
   }
   return terms;
-}
-
-function toMetricEntry(m: unknown): MetricEntry | null {
-  if (!m || typeof m !== "object") return null;
-  const r = m as Record<string, unknown>;
-  // YAML metrics use id/label; normalize to name
-  const name = typeof r.name === "string" ? r.name
-    : typeof r.label === "string" ? r.label
-    : typeof r.id === "string" ? r.id : null;
-  if (!name || typeof r.sql !== "string") return null;
-  return {
-    name,
-    description: typeof r.description === "string" ? r.description : undefined,
-    sql: r.sql,
-    entity: typeof r.entity === "string" ? r.entity
-      : (r.source && typeof r.source === "object" && typeof (r.source as Record<string, unknown>).entity === "string")
-        ? (r.source as Record<string, unknown>).entity as string : undefined,
-    type: typeof r.type === "string" ? r.type : undefined,
-  };
-}
-
-function normalizeMetrics(raw: unknown): MetricEntry[] {
-  if (!raw || !Array.isArray(raw)) return [];
-  const metrics: MetricEntry[] = [];
-  for (const entry of raw) {
-    const e = entry as { data: unknown; file?: string };
-    const data = e?.data;
-    const fileName = typeof e?.file === "string" ? e.file : undefined;
-    const items = Array.isArray(data) ? data
-      : (data && typeof data === "object" && Array.isArray((data as { metrics?: unknown }).metrics))
-        ? (data as { metrics: unknown[] }).metrics : null;
-    if (items) {
-      for (const m of items) {
-        const parsed = toMetricEntry(m);
-        if (parsed) {
-          parsed.file = parsed.file ?? fileName;
-          metrics.push(parsed);
-        }
-      }
-    }
-  }
-  return metrics;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -429,6 +404,10 @@ export default function SemanticPage() {
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [metrics, setMetrics] = useState<MetricEntry[]>([]);
   const [catalog, setCatalog] = useState<CatalogMeta | null>(null);
+  // Connections power the grouped tree's per-group datasource-type + member-
+  // count labels (#3235). Best-effort: a failed/empty fetch just means groups
+  // render with their id as the label and no metadata suffix.
+  const [connections, setConnections] = useState<ConnectionMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
@@ -506,7 +485,7 @@ export default function SemanticPage() {
       // will swap in the selected connection id; for now everything on this
       // page runs against the default connection.
       const entitiesUrl = `${apiUrl}/api/v1/admin/semantic/entities?connection=default`;
-      const [entitiesRes, glossaryRes, metricsRes, catalogRes] = await Promise.allSettled([
+      const [entitiesRes, glossaryRes, metricsRes, catalogRes, connectionsRes] = await Promise.allSettled([
         fetch(entitiesUrl, fetchOpts).then(async (r) => {
           if (!r.ok) throw await extractFetchError(r);
           return r.json();
@@ -520,6 +499,13 @@ export default function SemanticPage() {
           return r.json();
         }),
         fetch(`${apiUrl}/api/v1/admin/semantic/catalog`, fetchOpts).then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }),
+        // Best-effort: the grouped tree's datasource-type + member-count
+        // labels (#3235). A failure here leaves group sections labeled by id
+        // only — the tree still groups entities correctly.
+        fetch(`${apiUrl}/api/v1/admin/connections`, fetchOpts).then((r) => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return r.json();
         }),
@@ -615,6 +601,29 @@ export default function SemanticPage() {
         setCatalog(data?.catalog ?? data ?? null);
       } else {
         console.warn("Failed to load catalog:", catalogRes.reason instanceof Error ? catalogRes.reason.message : String(catalogRes.reason));
+      }
+      if (connectionsRes.status === "fulfilled") {
+        const data = connectionsRes.value;
+        const rawConnections = Array.isArray(data?.connections)
+          ? data.connections
+          : Array.isArray(data)
+            ? data
+            : [];
+        const parsed: ConnectionMeta[] = (rawConnections as Record<string, unknown>[])
+          .map((c) => ({
+            dbType: typeof c.dbType === "string" ? c.dbType : "",
+            groupId: typeof c.groupId === "string" && c.groupId.length > 0 ? c.groupId : null,
+            groupName: typeof c.groupName === "string" && c.groupName.length > 0 ? c.groupName : null,
+          }))
+          .filter((c) => c.dbType.length > 0);
+        setConnections(parsed);
+      } else {
+        // Non-fatal: the grouped tree still groups entities; only the
+        // datasource-type / member-count labels are unavailable.
+        console.warn(
+          "Failed to load connections for group labels:",
+          connectionsRes.reason instanceof Error ? connectionsRes.reason.message : String(connectionsRes.reason),
+        );
       }
     }
 
@@ -798,6 +807,41 @@ export default function SemanticPage() {
     return [...files].toSorted();
   })();
 
+  // Connection-group metadata for the grouped tree (#3235). Pivot the
+  // connections list by `groupId` (null → the default group) to derive a
+  // datasource-type label + member count per group. This is metadata only —
+  // the tree decides which groups to render from the entities themselves —
+  // so a group with no matching connection is simply absent here and falls
+  // back to an id-derived label in the component.
+  const connectionGroups: SemanticGroupMeta[] = (() => {
+    const DEFAULT_KEY = " default";
+    const buckets = new Map<
+      string,
+      { id: string | null; name: string | null; dbType: string | null; count: number }
+    >();
+    for (const c of connections) {
+      const key = c.groupId ?? DEFAULT_KEY;
+      const bucket = buckets.get(key) ?? {
+        id: c.groupId,
+        name: c.groupName,
+        dbType: null,
+        count: 0,
+      };
+      bucket.count += 1;
+      // First non-empty member wins for the group's datasource type / name —
+      // members of a group share a schema, so they share a dbType in practice.
+      if (!bucket.dbType && c.dbType) bucket.dbType = c.dbType;
+      if (!bucket.name && c.groupName) bucket.name = c.groupName;
+      buckets.set(key, bucket);
+    }
+    return [...buckets.values()].map((b) => ({
+      id: b.id,
+      label: b.id == null ? "default" : stripGroupPrefix(b.name ?? b.id),
+      dbTypeLabel: b.dbType ? labelForDbType(b.dbType) : undefined,
+      memberCount: b.count,
+    }));
+  })();
+
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6 pb-4">
@@ -961,6 +1005,7 @@ export default function SemanticPage() {
           metricFileNames={metricFileNames}
           hasCatalog={catalog !== null}
           hasGlossary={glossary.length > 0}
+          groups={connectionGroups}
           selection={selection}
           onSelect={handleSelect}
           className="w-64 shrink-0 border-r"

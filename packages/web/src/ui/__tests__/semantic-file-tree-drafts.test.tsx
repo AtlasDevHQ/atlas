@@ -67,7 +67,7 @@ describe("SemanticFileTree — draft accent", () => {
     expect(btn!.className).not.toContain("border-amber-400/60");
   });
 
-  test("renders one row per group when same name in multiple groups (#2412)", () => {
+  test("renders one row per group section when same name in multiple groups (#2412/#3235)", () => {
     const { container } = render(
       <SemanticFileTree
         entities={[
@@ -81,13 +81,22 @@ describe("SemanticFileTree — draft accent", () => {
         onSelect={() => {}}
       />,
     );
+    // One entity row per group — same as before the grouped-tree upgrade.
     const buttons = Array.from(container.querySelectorAll("button"))
       .filter((b) => b.textContent?.includes("users.yml"));
     expect(buttons.length).toBe(2);
 
-    const badges = container.querySelectorAll('[data-testid="entity-env-badge"]');
-    const badgeTexts = Array.from(badges).map((el) => el.textContent?.trim()).toSorted();
-    expect(badgeTexts).toEqual(["prod_eu", "prod_us"]);
+    // #3235: the per-row environment badge is replaced by a collapsible group
+    // section. With no `groups` metadata the label falls back to the id with
+    // the `g_` prefix stripped.
+    const sections = container.querySelectorAll('[data-testid="semantic-group-section"]');
+    expect(sections.length).toBe(2);
+    const sectionLabels = Array.from(sections)
+      .map((el) => el.textContent?.trim())
+      .toSorted();
+    expect(sectionLabels).toEqual(["prod_eu", "prod_us"]);
+    // The old badge affordance is gone.
+    expect(container.querySelector('[data-testid="entity-env-badge"]')).toBeNull();
   });
 
   test("selection match honors connectionGroupId (#2412)", () => {
@@ -104,14 +113,15 @@ describe("SemanticFileTree — draft accent", () => {
         onSelect={() => {}}
       />,
     );
-    // The selected button gets the `bg-accent` class. Only one button
-    // should match.
+    // Exactly one row matches the scoped selection — proving the group
+    // qualifier is honored (both rows share the name "users").
     const buttons = Array.from(container.querySelectorAll("button"))
       .filter((b) => b.textContent?.includes("users.yml"));
     const selected = buttons.filter((b) => b.className.includes("bg-accent"));
     expect(selected.length).toBe(1);
-    // The selected one's badge should be `prod_eu`.
-    const badge = selected[0].querySelector('[data-testid="entity-env-badge"]');
-    expect(badge?.textContent?.trim()).toBe("prod_eu");
+    // Groups are sorted by label (prod_eu before prod_us), so the selected
+    // prod_eu row is the first of the two.
+    expect(buttons[0]!.className).toContain("bg-accent");
+    expect(buttons[1]!.className).not.toContain("bg-accent");
   });
 });

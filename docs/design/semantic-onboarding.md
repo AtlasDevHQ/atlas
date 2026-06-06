@@ -70,15 +70,25 @@ In SaaS (DB-backed), the group is `connection_group_id` on the entity row — no
 `/admin/semantic` upgrades from a flat list with per-row group **badges** to a **grouped tree** keyed by Connection group, mirroring the disk layout 1:1:
 
 ```
-▾ default  (Postgres)
-    orders   customers   payments
-▾ warehouse  (Snowflake · 1 member)
-    events   sessions
-▾ crm  (Salesforce)
-    leads   accounts
+catalog.yml                       # global — see scoping note below
+glossary.yml                      # global
+▾ default  · Postgres · 1 member
+    orders.yml   customers.yml   payments.yml
+▾ crm  · Salesforce · 1 member
+    leads.yml   accounts.yml
+▾ warehouse  · Snowflake · 2 members
+    events.yml   sessions.yml
+▾ metrics
+    revenue.yml   sessions_per_day.yml  [warehouse]
 ```
 
-Each group node is labeled with its datasource type and member count. The default group renders without ceremony for the common single-DB case.
+*As implemented (#3235):*
+
+- **Entities** render under collapsible Connection-group sections in `SemanticFileTree`, replacing the per-row environment badge. Each section header carries the group's **datasource type + member count**, joined in from the admin connections list (`/api/v1/admin/connections` → `groupId`/`groupName`/`dbType`) — the semantic entities endpoint only carries the group id (`connectionId`), not the datasource type. The default group sorts first, then groups by label.
+- **Single-DB** (only the default / `null` group) renders the **flat** `entities` folder with no group chrome — the standalone-DB case sees zero added nesting. The grouped layout engages the moment any non-default group has entities.
+- **Graceful degrade:** which groups render is driven by the entities themselves, so a group with no matching connection row (e.g. a file-based `groups/<group>/` with no configured connection) still renders — just labeled by its id, with no datasource/member suffix. A failed connections fetch is non-fatal for the same reason.
+- **Scoping of the other artifacts** (preserving current semantics): **catalog** is global in the admin/DB model (the admin endpoint serves only the root `catalog.yml`; group catalogs feed the agent index per §B), so it stays at the tree root. **glossary** is likewise surfaced as a single combined root node today. **metrics** carry their group as `source` (`"default"` for the flat root, the group name for `groups/<group>/metrics/<id>.yml`); the Metrics viewer tags each non-default metric card with its group so group-scoped metrics read legibly while the metrics folder stays a single list.
+- **#3276 (folded in):** the Metrics normalizer (`normalize-metrics.ts`) now unwraps **single-object** metric files (`{ id|name|label, sql }`) in addition to the array and `{ metrics: [...] }` forms. The single-object shape is the common generated `groups/<group>/metrics/<id>.yml` output; it was previously discovered by the backend but silently dropped by the UI.
 
 ### D. Generation — two explicit phases with a cost gate
 

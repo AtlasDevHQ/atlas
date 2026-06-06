@@ -540,7 +540,7 @@ export function generateMetricYAML(profile: TableProfile, schema: string = "publ
 
   const pkCol = profile.columns.find((c) => c.is_primary_key);
   const enumCols = profile.columns.filter((c) => c.is_enum_like);
-  const qualifiedTable = schema !== "public" ? `${schema}.${profile.table_name}` : profile.table_name;
+  const qualifiedTable = schema !== "public" && schema !== "main" ? `${schema}.${profile.table_name}` : profile.table_name;
 
   const metrics: Record<string, unknown>[] = [];
 

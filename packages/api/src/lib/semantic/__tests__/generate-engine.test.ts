@@ -121,3 +121,38 @@ describe("shared generate engine (direct ../generate path)", () => {
     expect(isView(orders)).toBe(false);
   });
 });
+
+describe("generateMetricYAML schema qualification (issue #3244)", () => {
+  // Every metric's SQL uses `FROM <table>`; pull the table ref out of each clause.
+  function fromTables(metricYaml: string): string[] {
+    const parsed = yaml.load(metricYaml) as { metrics: { sql: string }[] };
+    return parsed.metrics
+      .map((m) => m.sql.match(/FROM\s+(\S+)/)?.[1])
+      .filter((t): t is string => Boolean(t));
+  }
+
+  it('treats schema="public" as unqualified (FROM orders)', () => {
+    const out = generateMetricYAML(orders, "public");
+    expect(out).not.toBeNull();
+    const tables = fromTables(out!);
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables.every((t) => t === "orders")).toBe(true);
+  });
+
+  it('treats schema="main" (DuckDB/SQLite) as unqualified, matching generateEntityYAML', () => {
+    const out = generateMetricYAML(orders, "main");
+    expect(out).not.toBeNull();
+    const tables = fromTables(out!);
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables.every((t) => t === "orders")).toBe(true);
+    expect(out!).not.toContain("main.orders");
+  });
+
+  it("qualifies a custom schema (FROM analytics.orders)", () => {
+    const out = generateMetricYAML(orders, "analytics");
+    expect(out).not.toBeNull();
+    const tables = fromTables(out!);
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables.every((t) => t === "analytics.orders")).toBe(true);
+  });
+});

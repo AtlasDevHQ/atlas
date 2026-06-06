@@ -109,15 +109,24 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 const mockBulkUpsertEntities: Mock<(
   orgId: string,
-  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string }>,
+  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
 ) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
+
+// Connection → Connection group resolver (#3234). The wizard scopes saved
+// entities by group: the default/unknown connection → NULL default group
+// (flat root), a non-default connection → its group (group-of-one stand-in
+// here = the connectionId itself). Tests override per-case for member-share.
+const mockResolveGroupId: Mock<(orgId: string, connectionId?: string | null) => Promise<string | null>> = mock(
+  async (_orgId, connectionId) => (!connectionId || connectionId === "default" ? null : connectionId),
+);
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   // Constants the wizard route imports statically
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
-  // Function under test in this suite
+  // Functions under test in this suite
   bulkUpsertEntities: mockBulkUpsertEntities,
+  resolveGroupIdForConnection: mockResolveGroupId,
   // Other named exports — the mock.module() loader requires every export
   // from the real module to be present, otherwise other test files in the
   // same isolated process throw `Export named 'X' not found`.
@@ -204,6 +213,7 @@ import {
   generateGlossaryYAML as _genGlossaryReal,
   generateMetricYAML as _genMetricReal,
   outputDirForDatasource as _outputDirReal,
+  outputDirForGroup as _outputDirGroupReal,
   mapSQLType as _mapSQLTypeReal,
   mapSalesforceFieldType as _mapSfReal,
   singularize as _singReal,
@@ -290,6 +300,7 @@ mock.module("@atlas/api/lib/profiler", () => ({
   generateGlossaryYAML: _genGlossaryReal,
   generateMetricYAML: _genMetricReal,
   outputDirForDatasource: _outputDirReal,
+  outputDirForGroup: _outputDirGroupReal,
   mapSQLType: _mapSQLTypeReal,
   mapSalesforceFieldType: _mapSfReal,
   singularize: _singReal,
@@ -377,6 +388,11 @@ beforeEach(() => {
   mockResetWhitelists.mockReset();
   mockSyncEntityToDisk.mockReset();
   mockSyncEntityToDisk.mockImplementation(async () => {});
+
+  mockResolveGroupId.mockReset();
+  mockResolveGroupId.mockImplementation(
+    async (_orgId, connectionId) => (!connectionId || connectionId === "default" ? null : connectionId),
+  );
 
   mockListPostgresObjects.mockReset();
   mockListPostgresObjects.mockImplementation(async () => [
@@ -672,19 +688,61 @@ describe("POST /api/v1/wizard/save", () => {
     const [orgIdArg, entitiesArg] = mockBulkUpsertEntities.mock.calls[0];
     expect(orgIdArg).toBe("org-1");
     expect(entitiesArg).toHaveLength(2);
+    // Rows are scoped by the Connection group (#3234), not the raw
+    // connectionId — "warehouse" resolves to its group (group-of-one here).
     expect(entitiesArg[0]).toMatchObject({
       entityType: "entity",
       name: "users",
       yamlContent: "table: users\n",
-      connectionId: "warehouse",
+      connectionGroupId: "warehouse",
     });
     expect(entitiesArg[1]).toMatchObject({
       entityType: "entity",
       name: "orders",
-      connectionId: "warehouse",
+      connectionGroupId: "warehouse",
     });
 
     expect(mockInvalidateOrgWhitelist).toHaveBeenCalledWith("org-1");
+  });
+
+  it("routes two members of the same group to one shared group key (no duplicate on member-add)", async () => {
+    // Adding a MEMBER to an already-populated group must not create a second
+    // copy of its entities (#3234). Both member connections resolve to the
+    // SAME connection_group_id, so saving via either upserts the shared
+    // group rows (the DB ON CONFLICT keys on connection_group_id) rather
+    // than inserting a duplicate. This pins the wizard half: both members
+    // route the same (name, group) key into bulkUpsertEntities.
+    mockResolveGroupId.mockReset();
+    mockResolveGroupId.mockImplementation(async () => "prod-group"); // every member → same group
+    mockBulkUpsertEntities.mockClear();
+    mockMkdirSync.mockReset();
+
+    const save = (conn: string) =>
+      postJson("/api/v1/wizard/save", {
+        connectionId: conn,
+        entities: [{ tableName: "orders", yaml: "table: orders\n" }],
+      });
+
+    const first = await save("us-prod");
+    const second = await save("eu-prod"); // member added to the already-populated group
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(mockBulkUpsertEntities).toHaveBeenCalledTimes(2);
+
+    const firstEntities = mockBulkUpsertEntities.mock.calls[0][1];
+    const secondEntities = mockBulkUpsertEntities.mock.calls[1][1];
+    // Same (name, group) key on both members → upsert, never a second row.
+    expect(firstEntities[0]).toMatchObject({ name: "orders", connectionGroupId: "prod-group" });
+    expect(secondEntities[0]).toMatchObject({ name: "orders", connectionGroupId: "prod-group" });
+
+    // Both members write into the SAME on-disk group namespace, not a
+    // per-connection dir — so the disk layer doesn't duplicate either.
+    const path = await import("path");
+    const mkdirPaths = mockMkdirSync.mock.calls.map(([dir]) => String(dir));
+    expect(mkdirPaths.every((p) => !p.includes(path.join("groups", "us-prod")))).toBe(true);
+    expect(mkdirPaths.every((p) => !p.includes(path.join("groups", "eu-prod")))).toBe(true);
+    expect(mkdirPaths.some((p) => p.includes(path.join("groups", "prod-group")))).toBe(true);
   });
 
   it("returns 500 db_persist_failed when bulkUpsertEntities throws", async () => {
@@ -1082,7 +1140,7 @@ describe("wizard __demo__ end-to-end", () => {
     expect(entities[0].tableName).toBe("users");
   });
 
-  it("save → persists the demo entities under the __demo__ output dir (not default/)", async () => {
+  it("save → persists the demo entities under the __demo__ group namespace (not default/)", async () => {
     registerDemoInRegistry();
     const res = await postJson("/api/v1/wizard/save", {
       connectionId: "__demo__",
@@ -1094,12 +1152,15 @@ describe("wizard __demo__ end-to-end", () => {
     expect(data.connectionId).toBe("__demo__");
     expect(data.orgId).toBe("org-1");
 
-    // Pin the sourceId branch in wizard.ts: __demo__ must NOT collapse
-    // into the `default` output dir (`semantic/.orgs/{orgId}/`) — it
-    // gets its own scope (`semantic/.orgs/{orgId}/__demo__/`) so a
-    // demo wipe doesn't blow away an org's real semantic layer.
+    // Pin the group-scoping branch in wizard.ts: __demo__ resolves to its
+    // own Connection group, so it must NOT collapse into the `default`
+    // output dir (`semantic/.orgs/{orgId}/`). Under ADR-0012 (#3234) it
+    // lands in the canonical groups/<group>/ namespace
+    // (`semantic/.orgs/{orgId}/groups/__demo__/`) so a demo wipe doesn't
+    // blow away an org's real semantic layer.
+    const path = await import("path");
     const mkdirPaths = mockMkdirSync.mock.calls.map(([dir]) => String(dir));
-    expect(mkdirPaths.some((p) => p.includes("__demo__"))).toBe(true);
+    expect(mkdirPaths.some((p) => p.includes(path.join("groups", "__demo__")))).toBe(true);
   });
 
   it("profile → falls back to ATLAS_DATASOURCE_URL when DB lookup misses __demo__", async () => {

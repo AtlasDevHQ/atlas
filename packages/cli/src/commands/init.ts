@@ -20,7 +20,7 @@ import {
   isView,
   isMatView,
   isViewLike,
-  outputDirForDatasource,
+  outputDirForGroup,
   listPostgresObjects,
   listMySQLObjects,
 } from "@atlas/api/lib/profiler";
@@ -556,8 +556,12 @@ async function profileDatasource(
     );
   }
 
-  // Compute output directories
-  const outputBase = outputDirForDatasource(id, orgId);
+  // Compute output directories. The semantic layer is Connection-group-scoped
+  // (ADR-0012): the default datasource is the flat-root default group, and a
+  // file-based standalone datasource is a group-of-one whose group is its id —
+  // so its entities land in the canonical `semantic/groups/<id>/` namespace the
+  // #3232 loader reads back, not the legacy `semantic/<id>/` layout (#3234).
+  const outputBase = outputDirForGroup(id, orgId);
   const entitiesOutDir = path.join(outputBase, "entities");
   const metricsOutDir = path.join(outputBase, "metrics");
 
@@ -669,10 +673,10 @@ async function profileDatasource(
   }
 
   const relativeOutput = orgId
-    ? `./semantic/.orgs/${orgId}/`
+    ? `./semantic/.orgs/${orgId}/${id === "default" ? "" : `groups/${id}/`}`
     : id === "default"
       ? "./semantic/"
-      : `./semantic/${id}/`;
+      : `./semantic/groups/${id}/`;
   console.log(`
 Done! Semantic layer written to ${relativeOutput} in ${formatDuration(profilingElapsed)}
 
@@ -690,11 +694,9 @@ Next steps:
   // Create initial snapshot after generation
   try {
     const { createSnapshot } = await import("../../lib/migrate");
-    const semanticRoot = orgId
-      ? path.join(SEMANTIC_DIR, ".orgs", orgId)
-      : id === "default"
-        ? SEMANTIC_DIR
-        : path.join(SEMANTIC_DIR, id);
+    // Snapshot the group's own directory — the same canonical
+    // `groups/<group>/` (or flat-root default) base we just wrote to.
+    const semanticRoot = outputBase;
     const entry = createSnapshot(semanticRoot, {
       message: `Initial snapshot from atlas init${demoDataset ? " (demo)" : ""}`,
       trigger: "init",

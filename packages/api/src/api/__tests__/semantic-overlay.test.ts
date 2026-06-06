@@ -215,6 +215,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   deleteDraftEntityForGroup: mock(() => Promise.resolve(false)),
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  resolveGroupIdForConnection: mock(() => Promise.resolve(null)),
   createVersion: mock(() => Promise.resolve(null)),
   listVersions: mock(() => Promise.resolve([])),
   getVersion: mock(() => Promise.resolve(null)),

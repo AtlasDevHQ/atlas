@@ -137,12 +137,59 @@ export {
 // ---------------------------------------------------------------------------
 
 import * as path from "path";
+import { GROUPS_DIR } from "./semantic/scanner";
 
 const SEMANTIC_DIR = path.resolve("semantic");
 
+/** Root for a (possibly org-scoped) semantic layer. */
+function semanticBaseDir(orgId?: string): string {
+  return orgId ? path.join(SEMANTIC_DIR, ".orgs", orgId) : SEMANTIC_DIR;
+}
+
+/**
+ * @deprecated Writes the pre-ADR-0012 per-source `semantic/<id>/` layout.
+ * New generation routes through {@link outputDirForGroup} (the canonical
+ * `groups/<group>/` namespace). Retained for back-compat consumers.
+ */
 export function outputDirForDatasource(id: string, orgId?: string): string {
-  const base = orgId ? path.join(SEMANTIC_DIR, ".orgs", orgId) : SEMANTIC_DIR;
+  const base = semanticBaseDir(orgId);
   return id === "default" ? base : path.join(base, id);
+}
+
+/**
+ * Canonical ADR-0012 output base for a Connection group's semantic layer.
+ *
+ * - The **default group** (`undefined` / `null` / `"default"`, i.e.
+ *   `connection_group_id = NULL`) stays **flat at the root** so single-DB
+ *   setups gain no nesting.
+ * - A **non-default group** `<g>` lives under the dedicated
+ *   `groups/<g>/` namespace — exactly what the #3232 loader
+ *   ({@link getEntityDirs}) reads back as group `<g>`, so generation and
+ *   loading can't drift on the layout (#3234).
+ *
+ * Unlike the deprecated {@link outputDirForDatasource} (a bare
+ * `semantic/<id>/` dir), this writes the blessed `groups/` parent.
+ *
+ * @throws if `group` contains a path separator or `..` traversal — group
+ *   names become a directory segment, so an unsafe value could escape the
+ *   semantic root.
+ */
+export function outputDirForGroup(group: string | null | undefined, orgId?: string): string {
+  const base = semanticBaseDir(orgId);
+  if (!group || group === "default") return base;
+  assertSafeGroupSegment(group);
+  return path.join(base, GROUPS_DIR, group);
+}
+
+/**
+ * Reject group names that would escape (or rename) the per-group directory.
+ * A group becomes a single path segment under `groups/`, so separators and
+ * `..` traversal are not allowed.
+ */
+function assertSafeGroupSegment(group: string): void {
+  if (group !== path.basename(group) || group === "." || group === ".." || group.includes("/") || group.includes("\\")) {
+    throw new Error(`Invalid semantic group name: "${group}". Group names cannot contain path separators or "..".`);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -24,7 +24,11 @@ import { validationHook } from "./validation-hook";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, decryptSecret } from "@atlas/api/lib/db/internal";
 import { _resetWhitelists, invalidateOrgWhitelist } from "@atlas/api/lib/semantic";
-import { DEMO_CONNECTION_ID, bulkUpsertEntities } from "@atlas/api/lib/semantic/entities";
+import {
+  DEMO_CONNECTION_ID,
+  bulkUpsertEntities,
+  resolveGroupIdForConnection,
+} from "@atlas/api/lib/semantic/entities";
 import { syncEntityToDisk } from "@atlas/api/lib/semantic/sync";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
@@ -39,7 +43,7 @@ import {
   listMySQLObjects,
   profilePostgres,
   profileMySQL,
-  outputDirForDatasource,
+  outputDirForGroup,
 } from "@atlas/api/lib/profiler";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
 // so the wizard and the CLI emit identical YAML.
@@ -570,8 +574,27 @@ wizard.openapi(generateRoute, async (c) => {
         // Run heuristics (returns new array — no mutation)
         const analyzedProfiles = analyzeTableProfiles(result.profiles);
 
-        // Generate entity YAML for each profile
-        const sourceId = connectionId === "default" ? undefined : connectionId;
+        // Scope the generated YAML by the Connection group the connection
+        // belongs to (ADR-0012 / #3234), not the raw connectionId — so the
+        // emitted group field matches the groups/<group>/ directory the
+        // matching /save writes into. A standalone datasource is a
+        // group-of-one; the default/unknown connection resolves to the NULL
+        // default group, which emits no group field (flat root). Best-effort:
+        // /generate is a preview, so a group-lookup hiccup degrades to no
+        // group field rather than failing the whole generate (/save resolves
+        // the group authoritatively and fails closed there).
+        let connectionGroupId: string | null = null;
+        if (user?.activeOrganizationId) {
+          try {
+            connectionGroupId = await resolveGroupIdForConnection(user.activeOrganizationId, connectionId);
+          } catch (err) {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err), requestId, connectionId },
+              "Wizard generate: connection-group resolution failed — previewing without a group field",
+            );
+          }
+        }
+        const sourceId = connectionGroupId ?? undefined;
         const entities = analyzedProfiles.map((profile) => ({
           tableName: profile.table_name,
           objectType: profile.object_type,
@@ -712,6 +735,31 @@ wizard.openapi(saveRoute, async (c) => {
       }
     }
   
+    // Scope every saved entity by the Connection group the connection belongs
+    // to (ADR-0012 / #3234), not the raw connectionId. A standalone datasource
+    // is a group-of-one; the default/unknown connection resolves to the NULL
+    // default group (flat root). Both the DB rows (connection_group_id) and the
+    // on-disk groups/<group>/ namespace key on this, so adding a MEMBER to an
+    // already-populated group upserts the shared group rows instead of writing a
+    // second copy. Resolved up front so a lookup failure fails the whole save
+    // (no partial write to the wrong group) rather than silently misscoping.
+    const groupResult = yield* Effect.tryPromise({
+      try: () => resolveGroupIdForConnection(orgId, connectionId),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (groupResult._tag === "Left") {
+      log.error(
+        { err: groupResult.left, requestId, orgId, connectionId },
+        "Wizard save: failed to resolve connection group",
+      );
+      return c.json({
+        error: "save_failed",
+        message: "Failed to resolve the connection group. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
+    const connectionGroupId = groupResult.right;
+
     try {
       // Disk + DB are not transactional. Run DB first so a failure leaves
       // the disk untouched — disk-orphan recovery is harder than DB-only
@@ -720,7 +768,7 @@ wizard.openapi(saveRoute, async (c) => {
         entityType: "entity" as const,
         name: path.basename(e.tableName),
         yamlContent: e.yaml,
-        connectionId,
+        connectionGroupId,
       }));
       if (hasInternalDB()) {
         const upserted = yield* Effect.tryPromise({
@@ -761,9 +809,10 @@ wizard.openapi(saveRoute, async (c) => {
         invalidateOrgWhitelist(orgId);
       }
 
-      // Disk writes happen after DB success. Output dir is org-scoped.
-      const sourceId = connectionId === "default" ? "default" : connectionId;
-      const outputBase = outputDirForDatasource(sourceId, orgId);
+      // Disk writes happen after DB success. Output dir is org-scoped and
+      // group-scoped: the canonical groups/<group>/ namespace (ADR-0012), or
+      // the flat default root for the NULL default group.
+      const outputBase = outputDirForGroup(connectionGroupId, orgId);
       const entitiesDir = path.join(outputBase, "entities");
       const metricsDir = path.join(outputBase, "metrics");
 

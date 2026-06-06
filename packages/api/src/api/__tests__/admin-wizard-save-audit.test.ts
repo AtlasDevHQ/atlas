@@ -135,13 +135,17 @@ mock.module("@atlas/api/lib/semantic/sync", () => ({
 // the route on the 201 path so the audit assertions can run.
 const mockBulkUpsertEntities: Mock<(
   orgId: string,
-  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string }>,
+  entities: Array<{ entityType: string; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null }>,
 ) => Promise<number>> = mock(async (_orgId, entities) => entities.length);
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   DEMO_CONNECTION_ID: "__demo__",
   SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"] as const,
   bulkUpsertEntities: mockBulkUpsertEntities,
+  // #3234: the wizard resolves the connection's group before saving.
+  resolveGroupIdForConnection: mock(async (_orgId: string, connectionId?: string | null) =>
+    !connectionId || connectionId === "default" ? null : connectionId,
+  ),
   upsertEntity: async () => {},
   upsertDraftEntity: async () => {},
   upsertTombstone: async () => {},
@@ -195,6 +199,11 @@ mock.module("@atlas/api/lib/profiler", () => ({
   generateMetricYAML: () => "metrics: []\n",
   outputDirForDatasource: (sourceId: string, orgId: string) =>
     `/tmp/test-semantic/.orgs/${orgId}/${sourceId}`,
+  // #3234 / ADR-0012: default group → flat root; non-default → groups/<group>/.
+  outputDirForGroup: (group: string | null | undefined, orgId?: string) => {
+    const base = orgId ? `/tmp/test-semantic/.orgs/${orgId}` : "/tmp/test-semantic";
+    return !group || group === "default" ? base : `${base}/groups/${group}`;
+  },
 }));
 
 const { app } = await import("../index");

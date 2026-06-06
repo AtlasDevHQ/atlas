@@ -188,27 +188,29 @@ export default defineConfig({
 });
 ```
 
-### Per-datasource semantic layers
+### Per-group semantic layers
 
-Each named datasource can have its own semantic layer directory at `semantic/{sourceId}/entities/`. The CLI's `--connection` flag writes to the matching subdirectory automatically:
+The semantic layer is scoped by **Connection group** ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)). The default datasource is the flat-root **default group**; each non-default datasource is a group-of-one whose entities live under the dedicated `semantic/groups/<group>/` namespace. The CLI's `--connection` flag writes to the matching group directory automatically:
 
 ```bash
-# Profile the "warehouse" datasource → writes to semantic/warehouse/entities/
+# Profile the "warehouse" datasource → writes to semantic/groups/warehouse/entities/
 bun run atlas -- init --connection warehouse
 ```
 
 ```
 semantic/
-├── entities/            # Default datasource entities
+├── entities/                  # Default group (flat root)
 │   └── users.yml
-├── warehouse/
-│   └── entities/        # "warehouse" datasource entities
-│       └── inventory.yml
 ├── metrics/
-└── glossary.yml
+├── glossary.yml
+└── groups/
+    └── warehouse/             # "warehouse" group
+        ├── entities/
+        │   └── inventory.yml
+        └── metrics/
 ```
 
-Atlas discovers per-source subdirectories automatically and maps entities to connections by directory name.
+Atlas discovers the `groups/<group>/` namespace automatically and maps entities to connection groups by directory name. The legacy per-source layout (`semantic/<source>/entities/`, e.g. from the deprecated `--source` flag) is still recognized for back-compat.
 
 ---
 

@@ -380,23 +380,32 @@ describe("buildSemanticIndex", () => {
       makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
     );
 
-    // Hand-written YAML can carry non-string entries (e.g. a bare number); the
-    // formatter drops them rather than rendering a coerced value, and preserves
-    // the order of the surviving strings.
+    // Hand-written YAML can carry non-string or blank entries; the formatter
+    // drops them, preserves the order of the survivors, and emits no clause at
+    // all when nothing survives (never a bare "(maps to: )").
     writeFileSync(
       join(root, "glossary.yml"),
       [
         "terms:",
-        "  status:",
+        "  mixed:",
         "    status: ambiguous",
         "    possible_mappings: [orders.status, 42, users.status]",
+        "  all_invalid:",
+        "    status: ambiguous",
+        "    possible_mappings: [1, 2, 3]",
       ].join("\n") + "\n",
     );
 
     const index = buildSemanticIndex(root);
+    const lineOf = (term: string) =>
+      index.split("\n").find((l) => l.includes(`**${term}**`)) ?? "";
 
-    expect(index).toContain("(maps to: orders.status, users.status)");
-    expect(index).not.toContain("42");
+    // Survivors render in order; the non-string entry is dropped.
+    expect(lineOf("mixed")).toContain("(maps to: orders.status, users.status)");
+    expect(lineOf("mixed")).not.toContain("42");
+
+    // No surviving strings → no "maps to" clause (not an empty one).
+    expect(lineOf("all_invalid")).not.toContain("maps to:");
   });
 
   it("discovers groups/<group>/metrics, glossary, and catalog in the index (#3240)", () => {

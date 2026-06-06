@@ -428,9 +428,16 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
   // these fields are spread untyped from yaml.load, so the static `string[]`
   // type can't be trusted here (mirrors parseGlossaryTerm in lookups.ts).
   const note = term.note ? ` → ${term.note}` : "";
+  const mappingCandidates = Array.isArray(term.possible_mappings)
+    ? term.possible_mappings.filter(
+        (m): m is string => typeof m === "string" && m.trim().length > 0,
+      )
+    : [];
+  // Gate on the filtered candidates, not the raw array — an all-non-string or
+  // all-blank `possible_mappings` must emit no clause, never a bare "(maps to: )".
   const mappings =
-    Array.isArray(term.possible_mappings) && term.possible_mappings.length > 0
-      ? ` (maps to: ${term.possible_mappings.filter((m) => typeof m === "string").join(", ")})`
+    mappingCandidates.length > 0
+      ? ` (maps to: ${mappingCandidates.join(", ")})`
       : "";
   const group = term.group ? ` [${term.group}]` : "";
   return `- **${name}**${status}${def}${disambig}${note}${mappings}${group}`;

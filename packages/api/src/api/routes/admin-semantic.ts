@@ -629,7 +629,7 @@ export function registerSemanticEditorRoutes(
       // Sync to disk — non-fatal; DB is authoritative
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityToDisk(orgId, name, "entity", yamlContent);
+        await syncEntityToDisk(orgId, name, "entity", yamlContent, body.connectionId);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
@@ -714,7 +714,7 @@ export function registerSemanticEditorRoutes(
       // Sync deletion to disk — non-fatal; DB is authoritative
       try {
         const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityDeleteFromDisk(orgId, name, "entity");
+        await syncEntityDeleteFromDisk(orgId, name, "entity", existing.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
@@ -967,7 +967,7 @@ export function registerSemanticEditorRoutes(
       // Sync to disk — non-fatal
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content);
+        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content, currentEntity?.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },

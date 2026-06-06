@@ -834,7 +834,7 @@ wizard.openapi(saveRoute, async (c) => {
         // entities are split rather than just a log line.
         if (hasInternalDB()) {
           const syncResult = yield* Effect.tryPromise({
-            try: () => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml),
+            try: () => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml, connectionGroupId),
             catch: (err) => err instanceof Error ? err : new Error(String(err)),
           }).pipe(Effect.catchAll((err) => {
             log.warn(

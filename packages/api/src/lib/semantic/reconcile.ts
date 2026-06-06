@@ -79,10 +79,11 @@ async function safeSyncToDisk(
   orgId: string,
   name: string,
   yamlContent: string,
+  connectionGroupId?: string | null,
 ): Promise<void> {
   try {
     const { syncEntityToDisk } = await import("./sync");
-    await syncEntityToDisk(orgId, name, "entity", yamlContent);
+    await syncEntityToDisk(orgId, name, "entity", yamlContent, connectionGroupId);
   } catch (err) {
     log.warn(
       { err: errorMessage(err), orgId, name },
@@ -91,10 +92,14 @@ async function safeSyncToDisk(
   }
 }
 
-async function safeSyncDeleteFromDisk(orgId: string, name: string): Promise<void> {
+async function safeSyncDeleteFromDisk(
+  orgId: string,
+  name: string,
+  connectionGroupId?: string | null,
+): Promise<void> {
   try {
     const { syncEntityDeleteFromDisk } = await import("./sync");
-    await syncEntityDeleteFromDisk(orgId, name, "entity");
+    await syncEntityDeleteFromDisk(orgId, name, "entity", connectionGroupId);
   } catch (err) {
     log.warn(
       { err: errorMessage(err), orgId, name },
@@ -144,7 +149,7 @@ async function reconcileSyncYaml(input: ReconcileInput): Promise<ReconcileResult
 
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(input.orgId);
-  await safeSyncToDisk(input.orgId, input.name, updatedYaml);
+  await safeSyncToDisk(input.orgId, input.name, updatedYaml, input.connection);
 
   log.info(
     { orgId: input.orgId, name: input.name, table },
@@ -179,7 +184,7 @@ async function reconcileRemove(input: ReconcileInput): Promise<ReconcileResult> 
 
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(input.orgId);
-  await safeSyncDeleteFromDisk(input.orgId, input.name);
+  await safeSyncDeleteFromDisk(input.orgId, input.name, groupId);
 
   log.info({ orgId: input.orgId, name: input.name }, "Removed entity via reconcile");
 
@@ -210,7 +215,7 @@ async function reconcileCreateFromDb(input: ReconcileInput): Promise<ReconcileRe
   await upsertDraftEntity(input.orgId, "entity", input.name, starterYaml, input.connection);
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(input.orgId);
-  await safeSyncToDisk(input.orgId, input.name, starterYaml);
+  await safeSyncToDisk(input.orgId, input.name, starterYaml, input.connection);
 
   log.info(
     { orgId: input.orgId, name: input.name, columns: columns.length },

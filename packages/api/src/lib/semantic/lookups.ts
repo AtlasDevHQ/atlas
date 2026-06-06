@@ -13,7 +13,15 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot, isValidEntityName } from "./files";
-import { RESERVED_DIRS, scanEntities, readEntityYaml, getEntityDirs } from "./scanner";
+import {
+  scanEntities,
+  readEntityYaml,
+  getEntityDirs,
+  getGroupDirs,
+  resolveEntityGroup,
+  readGroupField,
+  type EntityDirOrigin,
+} from "./scanner";
 
 const log = createLogger("semantic-lookups");
 
@@ -73,7 +81,9 @@ export interface GlossaryTermLookup {
 }
 
 /**
- * Load all glossary terms from `glossary.yml` and per-source glossaries.
+ * Load every glossary term across all three layouts: the flat default root, the
+ * canonical `groups/<group>/glossary.yml` namespace, and legacy
+ * `<source>/glossary.yml` (ADR-0012, via the shared scanner).
  *
  * Supports both glossary YAML shapes:
  * - Object form: `terms: { name: { status, definition, ... } }` (current)
@@ -85,27 +95,12 @@ export function loadGlossaryTerms(
   const root = opts.semanticRoot ?? getSemanticRoot();
   const out: GlossaryTermLookup[] = [];
 
-  loadGlossaryFile(path.join(root, "glossary.yml"), "default", out);
-
-  if (fs.existsSync(root)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch (err) {
-      log.warn(
-        { root, err: err instanceof Error ? err.message : String(err) },
-        "Failed to scan semantic root for per-source glossaries",
-      );
-      return out;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      loadGlossaryFile(
-        path.join(root, entry.name, "glossary.yml"),
-        entry.name,
-        out,
-      );
-    }
+  // Layout-aware traversal (ADR-0012): the flat default root, the canonical
+  // groups/<group>/ namespace, and legacy <source>/ all surface their
+  // glossary.yml through the shared scanner — never the reserved `groups/` dir
+  // itself.
+  for (const { dir, group, origin } of getGroupDirs(root, null).dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), group, origin, out);
   }
 
   return out;
@@ -134,7 +129,8 @@ export function searchGlossary(
 
 function loadGlossaryFile(
   filePath: string,
-  source: string,
+  dirGroup: string,
+  origin: EntityDirOrigin,
   out: GlossaryTermLookup[],
 ): void {
   if (!fs.existsSync(filePath)) return;
@@ -152,6 +148,10 @@ function loadGlossaryFile(
   }
 
   if (!raw || typeof raw !== "object") return;
+  // Resolve the effective group: the directory is canonical for groups/<group>/;
+  // a top-level group:/connection: field can override on the flat/legacy layouts
+  // (ADR-0012, same precedence the entity loader uses).
+  const source = resolveEntityGroup(dirGroup, origin, readGroupField(raw as Record<string, unknown>)).group;
   const terms = (raw as { terms?: unknown }).terms;
   if (!terms) return;
 
@@ -224,34 +224,19 @@ export interface MetricDefinition {
   readonly binding: MetricBinding | null;
 }
 
-/** Load every metric defined under `metrics/` (default + per-source). */
+/**
+ * Load every metric defined under `metrics/` across all three layouts:
+ * the flat default root, the canonical `groups/<group>/metrics/` namespace,
+ * and legacy `<source>/metrics/` (ADR-0012, via the shared scanner).
+ */
 export function loadMetricDefinitions(
   opts: { semanticRoot?: string } = {},
 ): MetricDefinition[] {
   const root = opts.semanticRoot ?? getSemanticRoot();
   const out: MetricDefinition[] = [];
 
-  loadMetricsFromDir(path.join(root, "metrics"), "default", out);
-
-  if (fs.existsSync(root)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch (err) {
-      log.warn(
-        { root, err: err instanceof Error ? err.message : String(err) },
-        "Failed to scan semantic root for per-source metric directories",
-      );
-      return out;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      loadMetricsFromDir(
-        path.join(root, entry.name, "metrics"),
-        entry.name,
-        out,
-      );
-    }
+  for (const { dir, group, origin } of getGroupDirs(root, "metrics").dirs) {
+    loadMetricsFromDir(dir, group, origin, out);
   }
 
   return out;
@@ -268,7 +253,8 @@ export function findMetricById(
 
 function loadMetricsFromDir(
   dir: string,
-  source: string,
+  dirGroup: string,
+  origin: EntityDirOrigin,
   out: MetricDefinition[],
 ): void {
   if (!fs.existsSync(dir)) return;
@@ -299,6 +285,10 @@ function loadMetricsFromDir(
 
     if (!raw || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
+
+    // Directory is canonical for groups/<group>/; a file-level group:/connection:
+    // can override on the flat/legacy layouts (ADR-0012).
+    const source = resolveEntityGroup(dirGroup, origin, readGroupField(r)).group;
 
     if (Array.isArray(r.metrics)) {
       for (const m of r.metrics) {

@@ -15,7 +15,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
-import { RESERVED_DIRS, scanEntities, resolveEntityGroup, readGroupField } from "./scanner";
+import { scanEntities, resolveEntityGroup, readGroupField, getGroupDirs } from "./scanner";
 
 const log = createLogger("semantic-index");
 
@@ -72,6 +72,8 @@ interface ParsedEntity {
 }
 
 interface ParsedMetric {
+  /** Canonical metric key (current shape). Older files used `name`. */
+  id?: string;
   name?: string;
   description?: string;
   sql?: string;
@@ -79,6 +81,13 @@ interface ParsedMetric {
   entity?: string;
   aggregation?: string;
   unit?: string;
+  /**
+   * Display group for the prompt index — set ONLY for the canonical
+   * `groups/<group>/` namespace so the agent can tell same-id metrics from
+   * different groups apart. Flat default + legacy `<source>/` stay unlabeled
+   * (exactly as before, ADR-0012/#3240).
+   */
+  group?: string;
 }
 
 interface GlossaryTerm {
@@ -86,6 +95,8 @@ interface GlossaryTerm {
   definition?: string;
   status?: string;
   disambiguation?: string;
+  /** Display group — set only for the canonical `groups/<group>/` namespace (see {@link ParsedMetric.group}). */
+  group?: string;
 }
 
 interface CatalogEntry {
@@ -93,6 +104,13 @@ interface CatalogEntry {
   description?: string;
   use_for?: string[];
   common_questions?: string[];
+  /**
+   * Resolved Connection group of the catalog this entry came from (`"default"`
+   * for the flat root). Stamped by {@link loadCatalog} so a merged multi-group
+   * catalog applies each entry's hints only to its own group's entity, never
+   * across groups (ADR-0012, #3240).
+   */
+  group?: string;
 }
 
 interface ParsedCatalog {
@@ -280,9 +298,15 @@ function formatEntity(
     lines.push(`Grain: ${entity.grain}`);
   }
 
-  // Catalog use_for hints
+  // Catalog use_for hints — match on entity name/table AND the resolved group,
+  // so a merged multi-group catalog never leaks one group's hints onto another
+  // group's same-named entity (#3240). `entity.connection` is the entity's
+  // resolved group (undefined for the default group).
+  const entityGroup = entity.connection ?? "default";
   const catalogEntry = catalog?.entities?.find(
-    (e) => e.name === entity.name || e.name === entity.table,
+    (e) =>
+      (e.name === entity.name || e.name === entity.table) &&
+      (e.group ?? "default") === entityGroup,
   );
   if (catalogEntry?.use_for && catalogEntry.use_for.length > 0) {
     lines.push(`Use for: ${catalogEntry.use_for.join("; ")}`);
@@ -370,10 +394,11 @@ function formatEntity(
 }
 
 function formatMetric(metric: ParsedMetric): string {
-  const name = metric.name ?? "unnamed";
+  const name = metric.name ?? metric.id ?? "unnamed";
   const desc = metric.description ? ` — ${metric.description}` : "";
   const entity = metric.entity ? ` (${metric.entity})` : "";
-  return `- **${name}**${entity}${desc}`;
+  const group = metric.group ? ` [${metric.group}]` : "";
+  return `- **${name}**${entity}${desc}${group}`;
 }
 
 function formatGlossaryTerm(term: GlossaryTerm): string {
@@ -383,7 +408,8 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
   const disambig = term.disambiguation
     ? ` → ${term.disambiguation}`
     : "";
-  return `- **${name}**${status}${def}${disambig}`;
+  const group = term.group ? ` [${term.group}]` : "";
+  return `- **${name}**${status}${def}${disambig}${group}`;
 }
 
 // --- Loaders ---
@@ -417,31 +443,18 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
 function loadMetrics(semanticRoot: string): ParsedMetric[] {
   const metrics: ParsedMetric[] = [];
 
-  // Default metrics
-  loadMetricsFromDir(path.join(semanticRoot, "metrics"), metrics);
-
-  // Per-source subdirectories
-  if (fs.existsSync(semanticRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
-    } catch (err) {
-      log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source metric directories");
-      return metrics;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      const subMetrics = path.join(semanticRoot, entry.name, "metrics");
-      if (fs.existsSync(subMetrics)) {
-        loadMetricsFromDir(subMetrics, metrics);
-      }
-    }
+  // Layout-aware traversal (ADR-0012): flat default `metrics/`, the canonical
+  // `groups/<group>/metrics/` namespace, and legacy `<source>/metrics/` all
+  // feed the index through the shared scanner. Only canonical groups/ metrics
+  // carry a display group label; flat + legacy stay unlabeled (as before).
+  for (const { dir, group, origin } of getGroupDirs(semanticRoot, "metrics").dirs) {
+    loadMetricsFromDir(dir, origin === "group" ? group : undefined, metrics);
   }
 
   return metrics;
 }
 
-function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
+function loadMetricsFromDir(dir: string, displayGroup: string | undefined, out: ParsedMetric[]): void {
   if (!fs.existsSync(dir)) return;
 
   let files: string[];
@@ -458,13 +471,14 @@ function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
       const raw = yaml.load(content) as Record<string, unknown> | null;
       if (!raw || typeof raw !== "object") continue;
 
-      // Metric files may contain a top-level array of metrics or a single metric
+      // Metric files may contain a top-level array of metrics or a single
+      // metric, keyed by the canonical `id:` (current shape) or legacy `name:`.
       if (Array.isArray(raw.metrics)) {
         for (const m of raw.metrics as ParsedMetric[]) {
-          if (m && typeof m === "object") out.push(m);
+          if (m && typeof m === "object") out.push({ ...m, group: displayGroup });
         }
-      } else if (raw.name) {
-        out.push(raw as ParsedMetric);
+      } else if (raw.name || raw.id) {
+        out.push({ ...(raw as ParsedMetric), group: displayGroup });
       }
     } catch (err) {
       log.warn({ file, dir, err: err instanceof Error ? err.message : String(err) }, "Skipping metric file in semantic index — failed to read or parse");
@@ -475,31 +489,18 @@ function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
 function loadGlossary(semanticRoot: string): GlossaryTerm[] {
   const terms: GlossaryTerm[] = [];
 
-  // Try root glossary
-  loadGlossaryFile(path.join(semanticRoot, "glossary.yml"), terms);
-
-  // Per-source glossaries
-  if (fs.existsSync(semanticRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
-    } catch (err) {
-      log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source glossary files");
-      return terms;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      loadGlossaryFile(
-        path.join(semanticRoot, entry.name, "glossary.yml"),
-        terms,
-      );
-    }
+  // Flat default root, the canonical groups/<group>/ namespace, and legacy
+  // <source>/ all surface glossary.yml through the shared scanner (ADR-0012).
+  // Only canonical groups/ terms carry a display group label; flat + legacy
+  // stay unlabeled (as before).
+  for (const { dir, group, origin } of getGroupDirs(semanticRoot, null).dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), origin === "group" ? group : undefined, terms);
   }
 
   return terms;
 }
 
-function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
+function loadGlossaryFile(filePath: string, displayGroup: string | undefined, out: GlossaryTerm[]): void {
   if (!fs.existsSync(filePath)) return;
 
   try {
@@ -507,9 +508,16 @@ function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
     const raw = yaml.load(content) as Record<string, unknown> | null;
     if (!raw || typeof raw !== "object") return;
 
+    // Supports both shapes: array form `terms: [{ term, ... }]` (legacy) and
+    // object form `terms: { name: { ... } }` (current) — the latter is the
+    // common case for grouped glossaries, so the index must handle it too.
     if (Array.isArray(raw.terms)) {
       for (const t of raw.terms as GlossaryTerm[]) {
-        if (t && typeof t === "object") out.push(t);
+        if (t && typeof t === "object") out.push({ ...t, group: displayGroup });
+      }
+    } else if (raw.terms && typeof raw.terms === "object") {
+      for (const [term, value] of Object.entries(raw.terms as Record<string, unknown>)) {
+        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), group: displayGroup });
       }
     }
   } catch (err) {
@@ -518,14 +526,39 @@ function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
 }
 
 function loadCatalog(semanticRoot: string): ParsedCatalog | null {
-  const catalogPath = path.join(semanticRoot, "catalog.yml");
-  if (!fs.existsSync(catalogPath)) return null;
+  // Merge catalog.yml across the flat default root, the canonical
+  // groups/<group>/ namespace, and legacy <source>/ (ADR-0012) so per-group
+  // `use_for` hints reach the index. The index keys catalog entries by entity
+  // name, so concatenating their `entities[]` is the natural merge. On a
+  // name collision across groups the lookup is first-wins (acceptable — entity
+  // names don't collide across groups in practice).
+  const merged: CatalogEntry[] = [];
+  let version: string | undefined;
+  let found = false;
 
-  try {
-    const content = fs.readFileSync(catalogPath, "utf-8");
-    return yaml.load(content) as ParsedCatalog | null;
-  } catch (err) {
-    log.warn({ catalogPath, err: err instanceof Error ? err.message : String(err) }, "Failed to load catalog for semantic index");
-    return null;
+  for (const { dir, group, origin } of getGroupDirs(semanticRoot, null).dirs) {
+    const catalogPath = path.join(dir, "catalog.yml");
+    if (!fs.existsSync(catalogPath)) continue;
+    try {
+      const content = fs.readFileSync(catalogPath, "utf-8");
+      const parsed = yaml.load(content);
+      if (!parsed || typeof parsed !== "object") continue;
+      const rec = parsed as Record<string, unknown>;
+      found = true;
+      if (version === undefined && typeof rec.version === "string") version = rec.version;
+      if (!Array.isArray(rec.entities)) continue;
+      // Stamp each entry with the catalog's resolved group so formatEntity can
+      // scope hints to the matching group (directory canonical; a file-level
+      // group:/connection: can override on flat/legacy layouts, ADR-0012).
+      const catalogGroup = resolveEntityGroup(group, origin, readGroupField(rec)).group;
+      for (const entry of rec.entities as CatalogEntry[]) {
+        merged.push({ ...entry, group: catalogGroup });
+      }
+    } catch (err) {
+      log.warn({ catalogPath, err: err instanceof Error ? err.message : String(err) }, "Failed to load catalog for semantic index");
+    }
   }
+
+  if (!found) return null;
+  return { version, entities: merged };
 }

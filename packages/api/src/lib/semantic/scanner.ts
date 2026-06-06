@@ -95,34 +95,79 @@ export interface EntityDirResult {
 }
 
 /**
- * Discover entity directories under a semantic root.
- *
- * Returns, in precedence order:
- *   1. the default `entities/` dir (flat default group), if it exists;
- *   2. the canonical `groups/<group>/entities/` dirs (ADR-0012);
- *   3. the legacy `<source>/entities/` dirs (back-compat).
- *
- * Also reports whether the root scan failed so callers can escalate severity.
+ * A per-group directory resolved by {@link getGroupDirs}, layout-aware across
+ * all three on-disk layouts (ADR-0012).
  */
-export function getEntityDirs(root: string): EntityDirResult {
-  const dirs: EntityDir[] = [];
+export interface GroupDir {
+  /**
+   * Absolute path to the resolved directory: `<base>/<subdir>` when a `subdir`
+   * was requested, or the per-group base itself when `subdir` is `null` (for
+   * artifacts that live directly in the group root — `glossary.yml`,
+   * `catalog.yml`).
+   */
+  dir: string;
+  /** Group name resolved from the directory: `"default"` for the flat root, the directory name otherwise. */
+  group: string;
+  /** On-disk layout this directory belongs to — drives group precedence. */
+  origin: EntityDirOrigin;
+}
+
+export interface GroupDirResult {
+  dirs: GroupDir[];
+  /** Same fail-closed semantics as {@link EntityDirResult.failedScans}. */
+  failedScans: ScanNamespace[];
+}
+
+/**
+ * The shared, layout-aware traversal of a semantic root — the single source of
+ * truth for the discovery read paths it backs (the SQL whitelist via
+ * {@link getEntityDirs}, the lookup helpers, admin discovery, and the boot-time
+ * search index), so they can't drift on the layout (ADR-0012, #3240). Read
+ * paths that don't route through here (e.g. the expert/`improve` context
+ * loader) are deliberately root-only.
+ *
+ * Resolves, in precedence order, the per-group directory for a given `subdir`
+ * across all three layouts:
+ *   1. flat default root → group `"default"` (origin `"flat"`);
+ *   2. canonical `groups/<group>/…` → group `"<group>"` (origin `"group"`);
+ *   3. legacy `<source>/…` → group `"<source>"` (origin `"legacy"`).
+ *
+ * `subdir` is the per-group subdirectory to resolve (e.g. `"entities"`,
+ * `"metrics"`); pass `null` for artifacts that live directly in the per-group
+ * root (`glossary.yml`, `catalog.yml`), which returns the per-group base dir
+ * itself. Only existing directories are returned — the per-group bases returned
+ * for `subdir === null` are known to exist, so the caller only needs to check
+ * for the specific file (`glossary.yml` / `catalog.yml`).
+ *
+ * The `groups/` namespace dir is never itself treated as a legacy `<source>/`
+ * (it is in {@link RESERVED_DIRS}), so no artifact is ever attributed to a
+ * source literally named "groups". Also reports whether either scan failed so
+ * callers can escalate severity and fail closed (#3243).
+ */
+export function getGroupDirs(root: string, subdir: string | null): GroupDirResult {
+  const dirs: GroupDir[] = [];
   const failedScans: ScanNamespace[] = [];
 
-  const defaultDir = path.join(root, "entities");
+  // Resolve a per-group base to its target dir: the requested subdir under the
+  // base, or the base itself when the artifact lives directly in the group root.
+  const resolve = (base: string): string => (subdir === null ? base : path.join(base, subdir));
+
+  // 1. Flat default root.
+  const defaultDir = resolve(root);
   if (fs.existsSync(defaultDir)) {
-    dirs.push({ dir: defaultDir, sourceName: "default", origin: "flat" });
+    dirs.push({ dir: defaultDir, group: "default", origin: "flat" });
   }
 
-  // Canonical per-group namespace: semantic/groups/<group>/entities/ (ADR-0012).
+  // 2. Canonical per-group namespace: semantic/groups/<group>/… (ADR-0012).
   const groupsRoot = path.join(root, GROUPS_DIR);
   if (fs.existsSync(groupsRoot)) {
     try {
       const groupEntries = fs.readdirSync(groupsRoot, { withFileTypes: true });
       for (const entry of groupEntries) {
         if (!entry.isDirectory()) continue;
-        const subDir = path.join(groupsRoot, entry.name, "entities");
-        if (fs.existsSync(subDir)) {
-          dirs.push({ dir: subDir, sourceName: entry.name, origin: "group" });
+        const target = resolve(path.join(groupsRoot, entry.name));
+        if (fs.existsSync(target)) {
+          dirs.push({ dir: target, group: entry.name, origin: "group" });
         }
       }
     } catch (err) {
@@ -131,33 +176,53 @@ export function getEntityDirs(root: string): EntityDirResult {
       // namespace so the partition decision downstream fails closed (#3243).
       failedScans.push("groups");
       log.warn(
-        { root: groupsRoot, err: err instanceof Error ? err.message : String(err) },
+        { root: groupsRoot, subdir, err: err instanceof Error ? err.message : String(err) },
         "Failed to scan semantic groups/ namespace — affected groups fail closed",
       );
     }
   }
 
-  // Legacy per-source layout: semantic/<source>/entities/ (pre-ADR-0012).
+  // 3. Legacy per-source layout: semantic/<source>/… (pre-ADR-0012).
   if (fs.existsSync(root)) {
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subDir = path.join(root, entry.name, "entities");
-        if (fs.existsSync(subDir)) {
-          dirs.push({ dir: subDir, sourceName: entry.name, origin: "legacy" });
+        const target = resolve(path.join(root, entry.name));
+        if (fs.existsSync(target)) {
+          dirs.push({ dir: target, group: entry.name, origin: "legacy" });
         }
       }
     } catch (err) {
       failedScans.push("legacy");
       log.warn(
-        { root, err: err instanceof Error ? err.message : String(err) },
+        { root, subdir, err: err instanceof Error ? err.message : String(err) },
         "Failed to scan semantic root for per-source directories — affected sources fail closed",
       );
     }
   }
 
   return { dirs, failedScans };
+}
+
+/**
+ * Discover entity directories under a semantic root.
+ *
+ * Returns, in precedence order:
+ *   1. the default `entities/` dir (flat default group), if it exists;
+ *   2. the canonical `groups/<group>/entities/` dirs (ADR-0012);
+ *   3. the legacy `<source>/entities/` dirs (back-compat).
+ *
+ * Thin projection over {@link getGroupDirs} (the shared traversal) into the
+ * entity-specific shape — `group` is surfaced as `sourceName`. Also reports
+ * whether either scan failed so callers can escalate severity.
+ */
+export function getEntityDirs(root: string): EntityDirResult {
+  const { dirs, failedScans } = getGroupDirs(root, "entities");
+  return {
+    dirs: dirs.map(({ dir, group, origin }) => ({ dir, sourceName: group, origin })),
+    failedScans,
+  };
 }
 
 // ---------------------------------------------------------------------------

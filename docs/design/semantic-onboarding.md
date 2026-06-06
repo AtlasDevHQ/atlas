@@ -61,6 +61,7 @@ semantic/                       # multi-DB
 - The loader infers the group from the directory (`semantic/groups/<group>/…` → group `<group>`); an in-file `group:` field is an **optional override**, not a co-equal second source of truth.
 - The **default group stays flat at the root** (`semantic/entities/…`, `connection_group_id = NULL`), so single-DB users see zero added nesting.
 - This formalizes (and renames) the existing-but-unblessed `semantic/<source>/entities/` inference in `whitelist.ts` into the dedicated `groups/` namespace. Legacy `semantic/<source>/` layouts need a one-time migration (see ADR-0012 Consequences).
+- **All four artifact types — entities, metrics, glossary, catalog — share one layout-aware traversal** (`getGroupDirs` in `lib/semantic/scanner.ts`, #3240). A non-default group's `groups/<group>/metrics/*.yml`, `groups/<group>/glossary.yml`, and `groups/<group>/catalog.yml` are discovered and attributed to `<group>` on every read path (admin discovery, the agent's lookup helpers, and the boot-time search index). `groups/` is a reserved namespace, so nothing is ever attributed to a source literally named "groups". The admin catalog endpoint remains the global root view (catalog is unscoped in the admin/DB model); group catalogs surface as `use_for` hints in the agent's semantic index.
 
 In SaaS (DB-backed), the group is `connection_group_id` on the entity row — no files; the same grouping drives the view.
 

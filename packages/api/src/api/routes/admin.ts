@@ -65,6 +65,15 @@ import {
   AdminEntityYamlShapeError,
   type AdminEntityYamlError,
 } from "@atlas/api/lib/semantic/admin-source";
+// Shared, layout-aware traversal (ADR-0012): the single source of truth so
+// metric/glossary discovery recognizes the canonical groups/<group>/ namespace
+// alongside flat-root + legacy <source>/ layouts (#3240).
+import {
+  getGroupDirs,
+  resolveEntityGroup,
+  readGroupField,
+  type EntityDirOrigin,
+} from "@atlas/api/lib/semantic/scanner";
 import { AmbiguousEntityError } from "@atlas/api/lib/effect/errors";
 import { runDiff, runDriftDiff } from "@atlas/api/lib/semantic/diff";
 import { attachDrift } from "@atlas/api/lib/semantic/drift";
@@ -510,81 +519,70 @@ registerSemanticEditorRoutes(admin, adminAuthAndContext);
 function discoverMetrics(root: string): Array<{ source: string; file: string; data: unknown }> {
   const metrics: Array<{ source: string; file: string; data: unknown }> = [];
 
-  const defaultDir = path.join(root, "metrics");
-  if (fs.existsSync(defaultDir)) {
-    loadMetricsFromDir(defaultDir, "default", metrics);
-  }
-
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subMetrics = path.join(root, entry.name, "metrics");
-        if (fs.existsSync(subMetrics)) {
-          loadMetricsFromDir(subMetrics, entry.name, metrics);
-        }
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for per-source metrics");
-    }
+  // Flat default `metrics/`, the canonical `groups/<group>/metrics/` namespace,
+  // and legacy `<source>/metrics/` all flow through the shared scanner — never
+  // the reserved `groups/` dir itself (ADR-0012, #3240).
+  for (const { dir, group, origin } of getGroupDirs(root, "metrics").dirs) {
+    loadMetricsFromDir(dir, group, origin, metrics);
   }
 
   return metrics;
 }
 
-function loadMetricsFromDir(dir: string, source: string, out: Array<{ source: string; file: string; data: unknown }>): void {
+function loadMetricsFromDir(
+  dir: string,
+  dirGroup: string,
+  origin: EntityDirOrigin,
+  out: Array<{ source: string; file: string; data: unknown }>,
+): void {
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir, source }, "Failed to read metrics directory");
+    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir, dirGroup }, "Failed to read metrics directory");
     return;
   }
 
   for (const file of files) {
     try {
       const raw = readYamlFile(path.join(dir, file));
+      // Directory is canonical for groups/<group>/; a file-level group:/connection:
+      // can override on the flat/legacy layouts (ADR-0012).
+      const fieldGroup =
+        raw && typeof raw === "object"
+          ? readGroupField(raw as Record<string, unknown>)
+          : undefined;
+      const source = resolveEntityGroup(dirGroup, origin, fieldGroup).group;
       out.push({ source, file: file.replace(/\.yml$/, ""), data: raw });
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir, source }, "Failed to parse metric YAML file");
+      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir, dirGroup }, "Failed to parse metric YAML file");
     }
   }
 }
 
 /**
- * Load glossary from semantic/glossary.yml and per-source glossaries.
+ * Load glossary from the flat default `glossary.yml`, the canonical
+ * `groups/<group>/glossary.yml` namespace, and legacy `<source>/glossary.yml`
+ * (ADR-0012, #3240) — all via the shared scanner traversal.
  */
 function loadGlossary(root: string): unknown[] {
   const glossaries: unknown[] = [];
 
-  const defaultFile = path.join(root, "glossary.yml");
-  if (fs.existsSync(defaultFile)) {
+  for (const { dir, group, origin } of getGroupDirs(root, null).dirs) {
+    const file = path.join(dir, "glossary.yml");
+    if (!fs.existsSync(file)) continue;
     try {
-      glossaries.push({ source: "default", data: readYamlFile(defaultFile) });
+      const data = readYamlFile(file);
+      // Directory is canonical for groups/<group>/; a file-level group:/connection:
+      // can override on the flat/legacy layouts (ADR-0012).
+      const fieldGroup =
+        data && typeof data === "object"
+          ? readGroupField(data as Record<string, unknown>)
+          : undefined;
+      const source = resolveEntityGroup(group, origin, fieldGroup).group;
+      glossaries.push({ source, data });
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file: defaultFile }, "Failed to parse glossary YAML");
-    }
-  }
-
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subGlossary = path.join(root, entry.name, "glossary.yml");
-        if (fs.existsSync(subGlossary)) {
-          try {
-            glossaries.push({ source: entry.name, data: readYamlFile(subGlossary) });
-          } catch (err) {
-            log.warn({ err: err instanceof Error ? err : new Error(String(err)), file: subGlossary, source: entry.name }, "Failed to parse per-source glossary YAML");
-          }
-        }
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for per-source glossaries");
+      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dirGroup: group }, "Failed to parse glossary YAML");
     }
   }
 
@@ -1855,6 +1853,14 @@ admin.openapi(getCatalogRoute, async (c) => {
   const { requestId, authResult } = await adminAuthAndContext(c, "admin:semantic");
   const orgId = authResult.user?.activeOrganizationId;
   const root = resolveSemanticRoot(orgId);
+  // Catalog is a single global document at the admin level — the root
+  // catalog.yml's top-level metadata (name/description/use_for) drives the
+  // single-object CatalogViewer, and the admin/DB model treats catalog as
+  // unscoped (serveRawYaml forces its group to null). Unlike metrics/glossary,
+  // it is intentionally NOT discovered per-group here; a group's
+  // groups/<group>/catalog.yml surfaces where it's agent-meaningful — as
+  // per-entity `use_for` hints merged into the boot-time search index
+  // (see loadCatalog in lib/semantic/search.ts). #3240.
   const catalogFile = path.join(root, "catalog.yml");
   if (!fs.existsSync(catalogFile)) {
     return c.json({ catalog: null }, 200);

@@ -202,6 +202,13 @@ export function getMissingProviderConfig(provider: string): string[] {
  */
 export function getMissingModelConfig(): { provider: string; missing: string[] } {
   const provider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (!isSupportedProvider(provider)) {
+    // An unknown/typo provider would otherwise fall through to
+    // getMissingProviderConfig's default `[]` (reads as "configured") and then
+    // throw at getModel()/resolveSelection() time — defeating the fail-fast this
+    // function exists for. Report it as missing so callers gate up front.
+    return { provider, missing: [`ATLAS_PROVIDER (unsupported: "${provider}")`] };
+  }
   return { provider, missing: getMissingProviderConfig(provider) };
 }
 

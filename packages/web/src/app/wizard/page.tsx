@@ -695,6 +695,27 @@ function StepReview({
     setEntities((prev) => prev.map((e) => (e.tableName === tableName ? { ...e, yaml } : e)));
   }
 
+  /**
+   * Apply an enrichment result, but only if the row still holds the exact YAML
+   * we sent (`snapshot`). If the user hand-edited the row while the request was
+   * in flight, their edit wins — the stale enrichment is dropped rather than
+   * silently overwriting their work.
+   */
+  function applyEnrichedYaml(tableName: string, yaml: string, snapshot: string | undefined) {
+    setEntities((prev) =>
+      prev.map((e) =>
+        e.tableName === tableName && (snapshot === undefined || e.yaml === snapshot)
+          ? { ...e, yaml }
+          : e,
+      ),
+    );
+    setEditingYaml((prev) => {
+      const cur = prev[tableName];
+      if (snapshot !== undefined && cur !== undefined && cur !== snapshot) return prev;
+      return { ...prev, [tableName]: yaml };
+    });
+  }
+
   function toggleIgnore(tableName: string) {
     setIgnored((prev) => {
       const next = new Set(prev);
@@ -809,7 +830,20 @@ function StepReview({
         if (outcome.kind === "error" && outcome.unavailable) aborted.current = true;
         return outcome;
       },
-      (tableName, outcome) => {
+      (tableName, outcome, workerError) => {
+        // The task catches its own errors, so workerError should be undefined —
+        // but never silently swallow an unexpected throw (CLAUDE.md error rule).
+        if (workerError) {
+          const message =
+            workerError instanceof Error ? workerError.message : String(workerError);
+          console.warn("[wizard] enrich worker error:", tableName, message);
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "error" }));
+          setEnrichRowError((prev) => ({
+            ...prev,
+            [tableName]: userMessageFor(workerError, "Couldn't enrich this table."),
+          }));
+          return;
+        }
         if (!outcome || outcome.kind === "skipped") {
           setEnrichStatus((prev) => ({ ...prev, [tableName]: "idle" }));
           return;
@@ -822,8 +856,16 @@ function StepReview({
           }
           return;
         }
+        // Model ran but returned nothing usable → keep the baseline, don't badge
+        // it "enriched" (would mislead which rows still need attention).
+        if (!outcome.enriched) {
+          setEnrichStatus((prev) => ({ ...prev, [tableName]: "unchanged" }));
+          return;
+        }
         setEnrichStatus((prev) => ({ ...prev, [tableName]: "enriched" }));
-        handleYamlChange(tableName, outcome.yaml);
+        // Apply only if the row still matches the YAML we sent — a manual edit
+        // made mid-flight wins over the stale enrichment (no silent clobber).
+        applyEnrichedYaml(tableName, outcome.yaml, yamlByTable.get(tableName));
       },
     );
 
@@ -1010,6 +1052,20 @@ function StepReview({
                         Enriched
                       </Badge>
                     )}
+                    {status === "unchanged" && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              No changes
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            The model returned nothing usable — this row kept its mechanical baseline. You can retry.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                     {status === "error" && (
                       <TooltipProvider>
                         <Tooltip>
@@ -1191,7 +1247,15 @@ function StepReview({
                           onChange={(e) => handleYamlChange(entity.tableName, e.target.value)}
                           className="font-mono text-xs"
                           rows={12}
+                          // Locked while this row is enriching so an in-flight
+                          // edit can't be clobbered by the returning YAML.
+                          disabled={status === "enriching"}
                         />
+                        {status === "enriching" && (
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            Locked while enriching — editable again when the result lands.
+                          </p>
+                        )}
                       </div>
                     </details>
                   </div>

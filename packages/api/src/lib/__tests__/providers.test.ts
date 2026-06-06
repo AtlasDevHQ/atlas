@@ -2,8 +2,14 @@ import { describe, expect, test, afterEach } from "bun:test";
 
 // Import after mocks — getProviderType reads process.env at call time, so no
 // module-level mocking is needed.
-const { getProviderType, getDefaultProvider, getModel, getModelForConfig, resolveModelId } =
-  await import("@atlas/api/lib/providers");
+const {
+  getProviderType,
+  getDefaultProvider,
+  getModel,
+  getModelForConfig,
+  resolveModelId,
+  getMissingModelConfig,
+} = await import("@atlas/api/lib/providers");
 
 // ---------------------------------------------------------------------------
 // Env snapshot — capture/restore only the vars this test touches
@@ -245,5 +251,30 @@ describe("getModel — openai-compatible", () => {
     process.env.OPENAI_COMPATIBLE_BASE_URL = "http://localhost:8000/v1";
     const model = getModel();
     expect(model).toBeDefined();
+  });
+});
+
+describe("getMissingModelConfig (wizard enrichment preflight, #3236)", () => {
+  test("reports an unsupported ATLAS_PROVIDER as missing (fail-fast, not silently healthy)", () => {
+    process.env.ATLAS_PROVIDER = "definitely-not-a-provider";
+    const { provider, missing } = getMissingModelConfig();
+    expect(provider).toBe("definitely-not-a-provider");
+    expect(missing.length).toBeGreaterThan(0);
+  });
+
+  test("reports the missing key for a supported-but-keyless provider", () => {
+    process.env.ATLAS_PROVIDER = "anthropic";
+    delete process.env.ANTHROPIC_API_KEY;
+    const { provider, missing } = getMissingModelConfig();
+    expect(provider).toBe("anthropic");
+    expect(missing).toContain("ANTHROPIC_API_KEY");
+  });
+
+  test("reports nothing missing when the provider is fully configured", () => {
+    process.env.ATLAS_PROVIDER = "gateway";
+    process.env.AI_GATEWAY_API_KEY = "gw-test-key";
+    const { provider, missing } = getMissingModelConfig();
+    expect(provider).toBe("gateway");
+    expect(missing).toEqual([]);
   });
 });

@@ -10,8 +10,12 @@
 
 import type { WizardEntityResult } from "@/ui/lib/types";
 
-/** Per-row enrichment status surfaced in the review list. */
-export type EnrichRowStatus = "idle" | "enriching" | "enriched" | "error";
+/**
+ * Per-row enrichment status surfaced in the review list. `unchanged` = the model
+ * ran but returned nothing usable, so the row kept its mechanical baseline (we
+ * must not badge it "enriched" — issue #3236 review).
+ */
+export type EnrichRowStatus = "idle" | "enriching" | "enriched" | "unchanged" | "error";
 
 /** How many tables enrich concurrently — bounded so a big "Enrich all" doesn't
  * fan out an unbounded burst of LLM + DB-profiling requests. */

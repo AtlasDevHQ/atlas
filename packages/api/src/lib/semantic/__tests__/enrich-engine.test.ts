@@ -198,6 +198,20 @@ describe("enrichEntityYaml (in-memory primitive, #3236)", () => {
     await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, usage);
     expect(usage.totalTokens).toBe(33); // from the mocked generateText usage
   });
+
+  it("asks for the datasource dialect (MySQL) so query_patterns aren't PostgreSQL-only", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never, undefined, "mysql");
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("valid MySQL");
+    expect(prompt).not.toContain("valid PostgreSQL");
+  });
+
+  it("defaults to PostgreSQL dialect when dbType is omitted (CLI parity)", async () => {
+    await enrichEntityYaml(ENTITY_YAML, ordersProfile, { modelId: "x" } as never);
+    const prompt = mockGenerateText.mock.calls.at(-1)?.[0]?.prompt as string;
+    expect(prompt).toContain("valid PostgreSQL");
+    expect(prompt).not.toContain("valid MySQL");
+  });
 });
 
 describe("enrichEntity (per-table primitive)", () => {

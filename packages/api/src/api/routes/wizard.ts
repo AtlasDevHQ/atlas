@@ -17,7 +17,8 @@ import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { RequestContext, AuthContext, ModelRouter } from "@atlas/api/lib/effect/services";
+import { runEnterprise } from "@atlas/api/lib/effect/enterprise-layer";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
@@ -57,7 +58,11 @@ import {
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
 import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
-import { getModel, getMissingModelConfig } from "@atlas/api/lib/providers";
+import {
+  getModel,
+  getMissingModelConfig,
+  getModelFromWorkspaceConfig,
+} from "@atlas/api/lib/providers";
 
 const log = createLogger("wizard");
 
@@ -362,6 +367,7 @@ const enrichRoute = createRoute({
     "Enrich all / Enrich selected action. Requires admin role and a configured LLM provider.",
   request: {
     body: {
+      required: true,
       content: {
         "application/json": {
           schema: EnrichRequestSchema,
@@ -764,20 +770,31 @@ wizard.openapi(enrichRoute, async (c) => {
 
     const { connectionId, tableName, yaml: baselineYaml } = c.req.valid("json");
 
-    // Fail fast (503) when no LLM provider is configured so the UI surfaces ONE
-    // actionable banner instead of every per-table enrich hitting the same
-    // provider-auth error. Mirrors getModel()'s env-based provider resolution.
-    const { provider, missing } = getMissingModelConfig();
-    if (missing.length > 0) {
-      log.warn({ requestId, provider, missing }, "Wizard enrich: no LLM provider configured");
+    // Resolve the enrichment model up front (workspace BYOT → platform env), so
+    // the UI surfaces ONE actionable 503 banner when nothing is configured
+    // instead of every per-table enrich hitting the same provider-auth error.
+    const modelResolution = yield* Effect.tryPromise({
+      try: () => resolveEnrichModel(user?.activeOrganizationId),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+    if (modelResolution._tag === "Left") {
+      log.error({ err: modelResolution.left, requestId }, "Wizard enrich: model resolution failed");
+      return c.json({
+        error: "enrich_failed",
+        message: "Failed to resolve the enrichment model. Check server logs and retry.",
+        requestId,
+      }, 500);
+    }
+    const modelChoice = modelResolution.right;
+    if (modelChoice.kind === "unavailable") {
+      log.warn({ requestId }, "Wizard enrich: enrichment unavailable — no model configured");
       return c.json({
         error: "enrichment_unavailable",
-        message:
-          `Enrichment needs a configured LLM provider (${provider} is missing ${missing.join(", ")}). ` +
-          "Configure a provider in admin, or save the mechanical baseline as-is.",
+        message: modelChoice.message,
         requestId,
       }, 503);
     }
+    const model = modelChoice.model;
 
     const connUrlResult = yield* Effect.tryPromise({
       try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
@@ -822,7 +839,9 @@ wizard.openapi(enrichRoute, async (c) => {
         if (!profile) {
           return { error: "no_profile" as const };
         }
-        const enriched = await enrichEntityYaml(baselineYaml, profile, getModel());
+        // Pass dbType so the prompt emits query_patterns in the datasource's
+        // dialect (PostgreSQL vs MySQL), not always PostgreSQL.
+        const enriched = await enrichEntityYaml(baselineYaml, profile, model, undefined, dbType);
         return { ok: true as const, enriched };
       },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
@@ -830,10 +849,12 @@ wizard.openapi(enrichRoute, async (c) => {
 
     if (enrichResult._tag === "Left") {
       const err = enrichResult.left;
+      // Keep driver/provider detail in the logs; the client gets a sanitized,
+      // actionable message + requestId (CLAUDE.md: no stack traces to the user).
       log.error({ err, requestId, connectionId, tableName }, "Wizard enrich failed");
       return c.json({
         error: "enrich_failed",
-        message: `Failed to enrich "${tableName}": ${err.message}`,
+        message: `Failed to enrich "${tableName}". Please retry; if it persists, check the provider configuration and server logs.`,
         requestId,
       }, 500);
     }
@@ -1133,6 +1154,62 @@ wizard.openapi(saveRoute, async (c) => {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+type EnrichModelResolution =
+  | { kind: "ok"; model: ReturnType<typeof getModel> }
+  | { kind: "unavailable"; message: string };
+
+/**
+ * Resolve the model the wizard's Phase-2 enrichment should use, or report why
+ * it can't run. Mirrors the agent loop (`lib/agent.ts`): honor an
+ * admin-configured per-workspace provider (BYOT via `ModelRouter`, EE) FIRST,
+ * so a workspace whose provider lives in settings rather than the platform env
+ * can still enrich — otherwise the "Configure a provider in admin" guidance the
+ * 503 surfaces would be self-contradictory. Self-hosted / no-EE sees the no-op
+ * ModelRouter (returns null) and falls through to the platform env provider,
+ * matching the shared engine + CLI `getModel()`. Returns `unavailable` (→ 503)
+ * only when NEITHER a workspace key NOR a platform provider is configured.
+ */
+async function resolveEnrichModel(
+  orgId: string | null | undefined,
+): Promise<EnrichModelResolution> {
+  if (orgId && hasInternalDB()) {
+    const { ModelConfigDecryptError } = await import("@atlas/api/lib/model-routing/errors");
+    const program = Effect.gen(function* () {
+      const router = yield* ModelRouter;
+      return yield* router.getWorkspaceModelConfigRaw(orgId);
+    });
+    try {
+      const workspaceConfig = await runEnterprise(program);
+      if (workspaceConfig) {
+        return { kind: "ok", model: getModelFromWorkspaceConfig(workspaceConfig) };
+      }
+    } catch (err) {
+      if (err instanceof ModelConfigDecryptError) {
+        return {
+          kind: "unavailable",
+          message:
+            "Your workspace's API key could not be decrypted. Re-enter it on the AI Provider settings page, then retry enrichment.",
+        };
+      }
+      log.warn(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Wizard enrich: workspace model config unavailable — falling back to platform default",
+      );
+    }
+  }
+
+  const { provider, missing } = getMissingModelConfig();
+  if (missing.length > 0) {
+    return {
+      kind: "unavailable",
+      message:
+        `Enrichment needs a configured LLM provider (${provider} is missing ${missing.join(", ")}). ` +
+        "Configure a provider in admin, or save the mechanical baseline as-is.",
+    };
+  }
+  return { kind: "ok", model: getModel() };
+}
 
 interface ResolvedConnection {
   url: string;

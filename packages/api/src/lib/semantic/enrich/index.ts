@@ -201,9 +201,16 @@ export async function enrichEntityYaml(
   existingContent: string,
   profile: TableProfile,
   model: ReturnType<typeof getModel>,
-  usage?: TokenUsage
+  usage?: TokenUsage,
+  dbType?: string
 ): Promise<EnrichEntityYamlResult> {
   const profileText = formatTableProfile(profile);
+  // The generated query_patterns are saved into the semantic layer for THIS
+  // datasource, so they must be in the datasource's dialect — emitting
+  // PostgreSQL-only functions for a MySQL connection produces SQL the agent
+  // can't run (issue #3236 review). Defaults to PostgreSQL for the file-based
+  // CLI path, which is Postgres-oriented.
+  const dialect = dbType === "mysql" ? "MySQL" : "PostgreSQL";
 
   const result = await generateText({
     model,
@@ -224,7 +231,7 @@ Output your response inside a single \`\`\`yaml code block.
 Required output fields:
 1. **description**: A rich 2-3 sentence business description. Explain what business concept this table represents, what each row means, and how it relates to other tables.
 2. **use_cases**: A list of 3-4 bullet strings. Include concrete analytical use cases and at least one "Avoid for X — use Y instead" entry.
-3. **query_patterns**: A list of 2-3 objects, each with "description" (string) and "sql" (multiline SQL string). These should be common, useful queries that analysts would run against this table. Use proper PostgreSQL syntax.
+3. **query_patterns**: A list of 2-3 objects, each with "description" (string) and "sql" (multiline SQL string). These should be common, useful queries that analysts would run against this table. Use proper ${dialect} syntax.
 4. **virtual_dimensions**: A list of suggested CASE-based bucketing dimensions for numeric columns and date extraction dimensions (year, month) for date/timestamp columns. Each should have: name, sql, type, description, virtual: true, and optionally sample_values. Only include if the table has suitable columns.
 
 Output format:
@@ -248,7 +255,7 @@ virtual_dimensions:
 
 Important:
 - Write concrete, actionable descriptions (not generic boilerplate)
-- SQL must be valid PostgreSQL referencing only columns from the profile
+- SQL must be valid ${dialect} referencing only columns from the profile
 - Do not invent columns that do not exist in the profile
 - Use the table name "${profile.table_name}" in all SQL`,
   });

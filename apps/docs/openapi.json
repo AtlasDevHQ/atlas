@@ -14143,6 +14143,7 @@
         "summary": "LLM-enrich a single table's entity YAML",
         "description": "Phase 2 of two-phase generate (issue #3236): re-profiles one table for fresh DB grounding, then runs an LLM over its mechanical baseline YAML to add business descriptions, use cases, query patterns, and virtual dimensions. Per-table by design so the wizard can stream results in and upgrade each row in place. Never fires automatically — the UI gates it behind an explicit Enrich all / Enrich selected action. Requires admin role and a configured LLM provider.",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {

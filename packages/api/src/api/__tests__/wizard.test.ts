@@ -335,13 +335,32 @@ const mockGetMissingModelConfig: Mock<() => { provider: string; missing: string[
 mock.module("@atlas/api/lib/providers", () => ({
   ..._providersActual,
   getModel: () => ({ modelId: "test-model" }),
+  getModelFromWorkspaceConfig: () => ({ modelId: "workspace-model" }),
   getMissingModelConfig: mockGetMissingModelConfig,
+}));
+
+// Enterprise layer — the /enrich route resolves per-workspace BYOT via
+// `runEnterprise(ModelRouter…)` before the env provider (#3236 P1, mirrors the
+// agent loop). Spread the real module so `runEffect`'s EnterpriseLayer stays
+// real; override only runEnterprise. Default: null = no workspace config →
+// route falls through to the env-based getMissingModelConfig path.
+import * as _enterpriseLayerActual from "@atlas/api/lib/effect/enterprise-layer";
+const mockRunEnterprise: Mock<(program: unknown) => Promise<unknown>> = mock(async () => null);
+mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
+  ..._enterpriseLayerActual,
+  runEnterprise: mockRunEnterprise,
 }));
 
 // Enrich engine — stub the in-memory per-table LLM pass so /enrich makes no real
 // model call. Default: a successful merge that appends a marker field.
 const mockEnrichEntityYaml: Mock<
-  (content: string, profile: unknown, model: unknown) => Promise<{ yaml: string; enriched: boolean }>
+  (
+    content: string,
+    profile: unknown,
+    model: unknown,
+    usage?: unknown,
+    dbType?: string,
+  ) => Promise<{ yaml: string; enriched: boolean }>
 > = mock(async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }));
 mock.module("@atlas/api/lib/semantic/enrich", () => ({
   enrichEntityYaml: mockEnrichEntityYaml,
@@ -439,6 +458,8 @@ beforeEach(() => {
   mockEnrichEntityYaml.mockImplementation(
     async (content: string) => ({ yaml: `${content}description: Enriched by AI.\n`, enriched: true }),
   );
+  mockRunEnterprise.mockReset();
+  mockRunEnterprise.mockImplementation(async () => null); // no workspace BYOT by default
 });
 
 // =====================================================================
@@ -613,11 +634,46 @@ describe("POST /api/v1/wizard/enrich", () => {
     expect(data.enriched).toBe(true);
     expect(String(data.yaml)).toContain("Enriched by AI.");
     // The engine got the submitted baseline + the freshly-profiled table profile
-    // (DB-grounded enrichment — § D).
+    // (DB-grounded enrichment — § D) + the datasource dialect so query_patterns
+    // match the connection (#3236 review: dbType threaded, 5th arg).
     expect(mockEnrichEntityYaml).toHaveBeenCalledTimes(1);
-    const [contentArg, profileArg] = mockEnrichEntityYaml.mock.calls[0];
-    expect(contentArg).toBe("table: users\n");
-    expect((profileArg as { table_name: string }).table_name).toBe("users");
+    const call = mockEnrichEntityYaml.mock.calls[0];
+    expect(call[0]).toBe("table: users\n");
+    expect((call[1] as { table_name: string }).table_name).toBe("users");
+    expect(call[4]).toBe("postgres");
+  });
+
+  it("uses an admin-configured workspace provider even when no platform env key is set", async () => {
+    // BYOT (#3236 P1): a workspace whose provider lives in settings must enrich
+    // even if the platform env has no provider — so the env preflight is skipped
+    // when the ModelRouter returns a workspace config.
+    // runEnterprise is a shared seam: adminAuth's IP-allowlist check
+    // (expects `{ allowed }`) AND resolveEnrichModel's ModelRouter both flow
+    // through it. The mock return must satisfy both — `allowed: true` keeps the
+    // IP check green; the model fields are the workspace BYOT config (consumed
+    // by the mocked getModelFromWorkspaceConfig, which ignores their values).
+    mockRunEnterprise.mockImplementation(async () => ({
+      allowed: true,
+      provider: "anthropic",
+      model: "claude-x",
+      baseUrl: null,
+      bedrockRegion: null,
+      credentials: { provider: "anthropic", apiKey: "sk-test" },
+    }));
+    mockGetMissingModelConfig.mockImplementation(() => ({
+      provider: "anthropic",
+      missing: ["ANTHROPIC_API_KEY"], // platform env is empty, but workspace BYOT wins
+    }));
+
+    const res = await postJson("/api/v1/wizard/enrich", {
+      connectionId: "default",
+      tableName: "users",
+      yaml: "table: users\n",
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    expect(data.enriched).toBe(true);
+    expect(mockEnrichEntityYaml).toHaveBeenCalledTimes(1);
   });
 
   it("passes the baseline through unchanged when the model returns no usable output", async () => {

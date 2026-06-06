@@ -109,6 +109,13 @@ describe("group-namespace generation (#3234, ADR-0012)", () => {
     expect(orders).toBeDefined();
     expect(orders!.sourceName).toBe("warehouse");
     expect(orders!.origin).toBe("group");
+
+    // #3285: the generator emits the canonical `group:` field, not the
+    // deprecated `connection:` alias (ADR-0012). Pin it on the parsed output —
+    // the round-trip above passes either way because the directory is canonical
+    // for `groups/` origin, so it can't catch a deprecated-field regression.
+    expect(orders!.raw.group).toBe("warehouse");
+    expect(orders!.raw.connection).toBeUndefined();
   });
 
   it("writes the default group flat at the root with no groups/ directory", () => {
@@ -136,6 +143,11 @@ describe("group-namespace generation (#3234, ADR-0012)", () => {
     const orders = entities.find((e) => e.raw.table === "orders");
     expect(orders!.sourceName).toBe("default");
     expect(orders!.origin).toBe("flat");
+
+    // #3285: the default group emits no group field at all (flat root), so a
+    // standalone DB gains neither `group:` nor the deprecated `connection:`.
+    expect(orders!.raw.group).toBeUndefined();
+    expect(orders!.raw.connection).toBeUndefined();
   });
 
   it("keeps multiple groups isolated on disk and distinctly attributed", () => {

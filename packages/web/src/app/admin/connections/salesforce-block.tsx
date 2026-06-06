@@ -146,11 +146,19 @@ export function SalesforceProviderBlock({
   const entry = catalogQuery.data?.catalog.find((e) => e.slug === SALESFORCE_SLUG);
   const installed = !!entry?.installed;
   const installHref = `${getApiUrl()}/api/v1/integrations/${SALESFORCE_SLUG}/install`;
+  // A reconnect-needed install is still "connected" (the workspace_plugins row
+  // exists) but NOT live — the row below renders it as `status="unhealthy"`, so
+  // the rollup must agree or the count contradicts the row once a token expires.
+  const needsReconnect = installed && entry?.installStatus === "reconnect_needed";
 
   const header = (
     <SectionHeader
       title="Apps & CRM"
-      count={entry ? countLine(installed ? 1 : 0) : undefined}
+      count={
+        entry
+          ? countLine(installed ? 1 : 0, needsReconnect ? 0 : installed ? 1 : 0)
+          : undefined
+      }
     />
   );
 
@@ -226,8 +234,6 @@ export function SalesforceProviderBlock({
       </section>
     );
   }
-
-  const needsReconnect = installed && entry.installStatus === "reconnect_needed";
 
   // ── Disconnected branch ──────────────────────────────────────────
   if (!installed) {

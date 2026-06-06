@@ -1218,6 +1218,14 @@ export default function ConnectionsPage() {
     }));
   })();
 
+  // "Live" mirrors the row rendering: ConnectionCard maps both `healthy` and
+  // `degraded` to a connected (teal) row via `healthToStatus`, so both count as
+  // live — otherwise a degraded row reads as connected while the rollup calls
+  // it not-live. Unhealthy / unknown are excluded. Single predicate so the hero
+  // stat and the Databases section count can't drift apart.
+  const isLive = (c: ConnectionInfo) =>
+    c.health?.status === "healthy" || c.health?.status === "degraded";
+
   // Header "X / Y live" mirrors the /admin/billing usage panel — the
   // lazy `default` fallback on self-hosted demo deploys reports
   // `billable: false` and stays out of both numerator and denominator
@@ -1225,13 +1233,13 @@ export default function ConnectionsPage() {
   // API servers that omit the field.
   const billableConnections = displayConnections.filter(isBillable);
   const stats = {
-    live: billableConnections.filter((c) => c.health?.status === "healthy").length,
+    live: billableConnections.filter(isLive).length,
     total: billableConnections.length,
   };
 
   // Databases section rollup — every row from `/admin/connections` is a SQL
   // (or legacy) database; REST APIs + Salesforce are separate sections.
-  const dbLive = displayConnections.filter((c) => c.health?.status === "healthy").length;
+  const dbLive = displayConnections.filter(isLive).length;
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">

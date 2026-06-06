@@ -81,6 +81,13 @@ interface ParsedMetric {
   entity?: string;
   aggregation?: string;
   unit?: string;
+  /**
+   * Display group for the prompt index — set ONLY for the canonical
+   * `groups/<group>/` namespace so the agent can tell same-id metrics from
+   * different groups apart. Flat default + legacy `<source>/` stay unlabeled
+   * (exactly as before, ADR-0012/#3240).
+   */
+  group?: string;
 }
 
 interface GlossaryTerm {
@@ -88,6 +95,8 @@ interface GlossaryTerm {
   definition?: string;
   status?: string;
   disambiguation?: string;
+  /** Display group — set only for the canonical `groups/<group>/` namespace (see {@link ParsedMetric.group}). */
+  group?: string;
 }
 
 interface CatalogEntry {
@@ -388,7 +397,8 @@ function formatMetric(metric: ParsedMetric): string {
   const name = metric.name ?? metric.id ?? "unnamed";
   const desc = metric.description ? ` — ${metric.description}` : "";
   const entity = metric.entity ? ` (${metric.entity})` : "";
-  return `- **${name}**${entity}${desc}`;
+  const group = metric.group ? ` [${metric.group}]` : "";
+  return `- **${name}**${entity}${desc}${group}`;
 }
 
 function formatGlossaryTerm(term: GlossaryTerm): string {
@@ -398,7 +408,8 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
   const disambig = term.disambiguation
     ? ` → ${term.disambiguation}`
     : "";
-  return `- **${name}**${status}${def}${disambig}`;
+  const group = term.group ? ` [${term.group}]` : "";
+  return `- **${name}**${status}${def}${disambig}${group}`;
 }
 
 // --- Loaders ---
@@ -434,15 +445,16 @@ function loadMetrics(semanticRoot: string): ParsedMetric[] {
 
   // Layout-aware traversal (ADR-0012): flat default `metrics/`, the canonical
   // `groups/<group>/metrics/` namespace, and legacy `<source>/metrics/` all
-  // feed the index through the shared scanner.
-  for (const { dir } of getGroupDirs(semanticRoot, "metrics").dirs) {
-    loadMetricsFromDir(dir, metrics);
+  // feed the index through the shared scanner. Only canonical groups/ metrics
+  // carry a display group label; flat + legacy stay unlabeled (as before).
+  for (const { dir, group, origin } of getGroupDirs(semanticRoot, "metrics").dirs) {
+    loadMetricsFromDir(dir, origin === "group" ? group : undefined, metrics);
   }
 
   return metrics;
 }
 
-function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
+function loadMetricsFromDir(dir: string, displayGroup: string | undefined, out: ParsedMetric[]): void {
   if (!fs.existsSync(dir)) return;
 
   let files: string[];
@@ -463,10 +475,10 @@ function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
       // metric, keyed by the canonical `id:` (current shape) or legacy `name:`.
       if (Array.isArray(raw.metrics)) {
         for (const m of raw.metrics as ParsedMetric[]) {
-          if (m && typeof m === "object") out.push(m);
+          if (m && typeof m === "object") out.push({ ...m, group: displayGroup });
         }
       } else if (raw.name || raw.id) {
-        out.push(raw as ParsedMetric);
+        out.push({ ...(raw as ParsedMetric), group: displayGroup });
       }
     } catch (err) {
       log.warn({ file, dir, err: err instanceof Error ? err.message : String(err) }, "Skipping metric file in semantic index — failed to read or parse");
@@ -479,14 +491,16 @@ function loadGlossary(semanticRoot: string): GlossaryTerm[] {
 
   // Flat default root, the canonical groups/<group>/ namespace, and legacy
   // <source>/ all surface glossary.yml through the shared scanner (ADR-0012).
-  for (const { dir } of getGroupDirs(semanticRoot, null).dirs) {
-    loadGlossaryFile(path.join(dir, "glossary.yml"), terms);
+  // Only canonical groups/ terms carry a display group label; flat + legacy
+  // stay unlabeled (as before).
+  for (const { dir, group, origin } of getGroupDirs(semanticRoot, null).dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), origin === "group" ? group : undefined, terms);
   }
 
   return terms;
 }
 
-function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
+function loadGlossaryFile(filePath: string, displayGroup: string | undefined, out: GlossaryTerm[]): void {
   if (!fs.existsSync(filePath)) return;
 
   try {
@@ -499,11 +513,11 @@ function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
     // common case for grouped glossaries, so the index must handle it too.
     if (Array.isArray(raw.terms)) {
       for (const t of raw.terms as GlossaryTerm[]) {
-        if (t && typeof t === "object") out.push(t);
+        if (t && typeof t === "object") out.push({ ...t, group: displayGroup });
       }
     } else if (raw.terms && typeof raw.terms === "object") {
       for (const [term, value] of Object.entries(raw.terms as Record<string, unknown>)) {
-        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm) });
+        if (value && typeof value === "object") out.push({ term, ...(value as GlossaryTerm), group: displayGroup });
       }
     }
   } catch (err) {

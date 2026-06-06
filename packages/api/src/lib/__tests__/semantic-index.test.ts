@@ -358,9 +358,12 @@ describe("buildSemanticIndex", () => {
 
     const index = buildSemanticIndex(root);
 
-    // Group metric + glossary term are discovered (were entirely skipped before).
+    // Group metric + glossary term are discovered (were entirely skipped before)
+    // AND attributed to their group on their own line (not just via the entity).
     expect(index).toContain("weekly_active_users");
     expect(index).toContain("**wau**");
+    expect(index).toMatch(/weekly_active_users.*\[analytics\]/);
+    expect(index).toMatch(/\*\*wau\*\*.*\[analytics\]/);
     // Catalog use_for hints from BOTH the flat-root catalog and the group
     // catalog merge in — each attaches to its own entity.
     expect(index).toContain("Use for: Engagement analysis"); // group catalog → sessions

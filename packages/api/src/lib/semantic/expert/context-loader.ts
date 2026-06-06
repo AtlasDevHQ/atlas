@@ -260,7 +260,17 @@ export async function loadEntitiesForOrg(
 }
 
 /**
- * Load all entity YAML files from disk.
+ * Load entity YAML files from the flat default `entities/` directory.
+ *
+ * Intentionally root-only (the default group), NOT layout-aware: unlike the
+ * glossary loader below, this feeds the scheduled tick's auto-apply path
+ * (`runExpertSchedulerTick` → `applyAmendmentToEntity`), which resolves the
+ * target entity purely by name with no group/connection. Discovering
+ * `groups/<group>/entities/` here would let an auto-approved amendment for a
+ * group entity 409 as ambiguous or write back into the default scope. Making
+ * the entity path group-aware end-to-end (thread the group through analyze →
+ * insert → apply) is tracked in #3284. `name` keys off `table`/file-stem (the
+ * storage key the apply path looks up by), mirroring `loadEntitiesFromDB`.
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
   const entitiesDir = path.join(getSemanticRoot(), "entities");
@@ -297,31 +307,100 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
 }
 
 /**
- * Load glossary terms from disk.
+ * Load glossary terms from disk across every on-disk layout (ADR-0012): the flat
+ * default root, the canonical `groups/<group>/glossary.yml` namespace, and
+ * legacy `<source>/glossary.yml`. Routed through the same layout-aware
+ * `getGroupDirs` traversal the discovery read paths use (#3240), so the expert
+ * context can no longer miss per-group glossary terms (#3273).
+ *
+ * Both glossary YAML shapes are honored, matching the discovery loaders
+ * (`lib/semantic/lookups.ts`, `lib/semantic/search.ts`): the object form
+ * `terms: { name: { status, definition } }` (canonical) and the array form
+ * `terms: [{ term, definition, ambiguous }]` (legacy). The previous root-only
+ * loader parsed the array form *only*, so it returned nothing for the object
+ * form the bundled glossaries actually use — a second drift point this closes.
+ *
+ * The expert `GlossaryTerm` carries no group label, so the loader returns a flat
+ * union of every group's terms (per-group attribution is the entity loader's
+ * concern). It does NOT dedup: the gap detector keys off term name via a Set
+ * (`categories.ts`), so a name defined in two groups won't spawn spurious gap
+ * proposals; the health count uses the raw list length (`health.ts`), so a name
+ * repeated across groups is counted once per group.
  */
 export async function loadGlossaryFromDisk(): Promise<GlossaryTerm[]> {
-  const glossaryPath = path.join(getSemanticRoot(), "glossary.yml");
-  if (!fs.existsSync(glossaryPath)) return [];
+  const { getGroupDirs } = await import("@atlas/api/lib/semantic/scanner");
 
-  try {
-    const content = fs.readFileSync(glossaryPath, "utf-8");
-    const parsed = yaml.load(content) as Record<string, unknown> | null;
-    if (!parsed || typeof parsed !== "object") return [];
-
-    const terms = parsed.terms;
-    if (Array.isArray(terms)) {
-      return terms.filter(
-        (t): t is GlossaryTerm => t != null && typeof t === "object" && "term" in t,
-      );
-    }
-  } catch (err) {
+  const terms: GlossaryTerm[] = [];
+  const { dirs, failedScans } = getGroupDirs(getSemanticRoot(), null);
+  for (const { dir } of dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), terms);
+  }
+  // The interactive lookup/search read paths surface scan failures to the user
+  // through the response; the expert tick runs unattended, so re-log a failed
+  // namespace enumeration against the expert context — otherwise a quietly
+  // partial glossary leaves only a low-level scanner warn (#3243 fail-closed
+  // semantics).
+  if (failedScans.length > 0) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to parse glossary.yml",
+      { failedScans },
+      "Expert glossary context is partial — a semantic namespace failed to enumerate",
     );
   }
+  return terms;
+}
 
-  return [];
+/**
+ * Parse a single `glossary.yml` into expert `GlossaryTerm`s, appending to `out`.
+ * Tolerates both the object- and array-term shapes; a read/parse failure on one
+ * group's file is logged and skipped so it can't blank the whole expert context.
+ */
+function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
+  if (!fs.existsSync(filePath)) return;
+
+  let raw: unknown;
+  try {
+    raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
+  } catch (err) {
+    log.warn(
+      { filePath, err: err instanceof Error ? err.message : String(err) },
+      "Failed to parse glossary.yml",
+    );
+    return;
+  }
+
+  if (!raw || typeof raw !== "object") return;
+  const termsNode = (raw as { terms?: unknown }).terms;
+
+  if (Array.isArray(termsNode)) {
+    for (const entry of termsNode) {
+      const term = normalizeGlossaryTerm(entry);
+      if (term) out.push(term);
+    }
+  } else if (termsNode && typeof termsNode === "object") {
+    for (const [key, value] of Object.entries(termsNode as Record<string, unknown>)) {
+      const term = normalizeGlossaryTerm(value, key);
+      if (term) out.push(term);
+    }
+  }
+}
+
+/**
+ * Normalize one glossary entry into the expert `GlossaryTerm` shape. Object-form
+ * entries supply the term name via `fallbackTerm` (the YAML key); array-form
+ * entries carry their own `term`. Returns `null` when no term name resolves.
+ * `ambiguous` is derived from an explicit `ambiguous: true` or the load-bearing
+ * `status: ambiguous` marker (the glossary's canonical "ask the user" signal).
+ */
+function normalizeGlossaryTerm(raw: unknown, fallbackTerm?: string): GlossaryTerm | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const term = typeof rec.term === "string" && rec.term ? rec.term : fallbackTerm;
+  if (!term) return null;
+  return {
+    term,
+    definition: typeof rec.definition === "string" ? rec.definition : "",
+    ambiguous: rec.ambiguous === true || rec.status === "ambiguous",
+  };
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   isMatView,
   isViewLike,
   outputDirForGroup,
+  outputDirForDatasource,
   listPostgresObjects,
   listMySQLObjects,
 } from "@atlas/api/lib/profiler";
@@ -201,6 +202,13 @@ export async function handleIndex(args: string[]): Promise<void> {
 
 interface ProfileDatasourceOpts {
   id: string; // "default", "warehouse", etc.
+  // On-disk layout (ADR-0012 / #3234):
+  //   "group"      — canonical groups/<id>/ namespace (named/config datasources,
+  //                  --connection, default). The path forward.
+  //   "datasource" — legacy semantic/<id>/ layout, kept for the deprecated
+  //                  --source flag's back-compat (its existing output is the
+  //                  "legacy <source>/ layout" ADR-0012 migrates from).
+  outputLayout: "group" | "datasource";
   url: string;
   dbType: DBType;
   schema: string; // resolved schema for this datasource
@@ -223,6 +231,7 @@ async function profileDatasource(
 ): Promise<void> {
   const {
     id,
+    outputLayout,
     url: connStr,
     dbType,
     filterTables,
@@ -557,11 +566,15 @@ async function profileDatasource(
   }
 
   // Compute output directories. The semantic layer is Connection-group-scoped
-  // (ADR-0012): the default datasource is the flat-root default group, and a
-  // file-based standalone datasource is a group-of-one whose group is its id —
-  // so its entities land in the canonical `semantic/groups/<id>/` namespace the
-  // #3232 loader reads back, not the legacy `semantic/<id>/` layout (#3234).
-  const outputBase = outputDirForGroup(id, orgId);
+  // (ADR-0012): named/config datasources + --connection write the canonical
+  // `semantic/groups/<id>/` namespace the #3232 loader reads back (a standalone
+  // datasource is a group-of-one; "default" stays flat at the root). The
+  // deprecated `--source` flag keeps the legacy `semantic/<id>/` layout for
+  // back-compat (#3234).
+  const outputBase =
+    outputLayout === "datasource"
+      ? outputDirForDatasource(id, orgId)
+      : outputDirForGroup(id, orgId);
   const entitiesOutDir = path.join(outputBase, "entities");
   const metricsOutDir = path.join(outputBase, "metrics");
 
@@ -672,11 +685,10 @@ async function profileDatasource(
     }
   }
 
-  const relativeOutput = orgId
-    ? `./semantic/.orgs/${orgId}/${id === "default" ? "" : `groups/${id}/`}`
-    : id === "default"
-      ? "./semantic/"
-      : `./semantic/groups/${id}/`;
+  // Derived from outputBase so it stays correct across both layouts (group vs
+  // legacy datasource) and the org-scoped nesting — single source of truth.
+  const relSuffix = path.relative(SEMANTIC_DIR, outputBase);
+  const relativeOutput = relSuffix ? `./semantic/${relSuffix}/` : "./semantic/";
   console.log(`
 Done! Semantic layer written to ${relativeOutput} in ${formatDuration(profilingElapsed)}
 
@@ -768,7 +780,7 @@ export async function handleInit(args: string[]): Promise<void> {
       "  --connection profiles a named datasource from atlas.config.ts",
     );
     console.error(
-      "  --source is the deprecated flag for selecting the output group (writes semantic/groups/<name>/)",
+      "  --source is the deprecated flag for the legacy per-source output directory (semantic/<name>/)",
     );
     process.exit(1);
   }
@@ -793,10 +805,11 @@ export async function handleInit(args: string[]): Promise<void> {
         files.push({ path: f.trim(), format: "parquet" });
     }
 
-    // Compute output directories. Like the DB path, `--source <name>` is a
-    // group-of-one and writes the canonical `semantic/groups/<name>/` namespace
-    // (ADR-0012 / #3234); no `--source` → the flat-root default group.
-    const outputBase = outputDirForGroup(sourceArg);
+    // Compute output directories. CSV/Parquet ingestion is only reachable via
+    // the deprecated `--source` flag (or no flag), so it keeps the legacy
+    // `semantic/<name>/` layout for back-compat (`--connection`, which writes
+    // the canonical groups/<group>/ namespace, isn't valid for file sources).
+    const outputBase = outputDirForDatasource(sourceArg ?? "default");
     const entitiesOutDir = path.join(outputBase, "entities");
     const metricsOutDir = path.join(outputBase, "metrics");
     const dbPath = path.join(outputBase, ".atlas.duckdb");
@@ -923,7 +936,7 @@ export async function handleInit(args: string[]): Promise<void> {
 
     const duckDbUrl = `duckdb://${dbPath}`;
     const relativeOutput = sourceArg
-      ? `./semantic/groups/${sourceArg}/`
+      ? `./semantic/${sourceArg}/`
       : "./semantic/";
     console.log(`
 Done! Your semantic layer is at ${relativeOutput}
@@ -1153,6 +1166,11 @@ Next steps:
   const isMultiSource = datasources.length > 1;
   const errors: { id: string; error: string }[] = [];
 
+  // The deprecated `--source` flag keeps the legacy `semantic/<id>/` layout for
+  // back-compat; every other path (--connection, config datasources, default)
+  // writes the canonical groups/<id>/ namespace (ADR-0012 / #3234).
+  const outputLayout: "group" | "datasource" = sourceArg ? "datasource" : "group";
+
   for (const ds of datasources) {
     let dbType: DBType;
     try {
@@ -1179,6 +1197,7 @@ Next steps:
     try {
       await profileDatasource({
         id: ds.id,
+        outputLayout,
         url: ds.url,
         dbType,
         schema: ds.schema,

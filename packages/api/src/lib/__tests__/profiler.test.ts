@@ -469,6 +469,14 @@ describe("outputDirForGroup", () => {
     expect(() => outputDirForGroup("a/b")).toThrow();
     expect(() => outputDirForGroup("..")).toThrow();
   });
+
+  it("rejects an orgId containing path separators or traversal (both helpers)", () => {
+    // orgId becomes a path segment under .orgs/ — an --org/ATLAS_ORG_ID value
+    // like "../../outside" must not escape the semantic root.
+    expect(() => outputDirForGroup(undefined, "../../outside")).toThrow();
+    expect(() => outputDirForGroup("warehouse", "a/b")).toThrow();
+    expect(() => outputDirForDatasource("warehouse", "..")).toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

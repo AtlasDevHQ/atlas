@@ -143,7 +143,12 @@ const SEMANTIC_DIR = path.resolve("semantic");
 
 /** Root for a (possibly org-scoped) semantic layer. */
 function semanticBaseDir(orgId?: string): string {
-  return orgId ? path.join(SEMANTIC_DIR, ".orgs", orgId) : SEMANTIC_DIR;
+  if (!orgId) return SEMANTIC_DIR;
+  // orgId becomes a path segment under `.orgs/`; a value like `../../outside`
+  // (e.g. from --org / ATLAS_ORG_ID) would escape the semantic root. Same guard
+  // sync.ts:getSemanticRoot already applies on the read side.
+  assertSafePathSegment(orgId, "org");
+  return path.join(SEMANTIC_DIR, ".orgs", orgId);
 }
 
 /**
@@ -177,18 +182,18 @@ export function outputDirForDatasource(id: string, orgId?: string): string {
 export function outputDirForGroup(group: string | null | undefined, orgId?: string): string {
   const base = semanticBaseDir(orgId);
   if (!group || group === "default") return base;
-  assertSafeGroupSegment(group);
+  assertSafePathSegment(group, "group");
   return path.join(base, GROUPS_DIR, group);
 }
 
 /**
- * Reject group names that would escape (or rename) the per-group directory.
- * A group becomes a single path segment under `groups/`, so separators and
- * `..` traversal are not allowed.
+ * Reject a group/org name that would escape (or rename) its directory. The
+ * value becomes a single path segment, so separators and `..` traversal are
+ * not allowed.
  */
-function assertSafeGroupSegment(group: string): void {
-  if (group !== path.basename(group) || group === "." || group === ".." || group.includes("/") || group.includes("\\")) {
-    throw new Error(`Invalid semantic group name: "${group}". Group names cannot contain path separators or "..".`);
+function assertSafePathSegment(value: string, kind: "group" | "org"): void {
+  if (value !== path.basename(value) || value === "." || value === ".." || value.includes("/") || value.includes("\\")) {
+    throw new Error(`Invalid semantic ${kind} name: "${value}". ${kind === "group" ? "Group" : "Org"} names cannot contain path separators or "..".`);
   }
 }
 

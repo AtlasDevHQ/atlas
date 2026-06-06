@@ -370,6 +370,88 @@ describe("syncAllEntitiesToDisk", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Group-namespace DB→disk mirror (#3275, ADR-0012)
+// ---------------------------------------------------------------------------
+
+describe("syncAllEntitiesToDisk — group namespace (#3275)", () => {
+  it("writes same-stem entities from different groups without collision", async () => {
+    const orgId = testOrgId();
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "orders", "entity", "table: orders\ndescription: US orders\n", "us"),
+        makeEntityRow(orgId, "orders", "entity", "table: orders\ndescription: EU orders\n", "eu"),
+        makeEntityRow(orgId, "users", "entity", "table: users\ndescription: Default users\n"),
+      ]),
+    );
+
+    const synced = await syncAllEntitiesToDisk(orgId);
+    expect(synced).toBe(3);
+
+    const root = getSemanticRoot(orgId);
+    const usPath = path.join(root, "groups", "us", "entities", "orders.yml");
+    const euPath = path.join(root, "groups", "eu", "entities", "orders.yml");
+    // Both group files exist — neither overwrote the other. The pre-fix bug
+    // wrote both to a flat entities/orders.yml, silently losing one group.
+    expect(fs.existsSync(usPath)).toBe(true);
+    expect(fs.existsSync(euPath)).toBe(true);
+    expect(fs.readFileSync(usPath, "utf-8")).toContain("US orders");
+    expect(fs.readFileSync(euPath, "utf-8")).toContain("EU orders");
+    // The default group stays flat at the root; no flat collision.
+    expect(fs.existsSync(path.join(root, "entities", "users.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "entities", "orders.yml"))).toBe(false);
+  });
+
+  it("routes group metrics under groups/<group>/metrics/", async () => {
+    const orgId = testOrgId();
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "revenue", "metric", "id: revenue\nsql: SELECT 1\n", "us"),
+      ]),
+    );
+    await syncAllEntitiesToDisk(orgId);
+    const root = getSemanticRoot(orgId);
+    expect(fs.existsSync(path.join(root, "groups", "us", "metrics", "revenue.yml"))).toBe(true);
+  });
+
+  it("cleans a stale group entity removed from the DB", async () => {
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    const staleGroupFile = path.join(root, "groups", "eu", "entities", "orders.yml");
+    fs.mkdirSync(path.dirname(staleGroupFile), { recursive: true });
+    fs.writeFileSync(staleGroupFile, "table: orders\n");
+    expect(fs.existsSync(staleGroupFile)).toBe(true);
+
+    // DB now only has the US group's orders.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "orders", "entity", "table: orders\ndescription: US\n", "us"),
+      ]),
+    );
+    await syncAllEntitiesToDisk(orgId);
+
+    // The EU group's stale file is removed; the US group's file is written.
+    expect(fs.existsSync(staleGroupFile)).toBe(false);
+    expect(fs.existsSync(path.join(root, "groups", "us", "entities", "orders.yml"))).toBe(true);
+  });
+
+  it("skips a row whose group is an unsafe path segment", async () => {
+    const orgId = testOrgId();
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        makeEntityRow(orgId, "orders", "entity", "table: orders\n", "../escape"),
+        makeEntityRow(orgId, "users", "entity", "table: users\n", "us"),
+      ]),
+    );
+    const synced = await syncAllEntitiesToDisk(orgId);
+    // Only the safe row is written; the traversal row is skipped, not escaped.
+    expect(synced).toBe(1);
+    const root = getSemanticRoot(orgId);
+    expect(fs.existsSync(path.join(root, "groups", "us", "entities", "users.yml"))).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(root), "escape"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cleanupOrgDirectory
 // ---------------------------------------------------------------------------
 

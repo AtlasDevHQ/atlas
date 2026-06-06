@@ -148,6 +148,28 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// #3281 — group-member routing for runMetric. Test topology: group "analytics"
+// has members "analytics" (the group id) + "analytics_eu"; group "warehouse"
+// has "warehouse" + "warehouse_eu"; everything else is ungrouped (1×1 fallback,
+// groupId undefined). Lets the member-routing tests resolve a member id to its
+// group without a real internal DB.
+mock.module("@atlas/api/lib/env-routing/lookup", () => ({
+  loadGroupRoutingContext: mock(async (_orgId: string | undefined, connectionId: string) => {
+    const topology: Record<string, string> = {
+      analytics: "analytics",
+      analytics_eu: "analytics",
+      warehouse: "warehouse",
+      warehouse_eu: "warehouse",
+    };
+    const groupId = topology[connectionId];
+    if (groupId) {
+      const members = Object.keys(topology).filter((c) => topology[c] === groupId);
+      return { groupId, members, primaryMember: members[0], currentMember: connectionId };
+    }
+    return { members: [connectionId], primaryMember: connectionId, currentMember: connectionId };
+  }),
+}));
+
 // Imports must come AFTER mock.module() registrations.
 const { registerSemanticTools } = await import("../semantic-tools.js");
 
@@ -781,6 +803,41 @@ describe("MCP semantic tools", () => {
     const result = await client.callTool({
       name: "runMetric",
       arguments: { id: "orders_count", connectionId: "analytics" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("validation_failed");
+    expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+  });
+
+  // --- runMetric multi-member-group routing (#3281) ---
+  // A multi-member group registers each member under its own install id, none
+  // equal to the group id. runMetric must accept a member connectionId (route
+  // to that member) while still rejecting a connection outside the group.
+
+  it("runMetric forwards a member connectionId of the metric's group, routing to that member (#3281)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      // "analytics_eu" is a member of group "analytics" but not the group id.
+      arguments: { id: "analytics_orders_count", connectionId: "analytics_eu" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const callArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
+      connectionId?: string;
+    };
+    // Routes to the specific member, not the group id — the whole point of #3281.
+    expect(callArgs.connectionId).toBe("analytics_eu");
+  });
+
+  it("runMetric rejects a connectionId that is a member of a DIFFERENT group (#3281)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      // "warehouse_eu" is a real grouped member, but of "warehouse", not "analytics".
+      arguments: { id: "analytics_orders_count", connectionId: "warehouse_eu" },
     });
 
     expect(result.isError).toBe(true);

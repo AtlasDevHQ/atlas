@@ -2118,7 +2118,7 @@ admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic e
   // All YAML uploads stage as drafts regardless of `atlasMode` (#2177).
   await upsertDraftEntity(orgId, entityType, name, body.yamlContent, body.connectionId);
   invalidateOrgWhitelist(orgId);
-  await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
+  await syncEntityToDisk(orgId, name, entityType, body.yamlContent, body.connectionId);
 
   log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
 
@@ -2185,7 +2185,7 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
     return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
   }
   invalidateOrgWhitelist(orgId);
-  await syncEntityDeleteFromDisk(orgId, name, entityType);
+  await syncEntityDeleteFromDisk(orgId, name, entityType, existing.connection_group_id ?? null);
 
   log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
 

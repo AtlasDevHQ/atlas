@@ -404,7 +404,7 @@ export function generateEntityYAML(
     name,
     type: entityType,
     table: qualifiedTable,
-    ...(source ? { connection: source } : {}),
+    ...(source ? { group: source } : {}),
     grain: isMatView(profile)
       ? `one row per result from ${profile.table_name} materialized view`
       : isViewLike(profile)

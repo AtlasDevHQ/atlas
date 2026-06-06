@@ -626,10 +626,15 @@ export function registerSemanticEditorRoutes(
       const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
       invalidateOrgWhitelist(orgId);
 
-      // Sync to disk — non-fatal; DB is authoritative
+      // Sync to disk — non-fatal; DB is authoritative. Key the disk write by
+      // the PERSISTED group scope (re-fetched), not the raw request
+      // `body.connectionId`, so editor writes land in the same group namespace
+      // the delete/rollback paths use — a raw request id can differ from the
+      // resolved group key (CodeRabbit, #3275).
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityToDisk(orgId, name, "entity", yamlContent);
+        const persisted = await getEntity(orgId, "entity", name, scope);
+        await syncEntityToDisk(orgId, name, "entity", yamlContent, persisted?.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
@@ -714,7 +719,7 @@ export function registerSemanticEditorRoutes(
       // Sync deletion to disk — non-fatal; DB is authoritative
       try {
         const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityDeleteFromDisk(orgId, name, "entity");
+        await syncEntityDeleteFromDisk(orgId, name, "entity", existing.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
@@ -967,7 +972,7 @@ export function registerSemanticEditorRoutes(
       // Sync to disk — non-fatal
       try {
         const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content);
+        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content, currentEntity?.connection_group_id ?? null);
       } catch (syncErr) {
         log.warn(
           { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },

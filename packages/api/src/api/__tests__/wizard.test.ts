@@ -498,7 +498,9 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(entities.length).toBe(1);
     expect(entities[0].tableName).toBe("users");
     expect(entities[0].yaml).toContain("name: Users");
-    // Default connection → NULL default group → no group field emitted.
+    // Default connection → NULL default group → no group field emitted
+    // (neither the canonical `group:` nor the deprecated `connection:` alias).
+    expect(entities[0].yaml).not.toContain("group:");
     expect(entities[0].yaml).not.toContain("connection:");
   });
 
@@ -512,7 +514,10 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(res.status).toBe(200);
     const data = await json(res);
     const entities = data.entities as { tableName: string; yaml: string }[];
-    expect(entities[0].yaml).toContain("connection: warehouse");
+    // #3285: the canonical `group:` field (ADR-0012), not the deprecated
+    // `connection:` alias the generator used to emit.
+    expect(entities[0].yaml).toContain("group: warehouse");
+    expect(entities[0].yaml).not.toContain("connection:");
   });
 
   it("degrades to no group field when group resolution fails (preview is best-effort)", async () => {
@@ -529,6 +534,8 @@ describe("POST /api/v1/wizard/generate", () => {
     const data = await json(res);
     const entities = data.entities as { tableName: string; yaml: string }[];
     expect(entities[0].tableName).toBe("users");
+    // Degraded preview falls back to no group field at all (#3285).
+    expect(entities[0].yaml).not.toContain("group:");
     expect(entities[0].yaml).not.toContain("connection:");
   });
 

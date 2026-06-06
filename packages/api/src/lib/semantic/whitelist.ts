@@ -743,20 +743,34 @@ export async function getOrgSemanticIndex(orgId: string): Promise<string> {
   const { getSemanticRoot, syncAllEntitiesToDisk } = await import("@atlas/api/lib/semantic/sync");
   const orgRoot = getSemanticRoot(orgId);
 
-  // Ensure the org directory exists on disk (may be first access after boot)
-  const entitiesDir = path.join(orgRoot, "entities");
+  // Detect whether any entity YAML is already on disk — the flat `entities/`
+  // dir OR a group namespace `groups/<group>/entities/` (ADR-0012, #3275). A
+  // multi-group org can have an empty flat dir with every entity under
+  // `groups/`, so checking only the flat dir would force a full DB→disk
+  // rebuild on every cache-cold build. `getEntityDirs` is the same
+  // layout-aware traversal the loader uses.
   let hasFiles = false;
   let syncFailed = false;
   try {
-    const entries = fs.readdirSync(entitiesDir);
-    hasFiles = entries.some((e) => e.endsWith(".yml"));
+    const { dirs } = getEntityDirs(orgRoot);
+    hasFiles = dirs.some(({ dir }) => {
+      try {
+        return fs.readdirSync(dir).some((e) => e.endsWith(".yml"));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          log.warn(
+            { orgId, dir, err: err instanceof Error ? err.message : String(err) },
+            "Unexpected error reading org entity directory",
+          );
+        }
+        return false;
+      }
+    });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      log.warn(
-        { orgId, err: err instanceof Error ? err.message : String(err) },
-        "Unexpected error reading org entities directory",
-      );
-    }
+    log.warn(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "Unexpected error scanning org entity directories",
+    );
   }
 
   if (!hasFiles) {

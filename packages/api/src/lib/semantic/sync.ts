@@ -19,6 +19,7 @@ import * as path from "path";
 import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { getSemanticRoot as getBaseSemanticRoot } from "./files";
+import { GROUPS_DIR } from "./scanner";
 
 const log = createLogger("semantic-sync");
 
@@ -104,12 +105,58 @@ function safeName(name: string): string {
   return path.basename(name).replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 
-/** Resolve the full file path for an entity on disk. */
-function entityFilePath(orgId: string, name: string, type: SemanticEntityType): string {
-  const root = getSemanticRoot(orgId);
+/**
+ * True when `value` is safe as a single path segment — no separators or `..`
+ * traversal that could escape the semantic root. Mirrors the generator's
+ * `assertSafePathSegment` (profiler.ts) but returns a boolean so the
+ * best-effort DB→disk writers can skip an unsafe row rather than aborting the
+ * whole rebuild.
+ */
+function isSafePathSegment(value: string): boolean {
+  return (
+    value === path.basename(value) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("/") &&
+    !value.includes("\\")
+  );
+}
+
+/**
+ * Resolve an entity's path within `root`, honoring its Connection group
+ * (ADR-0012, #3275). A non-default group is laid into the canonical
+ * `groups/<group>/<subdir>/` namespace so same-stem entities in different
+ * groups don't collide on a flat `<subdir>/<name>.yml` (whichever wrote last
+ * used to win, silently dropping the other group's YAML from the explore view).
+ * The default group (`null` / `undefined` / `"default"`) stays flat at the
+ * root, unchanged.
+ *
+ * Returns `null` when the group is an unsafe path segment — the caller skips
+ * the row rather than letting a crafted group escape `root`.
+ */
+function entityPathInRoot(
+  root: string,
+  name: string,
+  type: SemanticEntityType,
+  connectionGroupId?: string | null,
+): string | null {
   const subdir = entityTypeDir(type);
   const fileName = `${safeName(name)}.yml`;
-  return subdir ? path.join(root, subdir, fileName) : path.join(root, fileName);
+  const group =
+    connectionGroupId && connectionGroupId !== "default" ? connectionGroupId : null;
+  if (group && !isSafePathSegment(group)) return null;
+  const base = group ? path.join(root, GROUPS_DIR, group) : root;
+  return subdir ? path.join(base, subdir, fileName) : path.join(base, fileName);
+}
+
+/** Resolve the full file path for an entity on disk (group-aware, #3275). */
+function entityFilePath(
+  orgId: string,
+  name: string,
+  type: SemanticEntityType,
+  connectionGroupId?: string | null,
+): string | null {
+  return entityPathInRoot(getSemanticRoot(orgId), name, type, connectionGroupId);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,8 +172,16 @@ export async function syncEntityToDisk(
   name: string,
   type: SemanticEntityType,
   yamlContent: string,
+  connectionGroupId?: string | null,
 ): Promise<void> {
-  const filePath = entityFilePath(orgId, name, type);
+  const filePath = entityFilePath(orgId, name, type, connectionGroupId);
+  if (filePath === null) {
+    log.error(
+      { orgId, name, type, connectionGroupId },
+      "Refusing to sync entity to disk — group is an unsafe path segment",
+    );
+    return;
+  }
   try {
     await atomicWriteFile(filePath, yamlContent);
     log.debug({ orgId, name, type, filePath }, "Synced entity to disk");
@@ -148,8 +203,16 @@ export async function syncEntityDeleteFromDisk(
   orgId: string,
   name: string,
   type: SemanticEntityType,
+  connectionGroupId?: string | null,
 ): Promise<void> {
-  const filePath = entityFilePath(orgId, name, type);
+  const filePath = entityFilePath(orgId, name, type, connectionGroupId);
+  if (filePath === null) {
+    log.error(
+      { orgId, name, type, connectionGroupId },
+      "Refusing to delete entity from disk — group is an unsafe path segment",
+    );
+    return;
+  }
   try {
     await fs.promises.unlink(filePath);
     log.debug({ orgId, name, type, filePath }, "Deleted entity from disk");
@@ -224,7 +287,19 @@ async function _doSyncAllEntitiesToDisk(orgId: string): Promise<number> {
 
   let synced = 0;
   for (const row of rows) {
-    const filePath = entityFilePath(orgId, row.name, row.entity_type as SemanticEntityType);
+    const filePath = entityPathInRoot(
+      root,
+      row.name,
+      row.entity_type as SemanticEntityType,
+      row.connection_group_id,
+    );
+    if (filePath === null) {
+      log.error(
+        { orgId, name: row.name, type: row.entity_type, group: row.connection_group_id },
+        "Skipping entity during full sync — group is an unsafe path segment",
+      );
+      continue;
+    }
     expectedFiles.add(filePath);
     try {
       await atomicWriteFile(filePath, row.yaml_content);
@@ -261,6 +336,24 @@ async function _cleanStaleFiles(root: string, expectedFiles: Set<string>): Promi
     path.join(root, "metrics"),
     root, // for glossary.yml, catalog.yml
   ];
+
+  // Group namespace (ADR-0012, #3275): each groups/<group>/ holds its own
+  // entities/ + metrics/ subdirs plus a group-level glossary.yml/catalog.yml.
+  // Scan them too, else a group entity removed from the DB would linger on
+  // disk and keep shadowing the explore view after the rebuild.
+  const groupsRoot = path.join(root, GROUPS_DIR);
+  try {
+    const groupEntries = await fs.promises.readdir(groupsRoot, { withFileTypes: true });
+    for (const entry of groupEntries) {
+      if (!entry.isDirectory()) continue;
+      const groupDir = path.join(groupsRoot, entry.name);
+      dirs.push(path.join(groupDir, "entities"), path.join(groupDir, "metrics"), groupDir);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn({ groupsRoot, err: errorMessage(err) }, "Failed to scan groups/ namespace for stale files");
+    }
+  }
 
   for (const dir of dirs) {
     try {
@@ -431,9 +524,20 @@ async function _buildOrgModeRoot(
   let written = 0;
   let failed = 0;
   for (const row of rows) {
-    const subdir = entityTypeDir(row.entity_type as SemanticEntityType);
-    const fileName = `${safeName(row.name)}.yml`;
-    const filePath = subdir ? path.join(root, subdir, fileName) : path.join(root, fileName);
+    const filePath = entityPathInRoot(
+      root,
+      row.name,
+      row.entity_type as SemanticEntityType,
+      row.connection_group_id,
+    );
+    if (filePath === null) {
+      failed++;
+      log.error(
+        { orgId, mode, name: row.name, type: row.entity_type, group: row.connection_group_id },
+        "Skipping mode-specific entity file — group is an unsafe path segment",
+      );
+      continue;
+    }
     expectedFiles.add(filePath);
     try {
       await atomicWriteFile(filePath, row.yaml_content);

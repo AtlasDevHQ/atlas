@@ -88,10 +88,12 @@ export interface EntitySummary {
    * (a disagreeing `group:`/`connection:` field is ignored and warned on by
    * the whitelist), while the flat default root and legacy `<source>/` layout
    * let the field assign the group. This is the SAME key the file-based
-   * whitelist and importer scope by, so consumers (e.g. the drift snapshot
-   * reader) match entities to a connection by group here rather than the raw
-   * `connection`/`source` fields, which let a stale field win over the
-   * directory (#3245).
+   * whitelist scopes by (and the importer's group/legacy path), so consumers
+   * (e.g. the drift snapshot reader) match entities to a connection by group
+   * here rather than the raw `connection`/`source` fields, which let a stale
+   * field win over the directory (#3245). NOTE: the importer's flat default
+   * path still scopes by install id, not this group, so for flat entities this
+   * resolves the group but the DB row's scope comes from the install lookup.
    */
   group: string;
   /**

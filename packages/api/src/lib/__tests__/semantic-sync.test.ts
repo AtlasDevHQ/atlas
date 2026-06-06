@@ -110,7 +110,7 @@ function makeEntityRow(
   name: string,
   entityType: string,
   yamlContent: string,
-  connectionId?: string,
+  connectionGroupId?: string | null,
 ): SemanticEntityRow {
   return {
     id: `id-${name}`,
@@ -118,7 +118,7 @@ function makeEntityRow(
     entity_type: entityType as SemanticEntityRow["entity_type"],
     name,
     yaml_content: yamlContent,
-    connection_id: connectionId ?? null,
+    connection_group_id: connectionGroupId ?? null,
     status: "published" as const,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
@@ -717,7 +717,7 @@ describe("importFromDisk — group namespace traversal (#3245)", () => {
   const entityYaml = (table: string, extra = "") => `${extra}table: ${table}\n`;
 
   /** Entities handed to bulkUpsertEntities during the most recent import. */
-  type Collected = { entityType: string; name: string; connectionId?: string; connectionGroupId?: string | null };
+  type Collected = { entityType: string; name: string; yamlContent: string; connectionId?: string; connectionGroupId?: string | null };
   function lastUpsertedEntities(): Collected[] {
     const calls = mockBulkUpsertEntities.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
@@ -814,6 +814,25 @@ describe("importFromDisk — group namespace traversal (#3245)", () => {
     expect(flat!.connectionGroupId).toBeUndefined();
     expect(grouped!.connectionGroupId).toBe("prod");
     expect(grouped!.connectionId).toBeUndefined();
+  });
+
+  it("lets the canonical groups/ entity win over a same-group legacy duplicate (Codex review)", async () => {
+    // Mid-migration overlap: both canonical groups/prod/ and legacy prod/ hold
+    // an `orders` entity for group "prod". getEntityDirs orders canonical first,
+    // so only the canonical one is imported — the legacy duplicate must not
+    // upsert last into the shared (org, type, name, group) row and clobber it.
+    const root = makeSourceRoot();
+    writeEntityFile(root, entityYaml("orders_canonical"), "orders.yml", "groups", "prod");
+    writeEntityFile(root, entityYaml("orders_legacy"), "orders.yml", "prod");
+
+    const result = await importFromDisk("org-1", { sourceDir: root });
+
+    const upserted = lastUpsertedEntities();
+    const orders = upserted.filter((e) => e.name === "orders" && e.connectionGroupId === "prod");
+    expect(orders).toHaveLength(1); // de-duped, not two rows
+    expect(result.imported).toBe(1);
+    // The surviving row is the canonical one, not the stale legacy YAML.
+    expect(orders[0].yamlContent).toContain("orders_canonical");
   });
 
   it("reports a per-file error for a grouped entity missing the table field", async () => {

@@ -481,11 +481,13 @@ interface ImportResult {
 }
 
 /**
- * A row staged for `bulkUpsertEntities`. Exactly one of `connectionId` /
- * `connectionGroupId` carries the scope: flat default + metrics/glossary use
- * `connectionId` (resolved to a group via the install-id lookup), while
- * group-scoped entities (`groups/<group>/`, legacy `<source>/`) carry their
- * directory group directly in `connectionGroupId` (#3245, ADR-0012).
+ * A row staged for `bulkUpsertEntities`. At most one of `connectionId` /
+ * `connectionGroupId` is set (never both); the PRESENCE of `connectionGroupId`
+ * (even `null`) is what routes a row to the direct-group upsert. Flat default +
+ * metrics/glossary carry `connectionId` (resolved to a group via the install-id
+ * lookup) — frequently `undefined` for self-hosted, which resolves to the NULL
+ * default group. Group-scoped entities (`groups/<group>/`, legacy `<source>/`)
+ * carry their directory group directly in `connectionGroupId` (#3245, ADR-0012).
  */
 type CollectedEntity = {
   entityType: SemanticEntityType;
@@ -661,6 +663,15 @@ async function _scanEntityDirs(
     });
   }
 
+  // Track (group, name) pairs already collected from a group/legacy dir.
+  // `getEntityDirs` orders canonical `groups/<group>/` BEFORE legacy
+  // `<source>/`, so the canonical entry is seen first and a same-name/same-group
+  // legacy duplicate (mid-migration overlap) is skipped — otherwise the stale
+  // legacy YAML would upsert LAST into the shared
+  // `(org, type, name, connection_group_id)` draft row and overwrite the
+  // canonical file that should win (ADR-0012: directory canonical). Codex review.
+  const seenGroupKeys = new Set<string>();
+
   for (const { dir, sourceName, origin } of dirs) {
     let files: string[];
     try {
@@ -698,6 +709,17 @@ async function _scanEntityDirs(
               "Import: entity declares a group that differs from its directory — honoring the directory (ADR-0012)",
             );
           }
+          // Use NUL as the separator — it can't appear in a group name or file
+          // stem, so the key can't be forged by a crafted name.
+          const groupKey = `${group}\0${name}`;
+          if (seenGroupKeys.has(groupKey)) {
+            log.warn(
+              { file, dir, group, name, origin },
+              "Import: duplicate entity for the same group already collected from a higher-precedence directory — skipping (ADR-0012: canonical groups/ wins over legacy)",
+            );
+            continue;
+          }
+          seenGroupKeys.add(groupKey);
           out.push({ entityType: "entity", name, yamlContent: content, connectionGroupId: group });
         }
       } catch (err) {

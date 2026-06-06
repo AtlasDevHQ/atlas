@@ -166,3 +166,14 @@ A conversation can read from two kinds of **Datasource** (see Pillars): SQL conn
 
 > **Dev:** "If I **Pin** a conversation to `apac-prod`, does that stop it hitting Stripe?"
 > **Maintainer:** "No — the **routing mode** only picks which **Member** runs `executeSQL`. Stripe is a workspace-global **REST datasource**, so it's in **REST scope** regardless of the pin. To take it out, **exclude** it. If you want *only* Stripe and no SQL at all, **focus** it — that suspends SQL routing for the conversation."
+
+## Semantic layer scoping
+
+The semantic layer (entity YAMLs, glossary, metrics) describes the schema of a **Connection group**, not of an individual **Member** or **Datasource**. Members within a group are interchangeable and share a schema, so they share one set of entities; a standalone Datasource is simply a group-of-one. An entity therefore binds to exactly one Connection group.
+
+- **Entity group scope** — the Connection group an entity describes; the unit behind "which entities belong to which database." Surfaced as the entity's **group** (YAML `group:`, the view's grouping, the CLI's target). A NULL/absent scope is the **default group** — the single-database case where the "which is for which" question doesn't arise, and the layout collapses to flat `semantic/entities/*.yml`.
+  _Avoid_: scoping entities to a Member or an individual Datasource — members share a schema, so the binding is to the group, never to one connection.
+
+### Flagged ambiguities
+
+- "source" / `connection:` / `--source` — historically the entity-group scope wore three different names: the YAML `connection:` field, the CLI `--source` flag, and the admin/API `source` (computed as the group id, defaulting to `"default"`). All three denote the **Connection group**. Canonical surface term: **group**; the aliases are deprecated and being unified.

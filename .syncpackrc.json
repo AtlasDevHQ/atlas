@@ -41,6 +41,7 @@
         "@useatlas/duckdb",
         "@useatlas/mysql",
         "@useatlas/salesforce",
+        "@useatlas/elasticsearch",
         "@useatlas/e2b",
         "@useatlas/daytona",
         "@useatlas/nsjail",

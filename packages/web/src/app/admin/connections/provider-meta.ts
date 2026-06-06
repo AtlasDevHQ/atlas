@@ -2,6 +2,7 @@ import {
   Cloud,
   Database,
   HardDrive,
+  Search,
   Snowflake,
   type LucideIcon,
 } from "lucide-react";
@@ -22,10 +23,19 @@ import { DB_TYPES, type DBType } from "@/ui/lib/types";
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** SQL database providers offered in the Add picker, in display order.
- *  Salesforce is intentionally excluded — it installs via OAuth from its own
- *  "Apps & CRM" section, not the URL-form connection dialog. */
+ *  Some `DB_TYPES` are intentionally excluded from the URL-form picker:
+ *  - Salesforce installs via OAuth from its own "Apps & CRM" section.
+ *  - Elasticsearch / OpenSearch install via a structured (url + apiKey) form,
+ *    not the single-URL dialog — that admin install surface lands in #3270.
+ *    Until then they ship in `DB_TYPES` (wire/label union) but are not offered
+ *    here, so the picker never opens a URL-only form that can't capture the key. */
+const URL_FORM_EXCLUDED: ReadonlySet<DBType> = new Set([
+  "salesforce",
+  "elasticsearch",
+  "opensearch",
+]);
 export const DATABASE_PROVIDERS: ReadonlyArray<{ value: DBType; label: string }> =
-  DB_TYPES.filter((t) => t.value !== "salesforce");
+  DB_TYPES.filter((t) => !URL_FORM_EXCLUDED.has(t.value));
 
 /** Map a dbType to the icon used in rows and picker tiles. Accepts `string`
  *  (not `DBType`) to cover plugin-registered datasources — see file header. */
@@ -42,6 +52,9 @@ export function iconForDbType(dbType: string): LucideIcon {
       return Cloud;
     case "salesforce":
       return HardDrive;
+    case "elasticsearch":
+    case "opensearch":
+      return Search;
     default:
       return Database;
   }
@@ -64,6 +77,10 @@ export function descriptionForDbType(dbType: string): string {
       return "CRM objects via SOQL";
     case "bigquery":
       return "Google Cloud warehouse";
+    case "elasticsearch":
+      return "Search & log analytics cluster";
+    case "opensearch":
+      return "Open-source search & log analytics cluster";
     default:
       return "Datasource connection";
   }

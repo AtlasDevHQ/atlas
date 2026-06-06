@@ -269,6 +269,35 @@ describe("getWhitelistedTables — group partitioning (ADR-0012)", () => {
     expect(warehouse.has("events")).toBe(true);
     expect(warehouse.has("sessions")).toBe(true);
   });
+
+  it("empty groups/<group>/ dir fails closed (does not inherit default tables)", () => {
+    // A discovered-but-empty canonical group must be its own empty group, not
+    // silently fall back to shared mode and serve the default group's tables.
+    const root = ensureDir(`empty-group-${testCounter}`);
+    const entities = ensureDir(`empty-group-${testCounter}/entities`);
+    ensureDir(`empty-group-${testCounter}/groups/warehouse/entities`); // empty
+    writeEntity(entities, "orders.yml", entity("orders"));
+
+    expect(getWhitelistedTables("default", undefined, root).has("orders")).toBe(true);
+    // Partition is triggered by the discovered group → warehouse is empty,
+    // NOT the default group's tables.
+    const warehouse = getWhitelistedTables("warehouse", undefined, root);
+    expect(warehouse.has("orders")).toBe(false);
+    expect(warehouse.size).toBe(0);
+  });
+
+  it("all-invalid groups/<group>/ dir fails closed", () => {
+    const root = ensureDir(`broken-group-${testCounter}`);
+    const entities = ensureDir(`broken-group-${testCounter}/entities`);
+    const warehouse = ensureDir(`broken-group-${testCounter}/groups/warehouse/entities`);
+    writeEntity(entities, "orders.yml", entity("orders"));
+    // Missing the required `table` field → fails EntityShape validation.
+    writeEntity(warehouse, "broken.yml", "columns:\n  id:\n    type: integer\n");
+
+    const warehouseTables = getWhitelistedTables("warehouse", undefined, root);
+    expect(warehouseTables.has("orders")).toBe(false);
+    expect(warehouseTables.size).toBe(0);
+  });
 });
 
 describe("getCrossSourceJoins — group-scoped fromSource (ADR-0012)", () => {

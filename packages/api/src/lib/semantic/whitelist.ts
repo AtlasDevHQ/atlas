@@ -240,6 +240,13 @@ function loadTablesByConnection(
   for (const { dir, sourceName, origin } of dirs) {
     if (origin !== "flat") {
       log.info({ group: sourceName, dir, origin }, "Discovered per-group entities directory");
+      // Seed an empty bucket so a discovered group/legacy directory is
+      // recognized as its own non-default group even when empty or all-invalid.
+      // The directory is the group boundary (ADR-0012), so an empty/broken
+      // group must fail closed (empty whitelist → queries rejected) rather than
+      // leaving partition mode off and silently inheriting the default group's
+      // tables.
+      if (!byConnection.has(sourceName)) byConnection.set(sourceName, new Set());
     }
     loadEntitiesFromDir(dir, sourceName, origin, byConnection, crossJoins);
   }
@@ -534,21 +541,27 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
 
   const byConnection = new Map<string, Set<string>>();
   /**
-   * Register the entity's tables under every key the whitelist should
-   * accept: the explicit YAML group (canonical `group:`, deprecated
-   * `connection:` alias — ADR-0012), its `connection_group_id`, and every
-   * fellow group member. Multiple registrations of the same key share the
-   * underlying Set, so a second entity for the same group accretes onto the
-   * existing table set (correct fan-in semantics).
+   * Register the entity's tables under every key the whitelist should accept.
+   *
+   * In DB-backed orgs the row's `connection_group_id` is the **canonical**
+   * scope (ADR-0012), so when it is set we key by it (plus every fellow group
+   * member) and ignore the YAML `group:`/`connection:` field — a stale or
+   * mismatched field must never widen a row's scope across groups. Only when
+   * the row has no `connection_group_id` do we fall back to the YAML-declared
+   * group (the canonical `group:` field, or the deprecated `connection:`
+   * alias). Multiple registrations of the same key share the underlying Set,
+   * so a second entity for the same group accretes onto the existing table set
+   * (correct fan-in semantics).
    */
   function recordTables(row: typeof rows[number], parsedGroup: string | undefined, tableList: string[]): void {
     const keys = new Set<string>();
-    if (parsedGroup) keys.add(parsedGroup);
     if (row.connection_group_id) {
       keys.add(row.connection_group_id);
       for (const member of groupMembers.get(row.connection_group_id) ?? []) {
         keys.add(member);
       }
+    } else if (parsedGroup) {
+      keys.add(parsedGroup);
     }
     if (keys.size === 0) keys.add("default");
 

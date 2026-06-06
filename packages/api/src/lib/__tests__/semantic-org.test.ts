@@ -146,6 +146,25 @@ describe("loadOrgWhitelist", () => {
     expect(result.get("crm")?.has("x")).toBeFalsy();
   });
 
+  it("a YAML group cannot widen a DB row's canonical connection_group_id scope (ADR-0012)", async () => {
+    // The row is scoped to g_prod, but its stored YAML declares group: g_stage
+    // (stale/import mismatch). connection_group_id is canonical, so the table
+    // must be queryable only under g_prod — never widened to g_stage.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        {
+          ...makeEntityRow("orders", "orders"),
+          connection_group_id: "g_prod",
+          yaml_content: "table: orders\ngroup: g_stage\n",
+        },
+      ]),
+    );
+
+    const result = await loadOrgWhitelist("org-1");
+    expect(result.get("g_prod")?.has("orders")).toBe(true);
+    expect(result.get("g_stage")?.has("orders")).toBeFalsy();
+  });
+
   it("caches results across calls", async () => {
     mockListEntities.mockImplementation(() =>
       Promise.resolve([makeEntityRow("users", "users")]),

@@ -133,8 +133,14 @@ export async function listConnectionGroupMembers(
  * keep its current "no scope" behavior; the caller is expected to have
  * already verified `hasInternalDB()` before invoking write paths that
  * actually need the resolution.
+ *
+ * Exported for the onboarding write paths (the wizard `/generate` + `/save`
+ * routes, #3234) which scope generated entities by the Connection group the
+ * connection belongs to — group-of-one for a standalone datasource, NULL for
+ * the default/unknown connection — so adding a member to a populated group
+ * updates the shared group rows rather than duplicating them.
  */
-async function resolveGroupIdForConnection(
+export async function resolveGroupIdForConnection(
   orgId: string,
   connectionId: string | null | undefined,
 ): Promise<string | null> {

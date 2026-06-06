@@ -36,6 +36,7 @@ Entities bind to a **Connection group** — a standalone DB is simply a group-of
 
 - The unit is surfaced as **`group`** everywhere: YAML `group:`, the view's grouping, the CLI's target.
 - The three historical aliases — the YAML `connection:` field, the CLI `--source` flag, the admin/API `source` — are **deprecated and unified** to `group`. (See [CONTEXT.md § Semantic layer scoping](../../CONTEXT.md) and [ADR-0012](../adr/0012-group-scoped-semantic-layer-directories.md).)
+- *As implemented (#3234):* **generation honors this unit** — generation writes into a group namespace rather than scoping by raw `connectionId` (see § F). The wizard resolves the connection's *actual* Connection group (members of a group share one set of entities); the file-based CLI treats each connection name as a group-of-one. Either way the scope key is consistent end-to-end from generation through load and query.
 
 ### B. On-disk representation (self-host / file-based)
 
@@ -120,13 +121,15 @@ All three doors call the same group-scoped generation flow (Phase 1 → optional
 
 This is what makes the flow **DB-count-agnostic**: the 1st-DB-after-skip and the Nth-DB are the same code path.
 
+*As implemented (#3234):* whichever door launches the flow, the generated entities land in the **correct Connection group** — the shared group-routing in § F means a new-group connection seeds its own `groups/<group>/` namespace while a member added to a populated group reuses the existing group's entities (no second copy). This is the substrate the two-phase generate UI (#3236) and the entry points (#3237) build on.
+
 ### F. Shared engine (CLI ↔ web parity)
 
 Today the generator runs in two places and enrichment in a third (CLI-only). Consolidate:
 
 - Move the mechanical generator + the enrichment logic out of `packages/cli/bin/enrich.ts` into shared **`packages/api/src/lib/semantic/…`** (respecting CLAUDE.md: `lib/` sits above `api/routes/`; `lib/` must not import from `api/routes/`).
 - Both front-ends call the same engine: the `wizard.ts` routes (web) and `atlas init` / a new enrich surface (CLI). One behavior, two doors — no drift between "what the CLI produces" and "what the wizard produces."
-- Fix `wizard.ts` to scope by **group**, not `connectionId` (`wizard.ts:565`).
+- *As implemented (#3234):* both front-ends write into the canonical group namespace via the shared `outputDirForGroup(group, orgId)` helper (`lib/profiler.ts`) — the default group flat at the root, a non-default group under `groups/<group>/`, exactly what the #3232 loader reads back. `atlas init --connection <c>` treats `<c>` as a group-of-one; the wizard `/generate` + `/save` routes resolve the connection's actual Connection group via `resolveGroupIdForConnection` (`lib/semantic/entities.ts`), so saved rows carry the right `connection_group_id` (DB-backed) and land in `groups/<group>/` (file-based) — replacing the old `connectionId` scoping. Adding a member to an already-populated group resolves to the same group and upserts the shared rows rather than duplicating them.
 
 ### G. Relationship to the Semantic Expert Agent
 

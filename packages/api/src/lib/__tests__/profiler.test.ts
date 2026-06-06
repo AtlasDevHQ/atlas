@@ -20,6 +20,7 @@ import {
   generateGlossaryYAML,
   generateMetricYAML,
   outputDirForDatasource,
+  outputDirForGroup,
   type TableProfile,
   type ProfilingResult,
 } from "../profiler";
@@ -423,6 +424,58 @@ describe("outputDirForDatasource", () => {
   it("returns semantic/.orgs/{orgId}/{id}/ for non-default with orgId", () => {
     const result = outputDirForDatasource("warehouse", "org-123");
     expect(result).toContain(path.join(".orgs", "org-123", "warehouse"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// outputDirForGroup — canonical ADR-0012 groups/ namespace (#3234)
+// ---------------------------------------------------------------------------
+
+describe("outputDirForGroup", () => {
+  it("returns the flat semantic/ root for the default group", () => {
+    expect(outputDirForGroup(undefined)).toMatch(/semantic$/);
+    expect(outputDirForGroup(null)).toMatch(/semantic$/);
+    expect(outputDirForGroup("default")).toMatch(/semantic$/);
+  });
+
+  it("returns semantic/groups/<group>/ for a non-default group", () => {
+    const result = outputDirForGroup("warehouse");
+    expect(result).toMatch(/semantic[/\\]groups[/\\]warehouse$/);
+  });
+
+  it("nests the default group flat under .orgs/<orgId>/", () => {
+    const result = outputDirForGroup(undefined, "org-123");
+    expect(result).toContain(path.join(".orgs", "org-123"));
+    expect(result).not.toContain(path.join("org-123", "groups"));
+  });
+
+  it("nests a non-default group under .orgs/<orgId>/groups/<group>/", () => {
+    const result = outputDirForGroup("warehouse", "org-123");
+    expect(result).toContain(path.join(".orgs", "org-123", "groups", "warehouse"));
+  });
+
+  it("produces the canonical groups/<group> suffix the #3232 loader reads", () => {
+    // The CLI/wizard write to outputDirForGroup; the loader (getEntityDirs)
+    // reads groups/<group>/. This pins the two halves agree: a non-default
+    // group dir is exactly groups/<group> relative to the default root.
+    const rel = path.relative(outputDirForGroup(undefined), outputDirForGroup("warehouse"));
+    expect(rel).toBe(path.join("groups", "warehouse"));
+    // The default group adds zero nesting (round-trips to the flat root).
+    expect(path.relative(outputDirForGroup(undefined), outputDirForGroup("default"))).toBe("");
+  });
+
+  it("rejects group names containing path separators or traversal", () => {
+    expect(() => outputDirForGroup("../escape")).toThrow();
+    expect(() => outputDirForGroup("a/b")).toThrow();
+    expect(() => outputDirForGroup("..")).toThrow();
+  });
+
+  it("rejects an orgId containing path separators or traversal (both helpers)", () => {
+    // orgId becomes a path segment under .orgs/ — an --org/ATLAS_ORG_ID value
+    // like "../../outside" must not escape the semantic root.
+    expect(() => outputDirForGroup(undefined, "../../outside")).toThrow();
+    expect(() => outputDirForGroup("warehouse", "a/b")).toThrow();
+    expect(() => outputDirForDatasource("warehouse", "..")).toThrow();
   });
 });
 

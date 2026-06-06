@@ -244,6 +244,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   deleteEntity: mock(() => Promise.resolve(false)),
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  resolveGroupIdForConnection: mock(() => Promise.resolve(null)),
   // Publish / archive helpers (#1429, #1437) — not exercised here but
   // required for admin route loading since admin-publish.ts and
   // admin-archive.ts import them.

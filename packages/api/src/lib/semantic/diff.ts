@@ -300,13 +300,13 @@ export function getYAMLSnapshots(
   }
 
   for (const entity of entities) {
-    // Match entities to the requested connection:
-    // - entities with connection=null/undefined belong to "default"
-    // - entities with an explicit connection belong to that connection
-    const entityConnection = entity.connection ?? entity.source ?? "default";
-    // "default" source means flat layout → default connection
-    const effectiveConnection = entityConnection === "default" ? "default" : entityConnection;
-    if (effectiveConnection !== connectionId) continue;
+    // Match entities to the requested connection by their resolved Connection
+    // group (directory-canonical per ADR-0012), NOT the raw `connection`/`source`
+    // fields. A canonical `groups/<group>/` entity carrying a stale `connection:`
+    // field would otherwise be scoped to the field's group here while the
+    // importer + whitelist scope it to its directory — diverging the drift view
+    // from the imported whitelist for the same files (#3245).
+    if (entity.group !== connectionId) continue;
 
     // Locate the entity's YAML via the layout-aware path the scanner already
     // discovered. Reconstructing `<root>/<source>/entities/<table>.yml` (the

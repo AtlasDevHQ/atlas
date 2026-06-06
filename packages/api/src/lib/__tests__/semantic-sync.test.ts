@@ -16,7 +16,7 @@
  * Uses mock.module() to mock the DB layer.
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -33,6 +33,7 @@ const mockBulkUpsertEntities = mock((_orgId: string, entities: unknown[]): Promi
 );
 const mockHasInternalDB = mock((): boolean => true);
 const mockInternalQuery = mock((): Promise<Array<{ org_id: string }>> => Promise.resolve([]));
+const mockCountEntities = mock((_orgId: string): Promise<number> => Promise.resolve(0));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntityRows: mockListEntities,
@@ -41,7 +42,7 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity: mock(() => Promise.resolve(null)),
   upsertEntity: mock(() => Promise.resolve()),
   deleteEntity: mock(() => Promise.resolve(false)),
-  countEntities: mock(() => Promise.resolve(0)),
+  countEntities: mockCountEntities,
   bulkUpsertEntities: mockBulkUpsertEntities,
 }));
 
@@ -532,6 +533,42 @@ describe("reconcileAllOrgs", () => {
     const sales = ents.find((e) => e.name === "sales");
     expect(sales).toBeDefined();
     expect(sales!.connectionGroupId).toBe("prod");
+  });
+
+  it("first-boot: a namespace scan failure fails closed — does not silently skip the org (#3243/#3245)", async () => {
+    // getEntityDirs records a failed groups/ scan in `failedScans` and returns
+    // a dir list that is silently short. The auto-import detection must NOT
+    // treat that as "org is empty" and `continue` — it must fail closed and
+    // still consult the DB / attempt the import. Verified by asserting
+    // countEntities was consulted for the org (the buggy fail-open path
+    // `continue`s before reaching it).
+    const orgId = testOrgId();
+    const root = getSemanticRoot(orgId);
+    // groups/ exists (so getEntityDirs attempts to enumerate it) but its scan
+    // throws; no flat entities/ dir → without the fail-closed guard the org
+    // looks empty.
+    fs.mkdirSync(path.join(root, "groups"), { recursive: true });
+
+    const groupsPath = path.join(root, "groups");
+    const realReaddirSync = fs.readdirSync.bind(fs) as (p: fs.PathLike, o?: unknown) => unknown;
+    const spy = spyOn(fs, "readdirSync").mockImplementation(((p: fs.PathLike, options?: unknown) => {
+      if (typeof p === "string" && p === groupsPath) {
+        throw Object.assign(new Error("EACCES: simulated scan failure"), { code: "EACCES" });
+      }
+      return realReaddirSync(p, options);
+    }) as unknown as typeof fs.readdirSync);
+
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementationOnce(() => Promise.resolve([])); // no DB orgs → auto-import branch
+    mockCountEntities.mockClear();
+
+    try {
+      await reconcileAllOrgs();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(mockCountEntities.mock.calls.some((c) => c[0] === orgId)).toBe(true);
   });
 
   it("end-to-end: rename apikey → ApiKey in DB, then reconcile + list shows only ApiKey", async () => {

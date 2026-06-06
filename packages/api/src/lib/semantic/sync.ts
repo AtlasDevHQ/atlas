@@ -819,8 +819,9 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
     // the import and its grouped entities would stay missing from the DB
     // whitelist (#3245, ADR-0012).
     const orgRoot = path.join(orgsDir, orgId);
+    const { dirs, failedScans } = getEntityDirs(orgRoot);
     let hasDiskEntities = false;
-    for (const { dir } of getEntityDirs(orgRoot).dirs) {
+    for (const { dir } of dirs) {
       try {
         if ((await fs.promises.readdir(dir)).some((e) => e.endsWith(".yml"))) {
           hasDiskEntities = true;
@@ -837,7 +838,19 @@ async function _autoImportOrgsFromDisk(): Promise<void> {
       }
     }
 
-    if (!hasDiskEntities) continue;
+    // Fail closed (#3243): a failed groups/ or legacy namespace scan returns a
+    // dir list that is silently short, so a `hasDiskEntities === false` verdict
+    // is unreliable — the org may be populated but unscannable. Don't treat it
+    // as empty; attempt the import (which re-scans and surfaces the failure)
+    // rather than silently skipping a possibly-populated org.
+    if (failedScans.length > 0) {
+      log.error(
+        { orgId, failedScans },
+        "Auto-import: semantic namespace scan failed — cannot confirm org is empty; attempting import (fail closed)",
+      );
+    } else if (!hasDiskEntities) {
+      continue;
+    }
     const dbCount = await countEntities(orgId);
     if (dbCount > 0) continue; // already imported
 

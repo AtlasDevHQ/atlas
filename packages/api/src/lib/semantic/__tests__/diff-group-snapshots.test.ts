@@ -81,6 +81,20 @@ describe("getYAMLSnapshots — group-scoped layout (#3245)", () => {
     expect(eu.snapshots.has("orders_us")).toBe(false);
   });
 
+  it("scopes a grouped entity by its directory, not a disagreeing connection field (ADR-0012)", () => {
+    // A canonical groups/<group>/ entity whose `connection:` field disagrees
+    // with its directory must scope to the DIRECTORY (matching the importer +
+    // whitelist), not the field — otherwise the drift view diverges from the
+    // imported whitelist for the same files (#3245).
+    writeEntity("sales.yml", entity("sales", "connection: staging\n"), "groups", "prod");
+
+    const prod = getYAMLSnapshots("prod");
+    const staging = getYAMLSnapshots("staging");
+
+    expect(prod.snapshots.has("sales")).toBe(true); // directory wins
+    expect(staging.snapshots.has("sales")).toBe(false); // field does NOT win
+  });
+
   it("leaves the flat default layout unchanged", () => {
     writeEntity("users.yml", entity("users"));
 

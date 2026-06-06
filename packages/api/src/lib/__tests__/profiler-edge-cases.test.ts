@@ -240,11 +240,13 @@ describe("generateEntityYAML edge cases", () => {
     expect(yaml).toContain("TO_CHAR(created_at");
   });
 
-  it("includes source connection in YAML when specified", () => {
+  it("includes the canonical group field in YAML when a group is specified", () => {
+    // #3285: canonical `group:` (ADR-0012), not the deprecated `connection:` alias.
     const profile = makeProfile();
     const yaml = generateEntityYAML(profile, [profile], "postgres", "public", "analytics-db");
 
-    expect(yaml).toContain("connection: analytics-db");
+    expect(yaml).toContain("group: analytics-db");
+    expect(yaml).not.toContain("connection:");
   });
 
   it("skips measures for views", () => {

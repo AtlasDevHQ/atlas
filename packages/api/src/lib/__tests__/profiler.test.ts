@@ -324,10 +324,13 @@ describe("generateEntityYAML", () => {
     expect(yaml).toContain("Primary key");
   });
 
-  it("includes connection source when provided", () => {
+  it("includes the canonical group field when a group is provided", () => {
+    // #3285: the generator emits `group:` (ADR-0012), not the deprecated
+    // `connection:` alias.
     const profile = makeTestProfile("users", { withPk: true });
     const yaml = generateEntityYAML(profile, [profile], "postgres", "public", "warehouse");
-    expect(yaml).toContain("connection: warehouse");
+    expect(yaml).toContain("group: warehouse");
+    expect(yaml).not.toContain("connection:");
   });
 });
 

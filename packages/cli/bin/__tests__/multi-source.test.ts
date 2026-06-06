@@ -60,9 +60,9 @@ describe("outputDirForDatasource", () => {
   });
 });
 
-// --- Entity YAML connection: field ---
+// --- Entity YAML group: field (#3285, ADR-0012) ---
 
-describe("entity YAML connection field", () => {
+describe("entity YAML group field", () => {
   const profile = makeProfile({
     table_name: "orders",
     columns: [
@@ -72,20 +72,22 @@ describe("entity YAML connection field", () => {
     primary_key_columns: ["id"],
   });
 
-  test("default source omits connection: field", () => {
-    // source=undefined → no connection field
+  test("default source omits the group field", () => {
+    // source=undefined → no group field (neither canonical nor deprecated alias)
     const yaml = generateEntityYAML(profile, [profile], "postgres", "public", undefined);
+    expect(yaml).not.toContain("group:");
     expect(yaml).not.toContain("connection:");
   });
 
-  test("named source includes connection: field", () => {
+  test("named source emits the canonical group: field", () => {
     const yaml = generateEntityYAML(profile, [profile], "postgres", "public", "warehouse");
-    expect(yaml).toContain("connection: warehouse");
+    expect(yaml).toContain("group: warehouse");
+    expect(yaml).not.toContain("connection:");
   });
 
   test("different named source", () => {
     const yaml = generateEntityYAML(profile, [profile], "postgres", "public", "analytics");
-    expect(yaml).toContain("connection: analytics");
+    expect(yaml).toContain("group: analytics");
   });
 });
 

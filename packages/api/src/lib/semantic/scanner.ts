@@ -119,9 +119,12 @@ export interface GroupDirResult {
 }
 
 /**
- * The single, layout-aware traversal of a semantic root — the SINGLE SOURCE OF
- * TRUTH so entity/metric/glossary/catalog discovery can never drift on the
- * layout again (ADR-0012, #3240).
+ * The shared, layout-aware traversal of a semantic root — the single source of
+ * truth for the discovery read paths it backs (the SQL whitelist via
+ * {@link getEntityDirs}, the lookup helpers, admin discovery, and the boot-time
+ * search index), so they can't drift on the layout (ADR-0012, #3240). Read
+ * paths that don't route through here (e.g. the expert/`improve` context
+ * loader) are deliberately root-only.
  *
  * Resolves, in precedence order, the per-group directory for a given `subdir`
  * across all three layouts:
@@ -132,8 +135,9 @@ export interface GroupDirResult {
  * `subdir` is the per-group subdirectory to resolve (e.g. `"entities"`,
  * `"metrics"`); pass `null` for artifacts that live directly in the per-group
  * root (`glossary.yml`, `catalog.yml`), which returns the per-group base dir
- * itself. Only directories that exist are returned — for `subdir === null` the
- * per-group bases always exist, so the caller checks for the specific file.
+ * itself. Only existing directories are returned — the per-group bases returned
+ * for `subdir === null` are known to exist, so the caller only needs to check
+ * for the specific file (`glossary.yml` / `catalog.yml`).
  *
  * The `groups/` namespace dir is never itself treated as a legacy `<source>/`
  * (it is in {@link RESERVED_DIRS}), so no artifact is ever attributed to a

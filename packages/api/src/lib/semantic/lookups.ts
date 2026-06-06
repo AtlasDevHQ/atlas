@@ -81,7 +81,9 @@ export interface GlossaryTermLookup {
 }
 
 /**
- * Load all glossary terms from `glossary.yml` and per-source glossaries.
+ * Load every glossary term across all three layouts: the flat default root, the
+ * canonical `groups/<group>/glossary.yml` namespace, and legacy
+ * `<source>/glossary.yml` (ADR-0012, via the shared scanner).
  *
  * Supports both glossary YAML shapes:
  * - Object form: `terms: { name: { status, definition, ... } }` (current)

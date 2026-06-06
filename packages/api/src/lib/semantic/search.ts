@@ -492,7 +492,9 @@ function loadCatalog(semanticRoot: string): ParsedCatalog | null {
   // Merge catalog.yml across the flat default root, the canonical
   // groups/<group>/ namespace, and legacy <source>/ (ADR-0012) so per-group
   // `use_for` hints reach the index. The index keys catalog entries by entity
-  // name, so concatenating their `entities[]` is the natural merge.
+  // name, so concatenating their `entities[]` is the natural merge. On a
+  // name collision across groups the lookup is first-wins (acceptable — entity
+  // names don't collide across groups in practice).
   const merged: CatalogEntry[] = [];
   let version: string | undefined;
   let found = false;

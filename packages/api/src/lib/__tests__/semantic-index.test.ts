@@ -308,6 +308,19 @@ describe("buildSemanticIndex", () => {
       join(root, "entities", "orders.yml"),
       makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
     );
+    // A flat-root catalog alongside the group catalog → loadCatalog must MERGE
+    // both layouts' entities[] so each entity gets its own use_for hint.
+    writeFileSync(
+      join(root, "catalog.yml"),
+      [
+        "version: '1'",
+        "entities:",
+        "  - name: orders",
+        '    description: "Customer orders"',
+        "    use_for:",
+        '      - "Revenue analysis"',
+      ].join("\n") + "\n",
+    );
 
     writeFileSync(
       join(root, "groups", "analytics", "metrics", "sessions_metrics.yml"),
@@ -345,8 +358,10 @@ describe("buildSemanticIndex", () => {
     // Group metric + glossary term are discovered (were entirely skipped before).
     expect(index).toContain("weekly_active_users");
     expect(index).toContain("**wau**");
-    // Group catalog use_for hint attaches to the group entity.
-    expect(index).toContain("Use for: Engagement analysis");
+    // Catalog use_for hints from BOTH the flat-root catalog and the group
+    // catalog merge in — each attaches to its own entity.
+    expect(index).toContain("Use for: Engagement analysis"); // group catalog → sessions
+    expect(index).toContain("Use for: Revenue analysis"); // flat catalog → orders
     // The group entity is labeled with its group; nothing is attributed to "groups".
     expect(index).toContain("[analytics]");
     expect(index).not.toContain("[groups]");

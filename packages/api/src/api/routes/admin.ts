@@ -1853,6 +1853,14 @@ admin.openapi(getCatalogRoute, async (c) => {
   const { requestId, authResult } = await adminAuthAndContext(c, "admin:semantic");
   const orgId = authResult.user?.activeOrganizationId;
   const root = resolveSemanticRoot(orgId);
+  // Catalog is a single global document at the admin level — the root
+  // catalog.yml's top-level metadata (name/description/use_for) drives the
+  // single-object CatalogViewer, and the admin/DB model treats catalog as
+  // unscoped (serveRawYaml forces its group to null). Unlike metrics/glossary,
+  // it is intentionally NOT discovered per-group here; a group's
+  // groups/<group>/catalog.yml surfaces where it's agent-meaningful — as
+  // per-entity `use_for` hints merged into the boot-time search index
+  // (see loadCatalog in lib/semantic/search.ts). #3240.
   const catalogFile = path.join(root, "catalog.yml");
   if (!fs.existsSync(catalogFile)) {
     return c.json({ catalog: null }, 200);

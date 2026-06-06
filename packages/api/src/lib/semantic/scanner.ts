@@ -63,14 +63,35 @@ export interface EntityDir {
   origin: EntityDirOrigin;
 }
 
+/**
+ * On-disk namespace whose directory scan can fail independently of the others:
+ *
+ * - `groups` — the canonical `groups/<group>/` namespace (ADR-0012);
+ * - `legacy` — the pre-ADR-0012 per-source `<source>/` root scan.
+ *
+ * Naming the namespace (instead of collapsing both catch sites into one
+ * boolean) lets the escalated error say WHICH scan failed, and lets consumers
+ * reason about which groups may be missing (#3243).
+ */
+export type ScanNamespace = "groups" | "legacy";
+
 export interface EntityDirResult {
   dirs: EntityDir[];
   /**
-   * True when a directory scan failed — either the canonical `groups/`
-   * namespace or the legacy `<source>/` root — so some group/source dirs may
-   * be missing. Consumers escalate this to an error-level log.
+   * Namespaces whose directory scan FAILED with an unexpected FS error
+   * (EACCES, ENOTDIR on a symlinked/non-dir path, EMFILE/ENFILE under fd
+   * pressure, EIO/stalled network mount) — all distinct from "directory
+   * absent", which is guarded by `existsSync` and is NOT a failure. Empty when
+   * every scan that ran succeeded.
+   *
+   * A non-empty list means some group/source dirs may be missing, so the
+   * partition decision downstream is unreliable: consumers MUST fail closed
+   * (resolve the requested group to its own — possibly empty — set) rather than
+   * infer "no non-default group exists" and drop to the shared-default
+   * whitelist, which would validate a connection against the WRONG group
+   * (#3243). Consumers escalate this to an error-level log.
    */
-  rootScanFailed: boolean;
+  failedScans: ScanNamespace[];
 }
 
 /**
@@ -85,7 +106,7 @@ export interface EntityDirResult {
  */
 export function getEntityDirs(root: string): EntityDirResult {
   const dirs: EntityDir[] = [];
-  let rootScanFailed = false;
+  const failedScans: ScanNamespace[] = [];
 
   const defaultDir = path.join(root, "entities");
   if (fs.existsSync(defaultDir)) {
@@ -105,10 +126,13 @@ export function getEntityDirs(root: string): EntityDirResult {
         }
       }
     } catch (err) {
-      rootScanFailed = true;
+      // The dir EXISTS (existsSync above) but could not be enumerated — a real
+      // FS failure (EACCES/ENOTDIR/EMFILE/EIO), not "absent". Record the failed
+      // namespace so the partition decision downstream fails closed (#3243).
+      failedScans.push("groups");
       log.warn(
         { root: groupsRoot, err: err instanceof Error ? err.message : String(err) },
-        "Failed to scan semantic groups/ namespace",
+        "Failed to scan semantic groups/ namespace — affected groups fail closed",
       );
     }
   }
@@ -125,15 +149,15 @@ export function getEntityDirs(root: string): EntityDirResult {
         }
       }
     } catch (err) {
-      rootScanFailed = true;
+      failedScans.push("legacy");
       log.warn(
         { root, err: err instanceof Error ? err.message : String(err) },
-        "Failed to scan semantic root for per-source directories",
+        "Failed to scan semantic root for per-source directories — affected sources fail closed",
       );
     }
   }
 
-  return { dirs, rootScanFailed };
+  return { dirs, failedScans };
 }
 
 // ---------------------------------------------------------------------------
@@ -248,9 +272,9 @@ export function scanEntities(root: string): ScanResult {
   const entities: ScannedEntity[] = [];
   const warnings: string[] = [];
 
-  const { dirs, rootScanFailed } = getEntityDirs(root);
-  if (rootScanFailed) {
-    warnings.push("Failed to read semantic root directory");
+  const { dirs, failedScans } = getEntityDirs(root);
+  if (failedScans.length > 0) {
+    warnings.push(`Failed to read semantic directory namespace(s): ${failedScans.join(", ")}`);
   }
 
   for (const { dir, sourceName, origin } of dirs) {

@@ -29,7 +29,7 @@ import { z } from "zod";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
 import { invalidateSemanticIndex } from "./search";
-import { getEntityDirs, readGroupField, resolveEntityGroup, type EntityDirOrigin } from "./scanner";
+import { getEntityDirs, readGroupField, resolveEntityGroup, type EntityDirOrigin, type ScanNamespace } from "./scanner";
 import { invalidateOrgModeRoots } from "./sync";
 
 const log = createLogger("semantic");
@@ -60,6 +60,13 @@ export interface CrossSourceJoin {
 
 const _whitelists = new Map<string, Set<string>>();
 let _tablesByConnection: Map<string, Set<string>> | null = null;
+/**
+ * Namespaces whose directory scan failed during the cached load (#3243).
+ * Cached alongside `_tablesByConnection` so the fail-closed decision in
+ * {@link getWhitelistedTables} stays consistent with the table map it was
+ * built from. Reset by `_resetWhitelists`.
+ */
+let _scanFailedNamespaces: ScanNamespace[] = [];
 let _crossSourceJoins: CrossSourceJoin[] | null = null;
 
 /**
@@ -217,24 +224,38 @@ function loadEntitiesFromDir(
  * @param semanticRoot - Semantic layer root directory (scans subdirectories).
  * @param entitiesDir - Override for a single flat entities directory (DI for tests).
  */
+interface LoadedTables {
+  byConnection: Map<string, Set<string>>;
+  /**
+   * Namespaces whose directory scan failed during this load (see
+   * {@link ScanNamespace}). A non-empty list means the partition decision is
+   * unreliable and affected groups must fail closed — never drop to
+   * shared-default mode (#3243).
+   */
+  failedScans: ScanNamespace[];
+}
+
 function loadTablesByConnection(
   semanticRoot?: string,
   entitiesDir?: string,
   crossJoins?: CrossSourceJoin[],
-): Map<string, Set<string>> {
+): LoadedTables {
   const byConnection = new Map<string, Set<string>>();
 
   // Legacy flat-directory path (existing tests use this) — the default group.
   if (entitiesDir) {
     loadEntitiesFromDir(entitiesDir, "default", "flat", byConnection, crossJoins);
-    return byConnection;
+    return { byConnection, failedScans: [] };
   }
 
   const root = semanticRoot ?? getDefaultSemanticRoot();
 
-  const { dirs, rootScanFailed } = getEntityDirs(root);
-  if (rootScanFailed) {
-    log.error({ root }, "Failed to scan semantic root — per-group whitelist entries may be missing");
+  const { dirs, failedScans } = getEntityDirs(root);
+  if (failedScans.length > 0) {
+    log.error(
+      { root, failedScans },
+      "Failed to scan semantic namespace(s) — per-group whitelist entries may be missing; affected groups fail closed (not dropped to shared-default)",
+    );
   }
 
   for (const { dir, sourceName, origin } of dirs) {
@@ -256,16 +277,64 @@ function loadTablesByConnection(
     log.info({ groups: Array.from(byConnection.keys()) }, "Partitioned table whitelist mode");
   }
 
-  return byConnection;
+  return { byConnection, failedScans };
 }
 
-function getTablesByConnection(semanticRoot?: string, entitiesDir?: string): Map<string, Set<string>> {
+function getTablesByConnection(semanticRoot?: string, entitiesDir?: string): LoadedTables {
   if (!_tablesByConnection) {
     const crossJoins: CrossSourceJoin[] = [];
-    _tablesByConnection = loadTablesByConnection(semanticRoot, entitiesDir, crossJoins);
+    const { byConnection, failedScans } = loadTablesByConnection(semanticRoot, entitiesDir, crossJoins);
+    _tablesByConnection = byConnection;
+    _scanFailedNamespaces = failedScans;
     _crossSourceJoins = crossJoins;
   }
-  return _tablesByConnection;
+  return { byConnection: _tablesByConnection, failedScans: _scanFailedNamespaces };
+}
+
+/**
+ * Resolve the whitelist for one Connection group from a loaded by-connection
+ * map, applying the fail-closed rule on scan failure (#3243).
+ *
+ * Partition mode (each group sees only its own tables) is normally inferred
+ * from the presence of a non-default group. That inference is only trustworthy
+ * when every directory scan SUCCEEDED — a failed `groups/`/legacy scan can hide
+ * the very group that would have flipped the decision. So when any scan failed
+ * we never drop to shared-default mode: the requested group resolves to its own
+ * (possibly empty) set and fails closed, rather than silently inheriting the
+ * default group's tables (a fail-toward-widening, validating against the WRONG
+ * group). The empty-whitelist log distinguishes "scan failed (incomplete)" from
+ * "no entities configured" — different operator situations.
+ */
+function resolveGroupTables(
+  byConnection: Map<string, Set<string>>,
+  connectionId: string,
+  failedScans: ScanNamespace[],
+): Set<string> {
+  const scanFailed = failedScans.length > 0;
+  const hasNonDefaultConnection = Array.from(byConnection.keys()).some((k) => k !== "default");
+
+  // Shared-default (single-DB back-compat) ONLY when no non-default group
+  // exists AND every scan succeeded. A failed scan makes "no non-default group"
+  // untrustworthy, so we must not widen the lookup to the default whitelist.
+  if (!hasNonDefaultConnection && !scanFailed) {
+    return new Set(byConnection.get("default") ?? []);
+  }
+
+  const tables = new Set(byConnection.get(connectionId) ?? []);
+  if (tables.size === 0) {
+    if (scanFailed) {
+      log.error(
+        { connectionId, failedScans, knownConnections: Array.from(byConnection.keys()) },
+        "Semantic layer scan failed — whitelist load incomplete; failing closed (all queries for this connection rejected). This is a scan failure, not an unconfigured group.",
+      );
+    } else {
+      log.warn(
+        { connectionId, knownConnections: Array.from(byConnection.keys()) },
+        "No entities configured for connection — whitelist is empty; all queries will be rejected",
+      );
+    }
+  }
+  return tables;
 }
 
 /**
@@ -293,21 +362,8 @@ export function getWhitelistedTables(
 ): Set<string> {
   // When using custom paths (tests), bypass the global cache
   if (entitiesDir || semanticRoot) {
-    const byConnection = loadTablesByConnection(semanticRoot, entitiesDir);
-    const hasNonDefaultConnection = Array.from(byConnection.keys()).some((k) => k !== "default");
-
-    let tables: Set<string>;
-    if (!hasNonDefaultConnection) {
-      tables = new Set(byConnection.get("default") ?? []);
-    } else {
-      tables = new Set(byConnection.get(connectionId) ?? []);
-      if (tables.size === 0) {
-        log.warn(
-          { connectionId, knownConnections: Array.from(byConnection.keys()) },
-          "No entities found for connection — whitelist is empty; all queries will be rejected",
-        );
-      }
-    }
+    const { byConnection, failedScans } = loadTablesByConnection(semanticRoot, entitiesDir);
+    const tables = resolveGroupTables(byConnection, connectionId, failedScans);
     // Merge plugin-provided entities even in custom-path mode
     const pluginTables = _pluginEntities.get(connectionId);
     if (pluginTables && pluginTables.size > 0) {
@@ -319,25 +375,11 @@ export function getWhitelistedTables(
   const cached = _whitelists.get(connectionId);
   if (cached) return cached;
 
-  const byConnection = getTablesByConnection();
-
-  // Backward compat: if no non-default group exists (no `group:`/`connection:`
-  // field and no `groups/`/legacy subdirectories), all connections share the
-  // full set (pre-v0.7 single-DB behavior).
-  const hasNonDefaultConnection = Array.from(byConnection.keys()).some((k) => k !== "default");
-
-  let tables: Set<string>;
-  if (!hasNonDefaultConnection) {
-    tables = new Set(byConnection.get("default") ?? []);
-  } else {
-    tables = new Set(byConnection.get(connectionId) ?? []);
-    if (tables.size === 0) {
-      log.warn(
-        { connectionId, knownConnections: Array.from(byConnection.keys()) },
-        "No entities found for connection — whitelist is empty; all queries will be rejected",
-      );
-    }
-  }
+  // Resolve from the cached load, failing closed when a directory scan failed:
+  // a swallowed FS error must never drop the partition decision to shared-default
+  // mode (back-compat single-DB sharing applies only when every scan succeeded).
+  const { byConnection, failedScans } = getTablesByConnection();
+  const tables = resolveGroupTables(byConnection, connectionId, failedScans);
 
   // Merge plugin-provided entities for this connection
   const pluginTables = _pluginEntities.get(connectionId);
@@ -371,6 +413,7 @@ export function getCrossSourceJoins(semanticRoot?: string): readonly CrossSource
 export function _resetWhitelists(): void {
   _whitelists.clear();
   _tablesByConnection = null;
+  _scanFailedNamespaces = [];
   _crossSourceJoins = null;
   invalidateSemanticIndex();
 }

@@ -14,9 +14,10 @@
  * observable — see `docs/development/testing.md` and the existing
  * `config-deploy-mode-warning.test.ts` for the pattern.
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { resolve, join } from "path";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import * as fs from "fs";
 
 type LogCall = { level: "error" | "warn" | "info" | "debug"; payload: unknown; message: string };
 const logCalls: LogCall[] = [];
@@ -297,6 +298,139 @@ describe("getWhitelistedTables — group partitioning (ADR-0012)", () => {
     const warehouseTables = getWhitelistedTables("warehouse", undefined, root);
     expect(warehouseTables.has("orders")).toBe(false);
     expect(warehouseTables.size).toBe(0);
+  });
+});
+
+describe("fail-closed on directory scan failure (#3243)", () => {
+  // Simulate a real FS error (EACCES) on a single readdir path — distinct from
+  // "directory absent", which `existsSync` already guards. The dir EXISTS but
+  // cannot be enumerated, so its groups silently drop out of the whitelist
+  // unless we fail closed. We delegate every non-target readdir to the real fs
+  // so directory setup and the default `entities/` read still work.
+  // `spyOn(fs, …)` patches the shared `fs` namespace that scanner.ts calls
+  // through (same pattern as explore-backend.test.ts).
+  function throwReaddirOn(targetPath: string, code = "EACCES"): ReturnType<typeof spyOn> {
+    const realReaddir = fs.readdirSync.bind(fs) as (p: fs.PathLike, o?: unknown) => unknown;
+    return spyOn(fs, "readdirSync").mockImplementation(((p: fs.PathLike, options?: unknown) => {
+      if (typeof p === "string" && p === targetPath) {
+        throw Object.assign(new Error(`${code}: simulated scan failure`), { code });
+      }
+      return realReaddir(p, options);
+    }) as unknown as typeof fs.readdirSync);
+  }
+
+  it("getEntityDirs reports failedScans:['groups'] when the groups/ scan throws", () => {
+    const root = ensureDir(`scanfail-groups-${testCounter}`);
+    ensureDir(`scanfail-groups-${testCounter}/entities`);
+    ensureDir(`scanfail-groups-${testCounter}/groups`); // exists → readdir attempted
+    const spy = throwReaddirOn(join(root, "groups"));
+    try {
+      const { failedScans } = getEntityDirs(root);
+      expect(failedScans).toContain("groups");
+      expect(failedScans).not.toContain("legacy");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("getEntityDirs reports failedScans:['legacy'] when the legacy root scan throws", () => {
+    const root = ensureDir(`scanfail-legacy-${testCounter}`);
+    ensureDir(`scanfail-legacy-${testCounter}/entities`);
+    // No groups/ dir → groups scan skipped; the root (legacy) readdir throws.
+    const spy = throwReaddirOn(root);
+    try {
+      const { failedScans } = getEntityDirs(root);
+      expect(failedScans).toContain("legacy");
+      expect(failedScans).not.toContain("groups");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a failed groups/ scan fails CLOSED — affected group gets an EMPTY set, not default's tables", () => {
+    const root = ensureDir(`scanfail-closed-${testCounter}`);
+    const entities = ensureDir(`scanfail-closed-${testCounter}/entities`);
+    ensureDir(`scanfail-closed-${testCounter}/groups`);
+    writeEntity(entities, "orders.yml", entity("orders"));
+    const spy = throwReaddirOn(join(root, "groups"));
+    try {
+      // default is unaffected by a groups/ scan failure → still serves its tables.
+      expect(getWhitelistedTables("default", undefined, root).has("orders")).toBe(true);
+      // The group whose scan failed must NOT inherit default's tables.
+      const warehouse = getWhitelistedTables("warehouse", undefined, root);
+      expect(warehouse.has("orders")).toBe(false);
+      expect(warehouse.size).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a failed scan does NOT drop to shared-default mode", () => {
+    // Pre-fix: with only `default` surviving, hasNonDefaultConnection=false →
+    // shared mode → EVERY connection validates against default's tables. The
+    // scan-failure signal must keep us out of shared mode (fail-toward-widening).
+    const root = ensureDir(`scanfail-noshare-${testCounter}`);
+    const entities = ensureDir(`scanfail-noshare-${testCounter}/entities`);
+    ensureDir(`scanfail-noshare-${testCounter}/groups`);
+    writeEntity(entities, "orders.yml", entity("orders"));
+    const spy = throwReaddirOn(join(root, "groups"));
+    try {
+      // An arbitrary non-default connection must NOT see default's `orders`.
+      expect(getWhitelistedTables("anything", undefined, root).has("orders")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the escalated error names WHICH scan failed and is distinct from the no-entities warning", () => {
+    const root = ensureDir(`scanfail-log-${testCounter}`);
+    const entities = ensureDir(`scanfail-log-${testCounter}/entities`);
+    ensureDir(`scanfail-log-${testCounter}/groups`);
+    writeEntity(entities, "orders.yml", entity("orders"));
+    const spy = throwReaddirOn(join(root, "groups"));
+    try {
+      getWhitelistedTables("warehouse", undefined, root);
+      // Names the failed namespace in the escalated (error-level) log payload.
+      const named = logCalls.some(
+        (c) =>
+          c.level === "error" &&
+          Array.isArray((c.payload as { failedScans?: unknown }).failedScans) &&
+          (c.payload as { failedScans: string[] }).failedScans.includes("groups"),
+      );
+      expect(named).toBe(true);
+      // Distinguishes "scan failed (incomplete)" from "no entities configured":
+      // the empty `warehouse` whitelist is logged as a scan failure, NOT the
+      // benign "No entities configured" warning.
+      const scanFailedMsg = logCalls.some(
+        (c) => /scan failed/i.test(c.message) && /(load incomplete|failing closed)/i.test(c.message),
+      );
+      expect(scanFailedMsg).toBe(true);
+      const noEntitiesMsg = logCalls.some((c) =>
+        /No entities configured for connection/i.test(c.message),
+      );
+      expect(noEntitiesMsg).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a successful scan with a genuinely empty group keeps the benign 'no entities configured' message", () => {
+    // No scan failure: an absent group must keep today's behavior (benign warn,
+    // not a scan-failure error) — the two operator situations stay distinct.
+    const root = ensureDir(`noscanfail-${testCounter}`);
+    const entities = ensureDir(`noscanfail-${testCounter}/entities`);
+    ensureDir(`noscanfail-${testCounter}/groups/warehouse/entities`); // empty, real dir
+    writeEntity(entities, "orders.yml", entity("orders"));
+
+    // `crm` has no directory → empty set, but no scan failed.
+    const crm = getWhitelistedTables("crm", undefined, root);
+    expect(crm.size).toBe(0);
+    const noEntitiesMsg = logCalls.some(
+      (c) => c.level === "warn" && /No entities configured for connection/i.test(c.message),
+    );
+    expect(noEntitiesMsg).toBe(true);
+    const scanFailedErr = logCalls.some((c) => c.level === "error" && /scan failed/i.test(c.message));
+    expect(scanFailedErr).toBe(false);
   });
 });
 

@@ -260,68 +260,123 @@ export async function loadEntitiesForOrg(
 }
 
 /**
- * Load all entity YAML files from disk.
+ * Load all entity YAML files from disk across every on-disk layout (ADR-0012):
+ * the flat default root `entities/`, the canonical `groups/<group>/entities/`
+ * namespace, and legacy `<source>/entities/`. Routed through the shared
+ * `scanEntities` traversal the discovery read paths use (#3240), so the
+ * self-hosted (no internal DB) expert context sees every group's entities, not
+ * just the root's (#3273). Root-only before, it silently dropped per-group
+ * entities on a multi-group deployment.
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
-  const entitiesDir = path.join(getSemanticRoot(), "entities");
-  if (!fs.existsSync(entitiesDir)) return [];
+  const root = getSemanticRoot();
+  if (!fs.existsSync(root)) return [];
+
+  const { scanEntities, resolveEntityGroup, readGroupField } =
+    await import("@atlas/api/lib/semantic/scanner");
 
   const entities: ParsedEntity[] = [];
-
-  for (const file of fs.readdirSync(entitiesDir)) {
-    if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
-    try {
-      const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
-      const parsed = yaml.load(content) as Record<string, unknown> | null;
-      if (!parsed || typeof parsed !== "object") continue;
-
-      entities.push({
-        name: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
-        table: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
-        description: typeof parsed.description === "string" ? parsed.description : undefined,
-        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
-        measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
-        joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
-        query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-        connection: typeof parsed.connection === "string" ? parsed.connection : undefined,
-      });
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), file },
-        "Failed to parse entity YAML",
-      );
-    }
+  // `scanEntities` parses every layout's YAML and logs+skips unreadable files
+  // (matching this loader's prior per-file `try/catch`).
+  for (const { raw, filePath, sourceName, origin } of scanEntities(root).entities) {
+    // Attribution matches the discovery read paths (ADR-0012): the directory is
+    // canonical in the `groups/<group>/` namespace; a top-level `group:`/
+    // `connection:` field overrides on the flat + legacy layouts. The flat
+    // default group maps to the null connection (`undefined`), keeping parity
+    // with the DB loaders above.
+    const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
+    entities.push({
+      ...projectParsedEntity(raw, {
+        fallbackName: path.basename(filePath).replace(/\.ya?ml$/, ""),
+      }),
+      connection: group === "default" ? undefined : group,
+    });
   }
 
   return entities;
 }
 
 /**
- * Load glossary terms from disk.
+ * Load glossary terms from disk across every on-disk layout (ADR-0012): the flat
+ * default root, the canonical `groups/<group>/glossary.yml` namespace, and
+ * legacy `<source>/glossary.yml`. Routed through the same layout-aware
+ * `getGroupDirs` traversal the discovery read paths use (#3240), so the expert
+ * context can no longer miss per-group glossary terms (#3273).
+ *
+ * Both glossary YAML shapes are honored, matching the discovery loaders
+ * (`lib/semantic/lookups.ts`, `lib/semantic/search.ts`): the object form
+ * `terms: { name: { status, definition } }` (canonical) and the array form
+ * `terms: [{ term, definition, ambiguous }]` (legacy). The previous root-only
+ * loader parsed the array form *only*, so it returned nothing for the object
+ * form the bundled glossaries actually use — a second drift point this closes.
+ *
+ * The expert `GlossaryTerm` carries no group label — the scheduled analyzer
+ * reasons at global scope and dedups terms by name (`categories.ts`) — so the
+ * loader returns a flat union of every group's terms; per-group attribution is
+ * the entity loader's concern.
  */
 export async function loadGlossaryFromDisk(): Promise<GlossaryTerm[]> {
-  const glossaryPath = path.join(getSemanticRoot(), "glossary.yml");
-  if (!fs.existsSync(glossaryPath)) return [];
+  const { getGroupDirs } = await import("@atlas/api/lib/semantic/scanner");
 
+  const terms: GlossaryTerm[] = [];
+  for (const { dir } of getGroupDirs(getSemanticRoot(), null).dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), terms);
+  }
+  return terms;
+}
+
+/**
+ * Parse a single `glossary.yml` into expert `GlossaryTerm`s, appending to `out`.
+ * Tolerates both the object- and array-term shapes; a read/parse failure on one
+ * group's file is logged and skipped so it can't blank the whole expert context.
+ */
+function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
+  if (!fs.existsSync(filePath)) return;
+
+  let raw: unknown;
   try {
-    const content = fs.readFileSync(glossaryPath, "utf-8");
-    const parsed = yaml.load(content) as Record<string, unknown> | null;
-    if (!parsed || typeof parsed !== "object") return [];
-
-    const terms = parsed.terms;
-    if (Array.isArray(terms)) {
-      return terms.filter(
-        (t): t is GlossaryTerm => t != null && typeof t === "object" && "term" in t,
-      );
-    }
+    raw = yaml.load(fs.readFileSync(filePath, "utf-8"));
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { filePath, err: err instanceof Error ? err.message : String(err) },
       "Failed to parse glossary.yml",
     );
+    return;
   }
 
-  return [];
+  if (!raw || typeof raw !== "object") return;
+  const termsNode = (raw as { terms?: unknown }).terms;
+
+  if (Array.isArray(termsNode)) {
+    for (const entry of termsNode) {
+      const term = normalizeGlossaryTerm(entry);
+      if (term) out.push(term);
+    }
+  } else if (termsNode && typeof termsNode === "object") {
+    for (const [key, value] of Object.entries(termsNode as Record<string, unknown>)) {
+      const term = normalizeGlossaryTerm(value, key);
+      if (term) out.push(term);
+    }
+  }
+}
+
+/**
+ * Normalize one glossary entry into the expert `GlossaryTerm` shape. Object-form
+ * entries supply the term name via `fallbackTerm` (the YAML key); array-form
+ * entries carry their own `term`. Returns `null` when no term name resolves.
+ * `ambiguous` is derived from an explicit `ambiguous: true` or the load-bearing
+ * `status: ambiguous` marker (the glossary's canonical "ask the user" signal).
+ */
+function normalizeGlossaryTerm(raw: unknown, fallbackTerm?: string): GlossaryTerm | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const rec = raw as Record<string, unknown>;
+  const term = typeof rec.term === "string" && rec.term ? rec.term : fallbackTerm;
+  if (!term) return null;
+  return {
+    term,
+    definition: typeof rec.definition === "string" ? rec.definition : "",
+    ambiguous: rec.ambiguous === true || rec.status === "ambiguous",
+  };
 }
 
 /**

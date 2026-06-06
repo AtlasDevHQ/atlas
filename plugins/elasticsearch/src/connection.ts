@@ -174,6 +174,24 @@ export function parseElasticsearchUrl(url: string): ParsedElasticsearchUrl {
     throw new Error("Invalid Elasticsearch URL: missing host.");
   }
 
+  // Credentials belong in the secret `apiKey` config field (encrypted at rest),
+  // never in the URL. The endpoint is composed from host + path only, so URL
+  // userinfo / auth query params would otherwise be silently dropped — reject
+  // them loudly so a user can't believe they authenticated via the URL.
+  if (parsed.username || parsed.password) {
+    throw new Error(
+      "Invalid Elasticsearch URL: credentials must be supplied via the apiKey config field, not the URL userinfo.",
+    );
+  }
+  const AUTH_PARAM_KEYS = ["username", "password", "api_key", "apikey", "access_token", "token", "auth"];
+  for (const key of AUTH_PARAM_KEYS) {
+    if (parsed.searchParams.has(key)) {
+      throw new Error(
+        `Invalid Elasticsearch URL: auth parameter "${key}" is not allowed in the URL — use the apiKey config field.`,
+      );
+    }
+  }
+
   const proto = resolveSsl(parsed.searchParams) ? "https" : "http";
   const prefix = parsed.pathname.replace(/\/+$/, "");
   const endpoint = `${proto}://${host}${prefix}`;
@@ -190,6 +208,8 @@ export function extractHost(url: string): string {
   try {
     return new URL(url).hostname || "(unknown)";
   } catch {
+    // intentionally ignored: a parse failure here is non-fatal — this is a
+    // best-effort logging helper, and parseElasticsearchUrl owns real validation.
     return "(unknown)";
   }
 }

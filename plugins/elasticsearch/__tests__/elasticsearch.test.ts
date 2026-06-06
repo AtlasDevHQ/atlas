@@ -90,6 +90,27 @@ describe("parseElasticsearchUrl", () => {
   test("rejects an unparseable URL", () => {
     expect(() => parseElasticsearchUrl("not a url")).toThrow();
   });
+
+  test("rejects credentials embedded in the URL userinfo", () => {
+    expect(() =>
+      parseElasticsearchUrl("elasticsearch://user:pass@host:9200"),
+    ).toThrow(/apiKey config field/);
+  });
+
+  test("rejects auth-like query parameters in the URL", () => {
+    expect(() =>
+      parseElasticsearchUrl("elasticsearch://host:9200?api_key=abc"),
+    ).toThrow(/not allowed in the URL/);
+    expect(() =>
+      parseElasticsearchUrl("elasticsearch://host:9200?access_token=abc"),
+    ).toThrow(/not allowed in the URL/);
+  });
+
+  test("still allows the ssl/tls control params", () => {
+    expect(() =>
+      parseElasticsearchUrl("elasticsearch://host:9200?ssl=false"),
+    ).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

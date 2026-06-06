@@ -16,6 +16,29 @@ import { mapSQLType, isViewLike, singularize, entityName } from "../../profiler-
 import { suggestMeasureType, describeMeasure } from "../../profiler-patterns";
 import { isView, isMatView, mapSalesforceFieldType } from "./analyze";
 
+/**
+ * Decide the `table:` / `FROM` qualifier for a profiled table.
+ *
+ * `public` is the PostgreSQL default schema and is always left unqualified.
+ * `main` is the DuckDB/SQLite default schema, so it is unqualified *only*
+ * there — but `--schema` is Postgres-only, so a PostgreSQL datasource can be
+ * profiled with a custom schema literally named `main`, which MUST stay
+ * qualified or resolution silently falls back to the connection's
+ * `search_path` rather than the explicit schema (issue #3252). Every other
+ * schema is qualified.
+ *
+ * `generateEntityYAML` (entity `table:`) and `generateMetricYAML` (metric
+ * `FROM`) call this in lockstep: the SQL whitelist is built from
+ * `entity.table`, so a divergent metric ref would fail table-whitelist
+ * validation.
+ */
+function qualifyTableName(tableName: string, schema: string, dbType: DBType): string {
+  const schemaIsDefault =
+    schema === "public" ||
+    (schema === "main" && (dbType === "duckdb" || dbType === "sqlite"));
+  return schemaIsDefault ? tableName : `${schema}.${tableName}`;
+}
+
 export function generateEntityYAML(
   profile: TableProfile,
   allProfiles: TableProfile[],
@@ -24,7 +47,7 @@ export function generateEntityYAML(
   source?: string,
 ): string {
   const name = entityName(profile.table_name);
-  const qualifiedTable = schema !== "public" && schema !== "main" ? `${schema}.${profile.table_name}` : profile.table_name;
+  const qualifiedTable = qualifyTableName(profile.table_name, schema, dbType);
 
   // Build dimensions
   const dimensions: Record<string, unknown>[] = profile.columns.map((col) => {
@@ -525,7 +548,16 @@ export function generateCatalogYAML(profiles: TableProfile[]): string {
   return yaml.dump(catalog, { lineWidth: 120, noRefs: true });
 }
 
-export function generateMetricYAML(profile: TableProfile, schema: string = "public"): string | null {
+// `dbType` is appended after `schema` (rather than placed before it as in
+// generateEntityYAML) to preserve the existing `(profile, schema)` callers; it
+// is required for dbType-aware `main` qualification (issue #3252) and defaults
+// to "postgres" — the primary datasource and the only dbType for which a custom
+// schema named `main` is reachable.
+export function generateMetricYAML(
+  profile: TableProfile,
+  schema: string = "public",
+  dbType: DBType = "postgres",
+): string | null {
   if (isViewLike(profile)) return null;
 
   const numericCols = profile.columns.filter(
@@ -540,7 +572,7 @@ export function generateMetricYAML(profile: TableProfile, schema: string = "publ
 
   const pkCol = profile.columns.find((c) => c.is_primary_key);
   const enumCols = profile.columns.filter((c) => c.is_enum_like);
-  const qualifiedTable = schema !== "public" && schema !== "main" ? `${schema}.${profile.table_name}` : profile.table_name;
+  const qualifiedTable = qualifyTableName(profile.table_name, schema, dbType);
 
   const metrics: Record<string, unknown>[] = [];
 

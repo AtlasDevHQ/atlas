@@ -607,7 +607,7 @@ async function profileDatasource(
 
   // Generate metric files per table
   for (const profile of profiles) {
-    const metricYaml = generateMetricYAML(profile, schemaArg);
+    const metricYaml = generateMetricYAML(profile, schemaArg, dbType);
     if (metricYaml) {
       const filePath = path.join(
         metricsOutDir,
@@ -908,7 +908,7 @@ export async function handleInit(args: string[]): Promise<void> {
     console.log(`  wrote ${glossaryPath}`);
 
     for (const profile of profiles) {
-      const metricYaml = generateMetricYAML(profile, duckSchema);
+      const metricYaml = generateMetricYAML(profile, duckSchema, "duckdb" as DBType);
       if (metricYaml) {
         const filePath = path.join(
           metricsOutDir,

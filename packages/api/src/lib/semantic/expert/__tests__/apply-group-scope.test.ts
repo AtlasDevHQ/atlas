@@ -158,4 +158,18 @@ describe("applyAmendmentToEntity — group-aware routing (#3284)", () => {
     expect(upsertEntityForGroup.mock.calls[0][4]).toBe("eu_prod"); // row's own group, not null
     expect(syncEntityToDisk.mock.calls[0][4]).toBe("eu_prod");
   });
+
+  it("falls back to an unscoped lookup when the persisted group misses, then writes back to the row's group", async () => {
+    // A stale/mismatched explicit group (e.g. an interactive amendment whose
+    // flat-root entity was imported under a datasource group) misses the scoped
+    // lookup; the fallback resolves the unique row and the write-back targets
+    // its own group — never the stale label, never default. (#3284 fix for the
+    // default-vs-unknown conflation Codex flagged.)
+    await applyAmendmentToEntity("org-1", amendment("products", "stale_group"), "req-5");
+
+    expect(getEntity.mock.calls[0][3]).toBe("stale_group"); // scoped attempt first
+    expect(getEntity.mock.calls[1][3]).toBeUndefined(); // unscoped fallback
+    expect(upsertEntityForGroup.mock.calls[0][4]).toBe("eu_prod"); // row's own group
+    expect(syncEntityToDisk.mock.calls[0][4]).toBe("eu_prod");
+  });
 });

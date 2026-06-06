@@ -197,13 +197,25 @@ describe("loadEntitiesFromDisk (layout-aware, #3284)", () => {
     ]);
   });
 
-  it("honors a `group:` override on the flat + legacy layouts", async () => {
-    // Flat + legacy let a declared `group:`/`connection:` field assign the
-    // group (back-compat), matching `resolveEntityGroup`.
+  it("IGNORES a `group:` field on a flat-root entity (mirrors the importer's flat scope, #3284)", async () => {
+    // The disk importer (`_scanEntityDirs`) scopes flat-root entities by
+    // install-id, NOT a declared field — which resolves to NULL/default in the
+    // self-hosted scheduler context. Honoring the field here would target a
+    // group the DB row was never imported into, so the apply 409s / misses.
     writeSemanticFile("entities/orders.yml", "table: orders\ngroup: tenant_a\n");
     const entities = await loadEntitiesFromDisk();
     expect(entities).toHaveLength(1);
-    expect(entities[0].group).toBe("tenant_a");
+    expect(entities[0].group).toBe("default");
+  });
+
+  it("honors a `connection:` override on the legacy `<source>/` layout", async () => {
+    // Legacy `<source>/entities/` IS imported by its resolved group (the
+    // importer sets `connection_group_id` from `resolveEntityGroup`), so the
+    // field-wins precedence is honored — unlike flat root.
+    writeSemanticFile("crm/entities/contacts.yml", "table: contacts\nconnection: tenant_b\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities).toHaveLength(1);
+    expect(entities[0].group).toBe("tenant_b");
   });
 
   it("skips entity files missing the required `table` field (matches discoverEntities)", async () => {

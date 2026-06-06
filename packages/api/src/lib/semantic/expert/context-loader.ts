@@ -306,7 +306,19 @@ export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
     // `scanEntities` already dropped files whose YAML failed to parse.
     if (typeof raw.table !== "string" || !raw.table) continue;
 
-    const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
+    // Mirror the importer's write scope (`_scanEntityDirs`) so the apply path's
+    // `getEntity(..., group)` resolves the SAME row the importer wrote (#3284):
+    //   - flat root → "default" (NULL `connection_group_id`). The importer
+    //     scopes flat entities by install-id, NOT a declared `group:`/`connection:`
+    //     field — which resolves to NULL in the self-hosted scheduler context
+    //     this loader serves — so honoring the field here would target a group
+    //     the DB row was never imported into.
+    //   - canonical `groups/<group>/` and legacy `<source>/` → the resolved
+    //     group (the importer sets `connection_group_id` from the same
+    //     `resolveEntityGroup` call), so honor it.
+    const group = origin === "flat"
+      ? "default"
+      : resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
     entities.push({
       name: path.basename(filePath).replace(/\.ya?ml$/, ""),
       table: raw.table,

@@ -59,7 +59,17 @@ export async function applyAmendmentToEntity(
   // path. `getEntity` may still throw AmbiguousEntityError (undefined group,
   // 2+ groups) — that propagates to the route as a 409 with `groups`.
   const lookupScope = groupToLookupScope(result.group);
-  const entity = await getEntity(effectiveOrgId, "entity", result.entityName, lookupScope);
+  let entity = await getEntity(effectiveOrgId, "entity", result.entityName, lookupScope);
+  if (!entity && lookupScope !== undefined) {
+    // The persisted group didn't resolve to a row — e.g. an interactive
+    // `proposeAmendment` row (NULL group) whose flat-root entity was imported
+    // under a datasource group, or a stale group label. Fall back to the
+    // back-compat UNSCOPED lookup, which resolves a unique match (and only
+    // throws AmbiguousEntityError → 409 on genuine cross-group ambiguity). The
+    // write-back below still targets the resolved row's OWN group, so a wrong
+    // scope is never written.
+    entity = await getEntity(effectiveOrgId, "entity", result.entityName);
+  }
   if (!entity) {
     throw new Error(`Entity "${result.entityName}" not found for org ${orgId}`);
   }

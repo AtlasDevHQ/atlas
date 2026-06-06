@@ -260,47 +260,64 @@ export async function loadEntitiesForOrg(
 }
 
 /**
- * Load entity YAML files from the flat default `entities/` directory.
+ * Load entity YAML files across every on-disk layout (ADR-0012): the flat
+ * default `entities/`, the canonical `groups/<group>/entities/` namespace, and
+ * legacy `<source>/entities/`. Routed through the shared `scanEntities`
+ * traversal the discovery read paths use, so the expert context can no longer
+ * miss per-group entities (#3284).
  *
- * Intentionally root-only (the default group), NOT layout-aware: unlike the
- * glossary loader below, this feeds the scheduled tick's auto-apply path
- * (`runExpertSchedulerTick` → `applyAmendmentToEntity`), which resolves the
- * target entity purely by name with no group/connection. Discovering
- * `groups/<group>/entities/` here would let an auto-approved amendment for a
- * group entity 409 as ambiguous or write back into the default scope. Making
- * the entity path group-aware end-to-end (thread the group through analyze →
- * insert → apply) is tracked in #3284. `name` keys off `table`/file-stem (the
- * storage key the apply path looks up by), mirroring `loadEntitiesFromDB`.
+ * Each entity carries its effective Connection group on `ParsedEntity.group`,
+ * resolved directory-canonically via {@link resolveEntityGroup} (matching the
+ * importer + file whitelist): `"default"` for the flat root, the group name for
+ * `groups/<group>/` and legacy `<source>/`. That group is threaded
+ * analyze → insert → apply so the scheduled tick's auto-apply path
+ * (`runExpertSchedulerTick` → `applyAmendmentToEntity`) updates the correct
+ * group's row instead of 409-ing as ambiguous or corrupting the default scope —
+ * the gap that previously kept this loader deliberately root-only.
+ *
+ * `name` keys off the file stem — the storage key the importer
+ * (`_scanEntityDirs`) writes to `semantic_entities.name` and that the apply
+ * path looks the entity up by — matching `discoverEntities` rather than the
+ * YAML `name:` display label. Files missing the required `table:` field are
+ * skipped, mirroring `discoverEntities`/`_scanEntityDirs`.
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
-  const entitiesDir = path.join(getSemanticRoot(), "entities");
-  if (!fs.existsSync(entitiesDir)) return [];
+  const { scanEntities, resolveEntityGroup, readGroupField } = await import(
+    "@atlas/api/lib/semantic/scanner"
+  );
+
+  const root = getSemanticRoot();
+  if (!fs.existsSync(root)) return [];
+
+  const { entities: scanned, warnings } = scanEntities(root);
+  // The interactive read paths surface scan warnings to the user; the expert
+  // tick runs unattended, so re-log a partial scan against the expert context
+  // (matches `loadGlossaryFromDisk`'s fail-loud handling of a partial union).
+  if (warnings.length > 0) {
+    log.warn(
+      { warnings },
+      "Expert entity context is partial — some entity files failed to scan",
+    );
+  }
 
   const entities: ParsedEntity[] = [];
+  for (const { raw, filePath, sourceName, origin } of scanned) {
+    // Require `table:` so we match `discoverEntities`/`_scanEntityDirs`'s gate;
+    // `scanEntities` already dropped files whose YAML failed to parse.
+    if (typeof raw.table !== "string" || !raw.table) continue;
 
-  for (const file of fs.readdirSync(entitiesDir)) {
-    if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
-    try {
-      const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
-      const parsed = yaml.load(content) as Record<string, unknown> | null;
-      if (!parsed || typeof parsed !== "object") continue;
-
-      entities.push({
-        name: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
-        table: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
-        description: typeof parsed.description === "string" ? parsed.description : undefined,
-        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
-        measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
-        joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
-        query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
-        connection: typeof parsed.connection === "string" ? parsed.connection : undefined,
-      });
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), file },
-        "Failed to parse entity YAML",
-      );
-    }
+    const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
+    entities.push({
+      name: path.basename(filePath).replace(/\.ya?ml$/, ""),
+      table: raw.table,
+      description: typeof raw.description === "string" ? raw.description : undefined,
+      dimensions: Array.isArray(raw.dimensions) ? raw.dimensions as ParsedEntity["dimensions"] : [],
+      measures: Array.isArray(raw.measures) ? raw.measures as ParsedEntity["measures"] : [],
+      joins: Array.isArray(raw.joins) ? raw.joins as ParsedEntity["joins"] : [],
+      query_patterns: Array.isArray(raw.query_patterns) ? raw.query_patterns as ParsedEntity["query_patterns"] : [],
+      connection: typeof raw.connection === "string" ? raw.connection : undefined,
+      group,
+    });
   }
 
   return entities;

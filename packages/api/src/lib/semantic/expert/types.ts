@@ -49,7 +49,21 @@ export interface ParsedEntity {
     description?: string;
     sql: string;
   }>;
+  /**
+   * Legacy YAML `connection:` field, carried verbatim from the parsed YAML.
+   * Prefer {@link group} for the effective Connection group — `connection` is
+   * only the raw field, not the layout-resolved group.
+   */
   connection?: string;
+  /**
+   * Effective Connection group resolved via `resolveEntityGroup` from the
+   * on-disk directory + any declared `group:`/`connection:` field (ADR-0012,
+   * #3284): `"default"` for the flat `entities/` root, the group name for
+   * `groups/<group>/entities/` and legacy `<source>/entities/`. Threaded
+   * analyze → insert → apply so an amendment targets the correct group scope.
+   * `undefined` when the loader is not layout-aware (DB / overlay loaders).
+   */
+  group?: string;
 }
 
 /** A glossary term. */
@@ -85,6 +99,15 @@ export interface AnalysisContext {
 export interface AnalysisResult {
   category: AnalysisCategory;
   entityName: string;
+  /**
+   * Effective Connection group the finding's entity belongs to (ADR-0012,
+   * #3284): `"default"` for the flat root, the group name otherwise. Carried
+   * from {@link ParsedEntity.group} so the amendment is inserted and applied
+   * against the correct group scope (not the null/default scope or a 409).
+   * `undefined` for findings whose loader is not layout-aware (the interactive
+   * `proposeAmendment` tool, which reads the flat root) — treated as default.
+   */
+  group?: string;
   amendmentType: AmendmentType;
   amendment: Record<string, unknown>;
   rationale: string;

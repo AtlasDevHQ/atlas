@@ -140,7 +140,9 @@ describe("runMigrations", () => {
     //   Plus 0119 (drop legacy teams/telegram/gchat/whatsapp_installations, #3161) = 120.
     //   Plus 0120 (static-bot routing-id partial unique index, #3167) = 121.
     //   Plus 0121 (dashboard_cards.annotations for event annotations, #3209) = 122.
-    expect(count).toBe(122);
+    //   Plus 0122 (learned_patterns.connection_group_id for group-aware expert
+    //   apply, #3284) = 123.
+    expect(count).toBe(123);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -291,6 +293,7 @@ describe("runMigrations", () => {
         "0119_drop_legacy_credential_tables.sql",
         "0120_static_bot_routing_id_unique.sql",
         "0121_dashboard_card_annotations.sql",
+        "0122_learned_patterns_connection_group.sql",
       ],
     });
 

@@ -53,6 +53,7 @@ export function findCoverageGaps(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "coverage_gaps",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_dimension",
         amendment: {
           name: col.name,
@@ -87,6 +88,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "description_quality",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "update_description",
         amendment: { field: "table", description: entity.description ?? "" },
         rationale: entity.description
@@ -108,6 +110,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
         results.push(createAnalysisResult({
           category: "description_quality",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "update_description",
           amendment: { dimension: dim.name, description: dim.description ?? "" },
           rationale: dim.description
@@ -146,6 +149,7 @@ export function findTypeInaccuracies(ctx: AnalysisContext): AnalysisResult[] {
         results.push(createAnalysisResult({
           category: "type_accuracy",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "update_dimension",
           amendment: { name: dim.name, type: inferredType },
           rationale: `Dimension "${dim.name}" is typed as "${dim.type}" but the database column is ${col.type} (maps to "${inferredType}").`,
@@ -199,6 +203,7 @@ export function findMissingMeasures(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "missing_measures",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_measure",
         amendment: {
           name: measureName,
@@ -258,6 +263,7 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "missing_joins",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_join",
         amendment: {
           name: `to_${fk.to_table}`,
@@ -300,6 +306,7 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "glossary_gaps",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_glossary_term",
         amendment: { term: abbrev, definition: "", ambiguous: true },
         rationale: `Business abbreviation "${abbrev}" appears in column "${dim.name}" but is not defined in the glossary. Defining it helps the agent understand queries about this metric.`,
@@ -343,6 +350,7 @@ export function findStaleSampleValues(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "sample_value_staleness",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "update_dimension",
         amendment: {
           name: dim.name,
@@ -386,6 +394,7 @@ export function findQueryPatternGaps(ctx: AnalysisContext): AnalysisResult[] {
       results.push(createAnalysisResult({
         category: "query_pattern_coverage",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_query_pattern",
         amendment: {
           name: `pattern_${entity.table}_${results.length}`,
@@ -442,6 +451,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "add_virtual_dimension",
           amendment: {
             name: virtualName,
@@ -482,6 +492,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "add_virtual_dimension",
           amendment: {
             name: virtualName,

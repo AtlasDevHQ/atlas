@@ -233,6 +233,41 @@ export async function upsertEntity(
 }
 
 /**
+ * Upsert a PUBLISHED semantic entity, setting `connection_group_id` DIRECTLY
+ * rather than resolving it from an install/connection id via
+ * {@link inlineConnectionGroupSql}.
+ *
+ * The published-status sibling of {@link upsertDraftEntityForGroup}, used by
+ * the expert/`atlas improve` apply path (`applyAmendmentToEntity`, #3284) where
+ * the target group is the on-disk `groups/<group>/` directory the amendment was
+ * analyzed in (ADR-0012) — a group name, not an install id that would resolve
+ * through `workspace_plugins`. Passing that group to {@link upsertEntity} would
+ * resolve it through the connection subquery to NULL and silently write the
+ * amendment into the default scope. Pass `null` for the flat default group.
+ */
+export async function upsertEntityForGroup(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  yamlContent: string,
+  connectionGroupId?: string | null,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for org-scoped semantic entities");
+  }
+  await internalQuery(
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_group_id, status)
+     VALUES ($1, $2, $3, $4, $5, 'published')
+     ON CONFLICT (org_id, entity_type, name, ${coalescedScopeColumn(GROUP_COLUMN)}) WHERE status = 'published'
+     DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
+                   entity_type = EXCLUDED.entity_type,
+                   connection_group_id = EXCLUDED.connection_group_id,
+                   updated_at = now()`,
+    [orgId, entityType, name, yamlContent, connectionGroupId ?? null],
+  );
+}
+
+/**
  * Upsert a semantic entity at status='draft'.
  *
  * Used for developer-mode writes. The published row (if any) is left

@@ -152,38 +152,77 @@ describe("loadGlossaryFromDisk (layout-aware, #3273)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Entities — intentionally root-only (NOT layout-aware). Group-aware entity
-// discovery + apply is deferred to #3284 (the scheduler's auto-apply path
-// resolves entities by name with no group, so discovering group entities here
-// would mis-target an approved amendment). These tests pin that deliberate
-// scope so a future "helpful" refactor can't silently re-introduce the bug.
+// Entities — now layout-aware end-to-end (#3284). The loader discovers all
+// three layouts and carries each entity's resolved Connection group on
+// `ParsedEntity.group`, which is threaded analyze → insert → apply so an
+// auto/admin-approved amendment for a group entity updates THAT group's row
+// (no 409, no default-scope write). Before #3284 this was deliberately
+// root-only because the apply path resolved entities by name with no group.
 // ---------------------------------------------------------------------------
 
-describe("loadEntitiesFromDisk (root-only by design, see #3284)", () => {
-  it("discovers flat-root entities and keys name to the storage key (not a display `name:`)", async () => {
-    // The scheduled-tick apply path (`apply.ts`) looks the entity up by
-    // `proposal.entityName` (= entity.name), which must be the storage key the
-    // DB/disk is keyed by — never a display label. Mirrors `loadEntitiesFromDB`.
+describe("loadEntitiesFromDisk (layout-aware, #3284)", () => {
+  it("discovers flat-root entities, keys name to the storage key (not a display `name:`), group 'default'", async () => {
+    // The apply path (`apply.ts`) looks the entity up by `proposal.entityName`
+    // (= entity.name), which must be the storage key the DB/disk is keyed by
+    // (the file stem the importer writes to `semantic_entities.name`) — never a
+    // display label. Matches `discoverEntities`.
     writeSemanticFile("entities/orders.yml", "table: orders\nname: Orders Display Label\n");
     const entities = await loadEntitiesFromDisk();
     expect(entities).toHaveLength(1);
-    expect(entities[0].name).toBe("orders"); // storage key, not "Orders Display Label"
+    expect(entities[0].name).toBe("orders"); // file stem, not "Orders Display Label"
     expect(entities[0].table).toBe("orders");
     expect(entities[0].connection).toBeUndefined();
+    expect(entities[0].group).toBe("default");
   });
 
-  it("does NOT discover groups/<group>/ or legacy <source>/ entities (root-only; #3284)", async () => {
+  it("discovers groups/<group>/ + legacy <source>/ + flat entities, attributing each group (PRIMARY GAP)", async () => {
     writeSemanticFile("entities/orders.yml", "table: orders\n");
     writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n");
+    writeSemanticFile("groups/us_prod/entities/customers.yml", "table: customers\n");
     writeSemanticFile("marketing/entities/campaigns.yml", "table: campaigns\n");
+
     const entities = await loadEntitiesFromDisk();
-    // Only the flat-root entity surfaces; group + legacy entities are excluded
-    // until the apply path is group-aware (#3284).
-    expect(entities.map((e) => e.table)).toEqual(["orders"]);
+    // Group attribution: directory canonical for `groups/<group>/`, the source
+    // name for legacy `<source>/`, "default" for the flat root. The same-stem
+    // `customers` entity surfaces once per group (no cross-group collapse) —
+    // the bug #3284 fixes.
+    const byGroup = entities
+      .map((e) => `${e.group}:${e.name}`)
+      .toSorted();
+    expect(byGroup).toEqual([
+      "default:orders",
+      "eu_prod:customers",
+      "marketing:campaigns",
+      "us_prod:customers",
+    ]);
   });
 
-  it("returns empty when the flat root has no entities directory", async () => {
-    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n"); // present but not flat-root
+  it("honors a `group:` override on the flat + legacy layouts", async () => {
+    // Flat + legacy let a declared `group:`/`connection:` field assign the
+    // group (back-compat), matching `resolveEntityGroup`.
+    writeSemanticFile("entities/orders.yml", "table: orders\ngroup: tenant_a\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities).toHaveLength(1);
+    expect(entities[0].group).toBe("tenant_a");
+  });
+
+  it("skips entity files missing the required `table` field (matches discoverEntities)", async () => {
+    writeSemanticFile("entities/orders.yml", "table: orders\n");
+    writeSemanticFile("entities/no_table.yml", "name: just a label\n"); // no table:
+    const entities = await loadEntitiesFromDisk();
+    expect(entities.map((e) => e.name)).toEqual(["orders"]);
+  });
+
+  it("discovers group entities even when the flat root has no entities directory", async () => {
+    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n");
+    const entities = await loadEntitiesFromDisk();
+    expect(entities).toHaveLength(1);
+    expect(entities[0].name).toBe("customers");
+    expect(entities[0].group).toBe("eu_prod");
+  });
+
+  it("returns empty when no entities exist in any layout", async () => {
+    writeSemanticFile("glossary.yml", "terms:\n  arr:\n    definition: x\n"); // present but no entities
     const entities = await loadEntitiesFromDisk();
     expect(entities).toEqual([]);
   });

@@ -322,6 +322,85 @@ describe("searchGlossary — possible_mappings haystack", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Group-namespace discovery (ADR-0012 / #3240) — metrics + glossary under the
+// canonical `semantic/groups/<group>/` layout are discovered and attributed to
+// `<group>`, never to a source literally named "groups". Flat-root + legacy
+// `<source>/` layouts must keep behaving exactly as before.
+// ---------------------------------------------------------------------------
+describe("group-namespace discovery (#3240)", () => {
+  let groupRoot: string;
+
+  beforeAll(() => {
+    groupRoot = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-lookups-groups-"));
+    // Flat default group (unchanged baseline).
+    fs.mkdirSync(path.join(groupRoot, "metrics"), { recursive: true });
+    fs.writeFileSync(
+      path.join(groupRoot, "metrics", "default_revenue.yml"),
+      ["id: default_revenue", "sql: |-", "  SELECT SUM(total) FROM orders"].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(groupRoot, "glossary.yml"),
+      ["terms:", "  revenue:", "    status: defined", "    definition: Paid invoice total."].join("\n"),
+    );
+    // A flat-root metric with a `group:` field override — reuses the entity
+    // group-resolution logic, so it attributes to the field group, not default.
+    fs.writeFileSync(
+      path.join(groupRoot, "metrics", "override_metric.yml"),
+      ["id: override_metric", "group: crm", "sql: |-", "  SELECT COUNT(*) FROM leads"].join("\n"),
+    );
+
+    // Canonical groups/<group>/ namespace.
+    fs.mkdirSync(path.join(groupRoot, "groups", "analytics", "metrics"), { recursive: true });
+    fs.writeFileSync(
+      path.join(groupRoot, "groups", "analytics", "metrics", "sessions.yml"),
+      ["id: sessions_count", "sql: |-", "  SELECT COUNT(*) FROM sessions"].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(groupRoot, "groups", "analytics", "glossary.yml"),
+      ["terms:", "  mau:", "    status: defined", "    definition: Monthly active users."].join("\n"),
+    );
+  });
+
+  afterAll(() => {
+    fs.rmSync(groupRoot, { recursive: true, force: true });
+  });
+
+  it("discovers groups/<group>/metrics and attributes them to <group>", () => {
+    const metrics = loadMetricDefinitions({ semanticRoot: groupRoot });
+    const sessions = metrics.find((m) => m.id === "sessions_count");
+    expect(sessions).toBeDefined();
+    expect(sessions?.source).toBe("analytics");
+  });
+
+  it("discovers groups/<group>/glossary.yml and attributes terms to <group>", () => {
+    const terms = loadGlossaryTerms({ semanticRoot: groupRoot });
+    const mau = terms.find((t) => t.term === "mau");
+    expect(mau).toBeDefined();
+    expect(mau?.source).toBe("analytics");
+  });
+
+  it("never attributes a metric or glossary term to a source named 'groups'", () => {
+    const metrics = loadMetricDefinitions({ semanticRoot: groupRoot });
+    const terms = loadGlossaryTerms({ semanticRoot: groupRoot });
+    expect(metrics.some((m) => m.source === "groups")).toBe(false);
+    expect(terms.some((t) => t.source === "groups")).toBe(false);
+  });
+
+  it("keeps the flat default group attributed to 'default' (unchanged)", () => {
+    const metrics = loadMetricDefinitions({ semanticRoot: groupRoot });
+    const def = metrics.find((m) => m.id === "default_revenue");
+    expect(def?.source).toBe("default");
+    const terms = loadGlossaryTerms({ semanticRoot: groupRoot });
+    expect(terms.find((t) => t.term === "revenue")?.source).toBe("default");
+  });
+
+  it("honors a flat-root metric `group:` field override (reuses resolveEntityGroup)", () => {
+    const metrics = loadMetricDefinitions({ semanticRoot: groupRoot });
+    expect(metrics.find((m) => m.id === "override_metric")?.source).toBe("crm");
+  });
+});
+
 describe("listEntities — defensive coercion", () => {
   let coerceRoot: string;
 

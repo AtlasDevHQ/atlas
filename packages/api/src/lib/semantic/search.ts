@@ -15,7 +15,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
-import { RESERVED_DIRS, scanEntities, resolveEntityGroup, readGroupField } from "./scanner";
+import { scanEntities, resolveEntityGroup, readGroupField, getGroupDirs } from "./scanner";
 
 const log = createLogger("semantic-index");
 
@@ -417,25 +417,11 @@ function loadEntities(semanticRoot: string): ParsedEntity[] {
 function loadMetrics(semanticRoot: string): ParsedMetric[] {
   const metrics: ParsedMetric[] = [];
 
-  // Default metrics
-  loadMetricsFromDir(path.join(semanticRoot, "metrics"), metrics);
-
-  // Per-source subdirectories
-  if (fs.existsSync(semanticRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
-    } catch (err) {
-      log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source metric directories");
-      return metrics;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      const subMetrics = path.join(semanticRoot, entry.name, "metrics");
-      if (fs.existsSync(subMetrics)) {
-        loadMetricsFromDir(subMetrics, metrics);
-      }
-    }
+  // Layout-aware traversal (ADR-0012): flat default `metrics/`, the canonical
+  // `groups/<group>/metrics/` namespace, and legacy `<source>/metrics/` all
+  // feed the index through the shared scanner.
+  for (const { dir } of getGroupDirs(semanticRoot, "metrics").dirs) {
+    loadMetricsFromDir(dir, metrics);
   }
 
   return metrics;
@@ -475,25 +461,10 @@ function loadMetricsFromDir(dir: string, out: ParsedMetric[]): void {
 function loadGlossary(semanticRoot: string): GlossaryTerm[] {
   const terms: GlossaryTerm[] = [];
 
-  // Try root glossary
-  loadGlossaryFile(path.join(semanticRoot, "glossary.yml"), terms);
-
-  // Per-source glossaries
-  if (fs.existsSync(semanticRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
-    } catch (err) {
-      log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source glossary files");
-      return terms;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-      loadGlossaryFile(
-        path.join(semanticRoot, entry.name, "glossary.yml"),
-        terms,
-      );
-    }
+  // Flat default root, the canonical groups/<group>/ namespace, and legacy
+  // <source>/ all surface glossary.yml through the shared scanner (ADR-0012).
+  for (const { dir } of getGroupDirs(semanticRoot, null).dirs) {
+    loadGlossaryFile(path.join(dir, "glossary.yml"), terms);
   }
 
   return terms;
@@ -518,14 +489,29 @@ function loadGlossaryFile(filePath: string, out: GlossaryTerm[]): void {
 }
 
 function loadCatalog(semanticRoot: string): ParsedCatalog | null {
-  const catalogPath = path.join(semanticRoot, "catalog.yml");
-  if (!fs.existsSync(catalogPath)) return null;
+  // Merge catalog.yml across the flat default root, the canonical
+  // groups/<group>/ namespace, and legacy <source>/ (ADR-0012) so per-group
+  // `use_for` hints reach the index. The index keys catalog entries by entity
+  // name, so concatenating their `entities[]` is the natural merge.
+  const merged: CatalogEntry[] = [];
+  let version: string | undefined;
+  let found = false;
 
-  try {
-    const content = fs.readFileSync(catalogPath, "utf-8");
-    return yaml.load(content) as ParsedCatalog | null;
-  } catch (err) {
-    log.warn({ catalogPath, err: err instanceof Error ? err.message : String(err) }, "Failed to load catalog for semantic index");
-    return null;
+  for (const { dir } of getGroupDirs(semanticRoot, null).dirs) {
+    const catalogPath = path.join(dir, "catalog.yml");
+    if (!fs.existsSync(catalogPath)) continue;
+    try {
+      const content = fs.readFileSync(catalogPath, "utf-8");
+      const parsed = yaml.load(content) as ParsedCatalog | null;
+      if (!parsed || typeof parsed !== "object") continue;
+      found = true;
+      if (version === undefined && typeof parsed.version === "string") version = parsed.version;
+      if (Array.isArray(parsed.entities)) merged.push(...parsed.entities);
+    } catch (err) {
+      log.warn({ catalogPath, err: err instanceof Error ? err.message : String(err) }, "Failed to load catalog for semantic index");
+    }
   }
+
+  if (!found) return null;
+  return { version, entities: merged };
 }

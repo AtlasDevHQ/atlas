@@ -1573,6 +1573,26 @@ describe("GET /api/v1/admin/semantic/metrics", () => {
     const body = (await res.json()) as { metrics: unknown[] };
     expect(body.metrics.length).toBe(1);
   });
+
+  it("discovers groups/<group>/metrics and attributes them to <group> (#3240)", async () => {
+    const groupDir = path.join(tmpRoot, "groups", "analytics", "metrics");
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, "sessions.yml"),
+      ["id: sessions_count", "sql: SELECT COUNT(*) FROM sessions"].join("\n"),
+    );
+    try {
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/metrics"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { metrics: Array<{ source: string; file: string }> };
+      const grouped = body.metrics.find((m) => m.file === "sessions");
+      expect(grouped?.source).toBe("analytics");
+      // The reserved groups/ container is never itself a source.
+      expect(body.metrics.some((m) => m.source === "groups")).toBe(false);
+    } finally {
+      fs.rmSync(path.join(tmpRoot, "groups"), { recursive: true, force: true });
+    }
+  });
 });
 
 describe("GET /api/v1/admin/semantic/glossary", () => {
@@ -1587,6 +1607,24 @@ describe("GET /api/v1/admin/semantic/glossary", () => {
 
     const body = (await res.json()) as { glossary: unknown[] };
     expect(body.glossary.length).toBeGreaterThan(0);
+  });
+
+  it("discovers groups/<group>/glossary.yml and attributes it to <group> (#3240)", async () => {
+    const groupDir = path.join(tmpRoot, "groups", "analytics");
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, "glossary.yml"),
+      ["terms:", "  mau:", "    status: defined", "    definition: Monthly active users."].join("\n"),
+    );
+    try {
+      const res = await app.fetch(adminRequest("/api/v1/admin/semantic/glossary"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { glossary: Array<{ source: string }> };
+      expect(body.glossary.some((g) => g.source === "analytics")).toBe(true);
+      expect(body.glossary.some((g) => g.source === "groups")).toBe(false);
+    } finally {
+      fs.rmSync(path.join(tmpRoot, "groups"), { recursive: true, force: true });
+    }
   });
 });
 

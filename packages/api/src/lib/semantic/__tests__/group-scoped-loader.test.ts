@@ -41,7 +41,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 const { getWhitelistedTables, getCrossSourceJoins, _resetWhitelists } = await import("../whitelist");
-const { getEntityDirs, resolveEntityGroup } = await import("../scanner");
+const { getEntityDirs, getGroupDirs, resolveEntityGroup } = await import("../scanner");
 
 const tmpBase = resolve(__dirname, ".tmp-group-scoped-loader-test");
 let testCounter = 0;
@@ -118,6 +118,69 @@ describe("getEntityDirs — group-scoped layout (ADR-0012)", () => {
     const legacy = dirs.find((d) => d.sourceName === "sales");
     expect(legacy).toBeDefined();
     expect(legacy!.origin).toBe("legacy");
+  });
+});
+
+describe("getGroupDirs — shared layout traversal (ADR-0012 / #3240)", () => {
+  it("resolves a named subdir (metrics) across flat / groups / legacy layouts", () => {
+    const root = ensureDir(`gd-metrics-${testCounter}`);
+    ensureDir(`gd-metrics-${testCounter}/metrics`); // flat default
+    ensureDir(`gd-metrics-${testCounter}/groups/analytics/metrics`); // canonical
+    ensureDir(`gd-metrics-${testCounter}/sales/metrics`); // legacy
+
+    const { dirs } = getGroupDirs(root, "metrics");
+    const byGroup = Object.fromEntries(dirs.map((d) => [d.group, d]));
+    expect(byGroup["default"]?.origin).toBe("flat");
+    expect(byGroup["analytics"]?.origin).toBe("group");
+    expect(byGroup["sales"]?.origin).toBe("legacy");
+    // Each resolved dir is the <base>/metrics target.
+    expect(byGroup["analytics"]?.dir.endsWith(join("analytics", "metrics"))).toBe(true);
+  });
+
+  it("returns only existing target dirs for a named subdir", () => {
+    const root = ensureDir(`gd-missing-${testCounter}`);
+    ensureDir(`gd-missing-${testCounter}/groups/warehouse/entities`); // no metrics/ here
+
+    const { dirs } = getGroupDirs(root, "metrics");
+    // warehouse has entities/ but no metrics/ → not returned for subdir "metrics".
+    expect(dirs.some((d) => d.group === "warehouse")).toBe(false);
+  });
+
+  it("subdir=null returns the per-group base dir (for glossary.yml / catalog.yml)", () => {
+    const root = ensureDir(`gd-null-${testCounter}`);
+    ensureDir(`gd-null-${testCounter}/groups/analytics/entities`);
+    ensureDir(`gd-null-${testCounter}/sales/entities`);
+
+    const { dirs } = getGroupDirs(root, null);
+    const byGroup = Object.fromEntries(dirs.map((d) => [d.group, d]));
+    // Flat default base is the root itself.
+    expect(byGroup["default"]?.dir).toBe(root);
+    expect(byGroup["default"]?.origin).toBe("flat");
+    // Group base is groups/<group>, NOT groups/<group>/<subdir>.
+    expect(byGroup["analytics"]?.dir.endsWith(join("groups", "analytics"))).toBe(true);
+    expect(byGroup["analytics"]?.origin).toBe("group");
+    expect(byGroup["sales"]?.origin).toBe("legacy");
+  });
+
+  it("never attributes a directory to a source named 'groups'", () => {
+    const root = ensureDir(`gd-reserved-${testCounter}`);
+    ensureDir(`gd-reserved-${testCounter}/groups/crm/metrics`);
+
+    expect(getGroupDirs(root, "metrics").dirs.some((d) => d.group === "groups")).toBe(false);
+    expect(getGroupDirs(root, null).dirs.some((d) => d.group === "groups")).toBe(false);
+  });
+
+  it("getEntityDirs is a faithful projection of getGroupDirs(root, 'entities')", () => {
+    const root = ensureDir(`gd-parity-${testCounter}`);
+    ensureDir(`gd-parity-${testCounter}/entities`);
+    ensureDir(`gd-parity-${testCounter}/groups/warehouse/entities`);
+    ensureDir(`gd-parity-${testCounter}/sales/entities`);
+
+    const groupDirs = getGroupDirs(root, "entities").dirs;
+    const entityDirs = getEntityDirs(root).dirs;
+    expect(entityDirs.map((d) => [d.dir, d.sourceName, d.origin])).toEqual(
+      groupDirs.map((d) => [d.dir, d.group, d.origin]),
+    );
   });
 });
 

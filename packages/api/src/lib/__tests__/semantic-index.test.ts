@@ -292,6 +292,66 @@ describe("buildSemanticIndex", () => {
     expect(index).toContain("Ask the user which size they mean");
   });
 
+  it("discovers groups/<group>/metrics, glossary, and catalog in the index (#3240)", () => {
+    const root = ensureDir(`group-discovery-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    mkdirSync(join(root, "groups", "analytics", "entities"), { recursive: true });
+    mkdirSync(join(root, "groups", "analytics", "metrics"), { recursive: true });
+
+    // An entity in the group so its catalog use_for hint can attach.
+    writeFileSync(
+      join(root, "groups", "analytics", "entities", "sessions.yml"),
+      makeEntity("sessions", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+    // A flat-root entity so the layer isn't group-only.
+    writeFileSync(
+      join(root, "entities", "orders.yml"),
+      makeEntity("orders", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    writeFileSync(
+      join(root, "groups", "analytics", "metrics", "sessions_metrics.yml"),
+      [
+        "metrics:",
+        "  - name: weekly_active_users",
+        '    description: "Distinct users active in the last 7 days"',
+        "    entity: sessions",
+        "    aggregation: count_distinct",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(root, "groups", "analytics", "glossary.yml"),
+      [
+        "terms:",
+        "  - term: wau",
+        '    definition: "Weekly active users"',
+        "    status: defined",
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(root, "groups", "analytics", "catalog.yml"),
+      [
+        "version: '1'",
+        "entities:",
+        "  - name: sessions",
+        '    description: "User sessions"',
+        "    use_for:",
+        '      - "Engagement analysis"',
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+
+    // Group metric + glossary term are discovered (were entirely skipped before).
+    expect(index).toContain("weekly_active_users");
+    expect(index).toContain("**wau**");
+    // Group catalog use_for hint attaches to the group entity.
+    expect(index).toContain("Use for: Engagement analysis");
+    // The group entity is labeled with its group; nothing is attributed to "groups".
+    expect(index).toContain("[analytics]");
+    expect(index).not.toContain("[groups]");
+  });
+
   it("handles per-source subdirectories", () => {
     const root = ensureDir(`multisource-${testCounter}`);
     mkdirSync(join(root, "entities"), { recursive: true });

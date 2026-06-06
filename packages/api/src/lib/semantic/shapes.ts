@@ -10,10 +10,15 @@
 
 import { z } from "zod";
 
-/** Core entity shape — validates table name and connection only. */
+/**
+ * Core entity shape — validates the table name and the Connection-group
+ * scope. `group` is the canonical scope field (ADR-0012); `connection` is
+ * its deprecated alias, still parsed for back-compat.
+ */
 export const EntityShape = z
   .object({
     table: z.string(),
+    group: z.string().optional(),
     connection: z.string().optional(),
   })
   .passthrough();

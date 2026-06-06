@@ -85,10 +85,12 @@ export interface EntitySummary {
 }
 
 /**
- * Discover all entity YAML files from semantic/entities/ and
- * semantic/{source}/entities/. Entities in the top-level entities/
- * directory are tagged with source "default"; those under
- * semantic/{name}/entities/ use the subdirectory name as source.
+ * Discover all entity YAML files across the group-scoped layout (ADR-0012):
+ * the flat `semantic/entities/` root, the canonical
+ * `semantic/groups/<group>/entities/` namespace, and legacy
+ * `semantic/<source>/entities/` subdirectories. Entities in the flat root are
+ * tagged with source "default"; those under a group/legacy directory use the
+ * directory name as source.
  */
 interface DiscoverEntitiesResult {
   entities: EntitySummary[];
@@ -193,8 +195,9 @@ export function discoverTables(root: string): DiscoverTablesResult {
 }
 
 /**
- * Find a specific entity YAML file by table name. Searches default
- * entities/ and all per-source subdirectories.
+ * Find a specific entity YAML file by name. Searches the flat default
+ * entities/, the canonical groups/<group>/entities/ namespace, and legacy
+ * <source>/entities/ subdirectories (ADR-0012).
  * Caller must validate `name` with isValidEntityName() first.
  */
 export function findEntityFile(root: string, name: string): string | null {

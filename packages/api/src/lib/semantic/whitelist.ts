@@ -4,12 +4,15 @@
  * Reads the semantic/ directory to extract metadata used by the SQL tool
  * (table whitelist) and the CLI (schema profiling).
  *
- * Table whitelists are partitioned by connection ID when entity YAMLs use
- * the `connection` field or when per-source subdirectories exist under the
- * semantic root (e.g. `semantic/warehouse/entities/` infers connection ID
- * `warehouse`). When no entity specifies a connection and no per-source
- * subdirectories are present, all connections share the same whitelist
- * (backward compat with single-DB).
+ * Table whitelists are partitioned by Connection group. The canonical layout
+ * is the `semantic/groups/<group>/entities/` namespace, where the directory
+ * names the group (ADR-0012); the flat `semantic/entities/` root is the
+ * default group. An in-file `group:` field (with `connection:` as a deprecated
+ * alias) can assign the group from the flat root and overrides; in the
+ * `groups/` namespace the directory is canonical and a disagreeing field
+ * warns. The legacy `semantic/<source>/entities/` layout still loads for
+ * back-compat. When no group signal is present, all connections share the same
+ * whitelist (backward compat with single-DB).
  *
  * **Org scoping:** When an orgId is active, the whitelist is loaded from
  * the internal DB (`semantic_entities` table). The semantic index is built
@@ -26,7 +29,7 @@ import { z } from "zod";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
 import { invalidateSemanticIndex } from "./search";
-import { getEntityDirs } from "./scanner";
+import { getEntityDirs, readGroupField, resolveEntityGroup, type EntityDirOrigin } from "./scanner";
 import { invalidateOrgModeRoots } from "./sync";
 
 const log = createLogger("semantic");
@@ -95,13 +98,19 @@ export function normalizeTableIdentifier(raw: string): string {
 const _pluginEntities = new Map<string, Set<string>>();
 
 /**
- * Load entity YAMLs from a single directory into the connection map.
+ * Load entity YAMLs from a single directory into the group map.
+ *
+ * The effective group is resolved per-entity from the directory and any
+ * declared `group:`/`connection:` field via {@link resolveEntityGroup}
+ * (ADR-0012): the canonical `groups/<group>/` directory is authoritative
+ * (a disagreeing field warns and the directory wins); the flat default root
+ * and legacy `<source>/` layouts let the field assign the group.
  *
  * @param dir - Directory containing *.yml entity files.
- * @param defaultConnectionId - Connection ID for entities that don't specify
- *   an explicit `connection` field. When loading from a per-source subdirectory
- *   (e.g. `semantic/warehouse/entities/`), this is the subdirectory name.
- * @param byConnection - Accumulator map to populate.
+ * @param dirGroup - Group implied by the directory: `"default"` for the flat
+ *   root, the directory name for `groups/<group>/` or legacy `<source>/`.
+ * @param origin - On-disk layout of `dir`, driving group precedence.
+ * @param byConnection - Accumulator map to populate (keyed by group).
  * @param crossJoins - Optional accumulator for cross-source join hints.
  *   When provided, valid `cross_source_joins` entries from each entity are
  *   appended here. Invalid individual join entries are skipped with a warning
@@ -109,7 +118,8 @@ const _pluginEntities = new Map<string, Set<string>>();
  */
 function loadEntitiesFromDir(
   dir: string,
-  defaultConnectionId: string,
+  dirGroup: string,
+  origin: EntityDirOrigin,
   byConnection: Map<string, Set<string>>,
   crossJoins?: CrossSourceJoin[],
 ): void {
@@ -140,8 +150,17 @@ function loadEntitiesFromDir(
       }
       const entity = parsed.data;
 
-      // Explicit connection field takes precedence over directory-based inference
-      const connId = entity.connection ?? defaultConnectionId;
+      // Resolve the effective group from the directory + declared field
+      // (ADR-0012). The directory is canonical in the `groups/` namespace;
+      // a disagreeing field there is a foot-gun we warn on rather than honor.
+      const fieldGroup = readGroupField(entity);
+      const { group: connId, mismatch } = resolveEntityGroup(dirGroup, origin, fieldGroup);
+      if (mismatch) {
+        log.warn(
+          { file, dir, directoryGroup: dirGroup, declaredGroup: fieldGroup },
+          "Entity declares a group that differs from its directory — honoring the directory (ADR-0012: directory is canonical)",
+        );
+      }
       if (!byConnection.has(connId)) byConnection.set(connId, new Set());
       const tables = byConnection.get(connId)!;
 
@@ -186,13 +205,14 @@ function loadEntitiesFromDir(
 }
 
 /**
- * Load entity YAMLs and partition tables by connection ID.
+ * Load entity YAMLs and partition tables by Connection group.
  *
  * Supports two directory layouts:
- * - **Flat (legacy):** `entitiesDir` points to a single directory of *.yml files.
- * - **Multi-source:** `semanticRoot` points to the semantic root which contains
- *   `entities/` (default connection) and per-source subdirectories like
- *   `warehouse/entities/` whose name becomes the connection ID.
+ * - **Flat (legacy):** `entitiesDir` points to a single directory of *.yml files
+ *   (treated as the default group).
+ * - **Group-scoped:** `semanticRoot` points to the semantic root containing
+ *   `entities/` (default group), the canonical `groups/<group>/entities/`
+ *   namespace, and legacy `<source>/entities/` subdirectories (ADR-0012).
  *
  * @param semanticRoot - Semantic layer root directory (scans subdirectories).
  * @param entitiesDir - Override for a single flat entities directory (DI for tests).
@@ -204,9 +224,9 @@ function loadTablesByConnection(
 ): Map<string, Set<string>> {
   const byConnection = new Map<string, Set<string>>();
 
-  // Legacy flat-directory path (existing tests use this)
+  // Legacy flat-directory path (existing tests use this) — the default group.
   if (entitiesDir) {
-    loadEntitiesFromDir(entitiesDir, "default", byConnection, crossJoins);
+    loadEntitiesFromDir(entitiesDir, "default", "flat", byConnection, crossJoins);
     return byConnection;
   }
 
@@ -214,19 +234,19 @@ function loadTablesByConnection(
 
   const { dirs, rootScanFailed } = getEntityDirs(root);
   if (rootScanFailed) {
-    log.error({ root }, "Failed to scan semantic root — per-source whitelist entries may be missing");
+    log.error({ root }, "Failed to scan semantic root — per-group whitelist entries may be missing");
   }
 
-  for (const { dir, sourceName } of dirs) {
-    if (sourceName !== "default") {
-      log.info({ source: sourceName, dir }, "Discovered per-source entities directory");
+  for (const { dir, sourceName, origin } of dirs) {
+    if (origin !== "flat") {
+      log.info({ group: sourceName, dir, origin }, "Discovered per-group entities directory");
     }
-    loadEntitiesFromDir(dir, sourceName, byConnection, crossJoins);
+    loadEntitiesFromDir(dir, sourceName, origin, byConnection, crossJoins);
   }
 
   const hasPartitioned = Array.from(byConnection.keys()).some((k) => k !== "default");
   if (hasPartitioned) {
-    log.info({ connections: Array.from(byConnection.keys()) }, "Partitioned table whitelist mode");
+    log.info({ groups: Array.from(byConnection.keys()) }, "Partitioned table whitelist mode");
   }
 
   return byConnection;
@@ -242,21 +262,22 @@ function getTablesByConnection(semanticRoot?: string, entitiesDir?: string): Map
 }
 
 /**
- * Get the set of whitelisted table names for a given connection.
+ * Get the set of whitelisted table names for a given Connection group.
  *
- * The system switches to partitioned mode (each connection only sees its
- * own tables) when either:
- * - An entity YAML uses the `connection` field, or
- * - Per-source subdirectories exist under the semantic root (e.g.
- *   `semantic/warehouse/entities/` infers connection `warehouse`).
+ * The system switches to partitioned mode (each group only sees its own
+ * tables) when a non-default group exists — i.e. when either:
+ * - an entity declares a non-default `group:`/`connection:`, or
+ * - a `groups/<group>/entities/` (or legacy `<source>/entities/`) directory
+ *   exists under the semantic root (ADR-0012).
  *
  * When neither trigger is present, all connections share the same table
- * set (identical to pre-v0.7 behavior).
+ * set (identical to pre-v0.7 single-DB behavior).
  *
- * @param connectionId - Connection to get tables for. Defaults to "default".
+ * @param connectionId - Group to get tables for. Defaults to "default".
  * @param entitiesDir - Override for a single flat entities directory (DI for tests).
  * @param semanticRoot - Override for the semantic root directory (DI for tests).
- *   When provided, scans both `root/entities/` and per-source subdirectories.
+ *   When provided, scans `root/entities/`, `root/groups/<group>/entities/`,
+ *   and legacy `root/<source>/entities/` directories.
  */
 export function getWhitelistedTables(
   connectionId: string = "default",
@@ -293,8 +314,9 @@ export function getWhitelistedTables(
 
   const byConnection = getTablesByConnection();
 
-  // Backward compat: if no entity uses `connection:` and no per-source
-  // subdirectories exist, all connections share the full set (pre-v0.7).
+  // Backward compat: if no non-default group exists (no `group:`/`connection:`
+  // field and no `groups/`/legacy subdirectories), all connections share the
+  // full set (pre-v0.7 single-DB behavior).
   const hasNonDefaultConnection = Array.from(byConnection.keys()).some((k) => k !== "default");
 
   let tables: Set<string>;
@@ -513,15 +535,15 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
   const byConnection = new Map<string, Set<string>>();
   /**
    * Register the entity's tables under every key the whitelist should
-   * accept: the explicit YAML `connection`, its `connection_group_id`,
-   * and every fellow group member. Multiple
-   * registrations of the same key share the underlying Set, so a
-   * second entity for the same group accretes onto the existing
-   * table set (correct fan-in semantics).
+   * accept: the explicit YAML group (canonical `group:`, deprecated
+   * `connection:` alias — ADR-0012), its `connection_group_id`, and every
+   * fellow group member. Multiple registrations of the same key share the
+   * underlying Set, so a second entity for the same group accretes onto the
+   * existing table set (correct fan-in semantics).
    */
-  function recordTables(row: typeof rows[number], parsedConnection: string | undefined, tableList: string[]): void {
+  function recordTables(row: typeof rows[number], parsedGroup: string | undefined, tableList: string[]): void {
     const keys = new Set<string>();
-    if (parsedConnection) keys.add(parsedConnection);
+    if (parsedGroup) keys.add(parsedGroup);
     if (row.connection_group_id) {
       keys.add(row.connection_group_id);
       for (const member of groupMembers.get(row.connection_group_id) ?? []) {
@@ -553,7 +575,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
       const normalized = normalizeTableIdentifier(parsed.data.table);
       const parts = normalized.split(".");
       const tableList = [parts[parts.length - 1].toLowerCase(), normalized.toLowerCase()];
-      recordTables(row, parsed.data.connection ?? undefined, tableList);
+      recordTables(row, readGroupField(parsed.data), tableList);
     } catch (err) {
       parseFailures++;
       log.warn(

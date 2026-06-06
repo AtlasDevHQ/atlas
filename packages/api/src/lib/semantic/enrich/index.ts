@@ -1,18 +1,20 @@
-#!/usr/bin/env tsx
 /**
- * LLM-powered enrichment for auto-generated semantic layer YAMLs.
+ * LLM-powered enrichment for auto-generated semantic-layer YAMLs — Phase 2 of
+ * semantic-layer onboarding (docs/design/semantic-onboarding.md § D, § F).
  *
- * Uses the Vercel AI SDK generateText() to add business context,
- * improved descriptions, query patterns, and derived metrics to
- * the YAML files produced by `bin/atlas.ts`.
+ * Uses the Vercel AI SDK `generateText()` to add business context, improved
+ * descriptions, query patterns, and derived metrics to the mechanical YAML
+ * produced by the shared generator (../generate).
  *
- * Called automatically by `bun run atlas -- init --enrich` when
- * an API key is available.
+ * Relocated from CLI-only `packages/cli/bin/enrich.ts` (issue #3233) so it lives
+ * in the shared engine and is callable from BOTH the CLI (`atlas init --enrich`)
+ * and the API path with the same signature. Behaviour is unchanged: this is a
+ * file-based pass that reads/merges/writes the YAML under `semanticDir`.
  */
 
 import { generateText } from "ai";
 import { getModel } from "@atlas/api/lib/providers";
-import type { TableProfile } from "./atlas.js";
+import type { TableProfile } from "@useatlas/types";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
@@ -166,7 +168,7 @@ function formatAllTablesOverview(profiles: TableProfile[]): string {
 // Entity enrichment
 // ---------------------------------------------------------------------------
 
-async function enrichEntity(
+export async function enrichEntity(
   filePath: string,
   profile: TableProfile,
   model: ReturnType<typeof getModel>,
@@ -255,7 +257,7 @@ Important:
 // Glossary enrichment
 // ---------------------------------------------------------------------------
 
-async function enrichGlossary(
+export async function enrichGlossary(
   profiles: TableProfile[],
   model: ReturnType<typeof getModel>,
   usage: TokenUsage,
@@ -353,7 +355,7 @@ Important:
 // Metrics enrichment
 // ---------------------------------------------------------------------------
 
-async function enrichMetric(
+export async function enrichMetric(
   filePath: string,
   profile: TableProfile,
   model: ReturnType<typeof getModel>,

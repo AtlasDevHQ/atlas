@@ -16,6 +16,8 @@
     "./lib/sub-processor-publisher": "./src/lib/sub-processor-publisher/index.ts",
     "./lib/semantic": "./src/lib/semantic/index.ts",
     "./lib/semantic/expert": "./src/lib/semantic/expert/index.ts",
+    "./lib/semantic/generate": "./src/lib/semantic/generate/index.ts",
+    "./lib/semantic/enrich": "./src/lib/semantic/enrich/index.ts",
     "./lib/semantic/*": "./src/lib/semantic/*.ts",
     "./lib/*": "./src/lib/*.ts",
     "./lib/auth/*": "./src/lib/auth/*.ts",

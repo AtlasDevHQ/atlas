@@ -25,3 +25,10 @@ export {
   getOrgSemanticIndex,
 } from "./whitelist";
 export type { CrossSourceJoin } from "./whitelist";
+
+// The shared onboarding engine (issue #3233) is imported via its own paths —
+// @atlas/api/lib/semantic/generate (mechanical) and
+// @atlas/api/lib/semantic/enrich (LLM). It is intentionally NOT re-exported
+// from this barrel: enrich pulls in the AI SDK + providers, and the barrel is
+// imported broadly (sync, startup), so an eager re-export would force that
+// heavy graph — and break providers-mocking tests — on every barrel consumer.

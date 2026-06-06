@@ -39,13 +39,17 @@ import {
   listMySQLObjects,
   profilePostgres,
   profileMySQL,
+  outputDirForDatasource,
+} from "@atlas/api/lib/profiler";
+// Mechanical generation runs through the shared semantic engine (issue #3233)
+// so the wizard and the CLI emit identical YAML.
+import {
   analyzeTableProfiles,
   generateEntityYAML,
   generateCatalogYAML,
   generateGlossaryYAML,
   generateMetricYAML,
-  outputDirForDatasource,
-} from "@atlas/api/lib/profiler";
+} from "@atlas/api/lib/semantic/generate";
 
 const log = createLogger("wizard");
 

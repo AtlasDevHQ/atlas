@@ -381,10 +381,11 @@ export function registerSemanticTools(
           ),
         connectionId: z
           .string()
+          .min(1)
           .max(MAX_IDENTIFIER_LEN)
           .optional()
           .describe(
-            "Target connection id. Omit to use the default connection.",
+            "Target connection id. Omit to run the metric against its own group — a metric defined under `groups/<group>/` runs against `<group>`, an ungrouped metric against the default connection. Passing a connection id that does not match the metric's group is rejected.",
           ),
       },
     },

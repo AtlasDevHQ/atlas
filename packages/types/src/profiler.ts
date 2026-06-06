@@ -193,3 +193,19 @@ export interface WizardTableEntry {
   name: string;
   type: ObjectType;
 }
+
+/**
+ * Result of a single table's Phase-2 enrichment
+ * (POST /api/v1/wizard/enrich — issue #3236, semantic-onboarding § D).
+ *
+ * The enrich endpoint is per-table so the two-phase generate UI can stream
+ * results in and upgrade each row in place. `yaml` is the LLM-enriched entity
+ * YAML when `enriched` is true, or the unchanged mechanical baseline when the
+ * model returned an unusable response (`enriched: false`) — either way it's a
+ * valid YAML string safe to save.
+ */
+export interface WizardEnrichResult {
+  tableName: string;
+  yaml: string;
+  enriched: boolean;
+}

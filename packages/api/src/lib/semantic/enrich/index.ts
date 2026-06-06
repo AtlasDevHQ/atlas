@@ -168,24 +168,47 @@ function formatAllTablesOverview(profiles: TableProfile[]): string {
 // Entity enrichment
 // ---------------------------------------------------------------------------
 
-export async function enrichEntity(
-  filePath: string,
+/** Result of an in-memory entity enrichment pass. */
+export interface EnrichEntityYamlResult {
+  /**
+   * The enriched YAML when {@link EnrichEntityYamlResult.enriched} is true, or
+   * the unchanged input YAML when the LLM response could not be parsed into
+   * mergeable fields. Either way it's a valid YAML string safe to persist.
+   */
+  yaml: string;
+  /** True when LLM fields were merged in; false when the input was returned as-is. */
+  enriched: boolean;
+}
+
+/**
+ * In-memory entity enrichment: take a mechanical entity YAML string + its
+ * table profile, ask the LLM for business context, and deep-merge the result
+ * back. Returns the merged YAML — no filesystem access.
+ *
+ * This is the shared primitive behind BOTH the file-based CLI pass
+ * ({@link enrichEntity}) and the API/web two-phase generate flow (issue #3236,
+ * docs/design/semantic-onboarding.md § D), so a table enriched via the wizard
+ * and via `atlas init --enrich` get byte-identical prompts and merge rules.
+ *
+ * Unlike {@link enrichEntity}, this DOES NOT swallow the LLM call error: a
+ * provider/network failure throws so the API caller can map it to a per-table
+ * HTTP error and let the row fall back to its baseline. An unparseable (but
+ * successful) LLM response is the soft case — it returns the original YAML with
+ * `enriched: false` rather than throwing, matching the file-based "skip merge"
+ * behaviour.
+ */
+export async function enrichEntityYaml(
+  existingContent: string,
   profile: TableProfile,
   model: ReturnType<typeof getModel>,
-  usage: TokenUsage
-): Promise<void> {
-  const fileName = path.basename(filePath);
-  console.log(`  Enriching ${fileName}...`);
-
-  const existingContent = fs.readFileSync(filePath, "utf-8");
-  const existingYaml = yaml.load(existingContent) as Record<string, unknown>;
+  usage?: TokenUsage
+): Promise<EnrichEntityYamlResult> {
   const profileText = formatTableProfile(profile);
 
-  try {
-    const result = await generateText({
-      model,
-      maxOutputTokens: 2000,
-      prompt: `You are a data analyst enriching a semantic layer YAML file with business context.
+  const result = await generateText({
+    model,
+    maxOutputTokens: 2000,
+    prompt: `You are a data analyst enriching a semantic layer YAML file with business context.
 
 Here is the table profile from the database:
 ${profileText}
@@ -228,23 +251,48 @@ Important:
 - SQL must be valid PostgreSQL referencing only columns from the profile
 - Do not invent columns that do not exist in the profile
 - Use the table name "${profile.table_name}" in all SQL`,
-    });
+  });
 
-    addUsage(usage, result.usage);
+  if (usage) addUsage(usage, result.usage);
 
-    const yamlText = extractYamlBlock(result.text);
-    const enriched = safeParse(yamlText);
+  const yamlText = extractYamlBlock(result.text);
+  const enriched = safeParse(yamlText);
+
+  if (!enriched) {
+    // Successful call, unusable response — keep the mechanical baseline.
+    return { yaml: existingContent, enriched: false };
+  }
+
+  const existingYaml = yaml.load(existingContent) as Record<string, unknown>;
+  const merged = deepMerge(existingYaml, enriched);
+  const output = yaml.dump(merged, { lineWidth: 120, noRefs: true });
+  return { yaml: output, enriched: true };
+}
+
+export async function enrichEntity(
+  filePath: string,
+  profile: TableProfile,
+  model: ReturnType<typeof getModel>,
+  usage: TokenUsage
+): Promise<void> {
+  const fileName = path.basename(filePath);
+  console.log(`  Enriching ${fileName}...`);
+
+  const existingContent = fs.readFileSync(filePath, "utf-8");
+
+  try {
+    const { yaml: output, enriched } = await enrichEntityYaml(
+      existingContent,
+      profile,
+      model,
+      usage
+    );
 
     if (!enriched) {
       console.log(`    Warning: Could not parse LLM response for ${fileName}, skipping merge`);
       return;
     }
 
-    // Merge enriched fields into existing YAML
-    const merged = deepMerge(existingYaml, enriched);
-
-    // Write back
-    const output = yaml.dump(merged, { lineWidth: 120, noRefs: true });
     fs.writeFileSync(filePath, output);
     console.log(`    Updated ${fileName}`);
   } catch (err) {

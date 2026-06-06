@@ -64,6 +64,7 @@ export type {
   QuerySuggestion,
   ObjectType,
   WizardEntityColumn,
+  WizardEnrichResult,
   WizardEntityResult,
   WizardForeignKey,
   WizardInferredForeignKey,

@@ -54,6 +54,10 @@ import {
   generateGlossaryYAML,
   generateMetricYAML,
 } from "@atlas/api/lib/semantic/generate";
+// Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
+// variant lets the wizard enrich a YAML string per table without touching disk.
+import { enrichEntityYaml } from "@atlas/api/lib/semantic/enrich";
+import { getModel, getMissingModelConfig } from "@atlas/api/lib/providers";
 
 const log = createLogger("wizard");
 
@@ -129,6 +133,23 @@ const GenerateResponseSchema = z.object({
   schema: z.string(),
   entities: z.array(WizardEntityResultSchema),
   errors: z.array(z.object({ table: z.string(), error: z.string() })),
+});
+
+// Phase-2 enrichment is per-table (issue #3236): the frontend fires one request
+// per chosen table so results stream in and upgrade each row in place. `yaml` is
+// the current (baseline or hand-edited) YAML the LLM enriches and merges into.
+const EnrichRequestSchema = z.object({
+  connectionId: z.string().min(1),
+  tableName: z.string().min(1),
+  yaml: z.string().min(1),
+});
+
+const EnrichResponseSchema = z.object({
+  tableName: z.string(),
+  // The enriched YAML, or the unchanged baseline when the model returned an
+  // unusable response (`enriched: false`). Either way it's safe to save.
+  yaml: z.string(),
+  enriched: z.boolean(),
 });
 
 const PreviewRequestSchema = z.object({
@@ -323,6 +344,62 @@ const generateRoute = createRoute({
     },
     500: {
       description: "Profiling or generation failed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const enrichRoute = createRoute({
+  method: "post",
+  path: "/enrich",
+  tags: ["Wizard"],
+  summary: "LLM-enrich a single table's entity YAML",
+  description:
+    "Phase 2 of two-phase generate (issue #3236): re-profiles one table for fresh DB grounding, " +
+    "then runs an LLM over its mechanical baseline YAML to add business descriptions, use cases, " +
+    "query patterns, and virtual dimensions. Per-table by design so the wizard can stream results " +
+    "in and upgrade each row in place. Never fires automatically — the UI gates it behind an explicit " +
+    "Enrich all / Enrich selected action. Requires admin role and a configured LLM provider.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: EnrichRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Enriched entity YAML (or the unchanged baseline if the model returned no usable output)",
+      content: { "application/json": { schema: EnrichResponseSchema } },
+    },
+    400: {
+      description: "Invalid request (missing fields or unsupported database type)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Connection not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    503: {
+      description: "Enrichment unavailable — no LLM provider configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Profiling or enrichment failed",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -674,6 +751,123 @@ wizard.openapi(generateRoute, async (c) => {
       errors: genData.errors,
     }, 200);
   }), { label: "wizard generate" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /enrich — LLM-enrich one table's entity YAML (Phase 2, issue #3236)
+// ---------------------------------------------------------------------------
+
+wizard.openapi(enrichRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    const { connectionId, tableName, yaml: baselineYaml } = c.req.valid("json");
+
+    // Fail fast (503) when no LLM provider is configured so the UI surfaces ONE
+    // actionable banner instead of every per-table enrich hitting the same
+    // provider-auth error. Mirrors getModel()'s env-based provider resolution.
+    const { provider, missing } = getMissingModelConfig();
+    if (missing.length > 0) {
+      log.warn({ requestId, provider, missing }, "Wizard enrich: no LLM provider configured");
+      return c.json({
+        error: "enrichment_unavailable",
+        message:
+          `Enrichment needs a configured LLM provider (${provider} is missing ${missing.join(", ")}). ` +
+          "Configure a provider in admin, or save the mechanical baseline as-is.",
+        requestId,
+      }, 503);
+    }
+
+    const connUrlResult = yield* Effect.tryPromise({
+      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+
+    if (connUrlResult._tag === "Left") {
+      const err = connUrlResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
+    const connUrl = connUrlResult.right;
+    if (!connUrl) {
+      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
+    }
+
+    const { url, dbType, schema } = connUrl;
+
+    const enrichResult = yield* Effect.tryPromise({
+      try: async () => {
+        // Re-profile JUST this table so the LLM is grounded in fresh DB
+        // samples/distributions (semantic-onboarding § D: enrichment "receives
+        // the table profile AND read-only access to the DB" — the profiler IS
+        // that read-only access).
+        let result: ProfilingResult;
+        switch (dbType) {
+          case "postgres":
+            result = await profilePostgres(url, [tableName], undefined, schema, undefined, log);
+            break;
+          case "mysql":
+            result = await profileMySQL(url, [tableName], undefined, undefined, log);
+            break;
+          default:
+            return { error: "unsupported_db" as const, dbType };
+        }
+        const profile =
+          result.profiles.find((p) => p.table_name === tableName) ?? result.profiles[0];
+        if (!profile) {
+          return { error: "no_profile" as const };
+        }
+        const enriched = await enrichEntityYaml(baselineYaml, profile, getModel());
+        return { ok: true as const, enriched };
+      },
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.either);
+
+    if (enrichResult._tag === "Left") {
+      const err = enrichResult.left;
+      log.error({ err, requestId, connectionId, tableName }, "Wizard enrich failed");
+      return c.json({
+        error: "enrich_failed",
+        message: `Failed to enrich "${tableName}": ${err.message}`,
+        requestId,
+      }, 500);
+    }
+
+    const data = enrichResult.right;
+    if ("error" in data) {
+      if (data.error === "unsupported_db") {
+        return c.json({
+          error: "unsupported_db",
+          message: `Wizard enrichment is currently supported for PostgreSQL and MySQL. Got: ${data.dbType}`,
+        }, 400);
+      }
+      // no_profile — the table vanished between generate and enrich.
+      return c.json({
+        error: "not_found",
+        message: `Table "${tableName}" was not found while profiling for enrichment.`,
+        requestId,
+      }, 404);
+    }
+
+    log.info(
+      { requestId, connectionId, tableName, enriched: data.enriched.enriched },
+      "Wizard enrich complete",
+    );
+
+    return c.json(
+      {
+        tableName,
+        yaml: data.enriched.yaml,
+        enriched: data.enriched.enriched,
+      },
+      200,
+    );
+  }), { label: "wizard enrich" });
 });
 
 // ---------------------------------------------------------------------------

@@ -14135,6 +14135,205 @@
         "operationId": "postWizardGenerate"
       }
     },
+    "/api/v1/wizard/enrich": {
+      "post": {
+        "tags": [
+          "Wizard"
+        ],
+        "summary": "LLM-enrich a single table's entity YAML",
+        "description": "Phase 2 of two-phase generate (issue #3236): re-profiles one table for fresh DB grounding, then runs an LLM over its mechanical baseline YAML to add business descriptions, use cases, query patterns, and virtual dimensions. Per-table by design so the wizard can stream results in and upgrade each row in place. Never fires automatically — the UI gates it behind an explicit Enrich all / Enrich selected action. Requires admin role and a configured LLM provider.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "connectionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tableName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "yaml": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "connectionId",
+                  "tableName",
+                  "yaml"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Enriched entity YAML (or the unchanged baseline if the model returned no usable output)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tableName": {
+                      "type": "string"
+                    },
+                    "yaml": {
+                      "type": "string"
+                    },
+                    "enriched": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "tableName",
+                    "yaml",
+                    "enriched"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request (missing fields or unsupported database type)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connection not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Profiling or enrichment failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Enrichment unavailable — no LLM provider configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postWizardEnrich"
+      }
+    },
     "/api/v1/wizard/preview": {
       "post": {
         "tags": [

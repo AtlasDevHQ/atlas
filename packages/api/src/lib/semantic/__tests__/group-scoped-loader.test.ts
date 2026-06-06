@@ -254,6 +254,21 @@ describe("getWhitelistedTables — group partitioning (ADR-0012)", () => {
     expect(getWhitelistedTables("sales", undefined, root).has("deals")).toBe(true);
     expect(getWhitelistedTables("warehouse", undefined, root).has("deals")).toBe(false);
   });
+
+  it("same group name under groups/ and legacy <source>/ merges into one group (migration seam)", () => {
+    // A half-migrated layout: groups/warehouse/ (canonical) and warehouse/
+    // (legacy) for the same group. Both accrete into the one `warehouse` group.
+    const root = ensureDir(`merge-${testCounter}`);
+    ensureDir(`merge-${testCounter}/entities`);
+    const canonical = ensureDir(`merge-${testCounter}/groups/warehouse/entities`);
+    const legacy = ensureDir(`merge-${testCounter}/warehouse/entities`);
+    writeEntity(canonical, "events.yml", entity("events"));
+    writeEntity(legacy, "sessions.yml", entity("sessions"));
+
+    const warehouse = getWhitelistedTables("warehouse", undefined, root);
+    expect(warehouse.has("events")).toBe(true);
+    expect(warehouse.has("sessions")).toBe(true);
+  });
 });
 
 describe("getCrossSourceJoins — group-scoped fromSource (ADR-0012)", () => {

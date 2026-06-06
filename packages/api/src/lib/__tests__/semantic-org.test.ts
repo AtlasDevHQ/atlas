@@ -114,6 +114,38 @@ describe("loadOrgWhitelist", () => {
     expect(result.get("default")?.has("events")).toBeFalsy();
   });
 
+  it("honors the canonical `group:` field in stored YAML (ADR-0012)", async () => {
+    // The DB-backed path resolves the group via readGroupField, so a stored
+    // entity that declares `group:` keys the whitelist under that group.
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        {
+          ...makeEntityRow("leads", "leads"),
+          yaml_content: "table: leads\ngroup: crm\n",
+        },
+      ]),
+    );
+
+    const result = await loadOrgWhitelist("org-1");
+    expect(result.get("crm")?.has("leads")).toBe(true);
+    expect(result.get("default")?.has("leads")).toBeFalsy();
+  });
+
+  it("`group:` takes precedence over the deprecated `connection:` alias (ADR-0012)", async () => {
+    mockListEntities.mockImplementation(() =>
+      Promise.resolve([
+        {
+          ...makeEntityRow("x", "x"),
+          yaml_content: "table: x\ngroup: warehouse\nconnection: crm\n",
+        },
+      ]),
+    );
+
+    const result = await loadOrgWhitelist("org-1");
+    expect(result.get("warehouse")?.has("x")).toBe(true);
+    expect(result.get("crm")?.has("x")).toBeFalsy();
+  });
+
   it("caches results across calls", async () => {
     mockListEntities.mockImplementation(() =>
       Promise.resolve([makeEntityRow("users", "users")]),

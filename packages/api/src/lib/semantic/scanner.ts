@@ -65,7 +65,11 @@ export interface EntityDir {
 
 export interface EntityDirResult {
   dirs: EntityDir[];
-  /** True when the root directory scan failed (per-source dirs may be missing). */
+  /**
+   * True when a directory scan failed — either the canonical `groups/`
+   * namespace or the legacy `<source>/` root — so some group/source dirs may
+   * be missing. Consumers escalate this to an error-level log.
+   */
   rootScanFailed: boolean;
 }
 
@@ -153,6 +157,8 @@ export interface ResolvedEntityGroup {
   /**
    * True when a declared `group:`/`connection:` field disagrees with a
    * canonical per-group directory — a foot-gun the caller should warn on.
+   * Only ever set when `origin === "group"`; the flat and legacy layouts
+   * let the field win, so they never report a mismatch.
    */
   mismatch: boolean;
 }

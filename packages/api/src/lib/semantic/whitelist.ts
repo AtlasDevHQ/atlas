@@ -8,11 +8,11 @@
  * is the `semantic/groups/<group>/entities/` namespace, where the directory
  * names the group (ADR-0012); the flat `semantic/entities/` root is the
  * default group. An in-file `group:` field (with `connection:` as a deprecated
- * alias) can assign the group from the flat root and overrides; in the
- * `groups/` namespace the directory is canonical and a disagreeing field
- * warns. The legacy `semantic/<source>/entities/` layout still loads for
- * back-compat. When no group signal is present, all connections share the same
- * whitelist (backward compat with single-DB).
+ * alias) assigns the group from the flat root, and in the legacy
+ * `semantic/<source>/entities/` layout the field still wins over the directory
+ * (back-compat); in the canonical `groups/` namespace the directory is
+ * canonical and a disagreeing field warns. When no group signal is present,
+ * all connections share the same whitelist (backward compat with single-DB).
  *
  * **Org scoping:** When an orgId is active, the whitelist is loaded from
  * the internal DB (`semantic_entities` table). The semantic index is built

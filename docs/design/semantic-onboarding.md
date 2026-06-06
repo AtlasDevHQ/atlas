@@ -125,6 +125,8 @@ This is what makes the flow **DB-count-agnostic**: the 1st-DB-after-skip and the
 
 *As implemented (#3234):* whichever door launches the flow, the generated entities land in the **correct Connection group** — the shared group-routing in § F means a new-group connection seeds its own `groups/<group>/` namespace while a member added to a populated group reuses the existing group's entities (no second copy). This is the substrate the two-phase generate UI (#3236) and the entry points (#3237) build on.
 
+*As implemented (#3237):* both new doors deep-link into the one wizard flow rather than re-implementing it — `wizardGenerateHref(connectionId)` builds `/wizard?connectionId=…&step=2`, jumping straight to the table picker; the `/wizard/generate`+`/wizard/save` routes resolve the group server-side (above), so the door can stay group-unaware. **Door 1** (`wizard-generate-entry.ts` + `admin/connections/generate-prompt.ts`): after a create that forms a new group — `__create__` (named) or `__none__` (auto-singleton, the single-DB/first-DB-after-skip path) — an inline AlertDialog offers "Generate"; joining an existing group stays silent (`createsNewGroup`). **Door 2** (`/admin/semantic` empty state): a "Generate semantic layer" CTA scoped to the sole connection when there's exactly one (`generateLaunchConnectionId`), and the catalog/glossary/metrics empty states now point at the flow instead of "Run `atlas init`".
+
 ### F. Shared engine (CLI ↔ web parity)
 
 Today the generator runs in two places and enrichment in a third (CLI-only). Consolidate:
@@ -154,6 +156,6 @@ Tracer-bullet slices, roughly in dependency order:
 3. **`wizard.ts` group scoping** — replace `connectionId` scoping with group; save into the group's namespace.
 4. **Two-phase generate UI** — mechanical baseline auto + Enrich all / select / ignore (pre-seeded) + streamed results.
 5. **Grouped-tree view** — `/admin/semantic` grouped by Connection group with datasource-type/member labels.
-6. **Entry points** — inline-on-add prompt in `/admin/connections` (new-group trigger) + per-group "Generate" empty state replacing "run `atlas init`".
+6. **Entry points** — inline-on-add prompt in `/admin/connections` (new-group trigger) + per-group "Generate" empty state replacing "run `atlas init`". *(shipped — #3237; see § E "As implemented")*
 </content>
 </invoke>

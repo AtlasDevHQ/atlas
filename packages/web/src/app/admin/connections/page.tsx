@@ -35,6 +35,13 @@ import {
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { DEMO_CONNECTION_ID } from "./columns";
+import {
+  ENV_SENTINEL_NONE,
+  ENV_SENTINEL_CREATE,
+  createsNewGroup,
+  newGroupLabel,
+} from "./generate-prompt";
+import { wizardGenerateHref } from "../../wizard/wizard-generate-entry";
 import { stripGroupPrefix, isAutoBackfilledSingleton, isEmptyBackfillOrphan } from "@/ui/lib/strip-group-prefix";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -117,12 +124,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 // surfaces in tests because the API returns a 400 with the same message.
 const ENV_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$/;
 
-// Sentinel values used by the Environment combobox. `__create__` swaps the
-// combobox row for an inline text input bound to `newGroupName`; `__none__`
-// means the connection lands ungrouped (auto `g_<id>` singleton — the
-// migration-0062 invariant the single-DB user never has to think about).
-const ENV_SENTINEL_NONE = "__none__";
-const ENV_SENTINEL_CREATE = "__create__";
+// `ENV_SENTINEL_NONE` / `ENV_SENTINEL_CREATE` (the Environment combobox
+// sentinels) live in ./generate-prompt — shared with the new-group detection
+// for the inline "Generate semantic layer" prompt (#3237) so there's one
+// source of truth.
 
 const envSelectionSchema = z.string();
 
@@ -219,6 +224,13 @@ interface ConnectionFormProps {
    * cache and the dialog's combobox renders pre-selected on first open. */
   envGroups: ReadonlyArray<EnvGroup>;
   onSuccess: () => void;
+  /**
+   * Called after a successful **create** that formed a *new* Connection group
+   * (#3237 door 1). The parent surfaces an inline "Generate semantic layer?"
+   * prompt. Not called on edit, or when the connection joined an existing
+   * populated group.
+   */
+  onCreatedNewGroup?: (info: { connectionId: string; groupLabel: string }) => void;
 }
 
 function ConnectionFormDialog({
@@ -229,6 +241,7 @@ function ConnectionFormDialog({
   initialDbType,
   envGroups,
   onSuccess,
+  onCreatedNewGroup,
 }: ConnectionFormProps) {
   const isEdit = !!editId;
   const [showUrl, setShowUrl] = useState(false);
@@ -334,6 +347,16 @@ function ConnectionFormDialog({
     setSubmitError(null);
     const result = await saveMutation.mutate({ path, method, body });
     if (result.ok) {
+      // A create that forms a new group is the one moment to offer generation
+      // (#3237). Fire before closing so the parent's prompt opens as the form
+      // dismisses; member-adds and edits stay silent — they reuse the group's
+      // existing schema, with /admin/semantic's empty state as the way back in.
+      if (!isEdit && onCreatedNewGroup && createsNewGroup(values.envSelection)) {
+        onCreatedNewGroup({
+          connectionId: values.id,
+          groupLabel: newGroupLabel(values.envSelection, values.newGroupName, values.id),
+        });
+      }
       onOpenChange(false);
     } else {
       setSubmitError(result.error);
@@ -1019,6 +1042,10 @@ export default function ConnectionsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  // Inline "Generate semantic layer?" prompt shown after a create that forms a
+  // new Connection group (#3237 door 1). Holds the connection to scope the
+  // generate flow to; `null` when no prompt is pending.
+  const [genPrompt, setGenPrompt] = useState<{ connectionId: string; groupLabel: string } | null>(null);
 
   // Add-connection picker + the REST install dialogs it routes to. The
   // picker replaces the old always-listed "Connect" provider rows.
@@ -1401,7 +1428,42 @@ export default function ConnectionsPage() {
         initialDbType={createDbType}
         envGroups={envGroups}
         onSuccess={handleMutationSuccess}
+        onCreatedNewGroup={setGenPrompt}
       />
+
+      {/* Inline-on-add → generate (#3237 door 1). Both onboarding doors route
+          through `wizardGenerateHref` so they launch the one shared flow; the
+          generate/save routes resolve the connection's group server-side, so
+          the entities land in this new group. */}
+      <AlertDialog open={genPrompt !== null} onOpenChange={(open) => { if (!open) setGenPrompt(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Generate a semantic layer for{" "}
+              <span className="font-mono">{genPrompt ? stripGroupPrefix(genPrompt.groupLabel) : ""}</span>?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Atlas profiles this database and builds editable YAML so the agent
+              understands your schema and can write SQL on it. You can fine-tune
+              or skip enrichment along the way — and do this any time later from
+              the semantic layer page.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Not now</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = genPrompt;
+                setGenPrompt(null);
+                if (target) router.push(wizardGenerateHref(target.connectionId));
+              }}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Generate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <DeleteConnectionDialog
         open={deleteOpen}

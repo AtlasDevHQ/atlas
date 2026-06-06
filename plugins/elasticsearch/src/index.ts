@@ -40,7 +40,7 @@ import {
   extractHost,
   scrubElasticsearchError,
 } from "./connection";
-import type { ElasticsearchConnection } from "./connection";
+import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
 
 const ElasticsearchConfigSchema = z.object({
   /** Elasticsearch connection URL (elasticsearch://host:9200). */
@@ -68,6 +68,17 @@ const ElasticsearchConfigSchema = z.object({
 });
 
 export type ElasticsearchConfig = z.infer<typeof ElasticsearchConfigSchema>;
+
+// Compile-time guard: the Zod-inferred config and the connection module's raw
+// config shape must stay structurally identical, so adding a field to one
+// without the other fails the build instead of drifting silently.
+type _ConfigsAligned = [ElasticsearchConfig] extends [ElasticsearchPluginConfig]
+  ? [ElasticsearchPluginConfig] extends [ElasticsearchConfig]
+    ? true
+    : never
+  : never;
+const _configsAligned: _ConfigsAligned = true;
+void _configsAligned;
 
 /**
  * Build the plugin object from validated config.
@@ -148,19 +159,11 @@ export function buildElasticsearchPlugin(
     async healthCheck(): Promise<PluginHealthResult> {
       const start = performance.now();
       try {
-        const conn = getOrCreateConnection();
-        let timer: ReturnType<typeof setTimeout>;
-        const result = await Promise.race([
-          conn.ping().then(() => "ok" as const),
-          new Promise<"timeout">((resolve) => {
-            timer = setTimeout(() => resolve("timeout"), 5000);
-          }),
-        ]).finally(() => clearTimeout(timer!));
-        const latencyMs = Math.round(performance.now() - start);
-        if (result === "timeout") {
-          return { healthy: false, message: "Health check timed out after 5000ms", latencyMs };
-        }
-        return { healthy: true, latencyMs };
+        // The client owns the timeout/abort (it rejects with a clear "timed out"
+        // message at 5000ms), so awaiting it directly avoids the orphaned-promise
+        // / unhandled-rejection hazard of racing it against an outer setTimeout.
+        await getOrCreateConnection().ping(5000);
+        return { healthy: true, latencyMs: Math.round(performance.now() - start) };
       } catch (err) {
         const message = scrubElasticsearchError(err, config.apiKey);
         log?.warn(`Elasticsearch health check failed: ${message}`);

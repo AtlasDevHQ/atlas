@@ -172,6 +172,33 @@ describe("scrubElasticsearchError", () => {
     );
     expect(scrubbed).toContain("index_not_found_exception");
   });
+
+  test("redacts the literal key even when the message trips no auth marker", () => {
+    // Exercises the literal-redaction pass in isolation: the surrounding text
+    // matches no SENSITIVE_PATTERN, so only pass 1 can prevent the leak.
+    const scrubbed = scrubElasticsearchError(
+      new Error(`connection to es-node failed: ${API_KEY}`),
+      API_KEY,
+    );
+    expect(scrubbed).not.toContain(API_KEY);
+    expect(scrubbed).toContain("[REDACTED]");
+  });
+
+  test("does NOT over-scrub credential-free TLS certificate errors", () => {
+    const scrubbed = scrubElasticsearchError(
+      new Error("self-signed certificate in certificate chain"),
+      API_KEY,
+    );
+    expect(scrubbed).toContain("certificate");
+  });
+
+  test("does NOT over-scrub benign ES errors that mention 'token'", () => {
+    const scrubbed = scrubElasticsearchError(
+      new Error("Unknown token filter [my_filter]"),
+      API_KEY,
+    );
+    expect(scrubbed).toContain("token");
+  });
 });
 
 describe("SENSITIVE_PATTERNS", () => {
@@ -204,12 +231,12 @@ describe("createElasticsearchClient", () => {
     expect(info.name).toBe("es-node-1");
   });
 
-  test("ping sends an ApiKey Authorization header to the cluster-info endpoint", async () => {
+  test("ping issues a GET with ApiKey + Accept headers to the cluster-info endpoint", async () => {
     let capturedUrl: string | undefined;
-    let capturedHeaders: Record<string, string> | undefined;
+    let capturedInit: RequestInit | undefined;
     const fetchImpl = mock(async (url: string, init: RequestInit) => {
       capturedUrl = url;
-      capturedHeaders = init.headers as Record<string, string>;
+      capturedInit = init;
       return fetchResponse(CLUSTER_INFO_BODY);
     });
     const client = createElasticsearchClient(
@@ -218,7 +245,54 @@ describe("createElasticsearchClient", () => {
     );
     await client.ping();
     expect(capturedUrl).toBe("http://localhost:9200/");
-    expect(capturedHeaders?.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(capturedInit?.method).toBe("GET");
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(headers?.Accept).toBe("application/json");
+  });
+
+  test("ping rejects with a timeout error when the request exceeds timeoutMs", async () => {
+    // A fetch that only ever settles by honoring the abort signal — exercises the
+    // AbortController + setTimeout timeout branch.
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await expect(client.ping(10)).rejects.toThrow(/timed out after 10ms/);
+  });
+
+  test("close() during an in-flight ping rejects WITHOUT misreporting a timeout", async () => {
+    // The catch branch must distinguish a close-driven abort (closed === true)
+    // from a timeout-driven abort — otherwise teardown looks like a timeout.
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const pending = client.ping(5000);
+    client.close();
+    let message = "";
+    try {
+      await pending;
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toMatch(/timed out/);
   });
 
   test("ping throws a scrubbed error on a non-2xx response", async () => {

@@ -26,7 +26,11 @@ import type {
 // Types
 // ---------------------------------------------------------------------------
 
-/** Cluster engine. Only `elasticsearch` is resolvable in this slice (#3261). */
+/**
+ * Cluster engine. Forward-declared with both members so later slices widen
+ * without a breaking change, but `parseElasticsearchUrl` only ever produces
+ * `elasticsearch` until OpenSearch engine support lands (#3266).
+ */
 export type ElasticsearchEngine = "elasticsearch" | "opensearch";
 
 export interface ParsedElasticsearchUrl {
@@ -63,11 +67,16 @@ export interface ResolvedElasticsearchConfig {
   description?: string;
 }
 
-/** Normalized cluster-info result (engine-agnostic subset). */
+/** Normalized cluster-info result (engine-agnostic subset). All fields optional
+ *  because the `GET /` body varies by engine/version. */
 export interface ClusterInfo {
+  /** Node name (`name` in the cluster-info body) — identifies the responding node. */
   name?: string;
+  /** Cluster name (`cluster_name` in the body) — identifies the whole cluster. */
   clusterName?: string;
+  /** Server version string (`version.number`). */
   version?: string;
+  /** Distribution flavor (`version.distribution`), e.g. `elasticsearch`/`opensearch`. */
   distribution?: string;
 }
 
@@ -76,12 +85,21 @@ export interface ClusterInfo {
 // ---------------------------------------------------------------------------
 
 /**
- * Sensitive markers scrubbed from error messages before they reach the
- * agent/user/logs. Mirrors the Salesforce plugin's `SENSITIVE_PATTERNS`,
- * tuned for Elasticsearch auth (API keys, bearer tokens, Authorization).
+ * Auth-context markers scrubbed from error messages before they reach the
+ * agent/user/logs. Mirrors the Salesforce plugin's `SENSITIVE_PATTERNS`, tuned
+ * for Elasticsearch auth.
+ *
+ * Deliberately credential-context-only (`api key`, `authorization`, `bearer`,
+ * `credential`, `password`, `connection string`) — the literal-key redaction in
+ * {@link scrubElasticsearchError} already removes an echoed key, so this second
+ * pass need not (and must not) collapse benign diagnostics. In particular it
+ * omits `certificate`/`token`/`secret`: TLS-trust failures ("self-signed
+ * certificate") are the most common HTTPS first-connect error and carry no
+ * credential, and `token`/`secret` collide with ordinary ES content (token
+ * filters, fields named `secret`).
  */
 export const SENSITIVE_PATTERNS =
-  /api.?key|authorization|bearer|credential|password|secret|token|connection.?string|certificate/i;
+  /api[ _-]?key|authorization|bearer|credential|password|connection.?string/i;
 
 /**
  * Scrub an error for safe display. Two passes:
@@ -277,7 +295,11 @@ export function createElasticsearchClient(
             `Elasticsearch cluster-info request timed out after ${timeoutMs}ms`,
           );
         }
-        throw new Error(scrubElasticsearchError(err, auth.apiKey), { cause: err });
+        // No `{ cause: err }` — the raw error can carry the credential (e.g. an
+        // echoed Authorization header), and a `cause` chain survives the message
+        // scrub when a downstream serializer walks it. The scrubbed message
+        // retains the actionable detail.
+        throw new Error(scrubElasticsearchError(err, auth.apiKey));
       } finally {
         clearTimeout(timer);
         inFlight.delete(controller);
@@ -301,7 +323,7 @@ export function createElasticsearchClient(
 /**
  * A {@link PluginDBConnection} for Elasticsearch, extended with `ping()` for the
  * health check. `query()` is intentionally unimplemented in this slice — the SQL
- * and Query DSL surfaces arrive in #3262.
+ * surface (`executeSQL`) arrives in #3262 and the Query DSL tool in #3267.
  */
 export interface ElasticsearchConnection extends PluginDBConnection {
   ping(timeoutMs?: number): Promise<ClusterInfo>;

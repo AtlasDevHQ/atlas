@@ -49,8 +49,9 @@ export default defineConfig({
 | `description` | no       | no     | Optional. Surfaced to the agent in the system prompt.                       |
 
 The `apiKey` field is marked `secret: true` so Atlas encrypts it at rest and
-masks it in the admin UI. It is never returned in plaintext and is scrubbed from
-all error messages.
+masks it in the admin UI. It is not returned in plaintext: connection/health
+errors are scrubbed (the literal key is redacted and messages tripping auth
+markers are collapsed) before they reach the agent, the user, or logs.
 
 ## Security
 
@@ -58,8 +59,9 @@ all error messages.
   cluster-info/ping round-trip. Query surfaces (added later) are read-only by
   design.
 - **Secret-scrubbed errors.** Connection/health errors are scrubbed before they
-  reach the agent, the user, or logs — the API key and other sensitive markers
-  never leak.
+  reach the agent, the user, or logs: the literal API key is redacted and
+  messages that trip auth-context markers are collapsed to a generic message
+  (the detail stays in server logs).
 
 ## License
 

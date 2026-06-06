@@ -30,6 +30,7 @@ export type {
   ConnectionHealth,
   ConnectionInfo,
   ConnectionDetail,
+  DBType,
   ConnectionGroup,
   ConnectionGroupStatus,
   ConnectionGroupMember,

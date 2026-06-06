@@ -6,7 +6,6 @@ import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { bucketizeConnections } from "./group-by";
 import {
   Select,
   SelectContent,
@@ -53,10 +52,6 @@ import {
   Droplets,
   Check,
   X,
-  Database,
-  Snowflake,
-  Cloud,
-  HardDrive,
   RefreshCw,
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -80,14 +75,25 @@ import {
   type ComponentType,
 } from "react";
 import {
-  CompactRow,
   DetailList,
   DetailRow,
   InlineError,
-  SectionHeading,
-  Shell,
   type StatusKind,
 } from "@/ui/components/admin/compact";
+import { CollapsibleRow } from "@/ui/components/admin/collapsible-row";
+import { AddConnectionPicker } from "./add-connection-picker";
+import {
+  CuratedInstallDialog,
+  type CuratedCandidate,
+} from "./curated-install-dialog";
+import { RestInstallDialog } from "./openapi-block";
+import { iconForDbType, labelForDbType } from "./provider-meta";
+import {
+  AddDatasourceButton,
+  countLine,
+  SectionEmpty,
+  SectionHeader,
+} from "./section-header";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import {
@@ -920,51 +926,9 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
 }
 
 // ── Provider mapping ─────────────────────────────────────────────
-
-/** Map a dbType value to the icon used in the compact row and shell header. */
-function iconForDbType(dbType: string): ComponentType<{ className?: string }> {
-  switch (dbType) {
-    case "postgres":
-    case "mysql":
-    case "duckdb":
-      return Database;
-    case "snowflake":
-      return Snowflake;
-    case "clickhouse":
-    case "bigquery":
-      return Cloud;
-    case "salesforce":
-      return HardDrive;
-    default:
-      return Database;
-  }
-}
-
-/** Human-friendly one-line description shown under the provider name. */
-function descriptionForDbType(dbType: string): string {
-  switch (dbType) {
-    case "postgres":
-      return "Open-source OLTP — the default Atlas connection";
-    case "mysql":
-      return "MySQL / MariaDB OLTP instance";
-    case "clickhouse":
-      return "Column-store analytics warehouse";
-    case "snowflake":
-      return "Cloud data warehouse";
-    case "duckdb":
-      return "Embedded analytical SQL engine";
-    case "salesforce":
-      return "CRM objects via SOQL";
-    case "bigquery":
-      return "Google Cloud warehouse";
-    default:
-      return "Datasource connection";
-  }
-}
-
-function labelForDbType(dbType: string): string {
-  return DB_TYPES.find((t) => t.value === dbType)?.label ?? dbType;
-}
+// Icon / label / description helpers live in ./provider-meta so the page
+// (rendering connected DBs) and the Add picker (offering providers) share one
+// source of truth.
 
 /** Short human label for a connection's health.status. */
 function healthLabel(status: ConnectionHealth["status"]): string {
@@ -1036,14 +1000,11 @@ export default function ConnectionsPage() {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
 
-  // `useQueryStates` so the segmented control reflects whichever value
-  // the URL ships with on first paint — keeps the legacy
-  // `/admin/connections/groups` redirect landing on the right view and
-  // Post-0096 cutover (#2744): the `?groupBy=environment` toggle and
-  // the environments view it routed to are gone — group membership is
-  // now visible per-connection in the edit dialog (`newGroupName` on
-  // POST/PUT). The remaining `bucketizeConnections(..., "type")` call
-  // still powers the type-grouped provider blocks.
+  // Post-0096 cutover (#2744): the `?groupBy=environment` toggle and the
+  // environments view it routed to are gone — there's no segmented control
+  // or URL-driven view state here anymore. Group membership is surfaced
+  // per-connection in the edit dialog (`newGroupName` on POST/PUT), and the
+  // page renders one flat list split into type-grouped provider sections.
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -1058,6 +1019,17 @@ export default function ConnectionsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // Add-connection picker + the REST install dialogs it routes to. The
+  // picker replaces the old always-listed "Connect" provider rows.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [customRestOpen, setCustomRestOpen] = useState(false);
+  const [curatedCandidate, setCuratedCandidate] = useState<CuratedCandidate | null>(null);
+  // Bumped after a REST/curated install so the plugin-owned blocks
+  // (OpenAPI, Salesforce) remount and refetch their own lists — their data
+  // lives behind separate query keys from the `connections` fetch below.
+  const [datasourceRefreshKey, setDatasourceRefreshKey] = useState(0);
+  const refreshDatasources = () => setDatasourceRefreshKey((k) => k + 1);
 
   const { data: connections, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/connections",
@@ -1175,7 +1147,7 @@ export default function ConnectionsPage() {
     setEditId(null);
     setEditDetail(null);
     // Callers that don't pass a dbType (e.g. the hero CTA) get the dialog's
-    // built-in Postgres default; the provider CompactRow passes its own
+    // built-in Postgres default; the Add picker's database tile passes its own
     // dbType so the admin isn't re-routed into Postgres URL validation.
     setCreateDbType(dbType);
     setFormOpen(true);
@@ -1212,17 +1184,17 @@ export default function ConnectionsPage() {
     refetch();
   }
 
-  // Bucketize by dbType — the provider rendering walks DB_TYPES so
-  // disconnected providers can show a "Connect" CTA, and that loop
-  // needs a `dbType → connections` map shape.
-  const typeBuckets = bucketizeConnections(displayConnections, "type");
-  const byType = new Map<string, ConnectionInfo[]>(
-    typeBuckets.map((b) => [b.key, b.connections]),
-  );
-  const providerOrder: string[] = [
-    ...DB_TYPES.map((t) => t.value),
-    ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
-  ];
+  // Picker routing. A database pick opens the URL-form dialog pre-pointed at
+  // that dbType; Custom REST and curated picks open their own install
+  // dialogs (which then bump `datasourceRefreshKey` on success).
+  function handlePickDatabase(dbType: string) {
+    handleAdd(dbType);
+  }
+  function handleDatasourceInstalled() {
+    setCustomRestOpen(false);
+    setCuratedCandidate(null);
+    refreshDatasources();
+  }
 
   // Derive env-dropdown choices from the connections list — one entry
   // per distinct non-null group_id. Post-cutover (#2744 / ADR-0007)
@@ -1246,6 +1218,14 @@ export default function ConnectionsPage() {
     }));
   })();
 
+  // "Live" mirrors the row rendering: ConnectionCard maps both `healthy` and
+  // `degraded` to a connected (teal) row via `healthToStatus`, so both count as
+  // live — otherwise a degraded row reads as connected while the rollup calls
+  // it not-live. Unhealthy / unknown are excluded. Single predicate so the hero
+  // stat and the Databases section count can't drift apart.
+  const isLive = (c: ConnectionInfo) =>
+    c.health?.status === "healthy" || c.health?.status === "degraded";
+
   // Header "X / Y live" mirrors the /admin/billing usage panel — the
   // lazy `default` fallback on self-hosted demo deploys reports
   // `billable: false` and stays out of both numerator and denominator
@@ -1253,12 +1233,16 @@ export default function ConnectionsPage() {
   // API servers that omit the field.
   const billableConnections = displayConnections.filter(isBillable);
   const stats = {
-    live: billableConnections.filter((c) => c.health?.status === "healthy").length,
+    live: billableConnections.filter(isLive).length,
     total: billableConnections.length,
   };
 
+  // Databases section rollup — every row from `/admin/connections` is a SQL
+  // (or legacy) database; REST APIs + Salesforce are separate sections.
+  const dbLive = displayConnections.filter(isLive).length;
+
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
+    <div className="mx-auto max-w-4xl px-6 py-10">
       {/* Hero */}
       <header className="mb-10 flex flex-col gap-2">
         <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
@@ -1276,8 +1260,7 @@ export default function ConnectionsPage() {
         </div>
         <div className="flex items-end justify-between gap-6">
           <p className="max-w-xl text-sm text-muted-foreground">
-            Datasources Atlas can query. Each provider below is either connected or
-            ready to connect.
+            Databases and REST APIs Atlas can query — every datasource is read-only.
           </p>
           <div className="flex items-center gap-3">
           {demoReadOnly ? (
@@ -1285,7 +1268,7 @@ export default function ConnectionsPage() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span tabIndex={0}>
-                    <Button onClick={() => handleAdd()} size="sm" disabled>
+                    <Button size="sm" disabled>
                       <Plus className="mr-2 size-4" />
                       Add connection
                     </Button>
@@ -1295,7 +1278,7 @@ export default function ConnectionsPage() {
               </Tooltip>
             </TooltipProvider>
           ) : (
-            <Button onClick={() => handleAdd()} size="sm">
+            <Button onClick={() => setPickerOpen(true)} size="sm" data-testid="add-connection-hero">
               <Plus className="mr-2 size-4" />
               Add connection
             </Button>
@@ -1305,7 +1288,7 @@ export default function ConnectionsPage() {
       </header>
 
       <ErrorBoundary>
-        <div className="space-y-6">
+        <div className="space-y-8">
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
           {!mutationError && (
             <MutationErrorSurface
@@ -1317,99 +1300,96 @@ export default function ConnectionsPage() {
 
           <PoolStatsSection onError={setMutationError} />
 
-          <AdminContentWrapper
+          {/*
+            Connections aren't draft-publishable content the way prompts or
+            entities are: CREATE in developer mode produces a draft, but UPDATE
+            and DELETE are immediate, and the demo-hide flow is a per-org
+            archived tombstone that doesn't go through publish. So we don't wrap
+            in `<PublishedContextWrapper>` — doing so traps admins in
+            dev-mode-no-drafts behind an `inert` overlay and prevents the very
+            actions (test / hide demo / drain pool) that don't require drafting.
+
+            Three category sections, each progressive-disclosure: connected
+            items collapse to a one-line row and expand in place. The Add picker
+            (hero + per-section button) is the single place new datasources are
+            connected — there are no more always-listed "Connect" provider rows.
+          */}
+          <section>
+            <SectionHeader
+              title="Databases"
+              count={loading ? undefined : countLine(displayConnections.length, dbLive)}
+              action={
+                <AddDatasourceButton
+                  label="Add database"
+                  onClick={() => setPickerOpen(true)}
+                  demoReadOnly={demoReadOnly}
+                  demoTooltip={DEMO_ADD_READONLY_TOOLTIP}
+                  testId="add-database"
+                />
+              }
+            />
+            <AdminContentWrapper
               loading={loading}
               error={error}
               feature="Connections"
               onRetry={refetch}
               loadingMessage="Loading connections..."
-              emptyIcon={Cable}
-              emptyTitle="No datasource connections"
-              emptyDescription="Add a connection to start querying your data"
-              emptyAction={{ label: "Add connection", onClick: () => handleAdd() }}
-              isEmpty={!loading && displayConnections.length === 0}
+              isEmpty={false}
             >
-              {/*
-                Connections aren't draft-publishable content the way prompts or
-                entities are: CREATE in developer mode produces a draft, but
-                UPDATE and DELETE are immediate, and the demo-hide flow is a
-                per-org archived tombstone that doesn't go through publish. So we
-                don't wrap in `<PublishedContextWrapper>` — doing so traps admins
-                in dev-mode-no-drafts behind an `inert` overlay and prevents the
-                very actions (test / hide demo / drain pool) that don't require
-                drafting in the first place.
-              */}
-              <section>
-                <SectionHeading title="Datasources" description="Providers Atlas can read from" />
+              {displayConnections.length === 0 ? (
+                <SectionEmpty
+                  icon={Cable}
+                  title="No databases connected"
+                  description="Connect Postgres, MySQL, Snowflake, and more."
+                  action={
+                    demoReadOnly ? null : (
+                      <Button size="sm" variant="outline" onClick={() => setPickerOpen(true)}>
+                        <Plus className="mr-1.5 size-3.5" />
+                        Add database
+                      </Button>
+                    )
+                  }
+                />
+              ) : (
                 <div className="space-y-2">
-                  {providerOrder.map((dbType) => {
-                    // Salesforce is plugin-managed and lives in
-                    // `workspace_plugins WHERE pillar = 'datasource'`
-                    // post-#2744 cutover — `connections.describe()`
-                    // doesn't surface it, so the generic ProviderBlock
-                    // would always render "Add connection" pointing at a
-                    // URL-form dialog that has no input shape for the
-                    // OAuth flow. Render the dedicated block, AND fall
-                    // through to render any legacy `connections` rows
-                    // with `db_type = salesforce` via `ProviderBlock`
-                    // so admins can still see + delete pre-cutover rows
-                    // (slice 7 of 1.5.3, #2745 — see PR review).
-                    if (dbType === "salesforce") {
-                      const legacyConns = byType.get(dbType) ?? [];
-                      return (
-                        <div key={dbType} className="space-y-2">
-                          <SalesforceProviderBlock
-                            demoReadOnly={demoReadOnly}
-                            onChange={handleMutationSuccess}
-                          />
-                          {legacyConns.length > 0 ? (
-                            <ProviderBlock
-                              dbType={dbType}
-                              connections={legacyConns}
-                              demoReadOnly={demoReadOnly}
-                              loadingDetail={loadingDetail}
-                              testMutation={testMutation}
-                              testStatus={testStatus}
-                              onTest={testConnection}
-                              onEdit={handleEdit}
-                              onDelete={handleDelete}
-                              onAdd={handleAdd}
-                            />
-                          ) : null}
-                        </div>
-                      );
-                    }
-                    const conns = byType.get(dbType) ?? [];
-                    return (
-                      <ProviderBlock
-                        key={dbType}
-                        dbType={dbType}
-                        connections={conns}
-                        demoReadOnly={demoReadOnly}
-                        loadingDetail={loadingDetail}
-                        testMutation={testMutation}
-                        testStatus={testStatus}
-                        onTest={testConnection}
-                        onEdit={handleEdit}
-                        onDelete={handleDelete}
-                        onAdd={handleAdd}
-                      />
-                    );
-                  })}
-                  {/*
-                    OpenAPI (generic REST) datasources (#2926). Multi-instance
-                    and plugin-resolved (not in ConnectionRegistry.describe()),
-                    so — like Salesforce — they get a dedicated block rather
-                    than a `ProviderBlock` row. Always rendered so the install
-                    affordance shows even with zero REST datasources.
-                  */}
-                  <OpenApiProviderBlock
-                    demoReadOnly={demoReadOnly}
-                    onChange={handleMutationSuccess}
-                  />
+                  {displayConnections.map((conn) => (
+                    <ConnectionCard
+                      key={conn.id}
+                      conn={conn}
+                      icon={iconForDbType(conn.dbType)}
+                      providerLabel={labelForDbType(conn.dbType)}
+                      demoReadOnly={demoReadOnly}
+                      loadingDetail={loadingDetail}
+                      testMutation={testMutation}
+                      testStatus={testStatus}
+                      onTest={testConnection}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                    />
+                  ))}
                 </div>
-              </section>
+              )}
             </AdminContentWrapper>
+          </section>
+
+          {/*
+            REST APIs (OpenAPI / generic + curated candidates) and Salesforce
+            are plugin-resolved (not in ConnectionRegistry.describe()), so they
+            own their own fetch + section. Remounted on install via the
+            `datasourceRefreshKey` key so their lists repaint.
+          */}
+          <OpenApiProviderBlock
+            key={`rest-${datasourceRefreshKey}`}
+            demoReadOnly={demoReadOnly}
+            onAdd={() => setPickerOpen(true)}
+            onChange={handleMutationSuccess}
+          />
+
+          <SalesforceProviderBlock
+            key={`sf-${datasourceRefreshKey}`}
+            demoReadOnly={demoReadOnly}
+            onChange={handleMutationSuccess}
+          />
         </div>
       </ErrorBoundary>
 
@@ -1429,97 +1409,31 @@ export default function ConnectionsPage() {
         connectionId={deleteId}
         onSuccess={handleMutationSuccess}
       />
-    </div>
-  );
-}
 
-// ── Provider Block ───────────────────────────────────────────────
-
-/**
- * Renders one provider (dbType). When connections of this type exist, each
- * becomes a full IntegrationShell with a DetailList and action footer. When
- * there are none, a CompactRow prompts the admin to connect one.
- */
-function ProviderBlock({
-  dbType,
-  connections,
-  demoReadOnly,
-  loadingDetail,
-  testMutation,
-  testStatus,
-  onTest,
-  onEdit,
-  onDelete,
-  onAdd,
-}: {
-  dbType: string;
-  connections: ConnectionInfo[];
-  demoReadOnly: boolean;
-  loadingDetail: boolean;
-  testMutation: ReturnType<typeof useAdminMutation<ConnectionHealth>>;
-  testStatus: Record<string, "success" | "error">;
-  onTest: (id: string) => void;
-  onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
-  /** Receives the provider's `dbType` so the create dialog can preselect it. */
-  onAdd: (dbType: string) => void;
-}) {
-  const Icon = iconForDbType(dbType);
-  const label = labelForDbType(dbType);
-  const description = descriptionForDbType(dbType);
-
-  if (connections.length === 0) {
-    return (
-      <CompactRow
-        icon={Icon}
-        title={label}
-        description={description}
-        status="disconnected"
-        action={
-          demoReadOnly ? (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span tabIndex={0}>
-                    <Button size="sm" variant="outline" disabled>
-                      <Plus className="mr-1.5 size-3.5" />
-                      Connect
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{DEMO_ADD_READONLY_TOOLTIP}</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          ) : (
-            <Button size="sm" variant="outline" onClick={() => onAdd(dbType)}>
-              <Plus className="mr-1.5 size-3.5" />
-              Connect
-            </Button>
-          )
-        }
+      <AddConnectionPicker
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        demoReadOnly={demoReadOnly}
+        onPickDatabase={handlePickDatabase}
+        onPickCustomRest={() => setCustomRestOpen(true)}
+        onPickCuratedForm={setCuratedCandidate}
       />
-    );
-  }
 
-  return (
-    <>
-      {connections.map((conn) => (
-        <ConnectionCard
-          key={conn.id}
-          conn={conn}
-          icon={Icon}
-          providerLabel={label}
-          providerDescription={description}
-          demoReadOnly={demoReadOnly}
-          loadingDetail={loadingDetail}
-          testMutation={testMutation}
-          testStatus={testStatus}
-          onTest={onTest}
-          onEdit={onEdit}
-          onDelete={onDelete}
-        />
-      ))}
-    </>
+      <RestInstallDialog
+        open={customRestOpen}
+        onOpenChange={setCustomRestOpen}
+        onInstalled={handleDatasourceInstalled}
+      />
+
+      <CuratedInstallDialog
+        candidate={curatedCandidate}
+        open={curatedCandidate !== null}
+        onOpenChange={(open) => {
+          if (!open) setCuratedCandidate(null);
+        }}
+        onInstalled={handleDatasourceInstalled}
+      />
+    </div>
   );
 }
 
@@ -1529,7 +1443,6 @@ function ConnectionCard({
   conn,
   icon,
   providerLabel,
-  providerDescription,
   demoReadOnly,
   loadingDetail,
   testMutation,
@@ -1541,7 +1454,6 @@ function ConnectionCard({
   conn: ConnectionInfo;
   icon: ComponentType<{ className?: string }>;
   providerLabel: string;
-  providerDescription: string;
   demoReadOnly: boolean;
   loadingDetail: boolean;
   testMutation: ReturnType<typeof useAdminMutation<ConnectionHealth>>;
@@ -1660,15 +1572,23 @@ function ConnectionCard({
     </>
   );
 
+  const latencySummary =
+    conn.health?.latencyMs != null ? `${conn.health.latencyMs}ms` : undefined;
+  const meta = `${providerLabel}${
+    conn.groupName ? ` · ${stripGroupPrefix(conn.groupName)}` : ""
+  }`;
+
   return (
-    <Shell
+    <CollapsibleRow
       icon={icon}
       title={<span className="font-mono">{conn.id}</span>}
       titleText={conn.id}
       titleBadge={badges}
-      description={conn.description || providerDescription}
+      meta={meta}
       status={status}
       statusLabel={pillLabel}
+      summary={latencySummary}
+      dataTestId={`connection-row-${conn.id}`}
       actions={
         <>
           {testButton}
@@ -1731,6 +1651,6 @@ function ConnectionCard({
           <DetailRow label="Last tested" value={formatDateTime(conn.health.checkedAt)} />
         ) : null}
       </DetailList>
-    </Shell>
+    </CollapsibleRow>
   );
 }

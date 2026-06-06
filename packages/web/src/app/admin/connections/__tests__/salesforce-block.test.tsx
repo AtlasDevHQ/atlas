@@ -21,6 +21,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
   cleanup,
+  fireEvent,
   render as rtlRender,
   type RenderResult,
   waitFor,
@@ -80,6 +81,22 @@ function render(ui: ReactElement): RenderResult {
       <AtlasProvider config={testConfig}>{ui}</AtlasProvider>
     </QueryClientProvider>,
   );
+}
+
+/**
+ * Connected datasources render as a {@link CollapsibleRow} — a one-line summary
+ * that reveals its detail sheet + action footer only when expanded. Clicks the
+ * row's toggle so the detail rows / Reconnect / Disconnect assertions can run.
+ */
+async function expandSalesforceRow(container: HTMLElement): Promise<void> {
+  const toggle = await waitFor(() => {
+    const el = container.querySelector<HTMLButtonElement>(
+      '[data-testid="salesforce-row"] button',
+    );
+    if (!el) throw new Error("salesforce row toggle not rendered yet");
+    return el;
+  });
+  fireEvent.click(toggle);
 }
 
 describe("SalesforceProviderBlock", () => {
@@ -181,8 +198,11 @@ describe("SalesforceProviderBlock", () => {
       <SalesforceProviderBlock demoReadOnly={false} onChange={() => undefined} />,
     );
 
-    // Instance URL detail row carries the post-OAuth tenant host.
+    // Connected Salesforce renders as a collapsed row whose meta line carries
+    // the post-OAuth tenant host. Expand it to reveal the detail sheet (Org ID
+    // / Refresh token) and the Disconnect action.
     await findByText("https://na139.my.salesforce.com");
+    await expandSalesforceRow(container);
     await findByText("00DAB000000ZmU8");
 
     // "Refresh token: Live" — the freshness pill maps installStatus='ok'
@@ -220,7 +240,7 @@ describe("SalesforceProviderBlock", () => {
       <SalesforceProviderBlock demoReadOnly={false} onChange={() => undefined} />,
     );
 
-    // Reconnect-needed badge surfaces on the Shell title.
+    // Reconnect-needed badge surfaces on the collapsed row's title.
     await waitFor(() => {
       const badge = container.querySelector(
         '[data-testid="salesforce-reconnect-badge"]',
@@ -228,6 +248,9 @@ describe("SalesforceProviderBlock", () => {
       if (!badge) throw new Error("reconnect badge not rendered yet");
       return badge;
     });
+
+    // Expand the row to reveal its action footer (Reconnect / Disconnect).
+    await expandSalesforceRow(container);
 
     // Reconnect link is rendered as the primary CTA (same href as
     // Connect — the OAuth callback upserts the install row in place).

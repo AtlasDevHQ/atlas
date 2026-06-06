@@ -22,6 +22,11 @@ mock.module("@atlas/api/lib/semantic", () => ({
         return new Set(["events", "analytics.events"]);
       case "nonexistent":
         return new Set(); // empty — unknown connection
+      case "scanfail":
+        // A REGISTERED connection whose semantic directory scan FAILED, so its
+        // whitelist came back empty (fail-closed, #3243). It must reject all
+        // queries — never validate against the default group's tables.
+        return new Set();
       default:
         return new Set(["orders", "users", "companies"]);
     }
@@ -87,6 +92,16 @@ describe("per-connection whitelist enforcement", () => {
 
   it("rejects schema-qualified table not in warehouse whitelist", async () => {
     const result = await validateSQL("SELECT * FROM public.orders", "warehouse");
+    expect(result.valid).toBe(false);
+    expect(result.error).toContain("not in the allowed list");
+  });
+
+  it("fails closed: a registered connection whose scan failed (empty whitelist) rejects queries — not validated against default (#3243)", async () => {
+    // `orders` IS in the default whitelist. The "scanfail" connection is
+    // registered (getDBType returns postgres, no throw) but its whitelist is
+    // empty because its semantic scan failed and fell back closed. The query
+    // must be REJECTED — proving it did not silently validate against default.
+    const result = await validateSQL("SELECT * FROM orders", "scanfail");
     expect(result.valid).toBe(false);
     expect(result.error).toContain("not in the allowed list");
   });

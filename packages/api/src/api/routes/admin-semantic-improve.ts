@@ -866,6 +866,12 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
         // This throws on failure — runHandler maps it to 500
         await applyAmendmentToEntity(orgId, {
           entityName: target.source_entity,
+          // Recover the Connection group the amendment was analyzed against so
+          // the apply targets that group's row, not the default scope or a 409
+          // (#3284). A NULL column means the default (flat) group — map it to
+          // the explicit `"default"` label so the lookup is scoped to NULL
+          // rather than running the unscoped ambiguity check.
+          group: target.connection_group_id ?? "default",
           category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
             ? rawCategory as typeof ANALYSIS_CATEGORIES[number]
             : "coverage_gaps",

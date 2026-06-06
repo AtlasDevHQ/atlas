@@ -103,10 +103,17 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     // 5. Process each proposal
     for (const proposal of proposals) {
       try {
+        // Persist the finding's Connection group so the admin approve path can
+        // rebuild the correct scope (#3284). NULL = the default (flat) group:
+        // the layout-aware loader labels the default group `"default"`, which
+        // maps to a NULL `connection_group_id` like everywhere else.
+        const connectionGroupId =
+          proposal.group && proposal.group !== "default" ? proposal.group : null;
         const { status } = await insertSemanticAmendment({
           orgId: null, // global scope for self-hosted
           description: proposal.rationale,
           sourceEntity: proposal.entityName,
+          connectionGroupId,
           confidence: proposal.confidence,
           amendmentPayload: {
             category: proposal.category,

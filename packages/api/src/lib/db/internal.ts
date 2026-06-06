@@ -1203,6 +1203,15 @@ export async function insertSemanticAmendment(amendment: {
   sourceEntity: string;
   confidence: number;
   amendmentPayload: Record<string, unknown>;
+  /**
+   * Connection group the amendment targets (ADR-0012, #3284). NULL/omitted =
+   * the default (flat `entities/`) group. Persisted so the admin approve path,
+   * which rebuilds the proposal from the stored row's `source_entity` alone,
+   * can recover the group and apply the amendment against the correct scope
+   * (no 409, no default-scope corruption). The interactive `proposeAmendment`
+   * tool omits it — it reads the flat root, so the default scope is correct.
+   */
+  connectionGroupId?: string | null;
 }): Promise<{ id: string; status: "approved" | "pending" }> {
   const threshold = getAutoApproveThreshold();
   const allowedTypes = getAutoApproveTypes();
@@ -1230,8 +1239,9 @@ export async function insertSemanticAmendment(amendment: {
   const rows = await internalQuery<{ id: string }>(
     `INSERT INTO learned_patterns
        (org_id, pattern_sql, description, source_entity, confidence,
-        repetition_count, status, proposed_by, type, amendment_payload)
-     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7)
+        repetition_count, status, proposed_by, type, amendment_payload,
+        connection_group_id)
+     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7, $8)
      RETURNING id`,
     [
       amendment.orgId ?? null,
@@ -1241,6 +1251,7 @@ export async function insertSemanticAmendment(amendment: {
       amendment.confidence,
       status,
       JSON.stringify(amendment.amendmentPayload),
+      amendment.connectionGroupId ?? null,
     ],
   );
 
@@ -1278,6 +1289,12 @@ export async function getPendingAmendmentCount(orgId: string | null): Promise<nu
 export type PendingAmendmentRow = Record<string, unknown> & {
   id: string;
   source_entity: string;
+  /**
+   * Connection group the amendment targets (ADR-0012, #3284). NULL = the
+   * default (flat `entities/`) group. The admin approve path threads this into
+   * `applyAmendmentToEntity` so the amendment hits the correct group's row.
+   */
+  connection_group_id: string | null;
   description: string | null;
   confidence: number;
   amendment_payload: Record<string, unknown> | null;
@@ -1293,12 +1310,12 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
 
   return internalQuery<PendingAmendmentRow>(
     orgId
-      ? `SELECT id, source_entity, description, confidence, amendment_payload, created_at::text
+      ? `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, created_at::text
          FROM learned_patterns
          WHERE type = 'semantic_amendment' AND status = 'pending'
          AND (org_id = $1 OR org_id IS NULL)
          ORDER BY created_at DESC`
-      : `SELECT id, source_entity, description, confidence, amendment_payload, created_at::text
+      : `SELECT id, source_entity, connection_group_id, description, confidence, amendment_payload, created_at::text
          FROM learned_patterns
          WHERE type = 'semantic_amendment' AND status = 'pending'
          AND org_id IS NULL

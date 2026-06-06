@@ -38,10 +38,14 @@ export function analyzeSemanticLayer(
     ...findVirtualDimensionOpportunities(context),
   ];
 
-  // Deduplicate by entity + amendmentType + amendment.name
+  // Deduplicate by group + entity + amendmentType + amendment.name. The group
+  // is part of the key (#3284) so the same entity name in two Connection groups
+  // (`groups/eu/entities/orders.yml` + `groups/us/entities/orders.yml`) doesn't
+  // collapse to one proposal — each group's amendment must survive to be applied
+  // against its own row. `??""` keys the default/legacy group consistently.
   const seen = new Set<string>();
   const deduped = allResults.filter((r) => {
-    const key = `${r.entityName}:${r.amendmentType}:${String((r.amendment as Record<string, unknown>).name ?? "")}`;
+    const key = `${r.group ?? ""}:${r.entityName}:${r.amendmentType}:${String((r.amendment as Record<string, unknown>).name ?? "")}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

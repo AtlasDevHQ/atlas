@@ -538,6 +538,10 @@ export const learnedPatterns = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     type: text("type").notNull().default("query_pattern"),
     amendmentPayload: jsonb("amendment_payload"),
+    // Connection group the semantic amendment targets (ADR-0012, #3284).
+    // NULL = default (flat entities/) group. Lets the admin approve path
+    // rebuild the correct group scope from a persisted amendment row.
+    connectionGroupId: text("connection_group_id"),
   },
   (t) => [
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),

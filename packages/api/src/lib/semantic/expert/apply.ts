@@ -12,12 +12,30 @@ import { createLogger } from "@atlas/api/lib/logger";
 const log = createLogger("semantic-expert-apply");
 
 /**
+ * Resolve an {@link AnalysisResult.group} label to the `connection_group_id`
+ * scope used for the entity LOOKUP (#3284):
+ *
+ * - `undefined` (interactive `proposeAmendment` path, group unknown) → `undefined`,
+ *   preserving the back-compat unscoped lookup (`getEntity` runs its ambiguity
+ *   check and 409s when the name exists in 2+ groups).
+ * - `"default"` (the flat `entities/` group) → `null`, an EXPLICIT default-scope
+ *   lookup that won't 409 even when the same name also lives in a group.
+ * - `"<group>"` → the group name, scoping the lookup to that group's row.
+ */
+function groupToLookupScope(group: string | undefined): string | null | undefined {
+  if (group === undefined) return undefined;
+  return group === "default" ? null : group;
+}
+
+/**
  * Apply an amendment from an AnalysisResult to the org's semantic entity.
  *
- * 1. Read current YAML from DB
+ * 1. Read current YAML from DB — scoped to the finding's Connection group
+ *    (`result.group`) so a group entity resolves without a 409 (#3284)
  * 2. Parse, apply amendment, serialize back
- * 3. Upsert entity + create version snapshot
- * 4. Invalidate caches and sync to disk
+ * 3. Upsert entity + create version snapshot — written back to the row's OWN
+ *    `connection_group_id`, so the amendment can never land in the wrong scope
+ * 4. Invalidate caches and sync to disk (same group)
  */
 export async function applyAmendmentToEntity(
   orgId: string | null,
@@ -29,16 +47,38 @@ export async function applyAmendmentToEntity(
 
   const {
     getEntity,
-    upsertEntity,
+    upsertEntityForGroup,
     createVersion,
     generateChangeSummary,
     AmbiguousEntityError,
   } = await import("@atlas/api/lib/semantic/entities");
 
-  const entity = await getEntity(effectiveOrgId, "entity", result.entityName);
+  // Look the entity up in its Connection group (ADR-0012, #3284). An explicit
+  // group avoids the unscoped ambiguity 409 for a name shared across groups;
+  // an undefined group keeps the legacy unscoped behavior for the interactive
+  // path. `getEntity` may still throw AmbiguousEntityError (undefined group,
+  // 2+ groups) — that propagates to the route as a 409 with `groups`.
+  const lookupScope = groupToLookupScope(result.group);
+  let entity = await getEntity(effectiveOrgId, "entity", result.entityName, lookupScope);
+  if (!entity && lookupScope !== undefined) {
+    // The persisted group didn't resolve to a row — e.g. an interactive
+    // `proposeAmendment` row (NULL group) whose flat-root entity was imported
+    // under a datasource group, or a stale group label. Fall back to the
+    // back-compat UNSCOPED lookup, which resolves a unique match (and only
+    // throws AmbiguousEntityError → 409 on genuine cross-group ambiguity). The
+    // write-back below still targets the resolved row's OWN group, so a wrong
+    // scope is never written.
+    entity = await getEntity(effectiveOrgId, "entity", result.entityName);
+  }
   if (!entity) {
     throw new Error(`Entity "${result.entityName}" not found for org ${orgId}`);
   }
+
+  // The row's OWN group is authoritative for every write-back below — whether
+  // we resolved it by explicit scope or via the unscoped fallback, this is the
+  // exact row we read, so the amendment can never be written into a different
+  // (e.g. default) scope than the one it was analyzed against (#3284).
+  const targetGroupId = entity.connection_group_id ?? null;
 
   // Parse current YAML
   const parsed = yaml.load(entity.yaml_content) as Record<string, unknown>;
@@ -52,15 +92,15 @@ export async function applyAmendmentToEntity(
   // Serialize back to YAML
   const newYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
 
-  // Upsert entity
-  await upsertEntity(effectiveOrgId, "entity", result.entityName, newYaml);
+  // Upsert entity into its own group scope.
+  await upsertEntityForGroup(effectiveOrgId, "entity", result.entityName, newYaml, targetGroupId);
 
   // Create version snapshot. Tagged errors (AmbiguousEntityError) must
   // re-throw so the route layer maps them to 409 with `groups`; a generic
   // warn-log would bury the structural ambiguity that the expert agent
   // needs the operator to resolve.
   try {
-    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName);
+    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName, targetGroupId);
     if (refreshed) {
       const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
       const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
@@ -81,10 +121,11 @@ export async function applyAmendmentToEntity(
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
   invalidateOrgWhitelist(effectiveOrgId);
 
-  // Sync to disk (non-fatal)
+  // Sync to disk (non-fatal) — same group so the on-disk mirror lands in
+  // `groups/<group>/entities/` rather than the flat default dir.
   try {
     const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-    await syncEntityToDisk(effectiveOrgId, result.entityName, "entity", newYaml);
+    await syncEntityToDisk(effectiveOrgId, result.entityName, "entity", newYaml, targetGroupId);
   } catch (syncErr) {
     log.warn(
       { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, entity: result.entityName },
@@ -93,7 +134,7 @@ export async function applyAmendmentToEntity(
   }
 
   log.info(
-    { requestId, orgId, entity: result.entityName, amendmentType: result.amendmentType },
+    { requestId, orgId, entity: result.entityName, amendmentType: result.amendmentType, group: targetGroupId },
     "Semantic amendment applied via expert agent",
   );
 }

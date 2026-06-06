@@ -11,16 +11,28 @@ import { createAnalysisResult, tableFrequencyImpact } from "./scoring";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-function rejectionKey(entity: string, type: string, name?: string): string {
-  return `${entity}:${type}${name ? `:${name}` : ""}`;
+// Rejection/staleness keys are group-scoped (#3284): a review decision in one
+// Connection group must not suppress the same-named amendment in another group.
+// `loadRejectedKeys` builds the matching key from each rejected row's
+// `connection_group_id` (NULL → "default").
+function rejectionKey(group: string, entity: string, type: string, name?: string): string {
+  return `${group}:${entity}:${type}${name ? `:${name}` : ""}`;
 }
 
-function stalenessFactor(entity: string, type: string, name: string | undefined, rejectedKeys: Set<string>): number {
-  return rejectedKeys.has(rejectionKey(entity, type, name)) ? 0.8 : 0;
+function stalenessFactor(group: string, entity: string, type: string, name: string | undefined, rejectedKeys: Set<string>): number {
+  return rejectedKeys.has(rejectionKey(group, entity, type, name)) ? 0.8 : 0;
 }
 
-function findEntityForTable(entities: ParsedEntity[], tableName: string): ParsedEntity | undefined {
-  return entities.find((e) => e.table === tableName || e.name === tableName);
+/**
+ * Every entity that models `tableName` — across Connection groups (#3284).
+ * The loader now returns one entity per group for a shared table (e.g.
+ * `groups/us/entities/orders.yml` + `groups/eu/entities/orders.yml`), so the
+ * profile-driven analyzers must visit ALL of them — keying off only the first
+ * match would generate amendments for one group and silently skip the others,
+ * even though the apply path is now group-aware.
+ */
+function findEntitiesForTable(entities: ParsedEntity[], tableName: string): ParsedEntity[] {
+  return entities.filter((e) => e.table === tableName || e.name === tableName);
 }
 
 const AUTO_DESC_PATTERN = /^The \w+ column\.?$|^Column \w+\.?$/i;
@@ -37,35 +49,36 @@ export function findCoverageGaps(ctx: AnalysisContext): AnalysisResult[] {
   const results: AnalysisResult[] = [];
 
   for (const profile of ctx.profiles) {
-    const entity = findEntityForTable(ctx.entities, profile.table_name);
-    if (!entity) continue;
+    // Every group that models this table (#3284) — not just the first match.
+    for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
+      const dimNames = new Set(entity.dimensions.map((d) => d.sql.toLowerCase()));
 
-    const dimNames = new Set(entity.dimensions.map((d) => d.sql.toLowerCase()));
+      for (const col of profile.columns) {
+        if (col.is_primary_key) continue; // PKs are usually not needed as dimensions
+        if (dimNames.has(col.name.toLowerCase())) continue;
 
-    for (const col of profile.columns) {
-      if (col.is_primary_key) continue; // PKs are usually not needed as dimensions
-      if (dimNames.has(col.name.toLowerCase())) continue;
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_dimension", col.name, ctx.rejectedKeys);
+        const impact = 0.6;
+        const confidence = col.null_count !== null && col.unique_count !== null ? 0.7 : 0.5;
 
-      const staleness = stalenessFactor(entity.name, "add_dimension", col.name, ctx.rejectedKeys);
-      const impact = 0.6;
-      const confidence = col.null_count !== null && col.unique_count !== null ? 0.7 : 0.5;
-
-      results.push(createAnalysisResult({
-        category: "coverage_gaps",
-        entityName: entity.name,
-        amendmentType: "add_dimension",
-        amendment: {
-          name: col.name,
-          sql: col.name,
-          type: mapSQLType(col.type),
-          description: `The ${col.name.replace(/_/g, " ")} column`,
-          ...(col.sample_values.length > 0 && { sample_values: col.sample_values.slice(0, 5) }),
-        },
-        rationale: `Column "${col.name}" exists in ${profile.table_name} but is not represented as a dimension in the entity schema.`,
-        impact,
-        confidence,
-        staleness,
-      }));
+        results.push(createAnalysisResult({
+          category: "coverage_gaps",
+          entityName: entity.name,
+          group: entity.group,
+          amendmentType: "add_dimension",
+          amendment: {
+            name: col.name,
+            sql: col.name,
+            type: mapSQLType(col.type),
+            description: `The ${col.name.replace(/_/g, " ")} column`,
+            ...(col.sample_values.length > 0 && { sample_values: col.sample_values.slice(0, 5) }),
+          },
+          rationale: `Column "${col.name}" exists in ${profile.table_name} but is not represented as a dimension in the entity schema.`,
+          impact,
+          confidence,
+          staleness,
+        }));
+      }
     }
   }
 
@@ -80,13 +93,14 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
   for (const entity of ctx.entities) {
     // Table-level description
     if (!entity.description || AUTO_DESC_PATTERN.test(entity.description)) {
-      const staleness = stalenessFactor(entity.name, "update_description", "table", ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_description", "table", ctx.rejectedKeys);
       const impact = 0.5;
       const confidence = 0.6;
 
       results.push(createAnalysisResult({
         category: "description_quality",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "update_description",
         amendment: { field: "table", description: entity.description ?? "" },
         rationale: entity.description
@@ -101,13 +115,14 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
     // Dimension-level descriptions
     for (const dim of entity.dimensions) {
       if (!dim.description || AUTO_DESC_PATTERN.test(dim.description)) {
-        const staleness = stalenessFactor(entity.name, "update_description", dim.name, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_description", dim.name, ctx.rejectedKeys);
         const impact = 0.4;
         const confidence = 0.6;
 
         results.push(createAnalysisResult({
           category: "description_quality",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "update_description",
           amendment: { dimension: dim.name, description: dim.description ?? "" },
           rationale: dim.description
@@ -130,29 +145,30 @@ export function findTypeInaccuracies(ctx: AnalysisContext): AnalysisResult[] {
   const results: AnalysisResult[] = [];
 
   for (const profile of ctx.profiles) {
-    const entity = findEntityForTable(ctx.entities, profile.table_name);
-    if (!entity) continue;
+    // Every group that models this table (#3284) — not just the first match.
+    for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
+      for (const dim of entity.dimensions) {
+        const col = profile.columns.find((c) => c.name === dim.sql);
+        if (!col) continue;
 
-    for (const dim of entity.dimensions) {
-      const col = profile.columns.find((c) => c.name === dim.sql);
-      if (!col) continue;
+        const inferredType = mapSQLType(col.type);
+        if (inferredType !== dim.type && inferredType !== "string") {
+          const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
+          const impact = 0.7;
+          const confidence = 0.8;
 
-      const inferredType = mapSQLType(col.type);
-      if (inferredType !== dim.type && inferredType !== "string") {
-        const staleness = stalenessFactor(entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
-        const impact = 0.7;
-        const confidence = 0.8;
-
-        results.push(createAnalysisResult({
-          category: "type_accuracy",
-          entityName: entity.name,
-          amendmentType: "update_dimension",
-          amendment: { name: dim.name, type: inferredType },
-          rationale: `Dimension "${dim.name}" is typed as "${dim.type}" but the database column is ${col.type} (maps to "${inferredType}").`,
-          impact,
-          confidence,
-          staleness,
-        }));
+          results.push(createAnalysisResult({
+            category: "type_accuracy",
+            entityName: entity.name,
+            group: entity.group,
+            amendmentType: "update_dimension",
+            amendment: { name: dim.name, type: inferredType },
+            rationale: `Dimension "${dim.name}" is typed as "${dim.type}" but the database column is ${col.type} (maps to "${inferredType}").`,
+            impact,
+            confidence,
+            staleness,
+          }));
+        }
       }
     }
   }
@@ -166,52 +182,53 @@ export function findMissingMeasures(ctx: AnalysisContext): AnalysisResult[] {
   const results: AnalysisResult[] = [];
 
   for (const profile of ctx.profiles) {
-    const entity = findEntityForTable(ctx.entities, profile.table_name);
-    if (!entity) continue;
-
-    const existingMeasureSqls = new Set(
-      entity.measures.map((m) => m.sql.toLowerCase()),
-    );
-
-    for (const col of profile.columns) {
-      if (!NUMERIC_SQL_TYPES.has(col.type.toLowerCase())) continue;
-      if (col.is_primary_key || col.is_foreign_key) continue;
-
-      // Check if any measure already references this column
-      const alreadyCovered = entity.measures.some(
-        (m) => m.sql.toLowerCase().includes(col.name.toLowerCase()),
+    // Every group that models this table (#3284) — not just the first match.
+    for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
+      const existingMeasureSqls = new Set(
+        entity.measures.map((m) => m.sql.toLowerCase()),
       );
-      if (alreadyCovered) continue;
 
-      const suggestion = suggestMeasureType(col);
-      if (suggestion === "count_where") continue; // Not a standard numeric measure
+      for (const col of profile.columns) {
+        if (!NUMERIC_SQL_TYPES.has(col.type.toLowerCase())) continue;
+        if (col.is_primary_key || col.is_foreign_key) continue;
 
-      const aggType = suggestion === "avg" ? "avg" : "sum";
-      const measureName = `total_${col.name}`;
+        // Check if any measure already references this column
+        const alreadyCovered = entity.measures.some(
+          (m) => m.sql.toLowerCase().includes(col.name.toLowerCase()),
+        );
+        if (alreadyCovered) continue;
 
-      if (existingMeasureSqls.has(col.name.toLowerCase())) continue;
+        const suggestion = suggestMeasureType(col);
+        if (suggestion === "count_where") continue; // Not a standard numeric measure
 
-      const staleness = stalenessFactor(entity.name, "add_measure", measureName, ctx.rejectedKeys);
-      const impact = tableFrequencyImpact(profile.table_name, ctx.auditPatterns);
-      const confidence = 0.65;
-      const desc = describeMeasure(col, aggType);
+        const aggType = suggestion === "avg" ? "avg" : "sum";
+        const measureName = `total_${col.name}`;
 
-      results.push(createAnalysisResult({
-        category: "missing_measures",
-        entityName: entity.name,
-        amendmentType: "add_measure",
-        amendment: {
-          name: measureName,
-          sql: aggType === "sum" ? col.name : col.name,
-          type: aggType,
-          description: desc,
-        },
-        rationale: `Numeric column "${col.name}" (${col.type}) has no measure. A ${aggType.toUpperCase()} measure would enable aggregation queries.`,
-        testQuery: `SELECT ${aggType.toUpperCase()}("${col.name}") FROM "${profile.table_name}" LIMIT 1`,
-        impact,
-        confidence,
-        staleness,
-      }));
+        if (existingMeasureSqls.has(col.name.toLowerCase())) continue;
+
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_measure", measureName, ctx.rejectedKeys);
+        const impact = tableFrequencyImpact(profile.table_name, ctx.auditPatterns);
+        const confidence = 0.65;
+        const desc = describeMeasure(col, aggType);
+
+        results.push(createAnalysisResult({
+          category: "missing_measures",
+          entityName: entity.name,
+          group: entity.group,
+          amendmentType: "add_measure",
+          amendment: {
+            name: measureName,
+            sql: aggType === "sum" ? col.name : col.name,
+            type: aggType,
+            description: desc,
+          },
+          rationale: `Numeric column "${col.name}" (${col.type}) has no measure. A ${aggType.toUpperCase()} measure would enable aggregation queries.`,
+          testQuery: `SELECT ${aggType.toUpperCase()}("${col.name}") FROM "${profile.table_name}" LIMIT 1`,
+          impact,
+          confidence,
+          staleness,
+        }));
+      }
     }
   }
 
@@ -224,52 +241,59 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
   const results: AnalysisResult[] = [];
 
   for (const profile of ctx.profiles) {
-    const entity = findEntityForTable(ctx.entities, profile.table_name);
-    if (!entity) continue;
+    // Every group that models this table (#3284) — not just the first match.
+    for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
+      const existingJoinTables = new Set(
+        entity.joins.map((j) => {
+          // Extract target table from join SQL like "table_a.col = table_b.col".
+          // Split on the literal `=` (not `\s*=\s*`) and trim each side instead —
+          // a `\s*` quantifier in a split regex tries every position, giving
+          // O(n²) on inputs of long whitespace runs (CodeQL js/polynomial-redos).
+          const parts = j.sql.split("=");
+          if (parts.length !== 2) return "";
+          const lhs = parts[0].trim().match(/^(\w+)\.\w+$/);
+          const rhs = parts[1].trim().match(/^(\w+)\.\w+$/);
+          if (!lhs || !rhs) return "";
+          return lhs[1] === profile.table_name ? rhs[1] : lhs[1];
+        }).filter(Boolean).map((t) => t.toLowerCase()),
+      );
 
-    const existingJoinTables = new Set(
-      entity.joins.map((j) => {
-        // Extract target table from join SQL like "table_a.col = table_b.col".
-        // Split on the literal `=` (not `\s*=\s*`) and trim each side instead —
-        // a `\s*` quantifier in a split regex tries every position, giving
-        // O(n²) on inputs of long whitespace runs (CodeQL js/polynomial-redos).
-        const parts = j.sql.split("=");
-        if (parts.length !== 2) return "";
-        const lhs = parts[0].trim().match(/^(\w+)\.\w+$/);
-        const rhs = parts[1].trim().match(/^(\w+)\.\w+$/);
-        if (!lhs || !rhs) return "";
-        return lhs[1] === profile.table_name ? rhs[1] : lhs[1];
-      }).filter(Boolean).map((t) => t.toLowerCase()),
-    );
+      // Check declared foreign keys
+      for (const fk of [...profile.foreign_keys, ...profile.inferred_foreign_keys]) {
+        if (existingJoinTables.has(fk.to_table.toLowerCase())) continue;
 
-    // Check declared foreign keys
-    for (const fk of [...profile.foreign_keys, ...profile.inferred_foreign_keys]) {
-      if (existingJoinTables.has(fk.to_table.toLowerCase())) continue;
+        // Verify the target table has an entity IN THE SAME GROUP. The SQL
+        // whitelist keys tables by `connection_group_id` (whitelist.ts), so a
+        // group-scoped `orders → customers` join is invalid (and unapplyable)
+        // when `customers` only exists in a different group — propose it only
+        // when the target lives in this entity's group (#3284, Codex review).
+        const targetInGroup = ctx.entities.some(
+          (e) => (e.table === fk.to_table || e.name === fk.to_table) && e.group === entity.group,
+        );
+        if (!targetInGroup) continue;
 
-      // Verify target table has an entity
-      const targetEntity = findEntityForTable(ctx.entities, fk.to_table);
-      if (!targetEntity) continue;
+        const joinSql = `${profile.table_name}.${fk.from_column} = ${fk.to_table}.${fk.to_column}`;
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_join", fk.to_table, ctx.rejectedKeys);
+        const impact = 0.8;
+        const confidence = fk.source === "constraint" ? 0.95 : 0.6;
 
-      const joinSql = `${profile.table_name}.${fk.from_column} = ${fk.to_table}.${fk.to_column}`;
-      const staleness = stalenessFactor(entity.name, "add_join", fk.to_table, ctx.rejectedKeys);
-      const impact = 0.8;
-      const confidence = fk.source === "constraint" ? 0.95 : 0.6;
-
-      results.push(createAnalysisResult({
-        category: "missing_joins",
-        entityName: entity.name,
-        amendmentType: "add_join",
-        amendment: {
-          name: `to_${fk.to_table}`,
-          sql: joinSql,
-          description: `${profile.table_name}.${fk.from_column} → ${fk.to_table}.${fk.to_column}`,
-        },
-        rationale: `Foreign key relationship from ${profile.table_name}.${fk.from_column} to ${fk.to_table}.${fk.to_column} is not captured as a join in the entity schema.`,
-        testQuery: `SELECT COUNT(*) FROM "${profile.table_name}" INNER JOIN "${fk.to_table}" ON ${joinSql} LIMIT 1`,
-        impact,
-        confidence,
-        staleness,
-      }));
+        results.push(createAnalysisResult({
+          category: "missing_joins",
+          entityName: entity.name,
+          group: entity.group,
+          amendmentType: "add_join",
+          amendment: {
+            name: `to_${fk.to_table}`,
+            sql: joinSql,
+            description: `${profile.table_name}.${fk.from_column} → ${fk.to_table}.${fk.to_column}`,
+          },
+          rationale: `Foreign key relationship from ${profile.table_name}.${fk.from_column} to ${fk.to_table}.${fk.to_column} is not captured as a join in the entity schema.`,
+          testQuery: `SELECT COUNT(*) FROM "${profile.table_name}" INNER JOIN "${fk.to_table}" ON ${joinSql} LIMIT 1`,
+          impact,
+          confidence,
+          staleness,
+        }));
+      }
     }
   }
 
@@ -293,13 +317,14 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
       const abbrev = matches[1].toLowerCase();
       if (glossaryTerms.has(abbrev)) continue;
 
-      const staleness = stalenessFactor(entity.name, "add_glossary_term", abbrev, ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_glossary_term", abbrev, ctx.rejectedKeys);
       const impact = 0.5;
       const confidence = 0.5;
 
       results.push(createAnalysisResult({
         category: "glossary_gaps",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_glossary_term",
         amendment: { term: abbrev, definition: "", ambiguous: true },
         rationale: `Business abbreviation "${abbrev}" appears in column "${dim.name}" but is not defined in the glossary. Defining it helps the agent understand queries about this metric.`,
@@ -319,40 +344,41 @@ export function findStaleSampleValues(ctx: AnalysisContext): AnalysisResult[] {
   const results: AnalysisResult[] = [];
 
   for (const profile of ctx.profiles) {
-    const entity = findEntityForTable(ctx.entities, profile.table_name);
-    if (!entity) continue;
+    // Every group that models this table (#3284) — not just the first match.
+    for (const entity of findEntitiesForTable(ctx.entities, profile.table_name)) {
+      for (const dim of entity.dimensions) {
+        if (!dim.sample_values || dim.sample_values.length === 0) continue;
 
-    for (const dim of entity.dimensions) {
-      if (!dim.sample_values || dim.sample_values.length === 0) continue;
+        const col = profile.columns.find((c) => c.name === dim.sql);
+        if (!col || col.sample_values.length === 0) continue;
 
-      const col = profile.columns.find((c) => c.name === dim.sql);
-      if (!col || col.sample_values.length === 0) continue;
+        // Check how many declared samples still exist in actual data
+        const actualSet = new Set(col.sample_values.map((v) => String(v).toLowerCase()));
+        const staleValues = dim.sample_values.filter(
+          (v) => !actualSet.has(String(v).toLowerCase()),
+        );
 
-      // Check how many declared samples still exist in actual data
-      const actualSet = new Set(col.sample_values.map((v) => String(v).toLowerCase()));
-      const staleValues = dim.sample_values.filter(
-        (v) => !actualSet.has(String(v).toLowerCase()),
-      );
+        if (staleValues.length === 0) continue;
 
-      if (staleValues.length === 0) continue;
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
+        const impact = 0.3;
+        const confidence = 0.85;
 
-      const staleness = stalenessFactor(entity.name, "update_dimension", dim.name, ctx.rejectedKeys);
-      const impact = 0.3;
-      const confidence = 0.85;
-
-      results.push(createAnalysisResult({
-        category: "sample_value_staleness",
-        entityName: entity.name,
-        amendmentType: "update_dimension",
-        amendment: {
-          name: dim.name,
-          sample_values: col.sample_values.slice(0, 10),
-        },
-        rationale: `${staleValues.length} of ${dim.sample_values.length} declared sample values for "${dim.name}" no longer appear in the data: ${staleValues.slice(0, 3).join(", ")}${staleValues.length > 3 ? "..." : ""}`,
-        impact,
-        confidence,
-        staleness,
-      }));
+        results.push(createAnalysisResult({
+          category: "sample_value_staleness",
+          entityName: entity.name,
+          group: entity.group,
+          amendmentType: "update_dimension",
+          amendment: {
+            name: dim.name,
+            sample_values: col.sample_values.slice(0, 10),
+          },
+          rationale: `${staleValues.length} of ${dim.sample_values.length} declared sample values for "${dim.name}" no longer appear in the data: ${staleValues.slice(0, 3).join(", ")}${staleValues.length > 3 ? "..." : ""}`,
+          impact,
+          confidence,
+          staleness,
+        }));
+      }
     }
   }
 
@@ -379,13 +405,14 @@ export function findQueryPatternGaps(ctx: AnalysisContext): AnalysisResult[] {
       .filter((p) => !existingPatternSqls.has(p.sql.trim().toLowerCase()));
 
     for (const pattern of relevantPatterns.slice(0, 3)) {
-      const staleness = stalenessFactor(entity.name, "add_query_pattern", undefined, ctx.rejectedKeys);
+      const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_query_pattern", undefined, ctx.rejectedKeys);
       const impact = Math.min(1, pattern.count / 20); // 20+ queries = max impact
       const confidence = 0.7;
 
       results.push(createAnalysisResult({
         category: "query_pattern_coverage",
         entityName: entity.name,
+        group: entity.group,
         amendmentType: "add_query_pattern",
         amendment: {
           name: `pattern_${entity.table}_${results.length}`,
@@ -435,13 +462,14 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         );
         if (exists) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 
         results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "add_virtual_dimension",
           amendment: {
             name: virtualName,
@@ -475,13 +503,14 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         );
         if (exists) continue;
 
-        const staleness = stalenessFactor(entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
+        const staleness = stalenessFactor(entity.group ?? "default", entity.name, "add_virtual_dimension", virtualName, ctx.rejectedKeys);
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 
         results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
+          group: entity.group,
           amendmentType: "add_virtual_dimension",
           amendment: {
             name: virtualName,

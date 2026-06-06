@@ -44,9 +44,23 @@ describe("metricItemsFromData", () => {
 });
 
 describe("normalizeMetrics", () => {
-  test("returns [] for non-array input", () => {
+  test("returns [] for empty / invalid input", () => {
     expect(normalizeMetrics(null)).toEqual([]);
+    expect(normalizeMetrics("nope")).toEqual([]);
     expect(normalizeMetrics({ metrics: [] })).toEqual([]);
+  });
+
+  test("accepts the raw endpoint envelope, not just the unwrapped array", () => {
+    // The page hands normalizeMetrics the unwrapped array (`data?.metrics ?? data`),
+    // but the function also tolerates the raw `{ metrics: [...] }` endpoint envelope
+    // so a future caller can't silently drop everything by passing the body
+    // directly. (Distinct from the file-DATA-level `{ metrics: [...] }` unwrap that
+    // metricItemsFromData handles.)
+    expect(
+      normalizeMetrics({
+        metrics: [{ file: "core", source: "default", data: [{ id: "a", sql: "SELECT 1" }] }],
+      }),
+    ).toMatchObject([{ name: "a", file: "core", source: "default", sql: "SELECT 1" }]);
   });
 
   test("renders array-form metric files", () => {

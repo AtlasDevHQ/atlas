@@ -84,11 +84,20 @@ export function metricItemsFromData(data: unknown): unknown[] | null {
   return null;
 }
 
-/** Flatten the metrics endpoint payload into a list of `MetricEntry`. */
+/**
+ * Flatten the metrics endpoint payload into a list of `MetricEntry`. Accepts
+ * either the already-unwrapped array of entries OR the raw endpoint envelope
+ * `{ metrics: [...] }`, so handing it the response body directly can never
+ * silently drop every metric.
+ */
 export function normalizeMetrics(raw: unknown): MetricEntry[] {
-  if (!raw || !Array.isArray(raw)) return [];
+  const entries: unknown[] = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { metrics?: unknown }).metrics)
+      ? (raw as { metrics: unknown[] }).metrics
+      : [];
   const metrics: MetricEntry[] = [];
-  for (const entry of raw) {
+  for (const entry of entries) {
     const e = entry as { data: unknown; file?: string; source?: string };
     const data = e?.data;
     const fileName = typeof e?.file === "string" ? e.file : undefined;

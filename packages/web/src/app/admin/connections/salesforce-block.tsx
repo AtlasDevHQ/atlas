@@ -9,8 +9,8 @@
  * list (`/api/v1/admin/connections`) projects from the registry, so Salesforce
  * installs are invisible there. This component bridges the gap by reading the
  * catalog endpoint directly, finding the `salesforce` row, and rendering the
- * same provider block shape (CompactRow when disconnected, Shell when
- * connected) the SQL provider blocks use.
+ * same provider block shape (CompactRow when disconnected, CollapsibleRow when
+ * connected) the database rows use.
  *
  * Connect/Disconnect routes:
  *   - Connect    → `<a href=/api/v1/integrations/salesforce/install>` (OAuth dance,
@@ -110,9 +110,10 @@ interface SalesforceProviderBlockProps {
 
 /**
  * Provider block for the Salesforce row on `/admin/connections`. Parallel
- * to the {@link ProviderBlock} in `page.tsx` — same CompactRow / Shell
- * shape, but the install lookup goes through the catalog endpoint
- * (`/api/v1/integrations/catalog`) instead of the connections endpoint.
+ * to the `ConnectionCard` in `page.tsx` — same CompactRow (disconnected) /
+ * CollapsibleRow (connected) shape, but the install lookup goes through the
+ * catalog endpoint (`/api/v1/integrations/catalog`) instead of the
+ * connections endpoint.
  */
 export function SalesforceProviderBlock({
   demoReadOnly,
@@ -395,11 +396,11 @@ interface SalesforceActionsProps {
 }
 
 /**
- * Action footer for the connected Salesforce Shell. Mirrors the
- * `ShellActions` shape in `catalog-card.tsx`: when `needsReconnect`,
- * Reconnect is the primary CTA and Disconnect recedes to ghost;
- * otherwise Disconnect is the only routine action and Reconnect stays
- * ghost so it doesn't compete for attention.
+ * Action footer for the connected Salesforce row's expanded panel (the
+ * `CollapsibleRow` `actions` slot). When `needsReconnect`, Reconnect is the
+ * primary CTA and Disconnect recedes to ghost; otherwise Disconnect is the
+ * only routine action and Reconnect stays ghost so it doesn't compete for
+ * attention.
  */
 function SalesforceActions({
   name,

@@ -25,6 +25,7 @@ import {
 } from "@/ui/lib/admin-schemas";
 import { getApiUrl } from "@/lib/api-url";
 import { cn } from "@/lib/utils";
+import type { DBType } from "@/ui/lib/types";
 import { DATABASE_PROVIDERS, descriptionForDbType, iconForDbType } from "./provider-meta";
 import type { CuratedCandidate } from "./curated-install-dialog";
 
@@ -118,7 +119,7 @@ export function AddConnectionPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   demoReadOnly: boolean;
-  onPickDatabase: (dbType: string) => void;
+  onPickDatabase: (dbType: DBType) => void;
   onPickCustomRest: () => void;
   /** Form-based curated candidate (paste a key) → opens the curated dialog. */
   onPickCuratedForm: (candidate: CuratedCandidate) => void;
@@ -150,7 +151,7 @@ export function AddConnectionPicker({
     return entry ? { entry, icon } : null;
   }).filter((c): c is { entry: IntegrationsCatalogEntry; icon: LucideIcon } => c !== null);
 
-  function pickDatabase(dbType: string) {
+  function pickDatabase(dbType: DBType) {
     onOpenChange(false);
     onPickDatabase(dbType);
   }

@@ -5,21 +5,30 @@ import {
   Snowflake,
   type LucideIcon,
 } from "lucide-react";
-import { DB_TYPES } from "@/ui/lib/types";
+import { DB_TYPES, type DBType } from "@/ui/lib/types";
 
 /* ────────────────────────────────────────────────────────────────────────
  *  Provider metadata — shared by the connections page (rendering connected
  *  databases) and the Add-connection picker (offering providers to connect).
  *  Single source so an icon / blurb never drifts between the two surfaces.
+ *
+ *  The lookup functions below take `dbType: string`, not the closed `DBType`
+ *  union, on purpose: a *connected* row's dbType can be a plugin-/marketplace-
+ *  registered datasource that isn't in the URL-form `DB_TYPES` dropdown (e.g.
+ *  `bigquery`, seeded via the builtin-datasource catalog). So the extra switch
+ *  arms + `default` fallback are load-bearing for those wider runtime values,
+ *  and an exhaustiveness guard would wrongly reject them. The Add picker, by
+ *  contrast, only ever offers `DATABASE_PROVIDERS` — which is genuinely `DBType`.
  * ──────────────────────────────────────────────────────────────────────── */
 
 /** SQL database providers offered in the Add picker, in display order.
  *  Salesforce is intentionally excluded — it installs via OAuth from its own
  *  "Apps & CRM" section, not the URL-form connection dialog. */
-export const DATABASE_PROVIDERS: ReadonlyArray<{ value: string; label: string }> =
+export const DATABASE_PROVIDERS: ReadonlyArray<{ value: DBType; label: string }> =
   DB_TYPES.filter((t) => t.value !== "salesforce");
 
-/** Map a dbType to the icon used in rows and picker tiles. */
+/** Map a dbType to the icon used in rows and picker tiles. Accepts `string`
+ *  (not `DBType`) to cover plugin-registered datasources — see file header. */
 export function iconForDbType(dbType: string): LucideIcon {
   switch (dbType) {
     case "postgres":

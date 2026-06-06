@@ -1000,14 +1000,11 @@ export default function ConnectionsPage() {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
 
-  // `useQueryStates` so the segmented control reflects whichever value
-  // the URL ships with on first paint — keeps the legacy
-  // `/admin/connections/groups` redirect landing on the right view and
-  // Post-0096 cutover (#2744): the `?groupBy=environment` toggle and
-  // the environments view it routed to are gone — group membership is
-  // now visible per-connection in the edit dialog (`newGroupName` on
-  // POST/PUT). The remaining `bucketizeConnections(..., "type")` call
-  // still powers the type-grouped provider blocks.
+  // Post-0096 cutover (#2744): the `?groupBy=environment` toggle and the
+  // environments view it routed to are gone — there's no segmented control
+  // or URL-driven view state here anymore. Group membership is surfaced
+  // per-connection in the edit dialog (`newGroupName` on POST/PUT), and the
+  // page renders one flat list split into type-grouped provider sections.
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -1150,7 +1147,7 @@ export default function ConnectionsPage() {
     setEditId(null);
     setEditDetail(null);
     // Callers that don't pass a dbType (e.g. the hero CTA) get the dialog's
-    // built-in Postgres default; the provider CompactRow passes its own
+    // built-in Postgres default; the Add picker's database tile passes its own
     // dbType so the admin isn't re-routed into Postgres URL validation.
     setCreateDbType(dbType);
     setFormOpen(true);

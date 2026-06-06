@@ -5,7 +5,7 @@
  * (PRD #2868 slice 2, #2926). Parallel to {@link SalesforceProviderBlock}, but:
  *
  *  - **Multi-instance** — a workspace installs Twenty, Stripe, an internal
- *    service side by side. Each is its own Shell with its own actions.
+ *    service side by side. Each is its own CollapsibleRow with its own actions.
  *  - **Form install** — `POST /api/v1/integrations/openapi-generic/install-form`
  *    with the spec URL + auth (probed server-side; field errors surface inline).
  *  - **Per-install lifecycle** via `/api/v1/admin/openapi-datasources/{id}`:
@@ -523,6 +523,17 @@ function OpenApiInstallCard({
     }
   }
 
+  // The per-row PATCH/DELETE mutations report success via toast, but each is
+  // bound to a server value (the Switch/Selects below) that snaps back on a
+  // failed write — so a bare toast lets the revert read as a silent no-op once
+  // it fades. Surface a durable inline error too (rediscover already had one).
+  const settingsError =
+    setMode.error ??
+    setRefresh.error ??
+    setGroup.error ??
+    remove.error ??
+    acknowledgeDrift.error;
+
   return (
     <>
       <CollapsibleRow
@@ -716,6 +727,9 @@ function OpenApiInstallCard({
 
         {rediscover.error ? (
           <InlineError>{friendlyErrorOrNull(rediscover.error) ?? "Rediscover failed."}</InlineError>
+        ) : null}
+        {settingsError ? (
+          <InlineError>{friendlyErrorOrNull(settingsError) ?? "Update failed."}</InlineError>
         ) : null}
       </CollapsibleRow>
 

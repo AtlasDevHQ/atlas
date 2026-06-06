@@ -322,21 +322,24 @@ describe("buildSemanticIndex", () => {
       ].join("\n") + "\n",
     );
 
+    // Canonical single-metric shape — keyed by `id:` (no `name:`), the common
+    // form for generated group metrics. The index must surface it.
     writeFileSync(
-      join(root, "groups", "analytics", "metrics", "sessions_metrics.yml"),
+      join(root, "groups", "analytics", "metrics", "wau.yml"),
       [
-        "metrics:",
-        "  - name: weekly_active_users",
-        '    description: "Distinct users active in the last 7 days"',
-        "    entity: sessions",
-        "    aggregation: count_distinct",
+        "id: weekly_active_users",
+        'description: "Distinct users active in the last 7 days"',
+        "entity: sessions",
+        "aggregation: count_distinct",
+        "sql: SELECT COUNT(DISTINCT user_id) FROM sessions",
       ].join("\n") + "\n",
     );
+    // Object-form glossary (current shape) — keyed by term name.
     writeFileSync(
       join(root, "groups", "analytics", "glossary.yml"),
       [
         "terms:",
-        "  - term: wau",
+        "  wau:",
         '    definition: "Weekly active users"',
         "    status: defined",
       ].join("\n") + "\n",
@@ -365,6 +368,58 @@ describe("buildSemanticIndex", () => {
     // The group entity is labeled with its group; nothing is attributed to "groups".
     expect(index).toContain("[analytics]");
     expect(index).not.toContain("[groups]");
+  });
+
+  it("scopes catalog use_for hints to the matching group on a cross-group name collision (#3240)", () => {
+    const root = ensureDir(`catalog-collision-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    mkdirSync(join(root, "groups", "analytics", "entities"), { recursive: true });
+
+    // Same entity NAME (`customers`) in two groups — the flat default and the
+    // analytics group — each with its own catalog hint.
+    writeFileSync(
+      join(root, "entities", "customers.yml"),
+      makeEntity("customers", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+    writeFileSync(
+      join(root, "groups", "analytics", "entities", "customers.yml"),
+      makeEntity("customers", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+    writeFileSync(
+      join(root, "catalog.yml"),
+      [
+        "entities:",
+        "  - name: customers",
+        "    use_for:",
+        '      - "Billing default-group"',
+      ].join("\n") + "\n",
+    );
+    writeFileSync(
+      join(root, "groups", "analytics", "catalog.yml"),
+      [
+        "entities:",
+        "  - name: customers",
+        "    use_for:",
+        '      - "Engagement analytics-group"',
+      ].join("\n") + "\n",
+    );
+
+    const index = buildSemanticIndex(root);
+
+    // Each entity gets ONLY its own group's hint — no cross-group leakage.
+    expect(index).toContain("Use for: Billing default-group");
+    expect(index).toContain("Use for: Engagement analytics-group");
+    // The analytics-group hint must not also attach to the default customers
+    // entity rendered under the default (unlabeled) section, and vice versa.
+    // Render order is default first, then groups, so the default entity's block
+    // precedes the [analytics] block; assert the default block doesn't carry
+    // the analytics hint by checking the analytics hint appears only after the
+    // [analytics] label.
+    const analyticsLabelIdx = index.indexOf("[analytics]");
+    const analyticsHintIdx = index.indexOf("Use for: Engagement analytics-group");
+    const defaultHintIdx = index.indexOf("Use for: Billing default-group");
+    expect(analyticsHintIdx).toBeGreaterThan(analyticsLabelIdx);
+    expect(defaultHintIdx).toBeLessThan(analyticsLabelIdx);
   });
 
   it("handles per-source subdirectories", () => {

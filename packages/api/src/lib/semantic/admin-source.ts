@@ -473,17 +473,53 @@ export async function getAdminEntity(opts: GetAdminEntityOptions): Promise<Admin
   }
 
   // No internal DB → pure-YAML self-hosted. The disk root holds the
-  // authored YAML.
+  // authored YAML. Resolve DETAIL by (name, group) through the SAME
+  // discovery (`discoverEntities`) the LIST path uses, so the two can't
+  // drift: `findEntityFile` resolved by file stem alone and, after #3275
+  // kept same-stem rows distinct per group in the LIST, the DETAIL read
+  // could still open whichever stem match was scanned first — the wrong
+  // group.
   const diskRoot = resolveSemanticRoot(orgId);
-  const filePath = findEntityFile(diskRoot, name);
-  if (!filePath) return null;
+  const stemMatches = discoverEntities(diskRoot).entities.filter((e) => e.name === name);
+
+  let filePath: string | null;
+  if (stemMatches.length === 0) {
+    // `discoverEntities` parses every file and drops the unparseable / no-
+    // `table` ones, so an authored-but-broken file would vanish here and
+    // 404 — hiding a real authoring error behind "not found". Fall back to
+    // a raw stem existence check (group-agnostic: a broken file's group is
+    // unknowable) and let `parseEntityYaml` below surface it as the 500 the
+    // route contracts for malformed YAML. A genuinely absent file still
+    // returns null → 404.
+    filePath = findEntityFile(diskRoot, name);
+    if (!filePath) return null;
+  } else {
+    let chosen: EntitySummary | undefined;
+    if (connectionGroupId === undefined) {
+      // Mirror the DB unique-or-409 contract: a stem-only lookup spanning
+      // more than one group is ambiguous — reject rather than silently pick.
+      if (stemMatches.length > 1) {
+        log.warn(
+          { requestId, name, groups: stemMatches.map((e) => e.group) },
+          "getAdminEntity: ambiguous stem-only disk lookup across groups — pass connectionGroupId to disambiguate",
+        );
+        return null;
+      }
+      chosen = stemMatches[0];
+    } else {
+      const wantGroup = connectionGroupId === null ? "default" : connectionGroupId;
+      chosen = stemMatches.find((e) => e.group === wantGroup);
+    }
+    if (!chosen) return null;
+    filePath = chosen.filePath;
+  }
 
   // Intentional 403→404 downgrade if the path escapes the root: don't
   // leak whether a path-traversal probe hit a real file. The route's
   // upstream `isValidEntityName` check returns 400 for obvious probes,
   // so this branch is pure defense-in-depth (symlinks, future bugs in
-  // `findEntityFile`). `requestId` is preserved end-to-end via the
-  // 404 response so log correlation still works.
+  // disk path resolution). `requestId` is preserved end-to-end via the
+  // 404 response so log correlation works.
   const resolved = path.resolve(filePath);
   if (!resolved.startsWith(path.resolve(diskRoot))) {
     log.error({ requestId, name, resolved, root: diskRoot }, "getAdminEntity: resolved path escaped semantic root");

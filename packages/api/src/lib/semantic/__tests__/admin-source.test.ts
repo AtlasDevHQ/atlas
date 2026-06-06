@@ -1,5 +1,9 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { resolve, join } from "path";
 import {
+  AdminEntityYamlParseError,
+  getAdminEntity,
   mergeAdminEntities,
   parseRowToAdminSummary,
   type AdminEntitySummary,
@@ -443,5 +447,103 @@ describe("mergeAdminEntities", () => {
       "users|g_prod_eu",
       "users|g_prod_us",
     ]);
+  });
+});
+
+// ── getAdminEntity disk branch: group-aware detail (#3275 / PR #3286) ────
+//
+// The pure-YAML (no internal DB) disk branch must resolve DETAIL by
+// (name, group) through the SAME discovery (`discoverEntities`) the LIST
+// path uses, so the two can't drift: after #3275 kept same-stem rows
+// distinct per group in the list, a stem-only `findEntityFile` detail read
+// could still open whichever group it scanned first. A stem-only lookup
+// spanning more than one group is now rejected (mirrors the DB
+// unique-or-409 contract).
+//
+// Harness: point `ATLAS_SEMANTIC_ROOT` at a temp dir and call without an
+// `orgId`. The `orgId && hasInternalDB()` guard short-circuits on the
+// absent `orgId`, so the disk branch runs deterministically — no need to
+// mock the (heavy, 60-export) `db/internal` module just to force
+// `hasInternalDB() === false`.
+describe("getAdminEntity — group-aware disk detail (#3275)", () => {
+  const tmp = resolve(import.meta.dir, ".tmp-admin-source-disk");
+  let prevRoot: string | undefined;
+
+  beforeEach(() => {
+    prevRoot = process.env.ATLAS_SEMANTIC_ROOT;
+    process.env.ATLAS_SEMANTIC_ROOT = tmp;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    if (prevRoot === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+    else process.env.ATLAS_SEMANTIC_ROOT = prevRoot;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  /** Write `<tmp>/groups/<group>/entities/<stem>.yml` with a given table. */
+  function writeGroupEntity(group: string, stem: string, table: string): void {
+    const dir = join(tmp, "groups", group, "entities");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${stem}.yml`), `table: ${table}\n`);
+  }
+
+  /** Write a raw (possibly malformed) YAML body to the flat `entities/` dir. */
+  function writeFlatEntity(stem: string, body: string): void {
+    const dir = join(tmp, "entities");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${stem}.yml`), body);
+  }
+
+  it("resolves the requested group when the same stem exists in two groups", async () => {
+    writeGroupEntity("us", "orders", "orders_us");
+    writeGroupEntity("eu", "orders", "orders_eu");
+
+    const us = await getAdminEntity({ name: "orders", connectionGroupId: "us" });
+    expect(us).not.toBeNull();
+    expect(us?.source).toBe("disk");
+    expect(us?.entity.table).toBe("orders_us");
+
+    // Same stem, other group → the OTHER file, proving detail no longer
+    // opens whichever same-stem match is scanned first.
+    const eu = await getAdminEntity({ name: "orders", connectionGroupId: "eu" });
+    expect(eu?.entity.table).toBe("orders_eu");
+  });
+
+  it("returns null for an ambiguous stem-only lookup across groups", async () => {
+    writeGroupEntity("us", "orders", "orders_us");
+    writeGroupEntity("eu", "orders", "orders_eu");
+
+    // `connectionGroupId` omitted + >1 group match → reject (DB 409 mirror).
+    const detail = await getAdminEntity({ name: "orders" });
+    expect(detail).toBeNull();
+  });
+
+  it("returns the single match for a stem that exists in only one group", async () => {
+    writeGroupEntity("us", "products", "products");
+
+    // Single match → resolvable even without `connectionGroupId`.
+    const detail = await getAdminEntity({ name: "products" });
+    expect(detail).not.toBeNull();
+    expect(detail?.source).toBe("disk");
+    expect(detail?.entity.table).toBe("products");
+  });
+
+  it("surfaces a malformed authored file as a parse error, not a silent 404", async () => {
+    // `discoverEntities` parses every file and drops the unparseable ones,
+    // so a stem-only resolver built on it would 404 a broken file and hide
+    // the authoring error. The raw-existence fallback must still reach
+    // `parseEntityYaml` so the route can return its contracted 500.
+    writeFlatEntity("broken", "table: broken\ndimensions: [invalid: yaml: structure\n");
+
+    await expect(getAdminEntity({ name: "broken" })).rejects.toBeInstanceOf(
+      AdminEntityYamlParseError,
+    );
+  });
+
+  it("returns null for a genuinely absent entity", async () => {
+    writeGroupEntity("us", "orders", "orders_us");
+
+    expect(await getAdminEntity({ name: "nonexistent" })).toBeNull();
   });
 });

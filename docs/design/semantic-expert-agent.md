@@ -2,6 +2,8 @@
 
 > Design doc for an agent that iteratively improves the semantic layer through conversation, analysis, and validated amendments. Tracks to [#1180](https://github.com/AtlasDevHQ/atlas/issues/1180).
 
+> **Scope (2026-06-05):** This agent is the **post-onboarding maintenance layer** — it deepens and corrects an *existing* semantic layer using drift signals, data distributions, and audit-log query history. It is **not** the path from "added a DB" to "first usable semantic layer" — that is owned by [semantic-onboarding.md](./semantic-onboarding.md), which generates a mechanical baseline + one cost-gated enrichment pass at add-a-DB time. The split is deliberate: the expert agent's differentiators (data-distribution analysis, "this join appears in 47 queries" corroboration) require a query history that a *newly-added* DB doesn't have — its audit log is empty at onboarding. The agent earns its keep once there is usage to learn from. Onboarding gets you rich-enough; this keeps you rich as the schema and query patterns evolve.
+
 ## Problem
 
 Atlas's semantic layer (entity YAMLs, glossary, metrics) is the foundation the agent uses to write correct SQL. Today, creating and maintaining it has two paths:

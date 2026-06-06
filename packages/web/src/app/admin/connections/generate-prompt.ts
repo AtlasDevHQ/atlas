@@ -3,10 +3,12 @@
  * (issue #3237 door 1, docs/design/semantic-onboarding.md § E).
  *
  * Adding a SQL connection that forms a **new** Connection group offers to
- * generate a semantic layer for it. Adding a **member to an already-populated
- * group** does NOT re-prompt — that group already has its schema. The whole
- * decision is knowable from the create form's Environment selection, so it
- * lives here as pure functions rather than as another API round-trip.
+ * generate a semantic layer for it. A connection that **joins an existing
+ * group** does NOT re-prompt — generation is offered once, when the group is
+ * first formed (`/admin/semantic`'s empty state is the always-available way
+ * back in for a group whose generation was skipped). The whole decision is
+ * knowable from the create form's Environment selection, so it lives here as
+ * pure functions rather than as another API round-trip.
  */
 
 // Sentinel values for the Environment combobox, shared with the connection
@@ -26,10 +28,20 @@ export const ENV_SENTINEL_CREATE = "__create__";
  *  - `__create__` → a brand-new named group → new.
  *  - `__none__`   → server mints an auto `g_<id>` singleton → new (this is the
  *                   common single-DB / first-DB-after-skip path).
- *  - any existing group id → joining a populated group → NOT new.
+ *  - any existing group id → joining an existing group → NOT new.
  */
 export function createsNewGroup(envSelection: string): boolean {
   return envSelection === ENV_SENTINEL_NONE || envSelection === ENV_SENTINEL_CREATE;
+}
+
+/**
+ * Whether a connection-form submission should fire the generate prompt (door 1):
+ * only on **create** (never edit) and only when it forms a new group. Folding
+ * the `isEdit` gate in here keeps the "never prompt on edit" rule on the
+ * unit-tested surface alongside the Environment decision.
+ */
+export function shouldPromptGenerate(isEdit: boolean, envSelection: string): boolean {
+  return !isEdit && createsNewGroup(envSelection);
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   ENV_SENTINEL_NONE,
   ENV_SENTINEL_CREATE,
   createsNewGroup,
+  shouldPromptGenerate,
   newGroupLabel,
 } from "./generate-prompt";
 
@@ -27,6 +28,23 @@ describe("connections/generate-prompt", () => {
     it("does NOT fire when joining an existing populated group", () => {
       expect(createsNewGroup("prod")).toBe(false);
       expect(createsNewGroup("g_warehouse")).toBe(false);
+    });
+  });
+
+  describe("shouldPromptGenerate", () => {
+    it("prompts on a create that forms a new group", () => {
+      expect(shouldPromptGenerate(false, ENV_SENTINEL_CREATE)).toBe(true);
+      expect(shouldPromptGenerate(false, ENV_SENTINEL_NONE)).toBe(true);
+    });
+
+    it("does not prompt on a create that joins an existing group", () => {
+      expect(shouldPromptGenerate(false, "prod")).toBe(false);
+    });
+
+    it("never prompts on edit, regardless of Environment selection", () => {
+      expect(shouldPromptGenerate(true, ENV_SENTINEL_CREATE)).toBe(false);
+      expect(shouldPromptGenerate(true, ENV_SENTINEL_NONE)).toBe(false);
+      expect(shouldPromptGenerate(true, "prod")).toBe(false);
     });
   });
 

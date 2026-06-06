@@ -38,7 +38,7 @@ import { DEMO_CONNECTION_ID } from "./columns";
 import {
   ENV_SENTINEL_NONE,
   ENV_SENTINEL_CREATE,
-  createsNewGroup,
+  shouldPromptGenerate,
   newGroupLabel,
 } from "./generate-prompt";
 import { wizardGenerateHref } from "../../wizard/wizard-generate-entry";
@@ -349,9 +349,9 @@ function ConnectionFormDialog({
     if (result.ok) {
       // A create that forms a new group is the one moment to offer generation
       // (#3237). Fire before closing so the parent's prompt opens as the form
-      // dismisses; member-adds and edits stay silent — they reuse the group's
-      // existing schema, with /admin/semantic's empty state as the way back in.
-      if (!isEdit && onCreatedNewGroup && createsNewGroup(values.envSelection)) {
+      // dismisses; member-adds and edits stay silent (`shouldPromptGenerate`),
+      // with /admin/semantic's empty state as the always-available way back in.
+      if (onCreatedNewGroup && shouldPromptGenerate(isEdit, values.envSelection)) {
         onCreatedNewGroup({
           connectionId: values.id,
           groupLabel: newGroupLabel(values.envSelection, values.newGroupName, values.id),
@@ -1439,8 +1439,11 @@ export default function ConnectionsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
+              {/* groupLabel is already display-ready (the typed group name, or
+                  the connection id for an auto-singleton) — never a synthetic
+                  `g_<id>`, so no stripGroupPrefix. */}
               Generate a semantic layer for{" "}
-              <span className="font-mono">{genPrompt ? stripGroupPrefix(genPrompt.groupLabel) : ""}</span>?
+              <span className="font-mono">{genPrompt?.groupLabel ?? ""}</span>?
             </AlertDialogTitle>
             <AlertDialogDescription>
               Atlas profiles this database and builds editable YAML so the agent

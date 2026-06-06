@@ -4,10 +4,10 @@
  *
  * There is exactly **one** generate flow — the wizard's table-pick → two-phase
  * review → save (#3236). The onboarding wizard, the inline-on-add prompt in
- * `/admin/connections`, and the per-group empty state in `/admin/semantic` are
- * all just *doors* into it. Centralizing the deep-link here is what makes
- * "one flow, many doors" true by construction: every door builds its href the
- * same way, so they can't drift into separate flows.
+ * `/admin/connections`, and the empty state in `/admin/semantic` are all just
+ * *doors* into it. Centralizing the deep-link here is what makes "one flow,
+ * many doors" true by construction: every door builds its href the same way,
+ * so they can't drift into separate flows.
  *
  * Deliberately UI- and fetch-free so the routing/selection logic is unit-
  * testable without a React render.
@@ -15,11 +15,14 @@
 
 import type { ConnectionInfo } from "@/ui/lib/types";
 import { DEMO_CONNECTION_ID } from "../admin/connections/columns";
+import { WIZARD_STEPS } from "./wizard-steps";
 
-/** Wizard step number for the table picker (step 2). The datasource picker is
- * step 1; deep-linking past it skips a redundant "which connection?" prompt
- * when the caller already knows the connection. Mirrors `wizard-steps.ts`. */
-const WIZARD_TABLES_STEP = 2;
+/** Wizard step number (1-based) for the table picker. Deep-linking past the
+ * datasource picker (step 1) skips a redundant "which connection?" prompt when
+ * the caller already knows the connection. Derived from `WIZARD_STEPS` rather
+ * than hardcoded so inserting/reordering a step can't silently point the
+ * deep-link at the wrong screen. */
+const WIZARD_TABLES_STEP = WIZARD_STEPS.findIndex((s) => s.id === "tables") + 1;
 
 /**
  * Build the deep-link into the shared generate flow.

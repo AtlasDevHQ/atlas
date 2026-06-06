@@ -20,6 +20,19 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.12",
+    title: "Semantic Layer Onboarding",
+    date: "2026-06-06",
+    summary:
+      "Adding a database now produces a usable semantic layer without a trip to the terminal. A single guided flow — reachable from the onboarding wizard, an inline prompt right after you add a connection, and a \"Generate\" button on any database that has no entities yet — profiles your schema into a complete, queryable baseline instantly and for free, then lets you optionally enrich each table with AI-written descriptions, query patterns, and business context behind an explicit cost confirmation. Semantic layers are now organized by connection group, both on disk and in a grouped tree in the admin console, so workspaces with several databases stay legible at a glance.",
+    highlights: [
+      "Two-phase generation — an instant, free, no-AI mechanical baseline you can query immediately, plus optional per-table AI enrichment (descriptions, use cases, query patterns) that never runs by accident and always shows the cost first (#3236)",
+      "Generate from anywhere — the onboarding wizard, an inline prompt after adding a connection, and a per-group \"Generate semantic layer\" empty state all launch the same flow, replacing the old \"run atlas init\" terminal step (#3237)",
+      "Organized by connection group — each database's semantic layer lives in its own directory (semantic/groups/<group>/) and renders as a collapsible group in the admin console, so multi-database workspaces stay legible (#3232, #3235)",
+      "One generation engine — the CLI (atlas init) and the web wizard now share the same profiler and enrichment logic, so they produce identical output (#3233)",
+    ],
+  },
+  {
     version: "v0.0.11",
     title: "Connections Console Redesign",
     date: "2026-06-05",

@@ -51,20 +51,40 @@ const mockSearchGlossary = mock<(...args: unknown[]) => unknown>(
         : [],
 );
 const mockFindMetricById = mock<(...args: unknown[]) => unknown>(
-  (id: unknown) =>
-    id === "orders_count"
-      ? {
-          id: "orders_count",
-          label: "Total orders",
-          description: "Distinct order count.",
-          sql: "SELECT COUNT(DISTINCT id) AS count FROM orders",
-          type: "atomic",
-          aggregation: "count_distinct",
-          unit: null,
-          source: "default",
-          binding: null,
-        }
-      : null,
+  (id: unknown) => {
+    // Default-group metric (`source: "default"`) — runs against the default
+    // connection.
+    if (id === "orders_count") {
+      return {
+        id: "orders_count",
+        label: "Total orders",
+        description: "Distinct order count.",
+        sql: "SELECT COUNT(DISTINCT id) AS count FROM orders",
+        type: "atomic",
+        aggregation: "count_distinct",
+        unit: null,
+        source: "default",
+        binding: null,
+      };
+    }
+    // Group-scoped metric (#3240) — `source` is the resolved group, which is
+    // also the connection id executeSQL routes on (#3274). Discoverable via
+    // `findMetricById` but must NOT run against the default connection.
+    if (id === "analytics_orders_count") {
+      return {
+        id: "analytics_orders_count",
+        label: "Analytics orders",
+        description: "Distinct order count in the analytics group.",
+        sql: "SELECT COUNT(DISTINCT id) AS count FROM orders",
+        type: "atomic",
+        aggregation: "count_distinct",
+        unit: null,
+        source: "analytics",
+        binding: null,
+      };
+    }
+    return null;
+  },
 );
 
 mock.module("@atlas/api/lib/semantic/lookups", () => ({
@@ -672,17 +692,101 @@ describe("MCP semantic tools", () => {
     expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
   });
 
-  it("runMetric forwards connectionId through to executeSQL", async () => {
+  // --- runMetric group → connection routing (#3274) ---
+  // A metric's `source` is its resolved semantic group (#3240); search.ts
+  // surfaces a grouped entity's `connection` field as that same group, so the
+  // group IS the connection id executeSQL routes on. runMetric must route a
+  // group metric to its own group — never the default connection — and reject
+  // an explicit connectionId that targets a different group.
+
+  it("runMetric routes a group metric to its own group when connectionId is omitted (#3274)", async () => {
     const { client } = await createTestClient();
     await client.callTool({
       name: "runMetric",
-      arguments: { id: "orders_count", connectionId: "warehouse" },
+      arguments: { id: "analytics_orders_count" },
+    });
+
+    expect(mockExecuteSQLExecute).toHaveBeenCalledTimes(1);
+    const callArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
+      connectionId?: string;
+    };
+    // The whole point of #3274: defaults to the metric's group, NOT the
+    // default connection (which would query the wrong datasource).
+    expect(callArgs.connectionId).toBe("analytics");
+  });
+
+  it("runMetric leaves connectionId unset for a default-group metric (#3274)", async () => {
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count" },
     });
 
     const callArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
       connectionId?: string;
     };
-    expect(callArgs.connectionId).toBe("warehouse");
+    // `source: "default"` maps to the default connection — executeSQL receives
+    // no connectionId and falls back to its own default, as before.
+    expect(callArgs.connectionId).toBeUndefined();
+  });
+
+  it("runMetric forwards an explicit connectionId that matches the metric's group (#3274)", async () => {
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "runMetric",
+      arguments: { id: "analytics_orders_count", connectionId: "analytics" },
+    });
+
+    const callArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
+      connectionId?: string;
+    };
+    expect(callArgs.connectionId).toBe("analytics");
+  });
+
+  it('runMetric allows an explicit "default" connectionId for a default-group metric (#3274)', async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count", connectionId: "default" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const callArgs = (mockExecuteSQLExecute.mock.calls[0] as unknown[])[0] as {
+      connectionId?: string;
+    };
+    expect(callArgs.connectionId).toBe("default");
+  });
+
+  it("runMetric rejects an explicit connectionId that does not match a group metric (#3274)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "analytics_orders_count", connectionId: "warehouse" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("validation_failed");
+    // Actionable message names both the metric's group and the wrong target.
+    expect(envelope!.message).toContain("analytics");
+    expect(envelope!.message).toContain("warehouse");
+    expect(envelope!.hint).toContain("analytics");
+    // Must short-circuit before touching SQL — running the metric against the
+    // wrong datasource is exactly the silently-wrong-results bug we're fixing.
+    expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+  });
+
+  it("runMetric rejects a non-default connectionId for a default-group metric (#3274)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count", connectionId: "analytics" },
+    });
+
+    expect(result.isError).toBe(true);
+    const envelope = parseAtlasMcpToolError(getContentText(result.content));
+    expect(envelope!.code).toBe("validation_failed");
+    expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
   });
 
   // --- actor binding ---

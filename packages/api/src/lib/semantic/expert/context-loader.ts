@@ -260,55 +260,47 @@ export async function loadEntitiesForOrg(
 }
 
 /**
- * Load all entity YAML files from disk across every on-disk layout (ADR-0012):
- * the flat default root `entities/`, the canonical `groups/<group>/entities/`
- * namespace, and legacy `<source>/entities/`. Routed through the shared
- * `scanEntities` traversal the discovery read paths use (the entity group
- * namespace landed in #3241), so the self-hosted (no internal DB) expert context
- * sees every group's entities, not just the root's (#3273). Root-only before, it
- * silently dropped per-group entities on a multi-group deployment.
+ * Load entity YAML files from the flat default `entities/` directory.
  *
- * Like the other entity discovery surfaces this is `.yml`-only (via
- * `scanEntities`); the prior loader's extra `.yaml` acceptance was the odd one
- * out and never produced a queryable entity (the whitelist/file-tree are
- * `.yml`-only too).
+ * Intentionally root-only (the default group), NOT layout-aware: unlike the
+ * glossary loader below, this feeds the scheduled tick's auto-apply path
+ * (`runExpertSchedulerTick` → `applyAmendmentToEntity`), which resolves the
+ * target entity purely by name with no group/connection. Discovering
+ * `groups/<group>/entities/` here would let an auto-approved amendment for a
+ * group entity 409 as ambiguous or write back into the default scope. Making
+ * the entity path group-aware end-to-end (thread the group through analyze →
+ * insert → apply) is tracked in #3284. `name` keys off `table`/file-stem (the
+ * storage key the apply path looks up by), mirroring `loadEntitiesFromDB`.
  */
 export async function loadEntitiesFromDisk(): Promise<ParsedEntity[]> {
-  const root = getSemanticRoot();
-  if (!fs.existsSync(root)) return [];
-
-  const { scanEntities, resolveEntityGroup, readGroupField } =
-    await import("@atlas/api/lib/semantic/scanner");
+  const entitiesDir = path.join(getSemanticRoot(), "entities");
+  if (!fs.existsSync(entitiesDir)) return [];
 
   const entities: ParsedEntity[] = [];
-  // `scanEntities` parses every layout's YAML and logs+skips unreadable files
-  // and namespace-enumeration failures internally (scanner.ts), so a partial
-  // read is already traced — re-logging its `warnings` here would double-count
-  // the per-file parse failures it already emitted.
-  for (const { raw, filePath, sourceName, origin } of scanEntities(root).entities) {
-    // Attribution matches the discovery read paths (ADR-0012): the directory is
-    // canonical in the `groups/<group>/` namespace — a disagreeing field loses
-    // (`resolveEntityGroup`'s `mismatch` flag is intentionally not surfaced here,
-    // mirroring the lookup/catalog read paths); a top-level `group:`/`connection:`
-    // field overrides on the flat + legacy layouts. The flat default group maps
-    // to the null connection (`undefined`), keeping parity with the DB loaders
-    // above.
-    const group = resolveEntityGroup(sourceName, origin, readGroupField(raw)).group;
-    const projected = projectParsedEntity(raw, {
-      fallbackName: path.basename(filePath).replace(/\.yml$/, ""),
-    });
-    entities.push({
-      ...projected,
-      // The scheduled-tick analyzer stamps each proposal with `entity.name`, and
-      // the apply path (`apply.ts` → `getEntity`/`upsertEntity`/`syncEntityToDisk`)
-      // resolves the target by that key — which is the STORAGE name (table / file
-      // stem), never a display `name:`. Mirror `loadEntitiesFromDB`, which also
-      // ignores `parsed.name`, so an auto-approved amendment still finds its
-      // entity; honoring a display `name:` here would make apply look up a key
-      // that doesn't exist (#3280 review).
-      name: projected.table,
-      connection: group === "default" ? undefined : group,
-    });
+
+  for (const file of fs.readdirSync(entitiesDir)) {
+    if (!file.endsWith(".yml") && !file.endsWith(".yaml")) continue;
+    try {
+      const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
+      const parsed = yaml.load(content) as Record<string, unknown> | null;
+      if (!parsed || typeof parsed !== "object") continue;
+
+      entities.push({
+        name: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
+        table: String(parsed.table ?? file.replace(/\.ya?ml$/, "")),
+        description: typeof parsed.description === "string" ? parsed.description : undefined,
+        dimensions: Array.isArray(parsed.dimensions) ? parsed.dimensions as ParsedEntity["dimensions"] : [],
+        measures: Array.isArray(parsed.measures) ? parsed.measures as ParsedEntity["measures"] : [],
+        joins: Array.isArray(parsed.joins) ? parsed.joins as ParsedEntity["joins"] : [],
+        query_patterns: Array.isArray(parsed.query_patterns) ? parsed.query_patterns as ParsedEntity["query_patterns"] : [],
+        connection: typeof parsed.connection === "string" ? parsed.connection : undefined,
+      });
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), file },
+        "Failed to parse entity YAML",
+      );
+    }
   }
 
   return entities;

@@ -152,74 +152,38 @@ describe("loadGlossaryFromDisk (layout-aware, #3273)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Entities — the sibling root-only read (#3273 FIX bullet)
+// Entities — intentionally root-only (NOT layout-aware). Group-aware entity
+// discovery + apply is deferred to #3284 (the scheduler's auto-apply path
+// resolves entities by name with no group, so discovering group entities here
+// would mis-target an approved amendment). These tests pin that deliberate
+// scope so a future "helpful" refactor can't silently re-introduce the bug.
 // ---------------------------------------------------------------------------
 
-describe("loadEntitiesFromDisk (layout-aware, #3273)", () => {
-  it("discovers entities across flat, groups/, and legacy layouts with discovery-matching attribution", async () => {
-    writeSemanticFile("entities/orders.yml", "table: orders\n");
-    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n");
-    writeSemanticFile("marketing/entities/campaigns.yml", "table: campaigns\n");
-
-    const entities = await loadEntitiesFromDisk();
-    const connByTable = Object.fromEntries(entities.map((e) => [e.table, e.connection]));
-
-    expect(Object.keys(connByTable).toSorted()).toEqual(["campaigns", "customers", "orders"]);
-    // flat default → null connection (undefined), parity with the DB loaders.
-    expect(connByTable.orders).toBeUndefined();
-    // canonical groups/<group>/ → directory is canonical.
-    expect(connByTable.customers).toBe("eu_prod");
-    // legacy <source>/ → source name.
-    expect(connByTable.campaigns).toBe("marketing");
-  });
-
-  it("directory is canonical in groups/<group>/ even when a connection: field disagrees", async () => {
-    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\nconnection: wrong\n");
-    const entities = await loadEntitiesFromDisk();
-    expect(entities).toHaveLength(1);
-    expect(entities[0].connection).toBe("eu_prod"); // not "wrong"
-  });
-
-  it("honors a connection: field override on the flat layout", async () => {
-    writeSemanticFile("entities/orders.yml", "table: orders\nconnection: legacy_grp\n");
-    const entities = await loadEntitiesFromDisk();
-    expect(entities[0].connection).toBe("legacy_grp");
-  });
-
-  it("honors the canonical `group:` field override on the flat layout", async () => {
-    // `group:` is the canonical field (ADR-0012); `connection:` is the
-    // deprecated alias. The override test above used the alias — pin the
-    // canonical field new authors will actually write.
-    writeSemanticFile("entities/orders.yml", "table: orders\ngroup: us_prod\n");
-    const entities = await loadEntitiesFromDisk();
-    expect(entities[0].connection).toBe("us_prod");
-  });
-
-  it("the canonical `group:` field wins over the deprecated `connection:` alias", async () => {
-    writeSemanticFile("entities/orders.yml", "table: orders\ngroup: canonical_grp\nconnection: alias_grp\n");
-    const entities = await loadEntitiesFromDisk();
-    expect(entities[0].connection).toBe("canonical_grp");
-  });
-
-  it("honors a connection: override on the legacy layout", async () => {
-    // Legacy `<source>/entities/` retains field-wins precedence (ADR-0012):
-    // the source dir is "marketing" but the field reassigns the group.
-    writeSemanticFile("marketing/entities/campaigns.yml", "table: campaigns\nconnection: override_grp\n");
-    const entities = await loadEntitiesFromDisk();
-    expect(entities[0].connection).toBe("override_grp");
-  });
-
-  it("keys entity.name to the storage key (table/file stem), not a display `name:`", async () => {
+describe("loadEntitiesFromDisk (root-only by design, see #3284)", () => {
+  it("discovers flat-root entities and keys name to the storage key (not a display `name:`)", async () => {
     // The scheduled-tick apply path (`apply.ts`) looks the entity up by
     // `proposal.entityName` (= entity.name), which must be the storage key the
     // DB/disk is keyed by — never a display label. Mirrors `loadEntitiesFromDB`.
     writeSemanticFile("entities/orders.yml", "table: orders\nname: Orders Display Label\n");
     const entities = await loadEntitiesFromDisk();
+    expect(entities).toHaveLength(1);
     expect(entities[0].name).toBe("orders"); // storage key, not "Orders Display Label"
     expect(entities[0].table).toBe("orders");
+    expect(entities[0].connection).toBeUndefined();
   });
 
-  it("returns empty when the semantic root has no entities", async () => {
+  it("does NOT discover groups/<group>/ or legacy <source>/ entities (root-only; #3284)", async () => {
+    writeSemanticFile("entities/orders.yml", "table: orders\n");
+    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n");
+    writeSemanticFile("marketing/entities/campaigns.yml", "table: campaigns\n");
+    const entities = await loadEntitiesFromDisk();
+    // Only the flat-root entity surfaces; group + legacy entities are excluded
+    // until the apply path is group-aware (#3284).
+    expect(entities.map((e) => e.table)).toEqual(["orders"]);
+  });
+
+  it("returns empty when the flat root has no entities directory", async () => {
+    writeSemanticFile("groups/eu_prod/entities/customers.yml", "table: customers\n"); // present but not flat-root
     const entities = await loadEntitiesFromDisk();
     expect(entities).toEqual([]);
   });

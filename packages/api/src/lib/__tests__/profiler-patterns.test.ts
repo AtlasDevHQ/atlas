@@ -175,6 +175,62 @@ describe("detectSemanticType: email", () => {
     });
     expect(detectSemanticType(col, 1000)).toBeUndefined();
   });
+
+  // Parity guard for the linear-time email heuristic (replaced the former
+  // backtracking regex /^[^\s@]+@[^\s@]+\.[^\s@]+$/ — see #3246). Detection
+  // requires a >=50% match across >=2 samples, so feeding [v, v] makes the
+  // outcome a clean proxy for "is v email-like": 2/2 -> "email", 0/2 -> undefined.
+  // `isEmail(v)` therefore exercises exactly the email predicate via the public API.
+  const isEmail = (v: string): boolean =>
+    detectSemanticType(
+      makeColumn({ name: "col", type: "text", sample_values: [v, v] }),
+      1000,
+    ) === "email";
+
+  it("matches the same set of strings as the former regex (valid)", () => {
+    const valid = [
+      "a@b.com",
+      "a.b@c.d.com",
+      "x+y@sub.example.co.uk",
+      "a@a..b", // consecutive dots — old regex matched (interior dot exists)
+      "a@.a.b", // leading domain dot — old regex matched (interior dot exists)
+      "a@a.b.", // trailing domain dot — old regex matched (interior dot exists)
+    ];
+    for (const v of valid) {
+      expect(isEmail(v)).toBe(true);
+    }
+  });
+
+  it("matches the same set of strings as the former regex (invalid)", () => {
+    const invalid = [
+      "@b.com", // no local part
+      "a@", // no domain
+      "a@b", // domain has no dot
+      "a@a.", // dot only at end of domain
+      "a@.a", // dot only at start of domain
+      "a b@c.com", // whitespace in local part
+      "a@b .com", // whitespace in domain
+      "a@b@c.com", // more than one "@"
+      "", // empty
+    ];
+    for (const v of invalid) {
+      expect(isEmail(v)).toBe(false);
+    }
+  });
+
+  it("runs in linear time on pathological dot-heavy input (no ReDoS)", () => {
+    // The old regex backtracked polynomially here (a non-matching, dot-heavy
+    // domain that fails at the anchor). This would take seconds for large n.
+    const evil = `a@${"a.".repeat(40000)} x`;
+    const col = makeColumn({ name: "col", type: "text", sample_values: [evil, evil] });
+
+    const start = performance.now();
+    const result = detectSemanticType(col, 1000);
+    const elapsedMs = performance.now() - start;
+
+    expect(result).toBeUndefined(); // not email-like (trailing whitespace)
+    expect(elapsedMs).toBeLessThan(100); // linear scan finishes in well under 100ms
+  });
 });
 
 // =====================================================================

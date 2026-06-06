@@ -28,12 +28,38 @@ const TWO_DECIMAL_PATTERN = /^\d[\d,]*\.\d{2}$/;
 
 const PERCENTAGE_NAME_PATTERNS = /(?:^|_)(rate|pct|percent|ratio|proportion|share|coverage|utilization|completion|success_rate|failure_rate|click_rate|open_rate|conversion|churn)(?:$|_)/i;
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_PATTERN = /^https?:\/\//i;
 const URL_NAME_PATTERNS = /(?:^|_)(url|link|href|website|webpage|homepage|endpoint|uri)(?:$|_)/i;
 
 const PHONE_PATTERN = /^[+]?[\d\s().-]{7,20}$/;
 const PHONE_NAME_PATTERNS = /(?:^|_)(phone|tel|telephone|mobile|cell|fax|sms)(?:$|_)/i;
+
+/**
+ * Linear-time email-like check for sampled values.
+ *
+ * Replaces the former regex `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`, whose
+ * `[^\s@]+\.[^\s@]+` tail backtracked polynomially on dot-heavy input because
+ * `[^\s@]` also matches `.`, giving many ambiguous ways to place the literal
+ * `\.` (CodeQL `js/polynomial-redos`). Sample values come from the profiled
+ * datasource, so the input is attacker-influenceable during `atlas init`.
+ *
+ * Matches the exact same set of strings as the old regex: a non-empty local
+ * part, exactly one `@`, no whitespace anywhere, and a domain containing a `.`
+ * that is neither the first nor the last character. Each check is a single pass,
+ * so total cost is O(n) with no backtracking.
+ */
+function isEmailLike(value: string): boolean {
+  if (/\s/.test(value)) return false; // local + domain both forbid whitespace
+  const at = value.indexOf("@");
+  if (at <= 0) return false; // need a local part of >=1 char, and an "@"
+  if (value.indexOf("@", at + 1) !== -1) return false; // exactly one "@"
+  const domain = value.slice(at + 1);
+  // Domain must contain a "." that is neither the first nor the last character.
+  for (let i = 1; i < domain.length - 1; i++) {
+    if (domain[i] === ".") return true;
+  }
+  return false;
+}
 
 /** Detect semantic type for a single column based on name, SQL type, and sample values. */
 export function detectSemanticType(
@@ -72,7 +98,7 @@ export function detectSemanticType(
 
   // Email — string columns with email-like sample values
   if (mappedType === "string" && col.sample_values.length >= 2) {
-    const emailMatches = col.sample_values.filter((v) => EMAIL_PATTERN.test(v));
+    const emailMatches = col.sample_values.filter((v) => isEmailLike(v));
     if (emailMatches.length >= col.sample_values.length * 0.5) {
       return "email";
     }

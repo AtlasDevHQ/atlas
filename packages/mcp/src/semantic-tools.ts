@@ -35,6 +35,7 @@ import {
   findMetricById,
 } from "@atlas/api/lib/semantic/lookups";
 import { executeSQL } from "@atlas/api/lib/tools/sql";
+import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import {
   DESCRIBE_ENTITY_ERROR_CODES,
   DESCRIBE_ENTITY_TOOL_DESCRIPTION,
@@ -453,18 +454,37 @@ export function registerSemanticTools(
               // Reject an explicit connectionId that targets a different group:
               // running the metric's authoritative SQL against the wrong
               // datasource is the silently-wrong-results failure mode #3274
-              // exists to prevent. An explicit match (including the literal
-              // `"default"` for a default-group metric) is honored as-is.
+              // exists to prevent. An explicit match against the group id itself
+              // (including the literal `"default"` for a default-group metric)
+              // is honored as-is.
               if (connectionId !== undefined && connectionId !== metricConnectionId) {
-                return toEnvelopeResult(
-                  envelope(
-                    "validation_failed",
-                    `Metric "${metric.id}" belongs to the "${metric.source}" group, but connectionId "${connectionId}" targets a different datasource. Running it there would query the wrong data.`,
-                    {
-                      hint: `Omit connectionId to run "${metric.id}" against its own group, or pass connectionId "${metricConnectionId}".`,
-                    },
-                  ),
-                );
+                // #3281 — the connectionId isn't the group id itself, but for a
+                // multi-member group it may be a legitimate MEMBER: a group
+                // `prod` with members `us-prod`/`eu-prod` registers each member
+                // under its own install id, none equal to the group id. Resolve
+                // the passed connection's group and accept iff it matches the
+                // metric's group, then route to that specific member.
+                //
+                // A default-source (ungrouped) metric has no members: its
+                // canonical SQL is defined only against the default connection,
+                // so any explicit non-default connectionId is rejected. Running
+                // a canonical metric against an arbitrary sibling connection is
+                // intentionally out of scope — model it as a grouped metric and
+                // pass a member id instead (decision recorded for #3281).
+                const isGroupMember =
+                  metric.source !== DEFAULT_SEMANTIC_GROUP &&
+                  (await loadGroupRoutingContext(workspaceId, connectionId)).groupId === metric.source;
+                if (!isGroupMember) {
+                  return toEnvelopeResult(
+                    envelope(
+                      "validation_failed",
+                      `Metric "${metric.id}" belongs to the "${metric.source}" group, but connectionId "${connectionId}" targets a different datasource. Running it there would query the wrong data.`,
+                      {
+                        hint: `Omit connectionId to run "${metric.id}" against its own group, or pass the group id "${metricConnectionId}" or one of its member connections.`,
+                      },
+                    ),
+                  );
+                }
               }
               const targetConnectionId = connectionId ?? groupConnectionId;
 

@@ -17,6 +17,11 @@ import * as os from "os";
 import * as path from "path";
 import * as yaml from "js-yaml";
 import type { TableProfile } from "@useatlas/types";
+// Spread the real modules so the mocks preserve every other export (AGENTS.md:
+// mock.module must mock every named export, else an unrelated import from `ai`
+// or `providers` fails the whole file at load).
+import * as aiActual from "ai";
+import * as providersActual from "@atlas/api/lib/providers";
 
 // --- LLM mock: branch the response off the prompt ----------------------------
 
@@ -33,8 +38,8 @@ const mockGenerateText = mock(async ({ prompt }: GenArgs) => {
   return { text, usage: { promptTokens: 11, completionTokens: 22, totalTokens: 33 } };
 });
 
-mock.module("ai", () => ({ generateText: mockGenerateText }));
-mock.module("@atlas/api/lib/providers", () => ({ getModel: () => ({ modelId: "test-model" }) }));
+mock.module("ai", () => ({ ...aiActual, generateText: mockGenerateText }));
+mock.module("@atlas/api/lib/providers", () => ({ ...providersActual, getModel: () => ({ modelId: "test-model" }) }));
 
 const { enrichSemanticLayer, enrichEntity } = await import("../enrich");
 

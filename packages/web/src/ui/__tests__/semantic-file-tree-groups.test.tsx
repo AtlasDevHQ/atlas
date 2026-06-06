@@ -184,4 +184,75 @@ describe("SemanticFileTree — grouped tree (#3235)", () => {
       connectionGroupId: "g_warehouse",
     });
   });
+
+  test("empty entity list renders flat with the 'No entities' affordance", () => {
+    const { container } = render(
+      <SemanticFileTree
+        entities={[]}
+        metricFileNames={[]}
+        hasCatalog={false}
+        hasGlossary={false}
+        groups={[]}
+        selection={null}
+        onSelect={() => {}}
+      />,
+    );
+    expect(sections(container).length).toBe(0);
+    expect(container.textContent).toContain("entities");
+    expect(container.textContent).toContain("No entities");
+  });
+
+  test("a single non-default group still renders grouped (not flat)", () => {
+    const { container } = render(
+      <SemanticFileTree
+        entities={[{ name: "events", connectionGroupId: "g_warehouse" }]}
+        metricFileNames={[]}
+        hasCatalog={false}
+        hasGlossary={false}
+        groups={GROUPS}
+        selection={null}
+        onSelect={() => {}}
+      />,
+    );
+    // One non-default group with entities → grouped, even though it's the only group.
+    expect(sections(container).length).toBe(1);
+    expect(sections(container)[0]!.getAttribute("data-group-id")).toBe("g_warehouse");
+  });
+
+  test("group header suffix handles dbType-only, member-count edges, and neither", () => {
+    const { container } = render(
+      <SemanticFileTree
+        entities={[
+          { name: "a", connectionGroupId: "g_dbonly" },
+          { name: "b", connectionGroupId: "g_zero" },
+          { name: "c", connectionGroupId: "g_bare" },
+        ]}
+        metricFileNames={[]}
+        hasCatalog={false}
+        hasGlossary={false}
+        groups={[
+          // dbType but no member count → "· Postgres", no member clause.
+          { id: "g_dbonly", label: "dbonly", dbTypeLabel: "Postgres" },
+          // memberCount 0 is suppressed (only > 0 renders).
+          { id: "g_zero", label: "zero", dbTypeLabel: "Postgres", memberCount: 0 },
+          // neither → bare label, no "·" separator.
+          { id: "g_bare", label: "bare" },
+        ]}
+        selection={null}
+        onSelect={() => {}}
+      />,
+    );
+    const byId = (id: string) =>
+      sections(container).find((s) => s.getAttribute("data-group-id") === id)!;
+
+    expect(byId("g_dbonly").textContent).toContain("Postgres");
+    expect(byId("g_dbonly").textContent).not.toContain("member");
+
+    expect(byId("g_zero").textContent).not.toContain("0 member");
+
+    const bare = byId("g_bare").textContent ?? "";
+    expect(bare).toContain("bare");
+    expect(bare).not.toContain("·");
+    expect(bare).not.toContain("member");
+  });
 });

@@ -43,10 +43,12 @@ import {
   type SemanticTreeDrift,
   type SemanticGroupMeta,
 } from "@/ui/components/admin/semantic-file-tree";
-import { labelForDbType } from "@/app/admin/connections/provider-meta";
 import { stripGroupPrefix } from "@/ui/lib/strip-group-prefix";
+import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
+import { type ConnectionInfo } from "@/ui/lib/types";
 import { normalizeDrift } from "./normalize-drift";
 import { normalizeMetrics, type MetricEntry } from "./normalize-metrics";
+import { connectionGroupsFrom } from "./normalize-connection-groups";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull, buildFetchError, extractFetchError } from "@/ui/lib/fetch-error";
@@ -113,20 +115,6 @@ interface CatalogMeta {
   description?: string;
   use_for?: string[];
   common_questions?: string[];
-}
-
-/**
- * Minimal connection fields the grouped tree needs to label its Connection-
- * group sections with a datasource type + member count (#3235). Sourced from
- * the admin connections list (`/api/v1/admin/connections`); the semantic
- * entities endpoint only carries the group id, not its datasource type.
- */
-interface ConnectionMeta {
-  dbType: string;
-  /** `connection_group_id`; `null` = unassigned → folds into the default group. */
-  groupId: string | null;
-  /** Denormalized group display name from the connections endpoint. */
-  groupName: string | null;
 }
 
 // ── Content viewers ───────────────────────────────────────────────
@@ -407,7 +395,7 @@ export default function SemanticPage() {
   // Connections power the grouped tree's per-group datasource-type + member-
   // count labels (#3235). Best-effort: a failed/empty fetch just means groups
   // render with their id as the label and no metadata suffix.
-  const [connections, setConnections] = useState<ConnectionMeta[]>([]);
+  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
   const [fetchKey, setFetchKey] = useState(0);
@@ -603,20 +591,15 @@ export default function SemanticPage() {
         console.warn("Failed to load catalog:", catalogRes.reason instanceof Error ? catalogRes.reason.message : String(catalogRes.reason));
       }
       if (connectionsRes.status === "fulfilled") {
-        const data = connectionsRes.value;
-        const rawConnections = Array.isArray(data?.connections)
-          ? data.connections
-          : Array.isArray(data)
-            ? data
-            : [];
-        const parsed: ConnectionMeta[] = (rawConnections as Record<string, unknown>[])
-          .map((c) => ({
-            dbType: typeof c.dbType === "string" ? c.dbType : "",
-            groupId: typeof c.groupId === "string" && c.groupId.length > 0 ? c.groupId : null,
-            groupName: typeof c.groupName === "string" && c.groupName.length > 0 ? c.groupName : null,
-          }))
-          .filter((c) => c.dbType.length > 0);
-        setConnections(parsed);
+        // Reuse the connections wire SSOT (same schema the /admin/connections
+        // page parses with). `safeParse` keeps this best-effort: a shape the
+        // schema rejects leaves group labels off rather than throwing.
+        const parsed = ConnectionsResponseSchema.safeParse(connectionsRes.value);
+        if (parsed.success) {
+          setConnections(parsed.data);
+        } else {
+          console.warn("admin/semantic: connections response failed schema parse", parsed.error.issues);
+        }
       } else {
         // Non-fatal: the grouped tree still groups entities; only the
         // datasource-type / member-count labels are unavailable.
@@ -807,40 +790,11 @@ export default function SemanticPage() {
     return [...files].toSorted();
   })();
 
-  // Connection-group metadata for the grouped tree (#3235). Pivot the
-  // connections list by `groupId` (null → the default group) to derive a
-  // datasource-type label + member count per group. This is metadata only —
-  // the tree decides which groups to render from the entities themselves —
-  // so a group with no matching connection is simply absent here and falls
-  // back to an id-derived label in the component.
-  const connectionGroups: SemanticGroupMeta[] = (() => {
-    const DEFAULT_KEY = " default";
-    const buckets = new Map<
-      string,
-      { id: string | null; name: string | null; dbType: string | null; count: number }
-    >();
-    for (const c of connections) {
-      const key = c.groupId ?? DEFAULT_KEY;
-      const bucket = buckets.get(key) ?? {
-        id: c.groupId,
-        name: c.groupName,
-        dbType: null,
-        count: 0,
-      };
-      bucket.count += 1;
-      // First non-empty member wins for the group's datasource type / name —
-      // members of a group share a schema, so they share a dbType in practice.
-      if (!bucket.dbType && c.dbType) bucket.dbType = c.dbType;
-      if (!bucket.name && c.groupName) bucket.name = c.groupName;
-      buckets.set(key, bucket);
-    }
-    return [...buckets.values()].map((b) => ({
-      id: b.id,
-      label: b.id == null ? "default" : stripGroupPrefix(b.name ?? b.id),
-      dbTypeLabel: b.dbType ? labelForDbType(b.dbType) : undefined,
-      memberCount: b.count,
-    }));
-  })();
+  // Connection-group metadata for the grouped tree (#3235): datasource-type
+  // label + member count per group, pivoted from the connections list. The
+  // tree decides which groups to render from the entities, so a group with
+  // no matching connection falls back to an id-derived label.
+  const connectionGroups: SemanticGroupMeta[] = connectionGroupsFrom(connections);
 
   return (
     <div className="flex h-full flex-col">

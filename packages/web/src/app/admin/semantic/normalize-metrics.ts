@@ -42,6 +42,9 @@ export function toMetricEntry(m: unknown): MetricEntry | null {
     name,
     description: typeof r.description === "string" ? r.description : undefined,
     sql: r.sql,
+    // NB: `r.source` here is the metric file's INTERNAL `source: { entity, … }`
+    // block (its derivation hint), NOT the endpoint wrapper's group `source`
+    // string that `normalizeMetrics` reads below. Two different `source`s.
     entity: typeof r.entity === "string" ? r.entity
       : (r.source && typeof r.source === "object" && typeof (r.source as Record<string, unknown>).entity === "string")
         ? (r.source as Record<string, unknown>).entity as string : undefined,
@@ -95,9 +98,13 @@ export function normalizeMetrics(raw: unknown): MetricEntry[] {
       for (const m of items) {
         const parsed = toMetricEntry(m);
         if (parsed) {
-          parsed.file = parsed.file ?? fileName;
-          parsed.source = parsed.source ?? source;
-          metrics.push(parsed);
+          // toMetricEntry never sets file/source, so the entry-level values win;
+          // the `??` keeps a per-item override honest if that ever changes.
+          metrics.push({
+            ...parsed,
+            file: parsed.file ?? fileName,
+            source: parsed.source ?? source,
+          });
         }
       }
     }

@@ -79,8 +79,10 @@ glossary.yml                      # global
 ▾ warehouse  · Snowflake · 2 members
     events.yml   sessions.yml
 ▾ metrics
-    revenue.yml   sessions_per_day.yml  [warehouse]
+    revenue.yml   sessions_per_day.yml
 ```
+
+(The metrics tree node lists plain file names; the group is shown as a badge on the metric **card** in the right-hand viewer, not on the tree node.)
 
 *As implemented (#3235):*
 

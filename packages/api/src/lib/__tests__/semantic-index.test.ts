@@ -35,6 +35,7 @@ function cleanTmpBase() {
 function makeEntity(table: string, opts?: {
   description?: string;
   connection?: string;
+  group?: string;
   type?: string;
   grain?: string;
   dimensions?: Array<{ name: string; type: string; description?: string; primary_key?: boolean }>;
@@ -46,6 +47,7 @@ function makeEntity(table: string, opts?: {
   lines.push(`name: ${table}`);
   lines.push(`table: ${table}`);
   if (opts?.type) lines.push(`type: ${opts.type}`);
+  if (opts?.group) lines.push(`group: ${opts.group}`);
   if (opts?.connection) lines.push(`connection: ${opts.connection}`);
   if (opts?.grain) lines.push(`grain: ${opts.grain}`);
   if (opts?.description) lines.push(`description: "${opts.description}"`);
@@ -316,6 +318,29 @@ describe("buildSemanticIndex", () => {
     expect(index).toContain("**events**");
     // Per-source entities show connection ID
     expect(index).toContain("[warehouse]");
+  });
+
+  it("labels the resolved Connection group for the canonical groups/ layout and flat-root group: (ADR-0012)", () => {
+    const root = ensureDir(`group-scope-${testCounter}`);
+    mkdirSync(join(root, "entities"), { recursive: true });
+    mkdirSync(join(root, "groups", "warehouse", "entities"), { recursive: true });
+
+    // Canonical groups/<group>/ entity → labeled with the directory group.
+    writeFileSync(
+      join(root, "groups", "warehouse", "entities", "events.yml"),
+      makeEntity("events", { dimensions: [{ name: "id", type: "integer" }] }),
+    );
+    // Flat-root entity with a `group:` override → labeled with the field group,
+    // matching how the whitelist routes it (never shown unscoped).
+    writeFileSync(
+      join(root, "entities", "leads.yml"),
+      makeEntity("leads", { group: "crm", dimensions: [{ name: "id", type: "integer" }] }),
+    );
+
+    const index = buildSemanticIndex(root);
+
+    expect(index).toContain("[warehouse]");
+    expect(index).toContain("[crm]");
   });
 
   it("skips malformed YAML files gracefully", () => {

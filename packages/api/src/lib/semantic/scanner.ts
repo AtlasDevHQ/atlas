@@ -20,38 +20,68 @@ const log = createLogger("semantic-scanner");
 // ---------------------------------------------------------------------------
 
 /**
+ * Name of the dedicated namespace directory holding non-default Connection
+ * groups: `semantic/groups/<group>/…` (ADR-0012). A standalone parent keeps
+ * the root unambiguous and the legacy → canonical migration mechanical.
+ */
+export const GROUPS_DIR = "groups";
+
+/**
  * Directories at the semantic root that are structural, not per-source.
- * Skipped when scanning for source-specific subdirectories.
+ * Skipped when scanning for legacy `<source>/` subdirectories.
  *
  * - `entities` — default entity directory
  * - `metrics` — default metrics directory
  * - `.orgs` — org-scoped entity storage (dual-write sync)
+ * - `groups` — the canonical per-group namespace (`groups/<group>/…`),
+ *   scanned explicitly below; never treated as a legacy `<source>/` dir.
  */
-export const RESERVED_DIRS = new Set(["entities", "metrics", ".orgs"]);
+export const RESERVED_DIRS = new Set(["entities", "metrics", ".orgs", GROUPS_DIR]);
 
 // ---------------------------------------------------------------------------
 // Directory discovery
 // ---------------------------------------------------------------------------
 
+/**
+ * Where an entity directory sits in the on-disk layout, which determines how
+ * its group is resolved (ADR-0012):
+ *
+ * - `flat`   — root `entities/`; the default group (NULL `connection_group_id`).
+ * - `group`  — `groups/<group>/entities/`; the canonical per-group namespace,
+ *   where the **directory is canonical**.
+ * - `legacy` — `<source>/entities/`; the pre-ADR-0012 per-source layout, kept
+ *   for back-compat (retains its historical field-wins precedence).
+ */
+export type EntityDirOrigin = "flat" | "group" | "legacy";
+
 export interface EntityDir {
   /** Absolute path to the entities directory. */
   dir: string;
-  /** Source name: `"default"` for root `entities/`, subdirectory name for per-source. */
+  /** Group name: `"default"` for root `entities/`, the directory name otherwise. */
   sourceName: string;
+  /** On-disk layout this directory belongs to — drives group precedence. */
+  origin: EntityDirOrigin;
 }
 
 export interface EntityDirResult {
   dirs: EntityDir[];
-  /** True when the root directory scan failed (per-source dirs may be missing). */
+  /**
+   * True when a directory scan failed — either the canonical `groups/`
+   * namespace or the legacy `<source>/` root — so some group/source dirs may
+   * be missing. Consumers escalate this to an error-level log.
+   */
   rootScanFailed: boolean;
 }
 
 /**
  * Discover entity directories under a semantic root.
  *
- * Returns the default `entities/` dir (if it exists) and any per-source
- * `{source}/entities/` dirs found under the root. Also reports whether
- * the root scan failed so callers can escalate severity as appropriate.
+ * Returns, in precedence order:
+ *   1. the default `entities/` dir (flat default group), if it exists;
+ *   2. the canonical `groups/<group>/entities/` dirs (ADR-0012);
+ *   3. the legacy `<source>/entities/` dirs (back-compat).
+ *
+ * Also reports whether the root scan failed so callers can escalate severity.
  */
 export function getEntityDirs(root: string): EntityDirResult {
   const dirs: EntityDir[] = [];
@@ -59,9 +89,31 @@ export function getEntityDirs(root: string): EntityDirResult {
 
   const defaultDir = path.join(root, "entities");
   if (fs.existsSync(defaultDir)) {
-    dirs.push({ dir: defaultDir, sourceName: "default" });
+    dirs.push({ dir: defaultDir, sourceName: "default", origin: "flat" });
   }
 
+  // Canonical per-group namespace: semantic/groups/<group>/entities/ (ADR-0012).
+  const groupsRoot = path.join(root, GROUPS_DIR);
+  if (fs.existsSync(groupsRoot)) {
+    try {
+      const groupEntries = fs.readdirSync(groupsRoot, { withFileTypes: true });
+      for (const entry of groupEntries) {
+        if (!entry.isDirectory()) continue;
+        const subDir = path.join(groupsRoot, entry.name, "entities");
+        if (fs.existsSync(subDir)) {
+          dirs.push({ dir: subDir, sourceName: entry.name, origin: "group" });
+        }
+      }
+    } catch (err) {
+      rootScanFailed = true;
+      log.warn(
+        { root: groupsRoot, err: err instanceof Error ? err.message : String(err) },
+        "Failed to scan semantic groups/ namespace",
+      );
+    }
+  }
+
+  // Legacy per-source layout: semantic/<source>/entities/ (pre-ADR-0012).
   if (fs.existsSync(root)) {
     try {
       const entries = fs.readdirSync(root, { withFileTypes: true });
@@ -69,7 +121,7 @@ export function getEntityDirs(root: string): EntityDirResult {
         if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
         const subDir = path.join(root, entry.name, "entities");
         if (fs.existsSync(subDir)) {
-          dirs.push({ dir: subDir, sourceName: entry.name });
+          dirs.push({ dir: subDir, sourceName: entry.name, origin: "legacy" });
         }
       }
     } catch (err) {
@@ -82,6 +134,60 @@ export function getEntityDirs(root: string): EntityDirResult {
   }
 
   return { dirs, rootScanFailed };
+}
+
+// ---------------------------------------------------------------------------
+// Group resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Read an entity's declared group from YAML — the canonical `group:` field,
+ * falling back to the deprecated `connection:` alias (ADR-0012). Returns
+ * `undefined` when neither is a non-empty string.
+ */
+export function readGroupField(raw: { group?: unknown; connection?: unknown }): string | undefined {
+  if (typeof raw.group === "string" && raw.group) return raw.group;
+  if (typeof raw.connection === "string" && raw.connection) return raw.connection;
+  return undefined;
+}
+
+export interface ResolvedEntityGroup {
+  /** Effective Connection group: `"default"` or the group name. */
+  group: string;
+  /**
+   * True when a declared `group:`/`connection:` field disagrees with a
+   * canonical per-group directory — a foot-gun the caller should warn on.
+   * Only ever set when `origin === "group"`; the flat and legacy layouts
+   * let the field win, so they never report a mismatch.
+   */
+  mismatch: boolean;
+}
+
+/**
+ * Resolve an entity's effective Connection group from its on-disk directory
+ * and any declared `group:`/`connection:` field (ADR-0012).
+ *
+ * - Flat default root: the field is the only group signal, so it **assigns**
+ *   the group (this is the override path, and the back-compat `connection:`
+ *   behavior).
+ * - Canonical `groups/<group>/` namespace: the **directory is canonical**. A
+ *   matching field is fine; a disagreeing field is a foot-gun → the directory
+ *   wins and `mismatch` is flagged so the caller can warn (never silently
+ *   honored backwards).
+ * - Legacy `<source>/` namespace: retains the historical field-wins precedence
+ *   for back-compat until migrated into `groups/`.
+ */
+export function resolveEntityGroup(
+  dirGroup: string,
+  origin: EntityDirOrigin,
+  fieldGroup: string | undefined,
+): ResolvedEntityGroup {
+  if (fieldGroup === undefined) return { group: dirGroup, mismatch: false };
+  // Flat default root + legacy layout: the field assigns/overrides the group.
+  if (origin !== "group") return { group: fieldGroup, mismatch: false };
+  // Canonical namespace: directory is authoritative.
+  if (fieldGroup === dirGroup) return { group: dirGroup, mismatch: false };
+  return { group: dirGroup, mismatch: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +224,10 @@ export function readEntityYaml(
 export interface ScannedEntity {
   /** Absolute path to the .yml file. */
   filePath: string;
-  /** Source name: `"default"` for root `entities/`, subdirectory name for per-source. */
+  /** Group name: `"default"` for root `entities/`, the directory name otherwise. */
   sourceName: string;
+  /** On-disk layout this entity belongs to (ADR-0012) — drives group precedence. */
+  origin: EntityDirOrigin;
   /** Parsed YAML content. Callers project what they need. */
   raw: Record<string, unknown>;
 }
@@ -132,9 +240,9 @@ export interface ScanResult {
 /**
  * Discover and parse all entity YAML files under a semantic root.
  *
- * Handles both the default `entities/` directory and per-source
- * `{source}/entities/` subdirectories. Callers project what they need
- * from `raw`.
+ * Handles the default `entities/` directory, the canonical
+ * `groups/<group>/entities/` namespace, and legacy `<source>/entities/`
+ * subdirectories (ADR-0012). Callers project what they need from `raw`.
  */
 export function scanEntities(root: string): ScanResult {
   const entities: ScannedEntity[] = [];
@@ -145,7 +253,7 @@ export function scanEntities(root: string): ScanResult {
     warnings.push("Failed to read semantic root directory");
   }
 
-  for (const { dir, sourceName } of dirs) {
+  for (const { dir, sourceName, origin } of dirs) {
     let files: string[];
     try {
       files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
@@ -167,7 +275,7 @@ export function scanEntities(root: string): ScanResult {
         );
         continue;
       }
-      entities.push({ filePath, sourceName, raw });
+      entities.push({ filePath, sourceName, origin, raw });
     }
   }
 

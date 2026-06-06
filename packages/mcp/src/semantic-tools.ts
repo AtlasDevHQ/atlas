@@ -73,6 +73,12 @@ const MAX_FREE_TEXT_LEN = 1024;
 // error instead of an indistinguishable `{ found: false }`.
 const ENTITY_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
 
+// The flat-root semantic group, mirroring the `group: "default"` the scanner
+// stamps for the default layout (`lib/semantic/scanner.ts:getGroupDirs`). A
+// metric whose resolved `source` is this group runs against the default
+// connection; any other value is a connection-group id (#3274).
+const DEFAULT_SEMANTIC_GROUP = "default";
+
 export interface RegisterSemanticToolsOptions {
   /** Actor bound on every tool dispatch — see tools.ts. */
   actor: AtlasUser;
@@ -423,12 +429,50 @@ export function registerSemanticTools(
                 );
               }
 
+              // #3274 — route a group-scoped metric to its own connection.
+              // `metric.source` is the metric's resolved semantic group
+              // (#3240); search.ts surfaces a grouped entity's `connection`
+              // field as that same group, so the group IS the connection id
+              // executeSQL routes on. The default group (`"default"`) maps to
+              // the default connection — passed through as an unset
+              // connectionId so executeSQL keeps its existing default-routing
+              // behavior. A `groups/<group>/metrics/` metric resolves to its
+              // group, so omitting connectionId runs it against `<group>`
+              // instead of the default datasource (which would return
+              // silently-wrong rows for overlapping table names, or an
+              // avoidable whitelist miss for non-overlapping ones).
+              const groupConnectionId =
+                metric.source === DEFAULT_SEMANTIC_GROUP ? undefined : metric.source;
+              // Canonical connection token for the metric's group — `"default"`
+              // (not unset) for the default group — so an explicit connectionId
+              // can be matched against it directly.
+              const metricConnectionId = metric.source === DEFAULT_SEMANTIC_GROUP
+                ? "default"
+                : metric.source;
+              // Reject an explicit connectionId that targets a different group:
+              // running the metric's authoritative SQL against the wrong
+              // datasource is the silently-wrong-results failure mode #3274
+              // exists to prevent. An explicit match (including the literal
+              // `"default"` for a default-group metric) is honored as-is.
+              if (connectionId !== undefined && connectionId !== metricConnectionId) {
+                return toEnvelopeResult(
+                  envelope(
+                    "validation_failed",
+                    `Metric "${metric.id}" belongs to the "${metric.source}" group, but connectionId "${connectionId}" targets a different datasource. Running it there would query the wrong data.`,
+                    {
+                      hint: `Omit connectionId to run "${metric.id}" against its own group, or pass connectionId "${metricConnectionId}".`,
+                    },
+                  ),
+                );
+              }
+              const targetConnectionId = connectionId ?? groupConnectionId;
+
               const explanation = metric.description
                 ? `MCP runMetric ${metric.id}: ${metric.description}`
                 : `MCP runMetric ${metric.id}`;
 
               const result = (await executeSQL.execute!(
-                { sql: metric.sql, explanation, connectionId },
+                { sql: metric.sql, explanation, connectionId: targetConnectionId },
                 { toolCallId: "mcp-runMetric", messages: [] },
               )) as Record<string, unknown>;
 

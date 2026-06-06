@@ -36,7 +36,7 @@ Entities bind to a **Connection group** — a standalone DB is simply a group-of
 
 - The unit is surfaced as **`group`** everywhere: YAML `group:`, the view's grouping, the CLI's target.
 - The three historical aliases — the YAML `connection:` field, the CLI `--source` flag, the admin/API `source` — are **deprecated and unified** to `group`. (See [CONTEXT.md § Semantic layer scoping](../../CONTEXT.md) and [ADR-0012](../adr/0012-group-scoped-semantic-layer-directories.md).)
-- *As implemented (#3234):* **generation honors this unit** — both `atlas init` and the wizard write into the group the connection belongs to (see § F), so the scope key is consistent end-to-end from generation through load and query.
+- *As implemented (#3234):* **generation honors this unit** — generation writes into a group namespace rather than scoping by raw `connectionId` (see § F). The wizard resolves the connection's *actual* Connection group (members of a group share one set of entities); the file-based CLI treats each connection name as a group-of-one. Either way the scope key is consistent end-to-end from generation through load and query.
 
 ### B. On-disk representation (self-host / file-based)
 

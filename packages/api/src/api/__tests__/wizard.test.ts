@@ -498,6 +498,38 @@ describe("POST /api/v1/wizard/generate", () => {
     expect(entities.length).toBe(1);
     expect(entities[0].tableName).toBe("users");
     expect(entities[0].yaml).toContain("name: Users");
+    // Default connection → NULL default group → no group field emitted.
+    expect(entities[0].yaml).not.toContain("connection:");
+  });
+
+  it("scopes generated YAML by the connection's group (non-default connection)", async () => {
+    // A non-default connection resolves to its group, which is baked into the
+    // preview YAML so it matches the groups/<group>/ dir /save writes into.
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "warehouse",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    const entities = data.entities as { tableName: string; yaml: string }[];
+    expect(entities[0].yaml).toContain("connection: warehouse");
+  });
+
+  it("degrades to no group field when group resolution fails (preview is best-effort)", async () => {
+    // /generate is a preview — a group-lookup hiccup must not fail the whole
+    // generate; it falls back to no group field rather than 500ing.
+    mockResolveGroupId.mockReset();
+    mockResolveGroupId.mockRejectedValueOnce(new Error("internal DB unreachable"));
+
+    const res = await postJson("/api/v1/wizard/generate", {
+      connectionId: "warehouse",
+      tables: ["users"],
+    });
+    expect(res.status).toBe(200);
+    const data = await json(res);
+    const entities = data.entities as { tableName: string; yaml: string }[];
+    expect(entities[0].tableName).toBe("users");
+    expect(entities[0].yaml).not.toContain("connection:");
   });
 
   it("returns 500 with generate_failed when profiling throws", async () => {
@@ -743,6 +775,29 @@ describe("POST /api/v1/wizard/save", () => {
     expect(mkdirPaths.every((p) => !p.includes(path.join("groups", "us-prod")))).toBe(true);
     expect(mkdirPaths.every((p) => !p.includes(path.join("groups", "eu-prod")))).toBe(true);
     expect(mkdirPaths.some((p) => p.includes(path.join("groups", "prod-group")))).toBe(true);
+  });
+
+  it("fails closed with 500 save_failed when group resolution throws (no misscoped write)", async () => {
+    // The resolved group keys both the DB rows and the on-disk groups/<group>/
+    // dir. If resolution throws, we must abort BEFORE any write rather than
+    // silently fall through to the default group and misscope the entities.
+    mockResolveGroupId.mockReset();
+    mockResolveGroupId.mockRejectedValueOnce(new Error("internal DB unreachable"));
+    mockBulkUpsertEntities.mockClear();
+    mockWriteFileSync.mockClear();
+
+    const res = await postJson("/api/v1/wizard/save", {
+      connectionId: "warehouse",
+      entities: [{ tableName: "users", yaml: "table: users\n" }],
+    });
+
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("save_failed");
+    expect(data.requestId).toBeDefined();
+    // Fail-closed: neither the DB nor the disk was touched.
+    expect(mockBulkUpsertEntities).not.toHaveBeenCalled();
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
   });
 
   it("returns 500 db_persist_failed when bulkUpsertEntities throws", async () => {

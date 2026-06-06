@@ -31,7 +31,7 @@ bun run atlas -- init [options]
 |------|-------------|
 | `--tables <t1,t2>` | Profile only specific tables/views (comma-separated) |
 | `--schema <name>` | PostgreSQL schema name (default: `public`) |
-| `--source <name>` | Write to `semantic/{name}/` subdirectory (per-source layout). Mutually exclusive with `--connection` |
+| `--source <name>` | Deprecated alias for selecting the output group — writes to `semantic/groups/{name}/` (group-of-one). Mutually exclusive with `--connection` |
 | `--connection <name>` | Profile a named datasource from `atlas.config.ts`. Mutually exclusive with `--source` |
 | `--csv <file1.csv,...>` | Load CSV files via DuckDB (no DB server needed). Requires `@duckdb/node-api` |
 | `--parquet <f1.parquet,...>` | Load Parquet files via DuckDB. Requires `@duckdb/node-api` |
@@ -66,7 +66,7 @@ bun run atlas -- init --connection warehouse
 # Profile CSV files directly (no database needed)
 bun run atlas -- init --csv sales.csv,products.csv
 
-# Legacy per-source layout (writes to semantic/warehouse/)
+# Select the output group explicitly (writes to semantic/groups/warehouse/)
 bun run atlas -- init --source warehouse
 
 # Org-scoped: writes to semantic/.orgs/org-123/ and imports to DB
@@ -81,7 +81,7 @@ bun run atlas -- init --org org-123 --no-import
 `--connection` and `--source` cannot be used together. Here's how they differ:
 
 - **No flag** — Profiles the default datasource (`ATLAS_DATASOURCE_URL`) and writes output to the flat-root default group at `semantic/entities/`.
-- **`--source <name>`** — Writes output to the **legacy** per-source layout `semantic/<name>/entities/`. Deprecated alias for the group namespace ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)) — still recognized for back-compat. Does not change which datasource is profiled.
+- **`--source <name>`** — A **deprecated alias** for selecting the output group ([ADR-0012](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0012-group-scoped-semantic-layer-directories.md)). Writes output to the canonical `semantic/groups/<name>/entities/` namespace (group-of-one). Does not change which datasource is profiled. The pre-ADR-0012 flat `semantic/<name>/entities/` layout from older runs is still read by the loader for back-compat.
 - **`--connection <name>`** — Profiles a named datasource defined in `atlas.config.ts` (e.g. `datasources.warehouse`) and writes output to that connection's group under the canonical `semantic/groups/<name>/` namespace (the default datasource stays flat at `semantic/`).
 
 If more than 20% of tables fail to profile, `init` exits with an error — this usually indicates a systemic issue like wrong credentials or missing permissions. Use `--force` to override this threshold.

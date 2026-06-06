@@ -768,7 +768,7 @@ export async function handleInit(args: string[]): Promise<void> {
       "  --connection profiles a named datasource from atlas.config.ts",
     );
     console.error(
-      "  --source is the legacy flag for per-source output directory",
+      "  --source is the deprecated flag for selecting the output group (writes semantic/groups/<name>/)",
     );
     process.exit(1);
   }
@@ -793,10 +793,10 @@ export async function handleInit(args: string[]): Promise<void> {
         files.push({ path: f.trim(), format: "parquet" });
     }
 
-    // Compute output directories
-    const outputBase = sourceArg
-      ? path.join(SEMANTIC_DIR, sourceArg)
-      : SEMANTIC_DIR;
+    // Compute output directories. Like the DB path, `--source <name>` is a
+    // group-of-one and writes the canonical `semantic/groups/<name>/` namespace
+    // (ADR-0012 / #3234); no `--source` → the flat-root default group.
+    const outputBase = outputDirForGroup(sourceArg);
     const entitiesOutDir = path.join(outputBase, "entities");
     const metricsOutDir = path.join(outputBase, "metrics");
     const dbPath = path.join(outputBase, ".atlas.duckdb");
@@ -923,7 +923,7 @@ export async function handleInit(args: string[]): Promise<void> {
 
     const duckDbUrl = `duckdb://${dbPath}`;
     const relativeOutput = sourceArg
-      ? `./semantic/${sourceArg}/`
+      ? `./semantic/groups/${sourceArg}/`
       : "./semantic/";
     console.log(`
 Done! Your semantic layer is at ${relativeOutput}

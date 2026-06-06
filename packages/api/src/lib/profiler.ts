@@ -164,8 +164,8 @@ export function outputDirForDatasource(id: string, orgId?: string): string {
  *   setups gain no nesting.
  * - A **non-default group** `<g>` lives under the dedicated
  *   `groups/<g>/` namespace — exactly what the #3232 loader
- *   ({@link getEntityDirs}) reads back as group `<g>`, so generation and
- *   loading can't drift on the layout (#3234).
+ *   (`getEntityDirs` in `./semantic/scanner`) reads back as group `<g>`, so
+ *   generation and loading can't drift on the layout (#3234).
  *
  * Unlike the deprecated {@link outputDirForDatasource} (a bare
  * `semantic/<id>/` dir), this writes the blessed `groups/` parent.

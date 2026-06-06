@@ -525,7 +525,7 @@ export async function importFromDisk(
   // and legacy `<source>/entities/`. Hardcoding `root/entities` skipped grouped
   // entities entirely, so the DB-backed whitelist/admin view was empty for
   // those groups even though the file-based whitelist read them (#3245).
-  await _scanEntityDirs(root, entities, errors, yaml, options?.connectionId);
+  const { duplicateSkips } = await _scanEntityDirs(root, entities, errors, yaml, options?.connectionId);
 
   // Scan metrics/*.yml — metrics group-namespace traversal is out of scope
   // here (#3240), so metrics stay flat + scoped by the install id.
@@ -554,10 +554,14 @@ export async function importFromDisk(
     // ENOENT is fine — glossary is optional
   }
 
-  const total = entities.length + errors.length;
+  // `total` and `skipped` count every file the scan considered, including
+  // lower-precedence duplicates dropped by `_scanEntityDirs` — otherwise a
+  // canonical+legacy overlap would report `{ imported: 1, skipped: 0, total: 1 }`
+  // despite two YAML files being scanned (CodeRabbit review).
+  const total = entities.length + errors.length + duplicateSkips;
 
   if (entities.length === 0) {
-    return { imported: 0, skipped: errors.length, errors, total };
+    return { imported: 0, skipped: errors.length + duplicateSkips, errors, total };
   }
 
   let imported: number;
@@ -576,14 +580,15 @@ export async function importFromDisk(
     );
   }
 
+  const skipped = errors.length + dbFailures + duplicateSkips;
   log.info(
-    { orgId, imported, skipped: errors.length + dbFailures, total },
+    { orgId, imported, skipped, duplicateSkips, total },
     "Imported semantic entities from disk to DB",
   );
 
   return {
     imported,
-    skipped: errors.length + dbFailures,
+    skipped,
     errors,
     total,
   };
@@ -650,7 +655,8 @@ async function _scanEntityDirs(
   errors: ImportError[],
   yaml: typeof import("js-yaml"),
   defaultConnectionId?: string,
-): Promise<void> {
+): Promise<{ duplicateSkips: number }> {
+  let duplicateSkips = 0;
   const { getEntityDirs, resolveEntityGroup, readGroupField } = await import("./scanner");
   const { dirs, failedScans } = getEntityDirs(root);
   if (failedScans.length > 0) {
@@ -713,6 +719,7 @@ async function _scanEntityDirs(
           // stem, so the key can't be forged by a crafted name.
           const groupKey = `${group}\0${name}`;
           if (seenGroupKeys.has(groupKey)) {
+            duplicateSkips++;
             log.warn(
               { file, dir, group, name, origin },
               "Import: duplicate entity for the same group already collected from a higher-precedence directory — skipping (ADR-0012: canonical groups/ wins over legacy)",
@@ -727,6 +734,8 @@ async function _scanEntityDirs(
       }
     }
   }
+
+  return { duplicateSkips };
 }
 
 // ---------------------------------------------------------------------------

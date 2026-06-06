@@ -833,6 +833,10 @@ describe("importFromDisk — group namespace traversal (#3245)", () => {
     expect(result.imported).toBe(1);
     // The surviving row is the canonical one, not the stale legacy YAML.
     expect(orders[0].yamlContent).toContain("orders_canonical");
+    // The dropped legacy duplicate is still counted, so the summary is truthful
+    // about how many files were scanned (2), not silently undercounted (1).
+    expect(result.skipped).toBe(1);
+    expect(result.total).toBe(2);
   });
 
   it("reports a per-file error for a grouped entity missing the table field", async () => {

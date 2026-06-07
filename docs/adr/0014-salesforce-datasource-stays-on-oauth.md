@@ -31,7 +31,7 @@ Concretely:
 - **The Salesforce OAuth install handler + lazy builder are unchanged** — they are wired independently in `integrations/install/register.ts`, gated on `SALESFORCE_CLIENT_ID` / `SALESFORCE_CLIENT_SECRET`, and do not depend on the plugin being in the `plugins` array.
 - **The plugin's `createFromConfig` + adapter-only mode are retained as a dormant SDK seam** (clearly documented as such in `plugins/salesforce/src/index.ts`), so a future credential-form Salesforce-datasource path (option a below) remains cheap to revive without re-litigating the SDK shape. They are simply never reached at runtime.
 
-The result is that the bridge never builds a Salesforce connection, so it cannot stand up a **second** Salesforce datasource path competing with the OAuth / `LazyPluginLoader` one — pinned by a regression test in `datasource-registry-bridge.test.ts` (the bridge returns `false` and never calls `createFromConfig` for `salesforce`, whether or not a salesforce plugin is registered).
+The result is that the bridge never builds a Salesforce connection, so it cannot stand up a **second** Salesforce datasource path competing with the OAuth / `LazyPluginLoader` one — pinned by a regression test in `datasource-registry-bridge.test.ts` (the bridge returns `false` and never calls `createFromConfig` for `salesforce`, whether a salesforce plugin is registered).
 
 ## Alternatives considered
 

@@ -19,9 +19,12 @@
  *      sensitive markers before a message reaches the agent, the user, or logs;
  *      `extractEsSqlErrorMessage` surfaces the actionable ES error reason first.
  *
+ * The Query DSL surface (#3267) lives here too — `client.dslQuery()` /
+ * `connection.dslQuery()` POST a read-only DSL request and return the raw
+ * response for the tool to validate + normalize (see `./dsl.ts` + `./tool.ts`).
+ *
  * This slice handles `elasticsearch://` URLs with API-key auth only. Basic /
- * Cloud ID / AWS SigV4 auth, the OpenSearch engine, and the Query DSL tool
- * (#3267) are later slices.
+ * Cloud ID / AWS SigV4 auth and the OpenSearch engine (#3266) are later slices.
  */
 
 import type {
@@ -31,6 +34,7 @@ import type {
   ParserDialect,
 } from "@useatlas/plugin-sdk";
 import type { EsMappingResponse } from "./mapping";
+import { applyDslSafeguards, DEFAULT_DSL_MAX_SIZE, DEFAULT_DSL_TERMINATE_AFTER } from "./dsl";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,6 +136,30 @@ export interface ElasticsearchSqlQueryOptions {
   maxRows?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Query DSL surface (#3267)
+// ---------------------------------------------------------------------------
+
+/** The body-bearing read operations the DSL client executes. */
+export type ElasticsearchDslEndpoint = "_search" | "_count";
+
+/** Options for a single Query DSL request (`POST /<index>/<endpoint>`). */
+export interface ElasticsearchDslQueryOptions {
+  /** Target index / alias / data stream (comma-separated allowed). The tool has
+   *  already run `validateIndexAccess` (structural rails + membership) on it. */
+  index: string;
+  /** Read operation. Defaults to `_search`. */
+  endpoint?: ElasticsearchDslEndpoint;
+  /** The Query DSL request body. The tool has already validated it read-only. */
+  body?: Record<string, unknown>;
+  /** Hard wall-clock deadline for the request, in ms. Defaults to 30000. */
+  timeoutMs?: number;
+  /** `size` ceiling for `_search`. Defaults to {@link DEFAULT_DSL_MAX_SIZE}. */
+  maxSize?: number;
+  /** `terminate_after` for non-aggregation `_search`. `<=0` omits it. */
+  terminateAfter?: number;
+}
+
 /** Default ES `fetch_size` (rows per page) when the caller doesn't set one. */
 export const DEFAULT_FETCH_SIZE = 1000;
 
@@ -225,8 +253,9 @@ export function extractEsSqlErrorMessage(
   body: unknown,
   status: number,
   statusText: string,
+  surface: "SQL" | "DSL" = "SQL",
 ): string {
-  const fallback = `Elasticsearch SQL request failed: HTTP ${status} ${statusText}`;
+  const fallback = `Elasticsearch ${surface} request failed: HTTP ${status} ${statusText}`;
   if (body && typeof body === "object" && "error" in body) {
     const error = (body as { error: unknown }).error;
     if (typeof error === "string" && error.trim()) return error;
@@ -420,6 +449,14 @@ export interface ElasticsearchClient {
    * secret-scrubbed before they reach the caller.
    */
   sqlQuery(opts: ElasticsearchSqlQueryOptions): Promise<PluginQueryResult>;
+  /**
+   * Run a read-only Query DSL request via `POST /<index>/<endpoint>` and return
+   * the RAW parsed response body (normalization is the tool's job — it inspects
+   * `hits.total`/`aggregations` for truncation). Resource safeguards (size cap,
+   * `terminate_after`, search `timeout`) are applied to every request via
+   * {@link applyDslSafeguards}. Errors are secret-scrubbed before they surface.
+   */
+  dslQuery(opts: ElasticsearchDslQueryOptions): Promise<unknown>;
   /** Release the client — aborts any in-flight request and rejects future calls. */
   close(): void;
 }
@@ -654,6 +691,77 @@ export function createElasticsearchClient(
       }
     },
 
+    async dslQuery(opts: ElasticsearchDslQueryOptions): Promise<unknown> {
+      if (closed) {
+        throw new Error("Elasticsearch client is closed");
+      }
+
+      const {
+        index,
+        endpoint: op = "_search",
+        body,
+        timeoutMs = 30000,
+        maxSize = DEFAULT_DSL_MAX_SIZE,
+        terminateAfter = DEFAULT_DSL_TERMINATE_AFTER,
+      } = opts;
+
+      // Resource safeguards applied to EVERY DSL request (size cap, search
+      // timeout, terminate_after-when-no-aggs). Pure + tested in dsl.ts.
+      const safeBody = applyDslSafeguards(op, body, { maxSize, terminateAfter, timeoutMs });
+
+      // Per-index URL-encoding preserves the comma multi-index separator while
+      // escaping reserved characters in each name. The tool has already rejected
+      // wildcards / _all / non-whitelisted indices.
+      const indexPath = index
+        .split(",")
+        .map((s) => encodeURIComponent(s.trim()))
+        .filter((s) => s.length > 0)
+        .join(",");
+
+      const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
+      const controller = new AbortController();
+      inFlight.add(controller);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const res = await fetchImpl(`${endpoint}/${indexPath}/${op}`, {
+          method: "POST",
+          headers: {
+            Authorization: `ApiKey ${auth.apiKey}`,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(safeBody),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          // Read the body for the actionable ES error reason; fall back to the
+          // status line if it isn't JSON. The message is scrubbed in the catch.
+          let errBody: unknown;
+          try {
+            errBody = await res.json();
+          } catch {
+            // intentionally ignored: a non-JSON error body falls back to the
+            // HTTP status line via extractEsSqlErrorMessage.
+            errBody = undefined;
+          }
+          throw new Error(extractEsSqlErrorMessage(errBody, res.status, res.statusText, "DSL"));
+        }
+
+        return await res.json();
+      } catch (err) {
+        if (controller.signal.aborted && !closed) {
+          throw new Error(`Elasticsearch DSL query timed out after ${timeoutMs}ms`);
+        }
+        // Scrub before surfacing — see the ping() rationale (no cause chain).
+        throw new Error(scrubElasticsearchError(err, auth.apiKey));
+      } finally {
+        clearTimeout(timer);
+        inFlight.delete(controller);
+      }
+    },
+
     close(): void {
       closed = true;
       for (const controller of inFlight) {
@@ -670,11 +778,13 @@ export function createElasticsearchClient(
 
 /**
  * A {@link PluginDBConnection} for Elasticsearch, extended with `ping()` for the
- * health check. `query()` runs ES SQL via the cluster SQL API (#3262); the Query
- * DSL tool arrives in #3267.
+ * health check and `dslQuery()` for the Query DSL surface (#3267). `query()` runs
+ * ES SQL via the cluster SQL API (#3262); `dslQuery()` runs a read-only Query DSL
+ * request and returns the RAW response for the tool to normalize.
  */
 export interface ElasticsearchConnection extends PluginDBConnection {
   ping(timeoutMs?: number): Promise<ClusterInfo>;
+  dslQuery(opts: ElasticsearchDslQueryOptions): Promise<unknown>;
 }
 
 /**
@@ -700,6 +810,12 @@ export function createElasticsearchConnection(
 
     async ping(timeoutMs?: number): Promise<ClusterInfo> {
       return client.ping(timeoutMs);
+    },
+
+    async dslQuery(opts: ElasticsearchDslQueryOptions): Promise<unknown> {
+      // The tool has already validated the request read-only + index-whitelisted;
+      // the client applies the resource safeguards and returns the raw response.
+      return client.dslQuery(opts);
     },
 
     async close(): Promise<void> {

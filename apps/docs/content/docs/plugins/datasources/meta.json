@@ -9,6 +9,7 @@
     "mysql",
     "snowflake",
     "salesforce",
+    "elasticsearch",
     "obsidian-reader"
   ]
 }

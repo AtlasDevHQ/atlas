@@ -1,6 +1,6 @@
 ---
 title: Datasource Plugins
-description: Connect any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty) plus BigQuery, ClickHouse, DuckDB, MySQL, Snowflake, and Salesforce as Atlas query targets.
+description: Connect any REST/OpenAPI service (Stripe, GitHub, Notion, Twenty) plus BigQuery, ClickHouse, DuckDB, MySQL, Snowflake, Salesforce, and Elasticsearch as Atlas query targets.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -28,20 +28,21 @@ Never commit credentials to version control. Use environment variables (`process
   <Card title="MySQL" href="/plugins/datasources/mysql" description="MySQL / MariaDB via connection pool" />
   <Card title="Snowflake" href="/plugins/datasources/snowflake" description="Snowflake Data Cloud with pool management" />
   <Card title="Salesforce" href="/plugins/datasources/salesforce" description="Salesforce CRM via SOQL (not SQL)" />
+  <Card title="Elasticsearch / OpenSearch" href="/plugins/datasources/elasticsearch" description="Read-only cluster via SQL + a Query DSL tool for full-text and aggregations" />
   <Card title="Obsidian Reader" href="/plugins/datasources/obsidian-reader" description="Read-only access to an Obsidian vault via the Local REST API" />
 </Cards>
 
 ## Comparison
 
-| Feature | BigQuery | ClickHouse | DuckDB | MySQL | Snowflake | Salesforce |
-|---------|----------|-----------|--------|-------|-----------|------------|
-| Driver package | `@google-cloud/bigquery` | `@clickhouse/client` | `@duckdb/node-api` | `mysql2` | `snowflake-sdk` | `jsforce` |
-| Transport | REST API | HTTP | In-process | TCP pool | SDK pool | REST API |
-| Query language | BigQuery SQL | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL |
-| Parser dialect | BigQuery | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) |
-| Read-only enforcement | SQL validation + IAM | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation |
-| Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` |
-| Connection caching | No (stateless REST) | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) |
+| Feature | BigQuery | ClickHouse | DuckDB | MySQL | Snowflake | Salesforce | Elasticsearch |
+|---------|----------|-----------|--------|-------|-----------|------------|---------------|
+| Driver package | `@google-cloud/bigquery` | `@clickhouse/client` | `@duckdb/node-api` | `mysql2` | `snowflake-sdk` | `jsforce` | none (`fetch`) |
+| Transport | REST API | HTTP | In-process | TCP pool | SDK pool | REST API | HTTP (`fetch`) |
+| Query language | BigQuery SQL | ClickHouse SQL | DuckDB SQL | MySQL SQL | Snowflake SQL | SOQL | ES SQL + Query DSL |
+| Parser dialect | BigQuery | PostgreSQL (closest) | PostgreSQL (closest) | MySQL | Snowflake | Custom (regex) | PostgreSQL (closest) |
+| Read-only enforcement | SQL validation + IAM | `readonly: 1` per query | `READ_ONLY` access mode (file-based only) | `READ ONLY` session | SQL validation only | SELECT-only validation | SQL validation + DSL default-deny validator |
+| Agent tool | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `executeSQL` | `querySalesforce` | `executeSQL` + `queryElasticsearch` |
+| Connection caching | No (stateless REST) | No (stateless HTTP) | Yes (in-process) | Yes (pool) | Yes (pool) | Yes (session) | No (stateless `fetch`) |
 
 <Callout type="info">
 The table above compares the **SQL** datasources. REST services are connected through the built-in [OpenAPI (Generic REST)](/plugins/datasources/openapi-generic) datasource instead — the agent calls operations via the `executeRestOperation` tool (not `executeSQL`), reads are allowed by default, and writes require a per-endpoint `write_allowlist` plus confirm-before-write. See [Multi-Datasource Routing](/deployment/multi-datasource) for mixing REST and SQL sources in one deployment.

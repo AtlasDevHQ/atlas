@@ -51,6 +51,7 @@ import { defineConfig } from "./packages/api/src/lib/config";
 // The `defineConfig` import above uses the same relative-path pattern
 // for the same reason. Resolved at boot via bun's TS loader.
 import { chatPlugin } from "./plugins/chat/src/index";
+import { clickhousePlugin } from "./plugins/clickhouse/src/index";
 import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
@@ -85,6 +86,26 @@ import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin
 // under packages/api/node_modules and isn't on the upward walk from
 // /app/atlas.config.ts). Process-lifetime cached on the helper side.
 const proactiveAiRuntime = getProactiveAiRuntime();
+
+/**
+ * Datasource ADAPTER plugins for the staging soak matrix (#3253). Each is
+ * registered only when its staging connection URL env var is set — an unset
+ * env never trips the plugin's required-url config schema at boot, and prod
+ * (which doesn't set these) is unaffected.
+ *
+ * Registering the plugin makes its `connection.createFromConfig` available to
+ * the datasource bridge, which is what lets DB-stored (admin-UI-registered)
+ * datasources of that `dbType` actually connect (ADR-0013). The config-time
+ * URL below also yields a working static config-defined datasource as a bonus.
+ */
+function stagingDatasourcePlugins(): unknown[] {
+  const list: unknown[] = [];
+  const clickhouseUrl = process.env.ATLAS_STAGING_CLICKHOUSE_URL;
+  if (clickhouseUrl) {
+    list.push(clickhousePlugin({ url: clickhouseUrl }));
+  }
+  return list;
+}
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -778,6 +799,9 @@ export default defineConfig({
   // at rest via AES-256-GCM. OMIT `botToken` so the adapter operates
   // in multi-workspace mode.
   plugins: [
+    // Datasource adapter plugins (#3253) — registered before chat so their
+    // adapters are available when DB-stored datasources wire at boot.
+    ...stagingDatasourcePlugins(),
     chatPlugin({
       // Catalog-driven adapter activation (#2650 slice 2). The chat
       // plugin's `AdapterRegistry` reads the chat-type subset of the

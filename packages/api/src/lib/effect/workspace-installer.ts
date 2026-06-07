@@ -678,7 +678,8 @@ export interface WorkspaceInstallerShape {
    * per-`db_type` accuracy, writes the `workspace_plugins` row with
    * `status` derived from `input.atlasMode`, and registers the resulting
    * native pool with the `ConnectionRegistry` via
-   * `registerDatasourceInstall` (no-op for plugin-managed dbTypes).
+   * `registerDatasourceInstall` (for plugin-managed dbTypes this builds the
+   * connection from the registered plugin's `createFromConfig` — #3253 seam).
    *
    * Route ownership of `connection.healthCheck()` is preserved: the
    * route does its pre-flight test against a freshly-registered pool,
@@ -1480,35 +1481,43 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(Effect.catchAll((err) => Effect.die(err)));
 
-      // Register the native pool (idempotent for plugin dbTypes and for
-      // route-pre-registered pools).
-      try {
-        lazyDatasourceBridge().registerDatasourceInstall(
-          {
-            workspaceId,
-            catalogId: catalog.id,
-            installId: input.installId,
-            pillar: "datasource",
-            catalogSlug,
-          },
-          input.formData,
-        );
-      } catch (err) {
-        // Registry rejection is best-effort post-write: the DB row
-        // landed, so subsequent boots' `loadSavedConnections` will pick
-        // it up. Surface the warning rather than rolling back the
-        // install — the route's pre-flight test-connect would have
-        // caught a real connectivity issue.
-        log.warn(
-          {
-            workspaceId,
-            installId: input.installId,
-            catalogSlug,
-            err: err instanceof Error ? err.message : String(err),
-          },
-          "registerDatasourceInstall threw post-install — row persisted; next boot will reload",
-        );
-      }
+      // Register the native pool, or (for plugin dbTypes) build the live
+      // per-(workspace, install_id) plugin connection via the registered
+      // plugin's createFromConfig. Idempotent for route-pre-registered pools.
+      // `registerDatasourceInstall` is async (the plugin path builds a
+      // connection), so it's bridged into the Effect generator here.
+      yield* Effect.tryPromise({
+        try: () =>
+          lazyDatasourceBridge().registerDatasourceInstall(
+            {
+              workspaceId,
+              catalogId: catalog.id,
+              installId: input.installId,
+              pillar: "datasource",
+              catalogSlug,
+            },
+            input.formData,
+          ),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          // Registry rejection is best-effort post-write: the DB row landed, so
+          // subsequent boots' `loadSavedConnections` will pick it up. Surface
+          // the warning rather than rolling back the install — the route's
+          // pre-flight test-connect would have caught a real connectivity issue.
+          Effect.sync(() => {
+            log.warn(
+              {
+                workspaceId,
+                installId: input.installId,
+                catalogSlug,
+                err: err instanceof Error ? err.message : String(err),
+              },
+              "registerDatasourceInstall threw post-install — row persisted; next boot will reload",
+            );
+          }),
+        ),
+      );
 
       log.info(
         { workspaceId, catalogSlug, installId: input.installId, dbType: dryRun.dbType, status },
@@ -1776,28 +1785,34 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
         );
       }
       if (nextStatus !== "archived") {
-        try {
-          lazyDatasourceBridge().registerDatasourceInstall(
-            {
-              workspaceId,
-              catalogId: catalog.id,
-              installId,
-              pillar: "datasource",
-              catalogSlug,
-            },
-            merged,
-          );
-        } catch (err) {
-          log.warn(
-            {
-              workspaceId,
-              installId,
-              catalogSlug,
-              err: err instanceof Error ? err.message : String(err),
-            },
-            "registerDatasourceInstall threw during updateDatasourceConfig — DB row updated; next query may surface ConnectionNotRegisteredError until restart",
-          );
-        }
+        yield* Effect.tryPromise({
+          try: () =>
+            lazyDatasourceBridge().registerDatasourceInstall(
+              {
+                workspaceId,
+                catalogId: catalog.id,
+                installId,
+                pillar: "datasource",
+                catalogSlug,
+              },
+              merged,
+            ),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                {
+                  workspaceId,
+                  installId,
+                  catalogSlug,
+                  err: err instanceof Error ? err.message : String(err),
+                },
+                "registerDatasourceInstall threw during updateDatasourceConfig — DB row updated; next query may surface ConnectionNotRegisteredError until restart",
+              );
+            }),
+          ),
+        );
       }
 
       log.info(

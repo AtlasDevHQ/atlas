@@ -182,3 +182,82 @@ describe("ConnectionRegistry.unregister()", () => {
     registry._reset();
   });
 });
+
+describe("ConnectionRegistry — DB-stored plugin datasources (#3253 seam)", () => {
+  const fakeConn = (label: string) => {
+    let closed = false;
+    return {
+      query: async () => ({ columns: ["src"], rows: [{ src: label }] }),
+      close: async () => {
+        closed = true;
+      },
+      get closed() {
+        return closed;
+      },
+    };
+  };
+
+  it("registerDirectForWorkspace + getForWorkspace round-trips the live connection", () => {
+    const registry = new ConnectionRegistry();
+    const conn = fakeConn("ch");
+    registry.registerDirectForWorkspace("ws-1", "ch", conn, "clickhouse", "ClickHouse", undefined, undefined, "h.example");
+    expect(registry.hasDirectForWorkspace("ws-1", "ch")).toBe(true);
+    expect(registry.getForWorkspace("ws-1", "ch")).toBe(conn);
+    expect(registry.getDBType("ch", "ws-1")).toBe("clickhouse");
+    expect(registry.getTargetHost("ch", "ws-1")).toBe("h.example");
+    registry._reset();
+  });
+
+  it("surfaces the plugin's validator / dialect / forbidden patterns (not native defaults)", () => {
+    const registry = new ConnectionRegistry();
+    const conn = fakeConn("ch");
+    const validate = (q: string) => ({ valid: !/DROP/i.test(q) });
+    const forbidden = [/\bINSERT\b/i];
+    registry.registerDirectForWorkspace("ws-1", "ch", conn, "clickhouse", undefined, validate, {
+      parserDialect: "PostgresQL",
+      forbiddenPatterns: forbidden,
+    });
+    expect(registry.getValidator("ch", "ws-1")).toBe(validate);
+    expect(registry.getParserDialect("ch", "ws-1")).toBe("PostgresQL");
+    expect(registry.getForbiddenPatterns("ch", "ws-1")).toBe(forbidden);
+    registry._reset();
+  });
+
+  it("routes two workspaces sharing an install_id to their own plugin connections", () => {
+    const registry = new ConnectionRegistry();
+    const a = fakeConn("a");
+    const b = fakeConn("b");
+    registry.registerDirectForWorkspace("ws-a", "ch", a, "clickhouse", undefined, undefined, undefined, "a.host");
+    registry.registerDirectForWorkspace("ws-b", "ch", b, "clickhouse", undefined, undefined, undefined, "b.host");
+    expect(registry.getForWorkspace("ws-a", "ch")).toBe(a);
+    expect(registry.getForWorkspace("ws-b", "ch")).toBe(b);
+    expect(registry.getTargetHost("ch", "ws-a")).toBe("a.host");
+    expect(registry.getTargetHost("ch", "ws-b")).toBe("b.host");
+    registry._reset();
+  });
+
+  it("re-registration closes the previous connection", async () => {
+    const registry = new ConnectionRegistry();
+    const first = fakeConn("first");
+    const second = fakeConn("second");
+    registry.registerDirectForWorkspace("ws-1", "ch", first, "clickhouse");
+    registry.registerDirectForWorkspace("ws-1", "ch", second, "clickhouse");
+    await Promise.resolve();
+    expect(first.closed).toBe(true);
+    expect(registry.getForWorkspace("ws-1", "ch")).toBe(second);
+    registry._reset();
+  });
+
+  it("unregisterDirectForWorkspace closes + removes the connection", async () => {
+    const registry = new ConnectionRegistry();
+    const conn = fakeConn("ch");
+    registry.registerDirectForWorkspace("ws-1", "ch", conn, "clickhouse");
+    expect(registry.unregisterDirectForWorkspace("ws-1", "ch")).toBe(true);
+    await Promise.resolve();
+    expect(conn.closed).toBe(true);
+    expect(registry.hasDirectForWorkspace("ws-1", "ch")).toBe(false);
+    // Second call is a no-op.
+    expect(registry.unregisterDirectForWorkspace("ws-1", "ch")).toBe(false);
+    registry._reset();
+  });
+});

@@ -578,8 +578,33 @@ export type EntityProvider =
 
 export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginBase<TConfig> {
   readonly connection: {
-    /** Factory: create a DBConnection for the registry. */
+    /**
+     * Factory: create a DBConnection for the registry from the plugin's
+     * config-time config (the object passed to the plugin factory in
+     * `atlas.config.ts`). Used by the boot-time static wiring path
+     * (`wireDatasourcePlugins`) to register a single config-defined
+     * connection.
+     */
     create(): Promise<PluginDBConnection> | PluginDBConnection;
+    /**
+     * Factory: create a DBConnection from a runtime config resolved from a
+     * DB-stored datasource install (admin-UI-registered, persisted in
+     * `workspace_plugins`). Unlike {@link create}, which closes over the
+     * config-time config, this accepts the per-(workspace, install) config
+     * decrypted from the database — enabling multi-tenant, DB-driven
+     * datasources of this plugin's `dbType` rather than a single static
+     * connection.
+     *
+     * The `config` is the raw decrypted config record; the plugin validates
+     * it with its own schema (typically the same `configSchema`) and builds
+     * the connection. Throw a clear error when required fields are missing.
+     *
+     * Plugins that only support static config-defined connections may omit
+     * this; DB-stored installs of their `dbType` then remain unsupported.
+     */
+    createFromConfig?(
+      config: Readonly<Record<string, unknown>>,
+    ): Promise<PluginDBConnection> | PluginDBConnection;
     /** Database type identifier (used for SQL dialect selection). */
     dbType: PluginDBType;
     /**

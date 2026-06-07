@@ -1,12 +1,14 @@
 /**
- * Tests for `datasource-registry-bridge` (#2744).
+ * Tests for `datasource-registry-bridge` (#2744, #3253).
  *
  * The bridge is the shared (workspace_plugins row → ConnectionRegistry)
  * glue used by both boot-time `loadSavedConnections` and runtime
- * `WorkspaceInstaller.installDatasource`. The behavioral contract that
- * matters here is the native-vs-plugin dbType filter and the
- * already-registered idempotency guard — the per-dbType translation is
- * delegated to `DatasourcePoolResolver` (covered by its own tests).
+ * `WorkspaceInstaller.installDatasource`. Two behavioral contracts matter:
+ *  - native postgres/mysql → cloneable config registration (#2744/#2783)
+ *  - plugin dbTypes (clickhouse / …) → a live per-(workspace, install_id)
+ *    connection built from the registered plugin's `createFromConfig` (#3253)
+ * The per-dbType translation is delegated to `DatasourcePoolResolver`
+ * (covered by its own tests).
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
@@ -21,6 +23,10 @@ let registeredIds = new Set<string>();
 const wsRegisterCalls: Array<{ workspaceId: string; installId: string; url: string; schema?: string; description?: string }> = [];
 let wsRegisteredKeys = new Set<string>();
 const wsKey = (workspaceId: string, installId: string) => `${workspaceId}::${installId}`;
+
+// Per-(workspace, install_id) PLUGIN connections — the #3253 seam.
+const wsPluginRegisterCalls: Array<{ workspaceId: string; installId: string; dbType: string; description?: string; targetHost?: string }> = [];
+let wsPluginKeys = new Set<string>();
 
 const mockRegister: Mock<(id: string, cfg: { url: string; schema?: string; description?: string }) => void> = mock(
   (id: string, cfg: { url: string; schema?: string; description?: string }) => {
@@ -62,6 +68,28 @@ const mockDrainWorkspacePool: Mock<(workspaceId: string, installId: string) => n
     return 0;
   },
 );
+// Plugin connection registration seam (#3253).
+const mockRegisterDirectForWorkspace = mock(
+  (
+    workspaceId: string,
+    installId: string,
+    _conn: unknown,
+    dbType: string,
+    description?: string,
+    _validate?: unknown,
+    _meta?: unknown,
+    targetHost?: string,
+  ) => {
+    wsPluginRegisterCalls.push({ workspaceId, installId, dbType, description, targetHost });
+    wsPluginKeys.add(wsKey(workspaceId, installId));
+  },
+);
+const mockHasDirectForWorkspace = mock((workspaceId: string, installId: string) =>
+  wsPluginKeys.has(wsKey(workspaceId, installId)),
+);
+const mockUnregisterDirectForWorkspace = mock((workspaceId: string, installId: string) =>
+  wsPluginKeys.delete(wsKey(workspaceId, installId)),
+);
 
 mock.module("@atlas/api/lib/db/connection", () => ({
   connections: {
@@ -73,8 +101,36 @@ mock.module("@atlas/api/lib/db/connection", () => ({
     unregisterForWorkspace: mockUnregisterForWorkspace,
     hasWorkspacePoolsFor: mockHasWorkspacePoolsFor,
     drainWorkspacePool: mockDrainWorkspacePool,
+    registerDirectForWorkspace: mockRegisterDirectForWorkspace,
+    hasDirectForWorkspace: mockHasDirectForWorkspace,
+    unregisterDirectForWorkspace: mockUnregisterDirectForWorkspace,
   },
 }));
+
+// Plugin registry seam — the bridge lazy-imports this to find a datasource
+// plugin by dbType. `fakeDatasourcePlugins` is swapped per test.
+let fakeDatasourcePlugins: unknown[] = [];
+mock.module("@atlas/api/lib/plugins/registry", () => ({
+  plugins: {
+    getAll: () => fakeDatasourcePlugins,
+  },
+}));
+
+const fakeClickhouseConn = {
+  query: async () => ({ columns: [], rows: [] }),
+  close: async () => {},
+};
+const mockCreateFromConfig = mock((_cfg: Readonly<Record<string, unknown>>) => fakeClickhouseConn);
+const fakeClickhousePlugin = {
+  id: "clickhouse-datasource",
+  types: ["datasource"],
+  connection: {
+    dbType: "clickhouse",
+    parserDialect: "PostgresQL",
+    forbiddenPatterns: [/\bINSERT\b/i],
+    createFromConfig: mockCreateFromConfig,
+  },
+};
 
 type BridgeModule = typeof import("../datasource-registry-bridge");
 let bridge!: BridgeModule;
@@ -84,9 +140,12 @@ beforeEach(async () => {
   registerCalls.length = 0;
   unregisterCalls.length = 0;
   wsRegisterCalls.length = 0;
+  wsPluginRegisterCalls.length = 0;
   drainCalls.length = 0;
   registeredIds = new Set<string>();
   wsRegisteredKeys = new Set<string>();
+  wsPluginKeys = new Set<string>();
+  fakeDatasourcePlugins = [];
   mockRegister.mockClear();
   mockUnregister.mockClear();
   mockHas.mockClear();
@@ -95,15 +154,22 @@ beforeEach(async () => {
   mockUnregisterForWorkspace.mockClear();
   mockHasWorkspacePoolsFor.mockClear();
   mockDrainWorkspacePool.mockClear();
+  mockRegisterDirectForWorkspace.mockClear();
+  mockHasDirectForWorkspace.mockClear();
+  mockUnregisterDirectForWorkspace.mockClear();
+  mockCreateFromConfig.mockClear();
 });
 
 afterEach(() => {
   registerCalls.length = 0;
   unregisterCalls.length = 0;
   wsRegisterCalls.length = 0;
+  wsPluginRegisterCalls.length = 0;
   drainCalls.length = 0;
   registeredIds = new Set<string>();
   wsRegisteredKeys = new Set<string>();
+  wsPluginKeys = new Set<string>();
+  fakeDatasourcePlugins = [];
 });
 
 const ROW = (slug: string) =>
@@ -116,8 +182,8 @@ const ROW = (slug: string) =>
   });
 
 describe("registerDatasourceInstall", () => {
-  it("registers postgres installs", () => {
-    const ok = bridge.registerDatasourceInstall(ROW("postgres"), {
+  it("registers postgres installs", async () => {
+    const ok = await bridge.registerDatasourceInstall(ROW("postgres"), {
       url: "postgresql://u@h/d",
       schema: "analytics",
       description: "Prod",
@@ -132,8 +198,8 @@ describe("registerDatasourceInstall", () => {
     });
   });
 
-  it("registers mysql installs (no schema)", () => {
-    const ok = bridge.registerDatasourceInstall(ROW("mysql"), {
+  it("registers mysql installs (no schema)", async () => {
+    const ok = await bridge.registerDatasourceInstall(ROW("mysql"), {
       url: "mysql://u@h/d",
     });
     expect(ok).toBe(true);
@@ -141,24 +207,57 @@ describe("registerDatasourceInstall", () => {
     expect(registerCalls[0].schema).toBeUndefined();
   });
 
-  it("skips plugin-managed dbTypes (clickhouse/snowflake/bigquery/duckdb/salesforce)", () => {
-    const cases: Array<{ slug: string; cfg: Record<string, unknown> }> = [
-      { slug: "clickhouse", cfg: { url: "http://localhost:8123" } },
-      { slug: "snowflake", cfg: { url: "snowflake://x" } },
-      { slug: "bigquery", cfg: { service_account_json: "{}", project_id: "p" } },
-      { slug: "duckdb", cfg: { path: "/tmp/x.duckdb" } },
-      { slug: "salesforce", cfg: {} },
-    ];
-    for (const { slug, cfg } of cases) {
-      const ok = bridge.registerDatasourceInstall(ROW(slug), cfg);
-      expect(ok).toBe(false);
-    }
+  it("builds a plugin (clickhouse) connection via the registered plugin's createFromConfig (#3253)", async () => {
+    fakeDatasourcePlugins = [fakeClickhousePlugin];
+    const ok = await bridge.registerDatasourceInstall(ROW("clickhouse"), {
+      url: "clickhouse://u:p@h:8123/db",
+    });
+    expect(ok).toBe(true);
+    // The plugin's runtime factory is called with the decrypted config.
+    expect(mockCreateFromConfig).toHaveBeenCalledTimes(1);
+    expect(mockCreateFromConfig.mock.calls[0][0]).toMatchObject({ url: "clickhouse://u:p@h:8123/db" });
+    // Registered as a per-(workspace, install_id) plugin connection, with the
+    // plugin's dbType + host parsed from the URL for audit.
+    expect(wsPluginRegisterCalls).toHaveLength(1);
+    expect(wsPluginRegisterCalls[0]).toMatchObject({
+      workspaceId: "ws-1",
+      installId: "prod",
+      dbType: "clickhouse",
+      targetHost: "h",
+    });
+    // No native registration for a plugin type.
     expect(registerCalls).toHaveLength(0);
+    expect(wsRegisterCalls).toHaveLength(0);
   });
 
-  it("is idempotent for the same (workspace, install_id) — returns false on re-register", () => {
-    bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
-    const second = bridge.registerDatasourceInstall(ROW("postgres"), {
+  it("is idempotent for a plugin install — returns false on re-register", async () => {
+    fakeDatasourcePlugins = [fakeClickhousePlugin];
+    const first = await bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" });
+    const second = await bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" });
+    expect(first).toBe(true);
+    expect(second).toBe(false);
+  });
+
+  it("throws for a plugin dbType when no matching plugin is registered (#3253)", async () => {
+    fakeDatasourcePlugins = []; // clickhouse plugin absent from atlas.config.ts
+    await expect(
+      bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" }),
+    ).rejects.toThrow(/No datasource plugin registered for type "clickhouse"/);
+    expect(wsPluginRegisterCalls).toHaveLength(0);
+  });
+
+  it("throws for a plugin present but lacking createFromConfig", async () => {
+    fakeDatasourcePlugins = [
+      { id: "ch", types: ["datasource"], connection: { dbType: "clickhouse" } },
+    ];
+    await expect(
+      bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" }),
+    ).rejects.toThrow(/No datasource plugin registered for type "clickhouse"/);
+  });
+
+  it("is idempotent for the same (workspace, install_id) — returns false on re-register", async () => {
+    await bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
+    const second = await bridge.registerDatasourceInstall(ROW("postgres"), {
       url: "postgresql://u@different/d2",
     });
     expect(second).toBe(false);
@@ -166,115 +265,102 @@ describe("registerDatasourceInstall", () => {
     expect(registerCalls).toHaveLength(1);
   });
 
-  it("registers two workspaces sharing an install_id independently (#2783)", () => {
-    // Pre-#2783, the bridge keyed only on install_id, so the second workspace's
-    // install collapsed onto the first's bare row. Now each (workspace,
-    // install_id) gets its own routing config.
-    const alpha = bridge.registerDatasourceInstall(
+  it("registers two workspaces sharing an install_id independently (#2783)", async () => {
+    const alpha = await bridge.registerDatasourceInstall(
       { ...ROW("postgres"), workspaceId: "ws-alpha" },
       { url: "postgresql://alpha-host/wh" },
     );
-    const beta = bridge.registerDatasourceInstall(
+    const beta = await bridge.registerDatasourceInstall(
       { ...ROW("postgres"), workspaceId: "ws-beta" },
       { url: "postgresql://beta-host/wh" },
     );
 
-    // Both are fresh registrations — no collapse.
     expect(alpha).toBe(true);
     expect(beta).toBe(true);
 
-    // Two distinct per-(workspace, install_id) configs, each with its own URL.
     expect(wsRegisterCalls).toHaveLength(2);
     expect(wsRegisterCalls[0]).toMatchObject({ workspaceId: "ws-alpha", installId: "prod", url: "postgresql://alpha-host/wh" });
     expect(wsRegisterCalls[1]).toMatchObject({ workspaceId: "ws-beta", installId: "prod", url: "postgresql://beta-host/wh" });
 
-    // The bare install-id row is written once (first-write-wins) — it backs
-    // only install-id-keyed metadata, not routing.
     expect(registerCalls).toHaveLength(1);
     expect(registerCalls[0].url).toBe("postgresql://alpha-host/wh");
   });
 
-  it("throws when the resolver rejects (missing required field)", () => {
-    expect(() =>
+  it("throws when the resolver rejects (missing required field)", async () => {
+    await expect(
       bridge.registerDatasourceInstall(ROW("postgres"), { schema: "public" }),
-    ).toThrow(/missing required field `url`/);
+    ).rejects.toThrow(/missing required field `url`/);
     expect(registerCalls).toHaveLength(0);
   });
 
-  it("throws when pillar is not datasource", () => {
-    expect(() =>
+  it("throws when pillar is not datasource", async () => {
+    await expect(
       bridge.registerDatasourceInstall(
         { ...ROW("postgres"), pillar: "chat" as never },
         { url: "postgresql://u@h/d" },
       ),
-    ).toThrow(/pillar must be 'datasource'/);
+    ).rejects.toThrow(/pillar must be 'datasource'/);
   });
 
-  it("omits postgres schema when set to 'public' (it's the default)", () => {
-    // The resolver explicitly skips initSql for 'public', and the bridge
-    // mirrors the convention by not forwarding `schema` when it's
-    // 'public'. Verifies the bridge's spread guard.
-    const ok = bridge.registerDatasourceInstall(ROW("postgres"), {
+  it("forwards postgres schema 'public' (resolver contract — bridge does not filter)", async () => {
+    const ok = await bridge.registerDatasourceInstall(ROW("postgres"), {
       url: "postgresql://u@h/d",
       schema: "public",
     });
     expect(ok).toBe(true);
     expect(registerCalls[0].schema).toBe("public");
-    // The resolver returned schema='public' so the bridge forwards it;
-    // postgres pool driver no-ops on the SET. Documenting that the
-    // bridge does NOT filter — that's the resolver's contract.
   });
 });
 
 describe("unregisterDatasourceInstall", () => {
-  it("removes both the per-workspace config and the bare row when registered", () => {
-    bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
+  it("removes both the per-workspace config and the bare row when registered", async () => {
+    await bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
     const result = bridge.unregisterDatasourceInstall("ws-1", "prod");
     expect(result).toBe(true);
-    // Per-workspace routing config gone — no stale route survives.
     expect(wsRegisteredKeys.has(wsKey("ws-1", "prod"))).toBe(false);
-    // Bare row removed too (no sibling workspace owns the install_id).
     expect(unregisterCalls).toContain("prod");
   });
 
-  it("eagerly drains the live org-pool clone for the (workspace, install_id) (#3109)", () => {
-    // Both uninstall and updateDatasourceConfig route through this bridge fn, so
-    // a single drain hook here covers both — the cloned pool can't keep serving
-    // the prior config until LRU/restart.
-    bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
+  it("closes + removes a DB-stored plugin connection (#3253)", async () => {
+    fakeDatasourcePlugins = [fakeClickhousePlugin];
+    await bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" });
+    expect(wsPluginKeys.has(wsKey("ws-1", "prod"))).toBe(true);
+    const result = bridge.unregisterDatasourceInstall("ws-1", "prod");
+    expect(result).toBe(true);
+    expect(mockUnregisterDirectForWorkspace).toHaveBeenCalledWith("ws-1", "prod");
+    expect(wsPluginKeys.has(wsKey("ws-1", "prod"))).toBe(false);
+  });
+
+  it("eagerly drains the live org-pool clone for the (workspace, install_id) (#3109)", async () => {
+    await bridge.registerDatasourceInstall(ROW("postgres"), { url: "postgresql://u@h/d" });
     bridge.unregisterDatasourceInstall("ws-1", "prod");
     expect(drainCalls).toEqual([{ workspaceId: "ws-1", installId: "prod" }]);
   });
 
-  it("drains the targeted clone even when a sibling keeps the bare row", () => {
-    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
-    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
+  it("drains the targeted clone even when a sibling keeps the bare row", async () => {
+    await bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
+    await bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
 
     bridge.unregisterDatasourceInstall("ws-a", "prod");
-    // Only ws-a's clone is drained; ws-b's pool is left intact.
     expect(drainCalls).toEqual([{ workspaceId: "ws-a", installId: "prod" }]);
     expect(unregisterCalls).not.toContain("prod");
   });
 
-  it("keeps the shared bare row when a sibling workspace still owns the install_id", () => {
-    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
-    bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
+  it("keeps the shared bare row when a sibling workspace still owns the install_id", async () => {
+    await bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-a" }, { url: "postgresql://a/d" });
+    await bridge.registerDatasourceInstall({ ...ROW("postgres"), workspaceId: "ws-b" }, { url: "postgresql://b/d" });
 
     const result = bridge.unregisterDatasourceInstall("ws-a", "prod");
     expect(result).toBe(true);
 
-    // ws-a's routing config is gone; ws-b's survives.
     expect(wsRegisteredKeys.has(wsKey("ws-a", "prod"))).toBe(false);
     expect(wsRegisteredKeys.has(wsKey("ws-b", "prod"))).toBe(true);
-    // Bare row is NOT torn down while ws-b still owns `prod` — sibling metadata
-    // (getDBType / getTargetHost) keeps resolving.
     expect(unregisterCalls).not.toContain("prod");
   });
 
-  it("returns false when install_id was never registered (plugin-managed pool)", () => {
+  it("returns false when install_id was never registered", async () => {
     const result = bridge.unregisterDatasourceInstall("ws-1", "never-registered");
     expect(result).toBe(false);
-    // Nothing to remove — neither the per-workspace config nor the bare row.
     expect(unregisterCalls).toHaveLength(0);
   });
 });

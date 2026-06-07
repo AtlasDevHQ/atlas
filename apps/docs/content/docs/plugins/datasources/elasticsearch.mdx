@@ -144,16 +144,20 @@ For questions SQL can't express — full-text relevance ranking, deeply-nested
 aggregations, geo/span queries — a **static** datasource also registers a
 dedicated `queryElasticsearch` agent tool that issues a **read-only** Query DSL
 request (`POST /<index>/_search` | `_count`) and flattens the response to Atlas's
-`{ columns, rows }`. The tool inputs are `index` (one index/alias from the
-semantic layer — no wildcards), an optional `endpoint` (`_search` default, or
-`_count`), and an optional Query DSL `body`.
+`{ columns, rows }`. The tool inputs are a single explicit `index` (alias / data
+stream; no wildcards), an optional `endpoint` (`_search` default, or `_count`),
+and an optional Query DSL `body`.
 
 The surface is gated by a **default-deny** read-only validator: only read
 endpoints are allowed; mutating/administrative endpoints, smuggled bulk-write
 actions, mutating (`ctx`-referencing) scripts, and wildcard / `_all` /
-system-index targets are rejected. Every `_search` is resource-bounded — `size`
-clamped to `ATLAS_ROW_LIMIT`, a search `timeout`, and a non-aggregation
-`terminate_after` (`ATLAS_ES_TERMINATE_AFTER`).
+system-index targets are rejected. These structural rails are always enforced;
+per-index *membership* against the semantic-layer index list is **not** yet
+enforced from the DSL tool (the SQL surface enforces the real whitelist via the
+core pipeline) — tracked in [#3307](https://github.com/AtlasDevHQ/atlas/issues/3307).
+Every `_search` is resource-bounded — `size` clamped to `ATLAS_ROW_LIMIT`, a
+search `timeout`, and a non-aggregation `terminate_after`
+(`ATLAS_ES_TERMINATE_AFTER`).
 
 The `queryElasticsearch` tool is registered **only** for a static,
 `atlas.config.ts`-defined datasource; in SaaS per-workspace mode the connection

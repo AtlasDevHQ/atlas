@@ -183,6 +183,31 @@ describe("plugin shape", () => {
     expect(plugin.connection.dbType).toBe("clickhouse");
   });
 
+  test("connection.createFromConfig builds a connection from a runtime (DB-stored) config (#3253)", () => {
+    const plugin = clickhousePlugin(validConfig);
+    // The config-time url is ignored on this path — pass a DIFFERENT runtime url.
+    const conn = plugin.connection.createFromConfig!({
+      url: "clickhouse://runtime-user:pw@runtime-host:8123/runtime_db",
+      // Extra keys from the decrypted workspace_plugins.config record are tolerated.
+      db_type: "clickhouse",
+      group_id: "g_default",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("connection.createFromConfig validates the runtime config (rejects non-clickhouse url)", () => {
+    const plugin = clickhousePlugin(validConfig);
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow();
+  });
+
+  test("connection.createFromConfig rejects a missing url", () => {
+    const plugin = clickhousePlugin(validConfig);
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+  });
+
   test("connection.parserDialect is 'PostgresQL'", () => {
     const plugin = clickhousePlugin(validConfig);
     const conn = plugin.connection as Record<string, unknown>;

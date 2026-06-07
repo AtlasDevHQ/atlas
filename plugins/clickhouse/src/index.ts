@@ -64,6 +64,18 @@ export function buildClickHousePlugin(
         // ClickHouse HTTP transport is stateless — safe to create per call.
         // Pool-based databases (Postgres, MySQL) should cache the connection.
         createClickHouseConnection({ url: config.url, database: config.database, logger: log }),
+      // DB-driven (admin-UI-registered) datasources: build a connection from
+      // the per-(workspace, install) config decrypted from `workspace_plugins`,
+      // re-validated through the same schema. The config-time `config.url`
+      // above is ignored on this path.
+      createFromConfig: (runtimeConfig) => {
+        const parsed = ClickHouseConfigSchema.parse(runtimeConfig);
+        return createClickHouseConnection({
+          url: parsed.url,
+          database: parsed.database,
+          logger: log,
+        });
+      },
       dbType: "clickhouse",
       parserDialect: "PostgresQL", // closest match in node-sql-parser
       forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,

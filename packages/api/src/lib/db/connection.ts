@@ -439,6 +439,25 @@ interface WorkspaceBaseEntry {
   targetHost: string;
 }
 
+/**
+ * A live, pre-built connection for a DB-stored PLUGIN datasource, keyed by
+ * (workspace, install_id). Unlike {@link WorkspaceBaseEntry} (native
+ * postgres/mysql configs that are cloned lazily per-org via `createConnection`),
+ * plugin-managed dbTypes can't be cloned by the core `createConnection` switch,
+ * so the connection is built once (by the plugin's `connection.createFromConfig`)
+ * and held here directly. The plugin's own validator / parser dialect /
+ * forbidden patterns ride along on the entry (they do NOT default off the way
+ * native per-workspace configs do).
+ */
+interface WorkspacePluginEntry {
+  conn: DBConnection;
+  dbType: DBType;
+  description?: string;
+  targetHost: string;
+  validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
+  pluginMeta?: ConnectionPluginMeta;
+}
+
 /** Configuration for per-org pool isolation. */
 export interface OrgPoolSettings {
   /** Whether org-scoped pooling is active. Only true when pool.perOrg is explicitly configured. */
@@ -487,6 +506,15 @@ export class ConnectionRegistry {
    * no live connections are held here. See {@link WorkspaceBaseEntry} and #2783.
    */
   private workspaceEntries = new Map<string, WorkspaceBaseEntry>();
+
+  /**
+   * Per-(workspace, install_id) live connections for DB-stored plugin
+   * datasources (clickhouse / snowflake / bigquery / duckdb / salesforce /
+   * elasticsearch), keyed by {@link _workspaceKey}. Built by the datasource
+   * bridge via {@link registerDirectForWorkspace} from the plugin's
+   * `connection.createFromConfig`. See {@link WorkspacePluginEntry}.
+   */
+  private workspacePluginEntries = new Map<string, WorkspacePluginEntry>();
 
   // --- Org-scoped pool isolation ---
   /** Org pool entries keyed by "orgId:connectionId". */
@@ -624,6 +652,15 @@ export class ConnectionRegistry {
       return existing.conn;
     }
 
+    // DB-stored plugin datasources hold a pre-built live connection per
+    // (workspace, install_id) and are never cloned into orgEntries (the core
+    // createConnection switch can't build plugin dbTypes). Return it directly —
+    // mirrors getForWorkspace, and is required because the SaaS/org-pooling
+    // query path resolves through getForOrg, not getForWorkspace (#3253).
+    // `orgId` IS the workspace id in Atlas.
+    const pluginEntry = this.workspacePluginEntries.get(this._workspaceKey(orgId, connectionId));
+    if (pluginEntry) return pluginEntry.conn;
+
     // Ensure the base connection exists (trigger lazy init for "default")
     if (connectionId === "default" && !this.entries.has("default")) {
       this.getDefault();
@@ -747,6 +784,11 @@ export class ConnectionRegistry {
    * `get(installId)` path (org pooling off) would otherwise collide.
    */
   getForWorkspace(workspaceId: string, installId: string, region?: string): DBConnection {
+    // DB-stored plugin datasources hold a pre-built live connection per
+    // (workspace, install_id) — return it directly (no org-clone path, since
+    // the core `createConnection` switch can't build plugin dbTypes).
+    const pluginEntry = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, installId));
+    if (pluginEntry) return pluginEntry.conn;
     if (this.workspaceEntries.has(this._workspaceKey(workspaceId, installId))) {
       return this.getForOrg(workspaceId, installId, region);
     }
@@ -973,6 +1015,67 @@ export class ConnectionRegistry {
     return this.workspaceEntries.delete(this._workspaceKey(workspaceId, installId));
   }
 
+  /**
+   * Register a pre-built live connection for a DB-stored PLUGIN datasource,
+   * scoped to (workspace, install_id). The datasource bridge builds `conn`
+   * from the plugin's `connection.createFromConfig(decryptedConfig)` and passes
+   * the plugin's validator / parser dialect / forbidden patterns so SQL
+   * validation stays correct for the dialect. Re-registration closes the prior
+   * connection. See {@link WorkspacePluginEntry} and {@link getForWorkspace}.
+   */
+  registerDirectForWorkspace(
+    workspaceId: string,
+    installId: string,
+    conn: DBConnection,
+    dbType: DBType,
+    description?: string,
+    validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>,
+    meta?: ConnectionPluginMeta,
+    targetHost = "(direct)",
+  ): void {
+    const key = this._workspaceKey(workspaceId, installId);
+    const existing = this.workspacePluginEntries.get(key);
+    this.workspacePluginEntries.set(key, {
+      conn,
+      dbType,
+      description,
+      targetHost,
+      validate,
+      pluginMeta: meta,
+    });
+    if (existing) {
+      existing.conn.close().catch((err) => {
+        log.warn(
+          { err: errorMessage(err), workspaceId, installId },
+          "Failed to close previous plugin connection during re-registration",
+        );
+      });
+    }
+  }
+
+  /** True if a DB-stored plugin connection is registered for (workspace, install_id). */
+  hasDirectForWorkspace(workspaceId: string, installId: string): boolean {
+    return this.workspacePluginEntries.has(this._workspaceKey(workspaceId, installId));
+  }
+
+  /**
+   * Close + remove a DB-stored plugin connection for (workspace, install_id).
+   * Returns true if one was present. Called by the bridge on uninstall /
+   * config-update so a stale plugin connection doesn't outlive its install.
+   */
+  unregisterDirectForWorkspace(workspaceId: string, installId: string): boolean {
+    const key = this._workspaceKey(workspaceId, installId);
+    const entry = this.workspacePluginEntries.get(key);
+    if (!entry) return false;
+    entry.conn.close().catch((err) => {
+      log.warn(
+        { err: errorMessage(err), workspaceId, installId },
+        "Failed to close plugin connection during unregister",
+      );
+    });
+    return this.workspacePluginEntries.delete(key);
+  }
+
   /** Register a pre-built connection (e.g. for benchmark harness or datasource plugin). */
   registerDirect(
     id: string,
@@ -1132,6 +1235,8 @@ export class ConnectionRegistry {
    */
   getDBType(id: string, workspaceId?: string): DBType {
     if (workspaceId) {
+      const pe = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, id));
+      if (pe) return pe.dbType;
       const ws = this.workspaceEntries.get(this._workspaceKey(workspaceId, id));
       if (ws) return ws.dbType;
     }
@@ -1151,6 +1256,8 @@ export class ConnectionRegistry {
    */
   getTargetHost(id: string, workspaceId?: string): string {
     if (workspaceId) {
+      const pe = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, id));
+      if (pe) return pe.targetHost;
       const ws = this.workspaceEntries.get(this._workspaceKey(workspaceId, id));
       if (ws) return ws.targetHost;
     }
@@ -1163,41 +1270,56 @@ export class ConnectionRegistry {
    * Custom query validator for a connection, if one was registered. Callers must
    * verify connection existence first.
    *
-   * A per-(workspace, install_id) routing config is always a NATIVE
-   * postgres/mysql datasource — custom validators (and all plugin metadata) live
-   * only on the bare entry, registered via `registerDirect`. So when a
-   * per-workspace config exists for `(workspaceId, id)`, there is no custom
-   * validator for that workspace: return undefined rather than leak a sibling's
-   * bare validator (#3109).
+   * A DB-stored plugin entry (`workspacePluginEntries`) carries its OWN validator
+   * and is checked first — returned directly (#3253). Otherwise: a per-(workspace,
+   * install_id) NATIVE config is always postgres/mysql, where custom validators
+   * (and all plugin metadata) live only on the bare entry registered via
+   * `registerDirect`. So when only a native per-workspace config exists for
+   * `(workspaceId, id)`, return undefined rather than leak a sibling's bare
+   * validator (#3109).
    */
   getValidator(id: string, workspaceId?: string): ((query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined {
-    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
-      return undefined;
+    if (workspaceId) {
+      const pe = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, id));
+      if (pe) return pe.validate;
+      if (this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+        return undefined;
+      }
     }
     return this.entries.get(id)?.validate;
   }
 
   /**
-   * Plugin-provided parser dialect for a connection, if any. Like
-   * {@link getValidator}, a per-(workspace, install_id) config is native, so its
-   * dialect derives from `getDBType` (not plugin metadata) — return undefined to
-   * fall through to the dbType-based default (#3109).
+   * Plugin-provided parser dialect for a connection, if any. A DB-stored plugin
+   * entry returns its own dialect first (#3253). Otherwise, like
+   * {@link getValidator}, a native per-(workspace, install_id) config derives its
+   * dialect from `getDBType` (not plugin metadata) — return undefined to fall
+   * through to the dbType-based default (#3109).
    */
   getParserDialect(id: string, workspaceId?: string): string | undefined {
-    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
-      return undefined;
+    if (workspaceId) {
+      const pe = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, id));
+      if (pe) return pe.pluginMeta?.parserDialect;
+      if (this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+        return undefined;
+      }
     }
     return this.entries.get(id)?.pluginMeta?.parserDialect;
   }
 
   /**
    * Plugin-provided forbidden patterns for a connection. Empty array if none.
-   * Per-(workspace, install_id) configs are native (no plugin patterns), so the
+   * A DB-stored plugin entry returns its own patterns first (#3253). Otherwise
+   * native per-(workspace, install_id) configs carry no plugin patterns, so the
    * base + dbType-specific patterns apply — return [] for them (#3109).
    */
   getForbiddenPatterns(id: string, workspaceId?: string): RegExp[] {
-    if (workspaceId && this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
-      return [];
+    if (workspaceId) {
+      const pe = this.workspacePluginEntries.get(this._workspaceKey(workspaceId, id));
+      if (pe) return pe.pluginMeta?.forbiddenPatterns ?? [];
+      if (this.workspaceEntries.has(this._workspaceKey(workspaceId, id))) {
+        return [];
+      }
     }
     return this.entries.get(id)?.pluginMeta?.forbiddenPatterns ?? [];
   }
@@ -1597,9 +1719,17 @@ export class ConnectionRegistry {
         }),
       );
     }
+    for (const [key, entry] of this.workspacePluginEntries.entries()) {
+      closing.push(
+        entry.conn.close().catch((err) => {
+          log.warn({ err: errorMessage(err), workspacePluginKey: key }, "Failed to close plugin connection during shutdown");
+        }),
+      );
+    }
     await Promise.all(closing);
     this.entries.clear();
     this.workspaceEntries.clear();
+    this.workspacePluginEntries.clear();
     this.orgEntries.clear();
     this.orgAccessSeq.clear();
     _resetWhitelists();
@@ -1620,8 +1750,14 @@ export class ConnectionRegistry {
         log.warn({ err: errorMessage(err), orgPoolKey: key }, "Failed to close org pool during registry reset");
       });
     }
+    for (const [key, entry] of this.workspacePluginEntries.entries()) {
+      entry.conn.close().catch((err) => {
+        log.warn({ err: errorMessage(err), workspacePluginKey: key }, "Failed to close plugin connection during registry reset");
+      });
+    }
     this.entries.clear();
     this.workspaceEntries.clear();
+    this.workspacePluginEntries.clear();
     this.orgEntries.clear();
     this.orgAccessSeq.clear();
     _resetWhitelists();

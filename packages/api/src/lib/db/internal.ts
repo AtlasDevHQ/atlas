@@ -1030,7 +1030,7 @@ export async function loadSavedConnections(): Promise<number> {
         stage = "decrypt";
         const decryptedConfig = decryptSecretFields(row.config ?? {}, schema);
         stage = "bridge";
-        const didRegister = registerDatasourceInstall(
+        const didRegister = await registerDatasourceInstall(
           {
             workspaceId: row.workspace_id,
             catalogId: "",

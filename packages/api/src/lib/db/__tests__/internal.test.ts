@@ -472,12 +472,14 @@ describe("internal DB module", () => {
       expect(connections.has("bad")).toBe(false);
     });
 
-    it("skips non-native datasource installs (plugin-managed)", async () => {
+    it("plugin-managed install whose plugin isn't registered throws → caught per-row, counted 0 (#3253)", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool } = createMockPool();
-      // Snowflake / ClickHouse / etc. are plugin-managed; their installs
-      // surface here but the registry's native-adapter path can't create
-      // them — the plugin's boot path calls `registerDirect` instead.
+      // Snowflake / ClickHouse / etc. are plugin-managed. Post-#3253 the bridge
+      // looks the plugin up by dbType; with no such plugin registered (the real
+      // global registry is empty in this test) registerDatasourceInstall throws
+      // "No datasource plugin registered…". The boot loop catches that per-row
+      // and continues, so the row contributes 0 and never lands in the registry.
       pool._setResult({
         rows: [
           {
@@ -494,6 +496,7 @@ describe("internal DB module", () => {
       const count = await loadSavedConnections();
       expect(count).toBe(0);
       expect(connections.has("warehouse")).toBe(false);
+      expect(connections.hasDirectForWorkspace("ws-1", "warehouse")).toBe(false);
     });
 
     it("returns 0 when query throws (workspace_plugins not exist)", async () => {

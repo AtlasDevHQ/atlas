@@ -28,11 +28,112 @@
  */
 
 import { connections } from "@atlas/api/lib/db/connection";
+import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
 import {
   type DatasourcePoolConfig,
   type DatasourceWorkspacePluginRow,
   resolveDatasourcePoolConfig,
 } from "@atlas/api/lib/db/datasource-pool-resolver";
+
+/**
+ * Structural shape of a datasource plugin's `connection` object, matched
+ * against `PluginRegistry` entries by `dbType`. Declared locally (not imported
+ * from `@useatlas/plugin-sdk`) so core `@atlas/api` stays decoupled from the
+ * plugin packages — the same convention `lib/plugins/wiring.ts` uses, preserving
+ * the core→plugin decoupling the adapter-to-plugin extraction established.
+ */
+interface DatasourceConnectionShape {
+  dbType: string;
+  /** Build a connection from a runtime (DB-stored) config — see SDK `AtlasDatasourcePlugin`. */
+  createFromConfig?(
+    config: Readonly<Record<string, unknown>>,
+  ): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }>
+    | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
+  validate?: (query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
+  parserDialect?: string;
+  forbiddenPatterns?: RegExp[];
+}
+
+/** Narrow a registry plugin to its datasource `connection` shape, or undefined if it isn't one. */
+function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | undefined {
+  const c = (plugin as { connection?: unknown } | null)?.connection;
+  if (c && typeof c === "object" && typeof (c as { dbType?: unknown }).dbType === "string") {
+    return c as DatasourceConnectionShape;
+  }
+  return undefined;
+}
+
+/** Best-effort host for audit logging from a plugin pool config's URL (no credentials). */
+function pluginTargetHost(poolConfig: DatasourcePoolConfig): string {
+  const url = (poolConfig as { url?: unknown }).url;
+  if (typeof url === "string") {
+    try {
+      return new URL(url).hostname || "(plugin)";
+    } catch {
+      // intentionally ignored: targetHost is a best-effort audit label, not a
+      // routing/security value — a malformed URL falls back to "(plugin)".
+      return "(plugin)";
+    }
+  }
+  return "(plugin)";
+}
+
+/**
+ * Register a DB-stored datasource of a PLUGIN type (clickhouse / snowflake /
+ * bigquery / duckdb / salesforce / elasticsearch). Looks up the plugin in the
+ * registry by `dbType`, builds a per-(workspace, install_id) connection via the
+ * plugin's `connection.createFromConfig(decryptedConfig)`, and registers it
+ * with the plugin's validator / dialect / forbidden patterns so SQL validation
+ * stays correct.
+ *
+ * Throws (caught + logged per-row by `loadSavedConnections` at boot; surfaced
+ * to the admin on the install path) when no plugin is registered for the
+ * dbType, or the plugin doesn't implement `createFromConfig`.
+ */
+async function registerPluginDatasourceInstall(
+  row: DatasourceWorkspacePluginRow,
+  poolConfig: DatasourcePoolConfig,
+  decryptedConfig: Readonly<Record<string, unknown>>,
+): Promise<boolean> {
+  // Lazy import keeps the plugin registry out of this module's static import
+  // graph — several tests partial-mock this bridge's imports.
+  const { plugins } = await import("@atlas/api/lib/plugins/registry");
+  // Use getAll() (not getByType, which filters to status==="healthy"): the
+  // plugin is consulted purely as an ADAPTER via createFromConfig, independent
+  // of whether a static config-defined connection of its dbType is healthy.
+  const conn = plugins
+    .getAll()
+    .map(getDatasourceConnection)
+    .find((c): c is DatasourceConnectionShape => c != null && c.dbType === poolConfig.dbType);
+
+  if (!conn || typeof conn.createFromConfig !== "function") {
+    throw new Error(
+      `No datasource plugin registered for type "${poolConfig.dbType}". Add the ` +
+        `corresponding plugin (e.g. clickhousePlugin()) to the plugins array in ` +
+        `atlas.config.ts, listed before any datasources that use it.`,
+    );
+  }
+
+  const already = connections.hasDirectForWorkspace(row.workspaceId, row.installId);
+  const built = await conn.createFromConfig(decryptedConfig);
+  const meta: ConnectionPluginMeta = {
+    ...(conn.parserDialect ? { parserDialect: conn.parserDialect } : {}),
+    ...(conn.forbiddenPatterns ? { forbiddenPatterns: conn.forbiddenPatterns } : {}),
+  };
+  connections.registerDirectForWorkspace(
+    row.workspaceId,
+    row.installId,
+    // Single structural assertion (DBConnection is a superset of the plugin's
+    // {query,close} shape) — mirrors lib/plugins/wiring.ts; no `unknown` launder.
+    built as DBConnection,
+    poolConfig.dbType,
+    (poolConfig as { description?: string }).description,
+    conn.validate,
+    meta,
+    pluginTargetHost(poolConfig),
+  );
+  return !already;
+}
 
 /**
  * Resolve `(row, decryptedConfig)` and register the resulting native pool
@@ -55,14 +156,17 @@ import {
  * reject every plugin-managed dbType at the URL-scheme check and the
  * boot loop would log a noisy warning per row.
  */
-export function registerDatasourceInstall(
+export async function registerDatasourceInstall(
   row: DatasourceWorkspacePluginRow,
   decryptedConfig: Readonly<Record<string, unknown>>,
-): boolean {
+): Promise<boolean> {
   const poolConfig: DatasourcePoolConfig = resolveDatasourcePoolConfig(row, decryptedConfig);
 
+  // Plugin-managed dbTypes can't be cloned by the core `createConnection`
+  // switch — build a live per-(workspace, install_id) connection from the
+  // registered plugin's `createFromConfig` instead (#3253 seam).
   if (poolConfig.dbType !== "postgres" && poolConfig.dbType !== "mysql") {
-    return false;
+    return registerPluginDatasourceInstall(row, poolConfig, decryptedConfig);
   }
 
   const config = {
@@ -118,14 +222,18 @@ export function registerDatasourceInstall(
  *     config update / uninstall propagates immediately instead of serving the
  *     OLD config until LRU eviction / restart (#3109). Step 1 drops the routing
  *     config; this drops the live pool, keeping them symmetric.
- *  3. Removes the shared bare `entries` row ONLY when no OTHER workspace still
+ *  3. Closes + drops a DB-stored plugin connection (clickhouse / snowflake / …)
+ *     held in `workspacePluginEntries` for this (workspace, install_id) — the
+ *     plugin counterpart to step 1+2's native teardown (#3253).
+ *  4. Removes the shared bare `entries` row ONLY when no OTHER workspace still
  *     owns the install_id (`hasWorkspacePoolsFor`). A sibling sharing the
  *     install_id keeps the bare row so its install-id-keyed metadata
  *     (getDBType / getTargetHost / validators) keeps resolving.
  *
  * The registry's own `unregister` throws if the id isn't present; we guard
- * with `has()` so the soft-archive path (status → archived) is a no-op when
- * the row was never pooled (e.g. clickhouse).
+ * with `has()` so the soft-archive path (status → archived) is a no-op for the
+ * BARE row when the install never populated it (plugin datasources never do —
+ * their teardown is step 3's `unregisterDirectForWorkspace`).
  */
 export function unregisterDatasourceInstall(workspaceId: string, installId: string): boolean {
   const removedWorkspace = connections.unregisterForWorkspace(workspaceId, installId);
@@ -133,11 +241,15 @@ export function unregisterDatasourceInstall(workspaceId: string, installId: stri
   // so a config update / uninstall takes effect on the next query — without
   // this the cloned pool keeps the prior config until LRU/restart (#3109).
   connections.drainWorkspacePool(workspaceId, installId);
+  // Close + drop a DB-stored plugin connection (clickhouse / snowflake / …) for
+  // this (workspace, install_id) — the plugin counterpart to the native
+  // unregisterForWorkspace + drain above (#3253 seam).
+  const removedPlugin = connections.unregisterDirectForWorkspace(workspaceId, installId);
   // Drop the shared bare row only once the last workspace owning this
   // install_id is gone — siblings keep their install-id-keyed metadata.
   const removedBare =
     !connections.hasWorkspacePoolsFor(installId) &&
     connections.has(installId) &&
     connections.unregister(installId);
-  return removedWorkspace || removedBare;
+  return removedWorkspace || removedPlugin || removedBare;
 }

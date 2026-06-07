@@ -5,16 +5,17 @@ that connects an Elasticsearch (and, in a later slice, OpenSearch) cluster as a
 read-only Atlas datasource over a thin `fetch`-based HTTP client — no official
 SDK dependency.
 
-> **Status — connection + SQL query surface + CLI mapping profiler.** This
-> release ships the connection layer (`elasticsearch://` URL + **API-key** auth,
-> an authenticated cluster-info/ping health check, ConnectionRegistry
-> registration), the **SQL query surface** (tabular/aggregate questions over a
-> single index via the standard `executeSQL` tool — see
-> [SQL query surface](#sql-query-surface)), and the **CLI semantic-layer
+> **Status — connection + auth modes + engines + SQL query surface + CLI mapping
+> profiler.** This release ships the connection layer (an authenticated
+> cluster-info/ping health check, ConnectionRegistry registration); **both
+> engines** (Elasticsearch and OpenSearch — see [Engine selection](#engine-selection));
+> **four auth modes** (API key / HTTP Basic / Elastic Cloud ID / AWS SigV4 — see
+> [Authentication](#authentication)); the **SQL query surface** (tabular/aggregate
+> questions over a single index via the standard `executeSQL` tool — see
+> [SQL query surface](#sql-query-surface)); and the **CLI semantic-layer
 > profiler** (`atlas init` / `atlas diff` over index `_mapping`s — see
 > [Semantic layer](#semantic-layer-atlas-init-and-atlas-diff)). The dedicated
-> Query DSL tool, the remaining auth modes (Basic / Cloud ID / AWS SigV4), and
-> the OpenSearch engine arrive in later slices. See the
+> Query DSL tool arrives in a later slice. See the
 > [PRD (#3259)](https://github.com/AtlasDevHQ/atlas/issues/3259).
 
 ## Install
@@ -46,16 +47,78 @@ export default defineConfig({
 
 ## Configuration
 
-| Field         | Required | Secret | Description                                                                 |
-| ------------- | -------- | ------ | --------------------------------------------------------------------------- |
-| `url`         | yes      | no     | `elasticsearch://host[:port][/prefix]`. HTTPS by default; `?ssl=false` → HTTP. |
-| `apiKey`      | yes      | yes    | Base64-encoded API key sent as `Authorization: ApiKey <key>`. Encrypted at rest. |
-| `description` | no       | no     | Optional. Surfaced to the agent in the system prompt.                       |
+A connection needs an **endpoint** (`url` or `cloudId`), an **engine**
+(auto-detected from the URL scheme, overridable), and **one auth mode**.
 
-The `apiKey` field is marked `secret: true` so Atlas encrypts it at rest and
-masks it in the admin UI. It is not returned in plaintext: connection/health
-errors are scrubbed (the literal key is redacted and messages tripping auth
-markers are collapsed) before they reach the agent, the user, or logs.
+| Field         | Secret | Description                                                                 |
+| ------------- | ------ | --------------------------------------------------------------------------- |
+| `url`         | no     | `elasticsearch://host[:port][/prefix]` or `opensearch://host[:port][/prefix]`. HTTPS by default; `?ssl=false` → HTTP. Alternative to `cloudId`. |
+| `cloudId`     | no     | Elastic **Cloud ID** (`<name>:<base64>`), decoded to the cluster endpoint. Alternative to `url`. |
+| `engine`      | no     | `elasticsearch` \| `opensearch`. Overrides the engine inferred from the URL scheme. |
+| `apiKey`      | yes    | API-key auth: Base64 key sent as `Authorization: ApiKey`. Encrypted at rest. |
+| `username`    | no     | HTTP Basic username (pair with `password`).                                 |
+| `password`    | yes    | HTTP Basic password. Encrypted at rest.                                      |
+| `awsRegion`   | no     | AWS SigV4: region (e.g. `us-east-1`). **Setting this selects SigV4.**         |
+| `awsAccessKeyId` | no  | AWS SigV4: access key id. Falls back to `AWS_ACCESS_KEY_ID`.                  |
+| `awsSecretAccessKey` | yes | AWS SigV4: secret key. Falls back to `AWS_SECRET_ACCESS_KEY`. Encrypted at rest. |
+| `awsSessionToken` | yes | AWS SigV4: session token. Falls back to `AWS_SESSION_TOKEN`. Encrypted at rest. |
+| `awsService`  | no     | AWS SigV4: service code to sign with. Defaults to `es`.                       |
+| `description` | no     | Optional. Surfaced to the agent in the system prompt.                        |
+
+Every `secret: true` field is encrypted at rest (`encryptSecretFields`) and
+masked in the admin UI. Secrets are never returned in plaintext: connection /
+health / query errors are scrubbed (any literal secret is redacted and messages
+tripping auth markers are collapsed) before they reach the agent, the user, or
+logs. Credentials must **never** be placed in the URL — the parser rejects URL
+userinfo and auth query params.
+
+### Engine selection
+
+The engine routes the SQL surface (`/_sql` for Elasticsearch, `/_plugins/_sql`
+for OpenSearch). It is resolved with this **precedence**:
+
+1. An explicit `engine` config field — wins over everything.
+2. Otherwise the **URL scheme**: `elasticsearch://` → `elasticsearch`, `opensearch://` → `opensearch`.
+3. Otherwise (a Cloud ID, no scheme) → `elasticsearch`.
+
+```typescript
+elasticsearchPlugin({ url: "opensearch://localhost:9200?ssl=false", apiKey: "…" }); // OpenSearch
+elasticsearchPlugin({ url: "elasticsearch://host:9200", engine: "opensearch", apiKey: "…" }); // forced OpenSearch
+```
+
+### Authentication
+
+Supply exactly one mode's fields. If more than one is present, the resolver
+picks by a documented **precedence: AWS SigV4 → HTTP Basic → API key.**
+
+```typescript
+// API key
+elasticsearchPlugin({ url: "elasticsearch://host:9243", apiKey: process.env.ES_API_KEY! });
+
+// HTTP Basic
+elasticsearchPlugin({
+  url: "elasticsearch://logs.internal:9200?ssl=false",
+  username: process.env.ES_USER!,
+  password: process.env.ES_PASSWORD!,
+});
+
+// AWS SigV4 (Amazon OpenSearch Service) — explicit keys, or the ambient AWS env chain
+elasticsearchPlugin({
+  url: "opensearch://search-mydomain.us-east-1.es.amazonaws.com",
+  awsRegion: "us-east-1",
+  awsAccessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  awsSecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+});
+
+// Elastic Cloud ID + API key (or Basic)
+elasticsearchPlugin({ cloudId: process.env.ES_CLOUD_ID!, apiKey: process.env.ES_API_KEY! });
+```
+
+AWS SigV4 signs every health/query request fresh (Signature Version 4) with the
+configured region + service; credentials resolve from the explicit fields first,
+else the ambient `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN` environment variables. Cloud ID is decoded to the cluster's
+HTTPS endpoint and combined with the chosen auth mode.
 
 ## Semantic layer (`atlas init` and `atlas diff`)
 

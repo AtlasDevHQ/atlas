@@ -37,6 +37,9 @@ import type {
 import {
   createElasticsearchConnection,
   parseElasticsearchUrl,
+  resolveElasticsearchConfig,
+  isCompleteConnectionConfig,
+  collectConfigSecrets,
   extractHost,
   scrubElasticsearchError,
   ELASTICSEARCH_PARSER_DIALECT,
@@ -62,19 +65,21 @@ const ELASTICSEARCH_DIALECT_GUIDE = [
 ].join("\n");
 
 /**
- * Strict schema for a fully-specified Elasticsearch connection — both `url` and
- * `apiKey` are required. Used by `connection.createFromConfig` to validate the
- * decrypted per-(workspace, install) config of a DB-stored datasource (which
- * always carries both) before building the connection.
+ * Per-field shapes for the Elasticsearch config. Every field is optional: the
+ * connection target is `url` **or** `cloudId`, and the auth mode is selected from
+ * whichever credentials are present (API key / Basic / SigV4). Per-field rules
+ * (non-empty, valid URL scheme, engine enum) are enforced here; the cross-field
+ * "is this a complete, resolvable connection" rule is layered on by the strict
+ * schema below via {@link resolveElasticsearchConfig}.
  */
-const ElasticsearchConnectionConfigSchema = z.object({
-  /** Elasticsearch connection URL (elasticsearch://host:9200). */
+const ElasticsearchFieldsSchema = z.object({
+  /** Connection URL (`elasticsearch://` or `opensearch://`). Alternative to `cloudId`. */
   url: z
     .string()
     .min(1, "Elasticsearch URL must not be empty")
     .refine(
-      (u) => u.startsWith("elasticsearch://"),
-      "URL must start with elasticsearch://",
+      (u) => u.startsWith("elasticsearch://") || u.startsWith("opensearch://"),
+      "URL must start with elasticsearch:// or opensearch://",
     )
     .superRefine((u, ctx) => {
       try {
@@ -85,28 +90,69 @@ const ElasticsearchConnectionConfigSchema = z.object({
           message: err instanceof Error ? err.message : String(err),
         });
       }
-    }),
-  /** Base64-encoded API key. Secret — encrypted at rest, masked in admin UI. */
-  apiKey: z.string().min(1, "Elasticsearch apiKey must not be empty"),
+    })
+    .optional(),
+  /** Elastic Cloud ID (`name:base64`) — decoded to the cluster endpoint. */
+  cloudId: z.string().min(1, "cloudId must not be empty").optional(),
+  /** Explicit engine override; wins over the URL scheme. */
+  engine: z.enum(["elasticsearch", "opensearch"]).optional(),
+  /** API-key auth. Base64-encoded key. Secret — encrypted at rest. */
+  apiKey: z.string().min(1, "Elasticsearch apiKey must not be empty").optional(),
+  /** HTTP Basic username. */
+  username: z.string().min(1, "username must not be empty").optional(),
+  /** HTTP Basic password. Secret — encrypted at rest. */
+  password: z.string().min(1, "password must not be empty").optional(),
+  /** AWS region — selects SigV4 auth (e.g. `us-east-1`). */
+  awsRegion: z.string().min(1, "awsRegion must not be empty").optional(),
+  /** AWS access key id (explicit; else the ambient AWS env chain). */
+  awsAccessKeyId: z.string().min(1, "awsAccessKeyId must not be empty").optional(),
+  /** AWS secret access key (explicit; else the ambient chain). Secret. */
+  awsSecretAccessKey: z.string().min(1, "awsSecretAccessKey must not be empty").optional(),
+  /** AWS session token (explicit; else the ambient chain). Secret. */
+  awsSessionToken: z.string().min(1, "awsSessionToken must not be empty").optional(),
+  /** AWS service code for SigV4 (defaults to `es`). */
+  awsService: z.string().min(1, "awsService must not be empty").optional(),
   /** Optional. Surfaced to the agent in the system prompt. */
   description: z.string().optional(),
 });
 
 /**
- * Lenient config-time schema — every field optional so the plugin can be
- * registered as an ADAPTER ONLY: `elasticsearchPlugin({})` parses, registering
- * the plugin so its `createFromConfig` is available to the datasource bridge for
- * DB-stored per-workspace installs (the SaaS model), with no static datasource.
- * A `url` / `apiKey`, when supplied, is still validated.
+ * Strict schema for a fully-specified connection — used by
+ * `connection.createFromConfig` to validate the decrypted per-(workspace,
+ * install) config of a DB-stored datasource before building the connection. On
+ * top of the per-field rules it requires the config to resolve to a complete,
+ * usable connection (an endpoint source AND a usable auth mode), delegating to
+ * the single {@link resolveElasticsearchConfig} resolver so validation and
+ * runtime never disagree. The error message never echoes a secret.
  */
-const ElasticsearchConfigSchema = ElasticsearchConnectionConfigSchema.partial();
+const ElasticsearchConnectionConfigSchema = ElasticsearchFieldsSchema.superRefine(
+  (cfg, ctx) => {
+    try {
+      resolveElasticsearchConfig(cfg as ElasticsearchPluginConfig);
+    } catch (err) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
+);
+
+/**
+ * Lenient config-time schema — every field optional and NO completeness check,
+ * so the plugin can be registered as an ADAPTER ONLY: `elasticsearchPlugin({})`
+ * parses, registering the plugin so its `createFromConfig` is available to the
+ * datasource bridge for DB-stored per-workspace installs (the SaaS model), with
+ * no static datasource. Any field supplied is still shape-validated.
+ */
+const ElasticsearchConfigSchema = ElasticsearchFieldsSchema;
 
 export type ElasticsearchConfig = z.infer<typeof ElasticsearchConfigSchema>;
 
-// Compile-time guard: the STRICT schema's inferred config and the connection
+// Compile-time guard: the field schema's inferred config and the connection
 // module's raw config shape must stay structurally identical, so adding a field
 // to one without the other fails the build instead of drifting silently.
-type StrictElasticsearchConfig = z.infer<typeof ElasticsearchConnectionConfigSchema>;
+type StrictElasticsearchConfig = z.infer<typeof ElasticsearchFieldsSchema>;
 type _ConfigsAligned = [StrictElasticsearchConfig] extends [ElasticsearchPluginConfig]
   ? [ElasticsearchPluginConfig] extends [StrictElasticsearchConfig]
     ? true
@@ -126,19 +172,17 @@ export function buildElasticsearchPlugin(
   let cachedConn: ElasticsearchConnection | undefined;
   let log: PluginLogger | undefined;
 
-  // A static config-defined ES datasource (self-host / operator-baked) needs
-  // both a url and an apiKey. Without them the plugin is registered ADAPTER ONLY
-  // (the SaaS per-workspace model): no static connection, customers add their
-  // own per workspace via Admin → Connections, and the datasource bridge builds
-  // each connection via `createFromConfig`.
-  const staticConfig: ElasticsearchPluginConfig | undefined =
-    config.url && config.apiKey
-      ? {
-          url: config.url,
-          apiKey: config.apiKey,
-          ...(config.description ? { description: config.description } : {}),
-        }
-      : undefined;
+  // A static config-defined ES datasource (self-host / operator-baked) needs an
+  // endpoint source (`url`/`cloudId`) AND an auth signal (apiKey / username+
+  // password / awsRegion). Without a complete config the plugin is registered
+  // ADAPTER ONLY (the SaaS per-workspace model): no static connection, customers
+  // add their own per workspace via Admin → Connections, and the datasource
+  // bridge builds each connection via `createFromConfig`.
+  const staticConfig: ElasticsearchPluginConfig | undefined = isCompleteConnectionConfig(
+    config,
+  )
+    ? config
+    : undefined;
 
   /** Cached singleton so health checks and teardown share one client (static mode). */
   function getOrCreateConnection(): ElasticsearchConnection {
@@ -191,9 +235,19 @@ export function buildElasticsearchPlugin(
 
     /**
      * Serializable config schema for the admin install form + the secret
-     * encryption flow. `apiKey` is `secret: true` so `encryptSecretFields`
-     * encrypts it at rest and the admin mask/restore flow applies. `url` carries
-     * no credential, so it is not secret.
+     * encryption flow. The `secret: true` fields (`apiKey`, `password`,
+     * `awsSecretAccessKey`, `awsSessionToken`) drive `encryptSecretFields` so
+     * they land encrypted at rest and the admin mask/restore flow applies; `url`
+     * and the AWS region/key-id/service carry no credential, so they are not
+     * secret. The form offers all three auth modes (API key / HTTP Basic / AWS
+     * SigV4) — supply exactly one mode's fields. Engine is auto-detected from the
+     * URL scheme (`opensearch://`) and overridable here.
+     *
+     * Kept in lockstep with the built-in datasource catalog row
+     * (`db/seed-builtin-datasource-catalog.ts` + migration `0124`) — the admin
+     * form-install handler reads the catalog's `config_schema` to decide which
+     * fields to encrypt. Cloud ID is an `atlas.config.ts`-only convenience and
+     * intentionally not a form field.
      */
     getConfigSchema(): ConfigSchemaField[] {
       return [
@@ -203,16 +257,72 @@ export function buildElasticsearchPlugin(
           label: "Connection URL",
           required: true,
           description:
-            "elasticsearch://host:9200 — HTTPS by default; append ?ssl=false for a plaintext local cluster.",
+            "elasticsearch://host:9200 or opensearch://host:9200 — HTTPS by default; append ?ssl=false for a plaintext local cluster.",
+        },
+        {
+          key: "engine",
+          type: "select",
+          label: "Engine",
+          options: ["elasticsearch", "opensearch"],
+          description:
+            "Optional. Overrides the engine inferred from the URL scheme (defaults to elasticsearch).",
         },
         {
           key: "apiKey",
           type: "string",
           label: "API Key",
-          required: true,
           secret: true,
           description:
-            "Base64-encoded Elasticsearch API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+            "API-key auth: Base64-encoded API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+        },
+        {
+          key: "username",
+          type: "string",
+          label: "Username",
+          description: "HTTP Basic auth: username (pair with Password).",
+        },
+        {
+          key: "password",
+          type: "string",
+          label: "Password",
+          secret: true,
+          description: "HTTP Basic auth: password. Encrypted at rest.",
+        },
+        {
+          key: "awsRegion",
+          type: "string",
+          label: "AWS Region",
+          description:
+            "AWS SigV4 (Amazon OpenSearch Service): region, e.g. us-east-1. Setting this selects SigV4 signing.",
+        },
+        {
+          key: "awsAccessKeyId",
+          type: "string",
+          label: "AWS Access Key ID",
+          description:
+            "AWS SigV4: access key id. Optional — falls back to the AWS_ACCESS_KEY_ID environment variable.",
+        },
+        {
+          key: "awsSecretAccessKey",
+          type: "string",
+          label: "AWS Secret Access Key",
+          secret: true,
+          description:
+            "AWS SigV4: secret access key. Optional — falls back to AWS_SECRET_ACCESS_KEY. Encrypted at rest.",
+        },
+        {
+          key: "awsSessionToken",
+          type: "string",
+          label: "AWS Session Token",
+          secret: true,
+          description:
+            "AWS SigV4: session token for temporary credentials. Optional — falls back to AWS_SESSION_TOKEN. Encrypted at rest.",
+        },
+        {
+          key: "awsService",
+          type: "string",
+          label: "AWS Service",
+          description: "AWS SigV4: service code to sign with. Defaults to `es`.",
         },
         {
           key: "description",
@@ -226,9 +336,14 @@ export function buildElasticsearchPlugin(
     async initialize(ctx) {
       log = ctx.logger;
       if (staticConfig) {
-        ctx.logger.info(
-          `Elasticsearch datasource plugin initialized (${extractHost(staticConfig.url)})`,
-        );
+        // Log a non-secret target identifier (host, or "Elastic Cloud" for a
+        // Cloud ID) — never a credential.
+        const target = staticConfig.url
+          ? extractHost(staticConfig.url)
+          : staticConfig.cloudId
+            ? "Elastic Cloud (cloud id)"
+            : "(unknown)";
+        ctx.logger.info(`Elasticsearch datasource plugin initialized (${target})`);
       } else {
         ctx.logger.info(
           "Elasticsearch datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
@@ -251,7 +366,7 @@ export function buildElasticsearchPlugin(
         await getOrCreateConnection().ping(5000);
         return { healthy: true, latencyMs: Math.round(performance.now() - start) };
       } catch (err) {
-        const message = scrubElasticsearchError(err, staticConfig.apiKey);
+        const message = scrubElasticsearchError(err, collectConfigSecrets(staticConfig));
         log?.warn(`Elasticsearch health check failed: ${message}`);
         return {
           healthy: false,
@@ -295,6 +410,13 @@ export const elasticsearchPlugin = createPlugin({
 export {
   parseElasticsearchUrl,
   resolveElasticsearchConfig,
+  resolveAuth,
+  decodeCloudId,
+  isCompleteConnectionConfig,
+  collectAuthSecrets,
+  collectConfigSecrets,
+  engineSqlProfile,
+  parseSqlPage,
   extractHost,
   createElasticsearchClient,
   createElasticsearchConnection,
@@ -306,7 +428,16 @@ export {
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
   DEFAULT_FETCH_SIZE,
   DEFAULT_MAX_ROWS,
+  DEFAULT_AWS_SERVICE,
 } from "./connection";
+export {
+  deriveSigningKey,
+  buildCanonicalRequest,
+  sigV4SignHeaders,
+  formatAmzDate,
+  EMPTY_PAYLOAD_SHA256,
+} from "./sigv4";
+export type { SigV4SignInput, SignedHeaderInput } from "./sigv4";
 export {
   mapEsFieldType,
   flattenMapping,
@@ -328,6 +459,8 @@ export type {
   ElasticsearchEngine,
   ParsedElasticsearchUrl,
   ElasticsearchApiKeyAuth,
+  ElasticsearchBasicAuth,
+  ElasticsearchSigV4Auth,
   ElasticsearchAuthDescriptor,
   ElasticsearchPluginConfig,
   ResolvedElasticsearchConfig,

@@ -6,6 +6,7 @@
     "bigquery",
     "clickhouse",
     "duckdb",
+    "elasticsearch",
     "mysql",
     "snowflake",
     "salesforce",

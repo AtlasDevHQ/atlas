@@ -43,6 +43,7 @@ import {
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
 } from "./connection";
 import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
+import { createQueryElasticsearchTool } from "./tool";
 
 /**
  * ES SQL dialect guidance injected into the agent system prompt (under
@@ -51,7 +52,7 @@ import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./conne
  * from the few places it diverges (no cross-index JOINs, double-quote index
  * names with special characters).
  */
-const ELASTICSEARCH_DIALECT_GUIDE = [
+const ELASTICSEARCH_SQL_GUIDE = [
   "This datasource is Elasticsearch SQL (the cluster `/_sql` API), queried with the `executeSQL` tool.",
   "- Each Elasticsearch index is a table — `SELECT ... FROM <index>`. One index per query: there are NO JOINs across indices.",
   "- Quote index names containing `-`, `.`, or `:` with double quotes, e.g. `SELECT * FROM \"logs-2024.01.01\"`.",
@@ -60,6 +61,29 @@ const ELASTICSEARCH_DIALECT_GUIDE = [
   "- A nested field is addressed by its dotted path (e.g. `geo.dest`).",
   "- Read-only: only SELECT is allowed. SHOW/DESCRIBE and any DML/DDL are rejected.",
 ].join("\n");
+
+/**
+ * Query DSL guidance — injected ONLY in static-datasource mode, where the
+ * dedicated `queryElasticsearch` tool is registered (see `initialize`). Tells the
+ * agent WHEN to reach for the DSL surface instead of SQL, and the read-only rails.
+ */
+const ELASTICSEARCH_DSL_GUIDE = [
+  "",
+  "Elasticsearch also has a Query DSL surface via the `queryElasticsearch` tool. Prefer SQL (`executeSQL`) for ordinary tabular/aggregate questions; reach for `queryElasticsearch` when SQL can't express the question:",
+  "- Full-text / relevance ranking — `match`, `multi_match`, `match_phrase`, `query_string` ranked by `_score`.",
+  "- Deeply-nested or multi-level aggregations — `terms` within `terms`, `date_histogram` with sub-aggregations, `percentiles`, `cardinality`.",
+  "- Geo, span, and other DSL-only query types.",
+  "- Pass `index` (one index/alias from the semantic layer — no wildcards) and a `body` (the DSL). For aggregation-only questions set `\"size\": 0`.",
+  "- Read-only: only `_search` and `_count` are allowed; writes, `_bulk`, `_update*`, `_delete*`, and mutating scripts are rejected.",
+].join("\n");
+
+/** Compose the dialect guidance. The DSL section is added only when the dedicated
+ *  `queryElasticsearch` tool is registered (static-datasource mode). */
+function buildDialectGuide(hasStaticConfig: boolean): string {
+  return hasStaticConfig
+    ? `${ELASTICSEARCH_SQL_GUIDE}\n${ELASTICSEARCH_DSL_GUIDE}`
+    : ELASTICSEARCH_SQL_GUIDE;
+}
 
 /**
  * Strict schema for a fully-specified Elasticsearch connection — both `url` and
@@ -187,7 +211,7 @@ export function buildElasticsearchPlugin(
 
     entities: [],
 
-    dialect: ELASTICSEARCH_DIALECT_GUIDE,
+    dialect: buildDialectGuide(!!staticConfig),
 
     /**
      * Serializable config schema for the admin install form + the secret
@@ -233,6 +257,42 @@ export function buildElasticsearchPlugin(
         ctx.logger.info(
           "Elasticsearch datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
         );
+      }
+
+      // Register the queryElasticsearch DSL tool ONLY in static-datasource mode.
+      // The tool is hardwired to the static connection, so in adapter-only mode
+      // it would throw on every call. SaaS per-workspace Elasticsearch
+      // datasources are queried via the standard `executeSQL` (ES SQL) path,
+      // routed through the bridge-built connection. (Per-workspace DSL routing is
+      // a later slice — see #3269/#3271.)
+      if (staticConfig) {
+        const esTool = createQueryElasticsearchTool({
+          getConnection: () => getOrCreateConnection(),
+          // The index whitelist mirrors the Salesforce tool's source
+          // (`ctx.connections.list()`). NOTE: this currently returns registered
+          // CONNECTION IDs, not semantic-layer index names — so the membership
+          // tier is ineffective today; the always-on structural rails
+          // (no wildcards / _all / system indices) still apply. Tracked
+          // separately — the plugin context needs a semantic-table accessor.
+          getWhitelist: () => {
+            try {
+              return new Set(ctx.connections.list());
+            } catch (err) {
+              ctx.logger.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                "Failed to load Elasticsearch index whitelist — falling back to structural-only validation",
+              );
+              return new Set<string>();
+            }
+          },
+          logger: ctx.logger,
+        });
+
+        ctx.tools.register({
+          name: "queryElasticsearch",
+          description: "Execute a read-only Elasticsearch Query DSL request (full-text / aggregations)",
+          tool: esTool,
+        });
       }
     },
 
@@ -307,6 +367,23 @@ export {
   DEFAULT_FETCH_SIZE,
   DEFAULT_MAX_ROWS,
 } from "./connection";
+export { createQueryElasticsearchTool } from "./tool";
+export {
+  validateEsDslRequest,
+  validateIndexAccess,
+  isReadEndpoint,
+  normalizeDslResponse,
+  applyDslSafeguards,
+  flattenSource,
+  ES_READ_ENDPOINTS,
+  DEFAULT_DSL_MAX_SIZE,
+  DEFAULT_DSL_TERMINATE_AFTER,
+} from "./dsl";
+export type {
+  EsDslRequest,
+  EsDslValidationResult,
+  DslSafeguardLimits,
+} from "./dsl";
 export {
   mapEsFieldType,
   flattenMapping,
@@ -338,4 +415,6 @@ export type {
   ElasticsearchSqlColumn,
   ElasticsearchSqlResponse,
   ElasticsearchSqlQueryOptions,
+  ElasticsearchDslEndpoint,
+  ElasticsearchDslQueryOptions,
 } from "./connection";

@@ -5,16 +5,18 @@ that connects an Elasticsearch (and, in a later slice, OpenSearch) cluster as a
 read-only Atlas datasource over a thin `fetch`-based HTTP client — no official
 SDK dependency.
 
-> **Status — connection + SQL query surface + CLI mapping profiler.** This
+> **Status — connection + SQL + Query DSL surfaces + CLI mapping profiler.** This
 > release ships the connection layer (`elasticsearch://` URL + **API-key** auth,
 > an authenticated cluster-info/ping health check, ConnectionRegistry
-> registration), the **SQL query surface** (tabular/aggregate questions over a
-> single index via the standard `executeSQL` tool — see
-> [SQL query surface](#sql-query-surface)), and the **CLI semantic-layer
-> profiler** (`atlas init` / `atlas diff` over index `_mapping`s — see
-> [Semantic layer](#semantic-layer-atlas-init-and-atlas-diff)). The dedicated
-> Query DSL tool, the remaining auth modes (Basic / Cloud ID / AWS SigV4), and
-> the OpenSearch engine arrive in later slices. See the
+> registration), **two query surfaces** — the **SQL surface** (tabular/aggregate
+> questions over a single index via the standard `executeSQL` tool — see
+> [SQL query surface](#sql-query-surface)) and the **Query DSL surface** (the
+> dedicated `queryElasticsearch` tool for full-text / relevance and
+> deeply-nested aggregations — see [Query DSL surface](#query-dsl-surface)) — and
+> the **CLI semantic-layer profiler** (`atlas init` / `atlas diff` over index
+> `_mapping`s — see [Semantic layer](#semantic-layer-atlas-init-and-atlas-diff)).
+> The remaining auth modes (Basic / Cloud ID / AWS SigV4) and the OpenSearch
+> engine arrive in later slices. See the
 > [PRD (#3259)](https://github.com/AtlasDevHQ/atlas/issues/3259).
 
 ## Install
@@ -140,15 +142,94 @@ whitelist). These are anchored to the statement start, so a field literally name
 > ceiling (10,000 rows) as a runaway-cursor backstop; if it ever truncates, it
 > logs a warning rather than silently dropping rows.
 
+## Query DSL surface
+
+Some questions don't fit SQL — full-text relevance ranking and deeply-nested
+aggregations chief among them. For those the plugin registers a dedicated
+`queryElasticsearch` agent tool (only in static-datasource mode; see
+[Self-hosted note](#per-workspace-saas-mode) below) that issues a **read-only**
+Elasticsearch Query DSL request and flattens the response into the Atlas
+`{ columns, rows }` table shape.
+
+```text
+"Which products match 'wireless' best?"
+  → POST /products/_search { "query": { "match": { "title": "wireless" } } }
+  → a table of _id, _score, and the flattened _source fields, ranked by relevance
+
+"Average price by category, top sellers first"
+  → POST /products/_search { "size": 0, "aggs": { "by_category": { "terms": {...},
+      "aggs": { "avg_price": { "avg": { "field": "price" } } } } } }
+  → a table of category, doc_count, avg_price
+```
+
+The agent receives guidance in the system prompt on **when to prefer DSL over
+SQL**: full-text (`match` / `multi_match` / `match_phrase` / `query_string`
+ranked by `_score`), multi-level aggregations (`terms` within `terms`,
+`date_histogram` with sub-aggregations, `percentiles`, `cardinality`), and geo /
+span / other DSL-only queries. Ordinary tabular questions stay on SQL.
+
+### Tool inputs
+
+| Field | Required | Description |
+| ----- | -------- | ----------- |
+| `index` | yes | A single index / alias / data stream (or comma-separated list) **from the semantic layer**. Wildcards, `_all`, and system indices are rejected. |
+| `endpoint` | no | `_search` (default) for hits/aggregations, or `_count` for a match count. |
+| `body` | no | The Query DSL request body, e.g. `{"query": {...}}` or `{"size": 0, "aggs": {...}}`. Omit for a `match_all` search. |
+| `explanation` | yes | A short rationale, surfaced in the result. |
+
+### Read-only validator (default-deny)
+
+The DSL surface is gated by a custom read-only validator — the security boundary.
+**Default-deny**: anything not explicitly allowed is rejected.
+
+- **Endpoints.** Only the read shapes are allowed: `_search`, `_count`, `_msearch`,
+  `_field_caps`, `_mapping`, and the read-only `_cat/*` family. Every mutating /
+  administrative endpoint — `_bulk`, `_update`, `_delete_by_query`,
+  `_update_by_query`, `_doc`, `_create`, `_reindex`, index create/delete, … — and
+  any unknown endpoint is rejected. Path-traversal (`_search/../_bulk`) and
+  query-string smuggling are blocked by a charset guard first. (The `queryElasticsearch`
+  tool itself executes only `_search` / `_count`; the validator is the full gate.)
+- **No smuggled writes.** A bulk-style write action (`index` / `create` / `update`
+  / `delete`) at the top level of a read body is rejected.
+- **No mutating scripts.** A script that references `ctx` (`ctx._source`, `ctx.op`,
+  `ctx[...]`) — the write/ingest script context — is rejected wherever it appears
+  (`script_score`, a `script` agg, `script_fields`, `runtime_mappings`,
+  `scripted_metric`). Non-mutating scripts (e.g. a `script_score` relevance tweak)
+  are allowed.
+- **Index whitelist.** Each requested index must be present in the semantic layer;
+  wildcards, `_all`, and system / internal (`.`/`_`-prefixed) indices are always
+  rejected.
+
+### Resource safeguards
+
+Every DSL `_search` is bounded before it leaves Atlas:
+
+- **Size cap** — `size` is clamped to `ATLAS_ROW_LIMIT` (default 1000); an explicit
+  `"size": 0` aggregation request is preserved.
+- **Timeout** — a search `timeout` of `ATLAS_QUERY_TIMEOUT` (default 30s) plus a
+  hard client-side abort deadline.
+- **`terminate_after`** — a per-shard document ceiling (`ATLAS_ES_TERMINATE_AFTER`,
+  default 100000; set `0` to disable) added **only** to non-aggregation searches,
+  so aggregate accuracy is never compromised.
+
+### Per-workspace (SaaS) mode
+
+The dedicated `queryElasticsearch` tool is registered **only** for a static,
+config-defined datasource. In adapter-only / SaaS per-workspace mode the
+connection is queried over the SQL surface (`executeSQL`); per-workspace DSL
+routing is a later slice.
+
 ## Security
 
-- **Read-only.** Only `SELECT` reaches the cluster. The SQL surface goes through
-  Atlas's standard 4-layer validation (regex DML/DDL guard → AST single-`SELECT`
-  parse → index whitelist → auto-`LIMIT` + statement timeout), plus the
-  ES-specific `SHOW`/`DESCRIBE` guard above. The plugin sets **no** custom
-  validator, so this pipeline applies unchanged. The connection layer performs an
-  authenticated cluster-info/ping round-trip and the `atlas init`/`diff` profiler
-  issues only a read-only `GET /_mapping`.
+- **Read-only — both surfaces.** Only `SELECT` reaches the cluster on the SQL
+  surface, which goes through Atlas's standard 4-layer validation (regex DML/DDL
+  guard → AST single-`SELECT` parse → index whitelist → auto-`LIMIT` + statement
+  timeout), plus the ES-specific `SHOW`/`DESCRIBE` guard above (no custom SQL
+  validator). The Query DSL surface is gated by its own **default-deny** read-only
+  validator (read endpoints only, no smuggled writes, no mutating scripts, index
+  whitelist) — see [Read-only validator](#read-only-validator-default-deny). The
+  connection layer performs an authenticated cluster-info/ping round-trip and the
+  `atlas init`/`diff` profiler issues only a read-only `GET /_mapping`.
 - **Secret-scrubbed errors.** Connection, health, query, and mapping errors are
   scrubbed before they reach the agent, the user, or logs: the literal API key is
   redacted and messages that trip auth-context markers are collapsed to a generic

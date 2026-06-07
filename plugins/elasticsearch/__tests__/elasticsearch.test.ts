@@ -187,6 +187,19 @@ describe("resolveElasticsearchConfig", () => {
       resolveElasticsearchConfig({ url: VALID_URL, apiKey: "" }),
     ).toThrow(/API key/i);
   });
+
+  test("rejects a config with no endpoint (neither url nor cloudId)", () => {
+    expect(() => resolveElasticsearchConfig({ apiKey: API_KEY })).toThrow(
+      /provide a connection url or an Elastic Cloud ID/,
+    );
+  });
+
+  test("rejects a config with an endpoint but no auth at all", () => {
+    expect(() => resolveAuth({})).toThrow(/no authentication configured/);
+    expect(() => resolveElasticsearchConfig({ url: VALID_URL })).toThrow(
+      /no authentication configured/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1430,24 +1443,28 @@ describe("sigv4: sigV4SignHeaders", () => {
     expect(headers["X-Amz-Security-Token"]).toBeUndefined();
   });
 
-  test("the signature equals an independent recomputation from the verified pieces", () => {
-    // Re-derive the signature in the test from the (separately vector-verified)
-    // deriveSigningKey + buildCanonicalRequest, proving sigV4SignHeaders glues
-    // them together correctly without trusting a memorized golden signature.
+  test("the signature equals a fully independent SigV4 recomputation", () => {
+    // True oracle: re-implement the canonical request + string-to-sign INLINE
+    // here (NOT via buildCanonicalRequest, the function under test), so a bug
+    // *inside* buildCanonicalRequest — wrong newline count, header order, a
+    // missing payload-hash line — makes actualSig and expectedSig diverge and
+    // fails this test. Only deriveSigningKey (separately AWS-vector-verified) and
+    // node:crypto HMAC are shared.
     const headers = sigV4SignHeaders(SIGN_INPUT);
     const actualSig = /Signature=([0-9a-f]{64})$/.exec(headers.Authorization)![1];
 
     const payloadHash = createHash("sha256").update(SIGN_INPUT.body, "utf8").digest("hex");
-    const { canonicalRequest } = buildCanonicalRequest(
+    const canonicalRequest = [
       "POST",
       "/_sql",
-      new URLSearchParams("format=json"),
-      {
-        host: "search-mydomain.us-east-1.es.amazonaws.com",
-        amzDate: "20150830T123600Z",
-        payloadHash,
-      },
-    );
+      "format=json",
+      "host:search-mydomain.us-east-1.es.amazonaws.com",
+      `x-amz-content-sha256:${payloadHash}`,
+      "x-amz-date:20150830T123600Z",
+      "",
+      "host;x-amz-content-sha256;x-amz-date",
+      payloadHash,
+    ].join("\n");
     const scope = "20150830/us-east-1/es/aws4_request";
     const stringToSign = [
       "AWS4-HMAC-SHA256",
@@ -1686,14 +1703,17 @@ describe("AWS SigV4 auth (#3265)", () => {
     });
   });
 
-  test("resolveAuth resolves credentials from the ambient AWS env chain", () => {
+  test("resolveAuth resolves credentials from the ambient AWS env chain when allowed (static path)", () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
     delete process.env.AWS_SESSION_TOKEN;
     process.env.AWS_ACCESS_KEY_ID = "ENV_KEY_ID";
     process.env.AWS_SECRET_ACCESS_KEY = "ENV_SECRET";
     process.env.AWS_SESSION_TOKEN = "ENV_TOKEN";
-    const auth = resolveAuth({ url: VALID_URL, awsRegion: "eu-west-1", awsService: "aoss" });
+    const auth = resolveAuth(
+      { url: VALID_URL, awsRegion: "eu-west-1", awsService: "aoss" },
+      { allowAmbientAwsCreds: true },
+    );
     expect(auth).toEqual({
       mode: "sigv4",
       region: "eu-west-1",
@@ -1704,12 +1724,27 @@ describe("AWS SigV4 auth (#3265)", () => {
     });
   });
 
+  test("resolveAuth does NOT read the ambient AWS env by default — per-workspace path (#2850)", () => {
+    // Security: a DB-stored per-workspace SigV4 config must carry its own keys.
+    // Even with the operator's AWS env populated, the default (env-less) resolver
+    // must refuse rather than sign with the operator's ambient credentials.
+    process.env.AWS_ACCESS_KEY_ID = "OPERATOR_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "OPERATOR_SECRET";
+    expect(() => resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" })).toThrow(
+      /no credentials/,
+    );
+    // And the error must name the field-only remedy (no env-var hint) on this path.
+    expect(() => resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" })).toThrow(
+      /carry its own keys/,
+    );
+  });
+
   test("resolveAuth throws (no secret echoed) when SigV4 has no credentials", () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
-    expect(() => resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" })).toThrow(
-      /AWS SigV4 selected .* no credentials/,
-    );
+    expect(() =>
+      resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" }, { allowAmbientAwsCreds: true }),
+    ).toThrow(/AWS SigV4 selected .* no credentials/);
   });
 
   test("SigV4 takes precedence over API key + Basic when several are present", () => {
@@ -1777,6 +1812,33 @@ describe("AWS SigV4 auth (#3265)", () => {
     expect(result.healthy).toBe(false);
     expect(result.message).not.toContain(SIGV4.awsSecretAccessKey);
   });
+
+  test("createFromConfig rejects a SigV4 config without explicit keys, even with operator AWS env set (#2850)", () => {
+    // The per-workspace path must NOT fall back to the operator's ambient AWS
+    // env — a credential-less SigV4 install is rejected at validation time.
+    process.env.AWS_ACCESS_KEY_ID = "OPERATOR_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "OPERATOR_SECRET";
+    const plugin = elasticsearchPlugin({});
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: VALID_URL, awsRegion: "us-east-1" }),
+    ).toThrow();
+  });
+
+  test("the static path DOES use ambient AWS creds (self-hosted operator-baked config)", async () => {
+    // Mirror image of the per-workspace test: a static atlas.config.ts datasource
+    // with only awsRegion resolves SigV4 from the operator env and signs.
+    process.env.AWS_ACCESS_KEY_ID = "STATIC_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "STATIC_SECRET";
+    let auth: string | undefined;
+    globalThis.fetch = mock(async (_url: string, init: RequestInit) => {
+      auth = (init.headers as Record<string, string>).Authorization;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    }) as unknown as typeof fetch;
+    const plugin = buildElasticsearchPlugin({ url: VALID_URL, awsRegion: "us-east-1" });
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(auth).toContain("AWS4-HMAC-SHA256 Credential=STATIC_KEY_ID");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1814,6 +1876,20 @@ describe("engineSqlProfile + parseSqlPage (#3266)", () => {
       "opensearch",
     );
     expect(page).toEqual({ columns: [{ name: "a", type: "long" }], rows: [[1]], cursor: "c1" });
+  });
+
+  test("parseSqlPage tolerates a malformed/empty engine response (defensive guards)", () => {
+    // The cursor loop must not crash on a garbage page — undefined body, a
+    // non-array schema/columns, and a missing cursor all degrade gracefully.
+    expect(parseSqlPage(undefined, "opensearch")).toEqual({
+      columns: undefined,
+      rows: undefined,
+    });
+    expect(parseSqlPage({ schema: "nope", datarows: 5, cursor: 42 }, "opensearch")).toEqual({
+      columns: undefined,
+      rows: undefined,
+    });
+    expect(parseSqlPage({}, "elasticsearch")).toEqual({ columns: undefined, rows: undefined });
   });
 });
 

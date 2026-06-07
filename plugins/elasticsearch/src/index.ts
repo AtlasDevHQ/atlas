@@ -1,14 +1,16 @@
 /**
  * Elasticsearch / OpenSearch DataSource Plugin — connection foundation.
  *
- * A single unified plugin that connects an Elasticsearch cluster as a read-only
- * Atlas datasource over a thin `fetch`-based HTTP client (no official SDK). This
- * slice (#3261) ships the connection layer only: `elasticsearch://` URL +
- * API-key auth, an authenticated cluster-info/ping health check, and
- * ConnectionRegistry registration via the standard datasource-plugin shape (the
- * host's `wireDatasourcePlugins` calls `connection.create()` + `registerDirect`,
- * exactly as it does for the Salesforce plugin). Query surfaces, the remaining
- * auth modes, the OpenSearch engine, and `atlas init` profiling are later slices.
+ * A single unified plugin that connects an Elasticsearch OR OpenSearch cluster as
+ * a read-only Atlas datasource over a thin `fetch`-based HTTP client (no official
+ * SDK). It ships: the connection layer (authenticated cluster-info/ping health
+ * check + ConnectionRegistry registration via the standard datasource-plugin
+ * shape — the host's `wireDatasourcePlugins` calls `connection.create()` +
+ * `registerDirect`, as for the Salesforce plugin); three auth modes — API key,
+ * HTTP Basic, AWS SigV4 — plus an Elastic Cloud ID connection target
+ * (#3263–#3265); both engines (#3266, `/_sql` vs `/_plugins/_sql`); the SQL query
+ * surface via the standard `executeSQL` tool; and the `atlas init` `_mapping`
+ * profiler. The dedicated Query DSL tool (#3267) is a later slice.
  *
  * Usage in atlas.config.ts:
  * ```typescript
@@ -150,8 +152,10 @@ const ElasticsearchConfigSchema = ElasticsearchFieldsSchema;
 export type ElasticsearchConfig = z.infer<typeof ElasticsearchConfigSchema>;
 
 // Compile-time guard: the field schema's inferred config and the connection
-// module's raw config shape must stay structurally identical, so adding a field
-// to one without the other fails the build instead of drifting silently.
+// module's raw config shape must keep the same field names + value types, so
+// adding a field to one without the other fails the build instead of drifting
+// silently. (`exactOptionalPropertyTypes` is off, so the optional-vs-required
+// modifier itself is not compared — only names and types.)
 type StrictElasticsearchConfig = z.infer<typeof ElasticsearchFieldsSchema>;
 type _ConfigsAligned = [StrictElasticsearchConfig] extends [ElasticsearchPluginConfig]
   ? [ElasticsearchPluginConfig] extends [StrictElasticsearchConfig]
@@ -192,7 +196,12 @@ export function buildElasticsearchPlugin(
       );
     }
     if (!cachedConn) {
-      cachedConn = createElasticsearchConnection(staticConfig, { logger: log });
+      // Static (operator-baked, self-hosted) datasource — SigV4 MAY use the
+      // ambient AWS env chain, like any other process.env read in atlas.config.ts.
+      cachedConn = createElasticsearchConnection(staticConfig, {
+        logger: log,
+        allowAmbientAwsCreds: true,
+      });
     }
     return cachedConn;
   }
@@ -202,6 +211,13 @@ export function buildElasticsearchPlugin(
     // per-(workspace, install) config decrypted from `workspace_plugins`,
     // re-validated through the strict schema. Always available — this is the
     // SaaS per-workspace path and the only path in adapter-only mode.
+    //
+    // `allowAmbientAwsCreds` is intentionally NOT set: a stored per-workspace
+    // SigV4 datasource must carry its own explicit, encrypted keys — it must
+    // never sign with the operator's ambient AWS env on a multi-tenant deploy
+    // (CLAUDE.md: per-tenant creds never fall back to operator env vars, #2850).
+    // The strict schema's completeness check runs the same env-less resolver, so
+    // a credential-less SigV4 config is rejected at validation, not silently.
     createFromConfig: (runtimeConfig) => {
       const parsed = ElasticsearchConnectionConfigSchema.parse(runtimeConfig);
       return createElasticsearchConnection(parsed, { logger: log });
@@ -244,7 +260,7 @@ export function buildElasticsearchPlugin(
      * URL scheme (`opensearch://`) and overridable here.
      *
      * Kept in lockstep with the built-in datasource catalog row
-     * (`db/seed-builtin-datasource-catalog.ts` + migration `0124`) — the admin
+     * (`db/seed-builtin-datasource-catalog.ts` + migration `0125`) — the admin
      * form-install handler reads the catalog's `config_schema` to decide which
      * fields to encrypt. Cloud ID is an `atlas.config.ts`-only convenience and
      * intentionally not a form field.
@@ -471,4 +487,5 @@ export type {
   ElasticsearchSqlColumn,
   ElasticsearchSqlResponse,
   ElasticsearchSqlQueryOptions,
+  ResolveAuthOptions,
 } from "./connection";

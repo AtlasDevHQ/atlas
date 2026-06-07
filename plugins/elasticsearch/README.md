@@ -9,8 +9,9 @@ SDK dependency.
 > profiler.** This release ships the connection layer (an authenticated
 > cluster-info/ping health check, ConnectionRegistry registration); **both
 > engines** (Elasticsearch and OpenSearch — see [Engine selection](#engine-selection));
-> **four auth modes** (API key / HTTP Basic / Elastic Cloud ID / AWS SigV4 — see
-> [Authentication](#authentication)); the **SQL query surface** (tabular/aggregate
+> **three auth modes** (API key / HTTP Basic / AWS SigV4 — see
+> [Authentication](#authentication)), with an Elastic **Cloud ID** as an
+> alternative connection target; the **SQL query surface** (tabular/aggregate
 > questions over a single index via the standard `executeSQL` tool — see
 > [SQL query surface](#sql-query-surface)); and the **CLI semantic-layer
 > profiler** (`atlas init` / `atlas diff` over index `_mapping`s — see

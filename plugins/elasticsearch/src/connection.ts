@@ -274,10 +274,12 @@ export function normalizeSqlPages(
  * PURE: extract an actionable message from an ES SQL error response body.
  *
  * ES returns structured errors — `{ error: { type, reason }, status }` — whose
- * `reason` (e.g. "Unknown column [foo]") lets the agent self-correct. Prefer
- * `type: reason`, then `reason`, then `type`, then a string `error`, and finally
- * fall back to the HTTP status line. The caller scrubs the result through
- * {@link scrubElasticsearchError} before it leaves the process.
+ * `reason` (e.g. "Unknown column [foo]") lets the agent self-correct. The `error`
+ * field is either a string or an object (mutually exclusive). Matching the code:
+ * a string `error` is used as-is; otherwise from the object form prefer
+ * `type: reason`, then `reason`, then `type`; finally fall back to the HTTP status
+ * line. The caller scrubs the result through {@link scrubElasticsearchError}
+ * before it leaves the process.
  */
 export function extractEsSqlErrorMessage(
   body: unknown,
@@ -498,41 +500,69 @@ export function decodeCloudId(cloudId: string): string {
   return `https://${host}${port ? `:${port}` : ""}`;
 }
 
+/** Options governing how {@link resolveAuth} resolves credentials. */
+export interface ResolveAuthOptions {
+  /**
+   * Whether SigV4 may fall back to the ambient AWS environment chain
+   * (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`) when
+   * explicit keys aren't in the config. Defaults to `false` (safe).
+   *
+   * Only the static `atlas.config.ts` (operator-baked, self-hosted) path opts
+   * in. DB-stored **per-workspace** configs (`createFromConfig`) MUST carry their
+   * own explicit, encrypted keys and never read the operator's environment —
+   * otherwise a tenant on a multi-tenant deploy would sign requests with the
+   * operator's ambient IAM credentials (CLAUDE.md: "per-tenant plugin creds never
+   * fall back to operator env vars", #2850).
+   */
+  allowAmbientAwsCreds?: boolean;
+}
+
 /**
  * Resolve the auth descriptor from the credentials present, with a documented
  * precedence so a config carrying more than one signal is deterministic:
  *
  *   1. **SigV4** — selected when `awsRegion` is set (the unambiguous AWS signal).
  *      Credentials come from explicit `awsAccessKeyId` / `awsSecretAccessKey`
- *      (+ optional `awsSessionToken`), else the ambient AWS environment chain
- *      (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN`).
+ *      (+ optional `awsSessionToken`). The ambient AWS environment chain is used
+ *      ONLY when `options.allowAmbientAwsCreds` is set (the static-config path).
  *   2. **Basic** — `username` + `password` (both required together).
  *   3. **API key** — `apiKey`.
  *
  * Errors never echo a secret. A lone `username` (or lone `password`) is a config
  * mistake and is rejected explicitly rather than silently falling through.
  */
-export function resolveAuth(config: ElasticsearchPluginConfig): ElasticsearchAuthDescriptor {
+export function resolveAuth(
+  config: ElasticsearchPluginConfig,
+  options?: ResolveAuthOptions,
+): ElasticsearchAuthDescriptor {
+  const allowAmbient = options?.allowAmbientAwsCreds ?? false;
   const apiKey = typeof config.apiKey === "string" ? config.apiKey.trim() : "";
   const username = typeof config.username === "string" ? config.username.trim() : "";
   const password = typeof config.password === "string" ? config.password : "";
   const awsRegion = typeof config.awsRegion === "string" ? config.awsRegion.trim() : "";
 
-  // 1. AWS SigV4 — `awsRegion` is the selecting signal.
+  // 1. AWS SigV4 — `awsRegion` is the selecting signal. The ambient AWS env
+  // chain is consulted only on the static-config path (`allowAmbient`); a
+  // DB-stored per-workspace config must carry explicit keys (no operator-env
+  // bleed-through on multi-tenant deploys).
   if (awsRegion) {
+    const env = (name: string): string =>
+      allowAmbient ? (process.env[name] ?? "").trim() : "";
     const accessKeyId =
       (typeof config.awsAccessKeyId === "string" ? config.awsAccessKeyId.trim() : "") ||
-      (process.env.AWS_ACCESS_KEY_ID ?? "").trim();
+      env("AWS_ACCESS_KEY_ID");
     const secretAccessKey =
       (typeof config.awsSecretAccessKey === "string" ? config.awsSecretAccessKey.trim() : "") ||
-      (process.env.AWS_SECRET_ACCESS_KEY ?? "").trim();
+      env("AWS_SECRET_ACCESS_KEY");
     const sessionToken =
       (typeof config.awsSessionToken === "string" ? config.awsSessionToken.trim() : "") ||
-      (process.env.AWS_SESSION_TOKEN ?? "").trim();
+      env("AWS_SESSION_TOKEN");
     if (!accessKeyId || !secretAccessKey) {
       throw new Error(
         "Invalid Elasticsearch config: AWS SigV4 selected (awsRegion set) but no credentials — " +
-          "set awsAccessKeyId/awsSecretAccessKey or the AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables.",
+          (allowAmbient
+            ? "set awsAccessKeyId/awsSecretAccessKey or the AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY environment variables."
+            : "set awsAccessKeyId/awsSecretAccessKey (a stored per-workspace datasource must carry its own keys)."),
       );
     }
     const service =
@@ -576,12 +606,15 @@ export function resolveAuth(config: ElasticsearchPluginConfig): ElasticsearchAut
  *   config error.
  * - **Engine** precedence: explicit `engine` config → URL scheme → default
  *   `elasticsearch` (a Cloud ID, with no scheme, defaults to `elasticsearch`).
- * - **Auth** is picked by {@link resolveAuth}.
+ * - **Auth** is picked by {@link resolveAuth} (`options` forwarded — notably
+ *   `allowAmbientAwsCreds`, which the static-config path sets and the
+ *   per-workspace `createFromConfig` path does not).
  *
  * Error messages never echo a secret.
  */
 export function resolveElasticsearchConfig(
   config: ElasticsearchPluginConfig,
+  options?: ResolveAuthOptions,
 ): ResolvedElasticsearchConfig {
   const hasUrl = typeof config.url === "string" && config.url.trim().length > 0;
   const hasCloudId = typeof config.cloudId === "string" && config.cloudId.trim().length > 0;
@@ -607,7 +640,7 @@ export function resolveElasticsearchConfig(
   }
 
   const engine: ElasticsearchEngine = config.engine ?? schemeEngine ?? "elasticsearch";
-  const auth = resolveAuth(config);
+  const auth = resolveAuth(config, options);
 
   return {
     engine,
@@ -787,6 +820,15 @@ export function createElasticsearchClient(
           }),
         );
         break;
+      default: {
+        // Exhaustiveness: a new auth mode must add a case here. Without this a
+        // forgotten mode would fall through and send an UNAUTHENTICATED request
+        // (no Authorization) — a compile error is far safer than that.
+        const _exhaustive: never = auth;
+        throw new Error(
+          `Unhandled Elasticsearch auth mode: ${(_exhaustive as { mode?: string }).mode ?? "unknown"}`,
+        );
+      }
     }
     return headers;
   }
@@ -1012,14 +1054,21 @@ export interface ElasticsearchConnection extends PluginDBConnection {
 /**
  * Create an {@link ElasticsearchConnection} backed by the thin fetch client.
  *
+ * `allowAmbientAwsCreds` is forwarded to {@link resolveElasticsearchConfig}: the
+ * static `atlas.config.ts` path sets it (operator-baked, self-hosted) so SigV4
+ * may use the ambient AWS env chain; the per-workspace `createFromConfig` path
+ * leaves it `false` so a stored config must carry its own explicit keys.
+ *
  * @throws {Error} If the config is invalid (delegates to
- *   {@link resolveElasticsearchConfig}; the API key is never echoed).
+ *   {@link resolveElasticsearchConfig}; secrets are never echoed).
  */
 export function createElasticsearchConnection(
   config: ElasticsearchPluginConfig,
-  options?: ElasticsearchClientOptions,
+  options?: ElasticsearchClientOptions & ResolveAuthOptions,
 ): ElasticsearchConnection {
-  const resolved = resolveElasticsearchConfig(config);
+  const resolved = resolveElasticsearchConfig(config, {
+    allowAmbientAwsCreds: options?.allowAmbientAwsCreds,
+  });
   const client = createElasticsearchClient(resolved, options);
 
   return {

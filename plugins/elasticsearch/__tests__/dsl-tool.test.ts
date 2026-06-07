@@ -442,6 +442,23 @@ describe("plugin wiring — queryElasticsearch registration", () => {
     expect(registered.some((t) => t.name === "queryElasticsearch")).toBe(false);
   });
 
+  test("the tool input schema pins the executable surface to _search / _count", () => {
+    // Second gate: the validator's read allow-list is intentionally broader
+    // (defense-in-depth), but the tool only ever executes _search / _count.
+    // Widening this enum later must be a deliberate change — this test guards it.
+    const esTool = createQueryElasticsearchTool({
+      getConnection: () => ({ dslQuery: async () => ({}) }),
+      getWhitelist: () => new Set(["products"]),
+    });
+    const schema = esTool.inputSchema as unknown as {
+      safeParse(v: unknown): { success: boolean };
+    };
+    expect(schema.safeParse({ index: "products", endpoint: "_search", explanation: "x" }).success).toBe(true);
+    expect(schema.safeParse({ index: "products", endpoint: "_count", explanation: "x" }).success).toBe(true);
+    expect(schema.safeParse({ index: "products", endpoint: "_msearch", explanation: "x" }).success).toBe(false);
+    expect(schema.safeParse({ index: "products", endpoint: "_bulk", explanation: "x" }).success).toBe(false);
+  });
+
   test("static-mode dialect includes Query DSL guidance + the queryElasticsearch tool", () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     expect(plugin.dialect).toMatch(/Query DSL/);

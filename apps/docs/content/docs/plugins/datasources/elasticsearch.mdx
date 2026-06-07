@@ -154,8 +154,12 @@ boundary. Anything not explicitly allowed is rejected:
 3. **No mutating scripts** — a script referencing `ctx` (`ctx._source`, `ctx.op`,
    `ctx[…]`) — the write-context marker — is rejected wherever it appears.
    Non-mutating relevance scripts are allowed.
-4. **Index whitelist** — each index must be in the semantic layer; wildcards,
-   `_all`, and system / internal indices are always rejected.
+4. **Index rails** — you must name an explicit index; wildcards, `_all`, and
+   system / internal indices are always rejected (no fan-out beyond named
+   indices). Per-index *membership* against the semantic-layer index list is not
+   yet enforced from the DSL tool (the plugin context exposes no index-name
+   accessor — the SQL surface enforces the real whitelist via the core pipeline;
+   tracked in [#3307](https://github.com/AtlasDevHQ/atlas/issues/3307)).
 
 ### Resource safeguards
 

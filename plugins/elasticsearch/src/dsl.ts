@@ -59,7 +59,11 @@ export interface EsDslRequest {
   body?: unknown;
 }
 
-/** Result of validating a DSL request. `reason` is user/agent-facing. */
+/**
+ * Result of validating a DSL request. `reason` is user/agent-facing and is
+ * always present on a failure. Shape mirrors the plugin SDK's
+ * `QueryValidationResult` convention (`{ valid: boolean; reason?: string }`).
+ */
 export interface EsDslValidationResult {
   valid: boolean;
   reason?: string;
@@ -71,6 +75,12 @@ export interface EsDslValidationResult {
  * `_update_by_query`, `_doc`, `_create`, `_reindex`, `_aliases`, `_settings`,
  * `_close`, `_open`, `_forcemerge`, `_search/scroll`, …). The `_cat` read-only
  * family is matched separately (it has sub-resources).
+ *
+ * This is the validator's **defense-in-depth** allow-list and is intentionally
+ * BROADER than the endpoints the tool/client actually execute
+ * ({@link "./connection".ElasticsearchDslEndpoint} = `_search` | `_count`). The
+ * tool's input schema is the second gate that pins the executable surface, so
+ * widening it later is a deliberate change — not silent drift through here.
  */
 export const ES_READ_ENDPOINTS: ReadonlySet<string> = new Set([
   "_search",
@@ -105,7 +115,9 @@ const TOP_LEVEL_WRITE_KEYS: ReadonlySet<string> = new Set([
   "bulk",
 ]);
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Narrow to a non-array, non-null object. Exported so the tool's truncation
+ *  check shares the exact same predicate the validator/normalizer use. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -309,7 +321,9 @@ export function applyDslSafeguards(
   const maxSize = limits.maxSize ?? DEFAULT_DSL_MAX_SIZE;
   const requested =
     typeof base.size === "number" && Number.isFinite(base.size) ? base.size : maxSize;
-  base.size = Math.max(0, Math.min(requested, maxSize));
+  // Floor so a fractional agent-supplied size can't reach ES (which rejects a
+  // non-integer `size`); clamp to [0, maxSize].
+  base.size = Math.max(0, Math.min(Math.floor(requested), maxSize));
 
   if (typeof limits.timeoutMs === "number" && limits.timeoutMs > 0) {
     base.timeout = `${Math.round(limits.timeoutMs)}ms`;
@@ -548,7 +562,10 @@ function expandBucketAgg(
 }
 
 function flattenAggregations(aggs: Record<string, unknown>): PluginQueryResult {
-  const rows = flattenAggLevel(aggs, {});
+  // Drop zero-key rows — they only arise from a degenerate agg that produced no
+  // column at all (e.g. an empty metric object); real bucket/metric rows always
+  // carry at least one key.
+  const rows = flattenAggLevel(aggs, {}).filter((r) => Object.keys(r).length > 0);
   return { columns: columnsFromRows(rows), rows };
 }
 

@@ -196,9 +196,13 @@ The DSL surface is gated by a custom read-only validator — the security bounda
   (`script_score`, a `script` agg, `script_fields`, `runtime_mappings`,
   `scripted_metric`). Non-mutating scripts (e.g. a `script_score` relevance tweak)
   are allowed.
-- **Index whitelist.** Each requested index must be present in the semantic layer;
-  wildcards, `_all`, and system / internal (`.`/`_`-prefixed) indices are always
-  rejected.
+- **Index rails.** Always enforced: you must name an explicit index — wildcards
+  (`*`/`?`), `_all`, and system / internal (`.`/`_`-prefixed) indices are
+  rejected, so the agent can't fan out beyond named indices. (Per-index
+  *membership* against the semantic-layer index list is not yet enforced from the
+  DSL tool — the plugin context exposes no index-name accessor today; the SQL
+  surface enforces the real whitelist via the core pipeline. Tracked in
+  [#3307](https://github.com/AtlasDevHQ/atlas/issues/3307).)
 
 ### Resource safeguards
 
@@ -227,7 +231,7 @@ routing is a later slice.
   timeout), plus the ES-specific `SHOW`/`DESCRIBE` guard above (no custom SQL
   validator). The Query DSL surface is gated by its own **default-deny** read-only
   validator (read endpoints only, no smuggled writes, no mutating scripts, index
-  whitelist) — see [Read-only validator](#read-only-validator-default-deny). The
+  rails) — see [Read-only validator](#read-only-validator-default-deny). The
   connection layer performs an authenticated cluster-info/ping round-trip and the
   `atlas init`/`diff` profiler issues only a read-only `GET /_mapping`.
 - **Secret-scrubbed errors.** Connection, health, query, and mapping errors are

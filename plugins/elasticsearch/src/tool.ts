@@ -21,7 +21,7 @@ import { z } from "zod";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type { ElasticsearchDslEndpoint, ElasticsearchDslQueryOptions } from "./connection";
 import { scrubElasticsearchError, SENSITIVE_PATTERNS } from "./connection";
-import { validateEsDslRequest, validateIndexAccess, normalizeDslResponse } from "./dsl";
+import { validateEsDslRequest, validateIndexAccess, normalizeDslResponse, isPlainObject } from "./dsl";
 
 /** Parse an integer env var, falling back to `fallback` on missing/garbage. */
 function intEnv(name: string, fallback: number): number {
@@ -43,10 +43,6 @@ interface DslConnection {
   dslQuery(opts: ElasticsearchDslQueryOptions): Promise<unknown>;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Whether the result was capped. Only meaningful for `_search` hit results:
  * `true` when ES reports more total matches than we returned, or we returned a
@@ -59,12 +55,16 @@ function computeTruncated(
   rowCount: number,
   maxSize: number,
 ): boolean {
-  if (endpoint !== "_search" || !isObject(raw)) return false;
-  if (isObject(raw.aggregations) && Object.keys(raw.aggregations).length > 0) return false;
-  const hits = isObject(raw.hits) ? raw.hits : undefined;
+  if (endpoint !== "_search" || !isPlainObject(raw)) return false;
+  if (isPlainObject(raw.aggregations) && Object.keys(raw.aggregations).length > 0) return false;
+  const hits = isPlainObject(raw.hits) ? raw.hits : undefined;
   const total = hits?.total;
   const totalValue =
-    typeof total === "number" ? total : isObject(total) && typeof total.value === "number" ? total.value : undefined;
+    typeof total === "number"
+      ? total
+      : isPlainObject(total) && typeof total.value === "number"
+        ? total.value
+        : undefined;
   if (typeof totalValue === "number" && totalValue > rowCount) return true;
   return rowCount >= maxSize;
 }

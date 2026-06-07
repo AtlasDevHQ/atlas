@@ -130,6 +130,15 @@ describe("validateEsDslRequest — adversarial: writes smuggled into a read body
     },
   );
 
+  test("denies a write smuggled into a _count body (the other executable endpoint)", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_count",
+      body: { query: { match_all: {} }, delete: { _id: "1" } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/write action/i);
+  });
+
   test("does NOT false-positive on a field literally named 'update' nested in a query", () => {
     const result = validateEsDslRequest({
       endpoint: "_search",
@@ -184,6 +193,15 @@ describe("validateEsDslRequest — adversarial: mutating scripts", () => {
       body: { query: { function_score: { script_score: { script: "ctx._source.x++" } } } },
     });
     expect(result.valid).toBe(false);
+  });
+
+  test("denies a mutating script in a _count body too", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_count",
+      body: { query: { script: { script: { source: "ctx.op = 'delete'" } } } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/mutating script/i);
   });
 });
 
@@ -280,6 +298,21 @@ describe("applyDslSafeguards", () => {
   test("falls back to DEFAULT_DSL_MAX_SIZE when no maxSize is given", () => {
     const out = applyDslSafeguards("_search", {}, {});
     expect(out.size).toBe(DEFAULT_DSL_MAX_SIZE);
+  });
+
+  test("clamps a negative size up to 0", () => {
+    const out = applyDslSafeguards("_search", { size: -5 }, { maxSize: 1000 });
+    expect(out.size).toBe(0);
+  });
+
+  test("treats a non-finite size (NaN / Infinity) as omitted → maxSize", () => {
+    expect(applyDslSafeguards("_search", { size: NaN }, { maxSize: 500 }).size).toBe(500);
+    expect(applyDslSafeguards("_search", { size: Infinity }, { maxSize: 500 }).size).toBe(500);
+  });
+
+  test("floors a fractional size (ES rejects a non-integer size)", () => {
+    const out = applyDslSafeguards("_search", { size: 5.9 }, { maxSize: 1000 });
+    expect(out.size).toBe(5);
   });
 
   test("sets a search timeout from timeoutMs", () => {
@@ -574,6 +607,29 @@ describe("normalizeDslResponse — _count and degenerate bodies", () => {
     expect(normalizeDslResponse(null)).toEqual({ columns: [], rows: [] });
     expect(normalizeDslResponse("nope")).toEqual({ columns: [], rows: [] });
     expect(normalizeDslResponse({})).toEqual({ columns: [], rows: [] });
+  });
+});
+
+describe("normalizeDslResponse — malformed shapes degrade gracefully (never throw)", () => {
+  test("a bucket agg whose `buckets` is neither array nor object yields no rows", () => {
+    expect(() => normalizeDslResponse({ aggregations: { x: { buckets: null } } })).not.toThrow();
+    expect(normalizeDslResponse({ aggregations: { x: { buckets: 7 } } })).toEqual({ columns: [], rows: [] });
+  });
+
+  test("a hit missing _source produces an _id/_score-only row (no crash)", () => {
+    const result = normalizeDslResponse({ hits: { hits: [{ _id: "1", _score: 1 }] } });
+    expect(result.rows).toEqual([{ _id: "1", _score: 1 }]);
+    expect(result.columns).toEqual(["_id", "_score"]);
+  });
+
+  test("a hit with a non-object _source is skipped, not spread", () => {
+    const result = normalizeDslResponse({ hits: { hits: [{ _id: "1", _score: 1, _source: "oops" }] } });
+    expect(result.rows).toEqual([{ _id: "1", _score: 1 }]);
+  });
+
+  test("an empty metric agg object adds no column and does not crash", () => {
+    const result = normalizeDslResponse({ aggregations: { mystery: {} } });
+    expect(result).toEqual({ columns: [], rows: [] });
   });
 });
 

@@ -19,9 +19,12 @@
  *      sensitive markers before a message reaches the agent, the user, or logs;
  *      `extractEsSqlErrorMessage` surfaces the actionable ES error reason first.
  *
+ * The Query DSL surface (#3267) lives here too — `client.dslQuery()` /
+ * `connection.dslQuery()` POST a read-only DSL request and return the raw
+ * response for the tool to validate + normalize (see `./dsl.ts` + `./tool.ts`).
+ *
  * This slice handles `elasticsearch://` URLs with API-key auth only. Basic /
- * Cloud ID / AWS SigV4 auth, the OpenSearch engine, and the Query DSL tool
- * (#3267) are later slices.
+ * Cloud ID / AWS SigV4 auth and the OpenSearch engine (#3266) are later slices.
  */
 
 import type {
@@ -143,7 +146,7 @@ export type ElasticsearchDslEndpoint = "_search" | "_count";
 /** Options for a single Query DSL request (`POST /<index>/<endpoint>`). */
 export interface ElasticsearchDslQueryOptions {
   /** Target index / alias / data stream (comma-separated allowed). The tool has
-   *  already validated each against the semantic-layer whitelist. */
+   *  already run `validateIndexAccess` (structural rails + membership) on it. */
   index: string;
   /** Read operation. Defaults to `_search`. */
   endpoint?: ElasticsearchDslEndpoint;
@@ -250,8 +253,9 @@ export function extractEsSqlErrorMessage(
   body: unknown,
   status: number,
   statusText: string,
+  surface: "SQL" | "DSL" = "SQL",
 ): string {
-  const fallback = `Elasticsearch SQL request failed: HTTP ${status} ${statusText}`;
+  const fallback = `Elasticsearch ${surface} request failed: HTTP ${status} ${statusText}`;
   if (body && typeof body === "object" && "error" in body) {
     const error = (body as { error: unknown }).error;
     if (typeof error === "string" && error.trim()) return error;
@@ -742,7 +746,7 @@ export function createElasticsearchClient(
             // HTTP status line via extractEsSqlErrorMessage.
             errBody = undefined;
           }
-          throw new Error(extractEsSqlErrorMessage(errBody, res.status, res.statusText));
+          throw new Error(extractEsSqlErrorMessage(errBody, res.status, res.statusText, "DSL"));
         }
 
         return await res.json();

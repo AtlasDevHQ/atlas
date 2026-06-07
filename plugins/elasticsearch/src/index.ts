@@ -268,23 +268,19 @@ export function buildElasticsearchPlugin(
       if (staticConfig) {
         const esTool = createQueryElasticsearchTool({
           getConnection: () => getOrCreateConnection(),
-          // The index whitelist mirrors the Salesforce tool's source
-          // (`ctx.connections.list()`). NOTE: this currently returns registered
-          // CONNECTION IDs, not semantic-layer index names — so the membership
-          // tier is ineffective today; the always-on structural rails
-          // (no wildcards / _all / system indices) still apply. Tracked
-          // separately — the plugin context needs a semantic-table accessor.
-          getWhitelist: () => {
-            try {
-              return new Set(ctx.connections.list());
-            } catch (err) {
-              ctx.logger.warn(
-                { err: err instanceof Error ? err.message : String(err) },
-                "Failed to load Elasticsearch index whitelist — falling back to structural-only validation",
-              );
-              return new Set<string>();
-            }
-          },
+          // The index MEMBERSHIP whitelist should be the semantic layer's index
+          // names — but the plugin context exposes no accessor for them today:
+          // `ctx.connections.list()` returns registered CONNECTION IDs (e.g.
+          // "elasticsearch-datasource"), NOT index names. Feeding those in would
+          // make `validateIndexAccess` reject every legitimate query (an index
+          // like "flights" is never a connection id). So we pass an EMPTY set,
+          // which keeps validateIndexAccess in structural-only mode: the
+          // always-on rails (no wildcards / _all / system indices) still apply,
+          // and a named index is allowed. The SQL surface (`executeSQL`) still
+          // enforces the real table whitelist via the core pipeline. Per-index
+          // membership for the DSL tool lands when the context gains a
+          // semantic-table accessor — tracked in #3307.
+          getWhitelist: () => new Set<string>(),
           logger: ctx.logger,
         });
 
@@ -375,6 +371,7 @@ export {
   normalizeDslResponse,
   applyDslSafeguards,
   flattenSource,
+  isPlainObject,
   ES_READ_ENDPOINTS,
   DEFAULT_DSL_MAX_SIZE,
   DEFAULT_DSL_TERMINATE_AFTER,

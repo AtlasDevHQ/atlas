@@ -323,6 +323,21 @@ describe("parseAliases", () => {
     expect(parseAliases({ products: { mappings: {} } } as unknown as EsAliasResponse).size).toBe(0);
     expect(parseAliases(undefined).size).toBe(0);
   });
+
+  test("excludes system backing indices for non-system aliases unless asked (#3319)", () => {
+    const resp: EsAliasResponse = {
+      ".kibana": { aliases: { "my-alias": {} } },
+      products: { aliases: { "my-alias": {} } },
+    };
+    // includeSystem: false — the non-system alias keeps only its non-system backing.
+    const filtered = parseAliases(resp);
+    expect([...filtered.get("my-alias")!]).toEqual(["products"]);
+    // includeSystem: true — the system backing index is retained.
+    expect([...parseAliases(resp, { includeSystem: true }).get("my-alias")!].sort()).toEqual([
+      ".kibana",
+      "products",
+    ]);
+  });
 });
 
 describe("parseDataStreams", () => {

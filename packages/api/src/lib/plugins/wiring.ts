@@ -25,7 +25,10 @@ interface ContextShape {
 
 interface DatasourceShape {
   connection: {
-    create(): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }> | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
+    // Optional: adapter-only plugins (SaaS per-workspace model) omit `create`
+    // and expose only `createFromConfig`, consulted by the datasource bridge
+    // for DB-stored installs. They are skipped for static boot-time wiring.
+    create?(): Promise<{ query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> }> | { query(sql: string, timeoutMs?: number): Promise<unknown>; close(): Promise<void> };
     dbType: string;
     validate?(query: string): { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
     parserDialect?: string;
@@ -106,8 +109,23 @@ export async function wireDatasourcePlugins(
       log.warn({ pluginId: plugin.id }, "Datasource plugin missing connection property — skipped");
       continue;
     }
+    // Adapter-only plugins (SaaS per-workspace model) have no static
+    // config-defined connection — they implement only `createFromConfig` and
+    // are consulted by the datasource bridge via the registry's `getAll()` for
+    // DB-stored installs. They stay registered; there's just nothing to wire
+    // statically. (Entities/dialect hints attach to a static connection, so
+    // they're skipped here too — DB-stored connections carry their own
+    // validation dialect via ConnectionPluginMeta at register time.)
+    const createConn = plugin.connection.create;
+    if (typeof createConn !== "function") {
+      log.debug(
+        { pluginId: plugin.id, dbType: plugin.connection.dbType },
+        "Adapter-only datasource plugin — no static connection to wire",
+      );
+      continue;
+    }
     try {
-      const conn = await plugin.connection.create();
+      const conn = await createConn();
       const meta = (plugin.connection.parserDialect || plugin.connection.forbiddenPatterns)
         ? { parserDialect: plugin.connection.parserDialect, forbiddenPatterns: plugin.connection.forbiddenPatterns }
         : undefined;

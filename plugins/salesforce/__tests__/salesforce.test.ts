@@ -236,9 +236,10 @@ describe("config validation", () => {
     ).toThrow(/URL must start with salesforce:\/\//);
   });
 
-  test("rejects missing URL", () => {
-    // @ts-expect-error — intentionally passing invalid config
-    expect(() => salesforcePlugin({})).toThrow();
+  test("accepts empty config — adapter-only registration (SaaS per-workspace)", () => {
+    const plugin = salesforcePlugin({});
+    expect(plugin.id).toBe("salesforce-datasource");
+    expect(plugin.config).toEqual({});
   });
 
   test("rejects URL with missing credentials", () => {
@@ -317,6 +318,97 @@ describe("plugin shape", () => {
   test("has teardown method", () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
     expect(typeof plugin.teardown).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no url is configured", () => {
+    const plugin = salesforcePlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = salesforcePlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = salesforcePlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("salesforce");
+  });
+
+  test("SOQL validate is still present and working in adapter-only mode", async () => {
+    const plugin = salesforcePlugin({});
+    expect(typeof plugin.connection.validate).toBe("function");
+    const ok = await plugin.connection.validate!("SELECT Id FROM Account");
+    expect(ok.valid).toBe(true);
+    const bad = await plugin.connection.validate!("DELETE FROM Account");
+    expect(bad.valid).toBe(false);
+    expect(bad.reason).toContain("Forbidden");
+  });
+
+  test("createFromConfig builds a connection from a runtime config even with no static url", async () => {
+    const plugin = salesforcePlugin({});
+    const conn = await plugin.connection.createFromConfig!({
+      url: "salesforce://runtime-user:runtime-pass@runtime.salesforce.com?token=RTOKEN",
+      // Extra keys from the decrypted workspace_plugins.config record are tolerated.
+      db_type: "salesforce",
+      group_id: "g_default",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig still rejects a missing/invalid runtime url", () => {
+    const plugin = salesforcePlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow();
+  });
+
+  test("static-config mode still wires connection.create when a url is given", () => {
+    const plugin = salesforcePlugin({ url: VALID_URL });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = salesforcePlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+    // No connection is constructed when there is no static datasource.
+    expect(mockLogin).not.toHaveBeenCalled();
+  });
+
+  test("initialize logs adapter-only (no url, no credentials, no crash)", async () => {
+    const plugin = salesforcePlugin({});
+    const { ctx, logged } = makeCtx();
+    await plugin.initialize!(ctx);
+    const msg = logged.find((m) => m.includes("adapter-only"));
+    expect(msg).toBeDefined();
+  });
+
+  test("does NOT register the static querySalesforce tool in adapter-only mode", async () => {
+    const plugin = salesforcePlugin({});
+    const { ctx, registered } = makeCtx();
+    await plugin.initialize!(ctx);
+    // The querySalesforce tool is hardwired to the static connection; on SaaS
+    // per-workspace Salesforce is queried via executeSQL through the bridge.
+    expect(registered.some((t) => t.name === "querySalesforce")).toBe(false);
+  });
+
+  test("dialect recommends executeSQL (not querySalesforce) in adapter-only mode", () => {
+    // The dialect must stay consistent with tool registration: adapter-only mode
+    // skips querySalesforce, so the guidance must not point the agent at it.
+    const plugin = salesforcePlugin({});
+    expect(plugin.dialect).toContain("executeSQL");
+    expect(plugin.dialect).not.toContain("querySalesforce");
   });
 });
 
@@ -706,7 +798,9 @@ describe("SENSITIVE_PATTERNS", () => {
 describe("connection factory", () => {
   test("connection.create() returns a PluginDBConnection", async () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
-    const conn = await plugin.connection.create();
+    // `create` is optional on the type now (omitted in adapter-only mode), but
+    // static config wires it — non-null assert in this static-mode test.
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });

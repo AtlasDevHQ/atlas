@@ -148,8 +148,10 @@ describe("config validation", () => {
     ).toThrow(/URL must start with duckdb:\/\//);
   });
 
-  test("rejects config with neither url nor path", () => {
-    expect(() => duckdbPlugin({})).toThrow(/Either url or path is required/);
+  test("accepts empty config — adapter-only registration (SaaS per-workspace)", () => {
+    const plugin = duckdbPlugin({});
+    expect(plugin.id).toBe("duckdb-datasource");
+    expect(plugin.config).toEqual({});
   });
 
   test("accepts path-based config", () => {
@@ -241,6 +243,102 @@ describe("plugin shape", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no url/path is configured", () => {
+    const plugin = duckdbPlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = duckdbPlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = duckdbPlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("duckdb");
+  });
+
+  test("createFromConfig builds a connection from a runtime url even with no static config", () => {
+    const plugin = duckdbPlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      url: "duckdb://runtime/analytics.duckdb",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig builds a connection from a runtime path even with no static config", () => {
+    const plugin = duckdbPlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      path: "/runtime/analytics.duckdb",
+      // Extra keys from the decrypted workspace_plugins.config record are tolerated.
+      db_type: "duckdb",
+      group_id: "g_default",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig rejects a runtime config with neither url nor path", () => {
+    const plugin = duckdbPlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow(
+      /Either url or path is required/,
+    );
+  });
+
+  test("createFromConfig rejects an invalid runtime url scheme", () => {
+    const plugin = duckdbPlugin({});
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow(/URL must start with duckdb:\/\//);
+  });
+
+  test("static-config mode still wires connection.create when a url is given", () => {
+    const plugin = duckdbPlugin({ url: "duckdb://analytics.duckdb" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("static-config mode still wires connection.create when a path is given", () => {
+    const plugin = duckdbPlugin({ path: "/data/analytics.duckdb" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = duckdbPlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+    // No connection is constructed when there is no static datasource.
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  test("initialize logs adapter-only (no url/path, no crash)", async () => {
+    const plugin = duckdbPlugin({});
+    const logged: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (...args: unknown[]) => { logged.push(String(args[0])); },
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    const msg = logged.find((m) => m.includes("adapter-only"));
+    expect(msg).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Forbidden patterns behavioral tests
 // ---------------------------------------------------------------------------
 
@@ -304,7 +402,7 @@ describe("connection factory", () => {
     const plugin = duckdbPlugin({
       url: "duckdb://analytics.duckdb",
     });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });
@@ -420,7 +518,7 @@ describe("connection factory", () => {
 
   test("url-based config without readOnly defaults to READ_ONLY for files", async () => {
     const plugin = duckdbPlugin({ url: "duckdb://analytics.duckdb" });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     await conn.query("SELECT 1");
     expect(mockCreate).toHaveBeenCalledWith("analytics.duckdb", {
       access_mode: "READ_ONLY",
@@ -429,21 +527,21 @@ describe("connection factory", () => {
 
   test("url-based in-memory config without readOnly skips READ_ONLY", async () => {
     const plugin = duckdbPlugin({ url: "duckdb://" });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     await conn.query("SELECT 1");
     expect(mockCreate).toHaveBeenCalledWith(":memory:", {});
   });
 
   test("path-based in-memory config without readOnly skips READ_ONLY", async () => {
     const plugin = duckdbPlugin({ path: ":memory:" });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     await conn.query("SELECT 1");
     expect(mockCreate).toHaveBeenCalledWith(":memory:", {});
   });
 
   test("path-based config creates connection with correct path", async () => {
     const plugin = duckdbPlugin({ path: "/data/analytics.duckdb" });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     await conn.query("SELECT 1");
     expect(mockCreate).toHaveBeenCalledWith("/data/analytics.duckdb", {
       access_mode: "READ_ONLY",
@@ -452,7 +550,7 @@ describe("connection factory", () => {
 
   test("path-based config with readOnly false skips READ_ONLY", async () => {
     const plugin = duckdbPlugin({ path: "/data/analytics.duckdb", readOnly: false });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     await conn.query("SELECT 1");
     expect(mockCreate).toHaveBeenCalledWith("/data/analytics.duckdb", {});
   });

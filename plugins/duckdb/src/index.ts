@@ -4,15 +4,28 @@
  * Wraps the in-process DuckDB adapter extracted from
  * packages/api/src/lib/db/duckdb.ts.
  *
- * Usage in atlas.config.ts:
+ * Two registration modes:
+ *
+ * 1. Static config-defined datasource (self-host / operator-baked) — pass a
+ *    `url` or `path` and the plugin wires a single connection at boot:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
  * import { duckdbPlugin } from "@useatlas/duckdb";
  *
  * export default defineConfig({
- *   plugins: [
- *     duckdbPlugin({ url: "duckdb://path/to/analytics.duckdb" }),
- *   ],
+ *   plugins: [duckdbPlugin({ url: "duckdb://path/to/analytics.duckdb" })],
+ * });
+ * ```
+ *
+ * 2. Adapter-only — pass no `url`/`path` and the plugin registers purely as an
+ *    adapter (DB-stored per-workspace connections via `createFromConfig`). This
+ *    mode exists for self-host parity with the other datasource plugins; DuckDB
+ *    is deliberately NOT registered in the hosted SaaS deploy configs
+ *    (deploy/api and deploy/api-staging) because it is file-path based and a
+ *    local filesystem path is not a safe multi-tenant datasource. On self-host:
+ * ```typescript
+ * export default defineConfig({
+ *   plugins: [duckdbPlugin({})],
  * });
  * ```
  */
@@ -24,7 +37,12 @@ import { createDuckDBConnection, parseDuckDBUrl } from "./connection";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { DUCKDB_FORBIDDEN_PATTERNS } from "./validation";
 
-const DuckDBConfigSchema = z.object({
+/**
+ * Base object schema for a DuckDB connection. `url` and `path` are both
+ * optional here; the requirement that at least one be present is layered on by
+ * the strict schema below.
+ */
+const DuckDBConfigBaseSchema = z.object({
   /** DuckDB connection URL (duckdb://). */
   url: z
     .string()
@@ -39,10 +57,28 @@ const DuckDBConfigSchema = z.object({
   path: z.string().trim().min(1, "Path must not be empty").optional(),
   /** Open in read-only mode. Defaults to true for file databases. */
   readOnly: z.boolean().optional(),
-}).refine(
+});
+
+/**
+ * Strict schema for a fully-specified DuckDB connection. Either a `url` or a
+ * `path` is required. Used by `connection.createFromConfig` to validate the
+ * decrypted per-(workspace, install) config of a DB-stored datasource (which
+ * always carries a url or path) before building the connection.
+ */
+const DuckDBConnectionConfigSchema = DuckDBConfigBaseSchema.refine(
   (cfg) => cfg.url || cfg.path,
   "Either url or path is required",
 );
+
+/**
+ * Lenient config-time schema — neither url nor path required so the plugin can
+ * be registered as an ADAPTER ONLY: `duckdbPlugin({})` parses, registering the
+ * plugin so its `createFromConfig` is available to the datasource bridge for
+ * DB-stored per-workspace installs, with no static datasource. This is for
+ * self-host parity — DuckDB is not registered in the hosted SaaS configs (see
+ * the file header). A `url`/`path`, when supplied, is still validated.
+ */
+const DuckDBConfigSchema = DuckDBConfigBaseSchema;
 
 export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 
@@ -54,11 +90,52 @@ export type DuckDBPluginConfig = z.infer<typeof DuckDBConfigSchema>;
 export function buildDuckDBPlugin(
   config: DuckDBPluginConfig,
 ): AtlasDatasourcePlugin<DuckDBPluginConfig> {
-  const parsed = config.url
-    ? parseDuckDBUrl(config.url)
-    : { path: config.path!, readOnly: config.path !== ":memory:" };
-  const dbConfig = { ...parsed, readOnly: config.readOnly ?? parsed.readOnly };
   let log: PluginLogger | undefined;
+
+  // When a static url/path is configured the plugin wires a config-defined
+  // connection at boot; without one it is registered adapter-only.
+  const hasStaticConfig = !!(config.url || config.path);
+  const staticUrl = config.url;
+  const staticPath = config.path;
+  const staticReadOnly = config.readOnly;
+
+  /** Resolve a DuckDBConnectionConfig from a url/path/readOnly triple, matching the build-time logic. */
+  const resolveDbConfig = (input: {
+    url?: string;
+    path?: string;
+    readOnly?: boolean;
+  }) => {
+    const parsed = input.url
+      ? parseDuckDBUrl(input.url)
+      : { path: input.path as string, readOnly: input.path !== ":memory:" };
+    return { ...parsed, readOnly: input.readOnly ?? parsed.readOnly };
+  };
+
+  const connection: AtlasDatasourcePlugin<DuckDBPluginConfig>["connection"] = {
+    // DB-driven (admin-UI-registered) datasources: build a connection from
+    // the per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict schema. Always available — this is the
+    // SaaS per-workspace path and the only path in adapter-only mode.
+    createFromConfig: (runtimeConfig) => {
+      const parsed = DuckDBConnectionConfigSchema.parse(runtimeConfig);
+      const dbConfig = resolveDbConfig(parsed);
+      return createDuckDBConnection({ ...dbConfig, logger: log });
+    },
+    dbType: "duckdb",
+    parserDialect: "PostgresQL",
+    forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
+  };
+
+  if (hasStaticConfig) {
+    // Parse the static config once, inside the create closure so adapter-only
+    // mode never calls parseDuckDBUrl on an undefined url/path.
+    const dbConfig = resolveDbConfig({
+      url: staticUrl,
+      path: staticPath,
+      readOnly: staticReadOnly,
+    });
+    connection.create = () => createDuckDBConnection({ ...dbConfig, logger: log });
+  }
 
   return {
     id: "duckdb-datasource",
@@ -67,12 +144,7 @@ export function buildDuckDBPlugin(
     name: "DuckDB DataSource",
     config,
 
-    connection: {
-      create: () => createDuckDBConnection({ ...dbConfig, logger: log }),
-      dbType: "duckdb",
-      parserDialect: "PostgresQL",
-      forbiddenPatterns: DUCKDB_FORBIDDEN_PATTERNS,
-    },
+    connection,
 
     entities: [],
 
@@ -90,11 +162,33 @@ export function buildDuckDBPlugin(
 
     async initialize(ctx) {
       log = ctx.logger;
-      const label = dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
-      ctx.logger.info(`DuckDB datasource plugin initialized (${label})`);
+      if (hasStaticConfig) {
+        const dbConfig = resolveDbConfig({
+          url: staticUrl,
+          path: staticPath,
+          readOnly: staticReadOnly,
+        });
+        const label = dbConfig.path === ":memory:" ? "in-memory" : dbConfig.path;
+        ctx.logger.info(`DuckDB datasource plugin initialized (${label})`);
+      } else {
+        ctx.logger.info(
+          "DuckDB datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
+        );
+      }
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      // Adapter-only: no static datasource to probe. The plugin itself is a
+      // healthy adapter; per-workspace connections are health-checked by the
+      // ConnectionRegistry once installed.
+      if (!hasStaticConfig) {
+        return { healthy: true, message: "adapter-only: no static datasource configured" };
+      }
+      const dbConfig = resolveDbConfig({
+        url: staticUrl,
+        path: staticPath,
+        readOnly: staticReadOnly,
+      });
       const start = performance.now();
       let conn: PluginDBConnection | undefined;
       try {
@@ -126,7 +220,10 @@ export function buildDuckDBPlugin(
  *
  * @example
  * ```typescript
+ * // Static datasource (self-host):
  * plugins: [duckdbPlugin({ url: "duckdb://analytics.duckdb" })]
+ * // Adapter-only (SaaS — customers bring their own per workspace):
+ * plugins: [duckdbPlugin({})]
  * ```
  */
 export const duckdbPlugin = createPlugin({

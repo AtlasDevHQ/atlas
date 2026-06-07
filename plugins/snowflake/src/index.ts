@@ -4,7 +4,10 @@
  * Demonstrates how the AtlasDatasourcePlugin interface can wrap the callback-based
  * snowflake-sdk adapter extracted from packages/api/src/lib/db/connection.ts.
  *
- * Usage in atlas.config.ts:
+ * Two registration modes:
+ *
+ * 1. Static config-defined datasource (self-host / operator-baked) — pass a
+ *    `url` and the plugin wires a single connection at boot:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
  * import { snowflakePlugin } from "@useatlas/snowflake";
@@ -13,6 +16,16 @@
  *   plugins: [
  *     snowflakePlugin({ url: "snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE" }),
  *   ],
+ * });
+ * ```
+ *
+ * 2. Adapter-only (SaaS per-workspace) — pass no `url` and the plugin registers
+ *    purely as an adapter, so customers add their own Snowflake per workspace
+ *    via Admin → Connections (DB-stored, encrypted). No operator env var, no
+ *    static datasource:
+ * ```typescript
+ * export default defineConfig({
+ *   plugins: [snowflakePlugin({})],
  * });
  * ```
  */
@@ -27,7 +40,13 @@ import {
 } from "./connection";
 import { SNOWFLAKE_FORBIDDEN_PATTERNS } from "./validation";
 
-const SnowflakeConfigSchema = z.object({
+/**
+ * Strict schema for a fully-specified Snowflake connection. A `url` is
+ * required. Used by `connection.createFromConfig` to validate the decrypted
+ * per-(workspace, install) config of a DB-stored datasource (which always
+ * carries a url) before building the connection.
+ */
+const SnowflakeConnectionConfigSchema = z.object({
   /** Snowflake connection URL (snowflake://user:pass@account/db/schema?warehouse=WH&role=ROLE). */
   url: z
     .string()
@@ -50,6 +69,15 @@ const SnowflakeConfigSchema = z.object({
   maxConnections: z.number().int().positive().max(100).optional(),
 });
 
+/**
+ * Lenient config-time schema — every field optional so the plugin can be
+ * registered as an ADAPTER ONLY: `snowflakePlugin({})` parses, registering the
+ * plugin so its `createFromConfig` is available to the datasource bridge for
+ * DB-stored per-workspace installs (the SaaS model), with no static datasource.
+ * A `url`, when supplied, is still validated for scheme + parseability.
+ */
+const SnowflakeConfigSchema = SnowflakeConnectionConfigSchema.partial();
+
 export type SnowflakeConfig = z.infer<typeof SnowflakeConfigSchema>;
 
 /**
@@ -62,6 +90,33 @@ export function buildSnowflakePlugin(
 ): AtlasDatasourcePlugin<SnowflakeConfig> {
   let log: PluginLogger | undefined;
 
+  // When a static url is configured the plugin wires a config-defined
+  // connection at boot; without one it is registered adapter-only.
+  const staticUrl = config.url;
+
+  const connection: AtlasDatasourcePlugin<SnowflakeConfig>["connection"] = {
+    // DB-driven (admin-UI-registered) datasources: build a connection from
+    // the per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict schema. Always available — this is the
+    // SaaS per-workspace path and the only path in adapter-only mode.
+    createFromConfig: (runtimeConfig) => {
+      const parsed = SnowflakeConnectionConfigSchema.parse(runtimeConfig);
+      return createSnowflakeConnection({
+        url: parsed.url,
+        maxConnections: parsed.maxConnections,
+        logger: log,
+      });
+    },
+    dbType: "snowflake",
+    parserDialect: "Snowflake",
+    forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
+  };
+
+  if (staticUrl) {
+    connection.create = () =>
+      createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections, logger: log });
+  }
+
   return {
     id: "snowflake-datasource",
     types: ["datasource"] as const,
@@ -69,13 +124,7 @@ export function buildSnowflakePlugin(
     name: "Snowflake DataSource",
     config,
 
-    connection: {
-      create: () =>
-        createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections, logger: log }),
-      dbType: "snowflake",
-      parserDialect: "Snowflake",
-      forbiddenPatterns: SNOWFLAKE_FORBIDDEN_PATTERNS,
-    },
+    connection,
 
     entities: [],
 
@@ -93,7 +142,13 @@ export function buildSnowflakePlugin(
 
     async initialize(ctx) {
       log = ctx.logger;
-      ctx.logger.info(`Snowflake datasource plugin initialized (${extractAccount(config.url)})`);
+      if (staticUrl) {
+        ctx.logger.info(`Snowflake datasource plugin initialized (${extractAccount(staticUrl)})`);
+      } else {
+        ctx.logger.info(
+          "Snowflake datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
+        );
+      }
       ctx.logger.warn(
         "Snowflake has no session-level read-only mode — Atlas enforces SELECT-only " +
         "via SQL validation (regex + AST). For defense-in-depth, configure the " +
@@ -103,10 +158,16 @@ export function buildSnowflakePlugin(
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      // Adapter-only: no static datasource to probe. The plugin itself is a
+      // healthy adapter; per-workspace connections are health-checked by the
+      // ConnectionRegistry once installed.
+      if (!staticUrl) {
+        return { healthy: true, message: "adapter-only: no static datasource configured" };
+      }
       const start = performance.now();
       let conn: PluginDBConnection | undefined;
       try {
-        conn = createSnowflakeConnection({ url: config.url, maxConnections: config.maxConnections });
+        conn = createSnowflakeConnection({ url: staticUrl, maxConnections: config.maxConnections });
         await conn.query("SELECT 1", 5000);
         return {
           healthy: true,
@@ -138,7 +199,10 @@ export function buildSnowflakePlugin(
  *
  * @example
  * ```typescript
+ * // Static datasource (self-host):
  * plugins: [snowflakePlugin({ url: "snowflake://user:pass@xy12345/mydb/public?warehouse=COMPUTE_WH" })]
+ * // Adapter-only (SaaS — customers bring their own per workspace):
+ * plugins: [snowflakePlugin({})]
  * ```
  */
 export const snowflakePlugin = createPlugin({

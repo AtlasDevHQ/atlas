@@ -33,6 +33,19 @@ import { defineConfig } from "./packages/api/src/lib/config";
 // The `defineConfig` import above uses the same relative-path pattern
 // for the same reason. Resolved at boot via bun's TS loader.
 import { chatPlugin } from "./plugins/chat/src/index";
+// Datasource ADAPTER plugins (#3253 / ADR-0013). Registered with empty config
+// so each is available purely as an adapter: customers add their own connection
+// per workspace via Admin → Connections (DB-stored, encrypted), resolved through
+// the datasource bridge's `createFromConfig`. No operator env var, no static
+// datasource. DuckDB is intentionally NOT registered here — it is file-path
+// based and not a safe multi-tenant SaaS datasource (its plugin still supports
+// adapter-only mode for self-host). Postgres + MySQL need no plugin — the bridge
+// registers those DB-stored installs natively.
+import { clickhousePlugin } from "./plugins/clickhouse/src/index";
+import { salesforcePlugin } from "./plugins/salesforce/src/index";
+import { snowflakePlugin } from "./plugins/snowflake/src/index";
+import { bigqueryPlugin } from "./plugins/bigquery/src/index";
+import { elasticsearchPlugin } from "./plugins/elasticsearch/src/index";
 import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
@@ -760,6 +773,18 @@ export default defineConfig({
   // at rest via AES-256-GCM. OMIT `botToken` so the adapter operates
   // in multi-workspace mode.
   plugins: [
+    // ── Datasource adapters (adapter-only / SaaS per-workspace) ──────
+    // Order within plugins[] doesn't affect boot wiring — the datasource bridge
+    // resolves adapters via the registry's getAll() (order-independent). Each
+    // registers as an adapter only (no static connection); customers bring their
+    // own ClickHouse / Salesforce / Snowflake / BigQuery / Elasticsearch per
+    // workspace. See the import block above for why DuckDB is excluded and why
+    // Postgres + MySQL need no entry.
+    clickhousePlugin({}),
+    salesforcePlugin({}),
+    snowflakePlugin({}),
+    bigqueryPlugin({}),
+    elasticsearchPlugin({}),
     chatPlugin({
       // Catalog-driven adapter activation (#2650 slice 2). The chat
       // plugin's `AdapterRegistry` reads the chat-type subset of the

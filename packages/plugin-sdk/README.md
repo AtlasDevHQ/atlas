@@ -42,9 +42,12 @@ Atlas has five plugin types. Each extends `AtlasPluginBase` with variant-specifi
 
 Connect to a database. Provides a connection factory, SQL dialect hints, and optional entity definitions.
 
+A datasource plugin must provide **at least one** connection factory: `create()` for a static config-defined connection, `createFromConfig()` for a DB-stored (admin-registered) per-workspace connection, or both. A plugin with only `createFromConfig()` is an **adapter-only** plugin — registered for use but with no static datasource (the multi-tenant SaaS model, where every connection is added per workspace).
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `connection.create()` | `() => PluginDBConnection` | Yes | Factory that returns a connection with `query()` and `close()` |
+| `connection.create()` | `() => PluginDBConnection \| Promise<PluginDBConnection>` | One of create/createFromConfig | Factory that returns a connection with `query()` and `close()` from the plugin's config-time config (static / self-host) |
+| `connection.createFromConfig()` | `(config) => PluginDBConnection \| Promise<PluginDBConnection>` | One of create/createFromConfig | Factory that builds a connection from a DB-stored per-(workspace, install) config (adapter-only / SaaS) |
 | `connection.dbType` | `PluginDBType` | Yes | Database type identifier (`postgres`, `mysql`, `clickhouse`, `snowflake`, `duckdb`, or custom) |
 | `entities` | `EntityProvider` | No | Semantic layer fragments merged into the table whitelist at boot |
 | `dialect` | `string` | No | SQL dialect guidance injected into the agent system prompt |

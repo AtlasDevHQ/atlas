@@ -369,6 +369,7 @@ describe("migrateAuthTables", () => {
             { name: "0121_dashboard_card_annotations.sql" },
             { name: "0122_learned_patterns_connection_group.sql" },
             { name: "0123_elasticsearch_datasource_catalog.sql" },
+            { name: "0124_duckdb_not_saas_eligible.sql" },
           ],
         };
       }

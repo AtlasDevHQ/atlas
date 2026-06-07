@@ -25,6 +25,7 @@ import {
   checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { getConfig } from "@atlas/api/lib/config";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   isPlanEligible as planRankEligible,
@@ -147,6 +148,10 @@ interface CatalogRow extends Record<string, unknown> {
   config_schema: unknown;
   min_plan: string;
   enabled: boolean;
+  // #3301 — false rows are hidden from the marketplace on SaaS deploys
+  // (e.g. DuckDB, which is file-path based and not multi-tenant safe).
+  // `NOT NULL DEFAULT true` in the DB, so this is always a real boolean.
+  saas_eligible: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -589,7 +594,8 @@ const listAvailableRoute = createRoute({
   path: "/available",
   tags: ["Admin — Plugin Marketplace"],
   summary: "List plugins available to this workspace",
-  description: "Returns enabled catalog entries filtered by the workspace's plan tier, with installation status.",
+  description:
+    "Returns enabled catalog entries filtered by the workspace's plan tier, with installation status. On SaaS deploys (`ATLAS_DEPLOY_MODE=saas`), entries flagged `saas_eligible = false` (e.g. DuckDB) are excluded.",
   responses: {
     200: {
       description: "Available plugins",
@@ -731,6 +737,14 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       );
       const installedMap = new Map(installations.map((i) => [i.catalog_id, { id: i.id, config: i.config }]));
 
+      // #3301 — on SaaS deploys, hide catalog rows flagged `saas_eligible =
+      // false` (DuckDB is file-path based and not multi-tenant safe; rows with
+      // no registered adapter/install handler are likewise excluded). Resolved
+      // (not raw-env) deploy mode so an `ATLAS_DEPLOY_MODE=saas` that downgrades
+      // to self-hosted without @atlas/ee still lists everything. Self-hosted is
+      // unaffected — every datasource type stays visible.
+      const isSaasDeploy = getConfig()?.deployMode === "saas";
+
       // Filter by plan eligibility, masking any installedConfig field marked
       // `secret: true` in the catalog's config_schema. A workspace admin
       // would otherwise GET /available and read every live credential
@@ -741,6 +755,7 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       // every string value and we log so operators see the drift.
       const available = catalog
         .filter((entry) => isPlanEligible(plan, entry.min_plan))
+        .filter((entry) => !isSaasDeploy || entry.saas_eligible !== false)
         .map((entry) => {
           const inst = installedMap.get(entry.id);
           const schema = parseConfigSchema(entry.config_schema);

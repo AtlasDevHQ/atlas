@@ -7,6 +7,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Connects to a DuckDB database -- either a file on disk or an in-memory instance. DuckDB runs in-process via `@duckdb/node-api`, so there is no network connection or connection pooling. The plugin uses lazy initialization with a cached connection promise and automatic retry on transient failures.
 
+<Callout type="warn">
+DuckDB is **self-host only**. Because it is file-path based and runs in the Atlas process, it is not multi-tenant safe, so its catalog row carries `saas_eligible: false` and is hidden from the Atlas Cloud (SaaS) datasource marketplace. Configure it in `atlas.config.ts` on a self-hosted deploy.
+</Callout>
+
 ## Installation
 
 ```bash

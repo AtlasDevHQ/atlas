@@ -65,7 +65,7 @@ import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 import {
   profileElasticsearch,
   elasticsearchCatalog,
-  entityFileSlug,
+  buildUniqueFileSlugs,
 } from "../../lib/profilers/elasticsearch";
 
 // --- Demo dataset ---
@@ -318,16 +318,19 @@ async function profileElasticsearchDatasource(
   }
 
   console.log(`\nGenerating semantic layer...\n`);
-  for (const entity of entities) {
-    // Slug the filename so an index-pattern entity (`logs-*`) writes to a
-    // filesystem-safe path (`logs-star.yml`); concrete index names are unchanged.
-    const filePath = path.join(entitiesOutDir, `${entityFileSlug(entity.table)}.yml`);
+  // Collision-free filename slugs over the same ordered array `elasticsearchCatalog`
+  // uses, so the written files and the catalog `file:` refs agree. An index-pattern
+  // entity (`logs-*`) writes to a filesystem-safe path (`logs-star.yml`); concrete
+  // index names are unchanged; a slug collision is disambiguated (`-2`, `-3`, …).
+  const fileSlugs = buildUniqueFileSlugs(entities.map((e) => e.table));
+  entities.forEach((entity, i) => {
+    const filePath = path.join(entitiesOutDir, `${fileSlugs[i]}.yml`);
     fs.writeFileSync(
       filePath,
       yaml.dump(entity, { lineWidth: 120, noRefs: true }),
     );
     console.log(`  wrote ${filePath}`);
-  }
+  });
 
   const catalogPath = path.join(outputBase, "catalog.yml");
   fs.writeFileSync(

@@ -976,48 +976,10 @@ export function createElasticsearchClient(
       index?: string,
       timeoutMs = 10000,
     ): Promise<EsMappingResponse> {
-      if (closed) {
-        throw new Error("Elasticsearch client is closed");
-      }
-
-      const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
-      const controller = new AbortController();
-      inFlight.add(controller);
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
       // `GET /_mapping` (all indices) or `GET /<index>/_mapping` (one). The
       // index segment is URL-encoded so reserved characters can't escape the path.
-      const target = index
-        ? `${endpoint}/${encodeURIComponent(index)}/_mapping`
-        : `${endpoint}/_mapping`;
-
-      try {
-        const res = await fetchImpl(target, {
-          method: "GET",
-          headers: buildHeaders("GET", target, ""),
-          signal: controller.signal,
-        });
-
-        // On failure the body can echo the supplied credential, so report only
-        // the status line — never the body (mirrors `ping`).
-        if (!res.ok) {
-          throw new Error(
-            `Elasticsearch mapping request failed: HTTP ${res.status} ${res.statusText}`,
-          );
-        }
-
-        return (await res.json()) as EsMappingResponse;
-      } catch (err) {
-        if (controller.signal.aborted && !closed) {
-          throw new Error(
-            `Elasticsearch mapping request timed out after ${timeoutMs}ms`,
-          );
-        }
-        throw new Error(scrubElasticsearchError(err, secrets));
-      } finally {
-        clearTimeout(timer);
-        inFlight.delete(controller);
-      }
+      const path = index ? `/${encodeURIComponent(index)}/_mapping` : "/_mapping";
+      return readJson<EsMappingResponse>(path, "mapping", timeoutMs);
     },
 
     async getAliases(timeoutMs = 10000): Promise<EsAliasResponse> {

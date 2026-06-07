@@ -3,6 +3,8 @@ title: Elasticsearch / OpenSearch
 description: Connect an Elasticsearch or OpenSearch cluster as a read-only Atlas datasource — three auth modes, both engines, SQL + Query DSL surfaces.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
 A single unified plugin (`@useatlas/elasticsearch`) that connects an
 **Elasticsearch** or **OpenSearch** cluster as a read-only Atlas datasource over
 a thin `fetch`-based HTTP client — no official SDK dependency. The agent queries
@@ -169,6 +171,20 @@ SELECT level, COUNT(*) FROM "logs-*" GROUP BY level
 ```text
 queryElasticsearch(index: "logs-*", body: { ... })
 ```
+
+<Callout type="warn">
+A pattern entity authorizes the **literal pattern string**, not a fixed set of
+indices. The cluster expands `logs-*` at query time, so the entity grants access
+to whatever matches it *then* — **including indices created after `atlas init`
+ran**. Declaring a `logs-*` entity is your explicit authorization of that family.
+If a family must not expose future or by-pattern indices, declare
+concrete-index entities instead of a pattern.
+
+Pattern auto-detection is conservative to avoid collapsing unrelated families:
+it only groups indices whose suffix is a real date (`(19|20)YY[.-MM[-DD]]`) or a
+zero-padded rollover counter (`000001`). Id-suffixed indices like `app-12345`
+stay separate.
+</Callout>
 
 ## Query DSL surface
 

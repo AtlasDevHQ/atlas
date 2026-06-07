@@ -583,8 +583,10 @@ export {
   indexPatternBase,
   detectIndexPatterns,
   buildLogicalEntity,
+  collapseMappings,
   mappingsToLogicalEntities,
   entityFileSlug,
+  buildUniqueFileSlugs,
 } from "./mapping";
 export type {
   EsProperty,
@@ -596,6 +598,7 @@ export type {
   EsDataStreamResponse,
   EsLogicalKind,
   LogicalProfilingInput,
+  CollapsedMappings,
   EsDimensionType,
   FlatEsField,
   EsDimension,

@@ -272,6 +272,16 @@ export function validateIndexAccess(
     // exact token is a whitelisted PATTERN entity (#3269). `_all` can never be a
     // member (the system rail below rejects any `_`-leading name), so it always
     // falls here.
+    //
+    // SECURITY NOTE: membership authorizes the LITERAL pattern string (`logs-*`),
+    // not a fixed set of indices. The cluster — not Atlas — expands `logs-*` at
+    // query time, so a pattern entity authorizes whatever matches it *then*,
+    // INCLUDING indices created after `atlas init` profiled the layer. That is the
+    // intended contract: declaring a `logs-*` entity is the operator's explicit
+    // authorization of that family. Operators who must NOT expose
+    // future/by-pattern indices should declare concrete-index entities instead of
+    // a pattern. (There is no per-query expansion check; adding one would require
+    // resolving the pattern against the live cluster on every request.)
     if ((seg === "_all" || /[*?]/.test(seg)) && !isMember) {
       return {
         valid: false,

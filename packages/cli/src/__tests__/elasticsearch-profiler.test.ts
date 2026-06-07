@@ -200,6 +200,34 @@ describe("profileElasticsearch — logical sources", () => {
     expect(entities.map((e) => e.table)).toEqual(["orders"]);
   });
 
+  test("--tables resolves a collapsed concrete index to its owning pattern entity (#3269)", async () => {
+    const fetchImpl = routingFetch({
+      mapping: {
+        "logs-2024.01.01": { mappings: { properties: { ts: { type: "date" } } } },
+        "logs-2024.01.02": { mappings: { properties: { ts: { type: "date" } } } },
+        products: { mappings: { properties: { sku: { type: "keyword" } } } },
+      },
+    });
+    // A concrete index that collapsed into `logs-*` is still addressable by name:
+    // it resolves to the pattern entity instead of a spurious "not found".
+    const byMember = await profileElasticsearch(URL, API_KEY, ["logs-2024.01.01"], {
+      fetchImpl,
+    });
+    expect(byMember.entities.map((e) => e.table)).toEqual(["logs-*"]);
+    expect(byMember.errors).toEqual([]);
+
+    // The logical name itself still works too.
+    const byName = await profileElasticsearch(URL, API_KEY, ["logs-*"], { fetchImpl });
+    expect(byName.entities.map((e) => e.table)).toEqual(["logs-*"]);
+    expect(byName.errors).toEqual([]);
+
+    // A genuinely-absent index still reports not-found.
+    const missing = await profileElasticsearch(URL, API_KEY, ["nope"], { fetchImpl });
+    expect(missing.entities).toEqual([]);
+    expect(missing.errors).toHaveLength(1);
+    expect(missing.errors[0].table).toBe("nope");
+  });
+
   test("emits a data-stream entity from its backing-index mapping", async () => {
     const { entities } = await profileElasticsearch(URL, API_KEY, undefined, {
       fetchImpl: routingFetch({

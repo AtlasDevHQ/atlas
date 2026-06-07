@@ -12,8 +12,10 @@ import {
   indexPatternBase,
   detectIndexPatterns,
   buildLogicalEntity,
+  collapseMappings,
   mappingsToLogicalEntities,
   entityFileSlug,
+  buildUniqueFileSlugs,
 } from "../src/mapping";
 import type {
   EsMappingResponse,
@@ -361,12 +363,19 @@ describe("indexPatternBase", () => {
     expect(indexPatternBase(index)).toBe(base);
   });
 
-  test.each(["orders", "products", "-leading", "trailing-", "logs-prod"])(
-    "%s → null (no date/rollover suffix)",
-    (index) => {
-      expect(indexPatternBase(index)).toBeNull();
-    },
-  );
+  test.each([
+    "orders",
+    "products",
+    "-leading",
+    "trailing-",
+    "logs-prod",
+    // Id-suffixed, NOT time/rollover — must not be mistaken for a pattern (#3269 review).
+    "app-12345", // bare non-padded number (not a zero-padded rollover)
+    "tenant-99999",
+    "shard-1000", // 1000 is not a (19|20)YY year
+  ])("%s → null (no date/rollover suffix)", (index) => {
+    expect(indexPatternBase(index)).toBeNull();
+  });
 });
 
 describe("detectIndexPatterns", () => {
@@ -389,6 +398,11 @@ describe("detectIndexPatterns", () => {
 
   test("a lone dated index is NOT collapsed (no surprise wildcard)", () => {
     expect(detectIndexPatterns(["logs-2024.01.01", "orders"]).size).toBe(0);
+  });
+
+  test("does NOT collapse unrelated id-suffixed indices into a wildcard (#3269 review)", () => {
+    // Two distinct tenant/shard-id indices share a base but are not a time family.
+    expect(detectIndexPatterns(["app-12345", "app-67890"]).size).toBe(0);
   });
 });
 
@@ -482,5 +496,40 @@ describe("entityFileSlug", () => {
     expect(entityFileSlug("logs-*")).toBe("logs-star");
     expect(entityFileSlug("log-?")).toBe("log-q");
     expect(entityFileSlug("a b/c")).toBe("a_b_c");
+  });
+});
+
+describe("buildUniqueFileSlugs", () => {
+  test("passes distinct slugs through and disambiguates collisions deterministically", () => {
+    // `logs-*` slugs to `logs-star`; a real index literally named `logs-star`
+    // would collide — the second occurrence is suffixed rather than overwriting.
+    const slugs = buildUniqueFileSlugs(["logs-*", "logs-star", "products", "logs-*"]);
+    expect(slugs).toEqual(["logs-star", "logs-star-2", "products", "logs-star-3"]);
+    // Aligned to input order and collision-free.
+    expect(new Set(slugs).size).toBe(slugs.length);
+  });
+});
+
+describe("collapseMappings — coverage map", () => {
+  const mapping: EsMappingResponse = {
+    "logs-2024.01.01": { mappings: { properties: { ts: { type: "date" } } } },
+    "logs-2024.01.02": { mappings: { properties: { ts: { type: "date" } } } },
+    orders_v3: { mappings: { properties: { id: { type: "keyword" } } } },
+    products: { mappings: { properties: { sku: { type: "keyword" } } } },
+  };
+
+  test("maps every member/concrete index to its owning logical table", () => {
+    const { entities, coverage } = collapseMappings({
+      mapping,
+      aliases: { orders_v3: { aliases: { orders: {} } } },
+    });
+    expect(entities.map((e) => e.table).sort()).toEqual(["logs-*", "orders", "products"]);
+    // Pattern members resolve to the pattern entity.
+    expect(coverage.get("logs-2024.01.01")).toBe("logs-*");
+    expect(coverage.get("logs-2024.01.02")).toBe("logs-*");
+    // Alias backing index resolves to the alias entity.
+    expect(coverage.get("orders_v3")).toBe("orders");
+    // A standalone index maps to itself.
+    expect(coverage.get("products")).toBe("products");
   });
 });

@@ -394,23 +394,30 @@ export function parseDataStreams(
 }
 
 /**
- * `<base>-<suffix>` where the suffix is a date (`2024`, `2024.01`, `2024.01.01`,
- * `2024-01-01` — `.` or `-` separated) or a rollover sequence (`000001`). The
- * date alternative is matched BEFORE the bare-number one so a dash-separated date
- * (whose own internal `-`s would otherwise fool a last-dash split) is captured
- * whole. `base` is non-greedy so the leftmost dash that yields a valid suffix
- * wins (`filebeat-7.10.0-2024.01.01` → base `filebeat-7.10.0`). Index names are
- * short (ES caps them at 255 bytes), so the bounded backtracking is safe.
+ * `<base>-<suffix>` where the suffix is a date or a rollover counter. The suffix
+ * is deliberately NARROW to avoid collapsing unrelated id-suffixed families
+ * (`app-12345`, `tenant-99999`) into a wildcard:
+ *   - **Date** — `(19|20)\d{2}` year (so a bare 4-digit id like `1234` is NOT a
+ *     "year"), optionally followed by `.`/`-` separated month/day groups
+ *     (`2024`, `2024.01`, `2024.01.01`, `2024-01-01`).
+ *   - **Rollover** — `0\d{5,}`, the zero-padded ILM counter (`000001`). A bare
+ *     non-padded number (`12345`) is NOT treated as a rollover.
+ * The date alternative is matched before the rollover one so a dash-separated
+ * date (whose own internal `-`s would otherwise fool a last-dash split) is
+ * captured whole. `base` is non-greedy so the leftmost dash that yields a valid
+ * suffix wins (`filebeat-7.10.0-2024.01.01` → base `filebeat-7.10.0`). Index
+ * names are short (ES caps them at 255 bytes), so the bounded backtracking is safe.
  */
-const PATTERN_SUFFIX_RE = /^(.+?)-(\d{4}([.-]\d{2}){0,2}|\d{4,})$/;
+const PATTERN_SUFFIX_RE = /^(.+?)-((?:19|20)\d{2}(?:[.-]\d{2}){0,2}|0\d{5,})$/;
 
 /**
  * Derive the shared base of a time-/rollover-partitioned index, or `null` when
  * the name carries no such suffix:
  *   - `logs-2024.01.01` / `logs-2024-01-01` → `logs`
+ *   - `events-2024`            → `events`
  *   - `metrics-000001`         → `metrics`
  *   - `filebeat-7.10.0-2024.01.01` → `filebeat-7.10.0`
- *   - `orders` / `products` / `logs-prod` → `null` (not a pattern member)
+ *   - `orders` / `products` / `logs-prod` / `app-12345` → `null` (not a pattern)
  */
 export function indexPatternBase(index: string): string | null {
   const match = PATTERN_SUFFIX_RE.exec(index);
@@ -526,6 +533,18 @@ export interface LogicalProfilingInput {
   dataStreamMapping?: EsMappingResponse;
 }
 
+/** Result of {@link collapseMappings}: the emitted entities plus a coverage map
+ *  from every concrete/backing index name to the `table` of the entity that
+ *  represents it. Coverage lets a caller (e.g. the CLI `--tables` filter) resolve
+ *  a concrete index that was collapsed into a pattern/alias/data-stream back to
+ *  its owning logical entity instead of reporting it "not found" (#3269). Only
+ *  EMITTED entities contribute coverage — a member of a dropped (field-less)
+ *  entity is genuinely absent. */
+export interface CollapsedMappings {
+  entities: EsEntityDoc[];
+  coverage: Map<string, string>;
+}
+
 /**
  * Transform a cluster's mapping + alias + data-stream metadata into entity docs,
  * representing time-partitioned indices as ONE logical entity (#3269). Each
@@ -539,17 +558,28 @@ export interface LogicalProfilingInput {
  *      non-system) indices, ≥2 members (see {@link detectIndexPatterns}).
  *   4. **Standalone indices** — whatever is left, emitted exactly as
  *      {@link mappingsToEntities} would (byte-identical to the pre-#3269 output).
+ *
+ * Returns the entities and a {@link CollapsedMappings.coverage} map. Most callers
+ * want {@link mappingsToLogicalEntities} (entities only).
  */
-export function mappingsToLogicalEntities(
+export function collapseMappings(
   input: LogicalProfilingInput,
   opts?: { group?: string; includeSystem?: boolean },
-): EsEntityDoc[] {
+): CollapsedMappings {
   const includeSystem = opts?.includeSystem ?? false;
   const group = opts?.group;
   const mapping = input.mapping ?? {};
   const out: EsEntityDoc[] = [];
+  const coverage = new Map<string, string>();
   // Concrete indices already represented by a logical entity — never re-emitted.
   const claimed = new Set<string>();
+
+  /** Record an emitted entity + map each member index to its logical `table`. */
+  const emit = (entity: EsEntityDoc | null, members: string[]): void => {
+    if (!entity) return;
+    out.push(entity);
+    for (const m of members) coverage.set(m, entity.table);
+  };
 
   // 1. Data streams.
   const dataStreams = parseDataStreams(input.dataStreams, { includeSystem });
@@ -557,14 +587,16 @@ export function mappingsToLogicalEntities(
   for (const [name, indices] of dataStreams) {
     const members = [...indices];
     for (const m of members) claimed.add(m);
-    const entity = buildLogicalEntity({
-      name,
-      kind: "data_stream",
-      memberIndices: members,
-      response: dataStreamMapping,
-      ...(group ? { group } : {}),
-    });
-    if (entity) out.push(entity);
+    emit(
+      buildLogicalEntity({
+        name,
+        kind: "data_stream",
+        memberIndices: members,
+        response: dataStreamMapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
   }
 
   // 2. Aliases (a name colliding with a data stream defers to the stream).
@@ -573,14 +605,16 @@ export function mappingsToLogicalEntities(
     if (dataStreams.has(name)) continue;
     const members = [...indices];
     for (const m of members) claimed.add(m);
-    const entity = buildLogicalEntity({
-      name,
-      kind: "alias",
-      memberIndices: members,
-      response: mapping,
-      ...(group ? { group } : {}),
-    });
-    if (entity) out.push(entity);
+    emit(
+      buildLogicalEntity({
+        name,
+        kind: "alias",
+        memberIndices: members,
+        response: mapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
   }
 
   // 3. Patterns from the remaining concrete indices.
@@ -589,25 +623,36 @@ export function mappingsToLogicalEntities(
   );
   for (const [pattern, members] of detectIndexPatterns(remaining)) {
     for (const m of members) claimed.add(m);
-    const entity = buildLogicalEntity({
-      name: pattern,
-      kind: "pattern",
-      memberIndices: members,
-      response: mapping,
-      ...(group ? { group } : {}),
-    });
-    if (entity) out.push(entity);
+    emit(
+      buildLogicalEntity({
+        name: pattern,
+        kind: "pattern",
+        memberIndices: members,
+        response: mapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
   }
 
   // 4. Standalone concrete indices (existing behavior, unchanged).
-  for (const index of Object.keys(mapping)) {
-    if (!includeSystem && isSystemIndex(index)) continue;
-    if (claimed.has(index)) continue;
-    const entity = mappingToEntity(index, mapping[index], group ? { group } : undefined);
-    if (entity) out.push(entity);
+  for (const index of remaining) {
+    if (claimed.has(index)) continue; // claimed by a pattern in step 3
+    emit(
+      mappingToEntity(index, mapping[index], group ? { group } : undefined),
+      [index],
+    );
   }
 
-  return out;
+  return { entities: out, coverage };
+}
+
+/** {@link collapseMappings} without the coverage map — the common case. */
+export function mappingsToLogicalEntities(
+  input: LogicalProfilingInput,
+  opts?: { group?: string; includeSystem?: boolean },
+): EsEntityDoc[] {
+  return collapseMappings(input, opts).entities;
 }
 
 /**
@@ -622,4 +667,26 @@ export function entityFileSlug(table: string): string {
     .replace(/\*/g, "star")
     .replace(/\?/g, "q")
     .replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/**
+ * Map an ORDERED list of entity `table` names to collision-free filename slugs,
+ * aligned to the input order. {@link entityFileSlug} is lossy/non-injective
+ * (`logs-*` and a concrete index `logs-star` both slug to `logs-star`), so a bare
+ * per-entity slug could make two entities write to the same `.yml` and silently
+ * overwrite one. This disambiguates a collision by appending `-2`, `-3`, … The
+ * result is deterministic for a given input order, so the `atlas init` write loop
+ * and the catalog `file:` references stay in lockstep when both pass the same
+ * `entities` array.
+ */
+export function buildUniqueFileSlugs(tables: string[]): string[] {
+  const used = new Set<string>();
+  return tables.map((table) => {
+    const base = entityFileSlug(table);
+    let slug = base;
+    let n = 2;
+    while (used.has(slug)) slug = `${base}-${n++}`;
+    used.add(slug);
+    return slug;
+  });
 }

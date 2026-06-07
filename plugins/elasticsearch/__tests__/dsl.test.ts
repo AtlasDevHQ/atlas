@@ -223,6 +223,36 @@ describe("validateEsDslRequest — adversarial: mutating scripts", () => {
   });
 });
 
+describe("validateEsDslRequest — adversarial: stored-script references", () => {
+  test("denies a stored-script reference (script.id) — body is server-side, unverifiable", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { script_fields: { x: { script: { id: "my_stored_script" } } } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
+
+  test("denies a stored-script reference nested under script_score", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { query: { function_score: { script_score: { script: { id: "x" } } } } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
+
+  test("still allows an inline read-only script (script.source)", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: { function_score: { script_score: { script: { source: "doc['likes'].value" } } } },
+      },
+    });
+    expect(result.valid).toBe(true);
+  });
+});
+
 describe("isReadEndpoint", () => {
   test("strips surrounding slashes before matching", () => {
     expect(isReadEndpoint("/_search/")).toBe(true);
@@ -290,6 +320,27 @@ describe("validateIndexAccess", () => {
     expect(validateIndexAccess("flights", new Set()).valid).toBe(true);
     expect(validateIndexAccess("anything-not-in-layer", new Set()).valid).toBe(true);
     expect(validateIndexAccess("*", new Set()).valid).toBe(false);
+  });
+
+  test.each([
+    "products/_doc/1/_update",
+    "products/_doc/1",
+    "orders%0a",
+    "orders flights",
+    'a"b',
+    "a<b",
+    "a|b",
+  ])("rejects an out-of-charset index segment %p (path-injection guard)", (idx) => {
+    // Self-contained safety: the validator must reject illegal index-name chars
+    // (slashes, whitespace, control, quotes) on its own — not rely on a downstream
+    // caller URL-encoding the segment. Checked even in structural-only mode.
+    const result = validateIndexAccess(idx, new Set());
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/not allowed in an index name/);
+  });
+
+  test("allows ordinary date-suffixed concrete index names (dots and hyphens)", () => {
+    expect(validateIndexAccess("logs-2024.01.01", new Set()).valid).toBe(true);
   });
 
   test("allows a wildcard index-pattern entity that is an explicit whitelist member (#3269)", () => {

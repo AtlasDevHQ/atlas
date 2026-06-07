@@ -493,6 +493,13 @@ interface CatalogRowFromDb extends Record<string, unknown> {
    * from ever reaching a not-yet-cap-gated handler.
    */
   readonly implementation_status?: string;
+  /**
+   * `saas_eligible` (#3301) — `false` marks a row that must never install on a
+   * SaaS deploy (e.g. DuckDB, file-path based and not multi-tenant safe). The
+   * marketplace `/install` route refuses these server-side; the `/install-form`
+   * route mirrors that gate so a known slug can't bypass it directly.
+   */
+  readonly saas_eligible?: boolean | null;
 }
 
 /**
@@ -564,9 +571,10 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   min_plan: string;
   config_schema: unknown;
   implementation_status: string | null;
+  saas_eligible: boolean | null;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status
+    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status, saas_eligible
        FROM plugin_catalog
       WHERE slug = $1 AND enabled = true
       LIMIT 1`,
@@ -589,6 +597,7 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     min_plan: row.min_plan,
     config_schema: row.config_schema ?? null,
     implementation_status: row.implementation_status ?? null,
+    saas_eligible: row.saas_eligible ?? null,
   };
 }
 
@@ -972,6 +981,28 @@ integrations.openapi(installFormRoute, async (c) =>
       );
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not installable via this route (OAuth platforms use /install).`, requestId },
+        400,
+      );
+    }
+
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // The marketplace `/available` listing hides `saas_eligible = false` rows on
+    // SaaS, and the `/install` route refuses them server-side. This parallel
+    // form-install route must mirror that gate — otherwise a workspace admin who
+    // knows the slug could POST it here directly and bypass the hidden card. Use
+    // `=== false` (not `!== true`) so a stale/NULL row stays installable, exactly
+    // like the `/install` gate in admin-marketplace.ts. Resolved deploy mode.
+    if (deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform, deployMode },
+        "Refused install-form: platform is not saas_eligible (#3301)",
+      );
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
         400,
       );
     }

@@ -101,6 +101,66 @@ export function normalizeTableIdentifier(raw: string): string {
     .join(".");
 }
 
+/**
+ * A bare (unquoted) SQL identifier segment: a letter or underscore followed by
+ * letters, digits, underscores, or `$` (Postgres/MySQL allow `$`). A dotted SQL
+ * table reference is `schema.table` (or `db.schema.table`) where EVERY segment
+ * matches this. Elasticsearch/OpenSearch index, alias, and data-stream names do
+ * not: they use `-`, `*`, `?`, `+`, `:` and digit-leading date fragments, with
+ * `.` as an ordinary character.
+ */
+const SQL_IDENTIFIER_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
+ * Derive the whitelist key(s) a `table:` value contributes.
+ *
+ * Returns the lowercased normalized full name, plus — for a SQL `schema.table`
+ * identifier — the unqualified last segment, so a `FROM orders` matches an
+ * entity declared as `public.orders`.
+ *
+ * Whether the name is a SQL identifier (and so gets the unqualified key) is
+ * decided in two tiers (#3317):
+ *
+ *  1. **Authoritative marker.** When the entity declares `identifier_style:
+ *     opaque` (`opts.opaque`), `table` is a literal datasource identifier
+ *     (e.g. an Elasticsearch index / alias / data-stream name) where `.` is an
+ *     ordinary character — only the full name is registered, never dot-split.
+ *     Elasticsearch entities always carry this marker.
+ *  2. **Name heuristic (fallback)** for entities without the marker: derive the
+ *     unqualified key only when the name is a genuine dotted SQL identifier — at
+ *     least two segments, each a bare SQL identifier
+ *     ({@link SQL_IDENTIFIER_SEGMENT}). A `-`/`*`/`?` or a digit-leading segment
+ *     can never appear in a bare SQL identifier, so a dotted ES name like
+ *     `filebeat-7.10.0-*`, `metrics-2024.01.01`, or `logs-nginx.access-default`
+ *     is recognized as opaque and not split (which would otherwise inject a
+ *     bogus `0-*` / `01` / `access-default` fragment that widens the allow-list).
+ *
+ * The marker (tier 1) is what closes the residual the heuristic cannot: a pure
+ * word-dotted opaque name whose every segment is a valid SQL identifier (e.g. an
+ * alias literally named `logs.app`) is indistinguishable from `schema.table` by
+ * name alone, so only the declared `identifier_style` can tell them apart.
+ */
+export function tableWhitelistKeys(rawTable: string, opts?: { opaque?: boolean }): string[] {
+  const normalized = normalizeTableIdentifier(rawTable);
+  const full = normalized.toLowerCase();
+  // A malformed entity with an empty `table:` (z.string() permits "") must
+  // contribute NO whitelist key — never register a meaningless "" that would
+  // sit in the allow-list (#3317 review).
+  if (!full) return [];
+  if (opts?.opaque) return [full];
+  const parts = normalized.split(".");
+  if (parts.length < 2 || !parts.every((seg) => SQL_IDENTIFIER_SEGMENT.test(seg))) {
+    return [full];
+  }
+  const last = parts[parts.length - 1].toLowerCase();
+  return last === full ? [full] : [last, full];
+}
+
+/** True when an entity declares its `table` is an opaque (non-SQL) identifier. */
+function isOpaqueIdentifier(entity: { identifier_style?: "sql" | "opaque" }): boolean {
+  return entity.identifier_style === "opaque";
+}
+
 /** Plugin-provided entity tables, keyed by connection ID. */
 const _pluginEntities = new Map<string, Set<string>>();
 
@@ -172,13 +232,13 @@ function loadEntitiesFromDir(
       const tables = byConnection.get(connId)!;
 
       // Extract table name (may include schema prefix like "public.users").
-      // Normalize identifier quotes so `"user"` / `` `user` `` in the YAML
-      // matches the unquoted name `node-sql-parser` returns from `FROM "user"`.
-      const normalized = normalizeTableIdentifier(entity.table);
-      const parts = normalized.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      // Also add the full qualified name
-      tables.add(normalized.toLowerCase());
+      // `tableWhitelistKeys` normalizes identifier quotes so `"user"` /
+      // `` `user` `` in the YAML matches the unquoted name `node-sql-parser`
+      // returns from `FROM "user"`, registers the full + unqualified SQL keys,
+      // and registers only the full name for opaque (ES) identifiers (#3317).
+      for (const key of tableWhitelistKeys(entity.table, { opaque: isOpaqueIdentifier(entity) })) {
+        tables.add(key);
+      }
 
       // Validate and collect cross-source joins separately from core entity parsing.
       // Invalid join entries are skipped individually without dropping the entity.
@@ -529,10 +589,9 @@ export function registerPluginEntities(
         skippedCount++;
         continue;
       }
-      const tableName = normalizeTableIdentifier(parsed.data.table);
-      const parts = tableName.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      tables.add(tableName.toLowerCase());
+      for (const key of tableWhitelistKeys(parsed.data.table, { opaque: isOpaqueIdentifier(parsed.data) })) {
+        tables.add(key);
+      }
     } catch (err) {
       log.warn(
         { connectionId, entity: entity.name, err: err instanceof Error ? err.message : String(err) },
@@ -707,9 +766,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
-      const normalized = normalizeTableIdentifier(parsed.data.table);
-      const parts = normalized.split(".");
-      const tableList = [parts[parts.length - 1].toLowerCase(), normalized.toLowerCase()];
+      const tableList = tableWhitelistKeys(parsed.data.table, { opaque: isOpaqueIdentifier(parsed.data) });
       recordTables(row, readGroupField(parsed.data), tableList);
     } catch (err) {
       parseFailures++;

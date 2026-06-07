@@ -16,6 +16,7 @@ const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../se
 const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic/whitelist")._resetWhitelists;
 const registerPluginEntities = semMod.registerPluginEntities as typeof import("../semantic/whitelist").registerPluginEntities;
 const _resetPluginEntities = semMod._resetPluginEntities as typeof import("../semantic/whitelist")._resetPluginEntities;
+const tableWhitelistKeys = semMod.tableWhitelistKeys as typeof import("../semantic/whitelist").tableWhitelistKeys;
 
 const tmpBase = resolve(__dirname, ".tmp-semantic-test");
 let testCounter = 0;
@@ -190,6 +191,130 @@ describe("per-connection whitelists", () => {
     expect(tables.has("good_table")).toBe(true);
     expect(tables.size).toBe(1); // Only the good table
   });
+
+  // #3317: an ES/OpenSearch index-pattern entity can have a dotted base
+  // (e.g. `filebeat-7.10.0-2024.01.01` collapses to `filebeat-7.10.0-*`). The
+  // SQL `schema.table` last-segment split must NOT fire on it — that injected a
+  // bogus `0-*` whitelist key and widened the allow-list.
+  it("dotted ES index pattern → only the full-name key, no bogus fragment", () => {
+    const dir = ensureEntitiesDir(`es-pattern-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "filebeat.yml"),
+      `table: filebeat-7.10.0-*\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    // Full pattern name validates (SQL `FROM "filebeat-7.10.0-*"` and the DSL
+    // `index: "filebeat-7.10.0-*"` both look it up lowercased).
+    expect(tables.has("filebeat-7.10.0-*")).toBe(true);
+    // The dotted-split fragment must be absent.
+    expect(tables.has("0-*")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
+
+  // #3317: the same over-grant for a non-wildcard dotted ES name (data stream /
+  // dotted dataset) — `logs-nginx.access-default` must not inject `access-default`.
+  it("dotted ES data-stream name → only the full-name key, no bogus fragment", () => {
+    const dir = ensureEntitiesDir(`es-stream-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "stream.yml"),
+      `table: logs-nginx.access-default\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    expect(tables.has("logs-nginx.access-default")).toBe(true);
+    expect(tables.has("access-default")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
+
+  // #3317: an `identifier_style: opaque` marker (which ES entities always carry)
+  // closes the name-undecidable residual — a pure word-dotted ES name that the
+  // name heuristic alone would split is registered as the full name only.
+  it("identifier_style: opaque suppresses the dot-split end-to-end (disk path)", () => {
+    const dir = ensureEntitiesDir(`es-opaque-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "stream.yml"),
+      `table: logs.app\nidentifier_style: opaque\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    expect(tables.has("logs.app")).toBe(true);
+    expect(tables.has("app")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
+});
+
+describe("tableWhitelistKeys", () => {
+  it("SQL schema.table → full + unqualified last-segment keys", () => {
+    expect(tableWhitelistKeys("public.orders").sort()).toEqual(["orders", "public.orders"]);
+  });
+
+  it("bare table name → single key", () => {
+    expect(tableWhitelistKeys("orders")).toEqual(["orders"]);
+  });
+
+  // #3317 review: a malformed empty `table:` must register no whitelist key.
+  it("empty table name → no keys (no bogus empty-string entry)", () => {
+    expect(tableWhitelistKeys("")).toEqual([]);
+    expect(tableWhitelistKeys("", { opaque: true })).toEqual([]);
+  });
+
+  it("strips identifier quotes and lowercases", () => {
+    expect(tableWhitelistKeys(`"User"`)).toEqual(["user"]);
+    expect(tableWhitelistKeys('analytics."Events"').sort()).toEqual(["analytics.events", "events"]);
+  });
+
+  it("3-part SQL identifier (db.schema.table) → full + unqualified", () => {
+    expect(tableWhitelistKeys("warehouse.public.orders").sort()).toEqual([
+      "orders",
+      "warehouse.public.orders",
+    ]);
+  });
+
+  // #3317: a `-`/`*`/`?` or digit-leading segment can't appear in a bare SQL
+  // identifier, so a dotted ES name carrying one is NOT schema-qualified — skip
+  // the last-segment split that would inject a bogus fragment.
+  it("dotted ES wildcard pattern → only the full name (no `0-*` fragment)", () => {
+    expect(tableWhitelistKeys("filebeat-7.10.0-*")).toEqual(["filebeat-7.10.0-*"]);
+  });
+
+  it("ES pattern with `?` wildcard → only the full name", () => {
+    expect(tableWhitelistKeys("logs-2024.01.0?")).toEqual(["logs-2024.01.0?"]);
+  });
+
+  it("dotted concrete date-suffixed index → only the full name (no `01` fragment)", () => {
+    expect(tableWhitelistKeys("metrics-2024.01.01")).toEqual(["metrics-2024.01.01"]);
+  });
+
+  it("dotted data-stream / alias name with a dash → only the full name", () => {
+    expect(tableWhitelistKeys("logs-nginx.access-default")).toEqual([
+      "logs-nginx.access-default",
+    ]);
+  });
+
+  it("dotted name with a digit-leading segment → only the full name", () => {
+    // `metrics.2024.01` has no dash/wildcard, but `2024`/`01` are digit-leading
+    // so it is not a SQL schema.table — still no bogus `01` fragment.
+    expect(tableWhitelistKeys("metrics.2024.01")).toEqual(["metrics.2024.01"]);
+  });
+
+  // Heuristic fallback (no marker): a pure word-dotted name is name-undecidable
+  // — indistinguishable from `schema.table` — so it still splits. The opaque
+  // marker (below) is what closes this for ES entities.
+  it("pure word-dotted name without marker → still splits (heuristic fallback)", () => {
+    expect(tableWhitelistKeys("logs.app").sort()).toEqual(["app", "logs.app"]);
+  });
+
+  // #3317: the `identifier_style: opaque` marker is authoritative — it forces
+  // full-name-only even for a name the heuristic would treat as SQL, closing
+  // the pure word-dotted residual.
+  it("opaque marker → full name only, even for a word-dotted name", () => {
+    expect(tableWhitelistKeys("logs.app", { opaque: true })).toEqual(["logs.app"]);
+  });
+
+  it("opaque marker → suppresses the unqualified key for a SQL-looking name", () => {
+    expect(tableWhitelistKeys("public.orders", { opaque: true })).toEqual(["public.orders"]);
+  });
 });
 
 describe("registerPluginEntities", () => {
@@ -227,6 +352,20 @@ describe("registerPluginEntities", () => {
     const tables = getWhitelistedTables("bq-plugin", dir);
     expect(tables.has("analytics.events")).toBe(true);
     expect(tables.has("events")).toBe(true);
+  });
+
+  // #3317: plugin-registered ES index-pattern entities must not get the bogus
+  // dotted-split key either (registerPluginEntities is one of the three paths).
+  it("dotted ES index pattern → only the full-name key (plugin path)", () => {
+    registerPluginEntities("es-plugin", [
+      { name: "filebeat", yaml: "table: filebeat-7.10.0-*\ndimensions:\n  message:\n    type: text\n" },
+    ]);
+
+    const dir = ensureEntitiesDir(`plugin-es-pattern-${testCounter}`);
+    const tables = getWhitelistedTables("es-plugin", dir);
+    expect(tables.has("filebeat-7.10.0-*")).toBe(true);
+    expect(tables.has("0-*")).toBe(false);
+    expect(tables.size).toBe(1);
   });
 
   it("merges with disk-based entities", () => {

@@ -20,6 +20,16 @@ export const EntityShape = z
     table: z.string(),
     group: z.string().optional(),
     connection: z.string().optional(),
+    /**
+     * How `table` is interpreted when deriving whitelist keys (#3317).
+     * - `"sql"` (default when omitted) — a dot-qualified SQL identifier
+     *   (`schema.table`); the loader also registers the unqualified last
+     *   segment so `FROM orders` matches `public.orders`.
+     * - `"opaque"` — a literal datasource identifier (e.g. an Elasticsearch
+     *   index / alias / data-stream name) where `.` is an ordinary character;
+     *   the loader registers the full name only and never dot-splits it.
+     */
+    identifier_style: z.enum(["sql", "opaque"]).optional(),
   })
   .passthrough();
 

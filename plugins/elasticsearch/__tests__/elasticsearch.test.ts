@@ -928,6 +928,74 @@ describe("createElasticsearchClient.sqlQuery", () => {
     client.close();
     await expect(client.sqlQuery({ query: "SELECT 1" })).rejects.toThrow(/closed/);
   });
+
+  test("a failed cursor close is non-fatal — still returns the truncated rows, warns, logs at debug", async () => {
+    // The whole point of the best-effort /_sql/close is that its failure must NOT
+    // fail the user's already-successful (truncated) query. Also locks the
+    // "truncation is logged, never silent" contract.
+    const warns: unknown[][] = [];
+    const debugs: unknown[][] = [];
+    const logger = {
+      info: (...a: unknown[]) => void a,
+      warn: (...a: unknown[]) => void warns.push(a),
+      error: (...a: unknown[]) => void a,
+      debug: (...a: unknown[]) => void debugs.push(a),
+    };
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_sql/close")) {
+        throw new Error("close request boom");
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2]],
+          cursor: "live-cursor",
+        });
+      }
+      return fetchResponse({ rows: [[3], [4]], cursor: "live-cursor" });
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch, logger },
+    );
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights", maxRows: 3 });
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    // Truncation warned (never silent) and the close failure logged at debug.
+    expect(warns.length).toBeGreaterThan(0);
+    expect(warns[0][0]).toEqual({ maxRows: 3 });
+    expect(debugs.length).toBeGreaterThan(0);
+  });
+
+  test("caps on the first page (zero loop iterations) and still closes the cursor", async () => {
+    // Distinct control-flow path: the first page alone meets maxRows AND carries a
+    // cursor, so the `while` body never runs — but the cap-on-entry close must
+    // still fire and NO cursor-continuation page may be fetched.
+    let cursorPageFetched = false;
+    let closeCalled = false;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_sql/close")) {
+        closeCalled = true;
+        return fetchResponse({ succeeded: true });
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2], [3]],
+          cursor: "live-cursor",
+        });
+      }
+      cursorPageFetched = true; // must not happen
+      return fetchResponse({ rows: [[4]] });
+    });
+    const client = makeClient(fetchImpl);
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights", maxRows: 2 });
+
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(cursorPageFetched).toBe(false);
+    expect(closeCalled).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

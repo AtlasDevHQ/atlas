@@ -66,6 +66,18 @@ describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
     expect(autoInstall[0]!.slug).toBe("demo-postgres");
   });
 
+  it("marks only `duckdb` as not saas_eligible (#3301)", () => {
+    // DuckDB is file-path based and not multi-tenant safe — it is the lone
+    // built-in datasource hidden from the SaaS marketplace. Every other row
+    // stays installable on SaaS.
+    const ineligible = BUILTIN_DATASOURCE_CATALOG_ROWS.filter((r) => !r.saasEligible);
+    expect(ineligible).toHaveLength(1);
+    expect(ineligible[0]!.slug).toBe("duckdb");
+    for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
+      expect(row.saasEligible).toBe(row.slug !== "duckdb");
+    }
+  });
+
   it("uses install_model 'oauth' only for salesforce (rest are 'form')", () => {
     for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
       const expected = row.slug === "salesforce" ? "oauth" : "form";
@@ -145,11 +157,23 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
     expect(captured[0]!.sql).toContain("RETURNING slug");
   });
 
-  it("emits 7 params per row (id, name, slug, description, install_model, auto_install, config_schema)", async () => {
+  it("emits 8 params per row (id, name, slug, description, install_model, auto_install, saas_eligible, config_schema)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // 9 rows × 7 params per row = 63 bound params total.
-    expect(captured[0]!.params).toHaveLength(9 * 7);
+    // 9 rows × 8 params per row = 72 bound params total.
+    expect(captured[0]!.params).toHaveLength(9 * 8);
+  });
+
+  it("binds saas_eligible per row — DuckDB false, every other row true (#3301)", async () => {
+    const { db, captured } = captureDb();
+    await seedBuiltinDatasourceCatalog(db);
+    // Each row's 7th param (index 6, 14, 22, …) is the saas_eligible boolean,
+    // bound rather than a SQL literal so DuckDB lands `false` on a fresh DB.
+    for (let i = 0; i < BUILTIN_DATASOURCE_CATALOG_ROWS.length; i++) {
+      const row = BUILTIN_DATASOURCE_CATALOG_ROWS[i]!;
+      const param = captured[0]!.params[i * 8 + 6];
+      expect(param).toBe(row.slug === "duckdb" ? false : true);
+    }
   });
 
   it("reports every slug as inserted on a fresh catalog (no conflicts)", async () => {
@@ -182,9 +206,9 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
   it("serializes config_schema as JSON in the bound params (matches ::jsonb cast in SQL)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // Each row's 7th param (index 6, 13, 20, …) is the JSON-serialized configSchema.
+    // Each row's 8th param (index 7, 15, 23, …) is the JSON-serialized configSchema.
     for (let i = 0; i < BUILTIN_DATASOURCE_CATALOG_ROWS.length; i++) {
-      const param = captured[0]!.params[i * 7 + 6];
+      const param = captured[0]!.params[i * 8 + 7];
       expect(typeof param).toBe("string");
       const parsed = JSON.parse(param as string);
       expect(parsed).toEqual(BUILTIN_DATASOURCE_CATALOG_ROWS[i]!.configSchema);
@@ -271,6 +295,23 @@ describe("migration 0093 and seed module stay aligned", () => {
       // min_plan position.
       expect(stanza).toContain("false,\n    'starter'");
     }
+  });
+
+  it("converges the DuckDB saas_eligible flag to false in migration 0124 (#3301)", () => {
+    // 0093/0123 seeded every row `saas_eligible = true` (immutable). Migration
+    // 0124 is the data UPDATE that flips DuckDB on existing DBs; the seed row
+    // (`saasEligible: false`) keeps fresh / re-seeded DBs in agreement.
+    const duckdb = BUILTIN_DATASOURCE_CATALOG_ROWS.find((r) => r.slug === "duckdb");
+    expect(duckdb?.saasEligible).toBe(false);
+
+    const convergeSql = readFileSync(
+      join(import.meta.dir, "..", "migrations", "0124_duckdb_not_saas_eligible.sql"),
+      "utf8",
+    );
+    // Targets only the DuckDB row by slug and sets saas_eligible = false.
+    expect(convergeSql).toMatch(/UPDATE\s+plugin_catalog/i);
+    expect(convergeSql).toMatch(/saas_eligible\s*=\s*false/i);
+    expect(convergeSql).toMatch(/WHERE\s+slug\s*=\s*'duckdb'/i);
   });
 });
 

@@ -143,8 +143,9 @@ describe("runMigrations", () => {
     //   Plus 0122 (learned_patterns.connection_group_id for group-aware expert
     //   apply, #3284) = 123.
     //   Plus 0123 (elasticsearch built-in datasource catalog row, #3270) = 124.
-    //   Plus 0124 (elasticsearch auth-modes config_schema update, #3263–#3266) = 125.
-    expect(count).toBe(125);
+    //   Plus 0124 (DuckDB saas_eligible = false, #3301) = 125.
+    //   Plus 0125 (elasticsearch auth-modes config_schema update, #3263–#3266) = 126.
+    expect(count).toBe(126);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -297,7 +298,8 @@ describe("runMigrations", () => {
         "0121_dashboard_card_annotations.sql",
         "0122_learned_patterns_connection_group.sql",
         "0123_elasticsearch_datasource_catalog.sql",
-        "0124_elasticsearch_auth_modes_config_schema.sql",
+        "0124_duckdb_not_saas_eligible.sql",
+        "0125_elasticsearch_auth_modes_config_schema.sql",
       ],
     });
 
@@ -1132,5 +1134,38 @@ describe("0054_prompt_collections_dedup_unique.sql", () => {
     const keepersBlock = sql.match(/WITH\s+keepers\s+AS\s*\([\s\S]*?\)/i)?.[0] ?? "";
     expect(keepersBlock).not.toMatch(/\bGROUP\s+BY\b/i);
     expect(keepersBlock).not.toMatch(/\bouter_pc\b/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0124_duckdb_not_saas_eligible.sql (#3301)
+// ---------------------------------------------------------------------------
+//
+// 0093/0123 seeded every datasource row `saas_eligible = true` and are
+// immutable, so existing DBs need a data UPDATE to hide DuckDB from the SaaS
+// marketplace. Pin the shape: a slug-scoped UPDATE that sets
+// `saas_eligible = false`, touching only the canonical DuckDB row.
+
+describe("0124_duckdb_not_saas_eligible.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0124_duckdb_not_saas_eligible.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("UPDATEs only the duckdb catalog row to saas_eligible = false", () => {
+    // Strip `--` comment lines so the header prose (which mentions the
+    // historical `saas_eligible = true` seed) can't trip the negative match.
+    const sql = fs
+      .readFileSync(filePath, "utf-8")
+      .split("\n")
+      .map((line) => line.replace(/--.*$/, ""))
+      .join("\n");
+    expect(sql).toMatch(/UPDATE\s+plugin_catalog/i);
+    expect(sql).toMatch(/saas_eligible\s*=\s*false/i);
+    // Scoped by slug so an operator-renamed row isn't clobbered.
+    expect(sql).toMatch(/WHERE\s+slug\s*=\s*'duckdb'/i);
+    // Never widens to other rows / a blanket UPDATE.
+    expect(sql).not.toMatch(/saas_eligible\s*=\s*true/i);
   });
 });

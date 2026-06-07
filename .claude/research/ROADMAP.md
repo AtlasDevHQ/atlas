@@ -40,6 +40,8 @@ Lightweight forward-look. Conviction firms as work begins.
 
 - **Staging environment** ([milestone #57](https://github.com/AtlasDevHQ/atlas/milestone/57)) — separate work track on a late-June target; ships independently of the tag train. PRD [#2893](https://github.com/AtlasDevHQ/atlas/issues/2893) at [`docs/prd/staging-environment.md`](../../docs/prd/staging-environment.md). All code slices have landed (clamp wiring, `api-staging` config, misrouting coverage, smoke workflow, operator runbook #2899, and the review-surfaced hardening cluster #3095/#2984/#3088/#3096/#3097 via #3100); the staging services are live and green. Remaining: only the HITL OAuth/Railway provisioning slices (#2900–#2918), which need operator action.
 
+- **`v0.0.14` (candidate) — In-Product Onboarding for All Datasources** — parked PRD [#3303](https://github.com/AtlasDevHQ/atlas/issues/3303). A reusable, registry-resolved **profiler seam** (sibling to ADR-0013's `createFromConfig`) so any datasource plugin implements one introspection contract (`listObjects`/`profile`) and becomes onboardable via the wizard — today pg/mysql-only. Consolidates the duplicated CLI profilers onto the contract + adds the missing BigQuery profiler. Start after `v0.0.13` ships; `/kickoff` to slice (spine first, then per-dbType).
+
 - **`v0.1.0` — Public launch** ([#2919](https://github.com/AtlasDevHQ/atlas/issues/2919)) — the July 2026 launch event; first minor out of the `v0.0.x` train. Points at the banked changelog accumulated under `v0.0.x` (release-process plumbing, REST datasources, staging live). Tracked outside the tag train until the bundle firms up.
 
 ---

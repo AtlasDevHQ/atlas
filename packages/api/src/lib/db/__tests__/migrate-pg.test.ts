@@ -1259,6 +1259,21 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(rows[0]?.saas_eligible).toBe(true);
   }, PG_TEST_TIMEOUT_MS);
 
+  // #3301 — end-to-end: 0093 seeds the built-in DuckDB row `saas_eligible =
+  // true`, 0124 converges it to `false`. After the full migration chain (run
+  // in beforeAll) the canonical `catalog:duckdb` row must be `false` while a
+  // sibling datasource row (postgres) stays `true`. Catches a 0124 that
+  // mis-targets the row or never runs.
+  it("0124: built-in DuckDB catalog row is saas_eligible = false after migrations (#3301)", async () => {
+    const { rows } = await pool.query<{ slug: string; saas_eligible: boolean }>(
+      `SELECT slug, saas_eligible FROM plugin_catalog WHERE slug IN ('duckdb', 'postgres') ORDER BY slug`,
+    );
+    const bySlug = new Map(rows.map((r) => [r.slug, r.saas_eligible]));
+    expect(bySlug.get("duckdb")).toBe(false);
+    // Sibling datasource rows are untouched — only DuckDB is gated off SaaS.
+    expect(bySlug.get("postgres")).toBe(true);
+  }, PG_TEST_TIMEOUT_MS);
+
   it("0086: chat_cache.value->>'orgId' returns the Atlas org id for a stored Slack install (#2634)", async () => {
     // End-to-end shape check: a row written through the consolidated
     // path resolves cleanly by org_id via the new partial index. Uses
@@ -1373,16 +1388,16 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   // ─────────────────────────────────────────────────────────────────────
-  // 0124 — elasticsearch auth-modes config_schema (#3263–#3266)
+  // 0125 — elasticsearch auth-modes config_schema (#3263–#3266)
   //
   // 0123 inserts the elasticsearch catalog row with only url/apiKey/description;
-  // 0124 UPDATEs its `config_schema` to the full auth-mode + engine set. After
+  // 0125 UPDATEs its `config_schema` to the full auth-mode + engine set. After
   // the replay the row must carry all four `secret:true` credential fields so the
   // schema-driven `ElasticsearchFormInstallHandler` encrypts them at rest. A
-  // malformed JSONB in 0124 (which the mock-pool migrate.test.ts can't catch)
+  // malformed JSONB in 0125 (which the mock-pool migrate.test.ts can't catch)
   // would surface here against real Postgres.
   // ─────────────────────────────────────────────────────────────────────
-  it("0124: updates the elasticsearch catalog row to mark every auth-mode secret (#3263–#3266)", async () => {
+  it("0125: updates the elasticsearch catalog row to mark every auth-mode secret (#3263–#3266)", async () => {
     const { rows } = await pool.query<{
       config_schema: Array<{ key: string; type?: string; secret?: boolean }>;
     }>(

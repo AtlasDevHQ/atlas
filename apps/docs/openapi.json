@@ -56756,7 +56756,7 @@
           "Admin — Plugin Marketplace"
         ],
         "summary": "List plugins available to this workspace",
-        "description": "Returns enabled catalog entries filtered by the workspace's plan tier, with installation status.",
+        "description": "Returns enabled catalog entries filtered by the workspace's plan tier, with installation status. On SaaS deploys (`ATLAS_DEPLOY_MODE=saas`), entries flagged `saas_eligible = false` (e.g. DuckDB) are excluded.",
         "responses": {
           "200": {
             "description": "Available plugins",
@@ -57013,7 +57013,7 @@
             }
           },
           "400": {
-            "description": "Validation error or plan ineligible",
+            "description": "Validation error, plan ineligible, or not available on this deploy mode (SaaS-ineligible datasource)",
             "content": {
               "application/json": {
                 "schema": {

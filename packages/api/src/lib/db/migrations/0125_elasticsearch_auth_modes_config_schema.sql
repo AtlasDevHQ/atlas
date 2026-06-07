@@ -1,4 +1,4 @@
--- 0124_elasticsearch_auth_modes_config_schema.sql
+-- 0125_elasticsearch_auth_modes_config_schema.sql
 --
 -- v0.0.13 (#3263/#3264/#3265/#3266 / milestone #63) — extend the built-in
 -- Elasticsearch / OpenSearch datasource catalog row's `config_schema` to cover

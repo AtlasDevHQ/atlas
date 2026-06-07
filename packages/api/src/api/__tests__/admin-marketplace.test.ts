@@ -379,6 +379,19 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
+// #3301 — admin-marketplace.ts reads `getConfig()?.deployMode` to gate the
+// SaaS marketplace (`saas_eligible = false` rows are hidden on SaaS). A
+// controllable sync mock lets each test pick the resolved deploy mode without
+// standing up the real config resolver. `undefined` → getConfig() returns null
+// → `?.deployMode` is undefined → self-hosted behavior, matching every
+// pre-existing test (which never set a deploy mode). Sync factory (no inner
+// `await import`) so the bun loader can't deadlock on the self-referential
+// module name.
+let mockDeployMode: "saas" | "self-hosted" | undefined;
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => (mockDeployMode ? { deployMode: mockDeployMode } : null),
+}));
+
 // --- Import routes after mocks ---
 
 const { platformCatalog, workspaceMarketplace } = await import("../routes/admin-marketplace");
@@ -595,6 +608,9 @@ describe("Workspace Plugin Marketplace", () => {
     mockQueryResults = new Map();
     capturedQueries = [];
     mockLogAdminAction.mockClear();
+    // Default to an unresolved deploy mode (self-hosted behavior) so the
+    // plan-only tests below are unaffected by the #3301 saas_eligible gate.
+    mockDeployMode = undefined;
   });
 
   describe("GET /marketplace/available", () => {
@@ -723,6 +739,77 @@ describe("Workspace Plugin Marketplace", () => {
       expect(body.plugins[0].installed).toBe(false);
       expect(body.plugins[0].installedConfig).toBeNull();
     });
+
+    // #3301 — SaaS marketplace must hide datasource rows that can't be
+    // installed on SaaS (DuckDB is file-path based, not multi-tenant safe).
+    it("excludes saas_eligible=false rows on a SaaS deploy (#3301)", async () => {
+      mockDeployMode = "saas";
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        { ...sampleCatalogRow, id: "cat-pg", slug: "postgres", saas_eligible: true },
+        { ...sampleCatalogRow, id: "cat-duck", slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const slugs = body.plugins.map((p: { slug: string }) => p.slug);
+      expect(slugs).toContain("postgres");
+      expect(slugs).not.toContain("duckdb");
+      expect(body.total).toBe(1);
+    });
+
+    it("lists saas_eligible=false rows on a self-hosted deploy — gate is SaaS-only (#3301)", async () => {
+      mockDeployMode = "self-hosted";
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        { ...sampleCatalogRow, id: "cat-pg", slug: "postgres", saas_eligible: true },
+        { ...sampleCatalogRow, id: "cat-duck", slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const slugs = body.plugins.map((p: { slug: string }) => p.slug);
+      expect(slugs).toContain("postgres");
+      // DuckDB stays installable off SaaS.
+      expect(slugs).toContain("duckdb");
+      expect(body.total).toBe(2);
+    });
+
+    it("lists a row whose saas_eligible is absent even on SaaS — only an explicit false is gated (#3301)", async () => {
+      // Pins the deliberate fail-open `!== false` semantic: the DB column is
+      // NOT NULL DEFAULT true, but the route tolerates a stale/pre-column row
+      // (field absent) by leaving it visible rather than hiding it.
+      mockDeployMode = "saas";
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      // sampleCatalogRow has no `saas_eligible` key.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [sampleCatalogRow]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins.map((p: { slug: string }) => p.slug)).toContain("bigquery");
+    });
+
+    it("treats an unresolved deploy mode as self-hosted — lists saas_eligible=false rows (#3301)", async () => {
+      // getConfig() === null (pre-load / no config) must not gate anything —
+      // only a fully-resolved `deployMode === "saas"` hides rows.
+      mockDeployMode = undefined;
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
+        { ...sampleCatalogRow, id: "cat-duck", slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins.map((p: { slug: string }) => p.slug)).toContain("duckdb");
+    });
   });
 
   describe("POST /marketplace/install", () => {
@@ -798,6 +885,62 @@ describe("Workspace Plugin Marketplace", () => {
         body: JSON.stringify({ catalogId: "nonexistent" }),
       });
       expect(res.status).toBe(404);
+    });
+
+    // #3301 defense-in-depth — hiding the card on SaaS isn't enough; the
+    // install endpoint must also refuse a saas_eligible=false row so a direct
+    // POST (known catalog id) can't slip DuckDB into a SaaS tenant.
+    it("rejects installing a saas_eligible=false row on a SaaS deploy (#3301)", async () => {
+      mockDeployMode = "saas";
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(400);
+      const body = await json(res);
+      expect(body.error).toBe("saas_ineligible");
+      // Must short-circuit before persisting anything.
+      expect(findCapturedQuery("INSERT INTO workspace_plugins")).toBeUndefined();
+      // A failure audit is emitted so the blocked attempt is forensically visible.
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+      expect(failure?.metadata).toMatchObject({ saasIneligible: true, orgId: "org-1" });
+    });
+
+    it("allows installing a saas_eligible=false row on a self-hosted deploy (#3301)", async () => {
+      mockDeployMode = "self-hosted";
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "DuckDB",
+        slug: "duckdb",
+        type: "datasource",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
     });
   });
 

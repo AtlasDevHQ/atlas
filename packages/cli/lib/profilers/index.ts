@@ -21,3 +21,9 @@ export {
   listDuckDBObjects,
   profileDuckDB,
 } from "./duckdb";
+
+export {
+  type ElasticsearchProfilingResult,
+  type ProfileElasticsearchOptions,
+  profileElasticsearch,
+} from "./elasticsearch";

@@ -5,13 +5,16 @@ that connects an Elasticsearch (and, in a later slice, OpenSearch) cluster as a
 read-only Atlas datasource over a thin `fetch`-based HTTP client — no official
 SDK dependency.
 
-> **Status — connection + SQL query surface.** This release ships the connection
-> layer (`elasticsearch://` URL + **API-key** auth, an authenticated
-> cluster-info/ping health check, ConnectionRegistry registration) **and** the
-> SQL query surface: tabular/aggregate questions over a single index, answered
-> through the standard `executeSQL` tool. The dedicated Query DSL tool, the
-> remaining auth modes (Basic / Cloud ID / AWS SigV4), the OpenSearch engine, and
-> `atlas init` mapping profiling arrive in later slices. See the
+> **Status — connection + SQL query surface + CLI mapping profiler.** This
+> release ships the connection layer (`elasticsearch://` URL + **API-key** auth,
+> an authenticated cluster-info/ping health check, ConnectionRegistry
+> registration), the **SQL query surface** (tabular/aggregate questions over a
+> single index via the standard `executeSQL` tool — see
+> [SQL query surface](#sql-query-surface)), and the **CLI semantic-layer
+> profiler** (`atlas init` / `atlas diff` over index `_mapping`s — see
+> [Semantic layer](#semantic-layer-atlas-init-and-atlas-diff)). The dedicated
+> Query DSL tool, the remaining auth modes (Basic / Cloud ID / AWS SigV4), and
+> the OpenSearch engine arrive in later slices. See the
 > [PRD (#3259)](https://github.com/AtlasDevHQ/atlas/issues/3259).
 
 ## Install
@@ -53,6 +56,45 @@ The `apiKey` field is marked `secret: true` so Atlas encrypts it at rest and
 masks it in the admin UI. It is not returned in plaintext: connection/health
 errors are scrubbed (the literal key is redacted and messages tripping auth
 markers are collapsed) before they reach the agent, the user, or logs.
+
+## Semantic layer (`atlas init` and `atlas diff`)
+
+Atlas profiles an Elasticsearch cluster into the semantic layer straight from
+index `_mapping`s — there is no SQL schema to introspect, so each index becomes
+an entity and each mapped field becomes a dimension.
+
+Because the API key is **not** carried in the `elasticsearch://` URL (the URL
+parser rejects credentials), the CLI reads it from `ATLAS_ES_API_KEY`:
+
+```bash
+export ATLAS_DATASOURCE_URL="elasticsearch://my-cluster.es.io:9243"
+export ATLAS_ES_API_KEY="<base64-api-key>"
+
+# Profile every (non-system) index into semantic/entities/*.yml
+bun run atlas -- init
+
+# Limit to specific indices
+bun run atlas -- init --tables products,customers
+
+# Report drift between the live mappings and the on-disk semantic layer
+bun run atlas -- diff
+```
+
+Mapping → entity rules:
+
+| Mapping shape | Result |
+| ------------- | ------ |
+| scalar (`keyword`, `long`, `boolean`, …) | one dimension at the field path |
+| `date` / `date_nanos` | dimension typed `timestamp` |
+| object (`properties`) | dotted child dimensions (`vendor.name`); no dimension for the container |
+| `nested` object | dotted child dimensions, flagged `nested: true` (array semantics) |
+| multi-field (`fields`) | the main field **plus** each sub-field (`title.keyword`), flagged `multi_field: true` |
+
+Numeric ES types map to `number`, string-like types (`text`, `keyword`, `ip`, …)
+and unsupported types (`geo_point`, `dense_vector`, …) map to `string`.
+Dot-prefixed system indices (`.kibana`, `.security`) are skipped. The generated
+entities are queryable by the agent over the [SQL query surface](#sql-query-surface);
+the `table:` field is the raw index name (the SQL whitelist + `FROM` qualifier).
 
 ## SQL query surface
 
@@ -104,12 +146,14 @@ whitelist). These are anchored to the statement start, so a field literally name
   Atlas's standard 4-layer validation (regex DML/DDL guard → AST single-`SELECT`
   parse → index whitelist → auto-`LIMIT` + statement timeout), plus the
   ES-specific `SHOW`/`DESCRIBE` guard above. The plugin sets **no** custom
-  validator, so this pipeline applies unchanged.
-- **Secret-scrubbed errors.** Connection, health, and query errors are scrubbed
-  before they reach the agent, the user, or logs: the literal API key is redacted
-  and messages that trip auth-context markers are collapsed to a generic message
-  (the detail stays in server logs). Query errors still surface the actionable ES
-  reason (e.g. `Unknown column [foo]`) so the agent can self-correct.
+  validator, so this pipeline applies unchanged. The connection layer performs an
+  authenticated cluster-info/ping round-trip and the `atlas init`/`diff` profiler
+  issues only a read-only `GET /_mapping`.
+- **Secret-scrubbed errors.** Connection, health, query, and mapping errors are
+  scrubbed before they reach the agent, the user, or logs: the literal API key is
+  redacted and messages that trip auth-context markers are collapsed to a generic
+  message (the detail stays in server logs). Query errors still surface the
+  actionable ES reason (e.g. `Unknown column [foo]`) so the agent can self-correct.
 
 ## License
 

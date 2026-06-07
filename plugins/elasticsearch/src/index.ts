@@ -247,6 +247,23 @@ export {
   DEFAULT_FETCH_SIZE,
   DEFAULT_MAX_ROWS,
 } from "./connection";
+export {
+  mapEsFieldType,
+  flattenMapping,
+  indexToEntityName,
+  isSystemIndex,
+  mappingToEntity,
+  mappingsToEntities,
+} from "./mapping";
+export type {
+  EsProperty,
+  EsIndexMapping,
+  EsMappingResponse,
+  EsDimensionType,
+  FlatEsField,
+  EsDimension,
+  EsEntityDoc,
+} from "./mapping";
 export type {
   ElasticsearchEngine,
   ParsedElasticsearchUrl,

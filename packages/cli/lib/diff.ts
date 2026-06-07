@@ -6,6 +6,7 @@
 
 import type { TableProfile } from "@atlas/api/lib/profiler";
 import { mapSQLType, isView, isMatView } from "@atlas/api/lib/profiler";
+import type { EsEntityDoc } from "../../../plugins/elasticsearch/src/mapping";
 
 // --- Schema diff types ---
 
@@ -162,6 +163,29 @@ export function profileToSnapshot(profile: TableProfile): EntitySnapshot {
     objectType,
     partitionStrategy: profile.partition_info?.strategy,
     partitionKey: profile.partition_info?.key,
+  };
+}
+
+/**
+ * Build an EntitySnapshot from an Elasticsearch entity doc (one per index).
+ *
+ * The mirror of {@link profileToSnapshot} for the ES path: each flattened
+ * mapping field becomes a column (`name → mapped type`), keyed exactly as
+ * {@link parseEntityYAML} reads them back, so a freshly-profiled index diffs
+ * clean against its own emitted YAML. Elasticsearch has no foreign keys, so the
+ * FK set is always empty.
+ */
+export function esEntityToSnapshot(entity: EsEntityDoc): EntitySnapshot {
+  const columns = new Map<string, string>();
+  for (const dim of entity.dimensions) {
+    columns.set(dim.name, dim.type);
+  }
+
+  return {
+    table: entity.table,
+    columns,
+    foreignKeys: new Set<string>(),
+    objectType: entity.type,
   };
 }
 

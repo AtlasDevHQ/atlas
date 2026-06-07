@@ -102,30 +102,45 @@ export function normalizeTableIdentifier(raw: string): string {
 }
 
 /**
+ * A bare (unquoted) SQL identifier segment: a letter or underscore followed by
+ * letters, digits, underscores, or `$` (Postgres/MySQL allow `$`). A dotted SQL
+ * table reference is `schema.table` (or `db.schema.table`) where EVERY segment
+ * matches this. Elasticsearch/OpenSearch index, alias, and data-stream names do
+ * not: they use `-`, `*`, `?`, `+`, `:` and digit-leading date fragments, with
+ * `.` as an ordinary character.
+ */
+const SQL_IDENTIFIER_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
  * Derive the whitelist key(s) a `table:` value contributes.
  *
- * Returns the lowercased normalized full name, plus — for SQL `schema.table`
- * identifiers — the unqualified last segment, so a `FROM orders` matches an
+ * Returns the lowercased normalized full name, plus — for a SQL `schema.table`
+ * identifier — the unqualified last segment, so a `FROM orders` matches an
  * entity declared as `public.orders`.
  *
- * The last-segment split is **skipped** for Elasticsearch/OpenSearch index
- * patterns (and data-stream/alias names) that carry a `*`/`?` wildcard. A
- * pattern base can legitimately contain `.` as an ordinary character — version
- * strings, date fragments — e.g. `filebeat-7.10.0-*`. Splitting that on `.`
- * yields a meaningless fragment (`0-*`) that widens the allow-list with a bogus
- * key (#3317). Wildcard chars never appear in an unquoted SQL identifier, so
- * their presence is a safe discriminator: when the normalized name contains one,
- * only the full name is registered.
+ * The unqualified last-segment key is derived **only** when the name is a
+ * genuine dotted SQL identifier: at least two segments, each a bare SQL
+ * identifier ({@link SQL_IDENTIFIER_SEGMENT}). Elasticsearch/OpenSearch index
+ * patterns, aliases, and data-stream names carry `.` as an ordinary character
+ * (version strings, date fragments, dotted datasets) — e.g. `filebeat-7.10.0-*`,
+ * `metrics-2024.01.01`, `logs-nginx.access-default`. Splitting those on `.`
+ * injects a meaningless fragment (`0-*`, `01`, `access-default`) that widens the
+ * allow-list with a bogus key (#3317). Because a `-`/`*`/`?` or a digit-leading
+ * segment can never appear in a bare SQL identifier, the segment shape is a safe
+ * discriminator: when any segment fails it, only the full name is registered.
+ *
+ * (A pure word-dotted name whose every segment is a valid SQL identifier — e.g.
+ * an alias literally named `logs.app` — is indistinguishable from `schema.table`
+ * by name alone and still contributes the unqualified key; closing that requires
+ * an engine signal the loader does not carry.)
  */
 export function tableWhitelistKeys(rawTable: string): string[] {
   const normalized = normalizeTableIdentifier(rawTable);
   const full = normalized.toLowerCase();
-  // ES/OpenSearch index pattern: `.` is an ordinary char, not a schema
-  // separator — don't derive a bogus unqualified key from the last segment.
-  if (normalized.includes("*") || normalized.includes("?")) {
+  const parts = normalized.split(".");
+  if (parts.length < 2 || !parts.every((seg) => SQL_IDENTIFIER_SEGMENT.test(seg))) {
     return [full];
   }
-  const parts = normalized.split(".");
   const last = parts[parts.length - 1].toLowerCase();
   return last === full ? [full] : [last, full];
 }

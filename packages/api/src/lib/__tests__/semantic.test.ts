@@ -211,6 +211,21 @@ describe("per-connection whitelists", () => {
     expect(tables.has("0-*")).toBe(false);
     expect(tables.size).toBe(1);
   });
+
+  // #3317: the same over-grant for a non-wildcard dotted ES name (data stream /
+  // dotted dataset) — `logs-nginx.access-default` must not inject `access-default`.
+  it("dotted ES data-stream name → only the full-name key, no bogus fragment", () => {
+    const dir = ensureEntitiesDir(`es-stream-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "stream.yml"),
+      `table: logs-nginx.access-default\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    expect(tables.has("logs-nginx.access-default")).toBe(true);
+    expect(tables.has("access-default")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
 });
 
 describe("tableWhitelistKeys", () => {
@@ -227,14 +242,45 @@ describe("tableWhitelistKeys", () => {
     expect(tableWhitelistKeys('analytics."Events"').sort()).toEqual(["analytics.events", "events"]);
   });
 
-  // #3317: wildcard chars are never valid in an unquoted SQL identifier, so a
-  // name carrying `*`/`?` is an ES index pattern — skip the schema-split heuristic.
-  it("dotted ES pattern with `*` → only the full name (no bogus fragment)", () => {
+  it("3-part SQL identifier (db.schema.table) → full + unqualified", () => {
+    expect(tableWhitelistKeys("warehouse.public.orders").sort()).toEqual([
+      "orders",
+      "warehouse.public.orders",
+    ]);
+  });
+
+  // #3317: a `-`/`*`/`?` or digit-leading segment can't appear in a bare SQL
+  // identifier, so a dotted ES name carrying one is NOT schema-qualified — skip
+  // the last-segment split that would inject a bogus fragment.
+  it("dotted ES wildcard pattern → only the full name (no `0-*` fragment)", () => {
     expect(tableWhitelistKeys("filebeat-7.10.0-*")).toEqual(["filebeat-7.10.0-*"]);
   });
 
   it("ES pattern with `?` wildcard → only the full name", () => {
     expect(tableWhitelistKeys("logs-2024.01.0?")).toEqual(["logs-2024.01.0?"]);
+  });
+
+  it("dotted concrete date-suffixed index → only the full name (no `01` fragment)", () => {
+    expect(tableWhitelistKeys("metrics-2024.01.01")).toEqual(["metrics-2024.01.01"]);
+  });
+
+  it("dotted data-stream / alias name with a dash → only the full name", () => {
+    expect(tableWhitelistKeys("logs-nginx.access-default")).toEqual([
+      "logs-nginx.access-default",
+    ]);
+  });
+
+  it("dotted name with a digit-leading segment → only the full name", () => {
+    // `metrics.2024.01` has no dash/wildcard, but `2024`/`01` are digit-leading
+    // so it is not a SQL schema.table — still no bogus `01` fragment.
+    expect(tableWhitelistKeys("metrics.2024.01")).toEqual(["metrics.2024.01"]);
+  });
+
+  // Documented residual: a pure word-dotted name (every segment a valid SQL
+  // identifier) is indistinguishable from `schema.table` by name alone, so it
+  // still contributes the unqualified key. Captures current behavior.
+  it("pure word-dotted name → still splits (name-undecidable residual)", () => {
+    expect(tableWhitelistKeys("logs.app").sort()).toEqual(["app", "logs.app"]);
   });
 });
 

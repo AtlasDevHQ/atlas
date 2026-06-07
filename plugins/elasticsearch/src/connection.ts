@@ -1,25 +1,34 @@
 /**
  * Elasticsearch connection foundation for the datasource plugin.
  *
- * Three deep, independently testable modules live here:
+ * Deep, independently testable modules live here:
  *   1. Config/URL + auth parser — `parseElasticsearchUrl` (URL → engine +
  *      endpoint) and `resolveElasticsearchConfig` ({ url, apiKey } → resolved
  *      config + auth descriptor). Mirrors `parseSalesforceURL`.
  *   2. Thin `fetch`-based HTTP client — `createElasticsearchClient`. No official
  *      SDK (`@elastic/elasticsearch` / `@opensearch-project/opensearch`); it
- *      talks to the cluster's read endpoints directly. This slice exposes only an
- *      authenticated cluster-info/ping round-trip; query surfaces arrive later.
- *   3. Error scrubbing — `scrubElasticsearchError` strips the API key and other
- *      sensitive markers before a message reaches the agent, the user, or logs.
+ *      talks to the cluster's read endpoints directly. Exposes `ping()`
+ *      (cluster-info round-trip) and `sqlQuery()` (the SQL query surface, #3262).
+ *   3. SQL surface — `sqlQuery()` POSTs to the cluster SQL API (`POST /_sql`),
+ *      follows `cursor` pagination up to a row cap, and `normalizeSqlPages` (a
+ *      PURE folder) maps ES SQL `{ columns:[{name,type}], rows:[[...]] }` pages
+ *      into Atlas `{ columns, rows }`. ES SQL is real SQL, so it rides the host's
+ *      standard 4-layer `executeSQL` pipeline — this module ships only the
+ *      `parserDialect` + `forbiddenPatterns` it configures (no custom validate).
+ *   4. Error scrubbing — `scrubElasticsearchError` strips the API key and other
+ *      sensitive markers before a message reaches the agent, the user, or logs;
+ *      `extractEsSqlErrorMessage` surfaces the actionable ES error reason first.
  *
- * This slice (#3261) handles `elasticsearch://` URLs with API-key auth only.
- * Basic / Cloud ID / AWS SigV4 auth and the OpenSearch engine are later slices.
+ * This slice handles `elasticsearch://` URLs with API-key auth only. Basic /
+ * Cloud ID / AWS SigV4 auth, the OpenSearch engine, and the Query DSL tool
+ * (#3267) are later slices.
  */
 
 import type {
   PluginDBConnection,
   PluginQueryResult,
   PluginLogger,
+  ParserDialect,
 } from "@useatlas/plugin-sdk";
 
 // ---------------------------------------------------------------------------
@@ -78,6 +87,158 @@ export interface ClusterInfo {
   version?: string;
   /** Distribution flavor (`version.distribution`), e.g. `elasticsearch`/`opensearch`. */
   distribution?: string;
+}
+
+// ---------------------------------------------------------------------------
+// SQL query surface (#3262)
+// ---------------------------------------------------------------------------
+
+/** A column descriptor from an ES SQL response (`{ name, type }`). */
+export interface ElasticsearchSqlColumn {
+  name: string;
+  /** ES type (`text`, `long`, `keyword`, …). Not consumed by Atlas yet. */
+  type?: string;
+}
+
+/**
+ * One page of the ES SQL API response. The first page carries `columns`; every
+ * page carries `rows` (positional arrays aligned to the column order) and, when
+ * more pages remain, a `cursor` to fetch the next one.
+ */
+export interface ElasticsearchSqlResponse {
+  columns?: ElasticsearchSqlColumn[];
+  rows?: unknown[][];
+  cursor?: string;
+}
+
+/** Options for a single (possibly multi-page) SQL query. */
+export interface ElasticsearchSqlQueryOptions {
+  /**
+   * The ES SQL statement. By the time it reaches here the host's `executeSQL`
+   * pipeline has already validated it (SELECT-only, index whitelist) and
+   * appended its auto-LIMIT — that LIMIT is the authoritative row cap.
+   */
+  query: string;
+  /** Total deadline for the whole multi-page fetch, in ms. Defaults to 30000. */
+  timeoutMs?: number;
+  /** ES `fetch_size` (rows per page). Defaults to {@link DEFAULT_FETCH_SIZE}. */
+  fetchSize?: number;
+  /**
+   * Defensive client-side ceiling on accumulated rows. The SQL's auto-LIMIT is
+   * the real cap; this only backstops a pathological cursor. Defaults to
+   * {@link DEFAULT_MAX_ROWS}. Truncation is logged, never silent.
+   */
+  maxRows?: number;
+}
+
+/** Default ES `fetch_size` (rows per page) when the caller doesn't set one. */
+export const DEFAULT_FETCH_SIZE = 1000;
+
+/**
+ * Defensive ceiling on rows accumulated across cursor pages. The host appends a
+ * `LIMIT` (default `ATLAS_ROW_LIMIT` = 1000) before the query reaches us, so in
+ * normal operation the cursor terminates well below this — it exists only to
+ * cap a runaway cursor. Comfortably above the typical limit so it never silently
+ * truncates legitimately-LIMITed results; if it ever does fire, we log a warning.
+ */
+export const DEFAULT_MAX_ROWS = 10000;
+
+/**
+ * node-sql-parser dialect for the ES SQL surface. ES SQL is standard SQL and the
+ * full documented subset (SELECT / WHERE / GROUP BY / HAVING / ORDER BY / LIMIT
+ * over a single index-as-table, plus COUNT/SUM/AVG/MIN/MAX and COUNT(DISTINCT))
+ * parses cleanly under PostgreSQL mode. PostgreSQL is chosen over MySQL because
+ * ES SQL quotes identifiers (index names with `-`, `.`, etc.) with double quotes
+ * — `SELECT * FROM "logs-2024.01.01"` — matching PostgreSQL, whereas MySQL mode
+ * expects backticks. (Verified against node-sql-parser 5.4.0.)
+ */
+export const ELASTICSEARCH_PARSER_DIALECT: ParserDialect = "PostgresQL";
+
+/**
+ * ES-specific forbidden patterns layered on top of the host's base DML/DDL guard.
+ *
+ * The `/_sql` endpoint is query-only (no INSERT/UPDATE/DELETE exist in ES SQL),
+ * so the base guard already covers mutations. What ES SQL adds are catalog- and
+ * schema-disclosure verbs — `SHOW TABLES|COLUMNS|FUNCTIONS|CATALOGS`, `DESCRIBE`
+ * — which enumerate every index/field and so bypass the index whitelist. They
+ * are already rejected downstream (the AST layer parses `SHOW` as a non-`select`
+ * node and `DESCRIBE <x>` fails to parse), but blocking them here gives a clear
+ * "forbidden operation" error and a defense-in-depth net independent of parser
+ * behavior.
+ *
+ * Anchored to the statement start (`^\s*`) on purpose: a SELECT never begins
+ * with these verbs, so anchoring blocks the standalone commands without ever
+ * false-positiving on a field literally named `show`/`description`. Bare `DESC`
+ * is deliberately NOT blocked — it is the `ORDER BY … DESC` sort direction.
+ */
+export const ELASTICSEARCH_FORBIDDEN_PATTERNS: RegExp[] = [
+  /^\s*SHOW\b/i,
+  /^\s*DESCRIBE\b/i,
+];
+
+/**
+ * PURE: fold a sequence of ES SQL response pages into Atlas `{ columns, rows }`.
+ *
+ * Column names are taken from the first page that declares them (cursor pages
+ * omit `columns`). Each positional row array is zipped against those names into
+ * a record. Falsy scalars (`0`, `false`, `""`) are preserved; a missing trailing
+ * cell becomes `null`. Accumulation stops once `maxRows` records are collected.
+ *
+ * Side-effect free and HTTP-free so it can be unit-tested in isolation — the
+ * cursor-following fetch loop lives in {@link createElasticsearchClient}.
+ */
+export function normalizeSqlPages(
+  pages: ElasticsearchSqlResponse[],
+  maxRows: number = Number.POSITIVE_INFINITY,
+): PluginQueryResult {
+  const columnDefs =
+    pages.find((p) => Array.isArray(p.columns) && p.columns.length > 0)?.columns ?? [];
+  const columns = columnDefs.map((c) => c.name);
+
+  const rows: Record<string, unknown>[] = [];
+  for (const page of pages) {
+    for (const rowArr of page.rows ?? []) {
+      if (rows.length >= maxRows) return { columns, rows };
+      const record: Record<string, unknown> = {};
+      for (let i = 0; i < columns.length; i++) {
+        const value = rowArr[i];
+        // `?? null` only replaces null/undefined — 0, false, "" survive.
+        record[columns[i]] = value ?? null;
+      }
+      rows.push(record);
+    }
+  }
+  return { columns, rows };
+}
+
+/**
+ * PURE: extract an actionable message from an ES SQL error response body.
+ *
+ * ES returns structured errors — `{ error: { type, reason }, status }` — whose
+ * `reason` (e.g. "Unknown column [foo]") lets the agent self-correct. Prefer
+ * `type: reason`, then `reason`, then `type`, then a string `error`, and finally
+ * fall back to the HTTP status line. The caller scrubs the result through
+ * {@link scrubElasticsearchError} before it leaves the process.
+ */
+export function extractEsSqlErrorMessage(
+  body: unknown,
+  status: number,
+  statusText: string,
+): string {
+  const fallback = `Elasticsearch SQL request failed: HTTP ${status} ${statusText}`;
+  if (body && typeof body === "object" && "error" in body) {
+    const error = (body as { error: unknown }).error;
+    if (typeof error === "string" && error.trim()) return error;
+    if (error && typeof error === "object") {
+      const e = error as { type?: unknown; reason?: unknown };
+      const reason = typeof e.reason === "string" && e.reason.trim() ? e.reason : undefined;
+      const type = typeof e.type === "string" && e.type.trim() ? e.type : undefined;
+      if (reason && type) return `${type}: ${reason}`;
+      if (reason) return reason;
+      if (type) return type;
+    }
+  }
+  return fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +406,12 @@ export function resolveElasticsearchConfig(
 export interface ElasticsearchClient {
   /** Authenticated cluster-info round-trip (`GET /`). Resolves cluster metadata. */
   ping(timeoutMs?: number): Promise<ClusterInfo>;
+  /**
+   * Run an ES SQL statement via `POST /_sql`, following `cursor` pagination up to
+   * the row cap, and return the normalized `{ columns, rows }`. Errors are
+   * secret-scrubbed before they reach the caller.
+   */
+  sqlQuery(opts: ElasticsearchSqlQueryOptions): Promise<PluginQueryResult>;
   /** Release the client — aborts any in-flight request and rejects future calls. */
   close(): void;
 }
@@ -326,6 +493,108 @@ export function createElasticsearchClient(
       }
     },
 
+    async sqlQuery(opts: ElasticsearchSqlQueryOptions): Promise<PluginQueryResult> {
+      if (closed) {
+        throw new Error("Elasticsearch client is closed");
+      }
+
+      const {
+        query,
+        timeoutMs = 30000,
+        fetchSize = DEFAULT_FETCH_SIZE,
+        maxRows = DEFAULT_MAX_ROWS,
+      } = opts;
+
+      const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
+      const controller = new AbortController();
+      inFlight.add(controller);
+      // One deadline for the whole multi-page fetch — the statement timeout
+      // bounds total wall-clock across every cursor page, not each page.
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const headers = {
+        Authorization: `ApiKey ${auth.apiKey}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      };
+
+      /** POST a payload to `/_sql` and return the parsed page (throws on non-2xx). */
+      const postSql = async (
+        payload: Record<string, unknown>,
+      ): Promise<ElasticsearchSqlResponse> => {
+        const res = await fetchImpl(`${endpoint}/_sql?format=json`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          // Read the body for the actionable ES error reason; fall back to the
+          // status line if it isn't JSON. The message is scrubbed in the catch.
+          let body: unknown;
+          try {
+            body = await res.json();
+          } catch {
+            // intentionally ignored: a non-JSON error body just falls back to
+            // the HTTP status line via extractEsSqlErrorMessage.
+            body = undefined;
+          }
+          throw new Error(extractEsSqlErrorMessage(body, res.status, res.statusText));
+        }
+        return (await res.json()) as ElasticsearchSqlResponse;
+      };
+
+      try {
+        const pages: ElasticsearchSqlResponse[] = [];
+        let rowCount = 0;
+
+        let page = await postSql({ query, fetch_size: fetchSize });
+        pages.push(page);
+        rowCount += page.rows?.length ?? 0;
+
+        while (page.cursor && rowCount < maxRows) {
+          page = await postSql({ cursor: page.cursor });
+          pages.push(page);
+          rowCount += page.rows?.length ?? 0;
+        }
+
+        // Stopped early on the row cap with a live cursor: log (never silent) and
+        // best-effort release the server-side cursor so it doesn't linger.
+        if (page.cursor && rowCount >= maxRows) {
+          options?.logger?.warn(
+            { maxRows },
+            `Elasticsearch SQL result truncated at the client row cap (${maxRows}); a LIMIT below ${maxRows} avoids truncation.`,
+          );
+          try {
+            await fetchImpl(`${endpoint}/_sql/close`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ cursor: page.cursor }),
+              signal: controller.signal,
+            });
+          } catch (closeErr) {
+            options?.logger?.debug(
+              { err: closeErr instanceof Error ? closeErr.message : String(closeErr) },
+              "Failed to close Elasticsearch SQL cursor (non-fatal)",
+            );
+          }
+        }
+
+        return normalizeSqlPages(pages, maxRows);
+      } catch (err) {
+        if (controller.signal.aborted && !closed) {
+          throw new Error(
+            `Elasticsearch SQL query timed out after ${timeoutMs}ms`,
+          );
+        }
+        // Scrub before surfacing — see the ping() rationale above (no cause chain).
+        throw new Error(scrubElasticsearchError(err, auth.apiKey));
+      } finally {
+        clearTimeout(timer);
+        inFlight.delete(controller);
+      }
+    },
+
     close(): void {
       closed = true;
       for (const controller of inFlight) {
@@ -342,8 +611,8 @@ export function createElasticsearchClient(
 
 /**
  * A {@link PluginDBConnection} for Elasticsearch, extended with `ping()` for the
- * health check. `query()` is intentionally unimplemented in this slice — the SQL
- * surface (`executeSQL`) arrives in #3262 and the Query DSL tool in #3267.
+ * health check. `query()` runs ES SQL via the cluster SQL API (#3262); the Query
+ * DSL tool arrives in #3267.
  */
 export interface ElasticsearchConnection extends PluginDBConnection {
   ping(timeoutMs?: number): Promise<ClusterInfo>;
@@ -363,10 +632,11 @@ export function createElasticsearchConnection(
   const client = createElasticsearchClient(resolved, options);
 
   return {
-    async query(_sql: string, _timeoutMs?: number): Promise<PluginQueryResult> {
-      throw new Error(
-        "Elasticsearch query surface is not available yet — it arrives in a later slice (#3262).",
-      );
+    async query(sql: string, timeoutMs?: number): Promise<PluginQueryResult> {
+      // ES SQL is real SQL: the host's `executeSQL` pipeline has already run the
+      // 4-layer validation (SELECT-only, index whitelist) and appended its
+      // auto-LIMIT before calling here. We just execute + normalize the result.
+      return client.sqlQuery({ query: sql, timeoutMs });
     },
 
     async ping(timeoutMs?: number): Promise<ClusterInfo> {

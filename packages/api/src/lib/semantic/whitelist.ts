@@ -101,6 +101,35 @@ export function normalizeTableIdentifier(raw: string): string {
     .join(".");
 }
 
+/**
+ * Derive the whitelist key(s) a `table:` value contributes.
+ *
+ * Returns the lowercased normalized full name, plus — for SQL `schema.table`
+ * identifiers — the unqualified last segment, so a `FROM orders` matches an
+ * entity declared as `public.orders`.
+ *
+ * The last-segment split is **skipped** for Elasticsearch/OpenSearch index
+ * patterns (and data-stream/alias names) that carry a `*`/`?` wildcard. A
+ * pattern base can legitimately contain `.` as an ordinary character — version
+ * strings, date fragments — e.g. `filebeat-7.10.0-*`. Splitting that on `.`
+ * yields a meaningless fragment (`0-*`) that widens the allow-list with a bogus
+ * key (#3317). Wildcard chars never appear in an unquoted SQL identifier, so
+ * their presence is a safe discriminator: when the normalized name contains one,
+ * only the full name is registered.
+ */
+export function tableWhitelistKeys(rawTable: string): string[] {
+  const normalized = normalizeTableIdentifier(rawTable);
+  const full = normalized.toLowerCase();
+  // ES/OpenSearch index pattern: `.` is an ordinary char, not a schema
+  // separator — don't derive a bogus unqualified key from the last segment.
+  if (normalized.includes("*") || normalized.includes("?")) {
+    return [full];
+  }
+  const parts = normalized.split(".");
+  const last = parts[parts.length - 1].toLowerCase();
+  return last === full ? [full] : [last, full];
+}
+
 /** Plugin-provided entity tables, keyed by connection ID. */
 const _pluginEntities = new Map<string, Set<string>>();
 
@@ -172,13 +201,11 @@ function loadEntitiesFromDir(
       const tables = byConnection.get(connId)!;
 
       // Extract table name (may include schema prefix like "public.users").
-      // Normalize identifier quotes so `"user"` / `` `user` `` in the YAML
-      // matches the unquoted name `node-sql-parser` returns from `FROM "user"`.
-      const normalized = normalizeTableIdentifier(entity.table);
-      const parts = normalized.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      // Also add the full qualified name
-      tables.add(normalized.toLowerCase());
+      // `tableWhitelistKeys` normalizes identifier quotes so `"user"` /
+      // `` `user` `` in the YAML matches the unquoted name `node-sql-parser`
+      // returns from `FROM "user"`, registers the full + unqualified SQL keys,
+      // and skips the bogus last-segment split for ES wildcard patterns (#3317).
+      for (const key of tableWhitelistKeys(entity.table)) tables.add(key);
 
       // Validate and collect cross-source joins separately from core entity parsing.
       // Invalid join entries are skipped individually without dropping the entity.
@@ -529,10 +556,7 @@ export function registerPluginEntities(
         skippedCount++;
         continue;
       }
-      const tableName = normalizeTableIdentifier(parsed.data.table);
-      const parts = tableName.split(".");
-      tables.add(parts[parts.length - 1].toLowerCase());
-      tables.add(tableName.toLowerCase());
+      for (const key of tableWhitelistKeys(parsed.data.table)) tables.add(key);
     } catch (err) {
       log.warn(
         { connectionId, entity: entity.name, err: err instanceof Error ? err.message : String(err) },
@@ -707,9 +731,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
-      const normalized = normalizeTableIdentifier(parsed.data.table);
-      const parts = normalized.split(".");
-      const tableList = [parts[parts.length - 1].toLowerCase(), normalized.toLowerCase()];
+      const tableList = tableWhitelistKeys(parsed.data.table);
       recordTables(row, readGroupField(parsed.data), tableList);
     } catch (err) {
       parseFailures++;

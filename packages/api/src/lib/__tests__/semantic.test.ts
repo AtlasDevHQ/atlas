@@ -16,6 +16,7 @@ const getWhitelistedTables = semMod.getWhitelistedTables as typeof import("../se
 const _resetWhitelists = semMod._resetWhitelists as typeof import("../semantic/whitelist")._resetWhitelists;
 const registerPluginEntities = semMod.registerPluginEntities as typeof import("../semantic/whitelist").registerPluginEntities;
 const _resetPluginEntities = semMod._resetPluginEntities as typeof import("../semantic/whitelist")._resetPluginEntities;
+const tableWhitelistKeys = semMod.tableWhitelistKeys as typeof import("../semantic/whitelist").tableWhitelistKeys;
 
 const tmpBase = resolve(__dirname, ".tmp-semantic-test");
 let testCounter = 0;
@@ -190,6 +191,51 @@ describe("per-connection whitelists", () => {
     expect(tables.has("good_table")).toBe(true);
     expect(tables.size).toBe(1); // Only the good table
   });
+
+  // #3317: an ES/OpenSearch index-pattern entity can have a dotted base
+  // (e.g. `filebeat-7.10.0-2024.01.01` collapses to `filebeat-7.10.0-*`). The
+  // SQL `schema.table` last-segment split must NOT fire on it — that injected a
+  // bogus `0-*` whitelist key and widened the allow-list.
+  it("dotted ES index pattern → only the full-name key, no bogus fragment", () => {
+    const dir = ensureEntitiesDir(`es-pattern-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "filebeat.yml"),
+      `table: filebeat-7.10.0-*\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    // Full pattern name validates (SQL `FROM "filebeat-7.10.0-*"` and the DSL
+    // `index: "filebeat-7.10.0-*"` both look it up lowercased).
+    expect(tables.has("filebeat-7.10.0-*")).toBe(true);
+    // The dotted-split fragment must be absent.
+    expect(tables.has("0-*")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
+});
+
+describe("tableWhitelistKeys", () => {
+  it("SQL schema.table → full + unqualified last-segment keys", () => {
+    expect(tableWhitelistKeys("public.orders").sort()).toEqual(["orders", "public.orders"]);
+  });
+
+  it("bare table name → single key", () => {
+    expect(tableWhitelistKeys("orders")).toEqual(["orders"]);
+  });
+
+  it("strips identifier quotes and lowercases", () => {
+    expect(tableWhitelistKeys(`"User"`)).toEqual(["user"]);
+    expect(tableWhitelistKeys('analytics."Events"').sort()).toEqual(["analytics.events", "events"]);
+  });
+
+  // #3317: wildcard chars are never valid in an unquoted SQL identifier, so a
+  // name carrying `*`/`?` is an ES index pattern — skip the schema-split heuristic.
+  it("dotted ES pattern with `*` → only the full name (no bogus fragment)", () => {
+    expect(tableWhitelistKeys("filebeat-7.10.0-*")).toEqual(["filebeat-7.10.0-*"]);
+  });
+
+  it("ES pattern with `?` wildcard → only the full name", () => {
+    expect(tableWhitelistKeys("logs-2024.01.0?")).toEqual(["logs-2024.01.0?"]);
+  });
 });
 
 describe("registerPluginEntities", () => {
@@ -227,6 +273,20 @@ describe("registerPluginEntities", () => {
     const tables = getWhitelistedTables("bq-plugin", dir);
     expect(tables.has("analytics.events")).toBe(true);
     expect(tables.has("events")).toBe(true);
+  });
+
+  // #3317: plugin-registered ES index-pattern entities must not get the bogus
+  // dotted-split key either (registerPluginEntities is one of the three paths).
+  it("dotted ES index pattern → only the full-name key (plugin path)", () => {
+    registerPluginEntities("es-plugin", [
+      { name: "filebeat", yaml: "table: filebeat-7.10.0-*\ndimensions:\n  message:\n    type: text\n" },
+    ]);
+
+    const dir = ensureEntitiesDir(`plugin-es-pattern-${testCounter}`);
+    const tables = getWhitelistedTables("es-plugin", dir);
+    expect(tables.has("filebeat-7.10.0-*")).toBe(true);
+    expect(tables.has("0-*")).toBe(false);
+    expect(tables.size).toBe(1);
   });
 
   it("merges with disk-based entities", () => {

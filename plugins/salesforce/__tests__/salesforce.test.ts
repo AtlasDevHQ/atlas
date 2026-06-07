@@ -1050,9 +1050,10 @@ describe("initialize", () => {
   });
 
   test("fails CLOSED when the whitelist can't be loaded (does not silently allow)", async () => {
-    // If `tables()` throws (whitelist unloadable), the query must be REFUSED —
-    // not swallowed into an empty set, which validateSOQL treats as
-    // structural-only (a silent widening of access). #3307.
+    // If `tables()` throws (semantic-layer scan failed, #3243), the query must be
+    // REFUSED — not swallowed into an empty set, which validateSOQL treats as
+    // structural-only (a silent widening of access). The tool catches the throw
+    // and returns a clean refusal rather than letting it propagate (#3307/#3313).
     const plugin = salesforcePlugin({ url: VALID_URL });
     const registered: { name: string; tool: unknown }[] = [];
     const ctx = {
@@ -1065,13 +1066,15 @@ describe("initialize", () => {
     await plugin.initialize!(ctx);
 
     const sfTool = registered[0].tool as { execute: (args: unknown, opts: unknown) => Promise<unknown> };
-    // getWhitelist throws → execute rejects → the SELECT never runs (fail-closed).
-    await expect(
-      sfTool.execute(
-        { soql: "SELECT Id FROM Account", explanation: "test" },
-        { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
-      ),
-    ).rejects.toThrow(/semantic layer not ready/);
+    // getWhitelist throws → the tool refuses (success:false) and the SELECT never
+    // runs — `Account` would PASS structural-only, so a `success:true` here would
+    // be the fail-open bug this guards against.
+    const result = await sfTool.execute(
+      { soql: "SELECT Id FROM Account", explanation: "test" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
+    );
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toMatch(/unavailable|refus/i);
   });
 });
 

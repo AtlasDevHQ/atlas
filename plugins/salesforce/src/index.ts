@@ -222,14 +222,14 @@ export function buildSalesforcePlugin(
           // the SQL pipeline validates against in self-host/static mode (#3307).
           // `ctx.connections.list()` would be wrong: it returns CONNECTION IDs,
           // never object names like "Account", so validateSOQL would reject
-          // every legitimate query. An empty layer returns `[]` → validateSOQL
-          // falls back to structural-only.
+          // every legitimate query. A legitimately-empty layer returns `[]` →
+          // validateSOQL falls back to structural-only.
           //
-          // Fail CLOSED: we deliberately do NOT catch here. If the whitelist
-          // can't be loaded the error propagates and the query is refused —
-          // swallowing it into an empty set would silently widen access to
-          // structural-only (the "false negative on a security check" anti-pattern).
-          // Symmetric with the ES DSL tool.
+          // Fail CLOSED on a scan FAILURE: `tables()` THROWS (#3243) when the
+          // whitelist load is incomplete; the tool catches that and refuses the
+          // query rather than swallowing it into an empty set, which would
+          // silently widen access to structural-only (the "false negative on a
+          // security check" anti-pattern). Symmetric with the ES DSL tool (#3313).
           getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
           connectionId: "salesforce",
           logger: ctx.logger,
@@ -240,6 +240,24 @@ export function buildSalesforcePlugin(
           description: "Execute a read-only SOQL query against Salesforce",
           tool: sfTool,
         });
+
+        // One-time operator warning (#3313): a query tool registered against an
+        // empty whitelist runs in STRUCTURAL-ONLY mode — any explicitly-named
+        // object the credential can read is queryable. Name the consequence so
+        // operators know to add entity YAMLs. A scan FAILURE is a different
+        // situation: `tables()` throws and the tool fails closed at query time
+        // (logged there), so the catch below only flags that case.
+        try {
+          if (ctx.connections.tables(DATASOURCE_ID).length === 0) {
+            ctx.logger.warn(
+              "querySalesforce registered with an empty semantic-layer whitelist — running in STRUCTURAL-ONLY mode: any explicitly-named object the credential can read is queryable. Add entity YAMLs to enforce a per-object allow-list.",
+            );
+          }
+        } catch (err) {
+          ctx.logger.warn(
+            `querySalesforce: semantic-layer scan failed at registration — SOQL queries will fail closed until it recovers (${err instanceof Error ? err.message : String(err)}).`,
+          );
+        }
       }
     },
 

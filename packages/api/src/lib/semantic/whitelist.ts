@@ -338,6 +338,66 @@ function resolveGroupTables(
 }
 
 /**
+ * Thrown by {@link getWhitelistedTablesStrict} when a connection's whitelist is
+ * empty because a semantic-layer directory scan FAILED (#3243) — as opposed to a
+ * legitimately unconfigured semantic layer. Lets the bespoke plugin query tools
+ * (ES Query DSL / SOQL) distinguish the two and FAIL CLOSED on a scan failure
+ * rather than dropping to their structural-only fallback (#3313).
+ */
+export class SemanticLayerScanError extends Error {
+  readonly connectionId: string;
+  constructor(connectionId: string) {
+    super(
+      `Semantic-layer scan failed for connection "${connectionId}" — whitelist load incomplete; refusing query (fail-closed).`,
+    );
+    this.name = "SemanticLayerScanError";
+    this.connectionId = connectionId;
+  }
+}
+
+/**
+ * Resolve a connection's whitelist together with the **degraded** signal that
+ * distinguishes the two empty-set situations the bespoke plugin query tools
+ * must treat differently (#3313):
+ *
+ *  - `degraded: true`  — the resolved set is empty *because* a semantic-layer
+ *    directory scan FAILED (#3243). The load is incomplete, so a plugin query
+ *    tool must FAIL CLOSED (refuse) rather than drop to structural-only, which
+ *    would silently widen access to any explicitly-named index/object.
+ *  - `degraded: false` — either the connection has tables, or it is
+ *    legitimately empty (no scan failure → no semantic layer configured). The
+ *    empty case is the intended structural-only fallback.
+ *
+ * The flag mirrors the SQL path exactly: a scan failure only flips it when the
+ * connection's own set is empty. A non-empty set still enforces membership (any
+ * unlisted name is rejected), so an incomplete scan can only over-restrict such
+ * a connection — never widen it — and so need not refuse.
+ */
+function computeWhitelist(
+  connectionId: string,
+  entitiesDir?: string,
+  semanticRoot?: string,
+): { tables: Set<string>; degraded: boolean } {
+  // Custom paths (tests) load fresh; otherwise resolve from the cached load.
+  // Failing closed on a scan failure is enforced inside `resolveGroupTables`:
+  // a swallowed FS error must never drop the partition decision to shared-default
+  // mode (back-compat single-DB sharing applies only when every scan succeeded).
+  const { byConnection, failedScans } =
+    entitiesDir || semanticRoot
+      ? loadTablesByConnection(semanticRoot, entitiesDir)
+      : getTablesByConnection();
+  const tables = resolveGroupTables(byConnection, connectionId, failedScans);
+
+  // Merge plugin-provided entities for this connection.
+  const pluginTables = _pluginEntities.get(connectionId);
+  if (pluginTables && pluginTables.size > 0) {
+    for (const t of pluginTables) tables.add(t);
+  }
+
+  return { tables, degraded: failedScans.length > 0 && tables.size === 0 };
+}
+
+/**
  * Get the set of whitelisted table names for a given Connection group.
  *
  * The system switches to partitioned mode (each group only sees its own
@@ -348,6 +408,12 @@ function resolveGroupTables(
  *
  * When neither trigger is present, all connections share the same table
  * set (identical to pre-v0.7 single-DB behavior).
+ *
+ * Returns an empty set both when the layer is unconfigured AND when a directory
+ * scan failed (#3243): the SQL `executeSQL` path treats an empty set as
+ * deny-all, so either way it fails closed. Bespoke plugin query tools, which
+ * treat an empty set as structural-only, must instead read through
+ * {@link getWhitelistedTablesStrict} to tell the two apart (#3313).
  *
  * @param connectionId - Group to get tables for. Defaults to "default".
  * @param entitiesDir - Override for a single flat entities directory (DI for tests).
@@ -362,32 +428,45 @@ export function getWhitelistedTables(
 ): Set<string> {
   // When using custom paths (tests), bypass the global cache
   if (entitiesDir || semanticRoot) {
-    const { byConnection, failedScans } = loadTablesByConnection(semanticRoot, entitiesDir);
-    const tables = resolveGroupTables(byConnection, connectionId, failedScans);
-    // Merge plugin-provided entities even in custom-path mode
-    const pluginTables = _pluginEntities.get(connectionId);
-    if (pluginTables && pluginTables.size > 0) {
-      for (const t of pluginTables) tables.add(t);
-    }
-    return tables;
+    return computeWhitelist(connectionId, entitiesDir, semanticRoot).tables;
   }
 
   const cached = _whitelists.get(connectionId);
   if (cached) return cached;
 
-  // Resolve from the cached load, failing closed when a directory scan failed:
-  // a swallowed FS error must never drop the partition decision to shared-default
-  // mode (back-compat single-DB sharing applies only when every scan succeeded).
-  const { byConnection, failedScans } = getTablesByConnection();
-  const tables = resolveGroupTables(byConnection, connectionId, failedScans);
-
-  // Merge plugin-provided entities for this connection
-  const pluginTables = _pluginEntities.get(connectionId);
-  if (pluginTables && pluginTables.size > 0) {
-    for (const t of pluginTables) tables.add(t);
-  }
-
+  const { tables } = computeWhitelist(connectionId);
   _whitelists.set(connectionId, tables);
+  return tables;
+}
+
+/**
+ * Like {@link getWhitelistedTables}, but THROWS {@link SemanticLayerScanError}
+ * when the whitelist is empty because a semantic-layer directory scan FAILED
+ * (#3243), instead of returning the empty set.
+ *
+ * This is the accessor the bespoke plugin query tools (ES Query DSL / SOQL) read
+ * through (`AtlasPluginContext.connections.tables`). For the SQL `executeSQL`
+ * path an empty set already means deny-all, so a scan failure is fail-closed
+ * there. But those plugin tools treat an empty set as *structural-only* (allow
+ * any explicitly-named, non-system index/object) — so without this signal a
+ * scan failure would silently WIDEN their access. Throwing lets a tool refuse
+ * (fail-closed) on a scan failure while still receiving an empty set — and so
+ * structural-only — for a legitimately unconfigured layer. Mirrors the
+ * fail-closed intent of #3243 onto the plugin-tool surface (#3313).
+ *
+ * Unlike {@link getWhitelistedTables} it does not consult the `_whitelists`
+ * cache (it needs the live scan-failure signal), but it reuses the cached
+ * directory load via `getTablesByConnection`, so it triggers no disk re-scan.
+ */
+export function getWhitelistedTablesStrict(
+  connectionId: string = "default",
+  entitiesDir?: string,
+  semanticRoot?: string,
+): Set<string> {
+  const { tables, degraded } = computeWhitelist(connectionId, entitiesDir, semanticRoot);
+  if (degraded) {
+    throw new SemanticLayerScanError(connectionId);
+  }
   return tables;
 }
 

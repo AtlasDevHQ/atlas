@@ -570,3 +570,50 @@ describe("plugin wiring — index whitelist comes from ctx.connections.tables (#
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3313 — fail CLOSED when the whitelist accessor throws (semantic-layer scan
+// failure), but keep structural-only for a legitimately-empty layer.
+// ---------------------------------------------------------------------------
+
+describe("queryElasticsearch — fail closed on semantic-layer scan failure (#3313)", () => {
+  function makeTool(opts: { getWhitelist: () => Set<string>; fetchImpl?: unknown }) {
+    const conn = createElasticsearchConnection(
+      { url: VALID_URL, apiKey: API_KEY },
+      { fetchImpl: (opts.fetchImpl ?? mock(async () => fetchResponse(HITS_RESPONSE))) as unknown as typeof fetch },
+    );
+    return createQueryElasticsearchTool({ getConnection: () => conn, getWhitelist: opts.getWhitelist });
+  }
+
+  test("refuses the query when getWhitelist throws — does NOT drop to structural-only, no request issued", async () => {
+    const fetchImpl = mock(async () => fetchResponse(HITS_RESPONSE));
+    const esTool = makeTool({
+      fetchImpl,
+      // Mirrors `new Set(ctx.connections.tables(id))` throwing because the
+      // strict accessor saw a scan failure.
+      getWhitelist: () => {
+        throw new Error("Semantic-layer scan failed — whitelist load incomplete");
+      },
+    });
+    const result = await esTool.execute!(
+      // `products` would PASS structural-only (named, non-system) — proving the
+      // refusal is the scan-failure fail-closed, not an ordinary membership reject.
+      { index: "products", endpoint: "_search", body: {}, explanation: "x" },
+      EXEC_OPTS,
+    );
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toMatch(/unavailable|refus/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("structural-only still applies for a legitimately-empty whitelist (named index reaches the cluster)", async () => {
+    const fetchImpl = mock(async () => fetchResponse(HITS_RESPONSE));
+    const esTool = makeTool({ fetchImpl, getWhitelist: () => new Set() });
+    const result = await esTool.execute!(
+      { index: "products", endpoint: "_search", body: {}, explanation: "x" },
+      EXEC_OPTS,
+    );
+    expect(result).toMatchObject({ success: true });
+    expect(fetchImpl).toHaveBeenCalled();
+  });
+});

@@ -17,7 +17,7 @@ on:
       - 'duckdb-v*'
       - 'mysql-v*'
       - 'salesforce-v*'
-      # - 'elasticsearch-v*'  # TODO(#3272): uncomment once the npm trusted publisher is configured for @useatlas/elasticsearch
+      - 'elasticsearch-v*'
       # Plugins — sandbox
       - 'e2b-v*'
       - 'daytona-v*'
@@ -124,13 +124,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/salesforce-v')
         run: cd plugins/salesforce && npm publish --access public --provenance
 
-      # TODO(#3272): uncomment after configuring the npm trusted publisher (OIDC) for
-      # @useatlas/elasticsearch. v0.0.1 was published manually to bootstrap the package
-      # name; later versions publish here on an `elasticsearch-v*` tag (also uncomment
-      # the matching trigger in the `on.push.tags` list above).
-      # - name: Publish @useatlas/elasticsearch
-      #   if: startsWith(github.ref, 'refs/tags/elasticsearch-v')
-      #   run: cd plugins/elasticsearch && npm publish --access public --provenance
+      - name: Publish @useatlas/elasticsearch
+        if: startsWith(github.ref, 'refs/tags/elasticsearch-v')
+        run: cd plugins/elasticsearch && npm publish --access public --provenance
 
       # Sandbox
       - name: Publish @useatlas/e2b

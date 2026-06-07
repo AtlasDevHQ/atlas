@@ -130,16 +130,23 @@ export interface AtlasPluginContext {
      * Semantic-layer entity/table (for ES: index) names registered for a
      * connection — the per-object membership whitelist a plugin query tool must
      * enforce. In self-host / static-datasource mode this mirrors the
-     * filesystem whitelist `executeSQL` validates against
-     * (`getWhitelistedTables(connectionId)`), so a plugin's bespoke query tool
-     * (SOQL / Query DSL) honors the same boundary as the SQL path. (Org-scoped
-     * SaaS validates `executeSQL` against the DB-backed `getOrgWhitelistedTables`;
+     * filesystem whitelist `executeSQL` validates against, so a plugin's bespoke
+     * query tool (SOQL / Query DSL) honors the same boundary as the SQL path.
+     * (Org-scoped SaaS validates `executeSQL` against the DB-backed whitelist;
      * the static-config tools this serves are a self-host surface.)
      *
      * `id` must be a registered connection id (typically the plugin's own `id`);
      * an unrecognized id returns `[]`. Returns `[]` when the connection has no
-     * semantic layer — a tool fed an empty set falls back to structural-only
-     * validation, so a typo'd id silently downgrades enforcement. See #3307.
+     * semantic layer configured — a tool fed an empty set falls back to
+     * structural-only validation (the intended behavior for an unconfigured
+     * layer). See #3307.
+     *
+     * THROWS when the whitelist is empty because a semantic-layer directory scan
+     * FAILED (#3243), rather than returning `[]`. This lets a bespoke query tool
+     * FAIL CLOSED (refuse the query) on a scan failure instead of silently
+     * dropping to structural-only — which would widen access to any
+     * explicitly-named, non-system object the credential can read. A tool should
+     * call this inside a try/catch and surface a clean refusal on throw (#3313).
      */
     tables(id: string): readonly string[];
   };

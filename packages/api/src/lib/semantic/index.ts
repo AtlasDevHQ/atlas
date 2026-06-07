@@ -15,6 +15,8 @@
 
 export {
   getWhitelistedTables,
+  getWhitelistedTablesStrict,
+  SemanticLayerScanError,
   getCrossSourceJoins,
   registerPluginEntities,
   _resetWhitelists,

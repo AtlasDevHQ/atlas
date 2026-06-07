@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"] as const,
 }));
 
-const { getWhitelistedTables, getCrossSourceJoins, _resetWhitelists } = await import("../whitelist");
+const { getWhitelistedTables, getWhitelistedTablesStrict, SemanticLayerScanError, getCrossSourceJoins, _resetWhitelists } = await import("../whitelist");
 const { getEntityDirs, getGroupDirs, resolveEntityGroup } = await import("../scanner");
 
 const tmpBase = resolve(__dirname, ".tmp-group-scoped-loader-test");
@@ -494,6 +494,63 @@ describe("fail-closed on directory scan failure (#3243)", () => {
     expect(noEntitiesMsg).toBe(true);
     const scanFailedErr = logCalls.some((c) => c.level === "error" && /scan failed/i.test(c.message));
     expect(scanFailedErr).toBe(false);
+  });
+
+  // The bespoke plugin query tools (ES Query DSL / SOQL) treat an EMPTY set as
+  // structural-only, so they must distinguish "empty because scan failed" (fail
+  // closed) from "empty because no layer" (structural-only). `getWhitelistedTablesStrict`
+  // is that signal: it throws on the former and returns `[]` on the latter (#3313).
+  describe("getWhitelistedTablesStrict — fail closed on scan failure (#3313)", () => {
+    it("THROWS SemanticLayerScanError when an empty whitelist is caused by a failed scan", () => {
+      const root = ensureDir(`strict-scanfail-${testCounter}`);
+      const entities = ensureDir(`strict-scanfail-${testCounter}/entities`);
+      ensureDir(`strict-scanfail-${testCounter}/groups`);
+      writeEntity(entities, "orders.yml", entity("orders"));
+      const spy = throwReaddirOn(join(root, "groups"));
+      try {
+        // The group whose scan failed resolves to an empty set — strict refuses.
+        expect(() => getWhitelistedTablesStrict("warehouse", undefined, root)).toThrow(
+          SemanticLayerScanError,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("returns [] (does NOT throw) for a legitimately unconfigured layer — structural-only preserved", () => {
+      const root = ensureDir(`strict-nolayer-${testCounter}`);
+      const entities = ensureDir(`strict-nolayer-${testCounter}/entities`);
+      ensureDir(`strict-nolayer-${testCounter}/groups/warehouse/entities`); // empty, real dir
+      writeEntity(entities, "orders.yml", entity("orders"));
+      // `crm` has no directory → empty set, but NO scan failed → must not throw.
+      const crm = getWhitelistedTablesStrict("crm", undefined, root);
+      expect(crm.size).toBe(0);
+    });
+
+    it("returns the resolved tables (does NOT throw) when the connection has a whitelist", () => {
+      const root = ensureDir(`strict-haslayer-${testCounter}`);
+      const entities = ensureDir(`strict-haslayer-${testCounter}/entities`);
+      writeEntity(entities, "orders.yml", entity("orders"));
+      const tables = getWhitelistedTablesStrict("default", undefined, root);
+      expect(tables.has("orders")).toBe(true);
+    });
+
+    it("does NOT throw when a scan failed but the connection still resolves a non-empty whitelist", () => {
+      // A non-empty set still enforces membership (unlisted names rejected), so an
+      // incomplete scan can only over-restrict it — never widen — and need not refuse.
+      const root = ensureDir(`strict-scanfail-nonempty-${testCounter}`);
+      const entities = ensureDir(`strict-scanfail-nonempty-${testCounter}/entities`);
+      ensureDir(`strict-scanfail-nonempty-${testCounter}/groups`);
+      writeEntity(entities, "orders.yml", entity("orders"));
+      const spy = throwReaddirOn(join(root, "groups"));
+      try {
+        // `default` is unaffected by the groups/ scan failure → non-empty → no throw.
+        const def = getWhitelistedTablesStrict("default", undefined, root);
+        expect(def.has("orders")).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 });
 

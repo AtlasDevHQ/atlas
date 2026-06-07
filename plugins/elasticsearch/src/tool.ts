@@ -119,7 +119,26 @@ Rules:
       const op: ElasticsearchDslEndpoint = endpoint ?? "_search";
 
       // 1. Index whitelist (semantic layer) + always-on structural rails.
-      const indexCheck = validateIndexAccess(index, opts.getWhitelist());
+      // `getWhitelist` THROWS when the semantic-layer scan FAILED (#3243): the
+      // whitelist load is incomplete, so we FAIL CLOSED (refuse) rather than
+      // fall through to validateIndexAccess's structural-only mode, which would
+      // widen access to any explicitly-named index. A legitimately-empty layer
+      // does NOT throw — it returns `[]` and structural-only still applies (#3313).
+      let allowed: Set<string>;
+      try {
+        allowed = opts.getWhitelist();
+      } catch (err) {
+        opts.logger?.error(
+          { index, error: err instanceof Error ? err.message : String(err) },
+          "ES DSL refused — semantic layer unavailable (scan failed)",
+        );
+        return {
+          success: false,
+          error:
+            "The semantic layer is temporarily unavailable (its scan failed), so index access cannot be verified. Refusing the query to avoid unsafe access — retry once it recovers.",
+        };
+      }
+      const indexCheck = validateIndexAccess(index, allowed);
       if (!indexCheck.valid) {
         opts.logger?.debug({ index, error: indexCheck.reason }, "ES DSL index access rejected");
         return { success: false, error: indexCheck.reason };

@@ -425,14 +425,17 @@ export function buildElasticsearchPlugin(
           // The index MEMBERSHIP whitelist is the semantic layer's index names
           // for this connection — `ctx.connections.tables(id)`, the same
           // filesystem whitelist `executeSQL` validates against in self-host /
-          // static mode (`getWhitelistedTables`). So the DSL tool and the SQL
-          // surface enforce the identical per-index boundary (#3307). (This tool
-          // is static-only; SaaS per-workspace ES is queried over the SQL path.)
-          // NOTE: `ctx.connections.list()` would be wrong here — it
-          // returns CONNECTION IDs, not index names, so it can never match a
-          // real index like "flights". When the semantic layer is empty the
-          // accessor returns `[]` and `validateIndexAccess` falls back to its
-          // always-on structural rails (no wildcards / _all / system indices).
+          // static mode. So the DSL tool and the SQL surface enforce the
+          // identical per-index boundary (#3307). (This tool is static-only;
+          // SaaS per-workspace ES is queried over the SQL path.)
+          //
+          // `ctx.connections.list()` would be wrong here — it returns CONNECTION
+          // IDs, not index names, so it can never match a real index like
+          // "flights". A legitimately-empty semantic layer returns `[]` and
+          // `validateIndexAccess` falls back to its always-on structural rails
+          // (no wildcards / _all / system indices). A semantic-layer scan
+          // FAILURE instead THROWS (#3243) — the tool catches it and fails
+          // CLOSED rather than widening to structural-only (#3313).
           getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
           logger: ctx.logger,
         });
@@ -442,6 +445,24 @@ export function buildElasticsearchPlugin(
           description: "Execute a read-only Elasticsearch Query DSL request (full-text / aggregations)",
           tool: esTool,
         });
+
+        // One-time operator warning (#3313): a query tool registered against an
+        // empty whitelist runs in STRUCTURAL-ONLY mode — any explicitly-named,
+        // non-system index the credential can read is queryable. Name the
+        // consequence so operators know to add entity YAMLs. A scan FAILURE is a
+        // different situation: `tables()` throws, and the tool fails closed at
+        // query time (logged there), so the catch below only flags that case.
+        try {
+          if (ctx.connections.tables(DATASOURCE_ID).length === 0) {
+            ctx.logger.warn(
+              "queryElasticsearch registered with an empty semantic-layer whitelist — running in STRUCTURAL-ONLY mode: any explicitly-named, non-system index the credential can read is queryable. Add entity YAMLs to enforce a per-index allow-list.",
+            );
+          }
+        } catch (err) {
+          ctx.logger.warn(
+            `queryElasticsearch: semantic-layer scan failed at registration — DSL queries will fail closed until it recovers (${err instanceof Error ? err.message : String(err)}).`,
+          );
+        }
       }
     },
 

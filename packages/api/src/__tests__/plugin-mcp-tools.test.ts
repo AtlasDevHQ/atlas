@@ -189,7 +189,7 @@ describe("wireMcpToolPlugins", () => {
     pluginRegistry.register(makePlugin("docs", [makeTool({ name: "list" })]));
     await pluginRegistry.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},
@@ -215,7 +215,7 @@ describe("wireMcpToolPlugins", () => {
     } as PluginLike);
     await pluginRegistry.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},
@@ -236,7 +236,7 @@ describe("wireMcpToolPlugins", () => {
     pluginRegistry.register(makePlugin("good", [makeTool({ name: "ok" })]));
     await pluginRegistry.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},
@@ -262,7 +262,7 @@ describe("wireMcpToolPlugins", () => {
     } as PluginLike);
     await pluginRegistry.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},
@@ -287,7 +287,7 @@ describe("wireMcpToolPlugins", () => {
     } as PluginLike);
     await pluginRegistry.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},

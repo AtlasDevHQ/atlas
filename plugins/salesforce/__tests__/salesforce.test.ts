@@ -74,14 +74,16 @@ import { createSalesforceConnection } from "../src/connection";
 
 const VALID_URL = "salesforce://user:pass@login.salesforce.com?token=TOKEN";
 
-function makeCtx(overrides?: Partial<{ logged: string[]; warned: string[]; registered: { name: string }[] }>) {
+function makeCtx(overrides?: Partial<{ logged: string[]; warned: string[]; registered: { name: string }[]; tables: string[] }>) {
   const logged = overrides?.logged ?? [];
   const warned = overrides?.warned ?? [];
   const registered = overrides?.registered ?? [];
   return {
     ctx: {
       db: null,
-      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] as string[] },
+      // `tables()` returns SEMANTIC-LAYER object names — the whitelist source
+      // the querySalesforce tool must consult (#3307), NOT `list()` (connection IDs).
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] as string[], tables: () => overrides?.tables ?? [] },
       tools: { register: (t: { name: string; description: string; tool: unknown }) => { registered.push(t); } },
       logger: {
         info: (...args: unknown[]) => { logged.push(String(args[0])); },
@@ -1026,13 +1028,34 @@ describe("initialize", () => {
     expect(registered[0].name).toBe("querySalesforce");
   });
 
+  test("object whitelist is sourced from ctx.connections.tables() — rejects non-members (#3307)", async () => {
+    // Wiring guard: the tool's SOQL object whitelist must come from the semantic
+    // layer (`tables()`), not `list()` (connection IDs). With `tables() = [Account]`
+    // and the default empty `list()`, a query against Contact must be REJECTED —
+    // if the tool still read the empty `list()` it would fall back to
+    // structural-only and (wrongly) allow Contact.
+    const plugin = salesforcePlugin({ url: VALID_URL });
+    const registered: { name: string; tool: unknown }[] = [];
+    const { ctx } = makeCtx({ tables: ["Account"], registered });
+    await plugin.initialize!(ctx);
+    const sfTool = registered[0].tool as {
+      execute: (args: unknown, opts: unknown) => Promise<unknown>;
+    };
+    const result = await sfTool.execute(
+      { soql: "SELECT Id FROM Contact", explanation: "x" },
+      { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
+    );
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toContain("not in the allowed list");
+  });
+
   test("logs warning when whitelist loading fails", async () => {
     const plugin = salesforcePlugin({ url: VALID_URL });
     const warned: string[] = [];
     const registered: { name: string; tool: unknown }[] = [];
     const ctx = {
       db: null,
-      connections: { get: () => { throw new Error("not implemented"); }, list: () => { throw new Error("registry not ready"); } },
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [], tables: () => { throw new Error("semantic layer not ready"); } },
       tools: { register: (t: { name: string; description: string; tool: unknown }) => { registered.push(t); } },
       logger: {
         info: () => {},
@@ -1045,7 +1068,7 @@ describe("initialize", () => {
     await plugin.initialize!(ctx);
 
     // The warning happens lazily when getWhitelist is called, so trigger it
-    const sfTool = registered[0].tool as { execute?: Function };
+    const sfTool = registered[0].tool as { execute?: (args: unknown, opts: unknown) => Promise<unknown> };
     if (sfTool.execute) {
       await sfTool.execute(
         { soql: "SELECT Id FROM Account", explanation: "test" },

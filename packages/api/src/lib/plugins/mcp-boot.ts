@@ -67,9 +67,13 @@ export async function bootPluginsForMcp(): Promise<{
       // The MCP boot path does NOT have an internal DB pool wired or
       // analytics ConnectionRegistry — those are boot products of the
       // Hono server. Plugins designed to run in MCP context must
-      // tolerate `db: null` and an empty connections list.
+      // tolerate `db: null` and an empty connections list. `tables` is
+      // likewise empty (no semantic whitelist) — fine here because
+      // `tools.register` below is a no-op, so a plugin's bespoke query tool
+      // (which would consult `tables` for its whitelist) is never served from
+      // this path; the real, whitelist-backed context is the Hono boot's.
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: log as unknown as Record<string, unknown>,
       config: (config ?? {}) as unknown as Record<string, unknown>,

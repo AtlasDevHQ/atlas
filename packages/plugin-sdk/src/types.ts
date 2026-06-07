@@ -124,7 +124,18 @@ export interface AtlasPluginContext {
   /** Connection registry for analytics datasources. */
   connections: {
     get(id: string): PluginDBConnection;
+    /** Registered connection IDs — NOT semantic-layer object names. */
     list(): string[];
+    /**
+     * Semantic-layer entity/table (for ES: index) names registered for a
+     * connection — the per-object membership whitelist a plugin query tool must
+     * enforce. Mirrors the source `executeSQL` validates against
+     * (`getWhitelistedTables(connectionId)`), so a plugin's bespoke query tool
+     * (SOQL / Query DSL) honors the same boundary as the SQL path. Returns `[]`
+     * when the connection has no semantic layer; a tool fed an empty set falls
+     * back to structural-only validation. See #3307.
+     */
+    tables(id: string): string[];
   };
   /** Tool registry — plugins can register additional tools. */
   tools: {

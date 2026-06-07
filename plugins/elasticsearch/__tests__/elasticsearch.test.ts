@@ -752,7 +752,7 @@ describe("adapter-only mode", () => {
     const logged: string[] = [];
     const ctx = {
       db: null,
-      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {
         info: (...args: unknown[]) => { logged.push(String(args[0])); },
@@ -865,6 +865,7 @@ function makeCtx() {
           throw new Error("not implemented");
         },
         list: () => [] as string[],
+        tables: () => [],
       },
       tools: { register: () => {} },
       logger: {

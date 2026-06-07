@@ -818,7 +818,7 @@ describe("chat plugin lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {
         info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
@@ -839,7 +839,7 @@ describe("chat plugin lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -855,7 +855,7 @@ describe("chat plugin lifecycle", () => {
     const plugin = createTestPlugin();
     const ctx = {
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -1341,7 +1341,7 @@ describe("chat plugin streaming lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -1357,7 +1357,7 @@ describe("chat plugin streaming lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -1389,7 +1389,7 @@ describe("chat plugin streaming lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -1415,7 +1415,7 @@ describe("chat plugin streaming lifecycle", () => {
 
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -2207,7 +2207,7 @@ describe("chatPlugin webhook routes", () => {
     const { app, plugin } = await mountPlugin(TELEGRAM_CATALOG);
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
@@ -2261,7 +2261,7 @@ describe("chatPlugin webhook routes", () => {
     const { app, plugin } = await mountPlugin(GCHAT_CATALOG);
     await plugin.initialize!({
       db: null,
-      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},

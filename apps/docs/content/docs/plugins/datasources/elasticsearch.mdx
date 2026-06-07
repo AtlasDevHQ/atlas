@@ -151,12 +151,14 @@ and an optional Query DSL `body`.
 The surface is gated by a **default-deny** read-only validator: only read
 endpoints are allowed; mutating/administrative endpoints, smuggled bulk-write
 actions, mutating (`ctx`-referencing) scripts, and wildcard / `_all` /
-system-index targets are rejected. These structural rails are always enforced;
-per-index *membership* against the semantic-layer index list is **not** yet
-enforced from the DSL tool (the SQL surface enforces the real whitelist via the
-core pipeline) — tracked in [#3307](https://github.com/AtlasDevHQ/atlas/issues/3307).
-Every `_search` is resource-bounded — `size` clamped to `ATLAS_ROW_LIMIT`, a
-search `timeout`, and a non-aggregation `terminate_after`
+system-index targets are rejected. On top of those always-on structural rails,
+the tool enforces **per-index membership** against the semantic layer: the
+queried index must be a profiled entity (the same index/table whitelist
+`executeSQL` validates against), so the DSL surface honors the identical access
+boundary as the SQL surface ([#3307](https://github.com/AtlasDevHQ/atlas/issues/3307)).
+When a connection has no semantic layer the membership check is skipped and only
+the structural rails apply. Every `_search` is resource-bounded — `size` clamped
+to `ATLAS_ROW_LIMIT`, a search `timeout`, and a non-aggregation `terminate_after`
 (`ATLAS_ES_TERMINATE_AFTER`).
 
 The `queryElasticsearch` tool is registered **only** for a static,

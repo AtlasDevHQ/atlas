@@ -104,6 +104,12 @@ export function buildSalesforcePlugin(
   let cachedConn: SalesforceConnection | undefined;
   let log: PluginLogger | undefined;
 
+  // The static connection registers in the ConnectionRegistry under this plugin
+  // id (wiring.ts `registerDirect(plugin.id, …)`), which is also the
+  // connectionId the semantic-layer whitelist (`getWhitelistedTables`) keys on.
+  // The querySalesforce tool's object whitelist must use the same id.
+  const DATASOURCE_ID = "salesforce-datasource";
+
   // When a static url is configured the plugin wires a config-defined
   // connection at boot; without one it is registered adapter-only. The url is
   // only parsed where present — never on the adapter-only build path.
@@ -158,7 +164,7 @@ export function buildSalesforcePlugin(
   }
 
   return {
-    id: "salesforce-datasource",
+    id: DATASOURCE_ID,
     types: ["datasource"] as const,
     version: "0.1.0",
     name: "Salesforce DataSource",
@@ -211,10 +217,15 @@ export function buildSalesforcePlugin(
       if (staticUrl) {
         const sfTool = createQuerySalesforceTool({
           getConnection: () => getOrCreateConnection(),
+          // The object MEMBERSHIP whitelist is the semantic layer's object names
+          // for this connection — `ctx.connections.tables(id)`, the same source
+          // the SQL pipeline validates against (#3307). `ctx.connections.list()`
+          // would be wrong: it returns CONNECTION IDs, never object names like
+          // "Account", so validateSOQL would reject every legitimate query. An
+          // empty layer returns `[]` → validateSOQL falls back to structural-only.
           getWhitelist: () => {
             try {
-              const tables = ctx.connections.list();
-              return new Set(tables);
+              return new Set(ctx.connections.tables(DATASOURCE_ID));
             } catch (err) {
               ctx.logger.warn(
                 { err: err instanceof Error ? err.message : String(err) },

@@ -142,7 +142,7 @@ describe("bootPluginsForMcp", () => {
     );
     await plugins.initializeAll({
       db: null,
-      connections: { get: () => ({}), list: () => [] },
+      connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },
       logger: {},
       config: {},

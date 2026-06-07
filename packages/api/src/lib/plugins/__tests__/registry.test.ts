@@ -23,7 +23,7 @@ import type { PluginLike, PluginContextLike } from "../registry";
 
 const minimalCtx: PluginContextLike = {
   db: null,
-  connections: { get: () => ({}), list: () => [] },
+  connections: { get: () => ({}), list: () => [], tables: () => [] },
   tools: { register: () => {} },
   logger: {},
   config: {},
@@ -103,7 +103,7 @@ describe("PluginRegistry", () => {
 
       const fakeCtx: PluginContextLike = {
         db: null,
-        connections: { get: () => ({}), list: () => [] },
+        connections: { get: () => ({}), list: () => [], tables: () => [] },
         tools: { register: () => {} },
         logger: {},
         config: { test: true },

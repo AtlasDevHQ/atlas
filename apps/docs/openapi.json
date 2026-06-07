@@ -57013,7 +57013,7 @@
             }
           },
           "400": {
-            "description": "Validation error or plan ineligible",
+            "description": "Validation error, plan ineligible, or not available on this deploy mode (SaaS-ineligible datasource)",
             "content": {
               "application/json": {
                 "schema": {

@@ -16,9 +16,11 @@
 -- Self-hosted is unaffected: the marketplace filter ignores `saas_eligible`
 -- entirely off SaaS, so DuckDB stays installable there.
 --
--- Idempotent: re-running matches the same row and re-asserts `false`. Touches
--- only the canonical `catalog:duckdb` row by slug, so an operator-renamed row
--- is left alone. Better-Auth-independent — runs on every deploy mode.
+-- Idempotent: the `IS DISTINCT FROM false` guard makes a re-run a no-op (zero
+-- rows matched once DuckDB is already `false`), so `updated_at` isn't churned on
+-- redeploys. Touches only the canonical `catalog:duckdb` row by slug, so an
+-- operator-renamed row is left alone. Better-Auth-independent — runs on every
+-- deploy mode.
 
 UPDATE plugin_catalog
    SET saas_eligible = false,

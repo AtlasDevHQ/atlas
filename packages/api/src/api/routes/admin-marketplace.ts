@@ -150,7 +150,9 @@ interface CatalogRow extends Record<string, unknown> {
   enabled: boolean;
   // #3301 — false rows are hidden from the marketplace on SaaS deploys
   // (e.g. DuckDB, which is file-path based and not multi-tenant safe).
-  // `NOT NULL DEFAULT true` in the DB, so this is always a real boolean.
+  // `NOT NULL DEFAULT true` in the DB; the filter still treats only an
+  // explicit `false` as ineligible (`!== false`) since this is an unvalidated
+  // `SELECT *` cast — a stale/pre-column row defaults to visible.
   saas_eligible: boolean;
   created_at: string;
   updated_at: string;
@@ -631,7 +633,7 @@ const installRoute = createRoute({
       description: "Plugin installed",
       content: { "application/json": { schema: WorkspacePluginSchema } },
     },
-    400: { description: "Validation error or plan ineligible", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Validation error, plan ineligible, or not available on this deploy mode (SaaS-ineligible datasource)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Catalog entry not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Already installed", content: { "application/json": { schema: ErrorSchema } } },
@@ -738,11 +740,12 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       const installedMap = new Map(installations.map((i) => [i.catalog_id, { id: i.id, config: i.config }]));
 
       // #3301 — on SaaS deploys, hide catalog rows flagged `saas_eligible =
-      // false` (DuckDB is file-path based and not multi-tenant safe; rows with
-      // no registered adapter/install handler are likewise excluded). Resolved
-      // (not raw-env) deploy mode so an `ATLAS_DEPLOY_MODE=saas` that downgrades
-      // to self-hosted without @atlas/ee still lists everything. Self-hosted is
-      // unaffected — every datasource type stays visible.
+      // false` (DuckDB is file-path based and not multi-tenant safe). Resolved
+      // (not raw-env) deploy mode so a config-file `deployMode: "saas"` that
+      // silently downgrades to self-hosted without @atlas/ee still lists
+      // everything (the env `ATLAS_DEPLOY_MODE=saas` path hard-fails boot
+      // instead). Self-hosted is unaffected — every datasource type stays
+      // visible. The install path enforces the same flag (see POST /install).
       const isSaasDeploy = getConfig()?.deployMode === "saas";
 
       // Filter by plan eligibility, masking any installedConfig field marked
@@ -813,6 +816,34 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         return c.json({ error: "not_found", message: `Catalog entry "${body.catalogId}" not found or disabled.`, requestId }, 404);
       }
       const catalogEntry = catalogRows[0]!;
+
+      // #3301 defense-in-depth — the /available listing hides
+      // `saas_eligible = false` rows on SaaS, but the install path must also
+      // refuse them server-side: a workspace admin who already knows the
+      // catalog id could otherwise POST it directly and bypass the hidden
+      // card. DuckDB is file-path based and not multi-tenant safe. Mirrors the
+      // keyset gate in `integrations/install/github-pat-form-handler.ts`.
+      // Resolved (not raw-env) deploy mode, same as the listing filter.
+      if (getConfig()?.deployMode === "saas" && catalogEntry.saas_eligible === false) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.plugin.install,
+          targetType: "plugin",
+          targetId: body.catalogId,
+          scope: "workspace",
+          status: "failure",
+          metadata: {
+            pluginId: body.catalogId,
+            pluginSlug: catalogEntry.slug,
+            orgId,
+            saasIneligible: true,
+          },
+        });
+        return c.json({
+          error: "saas_ineligible",
+          message: `"${catalogEntry.slug}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        }, 400);
+      }
 
       // Plan check + existing check are independent — run in parallel
       const [plan, existing] = yield* Effect.promise(() =>

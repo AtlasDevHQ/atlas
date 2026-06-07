@@ -779,6 +779,22 @@ describe("Workspace Plugin Marketplace", () => {
       expect(body.total).toBe(2);
     });
 
+    it("lists a row whose saas_eligible is absent even on SaaS — only an explicit false is gated (#3301)", async () => {
+      // Pins the deliberate fail-open `!== false` semantic: the DB column is
+      // NOT NULL DEFAULT true, but the route tolerates a stale/pre-column row
+      // (field absent) by leaving it visible rather than hiding it.
+      mockDeployMode = "saas";
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      // sampleCatalogRow has no `saas_eligible` key.
+      setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [sampleCatalogRow]);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/available");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.plugins.map((p: { slug: string }) => p.slug)).toContain("bigquery");
+    });
+
     it("treats an unresolved deploy mode as self-hosted — lists saas_eligible=false rows (#3301)", async () => {
       // getConfig() === null (pre-load / no config) must not gate anything —
       // only a fully-resolved `deployMode === "saas"` hides rows.
@@ -869,6 +885,62 @@ describe("Workspace Plugin Marketplace", () => {
         body: JSON.stringify({ catalogId: "nonexistent" }),
       });
       expect(res.status).toBe(404);
+    });
+
+    // #3301 defense-in-depth — hiding the card on SaaS isn't enough; the
+    // install endpoint must also refuse a saas_eligible=false row so a direct
+    // POST (known catalog id) can't slip DuckDB into a SaaS tenant.
+    it("rejects installing a saas_eligible=false row on a SaaS deploy (#3301)", async () => {
+      mockDeployMode = "saas";
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(400);
+      const body = await json(res);
+      expect(body.error).toBe("saas_ineligible");
+      // Must short-circuit before persisting anything.
+      expect(findCapturedQuery("INSERT INTO workspace_plugins")).toBeUndefined();
+      // A failure audit is emitted so the blocked attempt is forensically visible.
+      const failure = mockLogAdminAction.mock.calls
+        .map((c) => c[0])
+        .find((e) => e.actionType === "plugin.install" && e.status === "failure");
+      expect(failure?.metadata).toMatchObject({ saasIneligible: true, orgId: "org-1" });
+    });
+
+    it("allows installing a saas_eligible=false row on a self-hosted deploy (#3301)", async () => {
+      mockDeployMode = "self-hosted";
+      setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
+        { ...sampleCatalogRow, slug: "duckdb", saas_eligible: false },
+      ]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
+      setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
+      setQueryResult("INSERT INTO workspace_plugins", [{
+        id: "inst-1",
+        workspace_id: "org-1",
+        catalog_id: "cat-1",
+        config: {},
+        enabled: true,
+        installed_at: now,
+        installed_by: "admin-1",
+        name: "DuckDB",
+        slug: "duckdb",
+        type: "datasource",
+      }]);
+
+      const res = await buildWorkspaceApp().request("/marketplace/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalogId: "cat-1" }),
+      });
+      expect(res.status).toBe(201);
     });
   });
 

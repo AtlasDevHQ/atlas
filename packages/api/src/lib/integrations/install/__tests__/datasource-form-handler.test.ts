@@ -341,6 +341,22 @@ describe("DatasourceFormInstallHandler — corrupt catalog schema", () => {
   });
 });
 
+// ── Absent-schema guard (fail closed — #3300 review) ─────────────────────────
+
+describe("DatasourceFormInstallHandler — absent catalog schema (NULL config_schema)", () => {
+  it("refuses the install (no INSERT) when config_schema is NULL — never persists a plaintext credential", async () => {
+    // A NULL config_schema parses to `absent`, which makes the secret walkers
+    // no-op: without this guard the `url` credential would persist in plaintext
+    // and the required check would be skipped. Must fail closed like `corrupt`.
+    catalogSchemaOverride = { value: null };
+    const handler = newHandler("clickhouse");
+    await expect(
+      handler.validateConfig(WSID, { url: "clickhouse://h:8443/db" }),
+    ).rejects.toThrow(/missing/i);
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
+  });
+});
+
 // ── Catalog row missing / disabled ────────────────────────────────────────────
 
 describe("DatasourceFormInstallHandler — catalog row missing", () => {

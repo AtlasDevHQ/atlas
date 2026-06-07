@@ -160,6 +160,23 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
         `Catalog "${this.slug}" config_schema is corrupt (${schema.reason}) — fix the catalog row before installing.`,
       );
     }
+    // An absent (NULL `config_schema` column) schema is just as unsafe as a
+    // corrupt one and must ALSO fail closed: `restoreMaskedSecrets`,
+    // `encryptSecretFields`, and `validateAgainstSchema` all no-op on `absent`,
+    // so a credential field would persist in PLAINTEXT and required fields go
+    // unchecked. Every built-in datasource row ships a non-empty `config_schema`
+    // (an empty array still parses to `parsed`), so `absent` means the row
+    // drifted to NULL — refuse rather than fail open at the credential boundary.
+    // (#3300 review — keeps datasource credential handling strictly schema-driven.)
+    if (schema.state === "absent") {
+      this.log.error(
+        { workspaceId },
+        "Datasource catalog config_schema is missing (NULL) — refusing install rather than persisting a credential in plaintext",
+      );
+      throw new Error(
+        `Catalog "${this.slug}" config_schema is missing — fix the catalog row before installing.`,
+      );
+    }
 
     // ── 4. SaaS keyset gate ─────────────────────────────────────────
     // `encryptSecret` falls back to plaintext when no key is configured (dev

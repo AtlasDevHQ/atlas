@@ -54,7 +54,7 @@ When running locally, either set `GOOGLE_APPLICATION_CREDENTIALS` to a service a
 
 ### Install from the admin console
 
-You don't have to edit `atlas.config.ts` to add a BigQuery connection. With the catalog row enabled, a workspace admin can install BigQuery from **Admin → Connections**: pick the BigQuery card, paste the full service-account key JSON and your GCP project ID into the form, and submit. The service-account JSON is encrypted at rest (it's a `secret: true` field) while the project ID stays in plaintext, and the connection becomes queryable via `executeSQL` once the deployment reloads. This works on SaaS too. See [Admin Console](/integrations/admin-console).
+You don't have to edit `atlas.config.ts` to add a BigQuery connection. With the catalog row enabled, a workspace admin can install BigQuery from **Admin → Connections**: pick the BigQuery card, paste the full service-account key JSON and your GCP project ID into the form, and submit. The service-account JSON is encrypted at rest (it's a `secret: true` field) while the project ID stays in plaintext, and the connection becomes queryable via `executeSQL` once the deployment reloads. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
 
 ## SQL Dialect
 

@@ -47,11 +47,14 @@ export async function profileElasticsearch(
   filterIndices?: string[],
   options?: ProfileElasticsearchOptions,
 ): Promise<ElasticsearchProfilingResult> {
+  // Independent modules — load concurrently (no async waterfall).
+  const [connectionModule, mappingModule] = await Promise.all([
+    import("../../../../plugins/elasticsearch/src/connection"),
+    import("../../../../plugins/elasticsearch/src/mapping"),
+  ]);
   const { resolveElasticsearchConfig, createElasticsearchClient, scrubElasticsearchError } =
-    await import("../../../../plugins/elasticsearch/src/connection");
-  const { mappingsToEntities } = await import(
-    "../../../../plugins/elasticsearch/src/mapping"
-  );
+    connectionModule;
+  const { mappingsToEntities } = mappingModule;
 
   const resolved = resolveElasticsearchConfig({ url: connectionString, apiKey });
   const client = createElasticsearchClient(

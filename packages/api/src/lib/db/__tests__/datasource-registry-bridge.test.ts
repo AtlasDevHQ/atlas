@@ -132,6 +132,22 @@ const fakeClickhousePlugin = {
   },
 };
 
+// A salesforce datasource plugin DOES expose createFromConfig (it's a valid SDK
+// seam), but the bridge must never call it — Salesforce is handler-managed
+// (OAuth) and queried via the LazyPluginLoader + querySalesforce tool. Used to
+// prove the bridge skips salesforce regardless of whether the plugin is
+// registered (#3302 / ADR-0014).
+const mockSalesforceCreateFromConfig = mock((_cfg: Readonly<Record<string, unknown>>) => fakeClickhouseConn);
+const fakeSalesforcePlugin = {
+  id: "salesforce-datasource",
+  types: ["datasource"],
+  connection: {
+    dbType: "salesforce",
+    validate: () => ({ valid: true }),
+    createFromConfig: mockSalesforceCreateFromConfig,
+  },
+};
+
 type BridgeModule = typeof import("../datasource-registry-bridge");
 let bridge!: BridgeModule;
 
@@ -158,6 +174,7 @@ beforeEach(async () => {
   mockHasDirectForWorkspace.mockClear();
   mockUnregisterDirectForWorkspace.mockClear();
   mockCreateFromConfig.mockClear();
+  mockSalesforceCreateFromConfig.mockClear();
 });
 
 afterEach(() => {
@@ -253,6 +270,43 @@ describe("registerDatasourceInstall", () => {
     await expect(
       bridge.registerDatasourceInstall(ROW("clickhouse"), { url: "clickhouse://h:8123/db" }),
     ).rejects.toThrow(/No datasource plugin registered for type "clickhouse"/);
+  });
+
+  // ── Salesforce is the OAuth exception — never built via the bridge ──────
+  // (#3302 / ADR-0014). These two tests pin "exactly one Salesforce query path":
+  // the bridge refuses to build a connection, so the only live path stays the
+  // OAuth + LazyPluginLoader + querySalesforce tool. They also guard the boot
+  // loop from logging a misleading per-row warning.
+  it("skips salesforce even when a salesforce plugin IS registered — createFromConfig is never called", async () => {
+    fakeDatasourcePlugins = [fakeSalesforcePlugin];
+    // The OAuth-installed workspace_plugins.config shape: instance_url / scopes
+    // / status, and crucially NO `url`.
+    const ok = await bridge.registerDatasourceInstall(ROW("salesforce"), {
+      instance_url: "https://na139.my.salesforce.com",
+      scopes: "api refresh_token offline_access",
+      status: "ok",
+    });
+    expect(ok).toBe(false);
+    // The bridge must NOT resurrect a second query path via the plugin adapter.
+    expect(mockSalesforceCreateFromConfig).not.toHaveBeenCalled();
+    expect(wsPluginRegisterCalls).toHaveLength(0);
+    expect(registerCalls).toHaveLength(0);
+    expect(wsRegisterCalls).toHaveLength(0);
+  });
+
+  it("skips salesforce WITHOUT throwing when no plugin is registered (boot stays quiet — the #3302 state)", async () => {
+    fakeDatasourcePlugins = []; // salesforcePlugin({}) removed from atlas.config.ts
+    // Must resolve to `false`, NOT throw "No datasource plugin registered for
+    // type salesforce" — that thrown error is what loadSavedConnections would
+    // log as a per-boot warning (and what would tempt re-adding the inert
+    // registration).
+    const ok = await bridge.registerDatasourceInstall(ROW("salesforce"), {
+      instance_url: "https://na139.my.salesforce.com",
+      scopes: "api",
+      status: "ok",
+    });
+    expect(ok).toBe(false);
+    expect(wsPluginRegisterCalls).toHaveLength(0);
   });
 
   it("is idempotent for the same (workspace, install_id) — returns false on re-register", async () => {

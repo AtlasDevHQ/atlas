@@ -2,7 +2,12 @@
 
 Salesforce datasource plugin for Atlas. Wraps Salesforce SOQL access via [jsforce](https://jsforce.github.io/), providing read-only querying of Salesforce objects through a dedicated `querySalesforce` tool.
 
-Unlike SQL-based datasource plugins, this plugin uses SOQL (Salesforce Object Query Language) and includes its own validation pipeline.
+Unlike SQL-based datasource plugins, this plugin uses SOQL (Salesforce Object Query Language) and includes its own validation pipeline. It is queried via the `querySalesforce` tool, **not** `executeSQL` — Salesforce is intentionally a deliberate exception to the generic `createFromConfig` datasource bridge ([ADR-0014](https://github.com/AtlasDevHQ/atlas/blob/main/docs/adr/0014-salesforce-datasource-stays-on-oauth.md)).
+
+## How Salesforce connects
+
+- **OAuth (canonical)** — In a running Atlas deployment, connect Salesforce from **Admin → Connections** via OAuth. Tokens are stored encrypted in `integration_credentials`, the connection is built on demand per workspace, and refresh/reconnect are handled automatically. This is the recommended path; the operator wires `SALESFORCE_CLIENT_ID` / `SALESFORCE_CLIENT_SECRET`. See the [Salesforce datasource docs](https://docs.useatlas.dev/plugins/datasources/salesforce).
+- **Static config (self-host)** — Alternatively, wire a single org with a connection URL in `atlas.config.ts` (below). Useful for self-hosted, env-driven deployments.
 
 ## Install
 
@@ -10,7 +15,7 @@ Unlike SQL-based datasource plugins, this plugin uses SOQL (Salesforce Object Qu
 bun add @useatlas/salesforce jsforce
 ```
 
-## Usage
+## Usage (static config — self-host)
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";

@@ -322,7 +322,9 @@ describe("plugin shape", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Adapter-only mode (SaaS per-workspace — no static datasource)
+// Adapter-only mode (dormant credential-form bridge seam — #3302 / ADR-0014).
+// Atlas connects Salesforce via OAuth, not the datasource bridge; this mode is
+// retained as an SDK seam but is not wired in any current deployment.
 // ---------------------------------------------------------------------------
 
 describe("adapter-only mode", () => {
@@ -398,8 +400,10 @@ describe("adapter-only mode", () => {
     const plugin = salesforcePlugin({});
     const { ctx, registered } = makeCtx();
     await plugin.initialize!(ctx);
-    // The querySalesforce tool is hardwired to the static connection; on SaaS
-    // per-workspace Salesforce is queried via executeSQL through the bridge.
+    // The querySalesforce tool is hardwired to the static connection, so the
+    // plugin doesn't register it in adapter-only mode. (SaaS per-workspace
+    // Salesforce is OAuth-installed and served by a querySalesforce tool the
+    // LazyPluginLoader builds per workspace — not by this plugin registration.)
     expect(registered.some((t) => t.name === "querySalesforce")).toBe(false);
   });
 

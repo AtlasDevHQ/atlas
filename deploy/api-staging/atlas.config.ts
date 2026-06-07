@@ -58,8 +58,10 @@ import { chatPlugin } from "./plugins/chat/src/index";
 // `createFromConfig`. No operator env var, no static datasource. DuckDB is
 // intentionally excluded (file-path based, not a safe multi-tenant datasource);
 // Postgres + MySQL need no plugin (the bridge registers those natively).
+// Salesforce is intentionally excluded too — it is OAuth-managed (queried via
+// the `LazyPluginLoader` + `querySalesforce` tool), so the bridge skips it and a
+// `salesforcePlugin({})` registration would be inert. See #3302 / ADR-0014.
 import { clickhousePlugin } from "./plugins/clickhouse/src/index";
-import { salesforcePlugin } from "./plugins/salesforce/src/index";
 import { snowflakePlugin } from "./plugins/snowflake/src/index";
 import { bigqueryPlugin } from "./plugins/bigquery/src/index";
 import { elasticsearchPlugin } from "./plugins/elasticsearch/src/index";
@@ -794,9 +796,9 @@ export default defineConfig({
     // Mirrors deploy/api/atlas.config.ts. Order within plugins[] doesn't affect
     // boot wiring — the bridge resolves adapters via the registry's getAll()
     // (order-independent). Each registers as an adapter only (no static
-    // connection); customers bring their own datasource per workspace.
+    // connection); customers bring their own datasource per workspace. Salesforce
+    // is excluded (OAuth-managed — see the import block above / ADR-0014).
     clickhousePlugin({}),
-    salesforcePlugin({}),
     snowflakePlugin({}),
     bigqueryPlugin({}),
     elasticsearchPlugin({}),

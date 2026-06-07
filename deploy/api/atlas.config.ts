@@ -40,9 +40,13 @@ import { chatPlugin } from "./plugins/chat/src/index";
 // datasource. DuckDB is intentionally NOT registered here — it is file-path
 // based and not a safe multi-tenant SaaS datasource (its plugin still supports
 // adapter-only mode for self-host). Postgres + MySQL need no plugin — the bridge
-// registers those DB-stored installs natively.
+// registers those DB-stored installs natively. Salesforce is intentionally NOT
+// registered either — it is OAuth-managed (tokens in `integration_credentials`,
+// queried via the `LazyPluginLoader` + `querySalesforce` tool), so the bridge
+// skips it and a `salesforcePlugin({})` registration would be inert. See #3302 /
+// ADR-0014. The Salesforce OAuth install handler is wired separately in
+// `integrations/install/register.ts`, gated on `SALESFORCE_CLIENT_ID/SECRET`.
 import { clickhousePlugin } from "./plugins/clickhouse/src/index";
-import { salesforcePlugin } from "./plugins/salesforce/src/index";
 import { snowflakePlugin } from "./plugins/snowflake/src/index";
 import { bigqueryPlugin } from "./plugins/bigquery/src/index";
 import { elasticsearchPlugin } from "./plugins/elasticsearch/src/index";
@@ -777,11 +781,10 @@ export default defineConfig({
     // Order within plugins[] doesn't affect boot wiring — the datasource bridge
     // resolves adapters via the registry's getAll() (order-independent). Each
     // registers as an adapter only (no static connection); customers bring their
-    // own ClickHouse / Salesforce / Snowflake / BigQuery / Elasticsearch per
-    // workspace. See the import block above for why DuckDB is excluded and why
+    // own ClickHouse / Snowflake / BigQuery / Elasticsearch per workspace. See
+    // the import block above for why DuckDB + Salesforce are excluded and why
     // Postgres + MySQL need no entry.
     clickhousePlugin({}),
-    salesforcePlugin({}),
     snowflakePlugin({}),
     bigqueryPlugin({}),
     elasticsearchPlugin({}),

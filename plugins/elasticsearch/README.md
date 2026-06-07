@@ -9,7 +9,7 @@ SDK dependency.
 > layer (`elasticsearch://` URL + **API-key** auth parsing, an authenticated
 > cluster-info/ping health check, ConnectionRegistry registration) and the
 > CLI semantic-layer profiler (`atlas init` / `atlas diff` over index
-> `_mapping`s — see [Semantic layer](#semantic-layer-atlas-init--diff)). The
+> `_mapping`s — see [Semantic layer](#semantic-layer-atlas-init-and-atlas-diff)). The
 > query surfaces (SQL via `executeSQL` and a dedicated Query DSL tool), the
 > remaining auth modes (Basic / Cloud ID / AWS SigV4), and the OpenSearch engine
 > arrive in later slices. See the
@@ -55,7 +55,7 @@ masks it in the admin UI. It is not returned in plaintext: connection/health
 errors are scrubbed (the literal key is redacted and messages tripping auth
 markers are collapsed) before they reach the agent, the user, or logs.
 
-## Semantic layer (`atlas init` / `atlas diff`)
+## Semantic layer (`atlas init` and `atlas diff`)
 
 Atlas profiles an Elasticsearch cluster into the semantic layer straight from
 index `_mapping`s — there is no SQL schema to introspect, so each index becomes

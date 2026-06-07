@@ -144,7 +144,8 @@ describe("runMigrations", () => {
     //   apply, #3284) = 123.
     //   Plus 0123 (elasticsearch built-in datasource catalog row, #3270) = 124.
     //   Plus 0124 (DuckDB saas_eligible = false, #3301) = 125.
-    expect(count).toBe(125);
+    //   Plus 0125 (elasticsearch auth-modes config_schema update, #3263–#3266) = 126.
+    expect(count).toBe(126);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -298,6 +299,7 @@ describe("runMigrations", () => {
         "0122_learned_patterns_connection_group.sql",
         "0123_elasticsearch_datasource_catalog.sql",
         "0124_duckdb_not_saas_eligible.sql",
+        "0125_elasticsearch_auth_modes_config_schema.sql",
       ],
     });
 

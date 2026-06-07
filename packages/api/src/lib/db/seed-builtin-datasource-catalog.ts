@@ -283,9 +283,14 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     // #3270 — added after the original eight (migration 0123, not 0093). The
     // boot seed re-asserts all nine; only this row also ships in 0123 for
     // existing DBs that already ran 0093. `config_schema` mirrors the plugin's
-    // `getConfigSchema()` (plugins/elasticsearch/src/index.ts): `apiKey` is the
-    // only `secret: true` field — the `url` carries no credential. Future auth
-    // modes (#3263–#3265) extend this list + getConfigSchema in lockstep.
+    // `getConfigSchema()` (plugins/elasticsearch/src/index.ts) — the CURRENT
+    // desired state (the auth + engine slices #3263–#3266). The four `secret:
+    // true` fields (apiKey / password / awsSecretAccessKey / awsSessionToken)
+    // drive `encryptSecretFields`; `url` and the AWS region/key-id/service carry
+    // no credential. The full set is brought to existing rows by migration 0125
+    // (0123 inserted only url/apiKey/description and is immutable); this literal
+    // is used only when the seed re-inserts a row deleted out-of-band. Cloud ID
+    // is an `atlas.config.ts`-only convenience, not a form field.
     id: "catalog:elasticsearch",
     slug: "elasticsearch",
     name: "Elasticsearch",
@@ -301,16 +306,72 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
         label: "Connection URL",
         required: true,
         description:
-          "elasticsearch://host:9200 — HTTPS by default; append ?ssl=false for a plaintext local cluster.",
+          "elasticsearch://host:9200 or opensearch://host:9200 — HTTPS by default; append ?ssl=false for a plaintext local cluster.",
+      },
+      {
+        key: "engine",
+        type: "select",
+        label: "Engine",
+        options: ["elasticsearch", "opensearch"],
+        description:
+          "Optional. Overrides the engine inferred from the URL scheme (defaults to elasticsearch).",
       },
       {
         key: "apiKey",
         type: "string",
         label: "API Key",
-        required: true,
         secret: true,
         description:
-          "Base64-encoded Elasticsearch API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+          "API-key auth: Base64-encoded API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+      },
+      {
+        key: "username",
+        type: "string",
+        label: "Username",
+        description: "HTTP Basic auth: username (pair with Password).",
+      },
+      {
+        key: "password",
+        type: "string",
+        label: "Password",
+        secret: true,
+        description: "HTTP Basic auth: password. Encrypted at rest.",
+      },
+      {
+        key: "awsRegion",
+        type: "string",
+        label: "AWS Region",
+        description:
+          "AWS SigV4 (Amazon OpenSearch Service): region, e.g. us-east-1. Setting this selects SigV4 signing.",
+      },
+      {
+        key: "awsAccessKeyId",
+        type: "string",
+        label: "AWS Access Key ID",
+        description:
+          "AWS SigV4: access key id. Optional — falls back to the AWS_ACCESS_KEY_ID environment variable.",
+      },
+      {
+        key: "awsSecretAccessKey",
+        type: "string",
+        label: "AWS Secret Access Key",
+        secret: true,
+        description:
+          "AWS SigV4: secret access key. Optional — falls back to AWS_SECRET_ACCESS_KEY. Encrypted at rest.",
+      },
+      {
+        key: "awsSessionToken",
+        type: "string",
+        label: "AWS Session Token",
+        secret: true,
+        description:
+          "AWS SigV4: session token for temporary credentials. Optional — falls back to AWS_SESSION_TOKEN. Encrypted at rest.",
+      },
+      {
+        key: "awsService",
+        type: "string",
+        label: "AWS Service",
+        description: "AWS SigV4: service code to sign with. Defaults to `es`.",
       },
       {
         key: "description",

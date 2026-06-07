@@ -6,10 +6,10 @@
     "bigquery",
     "clickhouse",
     "duckdb",
+    "elasticsearch",
     "mysql",
     "snowflake",
     "salesforce",
-    "elasticsearch",
     "obsidian-reader"
   ]
 }

@@ -95,8 +95,9 @@ describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
       duckdb: [],
       salesforce: [],
       "demo-postgres": [],
-      // ES `url` carries no credential (apiKey is separate) — only apiKey is secret.
-      elasticsearch: ["apiKey"],
+      // ES `url` carries no credential. The auth modes (#3263–#3266) add three
+      // more secret fields: HTTP Basic `password` and the two AWS SigV4 secrets.
+      elasticsearch: ["apiKey", "awsSecretAccessKey", "awsSessionToken", "password"],
     };
     for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
       const expectedSecrets = secretFieldsBySlug[row.slug] ?? [];

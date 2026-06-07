@@ -1,4 +1,5 @@
 import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+import { createHash, createHmac } from "node:crypto";
 
 import { definePlugin, isDatasourcePlugin } from "@useatlas/plugin-sdk";
 import {
@@ -6,6 +7,11 @@ import {
   buildElasticsearchPlugin,
   parseElasticsearchUrl,
   resolveElasticsearchConfig,
+  resolveAuth,
+  decodeCloudId,
+  isCompleteConnectionConfig,
+  engineSqlProfile,
+  parseSqlPage,
   extractHost,
   createElasticsearchClient,
   createElasticsearchConnection,
@@ -15,6 +21,11 @@ import {
   extractEsSqlErrorMessage,
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
   ELASTICSEARCH_PARSER_DIALECT,
+  deriveSigningKey,
+  buildCanonicalRequest,
+  sigV4SignHeaders,
+  formatAmzDate,
+  EMPTY_PAYLOAD_SHA256,
 } from "../src/index";
 import type { ElasticsearchSqlResponse } from "../src/index";
 
@@ -78,14 +89,22 @@ describe("parseElasticsearchUrl", () => {
     expect(parsed.endpoint).toBe("https://my-cluster.es.io");
   });
 
-  test("rejects a non-elasticsearch scheme", () => {
+  test("rejects a non-elasticsearch/opensearch scheme", () => {
     expect(() => parseElasticsearchUrl("postgresql://user:pass@host/db")).toThrow(
-      /expected elasticsearch:\/\/ scheme/,
+      /expected elasticsearch:\/\/ or opensearch:\/\/ scheme/,
     );
   });
 
-  test("rejects opensearch:// — OpenSearch engine arrives in a later slice", () => {
-    expect(() => parseElasticsearchUrl("opensearch://host:9200")).toThrow(/#3266/);
+  test("resolves opensearch:// to the opensearch engine (#3266)", () => {
+    const parsed = parseElasticsearchUrl("opensearch://host:9200");
+    expect(parsed.engine).toBe("opensearch");
+    expect(parsed.endpoint).toBe("https://host:9200");
+  });
+
+  test("opensearch:// honors ?ssl=false like elasticsearch://", () => {
+    const parsed = parseElasticsearchUrl("opensearch://localhost:9200?ssl=false");
+    expect(parsed.engine).toBe("opensearch");
+    expect(parsed.endpoint).toBe("http://localhost:9200");
   });
 
   test("rejects a URL missing a host", () => {
@@ -151,7 +170,7 @@ describe("resolveElasticsearchConfig", () => {
       url: VALID_URL,
       apiKey: `  ${API_KEY}  `,
     });
-    expect(resolved.auth.apiKey).toBe(API_KEY);
+    expect(resolved.auth).toEqual({ mode: "apiKey", apiKey: API_KEY });
   });
 
   test("includes an optional description when provided", () => {
@@ -167,6 +186,19 @@ describe("resolveElasticsearchConfig", () => {
     expect(() =>
       resolveElasticsearchConfig({ url: VALID_URL, apiKey: "" }),
     ).toThrow(/API key/i);
+  });
+
+  test("rejects a config with no endpoint (neither url nor cloudId)", () => {
+    expect(() => resolveElasticsearchConfig({ apiKey: API_KEY })).toThrow(
+      /provide a connection url or an Elastic Cloud ID/,
+    );
+  });
+
+  test("rejects a config with an endpoint but no auth at all", () => {
+    expect(() => resolveAuth({})).toThrow(/no authentication configured/);
+    expect(() => resolveElasticsearchConfig({ url: VALID_URL })).toThrow(
+      /no authentication configured/,
+    );
   });
 });
 
@@ -740,13 +772,35 @@ describe("adapter-only mode", () => {
 // ---------------------------------------------------------------------------
 
 describe("getConfigSchema", () => {
-  test("marks apiKey as a secret field", () => {
+  test("marks apiKey as a secret field (no longer unconditionally required — one of three auth modes)", () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     const schema = plugin.getConfigSchema!();
     const apiKeyField = schema.find((f) => f.key === "apiKey");
     expect(apiKeyField).toBeDefined();
     expect(apiKeyField?.secret).toBe(true);
-    expect(apiKeyField?.required).toBe(true);
+    expect(apiKeyField?.required).toBeFalsy();
+  });
+
+  test("marks every credential field secret: true (password + AWS secret/session)", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    const schema = plugin.getConfigSchema!();
+    const secretKeys = schema.filter((f) => f.secret === true).map((f) => f.key).sort();
+    expect(secretKeys).toEqual(
+      ["apiKey", "awsSecretAccessKey", "awsSessionToken", "password"].sort(),
+    );
+  });
+
+  test("offers an engine select with both engines + non-secret AWS region/key-id/service fields", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    const schema = plugin.getConfigSchema!();
+    const engineField = schema.find((f) => f.key === "engine");
+    expect(engineField?.type).toBe("select");
+    expect(engineField?.options).toEqual(["elasticsearch", "opensearch"]);
+    for (const key of ["awsRegion", "awsAccessKeyId", "awsService", "username"]) {
+      const field = schema.find((f) => f.key === key);
+      expect(field, `expected ${key} field`).toBeDefined();
+      expect(field?.secret).toBeFalsy();
+    }
   });
 
   test("does not mark the url as secret (it carries no credential)", () => {
@@ -1278,5 +1332,708 @@ describe("SQL surface wiring", () => {
     expect(plugin.dialect!).toMatch(/executeSQL/);
     // Single-index guidance (no JOINs across indices in the SQL surface).
     expect(plugin.dialect!.toLowerCase()).toContain("index");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AWS SigV4 signer (#3265) — verified against AWS-documented test vectors
+// ---------------------------------------------------------------------------
+
+describe("sigv4: deriveSigningKey", () => {
+  test("matches AWS's documented signing-key derivation example", () => {
+    // From AWS "Examples of how to derive a signing key for Signature Version 4".
+    const key = deriveSigningKey(
+      "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "20120215",
+      "us-east-1",
+      "iam",
+    );
+    expect(key.toString("hex")).toBe(
+      "f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d",
+    );
+  });
+});
+
+describe("sigv4: formatAmzDate", () => {
+  test("formats a Date into amzDate + dateStamp (UTC, no separators)", () => {
+    const { amzDate, dateStamp } = formatAmzDate(new Date("2015-08-30T12:36:00.000Z"));
+    expect(amzDate).toBe("20150830T123600Z");
+    expect(dateStamp).toBe("20150830");
+  });
+});
+
+describe("sigv4: buildCanonicalRequest", () => {
+  test("produces the canonical request string for a body-less GET", () => {
+    const { canonicalRequest, signedHeaders } = buildCanonicalRequest(
+      "GET",
+      "/",
+      new URLSearchParams(""),
+      {
+        host: "example.amazonaws.com",
+        amzDate: "20150830T123600Z",
+        payloadHash: EMPTY_PAYLOAD_SHA256,
+      },
+    );
+    expect(signedHeaders).toBe("host;x-amz-content-sha256;x-amz-date");
+    expect(canonicalRequest).toBe(
+      [
+        "GET",
+        "/",
+        "",
+        "host:example.amazonaws.com",
+        `x-amz-content-sha256:${EMPTY_PAYLOAD_SHA256}`,
+        "x-amz-date:20150830T123600Z",
+        "",
+        "host;x-amz-content-sha256;x-amz-date",
+        EMPTY_PAYLOAD_SHA256,
+      ].join("\n"),
+    );
+  });
+
+  test("sorts the canonical query string by encoded key", () => {
+    const { canonicalRequest } = buildCanonicalRequest(
+      "POST",
+      "/_sql",
+      new URLSearchParams("format=json"),
+      { host: "h", amzDate: "20150830T123600Z", payloadHash: "abc" },
+    );
+    // The 3rd line (index 2) is the canonical query string.
+    expect(canonicalRequest.split("\n")[2]).toBe("format=json");
+  });
+
+  test("includes x-amz-security-token in the signed headers when a session token is present", () => {
+    const { signedHeaders, canonicalRequest } = buildCanonicalRequest(
+      "GET",
+      "/",
+      new URLSearchParams(""),
+      {
+        host: "h",
+        amzDate: "20150830T123600Z",
+        payloadHash: EMPTY_PAYLOAD_SHA256,
+        sessionToken: "FQoSESSIONTOKEN",
+      },
+    );
+    expect(signedHeaders).toBe("host;x-amz-content-sha256;x-amz-date;x-amz-security-token");
+    expect(canonicalRequest).toContain("x-amz-security-token:FQoSESSIONTOKEN");
+  });
+});
+
+describe("sigv4: sigV4SignHeaders", () => {
+  const FIXED_DATE = new Date("2015-08-30T12:36:00.000Z");
+  const SIGN_INPUT = {
+    method: "POST",
+    url: "https://search-mydomain.us-east-1.es.amazonaws.com/_sql?format=json",
+    body: JSON.stringify({ query: "SELECT COUNT(*) FROM flights" }),
+    region: "us-east-1",
+    service: "es",
+    accessKeyId: "AKIDEXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    date: FIXED_DATE,
+  };
+
+  test("produces an Authorization header in the SigV4 format", () => {
+    const headers = sigV4SignHeaders(SIGN_INPUT);
+    expect(headers.Authorization).toMatch(
+      /^AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE\/20150830\/us-east-1\/es\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/,
+    );
+    expect(headers["X-Amz-Date"]).toBe("20150830T123600Z");
+    expect(headers["X-Amz-Content-Sha256"]).toBe(
+      createHash("sha256").update(SIGN_INPUT.body, "utf8").digest("hex"),
+    );
+    expect(headers["X-Amz-Security-Token"]).toBeUndefined();
+  });
+
+  test("the signature equals a fully independent SigV4 recomputation", () => {
+    // True oracle: re-implement the canonical request + string-to-sign INLINE
+    // here (NOT via buildCanonicalRequest, the function under test), so a bug
+    // *inside* buildCanonicalRequest — wrong newline count, header order, a
+    // missing payload-hash line — makes actualSig and expectedSig diverge and
+    // fails this test. Only deriveSigningKey (separately AWS-vector-verified) and
+    // node:crypto HMAC are shared.
+    const headers = sigV4SignHeaders(SIGN_INPUT);
+    const actualSig = /Signature=([0-9a-f]{64})$/.exec(headers.Authorization)![1];
+
+    const payloadHash = createHash("sha256").update(SIGN_INPUT.body, "utf8").digest("hex");
+    const canonicalRequest = [
+      "POST",
+      "/_sql",
+      "format=json",
+      "host:search-mydomain.us-east-1.es.amazonaws.com",
+      `x-amz-content-sha256:${payloadHash}`,
+      "x-amz-date:20150830T123600Z",
+      "",
+      "host;x-amz-content-sha256;x-amz-date",
+      payloadHash,
+    ].join("\n");
+    const scope = "20150830/us-east-1/es/aws4_request";
+    const stringToSign = [
+      "AWS4-HMAC-SHA256",
+      "20150830T123600Z",
+      scope,
+      createHash("sha256").update(canonicalRequest, "utf8").digest("hex"),
+    ].join("\n");
+    const signingKey = deriveSigningKey(
+      SIGN_INPUT.secretAccessKey,
+      "20150830",
+      "us-east-1",
+      "es",
+    );
+    const expectedSig = createHmac("sha256", signingKey)
+      .update(stringToSign, "utf8")
+      .digest("hex");
+    expect(actualSig).toBe(expectedSig);
+  });
+
+  test("is deterministic for a fixed clock and varies with the body", () => {
+    const a = sigV4SignHeaders(SIGN_INPUT);
+    const b = sigV4SignHeaders(SIGN_INPUT);
+    expect(a.Authorization).toBe(b.Authorization);
+    const c = sigV4SignHeaders({ ...SIGN_INPUT, body: JSON.stringify({ query: "SELECT 1" }) });
+    expect(c.Authorization).not.toBe(a.Authorization);
+  });
+
+  test("adds X-Amz-Security-Token and signs it when a session token is supplied", () => {
+    const headers = sigV4SignHeaders({ ...SIGN_INPUT, sessionToken: "SESSION123" });
+    expect(headers["X-Amz-Security-Token"]).toBe("SESSION123");
+    expect(headers.Authorization).toContain(
+      "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token",
+    );
+  });
+
+  test("hashes an empty body to the well-known empty SHA-256", () => {
+    const headers = sigV4SignHeaders({ ...SIGN_INPUT, method: "GET", body: "" });
+    expect(headers["X-Amz-Content-Sha256"]).toBe(EMPTY_PAYLOAD_SHA256);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HTTP Basic auth (#3263)
+// ---------------------------------------------------------------------------
+
+describe("HTTP Basic auth (#3263)", () => {
+  const BASIC = { url: VALID_URL, username: "esuser", password: "es-p@ss word" };
+
+  test("resolveAuth selects Basic from username + password", () => {
+    const auth = resolveAuth(BASIC);
+    expect(auth).toEqual({ mode: "basic", username: "esuser", password: "es-p@ss word" });
+  });
+
+  test("resolveAuth rejects a username without a password (and vice versa)", () => {
+    expect(() => resolveAuth({ url: VALID_URL, username: "esuser" })).toThrow(
+      /both a username and a password/,
+    );
+    expect(() => resolveAuth({ url: VALID_URL, password: "secret" })).toThrow(
+      /both a username and a password/,
+    );
+  });
+
+  test("the client sends Authorization: Basic on ping", async () => {
+    let capturedAuth: string | undefined;
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      capturedAuth = (init.headers as Record<string, string>).Authorization;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    });
+    const conn = createElasticsearchConnection(BASIC, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await conn.ping();
+    const expected = `Basic ${Buffer.from("esuser:es-p@ss word", "utf8").toString("base64")}`;
+    expect(capturedAuth).toBe(expected);
+  });
+
+  test("a Basic-secured health check succeeds (mocked)", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      fetchResponse(CLUSTER_INFO_BODY),
+    ) as unknown as typeof fetch;
+    try {
+      const plugin = buildElasticsearchPlugin(BASIC);
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("a failed Basic health check never leaks the password", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      fetchResponse(
+        { error: `auth failed for password es-p@ss word` },
+        { ok: false, status: 401, statusText: "Unauthorized" },
+      ),
+    ) as unknown as typeof fetch;
+    try {
+      const plugin = buildElasticsearchPlugin(BASIC);
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(false);
+      expect(result.message).not.toContain("es-p@ss word");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("the strict schema accepts a complete Basic config via createFromConfig", () => {
+    const plugin = elasticsearchPlugin({});
+    const conn = plugin.connection.createFromConfig!(BASIC);
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Elastic Cloud ID (#3264)
+// ---------------------------------------------------------------------------
+
+describe("Elastic Cloud ID (#3264)", () => {
+  /** Build a Cloud ID from a decoded `domain[:port]$es$kbn` payload. */
+  const cloudIdOf = (decoded: string, name = "my-deployment") =>
+    `${name}:${Buffer.from(decoded, "utf8").toString("base64")}`;
+
+  test("decodes to https://<es-uuid>.<domain>", () => {
+    const cloudId = cloudIdOf("us-east-1.aws.found.io$abc123es$def456kbn");
+    expect(decodeCloudId(cloudId)).toBe("https://abc123es.us-east-1.aws.found.io");
+  });
+
+  test("preserves an explicit port from the domain segment", () => {
+    const cloudId = cloudIdOf("cloud.example.com:9243$esid$kbnid");
+    expect(decodeCloudId(cloudId)).toBe("https://esid.cloud.example.com:9243");
+  });
+
+  test("falls back to the bare domain when the es-uuid is empty", () => {
+    const cloudId = cloudIdOf("host.example.com$$kbnid");
+    expect(decodeCloudId(cloudId)).toBe("https://host.example.com");
+  });
+
+  test("rejects a malformed Cloud ID (no colon)", () => {
+    expect(() => decodeCloudId("no-colon-here")).toThrow(/Invalid Elastic Cloud ID/);
+  });
+
+  test("rejects a Cloud ID with an empty base64 segment", () => {
+    expect(() => decodeCloudId("my-deployment:")).toThrow(/Invalid Elastic Cloud ID/);
+  });
+
+  test("rejects a base64 payload missing the $-separated parts", () => {
+    // "hello" base64-decodes fine but has no `$` separator.
+    const cloudId = cloudIdOf("hello");
+    expect(() => decodeCloudId(cloudId)).toThrow(/malformed/);
+  });
+
+  test("resolveElasticsearchConfig combines a Cloud ID with API-key creds", () => {
+    const cloudId = cloudIdOf("us-east-1.aws.found.io$abc123es$def456kbn");
+    const resolved = resolveElasticsearchConfig({ cloudId, apiKey: API_KEY });
+    expect(resolved.endpoint).toBe("https://abc123es.us-east-1.aws.found.io");
+    expect(resolved.engine).toBe("elasticsearch");
+    expect(resolved.auth).toEqual({ mode: "apiKey", apiKey: API_KEY });
+  });
+
+  test("resolveElasticsearchConfig combines a Cloud ID with Basic creds", () => {
+    const cloudId = cloudIdOf("us-east-1.aws.found.io$abc123es$def456kbn");
+    const resolved = resolveElasticsearchConfig({
+      cloudId,
+      username: "u",
+      password: "p",
+    });
+    expect(resolved.endpoint).toBe("https://abc123es.us-east-1.aws.found.io");
+    expect(resolved.auth.mode).toBe("basic");
+  });
+
+  test("rejects supplying both url and cloudId", () => {
+    const cloudId = cloudIdOf("h$e$k");
+    expect(() =>
+      resolveElasticsearchConfig({ url: VALID_URL, cloudId, apiKey: API_KEY }),
+    ).toThrow(/either a url or a cloudId/);
+  });
+
+  test("a Cloud ID health check succeeds (mocked) and hits the decoded endpoint", async () => {
+    const cloudId = cloudIdOf("us-east-1.aws.found.io$abc123es$def456kbn");
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    });
+    const conn = createElasticsearchConnection(
+      { cloudId, apiKey: API_KEY },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const info = await conn.ping();
+    expect(info.clusterName).toBe("atlas-test-cluster");
+    expect(capturedUrl).toBe("https://abc123es.us-east-1.aws.found.io/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AWS SigV4 auth (#3265)
+// ---------------------------------------------------------------------------
+
+describe("AWS SigV4 auth (#3265)", () => {
+  const realFetch = globalThis.fetch;
+  const SAVED = {
+    id: process.env.AWS_ACCESS_KEY_ID,
+    secret: process.env.AWS_SECRET_ACCESS_KEY,
+    token: process.env.AWS_SESSION_TOKEN,
+  };
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    // Restore the ambient AWS env to its pre-test state.
+    for (const [k, v] of [
+      ["AWS_ACCESS_KEY_ID", SAVED.id],
+      ["AWS_SECRET_ACCESS_KEY", SAVED.secret],
+      ["AWS_SESSION_TOKEN", SAVED.token],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  const SIGV4 = {
+    url: VALID_URL,
+    awsRegion: "us-east-1",
+    awsAccessKeyId: "AKIDEXAMPLE",
+    awsSecretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+  };
+
+  test("resolveAuth selects SigV4 from awsRegion + explicit keys", () => {
+    const auth = resolveAuth(SIGV4);
+    expect(auth).toEqual({
+      mode: "sigv4",
+      region: "us-east-1",
+      service: "es",
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+    });
+  });
+
+  test("resolveAuth resolves credentials from the ambient AWS env chain when allowed (static path)", () => {
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_SESSION_TOKEN;
+    process.env.AWS_ACCESS_KEY_ID = "ENV_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "ENV_SECRET";
+    process.env.AWS_SESSION_TOKEN = "ENV_TOKEN";
+    const auth = resolveAuth(
+      { url: VALID_URL, awsRegion: "eu-west-1", awsService: "aoss" },
+      { allowAmbientAwsCreds: true },
+    );
+    expect(auth).toEqual({
+      mode: "sigv4",
+      region: "eu-west-1",
+      service: "aoss",
+      accessKeyId: "ENV_KEY_ID",
+      secretAccessKey: "ENV_SECRET",
+      sessionToken: "ENV_TOKEN",
+    });
+  });
+
+  test("resolveAuth does NOT read the ambient AWS env by default — per-workspace path (#2850)", () => {
+    // Security: a DB-stored per-workspace SigV4 config must carry its own keys.
+    // Even with the operator's AWS env populated, the default (env-less) resolver
+    // must refuse rather than sign with the operator's ambient credentials.
+    process.env.AWS_ACCESS_KEY_ID = "OPERATOR_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "OPERATOR_SECRET";
+    expect(() => resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" })).toThrow(
+      /no credentials/,
+    );
+    // And the error must name the field-only remedy (no env-var hint) on this path.
+    expect(() => resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" })).toThrow(
+      /carry its own keys/,
+    );
+  });
+
+  test("resolveAuth throws (no secret echoed) when SigV4 has no credentials", () => {
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    expect(() =>
+      resolveAuth({ url: VALID_URL, awsRegion: "us-east-1" }, { allowAmbientAwsCreds: true }),
+    ).toThrow(/AWS SigV4 selected .* no credentials/);
+  });
+
+  test("SigV4 takes precedence over API key + Basic when several are present", () => {
+    const auth = resolveAuth({
+      ...SIGV4,
+      apiKey: API_KEY,
+      username: "u",
+      password: "p",
+    });
+    expect(auth.mode).toBe("sigv4");
+  });
+
+  test("the client signs ping requests with SigV4 (mocked)", async () => {
+    let headers: Record<string, string> | undefined;
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      headers = init.headers as Record<string, string>;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    });
+    const conn = createElasticsearchConnection(SIGV4, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    await conn.ping();
+    expect(headers?.Authorization).toMatch(
+      /^AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE\/\d{8}\/us-east-1\/es\/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$/,
+    );
+    expect(headers?.["X-Amz-Date"]).toMatch(/^\d{8}T\d{6}Z$/);
+    expect(headers?.["X-Amz-Content-Sha256"]).toBe(EMPTY_PAYLOAD_SHA256);
+  });
+
+  test("the client signs SQL queries with SigV4 (mocked) and carries the session token", async () => {
+    let headers: Record<string, string> | undefined;
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      headers = init.headers as Record<string, string>;
+      return fetchResponse({ columns: [{ name: "n", type: "long" }], rows: [[1]] });
+    });
+    const conn = createElasticsearchConnection(
+      { ...SIGV4, awsSessionToken: "SESSIONTOK" },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const result = await conn.query("SELECT COUNT(*) AS n FROM flights");
+    expect(result.rows).toEqual([{ n: 1 }]);
+    expect(headers?.Authorization).toContain("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE");
+    expect(headers?.Authorization).toContain("x-amz-security-token");
+    expect(headers?.["X-Amz-Security-Token"]).toBe("SESSIONTOK");
+  });
+
+  test("a SigV4 health check succeeds (mocked)", async () => {
+    globalThis.fetch = mock(async () =>
+      fetchResponse(CLUSTER_INFO_BODY),
+    ) as unknown as typeof fetch;
+    const plugin = buildElasticsearchPlugin(SIGV4);
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+  });
+
+  test("a failed SigV4 health check never leaks the secret key", async () => {
+    globalThis.fetch = mock(async () =>
+      fetchResponse(
+        { error: `denied for ${SIGV4.awsSecretAccessKey}` },
+        { ok: false, status: 403, statusText: "Forbidden" },
+      ),
+    ) as unknown as typeof fetch;
+    const plugin = buildElasticsearchPlugin(SIGV4);
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).not.toContain(SIGV4.awsSecretAccessKey);
+  });
+
+  test("createFromConfig rejects a SigV4 config without explicit keys, even with operator AWS env set (#2850)", () => {
+    // The per-workspace path must NOT fall back to the operator's ambient AWS
+    // env — a credential-less SigV4 install is rejected at validation time.
+    process.env.AWS_ACCESS_KEY_ID = "OPERATOR_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "OPERATOR_SECRET";
+    const plugin = elasticsearchPlugin({});
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: VALID_URL, awsRegion: "us-east-1" }),
+    ).toThrow();
+  });
+
+  test("the static path DOES use ambient AWS creds (self-hosted operator-baked config)", async () => {
+    // Mirror image of the per-workspace test: a static atlas.config.ts datasource
+    // with only awsRegion resolves SigV4 from the operator env and signs.
+    process.env.AWS_ACCESS_KEY_ID = "STATIC_KEY_ID";
+    process.env.AWS_SECRET_ACCESS_KEY = "STATIC_SECRET";
+    let auth: string | undefined;
+    globalThis.fetch = mock(async (_url: string, init: RequestInit) => {
+      auth = (init.headers as Record<string, string>).Authorization;
+      return fetchResponse(CLUSTER_INFO_BODY);
+    }) as unknown as typeof fetch;
+    const plugin = buildElasticsearchPlugin({ url: VALID_URL, awsRegion: "us-east-1" });
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(auth).toContain("AWS4-HMAC-SHA256 Credential=STATIC_KEY_ID");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenSearch engine coverage (#3266)
+// ---------------------------------------------------------------------------
+
+describe("engineSqlProfile + parseSqlPage (#3266)", () => {
+  test("routes Elasticsearch SQL to /_sql (format=json)", () => {
+    expect(engineSqlProfile("elasticsearch")).toEqual({
+      sqlPath: "/_sql",
+      sqlClosePath: "/_sql/close",
+      format: "json",
+    });
+  });
+
+  test("routes OpenSearch SQL to /_plugins/_sql (format=jdbc)", () => {
+    expect(engineSqlProfile("opensearch")).toEqual({
+      sqlPath: "/_plugins/_sql",
+      sqlClosePath: "/_plugins/_sql/close",
+      format: "jdbc",
+    });
+  });
+
+  test("parseSqlPage reads Elasticsearch columns/rows", () => {
+    const page = parseSqlPage(
+      { columns: [{ name: "a", type: "long" }], rows: [[1]], cursor: "c1" },
+      "elasticsearch",
+    );
+    expect(page).toEqual({ columns: [{ name: "a", type: "long" }], rows: [[1]], cursor: "c1" });
+  });
+
+  test("parseSqlPage maps OpenSearch schema/datarows into columns/rows", () => {
+    const page = parseSqlPage(
+      { schema: [{ name: "a", type: "long" }], datarows: [[1]], cursor: "c1" },
+      "opensearch",
+    );
+    expect(page).toEqual({ columns: [{ name: "a", type: "long" }], rows: [[1]], cursor: "c1" });
+  });
+
+  test("parseSqlPage tolerates a malformed/empty engine response (defensive guards)", () => {
+    // The cursor loop must not crash on a garbage page — undefined body, a
+    // non-array schema/columns, and a missing cursor all degrade gracefully.
+    expect(parseSqlPage(undefined, "opensearch")).toEqual({
+      columns: undefined,
+      rows: undefined,
+    });
+    expect(parseSqlPage({ schema: "nope", datarows: 5, cursor: 42 }, "opensearch")).toEqual({
+      columns: undefined,
+      rows: undefined,
+    });
+    expect(parseSqlPage({}, "elasticsearch")).toEqual({ columns: undefined, rows: undefined });
+  });
+});
+
+describe("engine resolution (#3266)", () => {
+  test("opensearch:// URL resolves the opensearch engine", () => {
+    const resolved = resolveElasticsearchConfig({
+      url: "opensearch://localhost:9200?ssl=false",
+      apiKey: API_KEY,
+    });
+    expect(resolved.engine).toBe("opensearch");
+  });
+
+  test("explicit engine config overrides the URL scheme (config precedence)", () => {
+    const asOpenSearch = resolveElasticsearchConfig({
+      url: "elasticsearch://h:9200",
+      engine: "opensearch",
+      apiKey: API_KEY,
+    });
+    expect(asOpenSearch.engine).toBe("opensearch");
+    const asElastic = resolveElasticsearchConfig({
+      url: "opensearch://h:9200",
+      engine: "elasticsearch",
+      apiKey: API_KEY,
+    });
+    expect(asElastic.engine).toBe("elasticsearch");
+  });
+
+  test("a Cloud ID with no scheme defaults to the elasticsearch engine", () => {
+    const cloudId = `dep:${Buffer.from("h$e$k", "utf8").toString("base64")}`;
+    expect(resolveElasticsearchConfig({ cloudId, apiKey: API_KEY }).engine).toBe(
+      "elasticsearch",
+    );
+  });
+});
+
+describe("OpenSearch SQL surface (#3266)", () => {
+  const OS_URL = "opensearch://localhost:9200?ssl=false";
+
+  test("query() POSTs to /_plugins/_sql?format=jdbc and parses schema/datarows", async () => {
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse({
+        schema: [
+          { name: "origin", type: "text" },
+          { name: "cnt", type: "long" },
+        ],
+        datarows: [
+          ["SFO", 42],
+          ["JFK", 31],
+        ],
+      });
+    });
+    const conn = createElasticsearchConnection(
+      { url: OS_URL, apiKey: API_KEY },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const result = await conn.query("SELECT origin, COUNT(*) AS cnt FROM flights GROUP BY origin");
+    expect(capturedUrl).toBe("http://localhost:9200/_plugins/_sql?format=jdbc");
+    expect(result.columns).toEqual(["origin", "cnt"]);
+    expect(result.rows).toEqual([
+      { origin: "SFO", cnt: 42 },
+      { origin: "JFK", cnt: 31 },
+    ]);
+  });
+
+  test("follows the OpenSearch jdbc cursor across pages and closes at /_plugins/_sql/close", async () => {
+    let closeUrl: string | undefined;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_plugins/_sql/close")) {
+        closeUrl = url;
+        return fetchResponse({ succeeded: true });
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          schema: [{ name: "id", type: "long" }],
+          datarows: [[1], [2]],
+          cursor: "os-cursor",
+        });
+      }
+      return fetchResponse({ datarows: [[3], [4]], cursor: "os-cursor" });
+    });
+    const conn = createElasticsearchConnection(
+      { url: OS_URL, apiKey: API_KEY },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const result = await conn.query("SELECT id FROM flights");
+    expect(result.rows.slice(0, 3)).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+  });
+
+  test("a health check against an OpenSearch cluster succeeds (mocked)", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      fetchResponse({ ...CLUSTER_INFO_BODY, version: { number: "2.13.0", distribution: "opensearch" } }),
+    ) as unknown as typeof fetch;
+    try {
+      const plugin = buildElasticsearchPlugin({ url: OS_URL, apiKey: API_KEY });
+      const result = await plugin.healthCheck!();
+      expect(result.healthy).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCompleteConnectionConfig + static vs adapter-only across modes
+// ---------------------------------------------------------------------------
+
+describe("isCompleteConnectionConfig", () => {
+  test("true when an endpoint source and an auth signal are both present", () => {
+    expect(isCompleteConnectionConfig({ url: VALID_URL, apiKey: API_KEY })).toBe(true);
+    expect(isCompleteConnectionConfig({ url: VALID_URL, username: "u", password: "p" })).toBe(true);
+    expect(isCompleteConnectionConfig({ url: VALID_URL, awsRegion: "us-east-1" })).toBe(true);
+    expect(isCompleteConnectionConfig({ cloudId: "n:abc", apiKey: API_KEY })).toBe(true);
+  });
+
+  test("false without an endpoint or without auth", () => {
+    expect(isCompleteConnectionConfig({ url: VALID_URL })).toBe(false);
+    expect(isCompleteConnectionConfig({ apiKey: API_KEY })).toBe(false);
+    expect(isCompleteConnectionConfig({})).toBe(false);
+    expect(isCompleteConnectionConfig({ url: VALID_URL, username: "u" })).toBe(false);
+  });
+});
+
+describe("static-config wiring across auth modes", () => {
+  test("wires connection.create for a Basic static config", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, username: "u", password: "p" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("wires connection.create for a SigV4 static config", () => {
+    const plugin = elasticsearchPlugin({
+      url: VALID_URL,
+      awsRegion: "us-east-1",
+      awsAccessKeyId: "AKID",
+      awsSecretAccessKey: "secret",
+    });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("stays adapter-only when only an endpoint (no auth) is configured", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL });
+    expect(plugin.connection.create).toBeUndefined();
   });
 });

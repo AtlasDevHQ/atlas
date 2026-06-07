@@ -1388,6 +1388,34 @@ describeIfPg("migrate-pg (real Postgres)", () => {
   }, PG_TEST_TIMEOUT_MS);
 
   // ─────────────────────────────────────────────────────────────────────
+  // 0125 — elasticsearch auth-modes config_schema (#3263–#3266)
+  //
+  // 0123 inserts the elasticsearch catalog row with only url/apiKey/description;
+  // 0125 UPDATEs its `config_schema` to the full auth-mode + engine set. After
+  // the replay the row must carry all four `secret:true` credential fields so the
+  // schema-driven `ElasticsearchFormInstallHandler` encrypts them at rest. A
+  // malformed JSONB in 0125 (which the mock-pool migrate.test.ts can't catch)
+  // would surface here against real Postgres.
+  // ─────────────────────────────────────────────────────────────────────
+  it("0125: updates the elasticsearch catalog row to mark every auth-mode secret (#3263–#3266)", async () => {
+    const { rows } = await pool.query<{
+      config_schema: Array<{ key: string; type?: string; secret?: boolean }>;
+    }>(
+      `SELECT config_schema
+         FROM plugin_catalog
+        WHERE id = 'catalog:elasticsearch'`,
+    );
+    expect(rows).toHaveLength(1);
+    const schema = rows[0]?.config_schema ?? [];
+    const secretKeys = schema.filter((f) => f.secret === true).map((f) => f.key).sort();
+    expect(secretKeys).toEqual(
+      ["apiKey", "awsSecretAccessKey", "awsSessionToken", "password"].sort(),
+    );
+    // The engine select rode along with the auth-mode update.
+    expect(schema.find((f) => f.key === "engine")?.type).toBe("select");
+  }, PG_TEST_TIMEOUT_MS);
+
+  // ─────────────────────────────────────────────────────────────────────
   // 0096: connections / connection_groups cutover (#2744, 1.5.3 slice 6)
   // ─────────────────────────────────────────────────────────────────────
   //

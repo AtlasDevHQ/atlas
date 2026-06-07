@@ -54,8 +54,8 @@ const captureDb = (
 };
 
 describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
-  it("contains exactly the eight built-in slugs", () => {
-    expect(BUILTIN_DATASOURCE_CATALOG_ROWS).toHaveLength(8);
+  it("contains exactly the nine built-in slugs", () => {
+    expect(BUILTIN_DATASOURCE_CATALOG_ROWS).toHaveLength(9);
     const slugs = BUILTIN_DATASOURCE_CATALOG_ROWS.map((r) => r.slug);
     expect(new Set(slugs)).toEqual(new Set(BUILTIN_DATASOURCE_CATALOG_SLUGS));
   });
@@ -83,6 +83,8 @@ describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
       duckdb: [],
       salesforce: [],
       "demo-postgres": [],
+      // ES `url` carries no credential (apiKey is separate) — only apiKey is secret.
+      elasticsearch: ["apiKey"],
     };
     for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
       const expectedSecrets = secretFieldsBySlug[row.slug] ?? [];
@@ -103,6 +105,7 @@ describe("BUILTIN_DATASOURCE_CATALOG_ROWS", () => {
       duckdb: "path",
       salesforce: null, // handler-managed, empty schema
       "demo-postgres": null, // operator-managed, empty schema
+      elasticsearch: "url", // connection URL is the primary required field
     };
     for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
       const key = primary[row.slug];
@@ -144,8 +147,8 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
   it("emits 7 params per row (id, name, slug, description, install_model, auto_install, config_schema)", async () => {
     const { db, captured } = captureDb();
     await seedBuiltinDatasourceCatalog(db);
-    // 8 rows × 7 params per row = 56 bound params total.
-    expect(captured[0]!.params).toHaveLength(8 * 7);
+    // 9 rows × 7 params per row = 63 bound params total.
+    expect(captured[0]!.params).toHaveLength(9 * 7);
   });
 
   it("reports every slug as inserted on a fresh catalog (no conflicts)", async () => {
@@ -162,7 +165,7 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
     const result = await seedBuiltinDatasourceCatalog(db);
     const preserved: string[] = [...result.preservedSlugs];
     expect(preserved.sort()).toEqual(["demo-postgres", "postgres"]);
-    expect(result.insertedSlugs).toHaveLength(6);
+    expect(result.insertedSlugs).toHaveLength(7);
     expect(result.insertedSlugs).not.toContain("postgres");
   });
 
@@ -200,15 +203,24 @@ describe("seedBuiltinDatasourceCatalog (idempotent boot seed)", () => {
 });
 
 describe("migration 0093 and seed module stay aligned", () => {
-  // The migration file's VALUES block and the seed module's
-  // BUILTIN_DATASOURCE_CATALOG_ROWS need to express the same eight rows.
+  // The migration files' VALUES blocks and the seed module's
+  // BUILTIN_DATASOURCE_CATALOG_ROWS need to express the same nine rows.
   // A migration-only edit (or a seed-only edit) would let live DBs and
   // fresh DBs disagree until the next boot. These tests catch the drift.
-
-  const migrationSql = readFileSync(
-    join(import.meta.dir, "..", "migrations", "0093_builtin_datasource_catalog.sql"),
-    "utf8",
-  );
+  //
+  // The original eight rows ship in 0093; `elasticsearch` (#3270) ships in
+  // 0123 (0093 is immutable). Concatenate both so every seed slug is covered
+  // by some migration's VALUES block.
+  const migrationSql =
+    readFileSync(
+      join(import.meta.dir, "..", "migrations", "0093_builtin_datasource_catalog.sql"),
+      "utf8",
+    ) +
+    "\n" +
+    readFileSync(
+      join(import.meta.dir, "..", "migrations", "0123_elasticsearch_datasource_catalog.sql"),
+      "utf8",
+    );
 
   it("references every seed slug in the migration SQL", () => {
     for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
@@ -317,7 +329,7 @@ describe("runBuiltinDatasourceCatalogSeedBoot (discriminated outcomes)", () => {
     const result = await runBuiltinDatasourceCatalogSeedBoot();
     expect(result.kind).toBe("seeded");
     if (result.kind === "seeded") {
-      expect(result.insertedSlugs).toHaveLength(8);
+      expect(result.insertedSlugs).toHaveLength(9);
       expect(result.preservedSlugs).toHaveLength(0);
     }
   });

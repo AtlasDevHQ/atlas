@@ -28,9 +28,12 @@ import { testDatabaseConnection } from "../../lib/test-connection";
 import {
   parseEntityYAML,
   profileToSnapshot,
+  esEntityToSnapshot,
   computeDiff,
   formatDiff,
+  type EntitySnapshot,
 } from "../../lib/diff";
+import { profileElasticsearch } from "../../lib/profilers/elasticsearch";
 
 export async function handleDiff(args: string[]): Promise<void> {
   const connStr = process.env.ATLAS_DATASOURCE_URL;
@@ -47,6 +50,9 @@ export async function handleDiff(args: string[]): Promise<void> {
     );
     console.error(
       "  Salesforce:  ATLAS_DATASOURCE_URL=salesforce://user:pass@login.salesforce.com?token=TOKEN",
+    );
+    console.error(
+      "  Elasticsearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (+ ATLAS_ES_API_KEY)",
     );
     process.exit(1);
   }
@@ -101,99 +107,139 @@ export async function handleDiff(args: string[]): Promise<void> {
 
   const tablesArg = getFlag(args, "--tables");
   const filterTables = tablesArg ? tablesArg.split(",") : undefined;
-  let schemaArg =
-    getFlag(args, "--schema") ?? process.env.ATLAS_SCHEMA ?? "public";
 
-  validateSchemaName(schemaArg);
-  if (schemaArg !== "public" && dbType !== "postgres") {
-    console.warn(
-      `Warning: --schema is only supported for PostgreSQL. Ignoring "${schemaArg}" for ${dbType}.`,
-    );
-    schemaArg = "public";
-  }
+  // Live-side snapshots, populated by the ES or SQL branch below.
+  const dbSnapshots = new Map<string, EntitySnapshot>();
 
-  // Profile live DB
-  console.log(`\nProfiling ${dbType} database...\n`);
-  let profiles: TableProfile[];
-  try {
-    let result: ProfilingResult;
-    switch (dbType) {
-      case "mysql":
-        result = await profileMySQL(
-          connStr,
-          filterTables,
-          undefined,
-          undefined,
-          cliProfileLogger,
-        );
-        break;
-      case "postgres":
-        result = await profilePostgres(
-          connStr,
-          filterTables,
-          undefined,
-          schemaArg,
-          undefined,
-          cliProfileLogger,
-        );
-        break;
-      case "clickhouse": {
-        const { profileClickHouse } = await import("../../lib/profilers/clickhouse");
-        result = await profileClickHouse(connStr, filterTables);
-        break;
-      }
-      case "snowflake": {
-        const { profileSnowflake } = await import("../../lib/profilers/snowflake");
-        result = await profileSnowflake(connStr, filterTables);
-        break;
-      }
-      case "duckdb": {
-        const { parseDuckDBUrl } = await import(
-          "../../../../plugins/duckdb/src/connection"
-        );
-        const { profileDuckDB } = await import("../../lib/profilers/duckdb");
-        const duckConfig = parseDuckDBUrl(connStr);
-        result = await profileDuckDB(duckConfig.path, filterTables);
-        break;
-      }
-      case "salesforce": {
-        const { profileSalesforce } = await import("../../lib/profilers/salesforce");
-        result = await profileSalesforce(connStr, filterTables);
-        break;
-      }
-      default: {
-        throw new Error(`Unknown database type: ${dbType}`);
-      }
-    }
-    profiles = result.profiles;
-    if (result.errors.length > 0) {
-      const total = result.profiles.length + result.errors.length;
-      logProfilingErrors(result.errors, total);
-      console.warn(
-        `Continuing diff with ${profiles.length} successfully profiled tables.\n`,
+  if (dbType === "elasticsearch") {
+    // Elasticsearch profiles index mappings into entity docs — no SQL
+    // TableProfile pipeline, no --schema (Postgres-only). The API key is read
+    // from ATLAS_ES_API_KEY, never the URL.
+    const apiKey = process.env.ATLAS_ES_API_KEY;
+    if (!apiKey) {
+      console.error(
+        "Error: ATLAS_ES_API_KEY is required to diff an Elasticsearch datasource.",
       );
+      process.exit(1);
     }
-  } catch (err) {
-    console.error(`\nError: Failed to profile database.`);
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
 
-  if (profiles.length === 0) {
-    console.error("Error: No tables were profiled from the database.");
-    process.exit(1);
-  }
+    console.log(`\nProfiling Elasticsearch mappings...\n`);
+    try {
+      const { entities, errors } = await profileElasticsearch(
+        connStr,
+        apiKey,
+        filterTables,
+      );
+      for (const e of errors) {
+        console.warn(`  Warning: ${e.table}: ${e.error}`);
+      }
+      for (const entity of entities) {
+        dbSnapshots.set(entity.table, esEntityToSnapshot(entity));
+      }
+    } catch (err) {
+      console.error(`\nError: Failed to profile Elasticsearch.`);
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
 
-  // Run FK inference so inferred FKs are comparable
-  profiles = analyzeTableProfiles(profiles);
+    if (dbSnapshots.size === 0) {
+      console.error(
+        "Error: No indices were profiled from the cluster — it exposes no user " +
+          "indices, or every requested index was missing or had no fields.",
+      );
+      process.exit(1);
+    }
+  } else {
+    let schemaArg =
+      getFlag(args, "--schema") ?? process.env.ATLAS_SCHEMA ?? "public";
 
-  // Build DB snapshots
-  const dbSnapshots = new Map<
-    string,
-    ReturnType<typeof profileToSnapshot>
-  >();
-  for (const profile of profiles) {
-    dbSnapshots.set(profile.table_name, profileToSnapshot(profile));
+    validateSchemaName(schemaArg);
+    if (schemaArg !== "public" && dbType !== "postgres") {
+      console.warn(
+        `Warning: --schema is only supported for PostgreSQL. Ignoring "${schemaArg}" for ${dbType}.`,
+      );
+      schemaArg = "public";
+    }
+
+    // Profile live DB
+    console.log(`\nProfiling ${dbType} database...\n`);
+    let profiles: TableProfile[];
+    try {
+      let result: ProfilingResult;
+      switch (dbType) {
+        case "mysql":
+          result = await profileMySQL(
+            connStr,
+            filterTables,
+            undefined,
+            undefined,
+            cliProfileLogger,
+          );
+          break;
+        case "postgres":
+          result = await profilePostgres(
+            connStr,
+            filterTables,
+            undefined,
+            schemaArg,
+            undefined,
+            cliProfileLogger,
+          );
+          break;
+        case "clickhouse": {
+          const { profileClickHouse } = await import("../../lib/profilers/clickhouse");
+          result = await profileClickHouse(connStr, filterTables);
+          break;
+        }
+        case "snowflake": {
+          const { profileSnowflake } = await import("../../lib/profilers/snowflake");
+          result = await profileSnowflake(connStr, filterTables);
+          break;
+        }
+        case "duckdb": {
+          const { parseDuckDBUrl } = await import(
+            "../../../../plugins/duckdb/src/connection"
+          );
+          const { profileDuckDB } = await import("../../lib/profilers/duckdb");
+          const duckConfig = parseDuckDBUrl(connStr);
+          result = await profileDuckDB(duckConfig.path, filterTables);
+          break;
+        }
+        case "salesforce": {
+          const { profileSalesforce } = await import("../../lib/profilers/salesforce");
+          result = await profileSalesforce(connStr, filterTables);
+          break;
+        }
+        default: {
+          throw new Error(`Unknown database type: ${dbType}`);
+        }
+      }
+      profiles = result.profiles;
+      if (result.errors.length > 0) {
+        const total = result.profiles.length + result.errors.length;
+        logProfilingErrors(result.errors, total);
+        console.warn(
+          `Continuing diff with ${profiles.length} successfully profiled tables.\n`,
+        );
+      }
+    } catch (err) {
+      console.error(`\nError: Failed to profile database.`);
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+
+    if (profiles.length === 0) {
+      console.error("Error: No tables were profiled from the database.");
+      process.exit(1);
+    }
+
+    // Run FK inference so inferred FKs are comparable
+    profiles = analyzeTableProfiles(profiles);
+
+    // Build DB snapshots
+    for (const profile of profiles) {
+      dbSnapshots.set(profile.table_name, profileToSnapshot(profile));
+    }
   }
 
   // Parse YAML snapshots

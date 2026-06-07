@@ -142,7 +142,8 @@ describe("runMigrations", () => {
     //   Plus 0121 (dashboard_cards.annotations for event annotations, #3209) = 122.
     //   Plus 0122 (learned_patterns.connection_group_id for group-aware expert
     //   apply, #3284) = 123.
-    expect(count).toBe(123);
+    //   Plus 0123 (elasticsearch built-in datasource catalog row, #3270) = 124.
+    expect(count).toBe(124);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -294,6 +295,7 @@ describe("runMigrations", () => {
         "0120_static_bot_routing_id_unique.sql",
         "0121_dashboard_card_annotations.sql",
         "0122_learned_patterns_connection_group.sql",
+        "0123_elasticsearch_datasource_catalog.sql",
       ],
     });
 

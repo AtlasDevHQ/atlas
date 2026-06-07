@@ -99,10 +99,11 @@ export function detectDBType(url: string): DBType {
   if (url.startsWith("snowflake://")) return "snowflake";
   if (url.startsWith("duckdb://")) return "duckdb";
   if (url.startsWith("salesforce://")) return "salesforce";
+  if (url.startsWith("elasticsearch://")) return "elasticsearch";
   const scheme = url.split("://")[0] || "(empty)";
   throw new Error(
     `Unsupported database URL scheme "${scheme}://". ` +
-      "Supported: postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, salesforce://.",
+      "Supported: postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, salesforce://, elasticsearch://.",
   );
 }
 

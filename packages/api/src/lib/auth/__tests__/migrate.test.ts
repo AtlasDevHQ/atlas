@@ -368,6 +368,7 @@ describe("migrateAuthTables", () => {
             { name: "0120_static_bot_routing_id_unique.sql" },
             { name: "0121_dashboard_card_annotations.sql" },
             { name: "0122_learned_patterns_connection_group.sql" },
+            { name: "0123_elasticsearch_datasource_catalog.sql" },
           ],
         };
       }

@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/elasticsearch",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Atlas Elasticsearch / OpenSearch datasource plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/elasticsearch.test.ts"
+    "test": "bun test __tests__/elasticsearch.test.ts && bun test __tests__/mapping.test.ts"
   },
   "keywords": [
     "atlas",

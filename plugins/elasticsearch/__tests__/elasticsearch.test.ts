@@ -11,7 +11,12 @@ import {
   createElasticsearchConnection,
   scrubElasticsearchError,
   SENSITIVE_PATTERNS,
+  normalizeSqlPages,
+  extractEsSqlErrorMessage,
+  ELASTICSEARCH_FORBIDDEN_PATTERNS,
+  ELASTICSEARCH_PARSER_DIALECT,
 } from "../src/index";
+import type { ElasticsearchSqlResponse } from "../src/index";
 
 const VALID_URL = "elasticsearch://localhost:9200?ssl=false";
 const API_KEY = "VnVhQ2ZHY0JDZGJrU=test-key";
@@ -373,6 +378,162 @@ describe("createElasticsearchClient", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getMapping — `_mapping` fetch for the CLI profiler
+// ---------------------------------------------------------------------------
+
+const MAPPING_BODY = {
+  products: {
+    mappings: {
+      properties: {
+        sku: { type: "keyword" },
+        title: { type: "text", fields: { keyword: { type: "keyword" } } },
+      },
+    },
+  },
+};
+
+describe("getMapping", () => {
+  test("GETs /_mapping with ApiKey + Accept headers when no index is given", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const mapping = await client.getMapping();
+    expect(capturedUrl).toBe("http://localhost:9200/_mapping");
+    expect(capturedInit?.method).toBe("GET");
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(headers?.Accept).toBe("application/json");
+    expect(mapping.products?.mappings?.properties?.sku?.type).toBe("keyword");
+  });
+
+  test("scopes the request to a single index when one is provided", async () => {
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.getMapping("products");
+    expect(capturedUrl).toBe("http://localhost:9200/products/_mapping");
+  });
+
+  test("url-encodes an index name with reserved characters", async () => {
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.getMapping("logs/2024");
+    expect(capturedUrl).toBe("http://localhost:9200/logs%2F2024/_mapping");
+  });
+
+  test("throws a status-only error on a non-2xx response (never the body)", async () => {
+    const fetchImpl = mock(async () =>
+      fetchResponse(
+        { error: `index closed for ApiKey ${API_KEY}` },
+        { ok: false, status: 403, statusText: "Forbidden" },
+      ),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    let message = "";
+    try {
+      await client.getMapping();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("403");
+    expect(message).not.toContain(API_KEY);
+  });
+
+  test("scrubs a network-level error and never leaks the API key", async () => {
+    const fetchImpl = mock(async () => {
+      throw new Error(`getaddrinfo ENOTFOUND with ApiKey ${API_KEY}`);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    let message = "";
+    try {
+      await client.getMapping();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toContain(API_KEY);
+  });
+
+  test("rejects with a timeout error when the request exceeds timeoutMs", async () => {
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await expect(client.getMapping(undefined, 10)).rejects.toThrow(
+      /mapping request timed out after 10ms/,
+    );
+  });
+
+  test("close() during an in-flight getMapping rejects WITHOUT misreporting a timeout", async () => {
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const pending = client.getMapping(undefined, 5000);
+    client.close();
+    let message = "";
+    try {
+      await pending;
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toMatch(/timed out/);
+  });
+
+  test("rejects after close()", async () => {
+    const fetchImpl = mock(async () => fetchResponse(MAPPING_BODY));
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    client.close();
+    await expect(client.getMapping()).rejects.toThrow(/closed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Connection factory
 // ---------------------------------------------------------------------------
 
@@ -384,9 +545,29 @@ describe("createElasticsearchConnection", () => {
     expect(typeof conn.close).toBe("function");
   });
 
-  test("query() throws — the query surface is not in this slice", async () => {
-    const conn = createElasticsearchConnection({ url: VALID_URL, apiKey: API_KEY });
-    await expect(conn.query("SELECT 1")).rejects.toThrow(/#3262|not available/i);
+  test("query() POSTs ES SQL to /_sql and returns normalized { columns, rows }", async () => {
+    const fetchImpl = mock(async () =>
+      fetchResponse({
+        columns: [
+          { name: "origin", type: "text" },
+          { name: "cnt", type: "long" },
+        ],
+        rows: [
+          ["SFO", 42],
+          ["JFK", 31],
+        ],
+      }),
+    );
+    const conn = createElasticsearchConnection(
+      { url: VALID_URL, apiKey: API_KEY },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const result = await conn.query("SELECT origin, COUNT(*) AS cnt FROM flights GROUP BY origin");
+    expect(result.columns).toEqual(["origin", "cnt"]);
+    expect(result.rows).toEqual([
+      { origin: "SFO", cnt: 42 },
+      { origin: "JFK", cnt: 31 },
+    ]);
   });
 
   test("ping() round-trips through the injected fetch", async () => {
@@ -611,5 +792,415 @@ describe("teardown", () => {
   test("teardown is a no-op when no connection was created", async () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     await plugin.teardown!(); // should not throw
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeSqlPages — PURE: ES SQL pages → Atlas { columns, rows }
+// ---------------------------------------------------------------------------
+
+describe("normalizeSqlPages", () => {
+  test("normalizes a single page of scalar columns to keyed rows", () => {
+    const page: ElasticsearchSqlResponse = {
+      columns: [
+        { name: "origin", type: "text" },
+        { name: "delay", type: "long" },
+      ],
+      rows: [
+        ["SFO", 12],
+        ["JFK", 7],
+      ],
+    };
+    const result = normalizeSqlPages([page]);
+    expect(result.columns).toEqual(["origin", "delay"]);
+    expect(result.rows).toEqual([
+      { origin: "SFO", delay: 12 },
+      { origin: "JFK", delay: 7 },
+    ]);
+  });
+
+  test("folds multiple cursor pages — columns come from the first page only", () => {
+    // ES returns `columns` only on the first page; cursor-continuation pages
+    // carry `rows` (and possibly another `cursor`) but omit `columns`.
+    const first: ElasticsearchSqlResponse = {
+      columns: [
+        { name: "carrier", type: "keyword" },
+        { name: "n", type: "long" },
+      ],
+      rows: [["AA", 1]],
+      cursor: "cursor-1",
+    };
+    const second: ElasticsearchSqlResponse = {
+      rows: [["DL", 2]],
+      cursor: "cursor-2",
+    };
+    const third: ElasticsearchSqlResponse = {
+      rows: [["UA", 3]],
+    };
+    const result = normalizeSqlPages([first, second, third]);
+    expect(result.columns).toEqual(["carrier", "n"]);
+    expect(result.rows).toEqual([
+      { carrier: "AA", n: 1 },
+      { carrier: "DL", n: 2 },
+      { carrier: "UA", n: 3 },
+    ]);
+  });
+
+  test("handles an empty result — columns present, zero rows", () => {
+    const page: ElasticsearchSqlResponse = {
+      columns: [{ name: "origin", type: "text" }],
+      rows: [],
+    };
+    const result = normalizeSqlPages([page]);
+    expect(result.columns).toEqual(["origin"]);
+    expect(result.rows).toEqual([]);
+  });
+
+  test("returns empty columns and rows for a degenerate empty page set", () => {
+    expect(normalizeSqlPages([])).toEqual({ columns: [], rows: [] });
+    expect(normalizeSqlPages([{}])).toEqual({ columns: [], rows: [] });
+  });
+
+  test("preserves falsy scalar values (0, false, empty string) and null", () => {
+    const page: ElasticsearchSqlResponse = {
+      columns: [
+        { name: "count", type: "long" },
+        { name: "active", type: "boolean" },
+        { name: "note", type: "text" },
+        { name: "missing", type: "text" },
+      ],
+      rows: [[0, false, "", null]],
+    };
+    const result = normalizeSqlPages([page]);
+    expect(result.rows).toEqual([{ count: 0, active: false, note: "", missing: null }]);
+  });
+
+  test("caps accumulated rows at maxRows across pages", () => {
+    const first: ElasticsearchSqlResponse = {
+      columns: [{ name: "id", type: "long" }],
+      rows: [[1], [2], [3]],
+      cursor: "c1",
+    };
+    const second: ElasticsearchSqlResponse = { rows: [[4], [5]] };
+    const result = normalizeSqlPages([first, second], 4);
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+  });
+
+  test("fills missing trailing cells with null when a row is short", () => {
+    const page: ElasticsearchSqlResponse = {
+      columns: [
+        { name: "a", type: "long" },
+        { name: "b", type: "long" },
+      ],
+      rows: [[1]],
+    };
+    const result = normalizeSqlPages([page]);
+    expect(result.rows).toEqual([{ a: 1, b: null }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractEsSqlErrorMessage — PURE: ES error body → actionable message
+// ---------------------------------------------------------------------------
+
+describe("extractEsSqlErrorMessage", () => {
+  test("extracts type + reason from a structured ES error body", () => {
+    const body = {
+      error: {
+        type: "verification_exception",
+        reason: "Found 1 problem\nline 1:8: Unknown column [foo]",
+      },
+      status: 400,
+    };
+    const msg = extractEsSqlErrorMessage(body, 400, "Bad Request");
+    expect(msg).toContain("verification_exception");
+    expect(msg).toContain("Unknown column [foo]");
+  });
+
+  test("uses reason alone when type is absent", () => {
+    const body = { error: { reason: "index_not_found_exception" } };
+    expect(extractEsSqlErrorMessage(body, 404, "Not Found")).toBe(
+      "index_not_found_exception",
+    );
+  });
+
+  test("accepts a string error field", () => {
+    const body = { error: "something broke" };
+    expect(extractEsSqlErrorMessage(body, 500, "Internal Server Error")).toBe(
+      "something broke",
+    );
+  });
+
+  test("falls back to the HTTP status line when the body has no error", () => {
+    expect(extractEsSqlErrorMessage({}, 503, "Service Unavailable")).toMatch(
+      /HTTP 503 Service Unavailable/,
+    );
+    expect(extractEsSqlErrorMessage(undefined, 502, "Bad Gateway")).toMatch(
+      /HTTP 502 Bad Gateway/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// client.sqlQuery — POSTs to /_sql, follows cursors, scrubs errors
+// ---------------------------------------------------------------------------
+
+describe("createElasticsearchClient.sqlQuery", () => {
+  function makeClient(fetchImpl: unknown) {
+    return createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as typeof fetch },
+    );
+  }
+
+  test("POSTs the query to /_sql with ApiKey auth + JSON body", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return fetchResponse({
+        columns: [{ name: "n", type: "long" }],
+        rows: [[5]],
+      });
+    });
+    const client = makeClient(fetchImpl);
+    const result = await client.sqlQuery({ query: "SELECT COUNT(*) AS n FROM flights" });
+
+    expect(capturedUrl).toBe("http://localhost:9200/_sql?format=json");
+    expect(capturedInit?.method).toBe("POST");
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(headers["Content-Type"]).toBe("application/json");
+    const body = JSON.parse(String(capturedInit?.body));
+    expect(body.query).toBe("SELECT COUNT(*) AS n FROM flights");
+    expect(typeof body.fetch_size).toBe("number");
+    expect(result.rows).toEqual([{ n: 5 }]);
+  });
+
+  test("follows the cursor across pages and concatenates rows", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = mock(async (_url: string, init: RequestInit) => {
+      const payload = JSON.parse(String(init.body));
+      bodies.push(payload);
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2]],
+          cursor: "cursor-abc",
+        });
+      }
+      if (payload.cursor === "cursor-abc") {
+        return fetchResponse({ rows: [[3]], cursor: "cursor-def" });
+      }
+      return fetchResponse({ rows: [[4]] });
+    });
+    const client = makeClient(fetchImpl);
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights" });
+
+    expect(result.columns).toEqual(["id"]);
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+    // 1 query page + 2 cursor pages
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(bodies[1]).toEqual({ cursor: "cursor-abc" });
+    expect(bodies[2]).toEqual({ cursor: "cursor-def" });
+  });
+
+  test("stops at maxRows and best-effort closes a still-open cursor", async () => {
+    let closeCalled = false;
+    let closeCursor: string | undefined;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_sql/close")) {
+        closeCalled = true;
+        closeCursor = JSON.parse(String(init.body)).cursor;
+        return fetchResponse({ succeeded: true });
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2]],
+          cursor: "live-cursor",
+        });
+      }
+      return fetchResponse({ rows: [[3], [4]], cursor: "live-cursor" });
+    });
+    const client = makeClient(fetchImpl);
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights", maxRows: 3 });
+
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    expect(closeCalled).toBe(true);
+    expect(closeCursor).toBe("live-cursor");
+  });
+
+  test("throws an actionable, scrubbed error on a non-2xx response", async () => {
+    const fetchImpl = mock(async () =>
+      fetchResponse(
+        { error: { type: "verification_exception", reason: "Unknown column [nope]" }, status: 400 },
+        { ok: false, status: 400, statusText: "Bad Request" },
+      ),
+    );
+    const client = makeClient(fetchImpl);
+    await expect(client.sqlQuery({ query: "SELECT nope FROM flights" })).rejects.toThrow(
+      /Unknown column \[nope\]/,
+    );
+  });
+
+  test("never leaks the API key even if the server echoes it in an error", async () => {
+    const fetchImpl = mock(async () =>
+      fetchResponse(
+        { error: { type: "security_exception", reason: `bad ApiKey ${API_KEY}` } },
+        { ok: false, status: 403, statusText: "Forbidden" },
+      ),
+    );
+    const client = makeClient(fetchImpl);
+    let message = "";
+    try {
+      await client.sqlQuery({ query: "SELECT * FROM flights" });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toContain(API_KEY);
+  });
+
+  test("rejects with a timeout error when the request exceeds timeoutMs", async () => {
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = makeClient(fetchImpl);
+    await expect(
+      client.sqlQuery({ query: "SELECT * FROM flights", timeoutMs: 10 }),
+    ).rejects.toThrow(/timed out after 10ms/);
+  });
+
+  test("sqlQuery after close rejects", async () => {
+    const fetchImpl = mock(async () => fetchResponse({ columns: [], rows: [] }));
+    const client = makeClient(fetchImpl);
+    client.close();
+    await expect(client.sqlQuery({ query: "SELECT 1" })).rejects.toThrow(/closed/);
+  });
+
+  test("a failed cursor close is non-fatal — still returns the truncated rows, warns, logs at debug", async () => {
+    // The whole point of the best-effort /_sql/close is that its failure must NOT
+    // fail the user's already-successful (truncated) query. Also locks the
+    // "truncation is logged, never silent" contract.
+    const warns: unknown[][] = [];
+    const debugs: unknown[][] = [];
+    const logger = {
+      info: (...a: unknown[]) => void a,
+      warn: (...a: unknown[]) => void warns.push(a),
+      error: (...a: unknown[]) => void a,
+      debug: (...a: unknown[]) => void debugs.push(a),
+    };
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_sql/close")) {
+        throw new Error("close request boom");
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2]],
+          cursor: "live-cursor",
+        });
+      }
+      return fetchResponse({ rows: [[3], [4]], cursor: "live-cursor" });
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch, logger },
+    );
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights", maxRows: 3 });
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    // Truncation warned (never silent) and the close failure logged at debug.
+    expect(warns.length).toBeGreaterThan(0);
+    expect(warns[0][0]).toEqual({ maxRows: 3 });
+    expect(debugs.length).toBeGreaterThan(0);
+  });
+
+  test("caps on the first page (zero loop iterations) and still closes the cursor", async () => {
+    // Distinct control-flow path: the first page alone meets maxRows AND carries a
+    // cursor, so the `while` body never runs — but the cap-on-entry close must
+    // still fire and NO cursor-continuation page may be fetched.
+    let cursorPageFetched = false;
+    let closeCalled = false;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/_sql/close")) {
+        closeCalled = true;
+        return fetchResponse({ succeeded: true });
+      }
+      const payload = JSON.parse(String(init.body));
+      if (payload.query) {
+        return fetchResponse({
+          columns: [{ name: "id", type: "long" }],
+          rows: [[1], [2], [3]],
+          cursor: "live-cursor",
+        });
+      }
+      cursorPageFetched = true; // must not happen
+      return fetchResponse({ rows: [[4]] });
+    });
+    const client = makeClient(fetchImpl);
+    const result = await client.sqlQuery({ query: "SELECT id FROM flights", maxRows: 2 });
+
+    expect(result.rows).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(cursorPageFetched).toBe(false);
+    expect(closeCalled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SQL surface wiring — parserDialect + forbiddenPatterns + dialect, no validate
+// ---------------------------------------------------------------------------
+
+describe("SQL surface wiring", () => {
+  test("declares the PostgresQL parser dialect on the connection", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    expect(plugin.connection.parserDialect).toBe("PostgresQL");
+    expect(ELASTICSEARCH_PARSER_DIALECT).toBe("PostgresQL");
+  });
+
+  test("sets NO custom validate — the standard 4-layer SQL pipeline applies", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    expect(plugin.connection.validate).toBeUndefined();
+  });
+
+  test("declares ES-specific forbiddenPatterns on the connection", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    expect(Array.isArray(plugin.connection.forbiddenPatterns)).toBe(true);
+    expect(plugin.connection.forbiddenPatterns!.length).toBeGreaterThan(0);
+  });
+
+  test("forbiddenPatterns block ES catalog/schema disclosure verbs", () => {
+    const matches = (sql: string) =>
+      ELASTICSEARCH_FORBIDDEN_PATTERNS.some((p) => p.test(sql));
+    expect(matches("SHOW TABLES")).toBe(true);
+    expect(matches("SHOW COLUMNS IN flights")).toBe(true);
+    expect(matches("SHOW FUNCTIONS")).toBe(true);
+    expect(matches("DESCRIBE flights")).toBe(true);
+    expect(matches("  show catalogs")).toBe(true);
+  });
+
+  test("forbiddenPatterns do NOT false-positive on legitimate SELECTs", () => {
+    const matches = (sql: string) =>
+      ELASTICSEARCH_FORBIDDEN_PATTERNS.some((p) => p.test(sql));
+    // ORDER BY ... DESC must not trip the guard.
+    expect(matches("SELECT origin FROM flights ORDER BY delay DESC LIMIT 10")).toBe(false);
+    // A field literally named `show` or `description` mid-query is fine.
+    expect(matches("SELECT show, description FROM tv_shows LIMIT 5")).toBe(false);
+  });
+
+  test("provides ES SQL dialect guidance for the agent system prompt", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    expect(typeof plugin.dialect).toBe("string");
+    expect(plugin.dialect!).toMatch(/Elasticsearch SQL/i);
+    expect(plugin.dialect!).toMatch(/executeSQL/);
+    // Single-index guidance (no JOINs across indices in the SQL surface).
+    expect(plugin.dialect!.toLowerCase()).toContain("index");
   });
 });

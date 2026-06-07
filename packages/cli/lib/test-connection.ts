@@ -260,6 +260,43 @@ export async function testDatabaseConnection(
       }
     }
 
+    case "elasticsearch": {
+      // The API key is NOT in the elasticsearch:// URL (the parser rejects
+      // credentials) — it is a separate secret, read from ATLAS_ES_API_KEY.
+      const apiKey = process.env.ATLAS_ES_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          "ATLAS_ES_API_KEY is required for an Elasticsearch datasource. " +
+            "Set it to the base64 API key for the cluster.",
+        );
+      }
+      const {
+        resolveElasticsearchConfig,
+        createElasticsearchClient,
+        scrubElasticsearchError,
+      } = await import("../../../plugins/elasticsearch/src/connection");
+      const client = createElasticsearchClient(
+        resolveElasticsearchConfig({ url: connStr, apiKey }),
+      );
+      try {
+        const info = await client.ping(5000);
+        const distribution = info.distribution ?? "elasticsearch";
+        const version = info.version ? ` ${info.version}` : "";
+        const cluster = info.clusterName ? ` (cluster: ${info.clusterName})` : "";
+        return `Elasticsearch [${distribution}${version}]${cluster}`;
+      } catch (err) {
+        // `client.ping` already scrubs its errors and config errors carry no
+        // credential, so the caught error is credential-free — preserving the
+        // cause chain is safe here.
+        throw new Error(
+          `Cannot connect to Elasticsearch: ${scrubElasticsearchError(err, apiKey)}`,
+          { cause: err },
+        );
+      } finally {
+        client.close();
+      }
+    }
+
     case "postgres":
     default: {
       const testPool = new Pool({

@@ -39,8 +39,27 @@ import {
   parseElasticsearchUrl,
   extractHost,
   scrubElasticsearchError,
+  ELASTICSEARCH_PARSER_DIALECT,
+  ELASTICSEARCH_FORBIDDEN_PATTERNS,
 } from "./connection";
 import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
+
+/**
+ * ES SQL dialect guidance injected into the agent system prompt (under
+ * "## Additional SQL Dialect Notes"). ES SQL is standard SQL over a single
+ * index-as-table via the `executeSQL` tool — these notes steer the agent away
+ * from the few places it diverges (no cross-index JOINs, double-quote index
+ * names with special characters).
+ */
+const ELASTICSEARCH_DIALECT_GUIDE = [
+  "This datasource is Elasticsearch SQL (the cluster `/_sql` API), queried with the `executeSQL` tool.",
+  "- Each Elasticsearch index is a table — `SELECT ... FROM <index>`. One index per query: there are NO JOINs across indices.",
+  "- Quote index names containing `-`, `.`, or `:` with double quotes, e.g. `SELECT * FROM \"logs-2024.01.01\"`.",
+  "- Supported: WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, and the aggregates COUNT, SUM, AVG, MIN, MAX (incl. COUNT(DISTINCT ...)).",
+  "- Standard predicates work: =, <, >, IN (...), BETWEEN, LIKE, IS NULL.",
+  "- A nested field is addressed by its dotted path (e.g. `geo.dest`).",
+  "- Read-only: only SELECT is allowed. SHOW/DESCRIBE and any DML/DDL are rejected.",
+].join("\n");
 
 const ElasticsearchConfigSchema = z.object({
   /** Elasticsearch connection URL (elasticsearch://host:9200). */
@@ -109,11 +128,18 @@ export function buildElasticsearchPlugin(
     connection: {
       create: () => getOrCreateConnection(),
       dbType: "elasticsearch",
-      // No custom `validate` and no `parserDialect`/`forbiddenPatterns` yet —
-      // the query surfaces (and their validation) arrive in #3262.
+      // ES SQL is real SQL, so there is intentionally NO custom `validate`: the
+      // host's standard 4-layer pipeline (regex guard → AST parse → index/table
+      // whitelist → auto-LIMIT + timeout) applies unchanged. We only tell it
+      // which grammar to parse with and add ES-specific guards on top of the
+      // base DML/DDL regex.
+      parserDialect: ELASTICSEARCH_PARSER_DIALECT,
+      forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
     },
 
     entities: [],
+
+    dialect: ELASTICSEARCH_DIALECT_GUIDE,
 
     /**
      * Serializable config schema for the admin install form + the secret
@@ -214,7 +240,30 @@ export {
   createElasticsearchConnection,
   scrubElasticsearchError,
   SENSITIVE_PATTERNS,
+  normalizeSqlPages,
+  extractEsSqlErrorMessage,
+  ELASTICSEARCH_PARSER_DIALECT,
+  ELASTICSEARCH_FORBIDDEN_PATTERNS,
+  DEFAULT_FETCH_SIZE,
+  DEFAULT_MAX_ROWS,
 } from "./connection";
+export {
+  mapEsFieldType,
+  flattenMapping,
+  indexToEntityName,
+  isSystemIndex,
+  mappingToEntity,
+  mappingsToEntities,
+} from "./mapping";
+export type {
+  EsProperty,
+  EsIndexMapping,
+  EsMappingResponse,
+  EsDimensionType,
+  FlatEsField,
+  EsDimension,
+  EsEntityDoc,
+} from "./mapping";
 export type {
   ElasticsearchEngine,
   ParsedElasticsearchUrl,
@@ -226,4 +275,7 @@ export type {
   ElasticsearchClient,
   ElasticsearchClientOptions,
   ClusterInfo,
+  ElasticsearchSqlColumn,
+  ElasticsearchSqlResponse,
+  ElasticsearchSqlQueryOptions,
 } from "./connection";

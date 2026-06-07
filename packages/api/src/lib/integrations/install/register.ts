@@ -25,6 +25,10 @@ import {
 } from "./dispatch";
 import { SlackOAuthInstallHandler } from "./slack-oauth-handler";
 import { EmailFormInstallHandler } from "./email-form-handler";
+import {
+  ElasticsearchFormInstallHandler,
+  ELASTICSEARCH_SLUG,
+} from "./elasticsearch-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
@@ -153,6 +157,14 @@ export function registerBuiltinInstallHandlers(): void {
     lazyPluginLoader.registerBuilder(EMAIL_CATALOG_ID, createEmailLazyBuilder());
   }
   log.info("Registered EmailFormInstallHandler + LazyPluginLoader builder");
+  // Elasticsearch / OpenSearch datasource form-install (#3270). Datasource-
+  // pillar, config_schema-driven (encrypts `apiKey`, masks on read, restores on
+  // save). No env gate — the customer admin supplies the cluster URL + API key
+  // at install time, same as every other form handler. Queryability for admin-
+  // installed plugin datasources is tracked separately (#3295); this slice owns
+  // the install/edit path.
+  registerFormHandler(ELASTICSEARCH_SLUG, new ElasticsearchFormInstallHandler());
+  log.info("Registered ElasticsearchFormInstallHandler");
   registerFormHandler("obsidian", new ObsidianFormInstallHandler());
   log.info("Registered ObsidianFormInstallHandler");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance

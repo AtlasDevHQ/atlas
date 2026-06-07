@@ -40,6 +40,9 @@ Cards are grouped by `type`:
   These are message-driven adapters that send and receive in chat threads.
 - **Integrations** — Salesforce, Jira, GitHub, Linear, Email, Webhook,
   Obsidian, and others. These extend Atlas's data surface or delivery channels.
+- **Datasources** — read-only query targets. PostgreSQL and MySQL are native;
+  Elasticsearch / OpenSearch and others install here from the console (a
+  config-schema-driven form) instead of editing `atlas.config.ts`.
 
 ## Install state
 
@@ -76,9 +79,12 @@ Clicking **Connect** runs the install flow for the card's `installModel`:
 - **OAuth** (Slack, Salesforce, Jira, Linear, GitHub) — opens an
   authorization tab against the Platform. After you approve, Atlas writes
   a `workspace_plugins` row and the card flips to **Installed**.
-- **Form** (Email, Webhook, Obsidian, Linear via API key) — opens a modal
-  that collects the credentials inline and writes the `workspace_plugins`
-  row on submit.
+- **Form** (Email, Webhook, Obsidian, Linear via API key, Elasticsearch /
+  OpenSearch) — opens a modal that collects the credentials inline and writes
+  the `workspace_plugins` row on submit. The form fields are rendered from the
+  catalog entry's `config_schema`, and any field marked `secret: true` (e.g.
+  the Elasticsearch API key) is encrypted at rest, masked on read, and
+  preserved on save when left unchanged.
 - **Static-bot** (Discord, Telegram, WhatsApp, Google Chat, Teams) —
   installed from their per-platform admin blocks further down the page
   rather than via the catalog card's Connect button (which is inert for

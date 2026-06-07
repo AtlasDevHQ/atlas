@@ -1,8 +1,8 @@
 /**
- * Boot-time idempotent seed pass for the eight built-in Datasource
- * catalog rows. Re-asserts the same rows migration 0093 inserts on
- * fresh DBs — keeps the catalog consistent if an operator deleted a
- * row out-of-band.
+ * Boot-time idempotent seed pass for the nine built-in Datasource
+ * catalog rows. Re-asserts the same rows migrations 0093 (the original
+ * eight) + 0123 (`elasticsearch`, #3270) insert on fresh DBs — keeps the
+ * catalog consistent if an operator deleted a row out-of-band.
  *
  * Per ADR-0007 §"Catalog seeding for Datasources":
  *
@@ -13,21 +13,23 @@
  *   > in `atlas.config.ts` — they ship with Atlas.
  *
  * Idempotency:
- *   - Uses `ON CONFLICT (slug) DO NOTHING` so re-running on a populated
+ *   - Uses unqualified `ON CONFLICT DO NOTHING` (covers both the `slug`
+ *     unique index AND the `id` primary key) so re-running on a populated
  *     catalog is a no-op. The atlas.config.ts catalog seeder
  *     (`integrations/catalog-seeder.ts`) updates mutable fields on
  *     existing rows; this seed deliberately leaves them alone — once
  *     a built-in row exists, an operator who edited its `name` or
  *     `description` via SQL keeps that edit.
- *   - Slice 5 ships the resolver inert (no ConnectionRegistry consumer);
- *     a seed-time failure logs at error and the API keeps booting —
+ *   - A seed-time failure logs at error and the API keeps booting —
  *     pre-existing rows answer admin-UI reads.
  *
- * Inert until slice 6 (#2744): no production caller reads from these
- * rows. The seeded rows do, however, surface as catalog entries in
- * admin-UI listings — they appear in the integrations marketplace as
- * `pillar = 'datasource'` cards (slice 8 / #2746 pivots the UI to
- * surface them on `/admin/connections`).
+ * These rows are live: they surface as catalog entries in admin-UI listings
+ * (integrations marketplace `pillar = 'datasource'` cards), and form-install
+ * handlers read them at install time to drive config_schema-based encryption
+ * (e.g. `ElasticsearchFormInstallHandler`, #3270, reads the `elasticsearch`
+ * row's `config_schema`). The `DatasourcePoolResolver` registry path remains
+ * native-only (postgres/mysql) — query wiring for admin-installed plugin
+ * datasources is tracked in #3295.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -63,11 +65,11 @@ export interface BuiltinDatasourceCatalogRow {
 }
 
 /**
- * The eight built-in Datasource catalog rows seeded by this module +
- * migration 0093. The single source of truth for `name` / `description`
- * / `config_schema` across both surfaces — keeping the SQL migration
- * structurally identical to this table is enforced by the
- * `migration-and-seed-stay-aligned` test in
+ * The nine built-in Datasource catalog rows seeded by this module +
+ * migrations 0093 (original eight) and 0123 (`elasticsearch`, #3270).
+ * The single source of truth for `name` / `description` / `config_schema`
+ * across both surfaces — keeping the SQL migrations structurally identical
+ * to this table is enforced by the `migration-and-seed-stay-aligned` test in
  * `__tests__/seed-builtin-datasource-catalog.test.ts`.
  *
  * `config_schema` `secret: true` fields drive
@@ -253,6 +255,46 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     autoInstall: true,
     configSchema: [],
   },
+  {
+    // #3270 — added after the original eight (migration 0123, not 0093). The
+    // boot seed re-asserts all nine; only this row also ships in 0123 for
+    // existing DBs that already ran 0093. `config_schema` mirrors the plugin's
+    // `getConfigSchema()` (plugins/elasticsearch/src/index.ts): `apiKey` is the
+    // only `secret: true` field — the `url` carries no credential. Future auth
+    // modes (#3263–#3265) extend this list + getConfigSchema in lockstep.
+    id: "catalog:elasticsearch",
+    slug: "elasticsearch",
+    name: "Elasticsearch",
+    description:
+      "Connect an Elasticsearch or OpenSearch cluster as a read-only analytics datasource.",
+    installModel: "form",
+    autoInstall: false,
+    configSchema: [
+      {
+        key: "url",
+        type: "string",
+        label: "Connection URL",
+        required: true,
+        description:
+          "elasticsearch://host:9200 — HTTPS by default; append ?ssl=false for a plaintext local cluster.",
+      },
+      {
+        key: "apiKey",
+        type: "string",
+        label: "API Key",
+        required: true,
+        secret: true,
+        description:
+          "Base64-encoded Elasticsearch API key, sent as `Authorization: ApiKey`. Encrypted at rest.",
+      },
+      {
+        key: "description",
+        type: "string",
+        label: "Description",
+        description: "Optional. Shown in the agent system prompt.",
+      },
+    ],
+  },
 ];
 
 /**
@@ -272,9 +314,9 @@ export interface BuiltinDatasourceCatalogSeedResult {
 }
 
 /**
- * Idempotently seed the eight built-in Datasource catalog rows.
+ * Idempotently seed the nine built-in Datasource catalog rows.
  *
- * Bulk INSERT keeps the seed cheap (single statement vs eight) and lets
+ * Bulk INSERT keeps the seed cheap (single statement vs nine) and lets
  * the result set (`RETURNING slug`) report which rows actually inserted
  * vs which were preserved. Unqualified `ON CONFLICT DO NOTHING` covers
  * both the `slug` unique index AND the `id` primary key — so a stray

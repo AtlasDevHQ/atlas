@@ -4,16 +4,26 @@
  * Demonstrates how the AtlasDatasourcePlugin interface can wrap real adapter
  * code extracted from the core ClickHouse adapter in packages/api/src/lib/db/connection.ts.
  *
- * Usage in atlas.config.ts (monorepo workspace — for external projects,
- * copy this plugin into your project or adjust the import path):
+ * Two registration modes:
+ *
+ * 1. Static config-defined datasource (self-host / operator-baked) — pass a
+ *    `url` and the plugin wires a single connection at boot:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
  * import { clickhousePlugin } from "@useatlas/clickhouse";
  *
  * export default defineConfig({
- *   plugins: [
- *     clickhousePlugin({ url: "clickhouse://localhost:8123/default" }),
- *   ],
+ *   plugins: [clickhousePlugin({ url: "clickhouse://localhost:8123/default" })],
+ * });
+ * ```
+ *
+ * 2. Adapter-only (SaaS per-workspace) — pass no `url` and the plugin registers
+ *    purely as an adapter, so customers add their own ClickHouse per workspace
+ *    via Admin → Connections (DB-stored, encrypted). No operator env var, no
+ *    static datasource:
+ * ```typescript
+ * export default defineConfig({
+ *   plugins: [clickhousePlugin({})],
  * });
  * ```
  */
@@ -27,7 +37,13 @@ import {
 } from "./connection";
 import { CLICKHOUSE_FORBIDDEN_PATTERNS } from "./validation";
 
-const ClickHouseConfigSchema = z.object({
+/**
+ * Strict schema for a fully-specified ClickHouse connection. A `url` is
+ * required. Used by `connection.createFromConfig` to validate the decrypted
+ * per-(workspace, install) config of a DB-stored datasource (which always
+ * carries a url) before building the connection.
+ */
+const ClickHouseConnectionConfigSchema = z.object({
   /** ClickHouse connection URL (clickhouse:// or clickhouses://). */
   url: z
     .string()
@@ -39,6 +55,15 @@ const ClickHouseConfigSchema = z.object({
   /** ClickHouse database name override. When omitted, uses the database from the URL path. */
   database: z.string().optional(),
 });
+
+/**
+ * Lenient config-time schema — every field optional so the plugin can be
+ * registered as an ADAPTER ONLY: `clickhousePlugin({})` parses, registering the
+ * plugin so its `createFromConfig` is available to the datasource bridge for
+ * DB-stored per-workspace installs (the SaaS model), with no static datasource.
+ * A `url`, when supplied, is still validated for scheme.
+ */
+const ClickHouseConfigSchema = ClickHouseConnectionConfigSchema.partial();
 
 export type ClickHouseConfig = z.infer<typeof ClickHouseConfigSchema>;
 
@@ -52,6 +77,35 @@ export function buildClickHousePlugin(
 ): AtlasDatasourcePlugin<ClickHouseConfig> {
   let log: PluginLogger | undefined;
 
+  // When a static url is configured the plugin wires a config-defined
+  // connection at boot; without one it is registered adapter-only.
+  const staticUrl = config.url;
+
+  const connection: AtlasDatasourcePlugin<ClickHouseConfig>["connection"] = {
+    // DB-driven (admin-UI-registered) datasources: build a connection from
+    // the per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict schema. Always available — this is the
+    // SaaS per-workspace path and the only path in adapter-only mode.
+    createFromConfig: (runtimeConfig) => {
+      const parsed = ClickHouseConnectionConfigSchema.parse(runtimeConfig);
+      return createClickHouseConnection({
+        url: parsed.url,
+        database: parsed.database,
+        logger: log,
+      });
+    },
+    dbType: "clickhouse",
+    parserDialect: "PostgresQL", // closest match in node-sql-parser
+    forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
+  };
+
+  if (staticUrl) {
+    connection.create = () =>
+      // ClickHouse HTTP transport is stateless — safe to create per call.
+      // Pool-based databases (Postgres, MySQL) should cache the connection.
+      createClickHouseConnection({ url: staticUrl, database: config.database, logger: log });
+  }
+
   return {
     id: "clickhouse-datasource",
     types: ["datasource"] as const,
@@ -59,27 +113,7 @@ export function buildClickHousePlugin(
     name: "ClickHouse DataSource",
     config,
 
-    connection: {
-      create: () =>
-        // ClickHouse HTTP transport is stateless — safe to create per call.
-        // Pool-based databases (Postgres, MySQL) should cache the connection.
-        createClickHouseConnection({ url: config.url, database: config.database, logger: log }),
-      // DB-driven (admin-UI-registered) datasources: build a connection from
-      // the per-(workspace, install) config decrypted from `workspace_plugins`,
-      // re-validated through the same schema. The config-time `config.url`
-      // above is ignored on this path.
-      createFromConfig: (runtimeConfig) => {
-        const parsed = ClickHouseConfigSchema.parse(runtimeConfig);
-        return createClickHouseConnection({
-          url: parsed.url,
-          database: parsed.database,
-          logger: log,
-        });
-      },
-      dbType: "clickhouse",
-      parserDialect: "PostgresQL", // closest match in node-sql-parser
-      forbiddenPatterns: CLICKHOUSE_FORBIDDEN_PATTERNS,
-    },
+    connection,
 
     entities: [],
 
@@ -96,14 +130,26 @@ export function buildClickHousePlugin(
 
     async initialize(ctx) {
       log = ctx.logger;
-      ctx.logger.info(`ClickHouse datasource plugin initialized (${extractHost(config.url)})`);
+      if (staticUrl) {
+        ctx.logger.info(`ClickHouse datasource plugin initialized (${extractHost(staticUrl)})`);
+      } else {
+        ctx.logger.info(
+          "ClickHouse datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
+        );
+      }
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      // Adapter-only: no static datasource to probe. The plugin itself is a
+      // healthy adapter; per-workspace connections are health-checked by the
+      // ConnectionRegistry once installed.
+      if (!staticUrl) {
+        return { healthy: true, message: "adapter-only: no static datasource configured" };
+      }
       const start = performance.now();
       let conn: PluginDBConnection | undefined;
       try {
-        conn = createClickHouseConnection({ url: config.url, database: config.database });
+        conn = createClickHouseConnection({ url: staticUrl, database: config.database });
         await conn.query("SELECT 1", 5000);
         return {
           healthy: true,
@@ -131,7 +177,10 @@ export function buildClickHousePlugin(
  *
  * @example
  * ```typescript
+ * // Static datasource (self-host):
  * plugins: [clickhousePlugin({ url: "clickhouse://localhost:8123/default" })]
+ * // Adapter-only (SaaS — customers bring their own per workspace):
+ * plugins: [clickhousePlugin({})]
  * ```
  */
 export const clickhousePlugin = createPlugin({

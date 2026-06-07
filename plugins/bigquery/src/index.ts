@@ -5,7 +5,10 @@
  * Supports service account JSON key files, inline credentials objects, and
  * Application Default Credentials (ADC) for GCP-native environments.
  *
- * Usage in atlas.config.ts:
+ * Two registration modes:
+ *
+ * 1. Static config-defined datasource (self-host / operator-baked) — pass a
+ *    `projectId` and the plugin wires a single connection at boot:
  * ```typescript
  * import { defineConfig } from "@atlas/api/lib/config";
  * import { bigqueryPlugin } from "@useatlas/bigquery";
@@ -18,6 +21,16 @@
  *       dataset: "analytics",
  *     }),
  *   ],
+ * });
+ * ```
+ *
+ * 2. Adapter-only (SaaS per-workspace) — pass no `projectId` and the plugin
+ *    registers purely as an adapter, so customers add their own BigQuery
+ *    project per workspace via Admin → Connections (DB-stored, encrypted). No
+ *    operator config, no static datasource:
+ * ```typescript
+ * export default defineConfig({
+ *   plugins: [bigqueryPlugin({})],
  * });
  * ```
  */
@@ -57,6 +70,57 @@ const BigQueryConfigSchema = z.object({
 });
 
 /**
+ * Strict runtime schema for a DB-stored (admin-UI-registered) BigQuery
+ * datasource install. The config-time {@link BigQueryConfigSchema} leaves
+ * `projectId` optional so the plugin can register as an ADAPTER ONLY
+ * (`bigqueryPlugin({})` parses), but a per-(workspace, install) datasource
+ * must identify a concrete project — credentials may still come from a
+ * keyFilename, inline credentials, or ADC, but the project is mandatory.
+ * Used by `connection.createFromConfig` so a runtime config missing
+ * `projectId` is REJECTED.
+ */
+const BigQueryRuntimeConfigSchema = BigQueryConfigSchema.extend({
+  projectId: z.string().min(1, "BigQuery projectId must not be empty"),
+});
+
+/**
+ * Normalize a DB-stored BigQuery datasource config into the connection factory's
+ * field shape. The Admin → Connections catalog form
+ * (`seed-builtin-datasource-catalog.ts`) collects `service_account_json` (the raw
+ * key JSON, as a string) + `project_id` (snake_case); the connection factory and
+ * {@link BigQueryRuntimeConfigSchema} use `credentials` (object) + `projectId`
+ * (camelCase). Map the form shape onto the factory shape WITHOUT clobbering
+ * explicit camelCase values (so a programmatic `createFromConfig` caller passing
+ * `projectId`/`credentials` directly still works). Without this, every
+ * admin-installed BigQuery datasource would be rejected by the runtime schema
+ * (missing `projectId`) and never register as a live connection.
+ */
+function normalizeBigQueryRuntimeConfig(
+  raw: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+  if (out.projectId === undefined && typeof out.project_id === "string") {
+    out.projectId = out.project_id;
+  }
+  if (
+    out.credentials === undefined &&
+    out.keyFilename === undefined &&
+    typeof out.service_account_json === "string" &&
+    out.service_account_json.trim().length > 0
+  ) {
+    try {
+      out.credentials = JSON.parse(out.service_account_json);
+    } catch (err) {
+      throw new Error(
+        `BigQuery service_account_json is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
+      );
+    }
+  }
+  return out;
+}
+
+/**
  * BigQuery config type. Uses `z.input` so both the `bigqueryPlugin()` factory
  * (which applies Zod defaults) and direct `buildBigQueryPlugin()` callers work
  * without requiring cost fields to be explicitly passed.
@@ -75,6 +139,15 @@ export function buildBigQueryPlugin(
 
   const costApproval = config.costApproval ?? "threshold";
   const costThreshold = config.costThreshold ?? 1.0;
+
+  // A static config-defined BigQuery datasource is identified by ANY connection
+  // field: an explicit projectId, a keyFilename, or inline credentials. Unlike
+  // the url-based datasources, BigQuery can run static with NO projectId — the
+  // project is inferred from the key/credentials or Application Default
+  // Credentials (createBigQueryConnection omits projectId in that case). Only
+  // when none of these is present does the plugin register adapter-only (SaaS
+  // per-workspace — datasources are DB-stored, added via Admin → Connections).
+  const hasStaticConfig = !!(config.projectId || config.keyFilename || config.credentials);
 
   const hooks: PluginHooks = {
     beforeQuery: [
@@ -115,6 +188,48 @@ export function buildBigQueryPlugin(
     ],
   };
 
+  const connection: AtlasDatasourcePlugin<BigQueryConfig>["connection"] = {
+    // DB-driven (admin-UI-registered) datasources: build a connection from the
+    // per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict runtime schema (projectId required).
+    // Always available — this is the SaaS per-workspace path and the only path
+    // in adapter-only mode.
+    createFromConfig: (runtimeConfig) => {
+      // Normalize the catalog form's snake_case / service_account_json shape onto
+      // the factory's camelCase / credentials shape before validating.
+      const parsed = BigQueryRuntimeConfigSchema.parse(
+        normalizeBigQueryRuntimeConfig(runtimeConfig),
+      );
+      return createBigQueryConnection({
+        projectId: parsed.projectId,
+        dataset: parsed.dataset,
+        location: parsed.location,
+        keyFilename: parsed.keyFilename,
+        credentials: parsed.credentials,
+        logger: log,
+      });
+    },
+    dbType: "bigquery",
+    parserDialect: "BigQuery",
+    forbiddenPatterns: BIGQUERY_FORBIDDEN_PATTERNS,
+  };
+
+  // When any static connection field is configured the plugin wires a
+  // config-defined connection at boot; without one it is registered adapter-only.
+  // `config.projectId` may be undefined here (key/credentials/ADC supply it) —
+  // createBigQueryConnection handles an absent projectId.
+  if (hasStaticConfig) {
+    connection.create = () =>
+      createBigQueryConnection({
+        projectId: config.projectId,
+        dataset: config.dataset,
+        location: config.location,
+        keyFilename: config.keyFilename,
+        credentials: config.credentials,
+        logger: log,
+      });
+  }
+
   return {
     id: "bigquery-datasource",
     types: ["datasource"] as const,
@@ -122,20 +237,7 @@ export function buildBigQueryPlugin(
     name: "BigQuery DataSource",
     config,
 
-    connection: {
-      create: () =>
-        createBigQueryConnection({
-          projectId: config.projectId,
-          dataset: config.dataset,
-          location: config.location,
-          keyFilename: config.keyFilename,
-          credentials: config.credentials,
-          logger: log,
-        }),
-      dbType: "bigquery",
-      parserDialect: "BigQuery",
-      forbiddenPatterns: BIGQUERY_FORBIDDEN_PATTERNS,
-    },
+    connection,
 
     entities: [],
 
@@ -158,10 +260,22 @@ export function buildBigQueryPlugin(
 
     async initialize(ctx) {
       log = ctx.logger;
-      ctx.logger.info(`BigQuery datasource plugin initialized (project: ${extractProjectId(config)})`);
+      if (hasStaticConfig) {
+        ctx.logger.info(`BigQuery datasource plugin initialized (project: ${extractProjectId(config)})`);
+      } else {
+        ctx.logger.info(
+          "BigQuery datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
+        );
+      }
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      // Adapter-only: no static datasource to probe. The plugin itself is a
+      // healthy adapter; per-workspace connections are health-checked by the
+      // ConnectionRegistry once installed.
+      if (!hasStaticConfig) {
+        return { healthy: true, message: "adapter-only: no static datasource configured" };
+      }
       const start = performance.now();
       let conn: PluginDBConnection | undefined;
       try {
@@ -200,7 +314,10 @@ export function buildBigQueryPlugin(
  *
  * @example
  * ```typescript
+ * // Static datasource (self-host):
  * plugins: [bigqueryPlugin({ projectId: "my-project", dataset: "analytics" })]
+ * // Adapter-only (SaaS — customers bring their own per workspace):
+ * plugins: [bigqueryPlugin({})]
  * ```
  */
 export const bigqueryPlugin = createPlugin({

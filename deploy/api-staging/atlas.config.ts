@@ -51,7 +51,18 @@ import { defineConfig } from "./packages/api/src/lib/config";
 // The `defineConfig` import above uses the same relative-path pattern
 // for the same reason. Resolved at boot via bun's TS loader.
 import { chatPlugin } from "./plugins/chat/src/index";
+// Datasource ADAPTER plugins (#3253 / ADR-0013) — mirrors deploy/api/atlas.config.ts.
+// Registered with empty config so each is available purely as an adapter:
+// customers add their own connection per workspace via Admin → Connections
+// (DB-stored, encrypted), resolved through the datasource bridge's
+// `createFromConfig`. No operator env var, no static datasource. DuckDB is
+// intentionally excluded (file-path based, not a safe multi-tenant datasource);
+// Postgres + MySQL need no plugin (the bridge registers those natively).
 import { clickhousePlugin } from "./plugins/clickhouse/src/index";
+import { salesforcePlugin } from "./plugins/salesforce/src/index";
+import { snowflakePlugin } from "./plugins/snowflake/src/index";
+import { bigqueryPlugin } from "./plugins/bigquery/src/index";
+import { elasticsearchPlugin } from "./plugins/elasticsearch/src/index";
 import { getProactiveAiRuntime } from "./packages/api/src/lib/effect/ai";
 import { getEnterpriseRuntime } from "./packages/api/src/lib/effect/enterprise-layer";
 import { createSlackWorkspaceIdResolver } from "./packages/api/src/lib/proactive/workspace-id-resolver";
@@ -86,26 +97,6 @@ import { createChatPluginExecuteQuery } from "./packages/api/src/lib/chat-plugin
 // under packages/api/node_modules and isn't on the upward walk from
 // /app/atlas.config.ts). Process-lifetime cached on the helper side.
 const proactiveAiRuntime = getProactiveAiRuntime();
-
-/**
- * Datasource ADAPTER plugins for the staging soak matrix (#3253). Each is
- * registered only when its staging connection URL env var is set — an unset
- * env never trips the plugin's required-url config schema at boot, and prod
- * (which doesn't set these) is unaffected.
- *
- * Registering the plugin makes its `connection.createFromConfig` available to
- * the datasource bridge, which is what lets DB-stored (admin-UI-registered)
- * datasources of that `dbType` actually connect (ADR-0013). The config-time
- * URL below also yields a working static config-defined datasource as a bonus.
- */
-function stagingDatasourcePlugins(): unknown[] {
-  const list: unknown[] = [];
-  const clickhouseUrl = process.env.ATLAS_STAGING_CLICKHOUSE_URL;
-  if (clickhouseUrl) {
-    list.push(clickhousePlugin({ url: clickhouseUrl }));
-  }
-  return list;
-}
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -799,11 +790,16 @@ export default defineConfig({
   // at rest via AES-256-GCM. OMIT `botToken` so the adapter operates
   // in multi-workspace mode.
   plugins: [
-    // Datasource adapter plugins (#3253). Listed first for clarity — order
-    // within plugins[] doesn't affect boot wiring (the bridge resolves adapters
-    // via the registry's getAll(), order-independent); what matters is that the
-    // whole array registers before loadSavedConnections runs.
-    ...stagingDatasourcePlugins(),
+    // ── Datasource adapters (adapter-only / SaaS per-workspace) ──────
+    // Mirrors deploy/api/atlas.config.ts. Order within plugins[] doesn't affect
+    // boot wiring — the bridge resolves adapters via the registry's getAll()
+    // (order-independent). Each registers as an adapter only (no static
+    // connection); customers bring their own datasource per workspace.
+    clickhousePlugin({}),
+    salesforcePlugin({}),
+    snowflakePlugin({}),
+    bigqueryPlugin({}),
+    elasticsearchPlugin({}),
     chatPlugin({
       // Catalog-driven adapter activation (#2650 slice 2). The chat
       // plugin's `AdapterRegistry` reads the chat-type subset of the

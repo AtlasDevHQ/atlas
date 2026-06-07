@@ -605,9 +605,17 @@ describe("config validation", () => {
     ).toThrow(/elasticsearch:\/\//);
   });
 
-  test("rejects a missing API key", () => {
-    // @ts-expect-error — intentionally omitting apiKey
-    expect(() => elasticsearchPlugin({ url: VALID_URL })).toThrow();
+  test("accepts a url with no apiKey — adapter-only registration (SaaS per-workspace)", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL });
+    expect(plugin.id).toBe("elasticsearch-datasource");
+    // Incomplete static config (url but no apiKey) → no static connection wired.
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("accepts a fully empty config — adapter-only registration", () => {
+    const plugin = elasticsearchPlugin({});
+    expect(plugin.id).toBe("elasticsearch-datasource");
+    expect(plugin.config).toEqual({});
   });
 
   test("rejects an empty API key", () => {
@@ -648,7 +656,7 @@ describe("plugin shape", () => {
 
   test("connection.create() returns a PluginDBConnection", async () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });
@@ -656,6 +664,74 @@ describe("plugin shape", () => {
   test("has teardown method", () => {
     const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
     expect(typeof plugin.teardown).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no url/apiKey is configured", () => {
+    const plugin = elasticsearchPlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = elasticsearchPlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = elasticsearchPlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("elasticsearch");
+  });
+
+  test("createFromConfig builds a connection from a runtime config even with no static config", () => {
+    const plugin = elasticsearchPlugin({});
+    const conn = plugin.connection.createFromConfig!({ url: VALID_URL, apiKey: API_KEY });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig still rejects a missing/invalid runtime config", () => {
+    const plugin = elasticsearchPlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db", apiKey: API_KEY }),
+    ).toThrow();
+  });
+
+  test("static-config mode still wires connection.create when url + apiKey are given", () => {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = elasticsearchPlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+  });
+
+  test("initialize logs adapter-only (no url, no crash)", async () => {
+    const plugin = elasticsearchPlugin({});
+    const logged: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (...args: unknown[]) => { logged.push(String(args[0])); },
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    expect(logged.some((m) => m.includes("adapter-only"))).toBe(true);
   });
 });
 

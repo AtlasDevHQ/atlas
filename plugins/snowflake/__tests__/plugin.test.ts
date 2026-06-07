@@ -198,9 +198,10 @@ describe("config validation", () => {
     ).toThrow(/URL must start with snowflake:\/\//);
   });
 
-  test("rejects missing URL", () => {
-    // @ts-expect-error — intentionally passing invalid config
-    expect(() => snowflakePlugin({})).toThrow();
+  test("accepts empty config — adapter-only registration (SaaS per-workspace)", () => {
+    const plugin = snowflakePlugin({});
+    expect(plugin.id).toBe("snowflake-datasource");
+    expect(plugin.config).toEqual({});
   });
 
   test("rejects URL with missing username with specific error", () => {
@@ -306,6 +307,104 @@ describe("plugin shape", () => {
     expect(plugin.connection.forbiddenPatterns).toBe(SNOWFLAKE_FORBIDDEN_PATTERNS);
     expect(plugin.connection.forbiddenPatterns!.length).toBeGreaterThan(0);
   });
+
+  test("connection.createFromConfig builds a connection from a runtime (DB-stored) config (#3253)", () => {
+    const plugin = snowflakePlugin(validConfig);
+    // The config-time url is ignored on this path — pass a DIFFERENT runtime url.
+    const conn = plugin.connection.createFromConfig!({
+      url: "snowflake://runtime-user:pw@runtime-acct/runtime_db/public?warehouse=RT_WH",
+      // Extra keys from the decrypted workspace_plugins.config record are tolerated.
+      db_type: "snowflake",
+      group_id: "g_default",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("connection.createFromConfig validates the runtime config (rejects non-snowflake url)", () => {
+    const plugin = snowflakePlugin(validConfig);
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow();
+  });
+
+  test("connection.createFromConfig rejects a missing url", () => {
+    const plugin = snowflakePlugin(validConfig);
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no url is configured", () => {
+    const plugin = snowflakePlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = snowflakePlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = snowflakePlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("snowflake");
+  });
+
+  test("createFromConfig builds a connection from a runtime config even with no static url", () => {
+    const plugin = snowflakePlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      url: "snowflake://runtime-user:pw@runtime-acct/runtime_db",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig still rejects a missing/invalid runtime url", () => {
+    const plugin = snowflakePlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow();
+  });
+
+  test("static-config mode still wires connection.create when a url is given", () => {
+    const plugin = snowflakePlugin({ url: "snowflake://user:pass@xy12345/db" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = snowflakePlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+    // No connection is constructed when there is no static datasource.
+    expect(mockCreatePool).not.toHaveBeenCalled();
+  });
+
+  test("initialize logs adapter-only (no url, no credentials, no crash)", async () => {
+    const plugin = snowflakePlugin({});
+    const logged: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (...args: unknown[]) => { logged.push(String(args[0])); },
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    const msg = logged.find((m) => m.includes("adapter-only"));
+    expect(msg).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -388,7 +487,7 @@ describe("connection factory", () => {
 
   test("connection.create() returns a PluginDBConnection", async () => {
     const plugin = snowflakePlugin({ url: testUrl });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });

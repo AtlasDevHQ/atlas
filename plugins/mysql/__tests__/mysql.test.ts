@@ -187,7 +187,7 @@ describe("connection factory", () => {
     const plugin = mysqlPlugin({
       url: "mysql://localhost:3306/mydb",
     });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });
@@ -196,8 +196,8 @@ describe("connection factory", () => {
     const plugin = mysqlPlugin({
       url: "mysql://localhost:3306/mydb",
     });
-    const conn1 = plugin.connection.create();
-    const conn2 = plugin.connection.create();
+    const conn1 = plugin.connection.create!();
+    const conn2 = plugin.connection.create!();
     expect(conn1).toBe(conn2);
     expect(mockCreatePool).toHaveBeenCalledTimes(1);
   });

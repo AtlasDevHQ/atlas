@@ -584,8 +584,18 @@ export interface AtlasDatasourcePlugin<TConfig = undefined> extends AtlasPluginB
      * `atlas.config.ts`). Used by the boot-time static wiring path
      * (`wireDatasourcePlugins`) to register a single config-defined
      * connection.
+     *
+     * Optional: a plugin registered as an ADAPTER ONLY — the SaaS
+     * per-workspace model where every datasource is DB-stored
+     * (admin-UI-registered, encrypted), not baked into operator config —
+     * omits `create` and implements only {@link createFromConfig}.
+     * `wireDatasourcePlugins` skips adapter-only plugins for static wiring;
+     * the datasource bridge still finds them via the registry's `getAll()`
+     * to build per-(workspace, install) connections on demand. At least one
+     * of `create` / `createFromConfig` must be present — enforced by
+     * `validatePluginShape`.
      */
-    create(): Promise<PluginDBConnection> | PluginDBConnection;
+    create?(): Promise<PluginDBConnection> | PluginDBConnection;
     /**
      * Factory: create a DBConnection from a runtime config resolved from a
      * DB-stored datasource install (admin-UI-registered, persisted in
@@ -841,7 +851,7 @@ type _InferFrom<P, C> = {
  * import type { clickhousePlugin } from "@useatlas/clickhouse";
  *
  * type CH = $InferServerPlugin<typeof clickhousePlugin>;
- * // CH["Config"] → { url: string; database?: string }
+ * // CH["Config"] → { url?: string; database?: string }
  * // CH["Types"]  → readonly ["datasource"]
  * // CH["Id"]     → string
  * ```

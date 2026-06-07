@@ -61,7 +61,13 @@ const ELASTICSEARCH_DIALECT_GUIDE = [
   "- Read-only: only SELECT is allowed. SHOW/DESCRIBE and any DML/DDL are rejected.",
 ].join("\n");
 
-const ElasticsearchConfigSchema = z.object({
+/**
+ * Strict schema for a fully-specified Elasticsearch connection — both `url` and
+ * `apiKey` are required. Used by `connection.createFromConfig` to validate the
+ * decrypted per-(workspace, install) config of a DB-stored datasource (which
+ * always carries both) before building the connection.
+ */
+const ElasticsearchConnectionConfigSchema = z.object({
   /** Elasticsearch connection URL (elasticsearch://host:9200). */
   url: z
     .string()
@@ -86,13 +92,23 @@ const ElasticsearchConfigSchema = z.object({
   description: z.string().optional(),
 });
 
+/**
+ * Lenient config-time schema — every field optional so the plugin can be
+ * registered as an ADAPTER ONLY: `elasticsearchPlugin({})` parses, registering
+ * the plugin so its `createFromConfig` is available to the datasource bridge for
+ * DB-stored per-workspace installs (the SaaS model), with no static datasource.
+ * A `url` / `apiKey`, when supplied, is still validated.
+ */
+const ElasticsearchConfigSchema = ElasticsearchConnectionConfigSchema.partial();
+
 export type ElasticsearchConfig = z.infer<typeof ElasticsearchConfigSchema>;
 
-// Compile-time guard: the Zod-inferred config and the connection module's raw
-// config shape must stay structurally identical, so adding a field to one
-// without the other fails the build instead of drifting silently.
-type _ConfigsAligned = [ElasticsearchConfig] extends [ElasticsearchPluginConfig]
-  ? [ElasticsearchPluginConfig] extends [ElasticsearchConfig]
+// Compile-time guard: the STRICT schema's inferred config and the connection
+// module's raw config shape must stay structurally identical, so adding a field
+// to one without the other fails the build instead of drifting silently.
+type StrictElasticsearchConfig = z.infer<typeof ElasticsearchConnectionConfigSchema>;
+type _ConfigsAligned = [StrictElasticsearchConfig] extends [ElasticsearchPluginConfig]
+  ? [ElasticsearchPluginConfig] extends [StrictElasticsearchConfig]
     ? true
     : never
   : never;
@@ -110,12 +126,54 @@ export function buildElasticsearchPlugin(
   let cachedConn: ElasticsearchConnection | undefined;
   let log: PluginLogger | undefined;
 
-  /** Cached singleton so health checks and teardown share one client. */
+  // A static config-defined ES datasource (self-host / operator-baked) needs
+  // both a url and an apiKey. Without them the plugin is registered ADAPTER ONLY
+  // (the SaaS per-workspace model): no static connection, customers add their
+  // own per workspace via Admin → Connections, and the datasource bridge builds
+  // each connection via `createFromConfig`.
+  const staticConfig: ElasticsearchPluginConfig | undefined =
+    config.url && config.apiKey
+      ? {
+          url: config.url,
+          apiKey: config.apiKey,
+          ...(config.description ? { description: config.description } : {}),
+        }
+      : undefined;
+
+  /** Cached singleton so health checks and teardown share one client (static mode). */
   function getOrCreateConnection(): ElasticsearchConnection {
+    if (!staticConfig) {
+      throw new Error(
+        "Elasticsearch plugin is adapter-only — no static datasource configured",
+      );
+    }
     if (!cachedConn) {
-      cachedConn = createElasticsearchConnection(config, { logger: log });
+      cachedConn = createElasticsearchConnection(staticConfig, { logger: log });
     }
     return cachedConn;
+  }
+
+  const connection: AtlasDatasourcePlugin<ElasticsearchConfig>["connection"] = {
+    // DB-driven (admin-UI-registered) datasources: build a connection from the
+    // per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict schema. Always available — this is the
+    // SaaS per-workspace path and the only path in adapter-only mode.
+    createFromConfig: (runtimeConfig) => {
+      const parsed = ElasticsearchConnectionConfigSchema.parse(runtimeConfig);
+      return createElasticsearchConnection(parsed, { logger: log });
+    },
+    dbType: "elasticsearch",
+    // ES SQL is real SQL, so there is intentionally NO custom `validate`: the
+    // host's standard 4-layer pipeline (regex guard → AST parse → index/table
+    // whitelist → auto-LIMIT + timeout) applies unchanged. We only tell it
+    // which grammar to parse with and add ES-specific guards on top of the
+    // base DML/DDL regex.
+    parserDialect: ELASTICSEARCH_PARSER_DIALECT,
+    forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
+  };
+
+  if (staticConfig) {
+    connection.create = () => getOrCreateConnection();
   }
 
   return {
@@ -125,17 +183,7 @@ export function buildElasticsearchPlugin(
     name: "Elasticsearch DataSource",
     config,
 
-    connection: {
-      create: () => getOrCreateConnection(),
-      dbType: "elasticsearch",
-      // ES SQL is real SQL, so there is intentionally NO custom `validate`: the
-      // host's standard 4-layer pipeline (regex guard → AST parse → index/table
-      // whitelist → auto-LIMIT + timeout) applies unchanged. We only tell it
-      // which grammar to parse with and add ES-specific guards on top of the
-      // base DML/DDL regex.
-      parserDialect: ELASTICSEARCH_PARSER_DIALECT,
-      forbiddenPatterns: ELASTICSEARCH_FORBIDDEN_PATTERNS,
-    },
+    connection,
 
     entities: [],
 
@@ -177,12 +225,24 @@ export function buildElasticsearchPlugin(
 
     async initialize(ctx) {
       log = ctx.logger;
-      ctx.logger.info(
-        `Elasticsearch datasource plugin initialized (${extractHost(config.url)})`,
-      );
+      if (staticConfig) {
+        ctx.logger.info(
+          `Elasticsearch datasource plugin initialized (${extractHost(staticConfig.url)})`,
+        );
+      } else {
+        ctx.logger.info(
+          "Elasticsearch datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
+        );
+      }
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
+      // Adapter-only: no static datasource to probe. The plugin itself is a
+      // healthy adapter; per-workspace connections are health-checked by the
+      // ConnectionRegistry once installed.
+      if (!staticConfig) {
+        return { healthy: true, message: "adapter-only: no static datasource configured" };
+      }
       const start = performance.now();
       try {
         // The client owns the timeout/abort (it rejects with a clear "timed out"
@@ -191,7 +251,7 @@ export function buildElasticsearchPlugin(
         await getOrCreateConnection().ping(5000);
         return { healthy: true, latencyMs: Math.round(performance.now() - start) };
       } catch (err) {
-        const message = scrubElasticsearchError(err, config.apiKey);
+        const message = scrubElasticsearchError(err, staticConfig.apiKey);
         log?.warn(`Elasticsearch health check failed: ${message}`);
         return {
           healthy: false,

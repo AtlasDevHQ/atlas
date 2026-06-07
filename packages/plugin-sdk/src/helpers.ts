@@ -42,8 +42,26 @@ function validatePluginShape(plugin: AtlasPlugin): void {
     if (!ds.connection || typeof ds.connection !== "object") {
       throw new Error('Datasource plugin must have a "connection" property');
     }
-    if (typeof ds.connection.create !== "function") {
-      throw new Error('Datasource plugin connection must have a "create()" factory function');
+    // A datasource plugin must expose at least one connection factory:
+    //   - `create()`           — a static config-defined connection (self-host /
+    //                            operator-baked datasource), wired at boot.
+    //   - `createFromConfig()` — an ADAPTER-ONLY connection built per-(workspace,
+    //                            install) from a DB-stored config (the SaaS
+    //                            per-workspace model). Plugins registered purely
+    //                            as adapters omit `create`.
+    // Each, when present, must be a function.
+    const hasCreate = ds.connection.create !== undefined;
+    const hasCreateFromConfig = ds.connection.createFromConfig !== undefined;
+    if (!hasCreate && !hasCreateFromConfig) {
+      throw new Error(
+        'Datasource plugin connection must have a "create()" or "createFromConfig()" factory function',
+      );
+    }
+    if (hasCreate && typeof ds.connection.create !== "function") {
+      throw new Error('Datasource plugin connection "create" must be a function when provided');
+    }
+    if (hasCreateFromConfig && typeof ds.connection.createFromConfig !== "function") {
+      throw new Error('Datasource plugin connection "createFromConfig" must be a function when provided');
     }
     if (ds.entities !== undefined && !Array.isArray(ds.entities) && typeof ds.entities !== "function") {
       throw new Error('Datasource plugin "entities" must be an array or a function');

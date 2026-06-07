@@ -194,6 +194,160 @@ describe("plugin shape", () => {
 });
 
 // ---------------------------------------------------------------------------
+// createFromConfig (DB-stored per-workspace datasources, #3253)
+// ---------------------------------------------------------------------------
+
+describe("connection.createFromConfig", () => {
+  const validConfig = { projectId: "my-project" };
+
+  test("builds a connection from a runtime (DB-stored) config", () => {
+    const plugin = bigqueryPlugin(validConfig);
+    // The config-time projectId is ignored on this path — pass a DIFFERENT
+    // runtime project, plus extra keys the decrypted record may carry.
+    const conn = plugin.connection.createFromConfig!({
+      projectId: "runtime-project",
+      dataset: "runtime_dataset",
+      location: "EU",
+      db_type: "bigquery",
+      group_id: "g_default",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+    expect(mockBigQuery).toHaveBeenCalledWith({ projectId: "runtime-project" });
+  });
+
+  test("rejects a runtime config missing projectId", () => {
+    const plugin = bigqueryPlugin(validConfig);
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+  });
+
+  test("rejects a runtime config with an empty projectId", () => {
+    const plugin = bigqueryPlugin(validConfig);
+    expect(() => plugin.connection.createFromConfig!({ projectId: "" })).toThrow();
+  });
+
+  test("accepts the Admin → Connections catalog form shape (service_account_json + project_id)", () => {
+    // The catalog form persists snake_case `project_id` + a `service_account_json`
+    // JSON string; createFromConfig must normalize these to projectId/credentials
+    // or every admin-installed BigQuery datasource would be rejected at boot.
+    const plugin = bigqueryPlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      project_id: "form-project",
+      service_account_json: JSON.stringify({
+        client_email: "svc@form-project.iam.gserviceaccount.com",
+        private_key: "k",
+      }),
+      description: "prod warehouse",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    // projectId came from project_id; credentials parsed from service_account_json.
+    expect(mockBigQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "form-project",
+        credentials: expect.objectContaining({
+          client_email: "svc@form-project.iam.gserviceaccount.com",
+        }),
+      }),
+    );
+  });
+
+  test("rejects an invalid service_account_json string", () => {
+    const plugin = bigqueryPlugin({});
+    expect(() =>
+      plugin.connection.createFromConfig!({
+        project_id: "p",
+        service_account_json: "{not valid json",
+      }),
+    ).toThrow(/not valid JSON/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no projectId is configured", () => {
+    const plugin = bigqueryPlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = bigqueryPlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = bigqueryPlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("bigquery");
+  });
+
+  test("createFromConfig builds a connection from a runtime config even with no static projectId", () => {
+    const plugin = bigqueryPlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      projectId: "runtime-project",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig still rejects a runtime config missing projectId", () => {
+    const plugin = bigqueryPlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+  });
+
+  test("static-config mode still wires connection.create when a projectId is given", () => {
+    const plugin = bigqueryPlugin({ projectId: "my-project" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("static-config mode wires connection.create from keyFilename alone (projectId inferred from key/ADC)", () => {
+    // BigQuery can run static with NO projectId — the project is inferred from
+    // the service-account key. Gating adapter-only on projectId alone would have
+    // silently demoted this to adapter-only and dropped the operator's datasource.
+    const plugin = bigqueryPlugin({ keyFilename: "/path/to/key.json" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("static-config mode wires connection.create from inline credentials alone", () => {
+    const plugin = bigqueryPlugin({
+      credentials: { client_email: "svc@proj.iam.gserviceaccount.com", private_key: "k" },
+    });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = bigqueryPlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+    // No client is constructed when there is no static datasource.
+    expect(mockBigQuery).not.toHaveBeenCalled();
+  });
+
+  test("initialize logs adapter-only (no projectId, no credentials, no crash)", async () => {
+    const plugin = bigqueryPlugin({});
+    const logged: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (...args: unknown[]) => { logged.push(String(args[0])); },
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    const msg = logged.find((m) => m.includes("adapter-only"));
+    expect(msg).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Forbidden patterns
 // ---------------------------------------------------------------------------
 
@@ -257,7 +411,7 @@ describe("BIGQUERY_FORBIDDEN_PATTERNS", () => {
 describe("connection factory", () => {
   test("connection.create() returns a PluginDBConnection", async () => {
     const plugin = bigqueryPlugin({ projectId: "my-project" });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });
@@ -492,7 +646,9 @@ describe("initialize", () => {
     expect(msg).not.toContain("/path/to");
   });
 
-  test("logs (default-project) when projectId is omitted", async () => {
+  test("logs adapter-only when projectId is omitted", async () => {
+    // Without a projectId there is no static datasource — the plugin registers
+    // adapter-only and initialize logs that, not a project-specific message.
     const plugin = bigqueryPlugin({});
     const logged: string[] = [];
     const ctx = {
@@ -508,8 +664,7 @@ describe("initialize", () => {
       config: {},
     };
     await plugin.initialize!(ctx);
-    const msg = logged.find((m) => m.includes("BigQuery datasource plugin initialized"));
+    const msg = logged.find((m) => m.includes("adapter-only"));
     expect(msg).toBeDefined();
-    expect(msg).toContain("(default-project)");
   });
 });

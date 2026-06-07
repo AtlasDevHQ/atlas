@@ -146,9 +146,10 @@ describe("config validation", () => {
     ).toThrow(/URL must start with clickhouse:\/\/ or clickhouses:\/\//);
   });
 
-  test("rejects missing URL", () => {
-    // @ts-expect-error — intentionally passing invalid config
-    expect(() => clickhousePlugin({})).toThrow();
+  test("accepts empty config — adapter-only registration (SaaS per-workspace)", () => {
+    const plugin = clickhousePlugin({});
+    expect(plugin.id).toBe("clickhouse-datasource");
+    expect(plugin.config).toEqual({});
   });
 });
 
@@ -257,6 +258,79 @@ describe("plugin shape", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Adapter-only mode (SaaS per-workspace — no static datasource)
+// ---------------------------------------------------------------------------
+
+describe("adapter-only mode", () => {
+  test("omits connection.create when no url is configured", () => {
+    const plugin = clickhousePlugin({});
+    expect(plugin.connection.create).toBeUndefined();
+  });
+
+  test("still exposes connection.createFromConfig (the per-workspace adapter)", () => {
+    const plugin = clickhousePlugin({});
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("still validates as a datasource plugin", () => {
+    const plugin = clickhousePlugin({});
+    expect(isDatasourcePlugin(plugin)).toBe(true);
+    expect(plugin.connection.dbType).toBe("clickhouse");
+  });
+
+  test("createFromConfig builds a connection from a runtime config even with no static url", () => {
+    const plugin = clickhousePlugin({});
+    const conn = plugin.connection.createFromConfig!({
+      url: "clickhouse://runtime-host:8123/runtime_db",
+    });
+    expect(typeof (conn as { query?: unknown }).query).toBe("function");
+    expect(typeof (conn as { close?: unknown }).close).toBe("function");
+  });
+
+  test("createFromConfig still rejects a missing/invalid runtime url", () => {
+    const plugin = clickhousePlugin({});
+    expect(() => plugin.connection.createFromConfig!({})).toThrow();
+    expect(() =>
+      plugin.connection.createFromConfig!({ url: "postgresql://localhost:5432/db" }),
+    ).toThrow();
+  });
+
+  test("static-config mode still wires connection.create when a url is given", () => {
+    const plugin = clickhousePlugin({ url: "clickhouse://localhost:8123/default" });
+    expect(typeof plugin.connection.create).toBe("function");
+  });
+
+  test("healthCheck reports healthy without probing when adapter-only", async () => {
+    const plugin = clickhousePlugin({});
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("adapter-only");
+    // No connection is constructed when there is no static datasource.
+    expect(mockCreateClient).not.toHaveBeenCalled();
+  });
+
+  test("initialize logs adapter-only (no url, no credentials, no crash)", async () => {
+    const plugin = clickhousePlugin({});
+    const logged: string[] = [];
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("not implemented"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (...args: unknown[]) => { logged.push(String(args[0])); },
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    };
+    await plugin.initialize!(ctx);
+    const msg = logged.find((m) => m.includes("adapter-only"));
+    expect(msg).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Forbidden patterns
 // ---------------------------------------------------------------------------
 
@@ -340,7 +414,7 @@ describe("connection factory", () => {
     const plugin = clickhousePlugin({
       url: "clickhouse://localhost:8123/default",
     });
-    const conn = await plugin.connection.create();
+    const conn = await plugin.connection.create!();
     expect(typeof conn.query).toBe("function");
     expect(typeof conn.close).toBe("function");
   });

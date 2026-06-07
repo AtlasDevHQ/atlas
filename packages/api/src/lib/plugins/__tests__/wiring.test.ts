@@ -124,6 +124,38 @@ describe("wireDatasourcePlugins", () => {
     expect(connRegistry.registered[0].dbType).toBe("postgres");
   });
 
+  test("skips adapter-only plugins (no connection.create) but keeps them registered", async () => {
+    // Adapter-only plugin (SaaS per-workspace model): exposes createFromConfig
+    // for the datasource bridge but NO static create(). Static boot wiring must
+    // skip it without erroring, and it must stay in the registry so the bridge's
+    // getAll() can resolve it for DB-stored installs.
+    const adapterOnly: PluginLike = {
+      id: "adapter-only-ds",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        createFromConfig: () => ({
+          query: async () => ({ columns: [], rows: [] }),
+          close: async () => {},
+        }),
+        dbType: "clickhouse",
+      },
+    };
+    registry.register(adapterOnly);
+    await registry.initializeAll(minimalCtx);
+
+    const result = await wireDatasourcePlugins(
+      registry,
+      connRegistry as unknown as import("@atlas/api/lib/db/connection").ConnectionRegistry,
+    );
+
+    expect(result.wired).toEqual([]);
+    expect(result.failed).toEqual([]);
+    expect(connRegistry.registered).toHaveLength(0);
+    // Still registered — reachable by the datasource bridge's getAll() lookup.
+    expect(registry.getAll().some((p) => p.id === "adapter-only-ds")).toBe(true);
+  });
+
   test("passes connection.validate through to registerDirect", async () => {
     const validator = (q: string) => ({ valid: /^SELECT/i.test(q) });
     const plugin: PluginLike = {

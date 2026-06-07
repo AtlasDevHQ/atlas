@@ -363,6 +363,48 @@ describe("definePlugin validation", () => {
     } as any)).toThrow('must have a "connection"');
   });
 
+  test("accepts adapter-only datasource (createFromConfig, no create)", () => {
+    const plugin = definePlugin({
+      id: "adapter-only-ds",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: {
+        createFromConfig: () => ({ query: async () => ({ columns: [], rows: [] }), close: async () => {} }),
+        dbType: "clickhouse",
+      },
+    } as AtlasDatasourcePlugin);
+    expect(plugin.id).toBe("adapter-only-ds");
+    expect(plugin.connection.create).toBeUndefined();
+    expect(typeof plugin.connection.createFromConfig).toBe("function");
+  });
+
+  test("throws when datasource connection has neither create nor createFromConfig", () => {
+    expect(() => definePlugin({
+      id: "test",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: { dbType: "postgres" },
+    } as any)).toThrow('must have a "create()" or "createFromConfig()" factory function');
+  });
+
+  test("throws when datasource connection.create is not a function", () => {
+    expect(() => definePlugin({
+      id: "test",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: { create: "nope", dbType: "postgres" },
+    } as any)).toThrow('"create" must be a function when provided');
+  });
+
+  test("throws when datasource connection.createFromConfig is not a function", () => {
+    expect(() => definePlugin({
+      id: "test",
+      types: ["datasource"],
+      version: "1.0.0",
+      connection: { createFromConfig: "nope", dbType: "postgres" },
+    } as any)).toThrow('"createFromConfig" must be a function when provided');
+  });
+
   test("throws when action plugin missing actions array", () => {
     expect(() => definePlugin({
       id: "test",

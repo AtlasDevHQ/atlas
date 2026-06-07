@@ -13,13 +13,18 @@
  * new dbType ships (or a tunable like `maxConnections` becomes
  * catalog-declared), only this file needs to change.
  *
- * Resolver runs unconditionally; native-dbType filter runs after. This
- * means a plugin-managed row (`clickhouse` / `snowflake` / `bigquery` /
- * `duckdb` / `salesforce`) missing a required catalog field will throw
- * from the resolver BEFORE reaching the native filter — only well-formed
- * plugin rows reach the filter and return `false`. The trade-off is
- * intentional: surfacing config violations loud at boot beats silently
- * skipping rows that the catalog declared as required.
+ * Resolver runs unconditionally; the handler-managed skip + native-dbType
+ * filter run after. This means a plugin-managed row (`clickhouse` /
+ * `snowflake` / `bigquery` / `duckdb` / `elasticsearch`) missing a required
+ * catalog field will throw from the resolver BEFORE reaching the filters —
+ * only well-formed plugin rows reach the filter and return `false`. The
+ * trade-off is intentional: surfacing config violations loud at boot beats
+ * silently skipping rows that the catalog declared as required.
+ *
+ * Salesforce is the exception — it is OAuth-managed (tokens in
+ * `integration_credentials`, connection built from those tokens via the
+ * `LazyPluginLoader`), so this bridge skips it before the plugin path. See
+ * `HANDLER_MANAGED_DATASOURCE_DBTYPES` and ADR-0014.
  *
  * Pure-ish: the only side effect is the registry mutation. No DB I/O,
  * no logging — callers handle errors and emit the appropriate breadcrumb.
@@ -30,6 +35,7 @@
 import { connections } from "@atlas/api/lib/db/connection";
 import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
 import {
+  type BuiltinDatasourceDbType,
   type DatasourcePoolConfig,
   type DatasourceWorkspacePluginRow,
   resolveDatasourcePoolConfig,
@@ -62,6 +68,34 @@ function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | u
   }
   return undefined;
 }
+
+/**
+ * Datasource dbTypes whose per-workspace connections are NOT built by this
+ * bridge from `workspace_plugins.config`. Salesforce is the sole member:
+ *
+ *   - It installs via OAuth (`SalesforceOAuthInstallHandler`), persisting the
+ *     refresh/access tokens in `integration_credentials` (per ADR-0005 /
+ *     ADR-0007 — "OAuth-token storage is NOT part of the install-record
+ *     unification"). Its `workspace_plugins.config` carries `instance_url` /
+ *     `scopes` / `status` (+ `org_id` / `org_user_id`) — never a `url`.
+ *   - Its per-workspace connection is built from those OAuth tokens via the
+ *     `LazyPluginLoader` (a jsforce session — see `salesforce/lazy-builder.ts`),
+ *     NOT from `workspace_plugins.config` via `createFromConfig`, and NOT
+ *     queried through `executeSQL` / `ConnectionRegistry`.
+ *
+ * Because the OAuth config has no `url`, handing it to the plugin's
+ * `createFromConfig` (which requires a `salesforce://…` url) would throw on
+ * every boot, and a naive "no plugin registered" path would print a warning
+ * telling operators to add `salesforcePlugin()` to atlas.config.ts — the exact
+ * inert registration #3302 removed. Skipping here keeps the boot loop quiet and
+ * records the decision in code: do NOT register `salesforcePlugin({})` expecting
+ * the bridge to wire it. See ADR-0014 (Salesforce datasource stays on OAuth).
+ *
+ * Typed against `BuiltinDatasourceDbType` (not `string`) so a typo'd member is
+ * a compile error rather than a silently-never-matching entry.
+ */
+const HANDLER_MANAGED_DATASOURCE_DBTYPES: ReadonlySet<BuiltinDatasourceDbType> =
+  new Set(["salesforce"]);
 
 /** Best-effort host for audit logging from a plugin pool config's URL (no credentials). */
 function pluginTargetHost(poolConfig: DatasourcePoolConfig): string {
@@ -142,9 +176,11 @@ async function registerPluginDatasourceInstall(
  * Returns:
  *   - `true`  — a fresh registration was performed (the per-(workspace,
  *               install_id) config and/or the bare install_id row was new)
- *   - `false` — either the dbType is plugin-managed (filter short-circuit) or
- *               BOTH the per-(workspace, install_id) config and the bare
- *               install_id were already registered (full idempotent re-register)
+ *   - `false` — the dbType is handler-managed (Salesforce / OAuth — skipped
+ *               entirely, see `HANDLER_MANAGED_DATASOURCE_DBTYPES`), OR the
+ *               dbType is plugin-managed (filter short-circuit), OR BOTH the
+ *               per-(workspace, install_id) config and the bare install_id were
+ *               already registered (full idempotent re-register)
  *
  * Throws on any resolver violation (missing required field, invalid
  * schema identifier, unknown catalog slug). Resolver runs before the
@@ -161,6 +197,16 @@ export async function registerDatasourceInstall(
   decryptedConfig: Readonly<Record<string, unknown>>,
 ): Promise<boolean> {
   const poolConfig: DatasourcePoolConfig = resolveDatasourcePoolConfig(row, decryptedConfig);
+
+  // Handler-managed (OAuth) datasources — Salesforce — never register a pool
+  // here. Their connection is built from tokens in `integration_credentials`
+  // via the `LazyPluginLoader`, not from `workspace_plugins.config` via
+  // `createFromConfig`. Returning `false` (nothing registered) keeps the boot
+  // loop from feeding an OAuth config (no `url`) to the plugin's
+  // `createFromConfig` and logging a misleading per-row warning. See ADR-0014.
+  if (HANDLER_MANAGED_DATASOURCE_DBTYPES.has(poolConfig.dbType)) {
+    return false;
+  }
 
   // Plugin-managed dbTypes can't be cloned by the core `createConnection`
   // switch — build a live per-(workspace, install_id) connection from the

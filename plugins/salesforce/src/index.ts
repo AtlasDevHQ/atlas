@@ -20,10 +20,19 @@
  * });
  * ```
  *
- * 2. Adapter-only (SaaS per-workspace) — pass no `url` and the plugin registers
- *    purely as an adapter, so customers add their own Salesforce per workspace
- *    via Admin → Connections (DB-stored, encrypted). No operator env var, no
- *    static datasource:
+ * 2. Adapter-only (`salesforcePlugin({})`) — pass no `url` and the plugin
+ *    registers purely as an adapter exposing `createFromConfig`, modelling a
+ *    credential-form (url-bearing) Salesforce datasource on the #3253 bridge.
+ *
+ *    DORMANT: per #3302 / ADR-0014, Atlas connects Salesforce via OAuth
+ *    (`SalesforceOAuthInstallHandler` → tokens in `integration_credentials`,
+ *    connection built from those tokens via the `LazyPluginLoader`), NOT via the
+ *    datasource bridge. The bridge therefore intentionally SKIPS `salesforce`
+ *    (`HANDLER_MANAGED_DATASOURCE_DBTYPES`), so this mode is not wired in any
+ *    current Atlas deployment — `salesforcePlugin({})` is no longer registered
+ *    in the deploy `atlas.config.ts` files. It is retained as an SDK seam should a
+ *    future credential-form Salesforce-datasource path be desired (#3302 option
+ *    a):
  * ```typescript
  * export default defineConfig({
  *   plugins: [salesforcePlugin({})],
@@ -73,9 +82,12 @@ const SalesforceConnectionConfigSchema = z.object({
 /**
  * Lenient config-time schema — every field optional so the plugin can be
  * registered as an ADAPTER ONLY: `salesforcePlugin({})` parses, registering the
- * plugin so its `createFromConfig` is available to the datasource bridge for
- * DB-stored per-workspace installs (the SaaS model), with no static datasource.
- * A `url`, when supplied, is still validated for scheme + credentials.
+ * plugin so its `createFromConfig` is exposed as a (DORMANT) credential-form
+ * bridge seam, with no static datasource. Per #3302 / ADR-0014 the datasource
+ * bridge SKIPS `salesforce` (Atlas uses OAuth — see the header), so this is not
+ * the SaaS path and is unused in any current deployment; it's kept for a
+ * possible future credential-form path. A `url`, when supplied, is still
+ * validated for scheme + credentials.
  */
 const SalesforceConfigSchema = SalesforceConnectionConfigSchema.partial();
 
@@ -115,10 +127,12 @@ export function buildSalesforcePlugin(
   }
 
   const connection: AtlasDatasourcePlugin<SalesforcePluginConfig>["connection"] = {
-    // DB-driven (admin-UI-registered) datasources: build a connection from
-    // the per-(workspace, install) config decrypted from `workspace_plugins`,
-    // re-validated through the strict schema. Always available — this is the
-    // SaaS per-workspace path and the only path in adapter-only mode.
+    // Credential-form (url-bearing) datasource seam: build a connection from a
+    // per-(workspace, install) config decrypted from `workspace_plugins`,
+    // re-validated through the strict schema. DORMANT — the datasource bridge
+    // skips `salesforce` (Atlas uses OAuth instead; see the header + ADR-0014),
+    // so no Atlas deployment currently routes here. Kept for a future
+    // credential-form path (#3302 option a) and self-host wiring.
     createFromConfig: (runtimeConfig) => {
       const parsed = SalesforceConnectionConfigSchema.parse(runtimeConfig);
       // Parse the runtime url here (never at build time) — surfaces parser
@@ -166,9 +180,12 @@ export function buildSalesforcePlugin(
       "- Date literals: YESTERDAY, TODAY, LAST_WEEK, THIS_MONTH, LAST_N_DAYS:n, etc.",
       "- No wildcards in field lists — always list specific fields (no `SELECT *`).",
       // Mode-aware: the dedicated `querySalesforce` tool is only registered in
-      // static mode (see initialize). In adapter-only / SaaS per-workspace mode
-      // the per-workspace connection is queried via `executeSQL`, routed through
-      // the bridge-built connection that carries this plugin's SOQL `validate`.
+      // static mode (see initialize). The adapter-only branch below describes
+      // the DORMANT credential-form bridge path (#3302 option a / ADR-0014);
+      // because the bridge skips `salesforce`, it is unreachable in any current
+      // Atlas deployment. SaaS per-workspace Salesforce is OAuth-installed and
+      // its connection is built via the `LazyPluginLoader` from the OAuth
+      // tokens — not `executeSQL` through this adapter.
       staticUrl
         ? "- Use `querySalesforce` tool (not `executeSQL`) for Salesforce queries."
         : "- Use `executeSQL` for Salesforce queries (per-workspace mode — the connection enforces SOQL validation).",
@@ -187,9 +204,10 @@ export function buildSalesforcePlugin(
       // Register the querySalesforce tool ONLY in static-datasource mode. The
       // tool is hardwired to the static connection (`getOrCreateConnection()` /
       // `connectionId: "salesforce"`), so in adapter-only mode it would throw on
-      // every call. SaaS per-workspace Salesforce datasources are queried via
-      // the standard `executeSQL` path, routed through the bridge-built
-      // connection (which carries this plugin's SOQL `validate`).
+      // every call. SaaS per-workspace Salesforce is NOT served by this plugin
+      // registration at all — it installs via OAuth and its connection is built
+      // per workspace by the `LazyPluginLoader` from the OAuth session (see
+      // integrations/salesforce/lazy-builder.ts).
       if (staticUrl) {
         const sfTool = createQuerySalesforceTool({
           getConnection: () => getOrCreateConnection(),
@@ -275,7 +293,9 @@ export function buildSalesforcePlugin(
  * ```typescript
  * // Static datasource (self-host):
  * plugins: [salesforcePlugin({ url: "salesforce://user:pass@login.salesforce.com?token=TOKEN" })]
- * // Adapter-only (SaaS — customers bring their own per workspace):
+ * // Adapter-only (DORMANT credential-form bridge seam — #3302 / ADR-0014;
+ * // the bridge skips salesforce, so this is unused in current deployments.
+ * // SaaS Salesforce connects via OAuth, not this registration):
  * plugins: [salesforcePlugin({})]
  * ```
  */

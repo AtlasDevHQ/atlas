@@ -17,7 +17,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test __tests__/elasticsearch.test.ts && bun test __tests__/mapping.test.ts"
+    "test": "bun test __tests__/elasticsearch.test.ts && bun test __tests__/mapping.test.ts && bun test __tests__/dsl.test.ts && bun test __tests__/dsl-tool.test.ts"
   },
   "keywords": [
     "atlas",

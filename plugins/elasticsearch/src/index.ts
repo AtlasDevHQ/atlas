@@ -39,6 +39,7 @@ import type {
 import {
   createElasticsearchConnection,
   parseElasticsearchUrl,
+  decodeCloudId,
   resolveElasticsearchConfig,
   isCompleteConnectionConfig,
   collectConfigSecrets,
@@ -48,6 +49,7 @@ import {
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
 } from "./connection";
 import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
+import { createQueryElasticsearchTool } from "./tool";
 
 /**
  * ES SQL dialect guidance injected into the agent system prompt (under
@@ -56,7 +58,7 @@ import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./conne
  * from the few places it diverges (no cross-index JOINs, double-quote index
  * names with special characters).
  */
-const ELASTICSEARCH_DIALECT_GUIDE = [
+const ELASTICSEARCH_SQL_GUIDE = [
   "This datasource is Elasticsearch SQL (the cluster `/_sql` API), queried with the `executeSQL` tool.",
   "- Each Elasticsearch index is a table — `SELECT ... FROM <index>`. One index per query: there are NO JOINs across indices.",
   "- Quote index names containing `-`, `.`, or `:` with double quotes, e.g. `SELECT * FROM \"logs-2024.01.01\"`.",
@@ -65,6 +67,29 @@ const ELASTICSEARCH_DIALECT_GUIDE = [
   "- A nested field is addressed by its dotted path (e.g. `geo.dest`).",
   "- Read-only: only SELECT is allowed. SHOW/DESCRIBE and any DML/DDL are rejected.",
 ].join("\n");
+
+/**
+ * Query DSL guidance — injected ONLY in static-datasource mode, where the
+ * dedicated `queryElasticsearch` tool is registered (see `initialize`). Tells the
+ * agent WHEN to reach for the DSL surface instead of SQL, and the read-only rails.
+ */
+const ELASTICSEARCH_DSL_GUIDE = [
+  "",
+  "Elasticsearch also has a Query DSL surface via the `queryElasticsearch` tool. Prefer SQL (`executeSQL`) for ordinary tabular/aggregate questions; reach for `queryElasticsearch` when SQL can't express the question:",
+  "- Full-text / relevance ranking — `match`, `multi_match`, `match_phrase`, `query_string` ranked by `_score`.",
+  "- Deeply-nested or multi-level aggregations — `terms` within `terms`, `date_histogram` with sub-aggregations, `percentiles`, `cardinality`.",
+  "- Geo, span, and other DSL-only query types.",
+  "- Pass `index` (one index/alias from the semantic layer — no wildcards) and a `body` (the DSL). For aggregation-only questions set `\"size\": 0`.",
+  "- Read-only: only `_search` and `_count` are allowed; writes, `_bulk`, `_update*`, `_delete*`, and mutating scripts are rejected.",
+].join("\n");
+
+/** Compose the dialect guidance. The DSL section is added only when the dedicated
+ *  `queryElasticsearch` tool is registered (static-datasource mode). */
+function buildDialectGuide(hasStaticConfig: boolean): string {
+  return hasStaticConfig
+    ? `${ELASTICSEARCH_SQL_GUIDE}\n${ELASTICSEARCH_DSL_GUIDE}`
+    : ELASTICSEARCH_SQL_GUIDE;
+}
 
 /**
  * Per-field shapes for the Elasticsearch config. Every field is optional: the
@@ -94,8 +119,23 @@ const ElasticsearchFieldsSchema = z.object({
       }
     })
     .optional(),
-  /** Elastic Cloud ID (`name:base64`) — decoded to the cluster endpoint. */
-  cloudId: z.string().min(1, "cloudId must not be empty").optional(),
+  /** Elastic Cloud ID (`name:base64`) — decoded to the cluster endpoint. Validated
+   *  at the field level (like `url`) so a malformed Cloud ID fails fast at config
+   *  load, not lazily at first connection. */
+  cloudId: z
+    .string()
+    .min(1, "cloudId must not be empty")
+    .superRefine((c, ctx) => {
+      try {
+        decodeCloudId(c);
+      } catch (err) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })
+    .optional(),
   /** Explicit engine override; wins over the URL scheme. */
   engine: z.enum(["elasticsearch", "opensearch"]).optional(),
   /** API-key auth. Base64-encoded key. Secret — encrypted at rest. */
@@ -247,7 +287,7 @@ export function buildElasticsearchPlugin(
 
     entities: [],
 
-    dialect: ELASTICSEARCH_DIALECT_GUIDE,
+    dialect: buildDialectGuide(Boolean(staticConfig)),
 
     /**
      * Serializable config schema for the admin install form + the secret
@@ -365,6 +405,38 @@ export function buildElasticsearchPlugin(
           "Elasticsearch datasource plugin registered as adapter-only — per-workspace datasources via Admin → Connections",
         );
       }
+
+      // Register the queryElasticsearch DSL tool ONLY in static-datasource mode.
+      // The tool is hardwired to the static connection, so in adapter-only mode
+      // it would throw on every call. SaaS per-workspace Elasticsearch
+      // datasources are queried via the standard `executeSQL` (ES SQL) path,
+      // routed through the bridge-built connection. (Per-workspace DSL routing is
+      // a later slice — see #3269/#3271.)
+      if (staticConfig) {
+        const esTool = createQueryElasticsearchTool({
+          getConnection: () => getOrCreateConnection(),
+          // The index MEMBERSHIP whitelist should be the semantic layer's index
+          // names — but the plugin context exposes no accessor for them today:
+          // `ctx.connections.list()` returns registered CONNECTION IDs (e.g.
+          // "elasticsearch-datasource"), NOT index names. Feeding those in would
+          // make `validateIndexAccess` reject every legitimate query (an index
+          // like "flights" is never a connection id). So we pass an EMPTY set,
+          // which keeps validateIndexAccess in structural-only mode: the
+          // always-on rails (no wildcards / _all / system indices) still apply,
+          // and a named index is allowed. The SQL surface (`executeSQL`) still
+          // enforces the real table whitelist via the core pipeline. Per-index
+          // membership for the DSL tool lands when the context gains a
+          // semantic-table accessor — tracked in #3307.
+          getWhitelist: () => new Set<string>(),
+          logger: ctx.logger,
+        });
+
+        ctx.tools.register({
+          name: "queryElasticsearch",
+          description: "Execute a read-only Elasticsearch Query DSL request (full-text / aggregations)",
+          tool: esTool,
+        });
+      }
     },
 
     async healthCheck(): Promise<PluginHealthResult> {
@@ -454,6 +526,24 @@ export {
   EMPTY_PAYLOAD_SHA256,
 } from "./sigv4";
 export type { SigV4SignInput, SignedHeaderInput } from "./sigv4";
+export { createQueryElasticsearchTool } from "./tool";
+export {
+  validateEsDslRequest,
+  validateIndexAccess,
+  isReadEndpoint,
+  normalizeDslResponse,
+  applyDslSafeguards,
+  flattenSource,
+  isPlainObject,
+  ES_READ_ENDPOINTS,
+  DEFAULT_DSL_MAX_SIZE,
+  DEFAULT_DSL_TERMINATE_AFTER,
+} from "./dsl";
+export type {
+  EsDslRequest,
+  EsDslValidationResult,
+  DslSafeguardLimits,
+} from "./dsl";
 export {
   mapEsFieldType,
   flattenMapping,
@@ -487,5 +577,7 @@ export type {
   ElasticsearchSqlColumn,
   ElasticsearchSqlResponse,
   ElasticsearchSqlQueryOptions,
+  ElasticsearchDslEndpoint,
+  ElasticsearchDslQueryOptions,
   ResolveAuthOptions,
 } from "./connection";

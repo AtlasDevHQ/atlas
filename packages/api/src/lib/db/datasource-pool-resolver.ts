@@ -22,10 +22,10 @@
  */
 
 /**
- * Catalog slugs for the eight built-in datasource catalog rows seeded by
- * migration 0093 + the boot-time `seed-builtin-datasource-catalog` pass.
- * Two slugs map to the same `db_type` (`postgres` and `demo-postgres`); see
- * {@link catalogSlugToDbType}.
+ * Catalog slugs for the built-in datasource catalog rows seeded by migration
+ * 0093 (the original eight) + migration 0123 (`elasticsearch`, #3270) + the
+ * boot-time `seed-builtin-datasource-catalog` pass. Two slugs map to the same
+ * `db_type` (`postgres` and `demo-postgres`); see {@link catalogSlugToDbType}.
  */
 export const BUILTIN_DATASOURCE_CATALOG_SLUGS = [
   "postgres",
@@ -36,6 +36,7 @@ export const BUILTIN_DATASOURCE_CATALOG_SLUGS = [
   "duckdb",
   "salesforce",
   "demo-postgres",
+  "elasticsearch",
 ] as const;
 export type BuiltinDatasourceCatalogSlug =
   (typeof BUILTIN_DATASOURCE_CATALOG_SLUGS)[number];
@@ -52,7 +53,8 @@ export type BuiltinDatasourceDbType =
   | "clickhouse"
   | "bigquery"
   | "duckdb"
-  | "salesforce";
+  | "salesforce"
+  | "elasticsearch";
 
 /**
  * Map a built-in datasource catalog slug to its `db_type`. The mapping is
@@ -79,6 +81,8 @@ export function catalogSlugToDbType(
       return "duckdb";
     case "salesforce":
       return "salesforce";
+    case "elasticsearch":
+      return "elasticsearch";
     default:
       throw new Error(
         `Unknown built-in datasource catalog slug "${slug}". ` +
@@ -179,6 +183,27 @@ export interface SalesforcePoolConfig {
   readonly description?: string;
 }
 
+export interface ElasticsearchPoolConfig {
+  readonly dbType: "elasticsearch";
+  /** `elasticsearch://host:9243` — carries no credential (the API key is separate). */
+  readonly url: string;
+  /**
+   * Base64-encoded API key. Optional in the shape so the resolver stays
+   * future-proof for the Basic / CloudID / SigV4 auth modes (#3263–#3265) that
+   * authenticate without an `apiKey` — the catalog `config_schema` enforces
+   * which auth fields are required per mode. Decrypted upstream by the caller
+   * (`decryptSecretFields`) before the resolver sees it.
+   *
+   * TRANSITIONAL: with only API-key auth shipping today this optional under-
+   * constrains the type (a valid install always has `apiKey`). When a second
+   * auth mode lands, promote this to a tagged per-auth-mode sub-union
+   * (`{ authMode: "apiKey"; apiKey: string } | { authMode: "basic"; ... }`)
+   * so each mode's credential is non-optional and exhaustive-switchable.
+   */
+  readonly apiKey?: string;
+  readonly description?: string;
+}
+
 export type DatasourcePoolConfig =
   | PostgresPoolConfig
   | MySQLPoolConfig
@@ -186,7 +211,8 @@ export type DatasourcePoolConfig =
   | ClickHousePoolConfig
   | BigQueryPoolConfig
   | DuckDBPoolConfig
-  | SalesforcePoolConfig;
+  | SalesforcePoolConfig
+  | ElasticsearchPoolConfig;
 
 // ---------------------------------------------------------------------------
 // Resolver
@@ -238,6 +264,8 @@ export function resolveDatasourcePoolConfig(
       return resolveDuckDB(decryptedConfig);
     case "salesforce":
       return resolveSalesforce(decryptedConfig);
+    case "elasticsearch":
+      return resolveElasticsearch(decryptedConfig);
   }
 }
 
@@ -382,6 +410,28 @@ function resolveDuckDB(c: Readonly<Record<string, unknown>>): DuckDBPoolConfig {
 function resolveSalesforce(c: Readonly<Record<string, unknown>>): SalesforcePoolConfig {
   return {
     dbType: "salesforce",
+    ...(asString(c.description) !== undefined
+      ? { description: asString(c.description)! }
+      : {}),
+  };
+}
+
+function resolveElasticsearch(
+  c: Readonly<Record<string, unknown>>,
+): ElasticsearchPoolConfig {
+  // `url` is the one universal field across every ES auth mode; per-auth-mode
+  // credential requirements (API key today; Basic / CloudID / SigV4 later) are
+  // enforced by the catalog `config_schema`, not hardcoded here.
+  const url = asString(c.url);
+  if (!url) {
+    throw new Error(
+      "DatasourcePoolResolver(elasticsearch): missing required field `url`",
+    );
+  }
+  return {
+    dbType: "elasticsearch",
+    url,
+    ...(asString(c.apiKey) !== undefined ? { apiKey: asString(c.apiKey)! } : {}),
     ...(asString(c.description) !== undefined
       ? { description: asString(c.description)! }
       : {}),

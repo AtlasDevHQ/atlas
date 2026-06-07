@@ -141,13 +141,14 @@ describe("registerDatasourceInstall", () => {
     expect(registerCalls[0].schema).toBeUndefined();
   });
 
-  it("skips plugin-managed dbTypes (clickhouse/snowflake/bigquery/duckdb/salesforce)", () => {
+  it("skips plugin-managed dbTypes (clickhouse/snowflake/bigquery/duckdb/salesforce/elasticsearch)", () => {
     const cases: Array<{ slug: string; cfg: Record<string, unknown> }> = [
       { slug: "clickhouse", cfg: { url: "http://localhost:8123" } },
       { slug: "snowflake", cfg: { url: "snowflake://x" } },
       { slug: "bigquery", cfg: { service_account_json: "{}", project_id: "p" } },
       { slug: "duckdb", cfg: { path: "/tmp/x.duckdb" } },
       { slug: "salesforce", cfg: {} },
+      { slug: "elasticsearch", cfg: { url: "elasticsearch://h:9243", apiKey: "k" } },
     ];
     for (const { slug, cfg } of cases) {
       const ok = bridge.registerDatasourceInstall(ROW(slug), cfg);

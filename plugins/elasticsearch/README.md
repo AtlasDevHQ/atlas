@@ -90,9 +90,10 @@ Mapping → entity rules:
 
 Numeric ES types map to `number`, string-like types (`text`, `keyword`, `ip`, …)
 and unsupported types (`geo_point`, `dense_vector`, …) map to `string`.
-Dot-prefixed system indices (`.kibana`, `.security`) are skipped. The generated
-entities are queryable by the agent through the SQL surface. The `table:` field
-is the raw index name (the SQL whitelist + `FROM` qualifier).
+Dot-prefixed system indices (`.kibana`, `.security`) are skipped. Once the query
+surface lands (#3262), the generated entities are queryable by the agent over
+Elasticsearch SQL; the `table:` field is the raw index name (the SQL whitelist +
+`FROM` qualifier).
 
 ## Security
 

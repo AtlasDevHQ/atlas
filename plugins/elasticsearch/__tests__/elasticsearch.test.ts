@@ -475,6 +475,48 @@ describe("getMapping", () => {
     expect(message).not.toContain(API_KEY);
   });
 
+  test("rejects with a timeout error when the request exceeds timeoutMs", async () => {
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await expect(client.getMapping(undefined, 10)).rejects.toThrow(
+      /mapping request timed out after 10ms/,
+    );
+  });
+
+  test("close() during an in-flight getMapping rejects WITHOUT misreporting a timeout", async () => {
+    const fetchImpl = mock(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" })),
+          );
+        }),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const pending = client.getMapping(undefined, 5000);
+    client.close();
+    let message = "";
+    try {
+      await pending;
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toMatch(/timed out/);
+  });
+
   test("rejects after close()", async () => {
     const fetchImpl = mock(async () => fetchResponse(MAPPING_BODY));
     const client = createElasticsearchClient(

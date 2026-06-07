@@ -4,7 +4,7 @@
  * A PURE, dependency-free module (no SDK, no `fetch`, no `@atlas/api`, no
  * `js-yaml`): it turns the JSON returned by `GET /_mapping` into entity-doc
  * objects that match the `semantic/entities/*.yml` shape Atlas profiles SQL
- * datasources into. The CLU profiler (`atlas init` / `atlas diff`) fetches the
+ * datasources into. The CLI profiler (`atlas init` / `atlas diff`) fetches the
  * mapping via the thin client and serializes these objects to YAML.
  *
  * Why a dedicated transform (rather than reusing the SQL `generateEntityYAML`):
@@ -71,9 +71,14 @@ export interface FlatEsField {
 
 /** One emitted entity dimension. Extra keys (`es_type`, `multi_field`,
  *  `nested`) are provenance the agent + humans can read; the diff + whitelist
- *  ignore them and key off `name` / `type`. */
+ *  ignore them and key off `name` / `type`. The `name` / `sql` / `type` keys are
+ *  coupled by convention to what {@link "../../../packages/cli/lib/diff".parseEntityYAML}
+ *  reads back — the round-trip test in `__tests__/mapping.test.ts` enforces it. */
 export interface EsDimension {
   name: string;
+  /** Raw, unescaped ES field path (dotted). The SQL whitelist gates on the
+   *  index (`table`), not dimension names, but the `executeSQL` surface (#3262)
+   *  must treat this as untrusted when composing `SELECT`/`FROM`. */
   sql: string;
   type: EsDimensionType;
   es_type: string;
@@ -92,6 +97,10 @@ export interface EsEntityDoc {
   group?: string;
   grain: string;
   description: string;
+  /** Non-empty by construction: {@link mappingToEntity} returns `null` rather
+   *  than emit a field-less entity. The type permits `[]`, so a second
+   *  constructor must uphold this — a zero-dimension entity would register in
+   *  the SQL whitelist with no queryable columns. */
   dimensions: EsDimension[];
 }
 
@@ -253,6 +262,11 @@ export function mappingToEntity(
   indexMapping: EsIndexMapping,
   opts?: { group?: string },
 ): EsEntityDoc | null {
+  // `indexMapping` is an unchecked cast over untrusted `_mapping` JSON
+  // (`getMapping` does `as EsMappingResponse`). The optional-chain below plus
+  // `walk`'s `typeof … === "object"` guard are the ONLY runtime narrowing — a
+  // refactor that moves field extraction off `flattenMapping`/`walk` must
+  // re-establish that guard.
   const fields = flattenMapping(indexMapping?.mappings?.properties);
   if (fields.length === 0) return null;
 

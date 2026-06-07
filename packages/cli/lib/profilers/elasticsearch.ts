@@ -14,7 +14,6 @@
  */
 
 import type { ProfileError } from "@atlas/api/lib/profiler";
-import type { ProfileProgressCallbacks } from "../../src/progress";
 import type { EsEntityDoc } from "../../../../plugins/elasticsearch/src/mapping";
 
 export interface ElasticsearchProfilingResult {
@@ -29,7 +28,6 @@ export interface ProfileElasticsearchOptions {
   includeSystem?: boolean;
   /** Inject a fetch implementation (tests). Defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
-  progress?: ProfileProgressCallbacks;
 }
 
 /**
@@ -85,7 +83,8 @@ export async function profileElasticsearch(
       }
     }
 
-    options?.progress?.onStart(entities.length);
+    // One `_mapping` round-trip covers every index, so there is no per-index
+    // progress to report — the caller logs the index list from `entities`.
     return { entities, errors };
   } catch (err) {
     // `getMapping` already scrubs its errors, and `resolveElasticsearchConfig`

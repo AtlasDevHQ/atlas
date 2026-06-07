@@ -102,6 +102,25 @@ describe("profileElasticsearch", () => {
     expect(entities.map((e) => e.table)).toContain(".kibana");
   });
 
+  test("returns empty (no entities, no errors) for a cluster with no user indices", async () => {
+    // A fresh cluster (or one exposing only system/empty indices) — the empty
+    // result is the contract the init/diff callers turn into a clear error.
+    const onlySystem = await profileElasticsearch(URL, API_KEY, undefined, {
+      fetchImpl: mappingFetch({
+        ".kibana": { mappings: { properties: { config: { type: "keyword" } } } },
+        empty_index: { mappings: { properties: {} } },
+      }),
+    });
+    expect(onlySystem.entities).toEqual([]);
+    expect(onlySystem.errors).toEqual([]);
+
+    const emptyMapping = await profileElasticsearch(URL, API_KEY, undefined, {
+      fetchImpl: mappingFetch({}),
+    });
+    expect(emptyMapping.entities).toEqual([]);
+    expect(emptyMapping.errors).toEqual([]);
+  });
+
   test("surfaces a secret-scrubbed error when the mapping fetch fails", async () => {
     const failing = mock(async () =>
       fetchResponse(

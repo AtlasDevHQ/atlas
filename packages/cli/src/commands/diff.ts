@@ -143,7 +143,10 @@ export async function handleDiff(args: string[]): Promise<void> {
     }
 
     if (dbSnapshots.size === 0) {
-      console.error("Error: No indices were profiled from the cluster.");
+      console.error(
+        "Error: No indices were profiled from the cluster — it exposes no user " +
+          "indices, or every requested index was missing or had no fields.",
+      );
       process.exit(1);
     }
   } else {

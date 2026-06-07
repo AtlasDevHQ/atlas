@@ -108,6 +108,29 @@ afterEach(() => {
   _resetInstallHandlerRegistries();
 });
 
+describe("registerBuiltinInstallHandlers — SQL plugin datasources (#3300)", () => {
+  // ClickHouse / Snowflake / BigQuery register the generic
+  // DatasourceFormInstallHandler with no env gate — the customer admin supplies
+  // credentials at install, same as every other form handler. So they're
+  // resolvable as a `form` handler immediately after registration.
+  for (const slug of ["clickhouse", "snowflake", "bigquery"] as const) {
+    it(`registers a form handler for ${slug} with no env gate`, () => {
+      registerBuiltinInstallHandlers();
+      const handler = getInstallHandler({ slug, install_model: "form" });
+      expect(handler.kind).toBe("form");
+    });
+  }
+
+  it("registers all three independently of any chat-platform env wiring", () => {
+    // No DATASOURCE-specific env vars exist; registration must not depend on the
+    // chat-platform gates (which are all cleared in beforeEach).
+    registerBuiltinInstallHandlers();
+    expect(getInstallHandler({ slug: "clickhouse", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "snowflake", install_model: "form" }).kind).toBe("form");
+    expect(getInstallHandler({ slug: "bigquery", install_model: "form" }).kind).toBe("form");
+  });
+});
+
 describe("registerBuiltinInstallHandlers — Telegram env gate", () => {
   it("does not register the Telegram handler when TELEGRAM_BOT_TOKEN is unset", () => {
     registerBuiltinInstallHandlers();

@@ -37,6 +37,10 @@ export default defineConfig({
 | `url` | `string` | Yes | -- | Connection URL in the format `snowflake://user:pass@account/database/schema?warehouse=WH&role=ROLE` |
 | `maxConnections` | `number` | No | `10` | Maximum pool connections (1--100) |
 
+### Install from the admin console
+
+You don't have to edit `atlas.config.ts` to add a Snowflake connection. With the catalog row enabled, a workspace admin can install Snowflake from **Admin → Connections**: pick the Snowflake card, paste the connection URL into the form, and submit. The URL is encrypted at rest (it's a `secret: true` field), and the connection becomes queryable via `executeSQL` once the deployment reloads. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
+
 ### Connection string format
 
 ```

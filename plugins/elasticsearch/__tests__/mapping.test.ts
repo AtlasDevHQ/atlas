@@ -223,6 +223,8 @@ describe("mappingToEntity", () => {
     expect(entity!.type).toBe("fact_table");
     // table: must be the raw index name so the SQL whitelist + FROM resolve.
     expect(entity!.table).toBe("products");
+    // #3317: ES names are opaque identifiers — the whitelist must not dot-split them.
+    expect(entity!.identifier_style).toBe("opaque");
     expect(entity!.grain).toContain("products");
     expect(entity!.description).toContain("products");
   });
@@ -424,6 +426,8 @@ describe("buildLogicalEntity", () => {
       response: mapping,
     })!;
     expect(entity.table).toBe("logs-*");
+    // #3317: logical (pattern/alias/data-stream) names are opaque identifiers too.
+    expect(entity.identifier_style).toBe("opaque");
     expect(entity.dimensions.map((d) => d.name).sort()).toEqual(["level", "msg", "ts"]);
     expect(entity.description).toContain("index pattern");
     expect(entity.description).toContain("2 backing indices");
@@ -467,6 +471,8 @@ describe("mappingsToLogicalEntities", () => {
     const tables = entities.map((e) => e.table).sort();
     // pattern (logs-*) + alias (orders) + data stream (events) + standalone (products)
     expect(tables).toEqual(["events", "logs-*", "orders", "products"]);
+    // #3317: every emitted ES entity (logical and standalone) is opaque-marked.
+    expect(entities.every((e) => e.identifier_style === "opaque")).toBe(true);
     // The aliased index isn't ALSO emitted standalone, nor are the pattern members.
     expect(tables).not.toContain("orders_v3");
     expect(tables).not.toContain("logs-2024.01.01");

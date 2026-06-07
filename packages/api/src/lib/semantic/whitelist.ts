@@ -118,31 +118,43 @@ const SQL_IDENTIFIER_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$]*$/;
  * identifier — the unqualified last segment, so a `FROM orders` matches an
  * entity declared as `public.orders`.
  *
- * The unqualified last-segment key is derived **only** when the name is a
- * genuine dotted SQL identifier: at least two segments, each a bare SQL
- * identifier ({@link SQL_IDENTIFIER_SEGMENT}). Elasticsearch/OpenSearch index
- * patterns, aliases, and data-stream names carry `.` as an ordinary character
- * (version strings, date fragments, dotted datasets) — e.g. `filebeat-7.10.0-*`,
- * `metrics-2024.01.01`, `logs-nginx.access-default`. Splitting those on `.`
- * injects a meaningless fragment (`0-*`, `01`, `access-default`) that widens the
- * allow-list with a bogus key (#3317). Because a `-`/`*`/`?` or a digit-leading
- * segment can never appear in a bare SQL identifier, the segment shape is a safe
- * discriminator: when any segment fails it, only the full name is registered.
+ * Whether the name is a SQL identifier (and so gets the unqualified key) is
+ * decided in two tiers (#3317):
  *
- * (A pure word-dotted name whose every segment is a valid SQL identifier — e.g.
- * an alias literally named `logs.app` — is indistinguishable from `schema.table`
- * by name alone and still contributes the unqualified key; closing that requires
- * an engine signal the loader does not carry.)
+ *  1. **Authoritative marker.** When the entity declares `identifier_style:
+ *     opaque` (`opts.opaque`), `table` is a literal datasource identifier
+ *     (e.g. an Elasticsearch index / alias / data-stream name) where `.` is an
+ *     ordinary character — only the full name is registered, never dot-split.
+ *     Elasticsearch entities always carry this marker.
+ *  2. **Name heuristic (fallback)** for entities without the marker: derive the
+ *     unqualified key only when the name is a genuine dotted SQL identifier — at
+ *     least two segments, each a bare SQL identifier
+ *     ({@link SQL_IDENTIFIER_SEGMENT}). A `-`/`*`/`?` or a digit-leading segment
+ *     can never appear in a bare SQL identifier, so a dotted ES name like
+ *     `filebeat-7.10.0-*`, `metrics-2024.01.01`, or `logs-nginx.access-default`
+ *     is recognized as opaque and not split (which would otherwise inject a
+ *     bogus `0-*` / `01` / `access-default` fragment that widens the allow-list).
+ *
+ * The marker (tier 1) is what closes the residual the heuristic cannot: a pure
+ * word-dotted opaque name whose every segment is a valid SQL identifier (e.g. an
+ * alias literally named `logs.app`) is indistinguishable from `schema.table` by
+ * name alone, so only the declared `identifier_style` can tell them apart.
  */
-export function tableWhitelistKeys(rawTable: string): string[] {
+export function tableWhitelistKeys(rawTable: string, opts?: { opaque?: boolean }): string[] {
   const normalized = normalizeTableIdentifier(rawTable);
   const full = normalized.toLowerCase();
+  if (opts?.opaque) return [full];
   const parts = normalized.split(".");
   if (parts.length < 2 || !parts.every((seg) => SQL_IDENTIFIER_SEGMENT.test(seg))) {
     return [full];
   }
   const last = parts[parts.length - 1].toLowerCase();
   return last === full ? [full] : [last, full];
+}
+
+/** True when an entity declares its `table` is an opaque (non-SQL) identifier. */
+function isOpaqueIdentifier(entity: { identifier_style?: "sql" | "opaque" }): boolean {
+  return entity.identifier_style === "opaque";
 }
 
 /** Plugin-provided entity tables, keyed by connection ID. */
@@ -219,8 +231,10 @@ function loadEntitiesFromDir(
       // `tableWhitelistKeys` normalizes identifier quotes so `"user"` /
       // `` `user` `` in the YAML matches the unquoted name `node-sql-parser`
       // returns from `FROM "user"`, registers the full + unqualified SQL keys,
-      // and skips the bogus last-segment split for ES wildcard patterns (#3317).
-      for (const key of tableWhitelistKeys(entity.table)) tables.add(key);
+      // and registers only the full name for opaque (ES) identifiers (#3317).
+      for (const key of tableWhitelistKeys(entity.table, { opaque: isOpaqueIdentifier(entity) })) {
+        tables.add(key);
+      }
 
       // Validate and collect cross-source joins separately from core entity parsing.
       // Invalid join entries are skipped individually without dropping the entity.
@@ -571,7 +585,9 @@ export function registerPluginEntities(
         skippedCount++;
         continue;
       }
-      for (const key of tableWhitelistKeys(parsed.data.table)) tables.add(key);
+      for (const key of tableWhitelistKeys(parsed.data.table, { opaque: isOpaqueIdentifier(parsed.data) })) {
+        tables.add(key);
+      }
     } catch (err) {
       log.warn(
         { connectionId, entity: entity.name, err: err instanceof Error ? err.message : String(err) },
@@ -746,7 +762,7 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
         log.warn({ orgId, entity: row.name, err: parsed.error.message }, "Skipping org entity — failed to validate");
         continue;
       }
-      const tableList = tableWhitelistKeys(parsed.data.table);
+      const tableList = tableWhitelistKeys(parsed.data.table, { opaque: isOpaqueIdentifier(parsed.data) });
       recordTables(row, readGroupField(parsed.data), tableList);
     } catch (err) {
       parseFailures++;

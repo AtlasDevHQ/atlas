@@ -226,6 +226,22 @@ describe("per-connection whitelists", () => {
     expect(tables.has("access-default")).toBe(false);
     expect(tables.size).toBe(1);
   });
+
+  // #3317: an `identifier_style: opaque` marker (which ES entities always carry)
+  // closes the name-undecidable residual — a pure word-dotted ES name that the
+  // name heuristic alone would split is registered as the full name only.
+  it("identifier_style: opaque suppresses the dot-split end-to-end (disk path)", () => {
+    const dir = ensureEntitiesDir(`es-opaque-${testCounter}`);
+    writeFileSync(
+      resolve(dir, "stream.yml"),
+      `table: logs.app\nidentifier_style: opaque\ncolumns:\n  message:\n    type: text\n`,
+    );
+
+    const tables = getWhitelistedTables("default", dir);
+    expect(tables.has("logs.app")).toBe(true);
+    expect(tables.has("app")).toBe(false);
+    expect(tables.size).toBe(1);
+  });
 });
 
 describe("tableWhitelistKeys", () => {
@@ -276,11 +292,22 @@ describe("tableWhitelistKeys", () => {
     expect(tableWhitelistKeys("metrics.2024.01")).toEqual(["metrics.2024.01"]);
   });
 
-  // Documented residual: a pure word-dotted name (every segment a valid SQL
-  // identifier) is indistinguishable from `schema.table` by name alone, so it
-  // still contributes the unqualified key. Captures current behavior.
-  it("pure word-dotted name → still splits (name-undecidable residual)", () => {
+  // Heuristic fallback (no marker): a pure word-dotted name is name-undecidable
+  // — indistinguishable from `schema.table` — so it still splits. The opaque
+  // marker (below) is what closes this for ES entities.
+  it("pure word-dotted name without marker → still splits (heuristic fallback)", () => {
     expect(tableWhitelistKeys("logs.app").sort()).toEqual(["app", "logs.app"]);
+  });
+
+  // #3317: the `identifier_style: opaque` marker is authoritative — it forces
+  // full-name-only even for a name the heuristic would treat as SQL, closing
+  // the pure word-dotted residual.
+  it("opaque marker → full name only, even for a word-dotted name", () => {
+    expect(tableWhitelistKeys("logs.app", { opaque: true })).toEqual(["logs.app"]);
+  });
+
+  it("opaque marker → suppresses the unqualified key for a SQL-looking name", () => {
+    expect(tableWhitelistKeys("public.orders", { opaque: true })).toEqual(["public.orders"]);
   });
 });
 

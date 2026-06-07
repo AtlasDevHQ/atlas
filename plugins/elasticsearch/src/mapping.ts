@@ -120,6 +120,14 @@ export interface EsEntityDoc {
   type: "fact_table";
   /** Index name — the SQL whitelist + `FROM` qualifier. */
   table: string;
+  /**
+   * Marks `table` as an OPAQUE datasource identifier — an ES index / alias /
+   * data-stream name where `.` is an ordinary character (version strings, date
+   * fragments, dotted datasets), NOT a SQL `schema.table`. The Atlas whitelist
+   * loader reads this to register the full name only and never dot-split it into
+   * a bogus unqualified key (#3317). Always `"opaque"` for ES entities.
+   */
+  identifier_style: "opaque";
   /** Connection-group scope (ADR-0012). Omitted for the default group. */
   group?: string;
   grain: string;
@@ -301,6 +309,7 @@ export function mappingToEntity(
     name: indexToEntityName(index),
     type: "fact_table",
     table: index,
+    identifier_style: "opaque",
     ...(opts?.group ? { group: opts.group } : {}),
     grain: `one row per document in the ${index} index`,
     description: `Elasticsearch index "${index}" profiled from its mapping. Contains ${fields.length} field${fields.length === 1 ? "" : "s"}.`,
@@ -510,6 +519,7 @@ export function buildLogicalEntity(opts: {
     name: indexToEntityName(opts.name),
     type: "fact_table",
     table: opts.name,
+    identifier_style: "opaque",
     ...(opts.group ? { group: opts.group } : {}),
     grain,
     description,

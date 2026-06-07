@@ -373,6 +373,120 @@ describe("createElasticsearchClient", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getMapping — `_mapping` fetch for the CLI profiler
+// ---------------------------------------------------------------------------
+
+const MAPPING_BODY = {
+  products: {
+    mappings: {
+      properties: {
+        sku: { type: "keyword" },
+        title: { type: "text", fields: { keyword: { type: "keyword" } } },
+      },
+    },
+  },
+};
+
+describe("getMapping", () => {
+  test("GETs /_mapping with ApiKey + Accept headers when no index is given", async () => {
+    let capturedUrl: string | undefined;
+    let capturedInit: RequestInit | undefined;
+    const fetchImpl = mock(async (url: string, init: RequestInit) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    const mapping = await client.getMapping();
+    expect(capturedUrl).toBe("http://localhost:9200/_mapping");
+    expect(capturedInit?.method).toBe("GET");
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers?.Authorization).toBe(`ApiKey ${API_KEY}`);
+    expect(headers?.Accept).toBe("application/json");
+    expect(mapping.products?.mappings?.properties?.sku?.type).toBe("keyword");
+  });
+
+  test("scopes the request to a single index when one is provided", async () => {
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.getMapping("products");
+    expect(capturedUrl).toBe("http://localhost:9200/products/_mapping");
+  });
+
+  test("url-encodes an index name with reserved characters", async () => {
+    let capturedUrl: string | undefined;
+    const fetchImpl = mock(async (url: string) => {
+      capturedUrl = url;
+      return fetchResponse(MAPPING_BODY);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    await client.getMapping("logs/2024");
+    expect(capturedUrl).toBe("http://localhost:9200/logs%2F2024/_mapping");
+  });
+
+  test("throws a status-only error on a non-2xx response (never the body)", async () => {
+    const fetchImpl = mock(async () =>
+      fetchResponse(
+        { error: `index closed for ApiKey ${API_KEY}` },
+        { ok: false, status: 403, statusText: "Forbidden" },
+      ),
+    );
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    let message = "";
+    try {
+      await client.getMapping();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).toContain("403");
+    expect(message).not.toContain(API_KEY);
+  });
+
+  test("scrubs a network-level error and never leaks the API key", async () => {
+    const fetchImpl = mock(async () => {
+      throw new Error(`getaddrinfo ENOTFOUND with ApiKey ${API_KEY}`);
+    });
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    let message = "";
+    try {
+      await client.getMapping();
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    expect(message).not.toContain(API_KEY);
+  });
+
+  test("rejects after close()", async () => {
+    const fetchImpl = mock(async () => fetchResponse(MAPPING_BODY));
+    const client = createElasticsearchClient(
+      resolveElasticsearchConfig({ url: VALID_URL, apiKey: API_KEY }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+    client.close();
+    await expect(client.getMapping()).rejects.toThrow(/closed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Connection factory
 // ---------------------------------------------------------------------------
 

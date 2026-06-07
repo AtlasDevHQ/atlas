@@ -215,6 +215,23 @@ export {
   scrubElasticsearchError,
   SENSITIVE_PATTERNS,
 } from "./connection";
+export {
+  mapEsFieldType,
+  flattenMapping,
+  indexToEntityName,
+  isSystemIndex,
+  mappingToEntity,
+  mappingsToEntities,
+} from "./mapping";
+export type {
+  EsProperty,
+  EsIndexMapping,
+  EsMappingResponse,
+  EsDimensionType,
+  FlatEsField,
+  EsDimension,
+  EsEntityDoc,
+} from "./mapping";
 export type {
   ElasticsearchEngine,
   ParsedElasticsearchUrl,

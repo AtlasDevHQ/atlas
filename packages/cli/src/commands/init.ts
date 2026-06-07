@@ -11,6 +11,7 @@
 import { Pool } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { type DBType } from "@atlas/api/lib/db/connection";
@@ -61,6 +62,10 @@ import {
   profileDuckDB,
 } from "../../lib/profilers";
 import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
+import {
+  profileElasticsearch,
+  elasticsearchCatalog,
+} from "../../lib/profilers/elasticsearch";
 
 // --- Demo dataset ---
 //
@@ -226,9 +231,154 @@ interface DatasourceEntry {
   schema: string;
 }
 
+/**
+ * Profile an Elasticsearch datasource: fetch every index `_mapping`, transform
+ * to entity docs, and write `entities/*.yml` + `catalog.yml`. The API key is
+ * read from `ATLAS_ES_API_KEY` (never the URL). No SQL TableProfile pipeline,
+ * no LLM enrichment in this slice.
+ */
+async function profileElasticsearchDatasource(
+  opts: ProfileDatasourceOpts,
+): Promise<void> {
+  const { id, outputLayout, url, filterTables, demoDataset, orgId } = opts;
+
+  if (demoDataset) {
+    throw new Error(
+      "--demo is not supported for Elasticsearch (demo data is PostgreSQL-only).",
+    );
+  }
+
+  const apiKey = process.env.ATLAS_ES_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "ATLAS_ES_API_KEY is required to profile an Elasticsearch datasource. " +
+        "Set it to the base64 API key for the cluster.",
+    );
+  }
+
+  const sourceId = id === "default" ? undefined : id;
+
+  // Connectivity check (clear error + nice UX) before profiling.
+  console.log("Testing Elasticsearch connection...");
+  try {
+    const version = await testDatabaseConnection(url, "elasticsearch");
+    console.log(`Connected: ${version}`);
+  } catch (err) {
+    console.error(
+      `\nError: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    console.error(
+      `\nCheck that the elasticsearch:// URL and ATLAS_ES_API_KEY are correct.`,
+    );
+    throw err;
+  }
+
+  console.log(`\nAtlas Init — profiling Elasticsearch mappings...\n`);
+  const start = Date.now();
+
+  const { entities, errors } = await profileElasticsearch(
+    url,
+    apiKey,
+    filterTables,
+    sourceId ? { group: sourceId } : undefined,
+  );
+
+  for (const e of errors) {
+    console.warn(`  Warning: ${e.table}: ${e.error}`);
+  }
+
+  if (entities.length === 0) {
+    throw new Error(
+      "No Elasticsearch indices were profiled. The cluster exposes no user " +
+        "indices, or every requested index was missing or had no fields.",
+    );
+  }
+
+  console.log(`Found ${entities.length} index(es):\n`);
+  for (const e of entities) {
+    console.log(
+      `  ${e.table} — ${e.dimensions.length} field${e.dimensions.length === 1 ? "" : "s"}`,
+    );
+  }
+
+  // Output dir: canonical groups/<id>/ namespace (or legacy <id>/ for --source).
+  const outputBase =
+    outputLayout === "datasource"
+      ? outputDirForDatasource(id, orgId)
+      : outputDirForGroup(id, orgId);
+  const entitiesOutDir = path.join(outputBase, "entities");
+  fs.mkdirSync(entitiesOutDir, { recursive: true });
+
+  // Clean stale entity files from previous runs.
+  for (const file of fs.readdirSync(entitiesOutDir)) {
+    if (file.endsWith(".yml") || file.endsWith(".yaml")) {
+      fs.unlinkSync(path.join(entitiesOutDir, file));
+    }
+  }
+
+  console.log(`\nGenerating semantic layer...\n`);
+  for (const entity of entities) {
+    const filePath = path.join(entitiesOutDir, `${entity.table}.yml`);
+    fs.writeFileSync(
+      filePath,
+      yaml.dump(entity, { lineWidth: 120, noRefs: true }),
+    );
+    console.log(`  wrote ${filePath}`);
+  }
+
+  const catalogPath = path.join(outputBase, "catalog.yml");
+  fs.writeFileSync(
+    catalogPath,
+    yaml.dump(elasticsearchCatalog(entities), { lineWidth: 120, noRefs: true }),
+  );
+  console.log(`  wrote ${catalogPath}`);
+
+  const elapsed = Date.now() - start;
+  const relSuffix = path.relative(SEMANTIC_DIR, outputBase);
+  const relativeOutput = relSuffix ? `./semantic/${relSuffix}/` : "./semantic/";
+  console.log(`
+Done! Semantic layer written to ${relativeOutput} in ${formatDuration(elapsed)}
+
+Generated:
+  - ${entities.length} entity YAMLs (one per Elasticsearch index)${sourceId ? ` (connection: ${id})` : ""}
+  - catalog.yml with index listing
+
+Next steps:
+  1. Review the generated YAMLs and refine business context
+  2. Run \`bun run dev\` to start Atlas
+`);
+
+  // Initial snapshot for version tracking (mirrors the SQL path).
+  try {
+    const { createSnapshot } = await import("../../lib/migrate");
+    const entry = createSnapshot(outputBase, {
+      message: "Initial snapshot from atlas init (elasticsearch)",
+      trigger: "init",
+    });
+    if (entry) {
+      console.log(
+        pc.dim(
+          `  Snapshot ${entry.hash} created for version tracking. Run 'atlas migrate log' to view history.\n`,
+        ),
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `Warning: Could not create initial snapshot: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 async function profileDatasource(
   opts: ProfileDatasourceOpts,
 ): Promise<void> {
+  // Elasticsearch profiles index mappings straight into entity docs — it does
+  // not fit the SQL TableProfile pipeline below (no rows/PKs/FKs, ES SQL surface).
+  if (opts.dbType === "elasticsearch") {
+    await profileElasticsearchDatasource(opts);
+    return;
+  }
+
   const {
     id,
     outputLayout,
@@ -736,6 +886,9 @@ export function exitMissingDatasourceUrl(): never {
   );
   console.error(
     "  DuckDB:      ATLAS_DATASOURCE_URL=duckdb://path/to/file.duckdb",
+  );
+  console.error(
+    "  Elasticsearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (+ ATLAS_ES_API_KEY)",
   );
   console.error(
     "  CSV/Parquet: Use --csv or --parquet flags (no database required)",

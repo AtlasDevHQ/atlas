@@ -21,6 +21,7 @@ import type {
   PluginQueryResult,
   PluginLogger,
 } from "@useatlas/plugin-sdk";
+import type { EsMappingResponse } from "./mapping";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -245,6 +246,13 @@ export function resolveElasticsearchConfig(
 export interface ElasticsearchClient {
   /** Authenticated cluster-info round-trip (`GET /`). Resolves cluster metadata. */
   ping(timeoutMs?: number): Promise<ClusterInfo>;
+  /**
+   * Fetch index mappings (`GET /_mapping`, or `GET /<index>/_mapping` when an
+   * index is given). Powers the `atlas init` / `atlas diff` semantic-layer
+   * profiler. The body is field definitions (no credential), so it is returned
+   * verbatim; errors are status-only and key-scrubbed, exactly like `ping`.
+   */
+  getMapping(index?: string, timeoutMs?: number): Promise<EsMappingResponse>;
   /** Release the client — aborts any in-flight request and rejects future calls. */
   close(): void;
 }
@@ -319,6 +327,57 @@ export function createElasticsearchClient(
         // echoed Authorization header), and a `cause` chain survives the message
         // scrub when a downstream serializer walks it. The scrubbed message
         // retains the actionable detail.
+        throw new Error(scrubElasticsearchError(err, auth.apiKey));
+      } finally {
+        clearTimeout(timer);
+        inFlight.delete(controller);
+      }
+    },
+
+    async getMapping(
+      index?: string,
+      timeoutMs = 10000,
+    ): Promise<EsMappingResponse> {
+      if (closed) {
+        throw new Error("Elasticsearch client is closed");
+      }
+
+      const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
+      const controller = new AbortController();
+      inFlight.add(controller);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      // `GET /_mapping` (all indices) or `GET /<index>/_mapping` (one). The
+      // index segment is URL-encoded so reserved characters can't escape the path.
+      const target = index
+        ? `${endpoint}/${encodeURIComponent(index)}/_mapping`
+        : `${endpoint}/_mapping`;
+
+      try {
+        const res = await fetchImpl(target, {
+          method: "GET",
+          headers: {
+            Authorization: `ApiKey ${auth.apiKey}`,
+            Accept: "application/json",
+          },
+          signal: controller.signal,
+        });
+
+        // On failure the body can echo the supplied credential, so report only
+        // the status line — never the body (mirrors `ping`).
+        if (!res.ok) {
+          throw new Error(
+            `Elasticsearch mapping request failed: HTTP ${res.status} ${res.statusText}`,
+          );
+        }
+
+        return (await res.json()) as EsMappingResponse;
+      } catch (err) {
+        if (controller.signal.aborted && !closed) {
+          throw new Error(
+            `Elasticsearch mapping request timed out after ${timeoutMs}ms`,
+          );
+        }
         throw new Error(scrubElasticsearchError(err, auth.apiKey));
       } finally {
         clearTimeout(timer);

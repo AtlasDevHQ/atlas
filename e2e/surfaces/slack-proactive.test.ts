@@ -430,7 +430,7 @@ beforeAll(async () => {
 
   await plugin.initialize!({
     db: null,
-    connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+    connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
     tools: { register: () => {} },
     logger: {
       info: () => {},

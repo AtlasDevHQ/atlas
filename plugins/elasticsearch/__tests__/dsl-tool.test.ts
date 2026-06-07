@@ -412,6 +412,7 @@ function makeCtx() {
           throw new Error("not implemented");
         },
         list: () => ["products"] as string[],
+        tables: () => [],
       },
       tools: { register: (t: { name: string; description: string; tool: unknown }) => registered.push(t) },
       logger: {
@@ -473,5 +474,99 @@ describe("plugin wiring — queryElasticsearch registration", () => {
     expect(plugin.dialect).not.toMatch(/queryElasticsearch/);
     // SQL guidance still applies in per-workspace mode.
     expect(plugin.dialect).toMatch(/executeSQL/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Index whitelist is sourced from the semantic layer via ctx.connections.tables
+// — NOT ctx.connections.list() (connection IDs). Regression guard for #3307.
+// ---------------------------------------------------------------------------
+
+describe("plugin wiring — index whitelist comes from ctx.connections.tables (#3307)", () => {
+  type ExecTool = { execute: (args: unknown, opts: unknown) => Promise<unknown> };
+
+  // `list()` returns CONNECTION IDs (the pre-#3307 — wrong — whitelist source);
+  // `tables()` returns SEMANTIC-LAYER index names (the correct source). They are
+  // deliberately disjoint here so a test can tell which one the tool consulted.
+  function makeCapturingCtx(tables: string[]) {
+    const registered: { name: string; description: string; tool: unknown }[] = [];
+    const tablesCalls: string[] = [];
+    return {
+      registered,
+      tablesCalls,
+      ctx: {
+        db: null,
+        connections: {
+          get: () => {
+            throw new Error("not implemented");
+          },
+          list: () => ["elasticsearch-datasource"] as string[],
+          tables: (id: string) => {
+            tablesCalls.push(id);
+            return tables;
+          },
+        },
+        tools: {
+          register: (t: { name: string; description: string; tool: unknown }) => registered.push(t),
+        },
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        config: {},
+      },
+    };
+  }
+
+  async function registerEsTool(tables: string[]): Promise<{ esTool: ExecTool; tablesCalls: string[] }> {
+    const plugin = elasticsearchPlugin({ url: VALID_URL, apiKey: API_KEY });
+    const { ctx, registered, tablesCalls } = makeCapturingCtx(tables);
+    await plugin.initialize!(ctx as unknown as Parameters<NonNullable<typeof plugin.initialize>>[0]);
+    const entry = registered.find((t) => t.name === "queryElasticsearch");
+    if (!entry) throw new Error("queryElasticsearch tool was not registered");
+    return { esTool: entry.tool as ExecTool, tablesCalls };
+  }
+
+  test("rejects an index absent from the semantic layer, keyed on the plugin's connection id", async () => {
+    const { esTool, tablesCalls } = await registerEsTool(["flights"]);
+    const result = await esTool.execute(
+      { index: "secret_logs", endpoint: "_search", body: {}, explanation: "x" },
+      EXEC_OPTS,
+    );
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toMatch(/not in the semantic layer/);
+    // Pin the whitelist key: the tool must look up tables() under the same id
+    // the static connection registers in the ConnectionRegistry under
+    // (`registerDirect(plugin.id, …)`), else getWhitelistedTables silently
+    // returns [] and the tool drops to structural-only.
+    expect(tablesCalls).toContain("elasticsearch-datasource");
+  });
+
+  test("rejects the connection id itself — proves tables(), not list(), is the source", async () => {
+    // Pre-#3307 the whitelist was `ctx.connections.list()` = ["elasticsearch-datasource"],
+    // which would have made the connection id the ONLY 'allowed index'. The fix
+    // sources index names from the semantic layer, so the connection id is now
+    // (correctly) not a queryable index.
+    const { esTool } = await registerEsTool(["flights"]);
+    const result = await esTool.execute(
+      { index: "elasticsearch-datasource", endpoint: "_search", body: {}, explanation: "x" },
+      EXEC_OPTS,
+    );
+    expect(result).toMatchObject({ success: false });
+    expect((result as { error: string }).error).toMatch(/not in the semantic layer/);
+  });
+
+  test("a semantic-layer index passes the membership gate (reaches the cluster)", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () => fetchResponse(HITS_RESPONSE)) as unknown as typeof fetch;
+    try {
+      const { esTool } = await registerEsTool(["flights"]);
+      const result = await esTool.execute(
+        { index: "flights", endpoint: "_search", body: {}, explanation: "x" },
+        EXEC_OPTS,
+      );
+      // The whitelist gate passed — the query reached the mocked cluster and
+      // returned a normal, successful result.
+      expect(result).toMatchObject({ success: true });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });

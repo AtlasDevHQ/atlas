@@ -216,6 +216,13 @@ export function buildElasticsearchPlugin(
   let cachedConn: ElasticsearchConnection | undefined;
   let log: PluginLogger | undefined;
 
+  // This plugin's static connection registers in the ConnectionRegistry under
+  // its plugin id (wiring.ts `registerDirect(plugin.id, …)`), which is also the
+  // connectionId `getWhitelistedTables` / `executeSQL` key the index whitelist
+  // on. The DSL tool MUST use the same id so its membership whitelist agrees
+  // with the SQL path.
+  const DATASOURCE_ID = "elasticsearch-datasource";
+
   // A static config-defined ES datasource (self-host / operator-baked) needs an
   // endpoint source (`url`/`cloudId`) AND an auth signal (apiKey / username+
   // password / awsRegion). Without a complete config the plugin is registered
@@ -277,7 +284,7 @@ export function buildElasticsearchPlugin(
   }
 
   return {
-    id: "elasticsearch-datasource",
+    id: DATASOURCE_ID,
     types: ["datasource"] as const,
     version: "0.1.0",
     name: "Elasticsearch DataSource",
@@ -415,19 +422,18 @@ export function buildElasticsearchPlugin(
       if (staticConfig) {
         const esTool = createQueryElasticsearchTool({
           getConnection: () => getOrCreateConnection(),
-          // The index MEMBERSHIP whitelist should be the semantic layer's index
-          // names — but the plugin context exposes no accessor for them today:
-          // `ctx.connections.list()` returns registered CONNECTION IDs (e.g.
-          // "elasticsearch-datasource"), NOT index names. Feeding those in would
-          // make `validateIndexAccess` reject every legitimate query (an index
-          // like "flights" is never a connection id). So we pass an EMPTY set,
-          // which keeps validateIndexAccess in structural-only mode: the
-          // always-on rails (no wildcards / _all / system indices) still apply,
-          // and a named index is allowed. The SQL surface (`executeSQL`) still
-          // enforces the real table whitelist via the core pipeline. Per-index
-          // membership for the DSL tool lands when the context gains a
-          // semantic-table accessor — tracked in #3307.
-          getWhitelist: () => new Set<string>(),
+          // The index MEMBERSHIP whitelist is the semantic layer's index names
+          // for this connection — `ctx.connections.tables(id)`, the same
+          // filesystem whitelist `executeSQL` validates against in self-host /
+          // static mode (`getWhitelistedTables`). So the DSL tool and the SQL
+          // surface enforce the identical per-index boundary (#3307). (This tool
+          // is static-only; SaaS per-workspace ES is queried over the SQL path.)
+          // NOTE: `ctx.connections.list()` would be wrong here — it
+          // returns CONNECTION IDs, not index names, so it can never match a
+          // real index like "flights". When the semantic layer is empty the
+          // accessor returns `[]` and `validateIndexAccess` falls back to its
+          // always-on structural rails (no wildcards / _all / system indices).
+          getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
           logger: ctx.logger,
         });
 

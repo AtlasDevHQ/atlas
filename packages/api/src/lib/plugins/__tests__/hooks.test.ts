@@ -5,7 +5,7 @@ import { dispatchHook, dispatchMutableHook } from "../hooks";
 
 const minimalCtx: PluginContextLike = {
   db: null,
-  connections: { get: () => ({}), list: () => [] },
+  connections: { get: () => ({}), list: () => [], tables: () => [] },
   tools: { register: () => {} },
   logger: {},
   config: {},

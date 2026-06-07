@@ -21,6 +21,7 @@ import { app } from "./index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { initializeConfig } from "@atlas/api/lib/config";
 import { connections } from "@atlas/api/lib/db/connection";
+import { getWhitelistedTables } from "@atlas/api/lib/semantic";
 import { closeInternalDB } from "@atlas/api/lib/db/internal";
 import {
   plugins,
@@ -124,6 +125,12 @@ if (config.plugins?.length) {
       // tools — #3109). Plugin-managed pools register on the bare map anyway.
       get: (id: string) => connections.get(id),
       list: () => connections.list(),
+      // Semantic-layer object names for a connection — the per-object
+      // membership whitelist for plugin query tools (SOQL / ES Query DSL).
+      // Self-host / static datasource mode: filesystem-backed, the same source
+      // `executeSQL` validates against (`getWhitelistedTables`), so a plugin's
+      // bespoke tool honors the identical boundary as the SQL path (#3307).
+      tables: (id: string) => Array.from(getWhitelistedTables(id)),
     },
     tools: {
       register: (tool) =>

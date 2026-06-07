@@ -272,6 +272,7 @@ export function createMockContext(
           );
         }),
       list: overrides.connections?.list ?? (() => []),
+      tables: overrides.connections?.tables ?? (() => []),
     },
     tools: {
       register:

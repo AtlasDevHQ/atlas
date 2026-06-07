@@ -95,7 +95,7 @@ export interface ConfigSchemaField {
  */
 export interface PluginContextLike {
   db: { query(sql: string, params?: unknown[]): Promise<unknown>; execute(sql: string, params?: unknown[]): Promise<void> } | null;
-  connections: { get(id: string): unknown; list(): string[] };
+  connections: { get(id: string): unknown; list(): string[]; tables(id: string): readonly string[] };
   tools: { register(tool: { name: string; description: string; tool: unknown }): void };
   logger: Record<string, unknown>;
   config: Record<string, unknown>;

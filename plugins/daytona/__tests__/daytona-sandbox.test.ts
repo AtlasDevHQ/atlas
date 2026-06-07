@@ -295,6 +295,7 @@ describe("initialize", () => {
           throw new Error("not implemented");
         },
         list: () => [],
+        tables: () => [],
       },
       tools: { register: () => {} },
       logger: {

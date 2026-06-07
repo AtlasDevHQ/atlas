@@ -48,6 +48,33 @@ export interface EsIndexMapping {
 /** Full `GET /_mapping` (or `GET /<index>/_mapping`) response, keyed by index. */
 export type EsMappingResponse = Record<string, EsIndexMapping>;
 
+/** Per-index body of a `GET /_alias` response: the aliases pointing at it. */
+export interface EsAliasIndexEntry {
+  aliases?: Record<string, unknown>;
+}
+
+/** Full `GET /_alias` response, keyed by concrete index → its aliases (#3269). */
+export type EsAliasResponse = Record<string, EsAliasIndexEntry>;
+
+/** One data stream from `GET /_data_stream` (the subset the profiler reads). */
+export interface EsDataStreamEntry {
+  name?: string;
+  /** Backing (`.ds-…`) indices, newest last. Hidden — omitted from `GET /_mapping`. */
+  indices?: { index_name?: string }[];
+}
+
+/** Full `GET /_data_stream` response (#3269). */
+export interface EsDataStreamResponse {
+  data_streams?: EsDataStreamEntry[];
+}
+
+/**
+ * The kind of logical source an entity represents. A concrete `index` is the
+ * single-index case; `pattern` (`logs-*`), `alias`, and `data_stream` each
+ * collapse multiple backing indices into ONE queryable entity (#3269).
+ */
+export type EsLogicalKind = "index" | "pattern" | "alias" | "data_stream";
+
 // ---------------------------------------------------------------------------
 // Semantic-layer output types (subset of the entity YAML shape)
 // ---------------------------------------------------------------------------
@@ -305,4 +332,361 @@ export function mappingsToEntities(
   }
 
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Logical sources: aliases, data streams, and index patterns (#3269)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `GET /_alias` into `alias → set of backing concrete indices`. Defensive
+ * over untrusted JSON: a body that isn't the `{ <index>: { aliases: {…} } }`
+ * shape (e.g. a `_mapping` body handed in by mistake) yields an empty map rather
+ * than throwing. System aliases (dot-prefixed) are skipped unless asked for.
+ */
+export function parseAliases(
+  response: EsAliasResponse | undefined,
+  opts?: { includeSystem?: boolean },
+): Map<string, Set<string>> {
+  const includeSystem = opts?.includeSystem ?? false;
+  const out = new Map<string, Set<string>>();
+  if (!response || typeof response !== "object") return out;
+
+  for (const index of Object.keys(response)) {
+    const aliases = response[index]?.aliases;
+    if (!aliases || typeof aliases !== "object") continue;
+    for (const alias of Object.keys(aliases)) {
+      if (!includeSystem && isSystemIndex(alias)) continue;
+      const set = out.get(alias) ?? new Set<string>();
+      set.add(index);
+      out.set(alias, set);
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse `GET /_data_stream` into `data-stream name → set of backing `.ds-…`
+ * indices`. Defensive: a body without the `{ data_streams: [...] }` shape yields
+ * an empty map. System streams (dot-prefixed) are skipped unless asked for.
+ */
+export function parseDataStreams(
+  response: EsDataStreamResponse | undefined,
+  opts?: { includeSystem?: boolean },
+): Map<string, Set<string>> {
+  const includeSystem = opts?.includeSystem ?? false;
+  const out = new Map<string, Set<string>>();
+  const list = response?.data_streams;
+  if (!Array.isArray(list)) return out;
+
+  for (const ds of list) {
+    const name = typeof ds?.name === "string" ? ds.name : "";
+    if (!name) continue;
+    if (!includeSystem && isSystemIndex(name)) continue;
+    const set = new Set<string>();
+    for (const entry of Array.isArray(ds.indices) ? ds.indices : []) {
+      const indexName = typeof entry?.index_name === "string" ? entry.index_name : "";
+      if (indexName) set.add(indexName);
+    }
+    out.set(name, set);
+  }
+  return out;
+}
+
+/**
+ * `<base>-<suffix>` where the suffix is a date or a rollover counter. The suffix
+ * is deliberately NARROW to avoid collapsing unrelated id-suffixed families
+ * (`app-12345`, `tenant-99999`) into a wildcard:
+ *   - **Date** — `(19|20)\d{2}` year (so a bare 4-digit id like `1234` is NOT a
+ *     "year"), optionally followed by `.`/`-` separated month/day groups
+ *     (`2024`, `2024.01`, `2024.01.01`, `2024-01-01`).
+ *   - **Rollover** — `0\d{5,}`, the zero-padded ILM counter (`000001`). A bare
+ *     non-padded number (`12345`) is NOT treated as a rollover.
+ * The date alternative is matched before the rollover one so a dash-separated
+ * date (whose own internal `-`s would otherwise fool a last-dash split) is
+ * captured whole. `base` is non-greedy so the leftmost dash that yields a valid
+ * suffix wins (`filebeat-7.10.0-2024.01.01` → base `filebeat-7.10.0`). Index
+ * names are short (ES caps them at 255 bytes), so the bounded backtracking is safe.
+ */
+const PATTERN_SUFFIX_RE = /^(.+?)-((?:19|20)\d{2}(?:[.-]\d{2}){0,2}|0\d{5,})$/;
+
+/**
+ * Derive the shared base of a time-/rollover-partitioned index, or `null` when
+ * the name carries no such suffix:
+ *   - `logs-2024.01.01` / `logs-2024-01-01` → `logs`
+ *   - `events-2024`            → `events`
+ *   - `metrics-000001`         → `metrics`
+ *   - `filebeat-7.10.0-2024.01.01` → `filebeat-7.10.0`
+ *   - `orders` / `products` / `logs-prod` / `app-12345` → `null` (not a pattern)
+ */
+export function indexPatternBase(index: string): string | null {
+  const match = PATTERN_SUFFIX_RE.exec(index);
+  return match ? match[1] : null;
+}
+
+/**
+ * Collapse a list of concrete index names into `pattern → member indices`. Two
+ * or more indices sharing a {@link indexPatternBase} become a `<base>-*` pattern;
+ * a lone dated index (no sibling) is left for the caller to emit as a concrete
+ * index, so a single day of logs isn't surprisingly hidden behind a wildcard.
+ */
+export function detectIndexPatterns(indexNames: string[]): Map<string, string[]> {
+  const byBase = new Map<string, string[]>();
+  for (const name of indexNames) {
+    const base = indexPatternBase(name);
+    if (!base) continue;
+    const list = byBase.get(base) ?? [];
+    list.push(name);
+    byBase.set(base, list);
+  }
+
+  const patterns = new Map<string, string[]>();
+  for (const [base, members] of byBase) {
+    if (members.length >= 2) patterns.set(`${base}-*`, members);
+  }
+  return patterns;
+}
+
+/** Union the flattened leaf fields across several indices' mappings, first-seen
+ *  type wins (members of a pattern/alias/data-stream share a template). */
+function unionFlatFields(
+  indices: string[],
+  response: EsMappingResponse,
+): FlatEsField[] {
+  const seen = new Set<string>();
+  const out: FlatEsField[] = [];
+  for (const index of indices) {
+    for (const field of flattenMapping(response?.[index]?.mappings?.properties)) {
+      if (seen.has(field.path)) continue;
+      seen.add(field.path);
+      out.push(field);
+    }
+  }
+  return out;
+}
+
+/** Human grain + description for a logical (multi-index) entity. */
+function logicalCopy(
+  kind: Exclude<EsLogicalKind, "index">,
+  name: string,
+  memberCount: number,
+  fieldCount: number,
+): { grain: string; description: string } {
+  const noun =
+    kind === "pattern" ? "index pattern" : kind === "alias" ? "alias" : "data stream";
+  const members = `${memberCount} backing ${memberCount === 1 ? "index" : "indices"}`;
+  const fields = `${fieldCount} field${fieldCount === 1 ? "" : "s"}`;
+  return {
+    grain: `one row per document across the ${name} ${noun}`,
+    description: `Elasticsearch ${noun} "${name}" (${members}), profiled from the union of their mappings. Contains ${fields}.`,
+  };
+}
+
+/**
+ * Build a single logical entity (pattern / alias / data stream) from the union
+ * of its member indices' mappings. Returns `null` when the union has no fields
+ * (every backing index is empty / unmapped), so the caller skips a field-less
+ * entity — mirroring {@link mappingToEntity}. The entity's `table` is the
+ * LOGICAL name (`logs-*`, the alias, or the stream), which is exactly what both
+ * query surfaces and the whitelist key on (#3269).
+ */
+export function buildLogicalEntity(opts: {
+  name: string;
+  kind: Exclude<EsLogicalKind, "index">;
+  memberIndices: string[];
+  response: EsMappingResponse;
+  group?: string;
+}): EsEntityDoc | null {
+  const fields = unionFlatFields(opts.memberIndices, opts.response);
+  if (fields.length === 0) return null;
+
+  const { grain, description } = logicalCopy(
+    opts.kind,
+    opts.name,
+    opts.memberIndices.length,
+    fields.length,
+  );
+  return {
+    name: indexToEntityName(opts.name),
+    type: "fact_table",
+    table: opts.name,
+    ...(opts.group ? { group: opts.group } : {}),
+    grain,
+    description,
+    dimensions: fields.map(toDimension),
+  };
+}
+
+/** The cluster shape `mappingsToLogicalEntities` consumes (#3269). */
+export interface LogicalProfilingInput {
+  /** `GET /_mapping` — concrete indices (powers patterns, aliases, standalone). */
+  mapping: EsMappingResponse;
+  /** `GET /_alias` — alias → backing indices. */
+  aliases?: EsAliasResponse;
+  /** `GET /_data_stream` — data streams → backing `.ds-…` indices. */
+  dataStreams?: EsDataStreamResponse;
+  /**
+   * Mappings of the data streams' `.ds-…` backing indices, fetched SEPARATELY:
+   * the default `GET /_mapping` omits hidden backing indices, so the profiler
+   * fetches `GET /<stream>/_mapping` per stream and merges the results here.
+   */
+  dataStreamMapping?: EsMappingResponse;
+}
+
+/** Result of {@link collapseMappings}: the emitted entities plus a coverage map
+ *  from every concrete/backing index name to the `table` of the entity that
+ *  represents it. Coverage lets a caller (e.g. the CLI `--tables` filter) resolve
+ *  a concrete index that was collapsed into a pattern/alias/data-stream back to
+ *  its owning logical entity instead of reporting it "not found" (#3269). Only
+ *  EMITTED entities contribute coverage — a member of a dropped (field-less)
+ *  entity is genuinely absent. */
+export interface CollapsedMappings {
+  entities: EsEntityDoc[];
+  coverage: Map<string, string>;
+}
+
+/**
+ * Transform a cluster's mapping + alias + data-stream metadata into entity docs,
+ * representing time-partitioned indices as ONE logical entity (#3269). Each
+ * concrete index is claimed by at most one entity, resolved in this precedence:
+ *
+ *   1. **Data streams** — explicit logical sources; their `.ds-…` backing
+ *      indices are claimed and their fields come from `dataStreamMapping`.
+ *   2. **Aliases** — explicit logical sources; backing indices claimed, fields
+ *      unioned from the main `mapping`.
+ *   3. **Index patterns** — `<base>-*` detected from the remaining (unclaimed,
+ *      non-system) indices, ≥2 members (see {@link detectIndexPatterns}).
+ *   4. **Standalone indices** — whatever is left, emitted exactly as
+ *      {@link mappingsToEntities} would (byte-identical to the pre-#3269 output).
+ *
+ * Returns the entities and a {@link CollapsedMappings.coverage} map. Most callers
+ * want {@link mappingsToLogicalEntities} (entities only).
+ */
+export function collapseMappings(
+  input: LogicalProfilingInput,
+  opts?: { group?: string; includeSystem?: boolean },
+): CollapsedMappings {
+  const includeSystem = opts?.includeSystem ?? false;
+  const group = opts?.group;
+  const mapping = input.mapping ?? {};
+  const out: EsEntityDoc[] = [];
+  const coverage = new Map<string, string>();
+  // Concrete indices already represented by a logical entity — never re-emitted.
+  const claimed = new Set<string>();
+
+  /** Record an emitted entity + map each member index to its logical `table`. */
+  const emit = (entity: EsEntityDoc | null, members: string[]): void => {
+    if (!entity) return;
+    out.push(entity);
+    for (const m of members) coverage.set(m, entity.table);
+  };
+
+  // 1. Data streams.
+  const dataStreams = parseDataStreams(input.dataStreams, { includeSystem });
+  const dataStreamMapping = input.dataStreamMapping ?? {};
+  for (const [name, indices] of dataStreams) {
+    const members = [...indices];
+    for (const m of members) claimed.add(m);
+    emit(
+      buildLogicalEntity({
+        name,
+        kind: "data_stream",
+        memberIndices: members,
+        response: dataStreamMapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
+  }
+
+  // 2. Aliases (a name colliding with a data stream defers to the stream).
+  const aliases = parseAliases(input.aliases, { includeSystem });
+  for (const [name, indices] of aliases) {
+    if (dataStreams.has(name)) continue;
+    const members = [...indices];
+    for (const m of members) claimed.add(m);
+    emit(
+      buildLogicalEntity({
+        name,
+        kind: "alias",
+        memberIndices: members,
+        response: mapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
+  }
+
+  // 3. Patterns from the remaining concrete indices.
+  const remaining = Object.keys(mapping).filter(
+    (idx) => (includeSystem || !isSystemIndex(idx)) && !claimed.has(idx),
+  );
+  for (const [pattern, members] of detectIndexPatterns(remaining)) {
+    for (const m of members) claimed.add(m);
+    emit(
+      buildLogicalEntity({
+        name: pattern,
+        kind: "pattern",
+        memberIndices: members,
+        response: mapping,
+        ...(group ? { group } : {}),
+      }),
+      members,
+    );
+  }
+
+  // 4. Standalone concrete indices (existing behavior, unchanged).
+  for (const index of remaining) {
+    if (claimed.has(index)) continue; // claimed by a pattern in step 3
+    emit(
+      mappingToEntity(index, mapping[index], group ? { group } : undefined),
+      [index],
+    );
+  }
+
+  return { entities: out, coverage };
+}
+
+/** {@link collapseMappings} without the coverage map — the common case. */
+export function mappingsToLogicalEntities(
+  input: LogicalProfilingInput,
+  opts?: { group?: string; includeSystem?: boolean },
+): EsEntityDoc[] {
+  return collapseMappings(input, opts).entities;
+}
+
+/**
+ * Filesystem-safe slug for an entity's YAML filename. A concrete index name is
+ * already safe and passes through unchanged (back-compat with pre-#3269 files);
+ * a pattern's `*` / `?` and any other unsafe character are replaced, so
+ * `logs-*` → `logs-star`. The slug is for the FILENAME only — the entity's
+ * `table` keeps the literal logical name the query surfaces use.
+ */
+export function entityFileSlug(table: string): string {
+  return table
+    .replace(/\*/g, "star")
+    .replace(/\?/g, "q")
+    .replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+/**
+ * Map an ORDERED list of entity `table` names to collision-free filename slugs,
+ * aligned to the input order. {@link entityFileSlug} is lossy/non-injective
+ * (`logs-*` and a concrete index `logs-star` both slug to `logs-star`), so a bare
+ * per-entity slug could make two entities write to the same `.yml` and silently
+ * overwrite one. This disambiguates a collision by appending `-2`, `-3`, … The
+ * result is deterministic for a given input order, so the `atlas init` write loop
+ * and the catalog `file:` references stay in lockstep when both pass the same
+ * `entities` array.
+ */
+export function buildUniqueFileSlugs(tables: string[]): string[] {
+  const used = new Set<string>();
+  return tables.map((table) => {
+    const base = entityFileSlug(table);
+    let slug = base;
+    let n = 2;
+    while (used.has(slug)) slug = `${base}-${n++}`;
+    used.add(slug);
+    return slug;
+  });
 }

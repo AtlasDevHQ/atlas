@@ -224,6 +224,21 @@ describe("getWhitelistedTables — group partitioning (ADR-0012)", () => {
     expect(any.has("users")).toBe(true);
   });
 
+  it("whitelists an index-pattern entity verbatim so the SQL FROM resolves (#3269)", () => {
+    // An Elasticsearch pattern/alias/data-stream entity declares `table:` as the
+    // LOGICAL name (`logs-*`). The whitelist stores it as-is, so `FROM "logs-*"`
+    // (node-sql-parser strips the quotes → `logs-*`) matches by exact name — no
+    // special-casing needed on the SQL path.
+    const root = ensureDir(`es-pattern-${testCounter}`);
+    const entities = ensureDir(`es-pattern-${testCounter}/entities`);
+    writeEntity(entities, "logs-star.yml", entity("logs-*"));
+    writeEntity(entities, "events.yml", entity("events")); // a data-stream entity
+
+    const tables = getWhitelistedTables("default", undefined, root);
+    expect(tables.has("logs-*")).toBe(true);
+    expect(tables.has("events")).toBe(true);
+  });
+
   it("per-group dir: entities under groups/<group>/ are queryable under <group>", () => {
     const root = ensureDir(`grp-query-${testCounter}`);
     ensureDir(`grp-query-${testCounter}/entities`);

@@ -234,13 +234,17 @@ export function validateEsDslRequest(request: EsDslRequest): EsDslValidationResu
  * Enforce per-index access for a DSL request. ALWAYS-ON structural rails reject
  * cross-index fan-out regardless of the whitelist:
  *   - empty / missing index,
- *   - wildcards (`*`, `?`) and `_all` (would match indices outside the layer),
+ *   - `_all` and wildcards (`*`, `?`) that are NOT an explicit whitelist member,
  *   - system / internal indices (leading `.` or `_`).
  *
  * When `allowed` is non-empty, each comma-separated index must additionally be a
- * member (case-insensitive) — the semantic-layer whitelist. When `allowed` is
- * empty the structural rails still apply (mirrors the Salesforce tool's
- * structural-only fallback when its object whitelist is unavailable).
+ * member (case-insensitive) — the semantic-layer whitelist. A wildcard that IS a
+ * member is allowed: an index-PATTERN entity (`logs-*`) is a deliberately-declared
+ * logical source (#3269), so the operator has authorized exactly that fan-out.
+ * When `allowed` is empty (structural-only fallback) there is no declared layer
+ * to authorize a pattern, so the no-wildcard rail stays on — mirroring the
+ * Salesforce tool's structural-only fallback when its object whitelist is
+ * unavailable.
  */
 export function validateIndexAccess(
   index: string,
@@ -262,10 +266,26 @@ export function validateIndexAccess(
   const allowedLower = new Set(Array.from(allowed, (s) => s.toLowerCase()));
 
   for (const seg of segments) {
-    if (seg === "_all" || /[*?]/.test(seg)) {
+    const isMember = allowedLower.has(seg.toLowerCase());
+
+    // `_all` / wildcards fan out beyond the named index — allowed ONLY when the
+    // exact token is a whitelisted PATTERN entity (#3269). `_all` can never be a
+    // member (the system rail below rejects any `_`-leading name), so it always
+    // falls here.
+    //
+    // SECURITY NOTE: membership authorizes the LITERAL pattern string (`logs-*`),
+    // not a fixed set of indices. The cluster — not Atlas — expands `logs-*` at
+    // query time, so a pattern entity authorizes whatever matches it *then*,
+    // INCLUDING indices created after `atlas init` profiled the layer. That is the
+    // intended contract: declaring a `logs-*` entity is the operator's explicit
+    // authorization of that family. Operators who must NOT expose
+    // future/by-pattern indices should declare concrete-index entities instead of
+    // a pattern. (There is no per-query expansion check; adding one would require
+    // resolving the pattern against the live cluster on every request.)
+    if ((seg === "_all" || /[*?]/.test(seg)) && !isMember) {
       return {
         valid: false,
-        reason: `Wildcard / _all index access ("${seg}") is not allowed. Name explicit indices from the semantic layer.`,
+        reason: `Wildcard / _all index access ("${seg}") is not allowed. Name an explicit index or a declared index-pattern entity from the semantic layer.`,
       };
     }
     if (seg.startsWith(".") || seg.startsWith("_")) {
@@ -274,7 +294,7 @@ export function validateIndexAccess(
         reason: `System / internal index "${seg}" is not queryable.`,
       };
     }
-    if (allowedLower.size > 0 && !allowedLower.has(seg.toLowerCase())) {
+    if (allowedLower.size > 0 && !isMember) {
       return {
         valid: false,
         reason: `Index "${seg}" is not in the semantic layer. Query only indices defined by the entity YAMLs.`,

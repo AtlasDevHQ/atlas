@@ -15,8 +15,8 @@
  * names it knows are the ones the schema declares as `secret: true`.
  *
  * **Mask-on-read / restore-on-save (the #3270 invariant).** Admin reads mask
- * `secret: true` fields to {@link MASKED_PLACEHOLDER} (see `integrations-catalog`
- * / marketplace `/available`). On save, a field still carrying the sentinel — or
+ * `secret: true` fields to the masked sentinel (`••••••••`) (see
+ * `integrations-catalog` / marketplace `/available`). On save, a field still carrying it — or
  * omitted entirely — MUST NOT clear the stored credential: {@link
  * restoreMaskedSecrets} swaps the bullets back to the persisted value before
  * re-encryption. An explicit new value is trusted and replaces it. Decryption of
@@ -128,7 +128,43 @@ export class ElasticsearchFormInstallHandler implements FormBasedInstallHandler 
     const catalogId = catalogRows[0].id;
     const schema = parseConfigSchema(catalogRows[0].config_schema);
 
-    // ── 3. Restore masked secrets against the existing install ──────
+    // ── 3. Corrupt-schema guard (fail closed) ───────────────────────
+    // The catalog `config_schema` is operator-controlled, not user input, and
+    // the built-in datasource row is seeded ON CONFLICT DO NOTHING (no
+    // self-heal of a drifted schema). A corrupt schema makes
+    // `restoreMaskedSecrets` / `encryptSecretFields` fall back to "act on every
+    // string" — which on a fresh install would encrypt-and-persist the masked
+    // sentinel itself as the credential while `validateAgainstSchema` skips the
+    // required check. Refuse loudly (operator must fix the row) instead of
+    // silently storing junk.
+    if (schema.state === "corrupt") {
+      log.error(
+        { workspaceId, reason: schema.reason },
+        "Elasticsearch catalog config_schema is corrupt — refusing install rather than persisting the mask sentinel as a credential",
+      );
+      throw new Error(
+        `Catalog "${ELASTICSEARCH_SLUG}" config_schema is corrupt (${schema.reason}) — fix the catalog row before installing.`,
+      );
+    }
+
+    // ── 4. SaaS keyset gate ─────────────────────────────────────────
+    // `encryptSecret` falls back to plaintext when no key is configured (dev
+    // convenience). In SaaS that would leak the credential — refuse the install
+    // so a misconfigured deploy fails closed at the credential boundary. Checked
+    // BEFORE the existing-row read so a re-save under misconfigured SaaS surfaces
+    // this actionable message rather than an opaque decrypt failure.
+    if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
+      log.error(
+        { workspaceId },
+        "Refusing Elasticsearch install: SaaS mode + no encryption keyset (would persist a plaintext credential)",
+      );
+      throw new Error(
+        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
+          "Set ATLAS_ENCRYPTION_KEYS and retry.",
+      );
+    }
+
+    // ── 5. Restore masked secrets against the existing install ──────
     // Read the current row (if any) so an unchanged masked secret round-trips
     // back to its stored value instead of persisting the bullet sentinel.
     const existingDecrypted = await this.loadExistingDecryptedConfig(
@@ -138,32 +174,16 @@ export class ElasticsearchFormInstallHandler implements FormBasedInstallHandler 
     );
     const restored = restoreMaskedSecrets(incoming, existingDecrypted, schema);
 
-    // ── 4. Catalog-schema required + type validation ────────────────
+    // ── 6. Catalog-schema required + type validation ────────────────
     // Runs on the RESTORED config so a masked-but-preserved secret satisfies
-    // its `required` rule. Skipped on a corrupt schema (the encrypt walker
-    // fail-closes by encrypting every string anyway — matching the installer's
-    // posture).
+    // its `required` rule. The schema is guaranteed `absent` or `parsed` here
+    // (corrupt was rejected in step 3).
     const fieldErrors = validateAgainstSchema(restored, schema);
     if (Object.keys(fieldErrors).length > 0) {
       throw new FormInstallValidationError({ fieldErrors, formErrors: [] });
     }
 
-    // ── 5. SaaS keyset gate ─────────────────────────────────────────
-    // `encryptSecret` falls back to plaintext when no key is configured (dev
-    // convenience). In SaaS that would leak `apiKey` plaintext — refuse the
-    // install so a misconfigured deploy fails closed at the credential boundary.
-    if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
-      log.error(
-        { workspaceId },
-        "Refusing Elasticsearch install: SaaS mode + no encryption keyset (would persist plaintext apiKey)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
-          "Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
-
-    // ── 6. Self-hosted plaintext-credential warning (non-fatal) ─────
+    // ── 7. Self-hosted plaintext-credential warning (non-fatal) ─────
     const secretKeys = schema.state === "parsed" ? secretFieldKeys(schema) : [];
     const credentialWritten = secretKeys.some(
       (k) => typeof restored[k] === "string" && (restored[k] as string).length > 0,
@@ -172,12 +192,12 @@ export class ElasticsearchFormInstallHandler implements FormBasedInstallHandler 
       log.warn(
         { workspaceId },
         "Persisting an Elasticsearch credential with no encryption keyset configured in a " +
-          "prod-like environment — apiKey will be stored in plaintext. Set ATLAS_ENCRYPTION_KEYS " +
+          "prod-like environment — the credential will be stored in plaintext. Set ATLAS_ENCRYPTION_KEYS " +
           "(or ATLAS_ENCRYPTION_KEY / BETTER_AUTH_SECRET) to encrypt integration credentials at rest.",
       );
     }
 
-    // ── 7. Encrypt secret fields + upsert the datasource install ────
+    // ── 8. Encrypt secret fields + upsert the datasource install ────
     // `encryptSecretFields` is idempotent against already-`enc:v1:` ciphertext.
     const encryptedConfig = encryptSecretFields(restored, schema);
 

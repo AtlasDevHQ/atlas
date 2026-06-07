@@ -38,12 +38,15 @@ interface CapturedQuery {
 let captured: CapturedQuery[] = [];
 /** Per-test override for the existing-install lookup (restore-on-save path). */
 let existingInstallRows: unknown[] = [];
+/** Per-test override for the catalog row's config_schema (corrupt-schema path). */
+let catalogSchemaOverride: { value: unknown } | null = null;
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   async (sql: string, params?: unknown[]) => {
     captured.push({ sql, params: params ?? [] });
     if (sql.includes("FROM plugin_catalog")) {
-      return [{ id: "catalog:elasticsearch", config_schema: ES_CONFIG_SCHEMA }];
+      const config_schema = catalogSchemaOverride ? catalogSchemaOverride.value : ES_CONFIG_SCHEMA;
+      return [{ id: "catalog:elasticsearch", config_schema }];
     }
     if (sql.includes("INSERT INTO workspace_plugins")) {
       const id = (params?.[0] as string | undefined) ?? "unknown";
@@ -134,6 +137,7 @@ beforeEach(() => {
   setKeys();
   captured = [];
   existingInstallRows = [];
+  catalogSchemaOverride = null;
   mockLogWarn.mockClear();
   mockLogInfo.mockClear();
   mockInternalQuery.mockClear();
@@ -235,6 +239,54 @@ describe("ElasticsearchFormInstallHandler — restore-on-save", () => {
 
     const cfg = upsertedConfig();
     expect(decryptSecret(cfg.apiKey as string)).toBe("a-freshly-rotated-key");
+  });
+
+  it("preserves the stored secret when apiKey is omitted from the form (dirty-fields save)", async () => {
+    // A UI that PATCHes only changed fields omits the untouched apiKey entirely.
+    // restoreMaskedSecrets' absent-key branch must preserve it — never clear it.
+    const storedCipher = encryptSecret("the-original-api-key");
+    existingInstallRows = [{ config: { url: "elasticsearch://old:9243", apiKey: storedCipher } }];
+
+    const handler = newHandler();
+    const result = await handler.validateConfig(WSID, { url: "elasticsearch://new:9243" });
+
+    const cfg = upsertedConfig();
+    expect(cfg.url).toBe("elasticsearch://new:9243");
+    // apiKey was absent from the form yet must still decrypt to the original —
+    // required validation runs on the restored config so it isn't rejected.
+    expect(decryptSecret(cfg.apiKey as string)).toBe("the-original-api-key");
+    // credentialWritten reflects the restored (preserved) credential.
+    expect(result.credentialWritten).toBe(true);
+  });
+
+  it("fails closed (no INSERT) when the existing row's secret cannot be decrypted", async () => {
+    // Encrypt under the test key, then rotate the v1 key out from under it so
+    // decryptSecretFields throws on read. A silently-empty config here would let
+    // this re-save wipe the live credential — the handler must surface the error.
+    const storedCipher = encryptSecret("the-original-api-key");
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:a-completely-different-key-than-the-encrypt-one-32b";
+    _resetEncryptionKeyCache();
+    existingInstallRows = [{ config: { url: "elasticsearch://old:9243", apiKey: storedCipher } }];
+
+    const handler = newHandler();
+    await expect(
+      handler.validateConfig(WSID, validForm({ apiKey: MASKED_PLACEHOLDER })),
+    ).rejects.toThrow();
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
+  });
+});
+
+// ── Corrupt-schema guard (fail closed) ────────────────────────────────────────
+
+describe("ElasticsearchFormInstallHandler — corrupt catalog schema", () => {
+  it("refuses the install (no INSERT) when the catalog config_schema is corrupt", async () => {
+    // A non-array config_schema (ops edit / migration typo) would make the
+    // walkers act on every string and persist the mask sentinel as the
+    // credential — the handler must reject instead.
+    catalogSchemaOverride = { value: "not-an-array" };
+    const handler = newHandler();
+    await expect(handler.validateConfig(WSID, validForm())).rejects.toThrow(/corrupt/i);
+    expect(captured.find((q) => q.sql.includes("INSERT INTO workspace_plugins"))).toBeUndefined();
   });
 });
 

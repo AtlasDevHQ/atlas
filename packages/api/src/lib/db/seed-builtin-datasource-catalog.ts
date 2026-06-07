@@ -13,21 +13,23 @@
  *   > in `atlas.config.ts` — they ship with Atlas.
  *
  * Idempotency:
- *   - Uses `ON CONFLICT (slug) DO NOTHING` so re-running on a populated
+ *   - Uses unqualified `ON CONFLICT DO NOTHING` (covers both the `slug`
+ *     unique index AND the `id` primary key) so re-running on a populated
  *     catalog is a no-op. The atlas.config.ts catalog seeder
  *     (`integrations/catalog-seeder.ts`) updates mutable fields on
  *     existing rows; this seed deliberately leaves them alone — once
  *     a built-in row exists, an operator who edited its `name` or
  *     `description` via SQL keeps that edit.
- *   - Slice 5 ships the resolver inert (no ConnectionRegistry consumer);
- *     a seed-time failure logs at error and the API keeps booting —
+ *   - A seed-time failure logs at error and the API keeps booting —
  *     pre-existing rows answer admin-UI reads.
  *
- * Inert until slice 6 (#2744): no production caller reads from these
- * rows. The seeded rows do, however, surface as catalog entries in
- * admin-UI listings — they appear in the integrations marketplace as
- * `pillar = 'datasource'` cards (slice 8 / #2746 pivots the UI to
- * surface them on `/admin/connections`).
+ * These rows are live: they surface as catalog entries in admin-UI listings
+ * (integrations marketplace `pillar = 'datasource'` cards), and form-install
+ * handlers read them at install time to drive config_schema-based encryption
+ * (e.g. `ElasticsearchFormInstallHandler`, #3270, reads the `elasticsearch`
+ * row's `config_schema`). The `DatasourcePoolResolver` registry path remains
+ * native-only (postgres/mysql) — query wiring for admin-installed plugin
+ * datasources is tracked in #3295.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

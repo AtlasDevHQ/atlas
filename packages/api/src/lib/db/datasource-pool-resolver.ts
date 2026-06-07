@@ -193,6 +193,12 @@ export interface ElasticsearchPoolConfig {
    * authenticate without an `apiKey` — the catalog `config_schema` enforces
    * which auth fields are required per mode. Decrypted upstream by the caller
    * (`decryptSecretFields`) before the resolver sees it.
+   *
+   * TRANSITIONAL: with only API-key auth shipping today this optional under-
+   * constrains the type (a valid install always has `apiKey`). When a second
+   * auth mode lands, promote this to a tagged per-auth-mode sub-union
+   * (`{ authMode: "apiKey"; apiKey: string } | { authMode: "basic"; ... }`)
+   * so each mode's credential is non-optional and exhaustive-switchable.
    */
   readonly apiKey?: string;
   readonly description?: string;

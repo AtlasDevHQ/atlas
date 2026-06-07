@@ -44,9 +44,9 @@ const log = createLogger("db.seed-builtin-datasource-catalog");
 /**
  * Declarative description of a single built-in Datasource catalog row.
  * Mirrors `plugin_catalog`'s column shape for the columns the seed sets.
- * `min_plan`, `enabled`, `saas_eligible` are pinned to the row's
- * canonical values; `created_at` / `updated_at` are written as `NOW()`
- * in the SQL — no field here.
+ * `min_plan` and `enabled` are pinned to canonical values in the SQL;
+ * `saas_eligible` is per row (#3301 — DuckDB is `false`); `created_at` /
+ * `updated_at` are written as `NOW()` in the SQL — no field here.
  *
  * `configSchema` reuses {@link ConfigSchemaField} (the same shape the
  * rest of the codebase reads back from `plugin_catalog.config_schema`
@@ -61,6 +61,15 @@ export interface BuiltinDatasourceCatalogRow {
   readonly description: string;
   readonly installModel: "form" | "oauth";
   readonly autoInstall: boolean;
+  /**
+   * Whether this datasource may be installed on a SaaS deploy (#3301).
+   * `false` rows are filtered out of the SaaS marketplace
+   * (`/marketplace/available`) — DuckDB is file-path based and not
+   * multi-tenant safe, so it is the lone `false` row. Existing DBs are
+   * converged by migration 0124; fresh DBs get the right value from
+   * 0093/0123 + this seed. Self-hosted ignores the flag entirely.
+   */
+  readonly saasEligible: boolean;
   readonly configSchema: ReadonlyArray<ConfigSchemaField>;
 }
 
@@ -71,6 +80,11 @@ export interface BuiltinDatasourceCatalogRow {
  * across both surfaces — keeping the SQL migrations structurally identical
  * to this table is enforced by the `migration-and-seed-stay-aligned` test in
  * `__tests__/seed-builtin-datasource-catalog.test.ts`.
+ *
+ * `saas_eligible` is per row (#3301): DuckDB is `false` (file-path based,
+ * not multi-tenant safe), the rest `true`. Migrations 0093/0123 seeded
+ * every row `true`; migration 0124 converges the DuckDB row on existing
+ * DBs, and this seed asserts the same value on fresh / re-seeded DBs.
  *
  * `config_schema` `secret: true` fields drive
  * `plugins/secrets.ts::encryptSecretFields` so per-workspace credentials
@@ -85,6 +99,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a PostgreSQL database as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "url",
@@ -115,6 +130,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a MySQL database as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "url",
@@ -140,6 +156,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a Snowflake account as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "url",
@@ -166,6 +183,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a ClickHouse instance as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "url",
@@ -190,6 +208,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a Google BigQuery project as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "service_account_json",
@@ -220,6 +239,9 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a DuckDB file as an analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    // #3301 — file-path based, not multi-tenant safe; the only built-in
+    // datasource hidden from the SaaS marketplace.
+    saasEligible: false,
     configSchema: [
       {
         key: "path",
@@ -243,6 +265,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
     description: "Connect a Salesforce org as an analytics datasource via OAuth.",
     installModel: "oauth",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [],
   },
   {
@@ -253,6 +276,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
       "Atlas-managed demo Postgres dataset, shared across all workspaces.",
     installModel: "form",
     autoInstall: true,
+    saasEligible: true,
     configSchema: [],
   },
   {
@@ -269,6 +293,7 @@ export const BUILTIN_DATASOURCE_CATALOG_ROWS: ReadonlyArray<BuiltinDatasourceCat
       "Connect an Elasticsearch or OpenSearch cluster as a read-only analytics datasource.",
     installModel: "form",
     autoInstall: false,
+    saasEligible: true,
     configSchema: [
       {
         key: "url",
@@ -343,20 +368,21 @@ export async function seedBuiltinDatasourceCatalog(
     }
   }
 
-  // Parameterised bulk INSERT — each row contributes 7 placeholders
+  // Parameterised bulk INSERT — each row contributes 8 placeholders
   // (id, name, slug, description, install_model, auto_install,
-  // config_schema). The remaining 8 columns are SQL literals
-  // (`'datasource'` for type and pillar, `'available'` for status,
-  // `'starter'` for min_plan, two `true`s for enabled + saas_eligible,
-  // and two `NOW()` timestamps). Column order matches migration 0093's
-  // VALUES block — drift is checked by
-  // `__tests__/seed-builtin-datasource-catalog.test.ts`'s
+  // saas_eligible, config_schema). The remaining 7 columns are SQL
+  // literals (`'datasource'` for type and pillar, `'available'` for
+  // status, `'starter'` for min_plan, one `true` for enabled, and two
+  // `NOW()` timestamps). `saas_eligible` is bound per row (#3301) so
+  // DuckDB lands `false` on a fresh DB; existing DBs are converged by
+  // migration 0124. Column order matches migration 0093's VALUES block —
+  // drift is checked by `__tests__/seed-builtin-datasource-catalog.test.ts`'s
   // `migration-and-seed-stay-aligned` suite.
   const placeholders: string[] = [];
   const params: unknown[] = [];
   let p = 0;
   for (const row of BUILTIN_DATASOURCE_CATALOG_ROWS) {
-    const placeholder = `($${++p}, $${++p}, $${++p}, $${++p}, 'datasource', $${++p}, 'datasource', 'available', $${++p}, 'starter', true, true, $${++p}::jsonb, NOW(), NOW())`;
+    const placeholder = `($${++p}, $${++p}, $${++p}, $${++p}, 'datasource', $${++p}, 'datasource', 'available', $${++p}, 'starter', true, $${++p}, $${++p}::jsonb, NOW(), NOW())`;
     placeholders.push(placeholder);
     params.push(
       row.id,
@@ -365,6 +391,7 @@ export async function seedBuiltinDatasourceCatalog(
       row.description,
       row.installModel,
       row.autoInstall,
+      row.saasEligible,
       JSON.stringify(row.configSchema),
     );
   }

@@ -29,6 +29,7 @@ import {
   ElasticsearchFormInstallHandler,
   ELASTICSEARCH_SLUG,
 } from "./elasticsearch-form-handler";
+import { DatasourceFormInstallHandler } from "./datasource-form-handler";
 import { ObsidianFormInstallHandler } from "./obsidian-form-handler";
 import { OpenApiGenericFormInstallHandler } from "./openapi-generic-form-handler";
 import { OPENAPI_GENERIC_SLUG } from "@atlas/api/lib/openapi/catalog";
@@ -165,6 +166,31 @@ export function registerBuiltinInstallHandlers(): void {
   // the install/edit path.
   registerFormHandler(ELASTICSEARCH_SLUG, new ElasticsearchFormInstallHandler());
   log.info("Registered ElasticsearchFormInstallHandler");
+  // SQL plugin datasources (#3300) — ClickHouse / Snowflake / BigQuery become
+  // form-installable on SaaS now that the runtime connect path is uniform across
+  // plugin datasources (#3297/#3299 adapter registration + the `createFromConfig`
+  // bridge; #3295 query-path wiring). Each registers the generic
+  // `DatasourceFormInstallHandler` pinned to its slug — single-instance per
+  // workspace (install_id = slug), config_schema-driven (reads the catalog row
+  // live so the `secret: true` field(s) — ClickHouse/Snowflake `url`, BigQuery
+  // `service_account_json` — encrypt at rest with no per-type branch). No env
+  // gate: the customer admin supplies credentials at install, same as every other
+  // form handler. `loadSavedConnections` boot-registers the persisted
+  // `pillar='datasource'` row via the bridge so the install becomes queryable
+  // after a reload. The catalog rows already exist (seed-builtin-datasource-
+  // catalog.ts) — this only wires the install handler. (Postgres / MySQL stay on
+  // the native config-managed path; DuckDB is a local file, not SaaS-installable;
+  // Salesforce uses the OAuth datasource handler.)
+  for (const datasourceSlug of ["clickhouse", "snowflake", "bigquery"] as const) {
+    registerFormHandler(
+      datasourceSlug,
+      new DatasourceFormInstallHandler({ slug: datasourceSlug, installId: datasourceSlug }),
+    );
+  }
+  log.info(
+    { slugs: ["clickhouse", "snowflake", "bigquery"] },
+    "Registered DatasourceFormInstallHandler(s) for SQL plugin datasources",
+  );
   registerFormHandler("obsidian", new ObsidianFormInstallHandler());
   log.info("Registered ObsidianFormInstallHandler");
   // Generic OpenAPI REST datasource (#2926). Datasource-pillar, multi-instance

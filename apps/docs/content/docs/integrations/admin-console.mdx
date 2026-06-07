@@ -41,8 +41,11 @@ Cards are grouped by `type`:
 - **Integrations** — Salesforce, Jira, GitHub, Linear, Email, Webhook,
   Obsidian, and others. These extend Atlas's data surface or delivery channels.
 - **Datasources** — read-only query targets. PostgreSQL and MySQL are native;
-  Elasticsearch / OpenSearch and others install here from the console (a
-  config-schema-driven form) instead of editing `atlas.config.ts`.
+  Elasticsearch / OpenSearch, ClickHouse, Snowflake, and BigQuery install here
+  from the console (a config-schema-driven form) instead of editing
+  `atlas.config.ts`. These plugin datasources are form-installable on SaaS too —
+  the credentials you enter are encrypted at rest and the connection becomes
+  queryable once the deployment reloads.
 
 ## Install state
 
@@ -80,11 +83,14 @@ Clicking **Connect** runs the install flow for the card's `installModel`:
   authorization tab against the Platform. After you approve, Atlas writes
   a `workspace_plugins` row and the card flips to **Installed**.
 - **Form** (Email, Webhook, Obsidian, Linear via API key, Elasticsearch /
-  OpenSearch) — opens a modal that collects the credentials inline and writes
-  the `workspace_plugins` row on submit. The form fields are rendered from the
-  catalog entry's `config_schema`, and any field marked `secret: true` (e.g.
-  the Elasticsearch API key) is encrypted at rest, masked on read, and
-  preserved on save when left unchanged.
+  OpenSearch, ClickHouse, Snowflake, BigQuery) — opens a modal that collects
+  the credentials inline and writes the `workspace_plugins` row on submit. The
+  form fields are rendered from the catalog entry's `config_schema`, and any
+  field marked `secret: true` (e.g. the Elasticsearch API key, the ClickHouse /
+  Snowflake connection URL, or the BigQuery service-account JSON) is encrypted
+  at rest, masked on read, and preserved on save when left unchanged. After
+  install, the connection is registered on the next deployment reload and the
+  agent can query it via `executeSQL`.
 - **Static-bot** (Discord, Telegram, WhatsApp, Google Chat, Teams) —
   installed from their per-platform admin blocks further down the page
   rather than via the catalog card's Connect button (which is inert for

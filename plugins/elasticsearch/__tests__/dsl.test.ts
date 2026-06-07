@@ -195,6 +195,24 @@ describe("validateEsDslRequest — adversarial: mutating scripts", () => {
     expect(result.valid).toBe(false);
   });
 
+  test("does NOT false-positive on a document field named 'source' whose value contains 'ctx.'", () => {
+    // Log/event indices commonly have a `source` field; matching it must not be
+    // mistaken for a script body. Only `script`/`*_script` subtrees are scanned.
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { query: { term: { source: "ctx.payment-service" } } },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test("does NOT false-positive on an 'inline' document field containing 'ctx['", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { query: { match: { inline: "ctx[0] reference" } } },
+    });
+    expect(result.valid).toBe(true);
+  });
+
   test("denies a mutating script in a _count body too", () => {
     const result = validateEsDslRequest({
       endpoint: "_count",

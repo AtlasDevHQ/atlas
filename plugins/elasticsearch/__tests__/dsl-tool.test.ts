@@ -173,12 +173,12 @@ describe("createElasticsearchClient.dslQuery", () => {
       ),
     );
     const client = makeClient(fetchImpl);
-    let message = "";
-    try {
-      await client.dslQuery({ index: "products", endpoint: "_search", body: {} });
-    } catch (err) {
-      message = err instanceof Error ? err.message : String(err);
-    }
+    const message = await client
+      .dslQuery({ index: "products", endpoint: "_search", body: {} })
+      .then(
+        () => "",
+        (err) => (err instanceof Error ? err.message : String(err)),
+      );
     expect(message).not.toContain(API_KEY);
   });
 

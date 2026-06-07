@@ -144,11 +144,15 @@ queries. Ordinary tabular questions stay on SQL.
 The DSL surface is gated by a custom **default-deny** validator — the security
 boundary. Anything not explicitly allowed is rejected:
 
-1. **Endpoints** — only read shapes (`_search`, `_count`, `_msearch`,
-   `_field_caps`, `_mapping`, read-only `_cat/*`). Every mutating / administrative
-   endpoint (`_bulk`, `_update`, `_delete_by_query`, `_update_by_query`, `_doc`,
-   `_create`, `_reindex`, index create/delete, …) and any unknown endpoint is
-   rejected. Path-traversal and query-string smuggling are blocked first.
+1. **Endpoints** — the validator allows only read shapes (`_search`, `_count`,
+   `_msearch`, `_field_caps`, `_mapping`, read-only `_cat/*`) as defense-in-depth.
+   Every mutating / administrative endpoint (`_bulk`, `_update`,
+   `_delete_by_query`, `_update_by_query`, `_doc`, `_create`, `_reindex`, index
+   create/delete, …) and any unknown endpoint is rejected; path-traversal and
+   query-string smuggling are blocked first. Note the **`queryElasticsearch` tool
+   itself executes only `_search` and `_count`** (its `endpoint` input is a
+   two-value enum) — the broader validator allow-list is a second, internal gate,
+   not a list of endpoints you can drive from the tool today.
 2. **No smuggled writes** — a bulk-style action key (`index` / `create` / `update`
    / `delete`) at the top level of a read body is rejected.
 3. **No mutating scripts** — a script referencing `ctx` (`ctx._source`, `ctx.op`,

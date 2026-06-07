@@ -128,16 +128,23 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
  * `_cat/<resource>`). Anything else is denied — the default-deny posture.
  */
 export function isReadEndpoint(endpoint: string): boolean {
-  if (typeof endpoint !== "string") return false;
-  const ep = endpoint.trim().replace(/^\/+|\/+$/g, "");
-  if (ep === "") return false;
-  // Charset guard: only word chars + single internal slash segments. Blocks
-  // traversal (`..`), query-string smuggling (`?`), and nested index paths
-  // (`flights/_doc/1`) before the allow-list check.
-  if (!/^[a-z0-9_]+(\/[a-z0-9_]+)?$/i.test(ep)) return false;
+  if (typeof endpoint !== "string" || endpoint.length > 256) return false;
+  const ep = endpoint.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+  // A real read endpoint is short (`_field_caps`, `_cat/indices`); bound the
+  // length so the per-segment checks below can never run on a pathological input.
+  if (ep === "" || ep.length > 64) return false;
 
-  if (ep === "_cat" || ep.startsWith("_cat/")) return true;
-  return ES_READ_ENDPOINTS.has(ep);
+  // Split into at most two segments and validate each with a SIMPLE, anchored,
+  // single-quantifier character class — no nested quantifiers (ReDoS-safe).
+  // This blocks traversal (`..`), query-string smuggling (`?`), and nested index
+  // paths (`flights/_doc/1`) before the allow-list check.
+  const segments = ep.split("/");
+  if (segments.length > 2) return false;
+  const SEGMENT = /^[a-z0-9_]+$/i;
+  if (!segments.every((s) => SEGMENT.test(s))) return false;
+
+  if (segments[0] === "_cat") return true; // `_cat` or `_cat/<resource>`
+  return segments.length === 1 && ES_READ_ENDPOINTS.has(ep);
 }
 
 /** Recursively test every string inside a `script` subtree for mutation markers. */
@@ -152,12 +159,15 @@ function scriptSubtreeMutates(node: unknown): boolean {
  * Walk the whole body; when a script-bearing key is found, scan its subtree for
  * mutation markers. Returns true if any mutating script is present anywhere.
  *
- * Script-bearing keys are `script`, any `*_script` (the `scripted_metric` agg's
- * `init_script` / `map_script` / `combine_script` / `reduce_script`), and the
- * raw `source` / `inline` script-body fields — so `script_score`, a `script`
- * agg, `script_fields`, `runtime_mappings`, and `scripted_metric` are all
- * covered. Scanning is scoped to these keys (not every string) so a legitimate
- * full-text search for the literal text "ctx." doesn't false-positive.
+ * Script-bearing keys are `script` and any `*_script` (the `scripted_metric`
+ * agg's `init_script` / `map_script` / `combine_script` / `reduce_script`). The
+ * full subtree under such a key is scanned, so the nested `source` / `inline`
+ * script-body strings are covered — and `script_score`, a `script` agg,
+ * `script_fields`, `runtime_mappings`, and `scripted_metric` all expose one of
+ * these keys. Scanning is scoped to these keys (NOT every string, and NOT bare
+ * `source` / `inline` fields, which collide with ordinary document fields like a
+ * log `source`), so a legitimate full-text search for the literal text "ctx."
+ * doesn't false-positive.
  */
 function bodyHasMutatingScript(node: unknown): boolean {
   if (Array.isArray(node)) return node.some(bodyHasMutatingScript);
@@ -165,13 +175,6 @@ function bodyHasMutatingScript(node: unknown): boolean {
   for (const [key, value] of Object.entries(node)) {
     const isScriptKey = key === "script" || /_script$/.test(key);
     if (isScriptKey && scriptSubtreeMutates(value)) return true;
-    if (
-      (key === "source" || key === "inline") &&
-      typeof value === "string" &&
-      MUTATING_SCRIPT_PATTERN.test(value)
-    ) {
-      return true;
-    }
     if (bodyHasMutatingScript(value)) return true;
   }
   return false;

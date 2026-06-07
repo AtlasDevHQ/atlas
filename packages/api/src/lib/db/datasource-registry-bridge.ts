@@ -39,8 +39,8 @@ import {
  * Structural shape of a datasource plugin's `connection` object, matched
  * against `PluginRegistry` entries by `dbType`. Declared locally (not imported
  * from `@useatlas/plugin-sdk`) so core `@atlas/api` stays decoupled from the
- * plugin packages — the same convention `lib/plugins/wiring.ts` uses, and what
- * ADR-0006's adapter extraction requires.
+ * plugin packages — the same convention `lib/plugins/wiring.ts` uses, preserving
+ * the core→plugin decoupling the adapter-to-plugin extraction established.
  */
 interface DatasourceConnectionShape {
   dbType: string;
@@ -54,6 +54,7 @@ interface DatasourceConnectionShape {
   forbiddenPatterns?: RegExp[];
 }
 
+/** Narrow a registry plugin to its datasource `connection` shape, or undefined if it isn't one. */
 function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | undefined {
   const c = (plugin as { connection?: unknown } | null)?.connection;
   if (c && typeof c === "object" && typeof (c as { dbType?: unknown }).dbType === "string") {
@@ -69,6 +70,8 @@ function pluginTargetHost(poolConfig: DatasourcePoolConfig): string {
     try {
       return new URL(url).hostname || "(plugin)";
     } catch {
+      // intentionally ignored: targetHost is a best-effort audit label, not a
+      // routing/security value — a malformed URL falls back to "(plugin)".
       return "(plugin)";
     }
   }
@@ -120,7 +123,9 @@ async function registerPluginDatasourceInstall(
   connections.registerDirectForWorkspace(
     row.workspaceId,
     row.installId,
-    built as unknown as DBConnection,
+    // Single structural assertion (DBConnection is a superset of the plugin's
+    // {query,close} shape) — mirrors lib/plugins/wiring.ts; no `unknown` launder.
+    built as DBConnection,
     poolConfig.dbType,
     (poolConfig as { description?: string }).description,
     conn.validate,
@@ -217,14 +222,18 @@ export async function registerDatasourceInstall(
  *     config update / uninstall propagates immediately instead of serving the
  *     OLD config until LRU eviction / restart (#3109). Step 1 drops the routing
  *     config; this drops the live pool, keeping them symmetric.
- *  3. Removes the shared bare `entries` row ONLY when no OTHER workspace still
+ *  3. Closes + drops a DB-stored plugin connection (clickhouse / snowflake / …)
+ *     held in `workspacePluginEntries` for this (workspace, install_id) — the
+ *     plugin counterpart to step 1+2's native teardown (#3253).
+ *  4. Removes the shared bare `entries` row ONLY when no OTHER workspace still
  *     owns the install_id (`hasWorkspacePoolsFor`). A sibling sharing the
  *     install_id keeps the bare row so its install-id-keyed metadata
  *     (getDBType / getTargetHost / validators) keeps resolving.
  *
  * The registry's own `unregister` throws if the id isn't present; we guard
- * with `has()` so the soft-archive path (status → archived) is a no-op when
- * the row was never pooled (e.g. clickhouse).
+ * with `has()` so the soft-archive path (status → archived) is a no-op for the
+ * BARE row when the install never populated it (plugin datasources never do —
+ * their teardown is step 3's `unregisterDirectForWorkspace`).
  */
 export function unregisterDatasourceInstall(workspaceId: string, installId: string): boolean {
   const removedWorkspace = connections.unregisterForWorkspace(workspaceId, installId);

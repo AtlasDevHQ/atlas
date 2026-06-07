@@ -3,11 +3,11 @@
 **Status:** Accepted
 **Date:** 2026-06-06
 **Context milestone:** Staging Environment (#57) — staging datasource matrix (#3253)
-**Depends on:** [ADR-0006](./0006-three-pillar-integration-taxonomy.md) (adapter extraction to plugins), [ADR-0007](./0007-unified-install-pipeline.md) (datasource pillar / `workspace_plugins`)
+**Depends on:** [ADR-0006](./0006-three-pillar-integration-taxonomy.md) (three-pillar datasource taxonomy), [ADR-0007](./0007-unified-install-pipeline.md) (datasource pillar / `workspace_plugins`)
 
 ## Context
 
-Datasource adapters beyond the two core engines (Postgres, MySQL) were extracted into plugins (`@useatlas/clickhouse`, `@useatlas/snowflake`, `@useatlas/bigquery`, `@useatlas/duckdb`, `@useatlas/salesforce`, `@useatlas/elasticsearch`) per ADR-0006. Core `@atlas/api` deliberately does **not** import those packages — `db/connection.ts`'s `detectDBType` / `createConnection` switch on postgres/mysql only and throw "this adapter is now a plugin" for anything else (`connection.test.ts:132` codifies that boundary).
+Datasource adapters beyond the two core engines (Postgres, MySQL) were extracted into plugins (`@useatlas/clickhouse`, `@useatlas/snowflake`, `@useatlas/bigquery`, `@useatlas/duckdb`, `@useatlas/salesforce`, `@useatlas/elasticsearch`). That package extraction is its own refactor (not formally ADR'd); ADR-0006 established the datasource pillar those plugins live under. Core `@atlas/api` deliberately does **not** import those packages — `db/connection.ts`'s `detectDBType` / `createConnection` switch on postgres/mysql only and throw "this adapter is now a plugin" for anything else (`connection.test.ts:124` codifies that boundary).
 
 A plugin datasource could be wired two ways, but only one worked:
 
@@ -36,7 +36,7 @@ Concretely:
 
 ### Core dbType→factory switch that `require()`s the plugin packages (rejected)
 
-A `plugin-connection-factory.ts` in core with a `switch (dbType)` that dynamically `require()`s `@useatlas/clickhouse/connection` etc. Smallest diff (no SDK change), and the packages are present in the deploy image. **Rejected:** it reintroduces a core→plugin dependency direction that ADR-0006 deliberately removed and that `connection.test.ts:132` codifies. The registry-based seam keeps `config.plugins` as the contract ("add it to the plugins array", which the error message already promised) and lets the operator gate which datasource types are enabled.
+A `plugin-connection-factory.ts` in core with a `switch (dbType)` that dynamically `require()`s `@useatlas/clickhouse/connection` etc. Smallest diff (no SDK change), and the packages are present in the deploy image. **Rejected:** it reintroduces a core→plugin dependency direction that the adapter-to-plugin extraction deliberately removed and that `connection.test.ts:124` codifies. The registry-based seam keeps `config.plugins` as the contract ("add it to the plugins array", which the error message already promised) and lets the operator gate which datasource types are enabled.
 
 ### Make `connection.create()` accept a runtime config (rejected)
 

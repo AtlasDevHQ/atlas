@@ -652,6 +652,15 @@ export class ConnectionRegistry {
       return existing.conn;
     }
 
+    // DB-stored plugin datasources hold a pre-built live connection per
+    // (workspace, install_id) and are never cloned into orgEntries (the core
+    // createConnection switch can't build plugin dbTypes). Return it directly —
+    // mirrors getForWorkspace, and is required because the SaaS/org-pooling
+    // query path resolves through getForOrg, not getForWorkspace (#3253).
+    // `orgId` IS the workspace id in Atlas.
+    const pluginEntry = this.workspacePluginEntries.get(this._workspaceKey(orgId, connectionId));
+    if (pluginEntry) return pluginEntry.conn;
+
     // Ensure the base connection exists (trigger lazy init for "default")
     if (connectionId === "default" && !this.entries.has("default")) {
       this.getDefault();
@@ -1261,12 +1270,13 @@ export class ConnectionRegistry {
    * Custom query validator for a connection, if one was registered. Callers must
    * verify connection existence first.
    *
-   * A per-(workspace, install_id) routing config is always a NATIVE
-   * postgres/mysql datasource — custom validators (and all plugin metadata) live
-   * only on the bare entry, registered via `registerDirect`. So when a
-   * per-workspace config exists for `(workspaceId, id)`, there is no custom
-   * validator for that workspace: return undefined rather than leak a sibling's
-   * bare validator (#3109).
+   * A DB-stored plugin entry (`workspacePluginEntries`) carries its OWN validator
+   * and is checked first — returned directly (#3253). Otherwise: a per-(workspace,
+   * install_id) NATIVE config is always postgres/mysql, where custom validators
+   * (and all plugin metadata) live only on the bare entry registered via
+   * `registerDirect`. So when only a native per-workspace config exists for
+   * `(workspaceId, id)`, return undefined rather than leak a sibling's bare
+   * validator (#3109).
    */
   getValidator(id: string, workspaceId?: string): ((query: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>) | undefined {
     if (workspaceId) {
@@ -1280,10 +1290,11 @@ export class ConnectionRegistry {
   }
 
   /**
-   * Plugin-provided parser dialect for a connection, if any. Like
-   * {@link getValidator}, a per-(workspace, install_id) config is native, so its
-   * dialect derives from `getDBType` (not plugin metadata) — return undefined to
-   * fall through to the dbType-based default (#3109).
+   * Plugin-provided parser dialect for a connection, if any. A DB-stored plugin
+   * entry returns its own dialect first (#3253). Otherwise, like
+   * {@link getValidator}, a native per-(workspace, install_id) config derives its
+   * dialect from `getDBType` (not plugin metadata) — return undefined to fall
+   * through to the dbType-based default (#3109).
    */
   getParserDialect(id: string, workspaceId?: string): string | undefined {
     if (workspaceId) {
@@ -1298,7 +1309,8 @@ export class ConnectionRegistry {
 
   /**
    * Plugin-provided forbidden patterns for a connection. Empty array if none.
-   * Per-(workspace, install_id) configs are native (no plugin patterns), so the
+   * A DB-stored plugin entry returns its own patterns first (#3253). Otherwise
+   * native per-(workspace, install_id) configs carry no plugin patterns, so the
    * base + dbType-specific patterns apply — return [] for them (#3109).
    */
   getForbiddenPatterns(id: string, workspaceId?: string): RegExp[] {

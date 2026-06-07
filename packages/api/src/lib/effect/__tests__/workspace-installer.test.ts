@@ -1399,7 +1399,10 @@ describe("WorkspaceInstaller.installDatasource", () => {
         !sql.includes("INSERT"),
       rows: [],
     });
-    mockBridgeRegister.mockImplementation(() => {
+    // registerDatasourceInstall is async — exercise the realistic rejected-promise
+    // path (the plugin branch builds a connection), not just a sync throw. Both
+    // flow through Effect.tryPromise's catch → catchAll(log.warn), non-fatal.
+    mockBridgeRegister.mockImplementation(async () => {
       throw new Error("simulated registry rejection");
     });
     const installer = await getLiveService();

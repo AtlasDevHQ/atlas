@@ -799,8 +799,10 @@ export default defineConfig({
   // at rest via AES-256-GCM. OMIT `botToken` so the adapter operates
   // in multi-workspace mode.
   plugins: [
-    // Datasource adapter plugins (#3253) — registered before chat so their
-    // adapters are available when DB-stored datasources wire at boot.
+    // Datasource adapter plugins (#3253). Listed first for clarity — order
+    // within plugins[] doesn't affect boot wiring (the bridge resolves adapters
+    // via the registry's getAll(), order-independent); what matters is that the
+    // whole array registers before loadSavedConnections runs.
     ...stagingDatasourcePlugins(),
     chatPlugin({
       // Catalog-driven adapter activation (#2650 slice 2). The chat

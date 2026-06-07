@@ -362,6 +362,9 @@ export function parseAliases(
   if (!response || typeof response !== "object") return out;
 
   for (const index of Object.keys(response)) {
+    // Skip system backing indices (e.g. `.kibana`) so a non-system alias
+    // pointing at one doesn't pull it into the alias's backing set (#3319).
+    if (!includeSystem && isSystemIndex(index)) continue;
     const aliases = response[index]?.aliases;
     if (!aliases || typeof aliases !== "object") continue;
     for (const alias of Object.keys(aliases)) {

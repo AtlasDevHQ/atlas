@@ -134,9 +134,9 @@ const fakeClickhousePlugin = {
 
 // A salesforce datasource plugin DOES expose createFromConfig (it's a valid SDK
 // seam), but the bridge must never call it — Salesforce is handler-managed
-// (OAuth) and queried via the LazyPluginLoader + querySalesforce tool. Used to
-// prove the bridge skips salesforce regardless of whether the plugin is
-// registered (#3302 / ADR-0014).
+// (OAuth: tokens in integration_credentials, connection built via the
+// LazyPluginLoader). Used to prove the bridge skips salesforce regardless of
+// whether the plugin is registered (#3302 / ADR-0014).
 const mockSalesforceCreateFromConfig = mock((_cfg: Readonly<Record<string, unknown>>) => fakeClickhouseConn);
 const fakeSalesforcePlugin = {
   id: "salesforce-datasource",
@@ -273,10 +273,10 @@ describe("registerDatasourceInstall", () => {
   });
 
   // ── Salesforce is the OAuth exception — never built via the bridge ──────
-  // (#3302 / ADR-0014). These two tests pin "exactly one Salesforce query path":
-  // the bridge refuses to build a connection, so the only live path stays the
-  // OAuth + LazyPluginLoader + querySalesforce tool. They also guard the boot
-  // loop from logging a misleading per-row warning.
+  // (#3302 / ADR-0014). These two tests pin "exactly one Salesforce path": the
+  // bridge refuses to build a connection, so the only live path stays the OAuth
+  // install (tokens in integration_credentials) + LazyPluginLoader. They also
+  // guard the boot loop from logging a misleading per-row warning.
   it("skips salesforce even when a salesforce plugin IS registered — createFromConfig is never called", async () => {
     fakeDatasourcePlugins = [fakeSalesforcePlugin];
     // The OAuth-installed workspace_plugins.config shape: instance_url / scopes

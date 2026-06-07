@@ -42,8 +42,8 @@ import { chatPlugin } from "./plugins/chat/src/index";
 // adapter-only mode for self-host). Postgres + MySQL need no plugin — the bridge
 // registers those DB-stored installs natively. Salesforce is intentionally NOT
 // registered either — it is OAuth-managed (tokens in `integration_credentials`,
-// queried via the `LazyPluginLoader` + `querySalesforce` tool), so the bridge
-// skips it and a `salesforcePlugin({})` registration would be inert. See #3302 /
+// connection built via the `LazyPluginLoader`), so the bridge skips it and a
+// `salesforcePlugin({})` registration would be inert. See #3302 /
 // ADR-0014. The Salesforce OAuth install handler is wired separately in
 // `integrations/install/register.ts`, gated on `SALESFORCE_CLIENT_ID/SECRET`.
 import { clickhousePlugin } from "./plugins/clickhouse/src/index";

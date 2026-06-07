@@ -58,8 +58,8 @@ import { chatPlugin } from "./plugins/chat/src/index";
 // `createFromConfig`. No operator env var, no static datasource. DuckDB is
 // intentionally excluded (file-path based, not a safe multi-tenant datasource);
 // Postgres + MySQL need no plugin (the bridge registers those natively).
-// Salesforce is intentionally excluded too — it is OAuth-managed (queried via
-// the `LazyPluginLoader` + `querySalesforce` tool), so the bridge skips it and a
+// Salesforce is intentionally excluded too — it is OAuth-managed (connection
+// built via the `LazyPluginLoader`), so the bridge skips it and a
 // `salesforcePlugin({})` registration would be inert. See #3302 / ADR-0014.
 import { clickhousePlugin } from "./plugins/clickhouse/src/index";
 import { snowflakePlugin } from "./plugins/snowflake/src/index";

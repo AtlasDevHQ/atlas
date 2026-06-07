@@ -22,9 +22,9 @@
  * silently skipping rows that the catalog declared as required.
  *
  * Salesforce is the exception — it is OAuth-managed (tokens in
- * `integration_credentials`, queried via the `LazyPluginLoader` +
- * `querySalesforce` tool), so this bridge skips it before the plugin path.
- * See `HANDLER_MANAGED_DATASOURCE_DBTYPES` and ADR-0014.
+ * `integration_credentials`, connection built from those tokens via the
+ * `LazyPluginLoader`), so this bridge skips it before the plugin path. See
+ * `HANDLER_MANAGED_DATASOURCE_DBTYPES` and ADR-0014.
  *
  * Pure-ish: the only side effect is the registry mutation. No DB I/O,
  * no logging — callers handle errors and emit the appropriate breadcrumb.
@@ -35,6 +35,7 @@
 import { connections } from "@atlas/api/lib/db/connection";
 import type { ConnectionPluginMeta, DBConnection } from "@atlas/api/lib/db/connection";
 import {
+  type BuiltinDatasourceDbType,
   type DatasourcePoolConfig,
   type DatasourceWorkspacePluginRow,
   resolveDatasourcePoolConfig,
@@ -75,11 +76,12 @@ function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | u
  *   - It installs via OAuth (`SalesforceOAuthInstallHandler`), persisting the
  *     refresh/access tokens in `integration_credentials` (per ADR-0005 /
  *     ADR-0007 — "OAuth-token storage is NOT part of the install-record
- *     unification"), and its `workspace_plugins.config` carries only
- *     `instance_url` / `scopes` / `status` — never a `url`.
- *   - It is queried on demand via the `LazyPluginLoader` + the dedicated
- *     `querySalesforce` tool, which builds a jsforce session from those OAuth
- *     tokens — NOT via `executeSQL` through `ConnectionRegistry`.
+ *     unification"). Its `workspace_plugins.config` carries `instance_url` /
+ *     `scopes` / `status` (+ `org_id` / `org_user_id`) — never a `url`.
+ *   - Its per-workspace connection is built from those OAuth tokens via the
+ *     `LazyPluginLoader` (a jsforce session — see `salesforce/lazy-builder.ts`),
+ *     NOT from `workspace_plugins.config` via `createFromConfig`, and NOT
+ *     queried through `executeSQL` / `ConnectionRegistry`.
  *
  * Because the OAuth config has no `url`, handing it to the plugin's
  * `createFromConfig` (which requires a `salesforce://…` url) would throw on
@@ -88,8 +90,12 @@ function getDatasourceConnection(plugin: unknown): DatasourceConnectionShape | u
  * inert registration #3302 removed. Skipping here keeps the boot loop quiet and
  * records the decision in code: do NOT register `salesforcePlugin({})` expecting
  * the bridge to wire it. See ADR-0014 (Salesforce datasource stays on OAuth).
+ *
+ * Typed against `BuiltinDatasourceDbType` (not `string`) so a typo'd member is
+ * a compile error rather than a silently-never-matching entry.
  */
-const HANDLER_MANAGED_DATASOURCE_DBTYPES: ReadonlySet<string> = new Set(["salesforce"]);
+const HANDLER_MANAGED_DATASOURCE_DBTYPES: ReadonlySet<BuiltinDatasourceDbType> =
+  new Set(["salesforce"]);
 
 /** Best-effort host for audit logging from a plugin pool config's URL (no credentials). */
 function pluginTargetHost(poolConfig: DatasourcePoolConfig): string {
@@ -193,10 +199,10 @@ export async function registerDatasourceInstall(
   const poolConfig: DatasourcePoolConfig = resolveDatasourcePoolConfig(row, decryptedConfig);
 
   // Handler-managed (OAuth) datasources — Salesforce — never register a pool
-  // here. Their connection is built on demand by the `LazyPluginLoader` from
-  // tokens in `integration_credentials`, not from `workspace_plugins.config`
-  // via `createFromConfig`. Returning `false` (nothing registered) keeps the
-  // boot loop from feeding an OAuth config (no `url`) to the plugin's
+  // here. Their connection is built from tokens in `integration_credentials`
+  // via the `LazyPluginLoader`, not from `workspace_plugins.config` via
+  // `createFromConfig`. Returning `false` (nothing registered) keeps the boot
+  // loop from feeding an OAuth config (no `url`) to the plugin's
   // `createFromConfig` and logging a misleading per-row warning. See ADR-0014.
   if (HANDLER_MANAGED_DATASOURCE_DBTYPES.has(poolConfig.dbType)) {
     return false;

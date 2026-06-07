@@ -402,8 +402,8 @@ describe("adapter-only mode", () => {
     await plugin.initialize!(ctx);
     // The querySalesforce tool is hardwired to the static connection, so the
     // plugin doesn't register it in adapter-only mode. (SaaS per-workspace
-    // Salesforce is OAuth-installed and served by a querySalesforce tool the
-    // LazyPluginLoader builds per workspace — not by this plugin registration.)
+    // Salesforce is OAuth-installed and its connection is built via the
+    // LazyPluginLoader from the OAuth session — not by this plugin registration.)
     expect(registered.some((t) => t.name === "querySalesforce")).toBe(false);
   });
 

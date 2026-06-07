@@ -1049,33 +1049,29 @@ describe("initialize", () => {
     expect((result as { error: string }).error).toContain("not in the allowed list");
   });
 
-  test("logs warning when whitelist loading fails", async () => {
+  test("fails CLOSED when the whitelist can't be loaded (does not silently allow)", async () => {
+    // If `tables()` throws (whitelist unloadable), the query must be REFUSED —
+    // not swallowed into an empty set, which validateSOQL treats as
+    // structural-only (a silent widening of access). #3307.
     const plugin = salesforcePlugin({ url: VALID_URL });
-    const warned: string[] = [];
     const registered: { name: string; tool: unknown }[] = [];
     const ctx = {
       db: null,
       connections: { get: () => { throw new Error("not implemented"); }, list: () => [], tables: () => { throw new Error("semantic layer not ready"); } },
       tools: { register: (t: { name: string; description: string; tool: unknown }) => { registered.push(t); } },
-      logger: {
-        info: () => {},
-        warn: (...args: unknown[]) => { warned.push(JSON.stringify(args)); },
-        error: () => {},
-        debug: () => {},
-      },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
       config: {},
     };
     await plugin.initialize!(ctx);
 
-    // The warning happens lazily when getWhitelist is called, so trigger it
-    const sfTool = registered[0].tool as { execute?: (args: unknown, opts: unknown) => Promise<unknown> };
-    if (sfTool.execute) {
-      await sfTool.execute(
+    const sfTool = registered[0].tool as { execute: (args: unknown, opts: unknown) => Promise<unknown> };
+    // getWhitelist throws → execute rejects → the SELECT never runs (fail-closed).
+    await expect(
+      sfTool.execute(
         { soql: "SELECT Id FROM Account", explanation: "test" },
-        { toolCallId: "test", messages: [], abortSignal: undefined },
-      );
-    }
-    expect(warned.some((w) => w.includes("whitelist"))).toBe(true);
+        { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
+      ),
+    ).rejects.toThrow(/semantic layer not ready/);
   });
 });
 

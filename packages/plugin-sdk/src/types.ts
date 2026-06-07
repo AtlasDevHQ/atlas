@@ -129,13 +129,19 @@ export interface AtlasPluginContext {
     /**
      * Semantic-layer entity/table (for ES: index) names registered for a
      * connection — the per-object membership whitelist a plugin query tool must
-     * enforce. Mirrors the source `executeSQL` validates against
+     * enforce. In self-host / static-datasource mode this mirrors the
+     * filesystem whitelist `executeSQL` validates against
      * (`getWhitelistedTables(connectionId)`), so a plugin's bespoke query tool
-     * (SOQL / Query DSL) honors the same boundary as the SQL path. Returns `[]`
-     * when the connection has no semantic layer; a tool fed an empty set falls
-     * back to structural-only validation. See #3307.
+     * (SOQL / Query DSL) honors the same boundary as the SQL path. (Org-scoped
+     * SaaS validates `executeSQL` against the DB-backed `getOrgWhitelistedTables`;
+     * the static-config tools this serves are a self-host surface.)
+     *
+     * `id` must be a registered connection id (typically the plugin's own `id`);
+     * an unrecognized id returns `[]`. Returns `[]` when the connection has no
+     * semantic layer — a tool fed an empty set falls back to structural-only
+     * validation, so a typo'd id silently downgrades enforcement. See #3307.
      */
-    tables(id: string): string[];
+    tables(id: string): readonly string[];
   };
   /** Tool registry — plugins can register additional tools. */
   tools: {

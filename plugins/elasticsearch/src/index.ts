@@ -423,10 +423,12 @@ export function buildElasticsearchPlugin(
         const esTool = createQueryElasticsearchTool({
           getConnection: () => getOrCreateConnection(),
           // The index MEMBERSHIP whitelist is the semantic layer's index names
-          // for this connection — `ctx.connections.tables(id)`, the SAME source
-          // `executeSQL` validates against (`getWhitelistedTables`). So the DSL
-          // tool and the SQL surface enforce the identical per-index boundary
-          // (#3307). NOTE: `ctx.connections.list()` would be wrong here — it
+          // for this connection — `ctx.connections.tables(id)`, the same
+          // filesystem whitelist `executeSQL` validates against in self-host /
+          // static mode (`getWhitelistedTables`). So the DSL tool and the SQL
+          // surface enforce the identical per-index boundary (#3307). (This tool
+          // is static-only; SaaS per-workspace ES is queried over the SQL path.)
+          // NOTE: `ctx.connections.list()` would be wrong here — it
           // returns CONNECTION IDs, not index names, so it can never match a
           // real index like "flights". When the semantic layer is empty the
           // accessor returns `[]` and `validateIndexAccess` falls back to its

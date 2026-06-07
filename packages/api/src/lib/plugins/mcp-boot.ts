@@ -68,10 +68,14 @@ export async function bootPluginsForMcp(): Promise<{
       // analytics ConnectionRegistry — those are boot products of the
       // Hono server. Plugins designed to run in MCP context must
       // tolerate `db: null` and an empty connections list. `tables` is
-      // likewise empty (no semantic whitelist) — fine here because
-      // `tools.register` below is a no-op, so a plugin's bespoke query tool
-      // (which would consult `tables` for its whitelist) is never served from
-      // this path; the real, whitelist-backed context is the Hono boot's.
+      // likewise empty (no semantic whitelist) — fine here for two independent
+      // reasons: (1) `tools.register` below is a no-op, so the bespoke query
+      // tool a plugin builds in `initialize` (which consults `tables` for its
+      // whitelist) is built-and-discarded; and (2) MCP serves only the tools a
+      // plugin returns from `mcpTools()` (wired separately by
+      // `wireMcpToolPlugins`), never the agent tools passed to `tools.register`
+      // — and the ES/SF DSL tools register only via `tools.register`. The real,
+      // whitelist-backed context is the Hono boot's.
       db: null,
       connections: { get: () => ({}), list: () => [], tables: () => [] },
       tools: { register: () => {} },

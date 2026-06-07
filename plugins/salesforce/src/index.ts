@@ -219,21 +219,18 @@ export function buildSalesforcePlugin(
           getConnection: () => getOrCreateConnection(),
           // The object MEMBERSHIP whitelist is the semantic layer's object names
           // for this connection — `ctx.connections.tables(id)`, the same source
-          // the SQL pipeline validates against (#3307). `ctx.connections.list()`
-          // would be wrong: it returns CONNECTION IDs, never object names like
-          // "Account", so validateSOQL would reject every legitimate query. An
-          // empty layer returns `[]` → validateSOQL falls back to structural-only.
-          getWhitelist: () => {
-            try {
-              return new Set(ctx.connections.tables(DATASOURCE_ID));
-            } catch (err) {
-              ctx.logger.warn(
-                { err: err instanceof Error ? err.message : String(err) },
-                "Failed to load Salesforce object whitelist — queries may be rejected",
-              );
-              return new Set<string>();
-            }
-          },
+          // the SQL pipeline validates against in self-host/static mode (#3307).
+          // `ctx.connections.list()` would be wrong: it returns CONNECTION IDs,
+          // never object names like "Account", so validateSOQL would reject
+          // every legitimate query. An empty layer returns `[]` → validateSOQL
+          // falls back to structural-only.
+          //
+          // Fail CLOSED: we deliberately do NOT catch here. If the whitelist
+          // can't be loaded the error propagates and the query is refused —
+          // swallowing it into an empty set would silently widen access to
+          // structural-only (the "false negative on a security check" anti-pattern).
+          // Symmetric with the ES DSL tool.
+          getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
           connectionId: "salesforce",
           logger: ctx.logger,
         });

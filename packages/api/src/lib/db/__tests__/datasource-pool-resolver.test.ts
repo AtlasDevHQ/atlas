@@ -68,6 +68,7 @@ describe("resolveDatasourcePoolConfig", () => {
         { slug: "bigquery", dbType: "bigquery" as const },
         { slug: "duckdb", dbType: "duckdb" as const },
         { slug: "salesforce", dbType: "salesforce" as const },
+        { slug: "elasticsearch", dbType: "elasticsearch" as const },
       ];
       for (const { slug, dbType } of cases) {
         expect(catalogSlugToDbType(slug)).toBe(dbType);
@@ -81,7 +82,7 @@ describe("resolveDatasourcePoolConfig", () => {
     });
 
     it("covers every BUILTIN_DATASOURCE_CATALOG_SLUGS entry", () => {
-      expect(BUILTIN_DATASOURCE_CATALOG_SLUGS).toHaveLength(8);
+      expect(BUILTIN_DATASOURCE_CATALOG_SLUGS).toHaveLength(9);
       for (const slug of BUILTIN_DATASOURCE_CATALOG_SLUGS) {
         catalogSlugToDbType(slug);
       }
@@ -266,6 +267,39 @@ describe("resolveDatasourcePoolConfig", () => {
     });
   });
 
+  describe("elasticsearch", () => {
+    it("emits an ElasticsearchPoolConfig with url + apiKey + description", () => {
+      const config = resolveDatasourcePoolConfig(baseRow("elasticsearch"), {
+        url: "elasticsearch://es.example.com:9243",
+        apiKey: "base64-encoded-api-key",
+        description: "Prod cluster",
+      });
+      expect(config.dbType).toBe("elasticsearch");
+      if (config.dbType !== "elasticsearch") throw new Error("type narrowing");
+      expect(config.url).toBe("elasticsearch://es.example.com:9243");
+      expect(config.apiKey).toBe("base64-encoded-api-key");
+      expect(config.description).toBe("Prod cluster");
+    });
+
+    it("requires `url` (the one universal field across auth modes)", () => {
+      expect(() =>
+        resolveDatasourcePoolConfig(baseRow("elasticsearch"), {
+          apiKey: "k",
+        }),
+      ).toThrow(/missing.+url/i);
+    });
+
+    it("does not hardcode `apiKey` as required (future Basic/CloudID/SigV4 auth)", () => {
+      // The catalog config_schema enforces per-auth-mode credential requirements;
+      // the resolver only pins `url`. A url-only config must resolve cleanly.
+      const config = resolveDatasourcePoolConfig(baseRow("elasticsearch"), {
+        url: "elasticsearch://es.example.com:9243",
+      });
+      if (config.dbType !== "elasticsearch") throw new Error("type narrowing");
+      expect(config.apiKey).toBeUndefined();
+    });
+  });
+
   describe("optional pool tuning fields", () => {
     it.each(["postgres", "mysql"] as const)(
       "passes maxConnections + idleTimeoutMs through for %s",
@@ -298,6 +332,7 @@ describe("resolveDatasourcePoolConfig", () => {
         duckdb: { path: "/tmp/x.db" },
         salesforce: {},
         "demo-postgres": { url: "postgresql://demo:demo@h/demo" },
+        elasticsearch: { url: "elasticsearch://h:9243", apiKey: "k" },
       };
       const seen = new Set<DatasourcePoolConfig["dbType"]>();
       for (const slug of BUILTIN_DATASOURCE_CATALOG_SLUGS) {
@@ -307,8 +342,9 @@ describe("resolveDatasourcePoolConfig", () => {
         );
         seen.add(config.dbType);
       }
-      // Every built-in db_type produced at least one PoolConfig.
-      expect(seen.size).toBe(7);
+      // Every built-in db_type produced at least one PoolConfig (8 distinct:
+      // postgres+demo-postgres collapse to `postgres`).
+      expect(seen.size).toBe(8);
     });
   });
 });

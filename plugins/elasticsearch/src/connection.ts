@@ -39,7 +39,7 @@ import type {
   PluginLogger,
   ParserDialect,
 } from "@useatlas/plugin-sdk";
-import type { EsMappingResponse } from "./mapping";
+import type { EsMappingResponse, EsAliasResponse, EsDataStreamResponse } from "./mapping";
 import { sigV4SignHeaders } from "./sigv4";
 import { applyDslSafeguards, DEFAULT_DSL_MAX_SIZE, DEFAULT_DSL_TERMINATE_AFTER } from "./dsl";
 
@@ -781,6 +781,18 @@ export interface ElasticsearchClient {
    */
   getMapping(index?: string, timeoutMs?: number): Promise<EsMappingResponse>;
   /**
+   * Fetch alias → backing-index mappings (`GET /_alias`). Powers the `atlas init`
+   * profiler's alias entities (#3269). Carries no credential; errors are
+   * status-only and key-scrubbed, exactly like `getMapping`.
+   */
+  getAliases(timeoutMs?: number): Promise<EsAliasResponse>;
+  /**
+   * Fetch data streams (`GET /_data_stream`). Powers the `atlas init` profiler's
+   * data-stream entities (#3269). Carries no credential; errors are status-only
+   * and key-scrubbed, exactly like `getMapping`.
+   */
+  getDataStreams(timeoutMs?: number): Promise<EsDataStreamResponse>;
+  /**
    * Run an ES SQL statement via `POST /_sql`, following `cursor` pagination up to
    * the row cap, and return the normalized `{ columns, rows }`. Errors are
    * secret-scrubbed before they reach the caller.
@@ -874,6 +886,47 @@ export function createElasticsearchClient(
     return headers;
   }
 
+  /**
+   * Shared GET-and-parse for the credential-free metadata endpoints (`/_alias`,
+   * `/_data_stream`). Mirrors `getMapping`: own abort/timeout, status-only error
+   * (the body can echo the credential), secret-scrubbed catch. `label` only
+   * shapes the timeout/error message. The body is unchecked JSON — the pure
+   * parsers (`parseAliases` / `parseDataStreams`) narrow it defensively.
+   */
+  async function readJson<T>(path: string, label: string, timeoutMs: number): Promise<T> {
+    if (closed) {
+      throw new Error("Elasticsearch client is closed");
+    }
+
+    const fetchImpl = options?.fetchImpl ?? globalThis.fetch;
+    const controller = new AbortController();
+    inFlight.add(controller);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    const url = `${endpoint}${path}`;
+    try {
+      const res = await fetchImpl(url, {
+        method: "GET",
+        headers: buildHeaders("GET", url, ""),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(
+          `Elasticsearch ${label} request failed: HTTP ${res.status} ${res.statusText}`,
+        );
+      }
+      return (await res.json()) as T;
+    } catch (err) {
+      if (controller.signal.aborted && !closed) {
+        throw new Error(`Elasticsearch ${label} request timed out after ${timeoutMs}ms`);
+      }
+      throw new Error(scrubElasticsearchError(err, secrets));
+    } finally {
+      clearTimeout(timer);
+      inFlight.delete(controller);
+    }
+  }
+
   return {
     async ping(timeoutMs = 5000): Promise<ClusterInfo> {
       if (closed) {
@@ -965,6 +1018,14 @@ export function createElasticsearchClient(
         clearTimeout(timer);
         inFlight.delete(controller);
       }
+    },
+
+    async getAliases(timeoutMs = 10000): Promise<EsAliasResponse> {
+      return readJson<EsAliasResponse>("/_alias", "alias", timeoutMs);
+    },
+
+    async getDataStreams(timeoutMs = 10000): Promise<EsDataStreamResponse> {
+      return readJson<EsDataStreamResponse>("/_data_stream", "data-stream", timeoutMs);
     },
 
     async sqlQuery(opts: ElasticsearchSqlQueryOptions): Promise<PluginQueryResult> {

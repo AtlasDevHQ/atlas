@@ -7,11 +7,20 @@ import {
   isSystemIndex,
   mappingToEntity,
   mappingsToEntities,
+  parseAliases,
+  parseDataStreams,
+  indexPatternBase,
+  detectIndexPatterns,
+  buildLogicalEntity,
+  mappingsToLogicalEntities,
+  entityFileSlug,
 } from "../src/mapping";
 import type {
   EsMappingResponse,
   EsIndexMapping,
   EsDimensionType,
+  EsAliasResponse,
+  EsDataStreamResponse,
 } from "../src/mapping";
 
 // ---------------------------------------------------------------------------
@@ -277,5 +286,201 @@ describe("mappingsToEntities", () => {
     expect(mappingsToEntities({})).toEqual([]);
     // @ts-expect-error — exercising the defensive guard
     expect(mappingsToEntities(undefined)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// Logical sources: aliases, data streams, index patterns (#3269)
+// ===========================================================================
+
+describe("parseAliases", () => {
+  test("maps each alias to its backing indices", () => {
+    const resp: EsAliasResponse = {
+      "logs-2024.01.01": { aliases: { logs: {} } },
+      "logs-2024.01.02": { aliases: { logs: {} } },
+      orders_v3: { aliases: { orders: {}, current: {} } },
+    };
+    const aliases = parseAliases(resp);
+    expect([...aliases.get("logs")!].sort()).toEqual([
+      "logs-2024.01.01",
+      "logs-2024.01.02",
+    ]);
+    expect([...aliases.get("orders")!]).toEqual(["orders_v3"]);
+    expect(aliases.has("current")).toBe(true);
+  });
+
+  test("skips system aliases unless asked, and tolerates non-alias shapes", () => {
+    const resp: EsAliasResponse = {
+      app: { aliases: { ".kibana_alias": {}, app_alias: {} } },
+    };
+    expect(parseAliases(resp).has(".kibana_alias")).toBe(false);
+    expect(parseAliases(resp, { includeSystem: true }).has(".kibana_alias")).toBe(true);
+    // A `_mapping`-shaped body (no `aliases` key) yields nothing, never throws.
+    expect(parseAliases({ products: { mappings: {} } } as unknown as EsAliasResponse).size).toBe(0);
+    expect(parseAliases(undefined).size).toBe(0);
+  });
+});
+
+describe("parseDataStreams", () => {
+  test("maps each data stream to its backing indices", () => {
+    const resp: EsDataStreamResponse = {
+      data_streams: [
+        {
+          name: "logs-app",
+          indices: [
+            { index_name: ".ds-logs-app-2024.01.01-000001" },
+            { index_name: ".ds-logs-app-2024.01.02-000002" },
+          ],
+        },
+      ],
+    };
+    const streams = parseDataStreams(resp);
+    expect([...streams.get("logs-app")!]).toEqual([
+      ".ds-logs-app-2024.01.01-000001",
+      ".ds-logs-app-2024.01.02-000002",
+    ]);
+  });
+
+  test("tolerates a non-data-stream shape and skips system streams", () => {
+    expect(parseDataStreams(undefined).size).toBe(0);
+    expect(parseDataStreams({ products: {} } as unknown as EsDataStreamResponse).size).toBe(0);
+    const sys: EsDataStreamResponse = { data_streams: [{ name: ".fleet-actions", indices: [] }] };
+    expect(parseDataStreams(sys).has(".fleet-actions")).toBe(false);
+    expect(parseDataStreams(sys, { includeSystem: true }).has(".fleet-actions")).toBe(true);
+  });
+});
+
+describe("indexPatternBase", () => {
+  test.each([
+    ["logs-2024.01.01", "logs"],
+    ["logs-2024-01-01", "logs"],
+    ["events-2024", "events"],
+    ["metrics-000001", "metrics"],
+    ["filebeat-7.10.0-2024.01.01", "filebeat-7.10.0"],
+  ])("%s → base %s", (index, base) => {
+    expect(indexPatternBase(index)).toBe(base);
+  });
+
+  test.each(["orders", "products", "-leading", "trailing-", "logs-prod"])(
+    "%s → null (no date/rollover suffix)",
+    (index) => {
+      expect(indexPatternBase(index)).toBeNull();
+    },
+  );
+});
+
+describe("detectIndexPatterns", () => {
+  test("collapses ≥2 indices sharing a base into <base>-*", () => {
+    const patterns = detectIndexPatterns([
+      "logs-2024.01.01",
+      "logs-2024.01.02",
+      "metrics-000001",
+      "metrics-000002",
+      "orders",
+    ]);
+    expect(patterns.has("logs-*")).toBe(true);
+    expect(patterns.has("metrics-*")).toBe(true);
+    expect(patterns.has("orders")).toBe(false);
+    expect(patterns.get("logs-*")!.sort()).toEqual([
+      "logs-2024.01.01",
+      "logs-2024.01.02",
+    ]);
+  });
+
+  test("a lone dated index is NOT collapsed (no surprise wildcard)", () => {
+    expect(detectIndexPatterns(["logs-2024.01.01", "orders"]).size).toBe(0);
+  });
+});
+
+describe("buildLogicalEntity", () => {
+  const mapping: EsMappingResponse = {
+    "logs-2024.01.01": {
+      mappings: { properties: { ts: { type: "date" }, level: { type: "keyword" } } },
+    },
+    "logs-2024.01.02": {
+      mappings: { properties: { ts: { type: "date" }, msg: { type: "text" } } },
+    },
+  };
+
+  test("unions fields across member indices and keys on the logical name", () => {
+    const entity = buildLogicalEntity({
+      name: "logs-*",
+      kind: "pattern",
+      memberIndices: ["logs-2024.01.01", "logs-2024.01.02"],
+      response: mapping,
+    })!;
+    expect(entity.table).toBe("logs-*");
+    expect(entity.dimensions.map((d) => d.name).sort()).toEqual(["level", "msg", "ts"]);
+    expect(entity.description).toContain("index pattern");
+    expect(entity.description).toContain("2 backing indices");
+  });
+
+  test("returns null when no member has fields", () => {
+    const entity = buildLogicalEntity({
+      name: "empty-*",
+      kind: "pattern",
+      memberIndices: ["missing-a", "missing-b"],
+      response: mapping,
+    });
+    expect(entity).toBeNull();
+  });
+});
+
+describe("mappingsToLogicalEntities", () => {
+  const mapping: EsMappingResponse = {
+    "logs-2024.01.01": { mappings: { properties: { ts: { type: "date" } } } },
+    "logs-2024.01.02": { mappings: { properties: { ts: { type: "date" } } } },
+    orders_v3: { mappings: { properties: { id: { type: "keyword" } } } },
+    products: { mappings: { properties: { sku: { type: "keyword" } } } },
+    ".kibana": { mappings: { properties: { config: { type: "keyword" } } } },
+  };
+
+  test("emits one entity per pattern / alias / data stream, plus standalone indices", () => {
+    const aliases: EsAliasResponse = { orders_v3: { aliases: { orders: {} } } };
+    const dataStreams: EsDataStreamResponse = {
+      data_streams: [{ name: "events", indices: [{ index_name: ".ds-events-000001" }] }],
+    };
+    const dataStreamMapping: EsMappingResponse = {
+      ".ds-events-000001": { mappings: { properties: { kind: { type: "keyword" } } } },
+    };
+
+    const entities = mappingsToLogicalEntities({
+      mapping,
+      aliases,
+      dataStreams,
+      dataStreamMapping,
+    });
+    const tables = entities.map((e) => e.table).sort();
+    // pattern (logs-*) + alias (orders) + data stream (events) + standalone (products)
+    expect(tables).toEqual(["events", "logs-*", "orders", "products"]);
+    // The aliased index isn't ALSO emitted standalone, nor are the pattern members.
+    expect(tables).not.toContain("orders_v3");
+    expect(tables).not.toContain("logs-2024.01.01");
+    // System indices stay excluded.
+    expect(tables).not.toContain(".kibana");
+  });
+
+  test("threads the group scope and falls back to standalone indices", () => {
+    const entities = mappingsToLogicalEntities({ mapping }, { group: "warehouse" });
+    expect(entities.every((e) => e.group === "warehouse")).toBe(true);
+    // No aliases/streams supplied → logs-* pattern + orders_v3 + products standalone.
+    expect(entities.map((e) => e.table).sort()).toEqual([
+      "logs-*",
+      "orders_v3",
+      "products",
+    ]);
+  });
+});
+
+describe("entityFileSlug", () => {
+  test("passes concrete index names through unchanged", () => {
+    expect(entityFileSlug("products")).toBe("products");
+    expect(entityFileSlug("logs-2024.01.01")).toBe("logs-2024.01.01");
+  });
+
+  test("sanitizes wildcard pattern names into a safe filename", () => {
+    expect(entityFileSlug("logs-*")).toBe("logs-star");
+    expect(entityFileSlug("log-?")).toBe("log-q");
+    expect(entityFileSlug("a b/c")).toBe("a_b_c");
   });
 });

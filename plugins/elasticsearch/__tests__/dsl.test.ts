@@ -291,6 +291,28 @@ describe("validateIndexAccess", () => {
     expect(validateIndexAccess("anything-not-in-layer", new Set()).valid).toBe(true);
     expect(validateIndexAccess("*", new Set()).valid).toBe(false);
   });
+
+  test("allows a wildcard index-pattern entity that is an explicit whitelist member (#3269)", () => {
+    const withPattern = new Set(["logs-*", "flights"]);
+    expect(validateIndexAccess("logs-*", withPattern).valid).toBe(true);
+    // Case-insensitive, like concrete names.
+    expect(validateIndexAccess("LOGS-*", withPattern).valid).toBe(true);
+    // Combined with a concrete member.
+    expect(validateIndexAccess("logs-*,flights", withPattern).valid).toBe(true);
+  });
+
+  test("still rejects a wildcard that is NOT a declared pattern entity (#3269)", () => {
+    const withPattern = new Set(["logs-*"]);
+    const result = validateIndexAccess("metrics-*", withPattern);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/wildcard/i);
+  });
+
+  test("a pattern entity does not authorize structural-only wildcards", () => {
+    // The pattern is allowed only because it's a member; with an empty layer the
+    // no-wildcard rail still fires.
+    expect(validateIndexAccess("logs-*", new Set()).valid).toBe(false);
+  });
 });
 
 // ===========================================================================

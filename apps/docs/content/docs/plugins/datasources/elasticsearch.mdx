@@ -138,24 +138,59 @@ so bypass the index whitelist). These are anchored to the statement start, so a
 field literally named `show` or `description` mid-query is fine, and
 `ORDER BY … DESC` is unaffected.
 
+## Logical sources: indices, patterns, aliases & data streams
+
+`atlas init` profiles a cluster into entity YAMLs. Beyond one entity per concrete
+index, it represents three kinds of **logical source** as a single queryable
+entity, so a time-partitioned family is one table rather than one-per-day
+([#3269](https://github.com/AtlasDevHQ/atlas/issues/3269)):
+
+| Source | `table:` value | How it's discovered |
+| ------ | -------------- | ------------------- |
+| **Index pattern** | `logs-*` | Two or more indices sharing a base with a trailing date (`logs-2024.01.01`, `logs-2024-01-01`, `events-2024`) or rollover sequence (`metrics-000001`) are collapsed to `<base>-*`. |
+| **Alias** | the alias name | `GET /_alias` — the alias's backing indices are unioned into one entity. |
+| **Data stream** | the stream name | `GET /_data_stream` — the stream's hidden `.ds-…` backing indices are unioned. |
+
+Each logical entity's dimensions are the **union** of its backing indices'
+mappings (members of a family share a template). A concrete index that backs an
+alias/data-stream, or that collapses into a pattern, is represented **only** by
+the logical entity — never also as a standalone index. A lone dated index with no
+sibling stays a concrete index (no surprise wildcard). The entity's `table:` is
+the logical name, which is exactly what both query surfaces and the index
+whitelist key on; the YAML **filename** is slugged (`logs-*` → `logs-star.yml`)
+so the `*` never reaches the filesystem.
+
+Querying is unchanged from a concrete index — name the logical source directly:
+
+```sql
+SELECT level, COUNT(*) FROM "logs-*" GROUP BY level
+```
+
+```text
+queryElasticsearch(index: "logs-*", body: { ... })
+```
+
 ## Query DSL surface
 
 For questions SQL can't express — full-text relevance ranking, deeply-nested
 aggregations, geo/span queries — a **static** datasource also registers a
 dedicated `queryElasticsearch` agent tool that issues a **read-only** Query DSL
 request (`POST /<index>/_search` | `_count`) and flattens the response to Atlas's
-`{ columns, rows }`. The tool inputs are a single explicit `index` (alias / data
-stream; no wildcards), an optional `endpoint` (`_search` default, or `_count`),
-and an optional Query DSL `body`.
+`{ columns, rows }`. The tool inputs are a single explicit `index` (a concrete
+index, alias, data stream, or declared index-pattern entity), an optional
+`endpoint` (`_search` default, or `_count`), and an optional Query DSL `body`.
 
 The surface is gated by a **default-deny** read-only validator: only read
 endpoints are allowed; mutating/administrative endpoints, smuggled bulk-write
-actions, mutating (`ctx`-referencing) scripts, and wildcard / `_all` /
+actions, mutating (`ctx`-referencing) scripts, ad-hoc wildcard / `_all` /
 system-index targets are rejected. On top of those always-on structural rails,
 the tool enforces **per-index membership** against the semantic layer: the
 queried index must be a profiled entity (the same index/table whitelist
 `executeSQL` validates against), so the DSL surface honors the identical access
 boundary as the SQL surface ([#3307](https://github.com/AtlasDevHQ/atlas/issues/3307)).
+A wildcard target is allowed **only** when it is itself a declared index-pattern
+entity (e.g. `logs-*`) — a deliberately-authorized fan-out, not an ad-hoc one
+([#3269](https://github.com/AtlasDevHQ/atlas/issues/3269)).
 When a connection has no semantic layer the membership check is skipped and only
 the structural rails apply. Every `_search` is resource-bounded — `size` clamped
 to `ATLAS_ROW_LIMIT`, a search `timeout`, and a non-aggregation `terminate_after`

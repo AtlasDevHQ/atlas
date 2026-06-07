@@ -4,9 +4,11 @@
  * Unlike the SQL profilers (which build `TableProfile`s for the shared
  * `generateEntityYAML` pipeline), Elasticsearch has no rows / PKs / FKs and its
  * query surface is Elasticsearch SQL — so it profiles index `_mapping`s
- * straight into entity docs via the plugin's pure `mappingsToEntities`
- * transform. `atlas init` serializes the docs to `semantic/entities/*.yml`;
- * `atlas diff` compares them against the on-disk layer.
+ * straight into entity docs via the plugin's pure `mappingsToLogicalEntities`
+ * transform. Index PATTERNS (`logs-*`), ALIASES, and DATA STREAMS each collapse
+ * their backing indices into ONE logical entity (#3269); everything else is a
+ * standalone index entity. `atlas init` serializes the docs to
+ * `semantic/entities/*.yml`; `atlas diff` compares them against the on-disk layer.
  *
  * The API key is NOT carried in the `elasticsearch://` URL (the URL parser
  * rejects credentials); the caller passes it separately (resolved from
@@ -15,6 +17,12 @@
 
 import type { ProfileError } from "@atlas/api/lib/profiler";
 import type { EsEntityDoc } from "../../../../plugins/elasticsearch/src/mapping";
+// `mapping.ts` is a pure, dependency-free module, so this value import is cheap
+// (it pulls no SDK / fetch / plugin runtime) and safe at module load.
+import { entityFileSlug } from "../../../../plugins/elasticsearch/src/mapping";
+
+// Re-exported so callers (e.g. `atlas init`) slug entity filenames identically.
+export { entityFileSlug };
 
 export interface ElasticsearchProfilingResult {
   entities: EsEntityDoc[];
@@ -31,15 +39,19 @@ export interface ProfileElasticsearchOptions {
 }
 
 /**
- * Profile an Elasticsearch cluster into entity docs — one per index. Fetches
- * `_mapping` once (covers every index) via the thin client, then runs the pure
- * mapping→entity transform. Connection / mapping-fetch failures surface as a
- * secret-scrubbed error.
+ * Profile an Elasticsearch cluster into entity docs (#3269). Fetches `_mapping`,
+ * `_alias`, and `_data_stream` (concurrently) via the thin client, then runs the
+ * pure mapping→entity transform so index patterns (`logs-*`), aliases, and data
+ * streams each become ONE logical entity and everything else a standalone index.
+ * The mapping fetch is required; alias / data-stream fetches are best-effort (a
+ * cluster may not expose either) — their failure logs a warning and the profile
+ * continues with the entities it can build. Connection / mapping-fetch failures
+ * surface as a secret-scrubbed error.
  *
  * @param connectionString `elasticsearch://host[:port][/prefix]` (no credentials).
  * @param apiKey Base64 API key (from `ATLAS_ES_API_KEY`).
- * @param filterIndices When set, only these indices are profiled; any requested
- *   index absent from the cluster mapping is reported in `errors`.
+ * @param filterIndices When set, only these entities (by logical name) are
+ *   profiled; any requested name absent from the result is reported in `errors`.
  */
 export async function profileElasticsearch(
   connectionString: string,
@@ -54,7 +66,7 @@ export async function profileElasticsearch(
   ]);
   const { resolveElasticsearchConfig, createElasticsearchClient, scrubElasticsearchError } =
     connectionModule;
-  const { mappingsToEntities } = mappingModule;
+  const { mappingsToLogicalEntities, parseDataStreams } = mappingModule;
 
   const resolved = resolveElasticsearchConfig({ url: connectionString, apiKey });
   const client = createElasticsearchClient(
@@ -62,15 +74,60 @@ export async function profileElasticsearch(
     options?.fetchImpl ? { fetchImpl: options.fetchImpl } : undefined,
   );
 
+  const includeSystem = options?.includeSystem ?? false;
   const errors: ProfileError[] = [];
 
   try {
-    const mapping = await client.getMapping();
+    // Mapping is required; aliases + data streams are best-effort enrichment —
+    // a swallowed fetch failure (logged) just yields fewer logical entities, it
+    // must not abort the whole profile. The mapping rejection still propagates.
+    const [mapping, aliases, dataStreamsResp] = await Promise.all([
+      client.getMapping(),
+      client.getAliases().catch((err) => {
+        console.warn(
+          `  Warning: could not fetch aliases (${err instanceof Error ? err.message : String(err)}) — continuing without alias entities.`,
+        );
+        return {};
+      }),
+      client.getDataStreams().catch((err) => {
+        console.warn(
+          `  Warning: could not fetch data streams (${err instanceof Error ? err.message : String(err)}) — continuing without data-stream entities.`,
+        );
+        return {};
+      }),
+    ]);
 
-    let entities = mappingsToEntities(mapping, {
-      includeSystem: options?.includeSystem ?? false,
-      ...(options?.group ? { group: options.group } : {}),
-    });
+    // Data-stream backing indices are hidden (`.ds-…`) and omitted from the
+    // default `_mapping`, so fetch each stream's mapping explicitly (concurrent,
+    // best-effort) and merge them for the transform.
+    const dataStreamNames = [...parseDataStreams(dataStreamsResp, { includeSystem }).keys()];
+    let dataStreamMapping: Record<string, unknown> = {};
+    if (dataStreamNames.length > 0) {
+      const dsMaps = await Promise.all(
+        dataStreamNames.map((name) =>
+          client.getMapping(name).catch((err) => {
+            console.warn(
+              `  Warning: could not fetch mapping for data stream "${name}" (${err instanceof Error ? err.message : String(err)}).`,
+            );
+            return {};
+          }),
+        ),
+      );
+      dataStreamMapping = Object.assign({}, ...dsMaps);
+    }
+
+    let entities = mappingsToLogicalEntities(
+      {
+        mapping,
+        aliases,
+        dataStreams: dataStreamsResp,
+        dataStreamMapping: dataStreamMapping as typeof mapping,
+      },
+      {
+        includeSystem,
+        ...(options?.group ? { group: options.group } : {}),
+      },
+    );
 
     if (filterIndices && filterIndices.length > 0) {
       const wanted = new Set(filterIndices);
@@ -112,10 +169,12 @@ export function elasticsearchCatalog(
     version: "1.0",
     entities: entities.map((e) => ({
       name: e.name,
-      file: `entities/${e.table}.yml`,
+      // Filename is slugged so an index-pattern entity (`logs-*`) maps to a safe
+      // file (`logs-star.yml`); concrete index names pass through unchanged.
+      file: `entities/${entityFileSlug(e.table)}.yml`,
       grain: e.grain,
-      description: `${e.table} (Elasticsearch index, ${e.dimensions.length} field${e.dimensions.length === 1 ? "" : "s"})`,
-      use_for: [`Search and aggregation over the ${e.table} index`],
+      description: `${e.table} (Elasticsearch source, ${e.dimensions.length} field${e.dimensions.length === 1 ? "" : "s"})`,
+      use_for: [`Search and aggregation over the ${e.table} source`],
       common_questions: [`What documents are in ${e.table}?`],
     })),
   };

@@ -65,6 +65,7 @@ import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 import {
   profileElasticsearch,
   elasticsearchCatalog,
+  entityFileSlug,
 } from "../../lib/profilers/elasticsearch";
 
 // --- Demo dataset ---
@@ -318,7 +319,9 @@ async function profileElasticsearchDatasource(
 
   console.log(`\nGenerating semantic layer...\n`);
   for (const entity of entities) {
-    const filePath = path.join(entitiesOutDir, `${entity.table}.yml`);
+    // Slug the filename so an index-pattern entity (`logs-*`) writes to a
+    // filesystem-safe path (`logs-star.yml`); concrete index names are unchanged.
+    const filePath = path.join(entitiesOutDir, `${entityFileSlug(entity.table)}.yml`);
     fs.writeFileSync(
       filePath,
       yaml.dump(entity, { lineWidth: 120, noRefs: true }),
@@ -340,8 +343,8 @@ async function profileElasticsearchDatasource(
 Done! Semantic layer written to ${relativeOutput} in ${formatDuration(elapsed)}
 
 Generated:
-  - ${entities.length} entity YAMLs (one per Elasticsearch index)${sourceId ? ` (connection: ${id})` : ""}
-  - catalog.yml with index listing
+  - ${entities.length} entity YAMLs (one per Elasticsearch index / pattern / alias / data stream)${sourceId ? ` (connection: ${id})` : ""}
+  - catalog.yml with the source listing
 
 Next steps:
   1. Review the generated YAMLs and refine business context

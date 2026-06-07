@@ -190,8 +190,11 @@ mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
 // register / unregister calls without spinning up real pg pools.
 const bridgeRegisterCalls: Array<{ workspaceId: string; installId: string; catalogSlug: string }> = [];
 const bridgeUnregisterCalls: string[] = [];
+// Async to match the real `registerDatasourceInstall` (now Promise<boolean>) —
+// keeps the mock's type signature accurate so `.mockImplementation(async …)`
+// overrides type-check.
 const mockBridgeRegister = mock(
-  (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
+  async (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
     bridgeRegisterCalls.push({
       workspaceId: row.workspaceId,
       installId: row.installId,
@@ -246,7 +249,7 @@ function resetState() {
   // override them get the happy path. Individual tests can swap via
   // mockImplementation(() => { throw new Error(...) }).
   mockBridgeRegister.mockImplementation(
-    (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
+    async (row: { workspaceId: string; installId: string; catalogSlug: string }, _cfg: unknown) => {
       bridgeRegisterCalls.push({
         workspaceId: row.workspaceId,
         installId: row.installId,

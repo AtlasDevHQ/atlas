@@ -253,6 +253,12 @@ describe("tableWhitelistKeys", () => {
     expect(tableWhitelistKeys("orders")).toEqual(["orders"]);
   });
 
+  // #3317 review: a malformed empty `table:` must register no whitelist key.
+  it("empty table name → no keys (no bogus empty-string entry)", () => {
+    expect(tableWhitelistKeys("")).toEqual([]);
+    expect(tableWhitelistKeys("", { opaque: true })).toEqual([]);
+  });
+
   it("strips identifier quotes and lowercases", () => {
     expect(tableWhitelistKeys(`"User"`)).toEqual(["user"]);
     expect(tableWhitelistKeys('analytics."Events"').sort()).toEqual(["analytics.events", "events"]);

@@ -143,6 +143,10 @@ const SQL_IDENTIFIER_SEGMENT = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 export function tableWhitelistKeys(rawTable: string, opts?: { opaque?: boolean }): string[] {
   const normalized = normalizeTableIdentifier(rawTable);
   const full = normalized.toLowerCase();
+  // A malformed entity with an empty `table:` (z.string() permits "") must
+  // contribute NO whitelist key — never register a meaningless "" that would
+  // sit in the allow-list (#3317 review).
+  if (!full) return [];
   if (opts?.opaque) return [full];
   const parts = normalized.split(".");
   if (parts.length < 2 || !parts.every((seg) => SQL_IDENTIFIER_SEGMENT.test(seg))) {

@@ -655,7 +655,10 @@ export function resolveAuth(
  */
 function isLoopbackHost(host: string): boolean {
   const h = host.toLowerCase().replace(/^\[|\]$/g, "");
-  return h === "localhost" || h === "127.0.0.1" || h === "::1" || h.endsWith(".localhost");
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1") return true;
+  // The whole 127.0.0.0/8 block is loopback (127.0.0.1 is just the common case),
+  // including the IPv4-mapped-IPv6 form of a v4 loopback address.
+  return /^(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
 }
 
 /**

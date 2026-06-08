@@ -187,13 +187,26 @@ function bodyHasMutatingScript(node: unknown): boolean {
  * a `_search` / `_count` context a script can't actually mutate documents, so
  * this is belt-and-suspenders: refuse the opaque reference rather than execute a
  * body we can't inspect. Inline read-only scripts (`script.source`) are unaffected.
+ *
+ * A terms LOOKUP (`{ "terms": { "<field>": { "index", "id", "path" } } }`) also
+ * carries a string `id`, and its `<field>` may legitimately be named `*_script`,
+ * so it would otherwise false-positive here — exclude any value that carries the
+ * `index`/`path` terms-lookup markers (a real stored-script ref never has them).
  */
 function bodyReferencesStoredScript(node: unknown): boolean {
   if (Array.isArray(node)) return node.some(bodyReferencesStoredScript);
   if (!isPlainObject(node)) return false;
   for (const [key, value] of Object.entries(node)) {
     const isScriptKey = key === "script" || /_script$/.test(key);
-    if (isScriptKey && isPlainObject(value) && typeof value.id === "string") return true;
+    if (
+      isScriptKey &&
+      isPlainObject(value) &&
+      typeof value.id === "string" &&
+      !("index" in value) &&
+      !("path" in value)
+    ) {
+      return true;
+    }
     if (bodyReferencesStoredScript(value)) return true;
   }
   return false;
@@ -291,15 +304,17 @@ export function validateIndexAccess(
   const allowedLower = new Set(Array.from(allowed, (s) => s.toLowerCase()));
 
   for (const seg of segments) {
-    // Reject anything outside the legal index-name charset BEFORE the
+    // Reject path-injection / illegal characters BEFORE the
     // membership/pattern/system checks, so this validator is self-contained: its
-    // safety must not depend on a downstream caller URL-encoding the segment. ES
-    // index names are lowercase alnum plus `. _ - +`; the wildcard chars `* ?`
-    // are permitted here but gated by the pattern-membership rule below. A `/`,
-    // whitespace, control char, or quote slipping through (e.g. in structural-only
-    // mode, where membership isn't enforced) would otherwise enable path injection
-    // if interpolated into a request path unescaped.
-    if (!/^[A-Za-z0-9._+*?-]+$/.test(seg)) {
+    // safety must not depend on a downstream caller URL-encoding the segment. A
+    // `/`, backslash, whitespace, control char, quote, or `< > | %` slipping
+    // through (e.g. in structural-only mode, where membership isn't enforced)
+    // would otherwise enable path injection if interpolated into a request path
+    // unescaped. This is a DENY-list, not an ASCII allow-list: Elasticsearch
+    // permits Unicode index names (e.g. CJK), so a legitimately whitelisted
+    // non-ASCII index must still pass. The wildcard chars `* ?` are deliberately
+    // NOT denied — they're gated by the pattern-membership rule below.
+    if (/[\x00-\x1f/\\\s"'`<>|%]/.test(seg)) {
       return {
         valid: false,
         reason: `Index "${seg}" contains characters that are not allowed in an index name.`,

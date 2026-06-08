@@ -816,6 +816,34 @@ integrations.openapi(installRoute, async (c) =>
       );
     }
 
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // Mirror the /install-form + marketplace gates on this OAuth entrypoint: the
+    // catalog listing hides `saas_eligible = false` rows on SaaS, but a workspace
+    // admin who knows the slug could POST here directly (e.g. github-single-tenant,
+    // an `oauth` row that is `saas_eligible: false`). Refuse before minting any
+    // authorize URL. Browser callers get the same redirect UX as the plan gate;
+    // JSON callers get the structured 400. `=== false` (stale/NULL stays
+    // installable) matches admin-marketplace.ts.
+    if (deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform, deployMode },
+        "Refused OAuth install: platform is not saas_eligible (#3301)",
+      );
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(
+          buildPlatformAdminUrl("error", platform, { reason: "saas_ineligible" }),
+        );
+      }
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
+        400,
+      );
+    }
+
     // ── Plan-tier gate (#2701) ────────────────────────────────────
     // Browser callers expect a redirect-driven UX (clicking Connect on a
     // locked card already routes through the UI, but a direct deep-link
@@ -1336,6 +1364,32 @@ integrations.openapi(callbackRoute, async (c) =>
     if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
+        400,
+      );
+    }
+
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // The callback is the PERSISTENCE point: a self-redirecting handler can reach
+    // it without re-passing /install, so the saas_eligible refusal must also live
+    // here, before any install record is written, not only at /install. Same gate
+    // as /install (browser redirect / JSON 400); `=== false` keeps stale/NULL rows
+    // installable.
+    if (getConfig()?.deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform },
+        "Refused OAuth callback: platform is not saas_eligible (#3301)",
+      );
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(
+          buildPlatformAdminUrl("error", platform, { reason: "saas_ineligible" }),
+        );
+      }
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
         400,
       );
     }

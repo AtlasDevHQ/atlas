@@ -251,6 +251,21 @@ describe("validateEsDslRequest — adversarial: stored-script references", () =>
     });
     expect(result.valid).toBe(true);
   });
+
+  test("does NOT false-positive on a terms LOOKUP against a field named like a script", () => {
+    // `{ terms: { <field>: { index, id, path } } }` carries a string `id`, and the
+    // looked-up field may legitimately be named `*_script`. The index/path markers
+    // distinguish it from a real stored-script reference.
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: {
+          terms: { deploy_script: { index: "deployments", id: "rel-42", path: "scripts" } },
+        },
+      },
+    });
+    expect(result.valid).toBe(true);
+  });
 });
 
 describe("isReadEndpoint", () => {
@@ -341,6 +356,13 @@ describe("validateIndexAccess", () => {
 
   test("allows ordinary date-suffixed concrete index names (dots and hyphens)", () => {
     expect(validateIndexAccess("logs-2024.01.01", new Set()).valid).toBe(true);
+  });
+
+  test("allows a whitelisted Unicode (non-ASCII) index name (deny-list, not ASCII allow-list)", () => {
+    // Elasticsearch permits Unicode index names; the path-injection guard is a
+    // deny-list of dangerous chars, so a CJK-named whitelisted index still passes.
+    expect(validateIndexAccess("ログ", new Set(["ログ"])).valid).toBe(true);
+    expect(validateIndexAccess("café-logs", new Set()).valid).toBe(true);
   });
 
   test("allows a wildcard index-pattern entity that is an explicit whitelist member (#3269)", () => {

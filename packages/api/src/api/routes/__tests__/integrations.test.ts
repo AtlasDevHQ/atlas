@@ -545,6 +545,69 @@ describe("GET /api/v1/integrations/slack/install — startInstall error passthro
   });
 });
 
+describe("OAuth routes — saas_eligible gate (#3301)", () => {
+  beforeEach(() => {
+    // A saas_eligible=false OAuth row (e.g. github-single-tenant). Mock both the
+    // catalog lookup and the organization plan read so the gate (which precedes
+    // the plan gate) is exercised in isolation.
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: "business", is_operator_workspace: false }];
+      }
+      return [
+        { slug: "github-single-tenant", install_model: "oauth", enabled: true, min_plan: "free", saas_eligible: false },
+      ];
+    });
+    deployModeImpl = () => "saas";
+  });
+
+  it("/install refuses with 400 saas_ineligible (JSON caller) under SaaS", async () => {
+    const res = await request("/api/v1/integrations/github-single-tenant/install", {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("saas_ineligible");
+  });
+
+  it("/install redirects a browser to the admin error page under SaaS", async () => {
+    const res = await request("/api/v1/integrations/github-single-tenant/install", {
+      headers: { Accept: "text/html" },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location") ?? "").toContain("saas_ineligible");
+  });
+
+  it("/callback refuses with 400 saas_ineligible (JSON caller) before persisting, under SaaS", async () => {
+    const res = await request(
+      // installation_id is required by the github-single-tenant identifier check
+      // that precedes the catalog lookup; supply it so the request reaches the gate.
+      "/api/v1/integrations/github-single-tenant/callback?code=auth-abc&state=stub&installation_id=42",
+      { redirect: "manual" },
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("saas_ineligible");
+  });
+
+  it("/install does NOT block the same row on a self-hosted deploy", async () => {
+    deployModeImpl = () => undefined;
+    const res = await request("/api/v1/integrations/github-single-tenant/install", {
+      headers: { Accept: "text/html" },
+      redirect: "manual",
+    });
+    // Gate skipped → proceeds into handler dispatch (302 redirect or a
+    // handler-level outcome), never the saas_ineligible refusal.
+    if (res.status === 400) {
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).not.toBe("saas_ineligible");
+    } else {
+      expect(res.status).not.toBe(400);
+    }
+  });
+});
+
 describe("GET /api/v1/integrations/slack/callback — happy path", () => {
   it("redirects to /admin/integrations?installed=slack on success", async () => {
     callbackImpl = async () => happyResult();

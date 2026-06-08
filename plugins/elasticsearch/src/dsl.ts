@@ -190,8 +190,11 @@ function bodyHasMutatingScript(node: unknown): boolean {
  *
  * A terms LOOKUP (`{ "terms": { "<field>": { "index", "id", "path" } } }`) also
  * carries a string `id`, and its `<field>` may legitimately be named `*_script`,
- * so it would otherwise false-positive here — exclude any value that carries the
- * `index`/`path` terms-lookup markers (a real stored-script ref never has them).
+ * so it would otherwise false-positive here. A real terms lookup always carries
+ * BOTH `index` and `path`; a stored-script ref never does. So we treat the value
+ * as a stored-script reference unless it has both lookup markers — requiring both
+ * (not either) keeps an attacker from cloaking a stored-script id behind a single
+ * bogus `index`/`path` key.
  */
 function bodyReferencesStoredScript(node: unknown): boolean {
   if (Array.isArray(node)) return node.some(bodyReferencesStoredScript);
@@ -202,8 +205,7 @@ function bodyReferencesStoredScript(node: unknown): boolean {
       isScriptKey &&
       isPlainObject(value) &&
       typeof value.id === "string" &&
-      !("index" in value) &&
-      !("path" in value)
+      !("index" in value && "path" in value)
     ) {
       return true;
     }
@@ -313,8 +315,11 @@ export function validateIndexAccess(
     // unescaped. This is a DENY-list, not an ASCII allow-list: Elasticsearch
     // permits Unicode index names (e.g. CJK), so a legitimately whitelisted
     // non-ASCII index must still pass. The wildcard chars `* ?` are deliberately
-    // NOT denied — they're gated by the pattern-membership rule below.
-    if (/[\x00-\x1f/\\\s"'`<>|%]/.test(seg)) {
+    // NOT denied — they're gated by the pattern-membership rule below. Control
+    // chars are matched via the Unicode `\p{Cc}` class (C0+C1+DEL) under the `u`
+    // flag rather than an `\x00-\x1f` literal range, which both widens coverage
+    // and avoids ESLint `no-control-regex` on a literal control escape.
+    if (/[\p{Cc}/\\\s"'`<>|%]/u.test(seg)) {
       return {
         valid: false,
         reason: `Index "${seg}" contains characters that are not allowed in an index name.`,

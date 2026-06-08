@@ -591,20 +591,26 @@ describe("OAuth routes — saas_eligible gate (#3301)", () => {
     expect(body.error).toBe("saas_ineligible");
   });
 
-  it("/install does NOT block the same row on a self-hosted deploy", async () => {
+  it("/install admits a saas_eligible=false row on a self-hosted deploy", async () => {
+    // Use `slack` (which has a registered OAuth handler stub) so the control
+    // proves real admission — the request reaches the handler and redirects to
+    // the authorize URL — rather than merely avoiding `saas_ineligible` while
+    // tripping a 501 handler_unavailable, which a slug with no handler would.
     deployModeImpl = () => undefined;
-    const res = await request("/api/v1/integrations/github-single-tenant/install", {
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM organization")) {
+        return [{ plan_tier: "business", is_operator_workspace: false }];
+      }
+      return [
+        { slug: "slack", install_model: "oauth", enabled: true, min_plan: "free", saas_eligible: false },
+      ];
+    });
+    const res = await request("/api/v1/integrations/slack/install", {
       headers: { Accept: "text/html" },
       redirect: "manual",
     });
-    // Gate skipped → proceeds into handler dispatch (302 redirect or a
-    // handler-level outcome), never the saas_ineligible refusal.
-    if (res.status === 400) {
-      const body = (await res.json()) as { error?: string };
-      expect(body.error).not.toBe("saas_ineligible");
-    } else {
-      expect(res.status).not.toBe(400);
-    }
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location") ?? "").toContain("slack.com/oauth/v2/authorize");
   });
 });
 

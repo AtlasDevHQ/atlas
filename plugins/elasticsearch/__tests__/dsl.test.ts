@@ -266,6 +266,21 @@ describe("validateEsDslRequest — adversarial: stored-script references", () =>
     });
     expect(result.valid).toBe(true);
   });
+
+  test("still denies a stored-script id cloaked behind only ONE terms-lookup marker", () => {
+    // A real terms lookup carries BOTH `index` and `path`. A single bogus marker
+    // (here `index` without `path`) must not exempt a `*_script` value that
+    // otherwise looks like a stored-script reference — otherwise it's a bypass.
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: {
+          script_fields: { x: { script: { id: "evil_stored_script", index: "x" } } },
+        },
+      },
+    });
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
 });
 
 describe("isReadEndpoint", () => {

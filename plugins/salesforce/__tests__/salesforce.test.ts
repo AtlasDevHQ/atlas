@@ -504,6 +504,16 @@ describe("validateSOQL", () => {
       expect(result.valid).toBe(true);
     });
 
+    test("handles an escaped quote inside a literal without leaking trailing tokens", () => {
+      // SOQL: ...WHERE Name = 'it\'s from Contact' — the escaped quote must not
+      // split the literal and expose `from Contact` as a phantom object.
+      const result = validateSOQL(
+        "SELECT Id FROM Account WHERE Name = 'it\\'s from Contact'",
+        ALLOWED,
+      );
+      expect(result.valid).toBe(true);
+    });
+
     test("rejects queries with no FROM clause", () => {
       const result = validateSOQL("SELECT 1", ALLOWED);
       expect(result.valid).toBe(false);

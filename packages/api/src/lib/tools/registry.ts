@@ -8,6 +8,11 @@ import {
   createLinearIssueTool,
   CREATE_LINEAR_ISSUE_DESCRIPTION,
 } from "@atlas/api/lib/integrations/linear-tool";
+import {
+  querySalesforceTool,
+  QUERY_SALESFORCE_DESCRIPTION,
+  isSalesforceOAuthConfigured,
+} from "@atlas/api/lib/integrations/salesforce-tool";
 
 export type { AtlasAction };
 export { isAction };
@@ -201,6 +206,20 @@ defaultRegistry.register({
   tool: createLinearIssueTool,
 });
 
+// #3311 — OAuth per-Workspace Salesforce query tool. Registered ONLY when the
+// Salesforce OAuth Connected App env is wired, so it never shadows the static-
+// config `querySalesforce` tool (which `@useatlas/salesforce` registers via the
+// plugin context in self-host static-url mode — and which `ToolRegistry.merge`
+// would otherwise let this base-registry entry override). Like sendEmail /
+// createLinearIssue, the workspace + install gate runs at execute time.
+if (isSalesforceOAuthConfigured()) {
+  defaultRegistry.register({
+    name: "querySalesforce",
+    description: QUERY_SALESFORCE_DESCRIPTION,
+    tool: querySalesforceTool,
+  });
+}
+
 defaultRegistry.freeze();
 
 interface BuildRegistryResult {
@@ -252,6 +271,15 @@ export async function buildRegistry(options?: {
     description: CREATE_LINEAR_ISSUE_DESCRIPTION,
     tool: createLinearIssueTool,
   });
+
+  // #3311 — OAuth Salesforce query tool, OAuth-env-gated (see defaultRegistry above).
+  if (isSalesforceOAuthConfigured()) {
+    registry.register({
+      name: "querySalesforce",
+      description: QUERY_SALESFORCE_DESCRIPTION,
+      tool: querySalesforceTool,
+    });
+  }
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {
     if (!process.env.ATLAS_SANDBOX_URL) {

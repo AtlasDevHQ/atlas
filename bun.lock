@@ -205,6 +205,7 @@
         "@opentelemetry/sdk-node": "^0.218.0",
         "@opentelemetry/semantic-conventions": "^1.41.1",
         "@useatlas/chat": "workspace:*",
+        "@useatlas/salesforce": "workspace:*",
         "@useatlas/schemas": "workspace:*",
         "@useatlas/twenty": "workspace:*",
         "@useatlas/types": "workspace:*",

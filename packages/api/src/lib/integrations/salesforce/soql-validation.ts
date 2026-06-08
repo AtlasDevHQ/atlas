@@ -44,7 +44,10 @@ export const SENSITIVE_PATTERNS =
  * the literal mid-value and leak trailing tokens.
  */
 function stripStringLiterals(soql: string): string {
-  return soql.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+  // "Unrolled loop" form (a non-backslash-non-quote run, then zero or more
+  // [escaped-char + run] groups) — handles SOQL `\'`/`\\` escapes while staying
+  // linear: no alternation-under-star, so no polynomial backtracking (CodeQL).
+  return soql.replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, "''");
 }
 
 /**

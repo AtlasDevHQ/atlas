@@ -70,9 +70,15 @@ const QUERY_TIMEOUT = parseInt(process.env.ATLAS_QUERY_TIMEOUT ?? "30000", 10);
 
 /**
  * Semantic-layer connection id the Salesforce object whitelist keys on. Matches
- * the static plugin's `DATASOURCE_ID` so both paths read the same entity YAMLs
- * on disk in self-host mode. The OAuth path typically has no Salesforce entities
- * yet → the whitelist is empty → SOQL runs in structural-only mode (logged).
+ * the static plugin's `DATASOURCE_ID` so the self-host filesystem path reads the
+ * same entity YAMLs.
+ *
+ * CAVEAT (tracked separately): the OAuth/SaaS path has no entity profiling wired
+ * yet, so the org whitelist under this key is always empty → structural-only
+ * (fail-OPEN to SELECT-only/no-DML, never fail-closed). When SaaS Salesforce
+ * object profiling lands, the org entities will likely be keyed by the per-
+ * install connection id, not this static-mode constant — so this binding must be
+ * revisited then for per-object enforcement to actually apply.
  */
 const SALESFORCE_CONNECTION_ID = "salesforce-datasource";
 
@@ -199,9 +205,13 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
         };
       }
       if (allowed.size === 0) {
-        log.warn(
+        // Debug, not warn: an empty whitelist is the EXPECTED steady state for
+        // OAuth Salesforce today (no entity profiling wired yet), so this fires
+        // on every query — warn-level would be pure log noise. Structural-only
+        // still enforces SELECT-only / no-DML; it only skips per-object membership.
+        log.debug(
           { workspaceId },
-          "querySalesforce running in STRUCTURAL-ONLY mode — empty semantic-layer whitelist; any explicitly-named object the credential can read is queryable. Add Salesforce entity YAMLs to enforce a per-object allow-list.",
+          "querySalesforce running in structural-only mode — empty semantic-layer whitelist (no per-object allow-list).",
         );
       }
 
@@ -263,12 +273,23 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
         }
         // Credential decrypt failure, missing bundle / instance_url, or
         // construction error — surfaced as query_failure so the agent stops
-        // looping. `errorMessage()` scrubs connection-string-shaped substrings.
+        // looping. These can carry auth/credential substrings (decrypt errors,
+        // INVALID_CLIENT_ID, …), so gate on SENSITIVE_PATTERNS exactly like the
+        // query-execution branch below — `errorMessage()` only strips
+        // connection-string userinfo, not those tokens.
         const requestId = resolveRequestId();
+        const instErr = err instanceof Error ? err.message : String(err);
         log.error(
-          { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+          { workspaceId, requestId, err: instErr },
           "querySalesforce aborted — failed to instantiate Salesforce plugin",
         );
+        if (SENSITIVE_PATTERNS.test(instErr)) {
+          return {
+            status: "query_failure",
+            message: `Could not initialise the Salesforce integration — check server logs for details. Request id ${requestId ?? "<unset>"}.`,
+            requestId,
+          };
+        }
         return {
           status: "query_failure",
           message: `Could not initialise the Salesforce integration: ${errorMessage(err)}`,

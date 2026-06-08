@@ -207,11 +207,16 @@ defaultRegistry.register({
 });
 
 // #3311 — OAuth per-Workspace Salesforce query tool. Registered ONLY when the
-// Salesforce OAuth Connected App env is wired, so it never shadows the static-
-// config `querySalesforce` tool (which `@useatlas/salesforce` registers via the
-// plugin context in self-host static-url mode — and which `ToolRegistry.merge`
-// would otherwise let this base-registry entry override). Like sendEmail /
-// createLinearIssue, the workspace + install gate runs at execute time.
+// Salesforce OAuth Connected App env is wired. The static-config `querySalesforce`
+// tool (`@useatlas/salesforce`, registered via the plugin context in self-host
+// static-url mode) needs a `salesforce://` url but NOT the OAuth env, so the two
+// modes don't normally coexist and this env gate keeps them apart.
+// KNOWN EDGE: if an operator sets BOTH a static url AND the OAuth env, both
+// register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives this
+// base entry precedence, so the OAuth tool shadows the static one (and in
+// single-tenant self-host returns `no_workspace`). Tracked as a follow-up; the
+// expected deployments are mutually exclusive. Like sendEmail / createLinearIssue,
+// the workspace + install gate runs at execute time.
 if (isSalesforceOAuthConfigured()) {
   defaultRegistry.register({
     name: "querySalesforce",

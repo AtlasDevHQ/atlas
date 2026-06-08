@@ -299,6 +299,21 @@ describe("querySalesforce — failure surfaces", () => {
     expect(result.status).toBe("query_failure");
     expect(result.message).toMatch(/MALFORMED_QUERY/);
   });
+
+  it("scrubs a sensitive INSTANTIATION error (not just query errors) to a generic message", async () => {
+    // Plain Error (not a tagged class) → instantiation fallthrough branch.
+    const tool = createQuerySalesforceTool(
+      makeDeps(new Error("decrypt failed: INVALID_CLIENT_ID for stored credential")),
+    );
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "x",
+    });
+    expect(result.status).toBe("query_failure");
+    expect(result.message).toMatch(/check server logs/i);
+    expect(result.message).not.toMatch(/INVALID_CLIENT_ID/);
+    expect(result.message).not.toMatch(/credential/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

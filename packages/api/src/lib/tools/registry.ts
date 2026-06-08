@@ -8,6 +8,11 @@ import {
   createLinearIssueTool,
   CREATE_LINEAR_ISSUE_DESCRIPTION,
 } from "@atlas/api/lib/integrations/linear-tool";
+import {
+  querySalesforceTool,
+  QUERY_SALESFORCE_DESCRIPTION,
+  isSalesforceOAuthConfigured,
+} from "@atlas/api/lib/integrations/salesforce-tool";
 
 export type { AtlasAction };
 export { isAction };
@@ -201,6 +206,25 @@ defaultRegistry.register({
   tool: createLinearIssueTool,
 });
 
+// #3311 — OAuth per-Workspace Salesforce query tool. Registered ONLY when the
+// Salesforce OAuth Connected App env is wired. The static-config `querySalesforce`
+// tool (`@useatlas/salesforce`, registered via the plugin context in self-host
+// static-url mode) needs a `salesforce://` url but NOT the OAuth env, so the two
+// modes don't normally coexist and this env gate keeps them apart.
+// KNOWN EDGE: if an operator sets BOTH a static url AND the OAuth env, both
+// register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives this
+// base entry precedence, so the OAuth tool shadows the static one (and in
+// single-tenant self-host returns `no_workspace`). Tracked as a follow-up; the
+// expected deployments are mutually exclusive. Like sendEmail / createLinearIssue,
+// the workspace + install gate runs at execute time.
+if (isSalesforceOAuthConfigured()) {
+  defaultRegistry.register({
+    name: "querySalesforce",
+    description: QUERY_SALESFORCE_DESCRIPTION,
+    tool: querySalesforceTool,
+  });
+}
+
 defaultRegistry.freeze();
 
 interface BuildRegistryResult {
@@ -252,6 +276,15 @@ export async function buildRegistry(options?: {
     description: CREATE_LINEAR_ISSUE_DESCRIPTION,
     tool: createLinearIssueTool,
   });
+
+  // #3311 — OAuth Salesforce query tool, OAuth-env-gated (see defaultRegistry above).
+  if (isSalesforceOAuthConfigured()) {
+    registry.register({
+      name: "querySalesforce",
+      description: QUERY_SALESFORCE_DESCRIPTION,
+      tool: querySalesforceTool,
+    });
+  }
 
   if (process.env.ATLAS_PYTHON_ENABLED === "true") {
     if (!process.env.ATLAS_SANDBOX_URL) {

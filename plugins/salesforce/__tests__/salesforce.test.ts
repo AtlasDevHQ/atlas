@@ -496,6 +496,14 @@ describe("validateSOQL", () => {
       expect(result.valid).toBe(true);
     });
 
+    test("does not phantom-reject 'from <word>' inside a string literal", () => {
+      const result = validateSOQL(
+        "SELECT Id FROM Account WHERE Description = 'order from Supplier'",
+        ALLOWED,
+      );
+      expect(result.valid).toBe(true);
+    });
+
     test("rejects queries with no FROM clause", () => {
       const result = validateSOQL("SELECT 1", ALLOWED);
       expect(result.valid).toBe(false);
@@ -751,6 +759,12 @@ describe("appendSOQLLimit", () => {
     expect(appendSOQLLimit("  SELECT Id FROM Account  ", 100)).toBe(
       "SELECT Id FROM Account LIMIT 100",
     );
+  });
+
+  test("appends LIMIT even when the word LIMIT appears inside a string literal", () => {
+    expect(
+      appendSOQLLimit("SELECT Id FROM Account WHERE Name = 'no LIMIT here'", 100),
+    ).toBe("SELECT Id FROM Account WHERE Name = 'no LIMIT here' LIMIT 100");
   });
 });
 

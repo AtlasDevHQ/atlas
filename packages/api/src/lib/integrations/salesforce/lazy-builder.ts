@@ -15,7 +15,8 @@
  *   4. Constructs a jsforce Connection in OAuth-token mode (skipping
  *      username/password login).
  *   5. Returns a {@link PluginLike} carrying a `query(soql)` method.
- *      The agent's Salesforce tool dispatches through this method.
+ *      The agent's `querySalesforce` tool (../salesforce-tool.ts, #3311)
+ *      dispatches through this method.
  *
  * Refresh strategy: the builder does NOT pro-actively refresh on
  * `expires_at`. Instead, the shared {@link createOAuthRetry} harness
@@ -39,6 +40,7 @@
  * @see packages/api/src/lib/integrations/_shared/oauth-retry.ts — shared retry harness
  * @see packages/api/src/lib/plugins/lazy-loader.ts — generic loader
  * @see ./../install/salesforce-token-refresh.ts — refresh + reconnect surface
+ * @see ../salesforce-tool.ts — the agent `querySalesforce` tool that consumes this (#3311)
  */
 
 import { createLogger } from "@atlas/api/lib/logger";

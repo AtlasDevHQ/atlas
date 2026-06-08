@@ -1,14 +1,25 @@
 /**
- * SOQL validation — regex + structural checks.
+ * SOQL validation for the OAuth per-Workspace Salesforce path (#3311).
  *
- * SOQL is simpler than SQL, so no AST parser is needed. Validation layers:
- * 0. Empty check
- * 1. Regex mutation guard (INSERT, UPDATE, DELETE, UPSERT, MERGE, UNDELETE)
- * 2. Must start with SELECT, no semicolons
- * 3. Object whitelist — FROM object must be in the allowed set
+ * A core-local copy of the SOQL validator. The canonical static-datasource
+ * validator lives in `@useatlas/salesforce` (`plugins/salesforce/src/validation.ts`),
+ * but core `@atlas/api` CANNOT import that plugin package: the create-atlas
+ * standalone template bundles core's `src/` while its dependency closure
+ * excludes workspace plugin packages (they're not published to npm), so a
+ * `@useatlas/salesforce` import breaks the scaffold build. The OAuth path is a
+ * core concern (its lazy-builder already lives in core), so the validator is
+ * duplicated here intentionally. Keep the two in sync — both enforce identical
+ * SELECT-only / no-DML / object-whitelist semantics.
+ *
+ * Validation layers:
+ *   0. Empty check / no semicolons
+ *   1. Regex mutation guard (INSERT/UPDATE/DELETE/UPSERT/MERGE/UNDELETE)
+ *   2. Must start with SELECT
+ *   3. Object whitelist — FROM object must be in the allowed set (empty set →
+ *      structural-only)
  */
 
-export const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
+const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
   /\b(INSERT)\b/i,
   /\b(UPDATE)\b/i,
   /\b(DELETE)\b/i,
@@ -18,16 +29,16 @@ export const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Sensitive error patterns — used to scrub error messages before returning
- * them to the agent/user. Prevents leaking credentials, hostnames, and
- * internal details. Mirrors @atlas/api/lib/security.ts SENSITIVE_PATTERNS.
+ * Sensitive error patterns — scrub error messages before returning them to the
+ * agent so credentials / hostnames / internal details don't leak. Mirrors
+ * `@atlas/api/lib/security.ts` SENSITIVE_PATTERNS and the plugin's copy.
  */
 export const SENSITIVE_PATTERNS =
   /password|secret|credential|connection.?string|SSL|certificate|INVALID_SESSION_ID|LOGIN_MUST_USE_SECURITY_TOKEN|INVALID_LOGIN|INVALID_CLIENT_ID|Authentication failed/i;
 
 /**
- * Strip single-quoted string literals from SOQL so regex guards / FROM extraction
- * / LIMIT detection don't match keywords embedded in user values (e.g.
+ * Strip single-quoted string literals so regex guards / FROM extraction / LIMIT
+ * detection don't match keywords embedded in user values (e.g.
  * `WHERE Name = 'delete this'`, `WHERE Name = 'from X'`, `WHERE Name = 'LIMIT'`).
  * Handles SOQL backslash escapes (`\'`, `\\`) so an escaped quote doesn't split
  * the literal mid-value and leak trailing tokens.
@@ -40,12 +51,11 @@ function stripStringLiterals(soql: string): string {
  * Extract top-level object names referenced in FROM clauses.
  *
  * Parent-to-child relationship subqueries — `(SELECT ... FROM Contacts)` inside
- * the SELECT list — use relationship names (plural) that don't appear in the
- * object whitelist. Salesforce enforces object-level security server-side for
- * these, so we skip nested FROM inside parenthesized subqueries.
- *
- * Semi-join / anti-join subqueries in WHERE — `WHERE Id IN (SELECT ... FROM Contact)`
- * — reference real object names and ARE checked.
+ * the SELECT list — use relationship (plural) names not in the object whitelist;
+ * Salesforce enforces object-level security server-side for those, so nested
+ * FROM inside parenthesized subqueries is skipped. Semi-join / anti-join
+ * subqueries in WHERE — `WHERE Id IN (SELECT ... FROM Contact)` — reference real
+ * object names and ARE checked.
  */
 function extractFromObjects(soql: string): string[] {
   const objects: string[] = [];
@@ -83,7 +93,6 @@ function extractFromObjects(soql: string): string[] {
   }
 
   // Extract ALL FROM objects in the WHERE/HAVING region (after the top-level FROM).
-  // This catches both simple semi-joins and nested subqueries.
   const whereClause = soql.slice(topLevelFromIndex + (topMatch ? topMatch[0].length : 4));
   const fromPattern = /\bFROM\s+(\w+)/gi;
   let subMatch;
@@ -98,26 +107,24 @@ function extractFromObjects(soql: string): string[] {
  * Validate a SOQL query for safety.
  *
  * @param soql - The SOQL query string.
- * @param allowedObjects - Set of allowed Salesforce object names (case-insensitive).
- * @returns Validation result.
+ * @param allowedObjects - Allowed Salesforce object names (case-insensitive).
+ *   An empty set means structural-only (no per-object membership check).
  */
 export function validateSOQL(
   soql: string,
   allowedObjects: Set<string>,
 ): { valid: boolean; error?: string } {
-  // 0. Empty check
   const trimmed = soql.trim();
   if (!trimmed) {
     return { valid: false, error: "Empty query" };
   }
 
-  // Reject semicolons (no statement chaining)
   if (trimmed.includes(";")) {
     return { valid: false, error: "Semicolons are not allowed in SOQL queries" };
   }
 
-  // 1. Regex mutation guard — strip string literals first so keywords inside
-  //    values like `WHERE Name = 'delete this'` don't trigger false positives.
+  // Regex mutation guard — strip string literals first so keywords inside values
+  // like `WHERE Name = 'delete this'` don't trigger false positives.
   const stripped = stripStringLiterals(trimmed);
   for (const pattern of SOQL_FORBIDDEN_PATTERNS) {
     if (pattern.test(stripped)) {
@@ -128,15 +135,11 @@ export function validateSOQL(
     }
   }
 
-  // 2. Must start with SELECT
   if (!/^\s*SELECT\b/i.test(trimmed)) {
-    return {
-      valid: false,
-      error: "Only SELECT queries are allowed in SOQL",
-    };
+    return { valid: false, error: "Only SELECT queries are allowed in SOQL" };
   }
 
-  // 3. Object whitelist (skip when empty — structural-only mode)
+  // Object whitelist (skip when empty — structural-only mode)
   if (allowedObjects.size === 0) {
     return { valid: true };
   }
@@ -149,30 +152,17 @@ export function validateSOQL(
     return { valid: false, error: "No FROM clause found in query" };
   }
 
-  // Build lowercase allowed set for case-insensitive comparison
-  const allowedLower = new Set(
-    Array.from(allowedObjects).map((o) => o.toLowerCase()),
-  );
-
+  const allowedLower = new Set(Array.from(allowedObjects).map((o) => o.toLowerCase()));
   for (const obj of objects) {
     if (!allowedLower.has(obj.toLowerCase())) {
       return {
         valid: false,
-        error: `Object "${obj}" is not in the allowed list. Check catalog.yml for available objects.`,
+        error: `Object "${obj}" is not in the allowed list. Check the semantic layer for available objects.`,
       };
     }
   }
 
   return { valid: true };
-}
-
-/**
- * Structural-only SOQL validation — checks SELECT-only, no DML, no semicolons.
- * Does NOT check the object whitelist. Used by `connection.validate()` where
- * the whitelist is applied separately by the querySalesforce tool.
- */
-export function validateSOQLStructure(soql: string): { valid: boolean; error?: string } {
-  return validateSOQL(soql, new Set());
 }
 
 /**

@@ -7,9 +7,9 @@
  * or the semantic layer.
  *
  * The Salesforce-specific surface is the SOQL validation + object whitelist
- * (reused from `@useatlas/salesforce`): an empty whitelist → structural-only,
- * a populated whitelist → per-object membership enforced, a throwing resolver
- * → fail-closed (`scan_unavailable`).
+ * (core-local `./salesforce/soql-validation.ts`): an empty whitelist →
+ * structural-only, a populated whitelist → per-object membership enforced, a
+ * throwing resolver → fail-closed (`scan_unavailable`).
  */
 
 import { describe, expect, it, mock, type Mock } from "bun:test";

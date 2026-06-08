@@ -22,8 +22,10 @@
  *      A scan FAILURE FAILS CLOSED (`scan_unavailable`); a legitimately-empty
  *      layer falls back to SOQL structural-only (mirrors the static tool, #3313).
  *   2. **SOQL validation** — `validateSOQL` (SELECT-only, no DML, no semicolons,
- *      object whitelist). Reused from `@useatlas/salesforce` so the OAuth and
- *      static paths share identical SOQL semantics.
+ *      object whitelist). A core-local copy of the canonical static-path
+ *      validator (./salesforce/soql-validation.ts) — core can't import the
+ *      `@useatlas/salesforce` plugin package (the create-atlas scaffold excludes
+ *      workspace plugins), so the identical semantics are duplicated, not shared.
  *   3. **Auto LIMIT** — `appendSOQLLimit` (`ATLAS_ROW_LIMIT`, default 1000).
  *
  * Status discriminants surfaced to the agent (so it can self-correct or stop):
@@ -48,8 +50,6 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "@useatlas/salesforce";
-
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
@@ -61,6 +61,7 @@ import {
 import { SALESFORCE_CATALOG_ID } from "./install/salesforce-oauth-handler";
 import { IntegrationReconnectRequiredError } from "./install/salesforce-token-refresh";
 import type { SalesforcePluginInstance } from "./salesforce/lazy-builder";
+import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "./salesforce/soql-validation";
 
 const log = createLogger("integrations.salesforce.tool");
 

@@ -616,7 +616,12 @@ export function collapseMappings(
   const aliases = parseAliases(input.aliases, { includeSystem });
   for (const [name, indices] of aliases) {
     if (dataStreams.has(name)) continue;
-    const members = [...indices];
+    // Drop backing indices already claimed by a data stream (step 1): re-emitting
+    // one under the alias would double-count it in `coverage` (last-write-wins)
+    // and mis-resolve it away from its owning stream. If every member is already
+    // claimed, the alias is fully subsumed — skip it. Mirrors step 4's re-check.
+    const members = [...indices].filter((m) => !claimed.has(m));
+    if (members.length === 0) continue;
     for (const m of members) claimed.add(m);
     emit(
       buildLogicalEntity({

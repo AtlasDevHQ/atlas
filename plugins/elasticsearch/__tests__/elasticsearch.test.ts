@@ -200,6 +200,49 @@ describe("resolveElasticsearchConfig", () => {
       /no authentication configured/,
     );
   });
+
+  test("rejects an explicit engine outside the union", () => {
+    expect(() =>
+      resolveElasticsearchConfig({
+        url: VALID_URL,
+        apiKey: API_KEY,
+        engine: "solr" as unknown as "elasticsearch",
+      }),
+    ).toThrow(/engine must be "elasticsearch" or "opensearch"/);
+  });
+
+  test("rejects SigV4 auth over plaintext HTTP to a remote host", () => {
+    expect(() =>
+      resolveElasticsearchConfig({
+        url: "elasticsearch://search.example.com:9200?ssl=false",
+        awsRegion: "us-east-1",
+        awsAccessKeyId: "AKIDEXAMPLE",
+        awsSecretAccessKey: "secret",
+      }),
+    ).toThrow(/SigV4 \(AWS\) auth requires HTTPS for a remote host/);
+  });
+
+  test("allows SigV4 over plaintext HTTP to a loopback host (local mock)", () => {
+    // VALID_URL is http://localhost — a LocalStack-style local AWS mock is valid.
+    const resolved = resolveElasticsearchConfig({
+      url: VALID_URL,
+      awsRegion: "us-east-1",
+      awsAccessKeyId: "AKIDEXAMPLE",
+      awsSecretAccessKey: "secret",
+    });
+    expect(resolved.auth.mode).toBe("sigv4");
+  });
+
+  test("allows SigV4 over HTTPS (the managed-AWS path)", () => {
+    const resolved = resolveElasticsearchConfig({
+      url: "elasticsearch://search.example.com:9200",
+      awsRegion: "us-east-1",
+      awsAccessKeyId: "AKIDEXAMPLE",
+      awsSecretAccessKey: "secret",
+    });
+    expect(resolved.auth.mode).toBe("sigv4");
+    expect(resolved.endpoint).toBe("https://search.example.com:9200");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -277,6 +320,45 @@ describe("SENSITIVE_PATTERNS", () => {
 // ---------------------------------------------------------------------------
 
 describe("createElasticsearchClient", () => {
+  test("warns when Basic credentials would go over plaintext HTTP to a remote host", () => {
+    const warn = mock(() => {});
+    createElasticsearchClient(
+      resolveElasticsearchConfig({
+        url: "elasticsearch://search.example.com:9200?ssl=false",
+        username: "u",
+        password: "s3cr3t-pw-xyz",
+      }),
+      { logger: { info: () => {}, warn, debug: () => {}, error: () => {} } },
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [, message] = warn.mock.calls[0] as unknown as [unknown, string];
+    expect(message).toMatch(/plaintext HTTP/);
+    // The warning must not echo the credential.
+    expect(message).not.toContain("s3cr3t-pw-xyz");
+  });
+
+  test("does NOT warn for plaintext HTTP to a loopback host", () => {
+    const warn = mock(() => {});
+    createElasticsearchClient(
+      // VALID_URL is http://localhost — local dev plaintext is fine.
+      resolveElasticsearchConfig({ url: VALID_URL, username: "u", password: "p" }),
+      { logger: { info: () => {}, warn, debug: () => {}, error: () => {} } },
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test("does NOT warn when transport is HTTPS", () => {
+    const warn = mock(() => {});
+    createElasticsearchClient(
+      resolveElasticsearchConfig({
+        url: "elasticsearch://search.example.com:9200",
+        apiKey: API_KEY,
+      }),
+      { logger: { info: () => {}, warn, debug: () => {}, error: () => {} } },
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   test("ping returns a normalized cluster-info result", async () => {
     const fetchImpl = mock(async () => fetchResponse(CLUSTER_INFO_BODY));
     const client = createElasticsearchClient(
@@ -1617,6 +1699,11 @@ describe("Elastic Cloud ID (#3264)", () => {
     // "hello" base64-decodes fine but has no `$` separator.
     const cloudId = cloudIdOf("hello");
     expect(() => decodeCloudId(cloudId)).toThrow(/malformed/);
+  });
+
+  test("rejects a decoded domain carrying a non-numeric port", () => {
+    const cloudId = cloudIdOf("cloud.example.com:notaport$esid$kbnid");
+    expect(() => decodeCloudId(cloudId)).toThrow(/non-numeric port/);
   });
 
   test("resolveElasticsearchConfig combines a Cloud ID with API-key creds", () => {

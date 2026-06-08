@@ -181,6 +181,40 @@ function bodyHasMutatingScript(node: unknown): boolean {
 }
 
 /**
+ * Detect a stored-script reference (`{ "script": { "id": "…" } }`) under any
+ * script-bearing key. A stored script's body lives server-side, so it is
+ * INVISIBLE to {@link bodyHasMutatingScript} — we cannot prove it read-only. From
+ * a `_search` / `_count` context a script can't actually mutate documents, so
+ * this is belt-and-suspenders: refuse the opaque reference rather than execute a
+ * body we can't inspect. Inline read-only scripts (`script.source`) are unaffected.
+ *
+ * A terms LOOKUP (`{ "terms": { "<field>": { "index", "id", "path" } } }`) also
+ * carries a string `id`, and its `<field>` may legitimately be named `*_script`,
+ * so it would otherwise false-positive here. A real terms lookup always carries
+ * BOTH `index` and `path`; a stored-script ref never does. So we treat the value
+ * as a stored-script reference unless it has both lookup markers — requiring both
+ * (not either) keeps an attacker from cloaking a stored-script id behind a single
+ * bogus `index`/`path` key.
+ */
+function bodyReferencesStoredScript(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(bodyReferencesStoredScript);
+  if (!isPlainObject(node)) return false;
+  for (const [key, value] of Object.entries(node)) {
+    const isScriptKey = key === "script" || /_script$/.test(key);
+    if (
+      isScriptKey &&
+      isPlainObject(value) &&
+      typeof value.id === "string" &&
+      !("index" in value && "path" in value)
+    ) {
+      return true;
+    }
+    if (bodyReferencesStoredScript(value)) return true;
+  }
+  return false;
+}
+
+/**
  * Validate a Query DSL request against the read-only boundary. **Default-deny**:
  *
  *  1. Endpoint must be a known read shape ({@link isReadEndpoint}) — every
@@ -209,6 +243,12 @@ export function validateEsDslRequest(request: EsDslRequest): EsDslValidationResu
       return {
         valid: false,
         reason: "Mutating script detected in the request body — scripts that reference `ctx` are write-context and are not allowed.",
+      };
+    }
+    if (bodyReferencesStoredScript(body)) {
+      return {
+        valid: false,
+        reason: "Stored-script reference (`script.id`) is not allowed — its body lives server-side and can't be verified read-only. Use an inline read-only script (`script.source`) instead.",
       };
     }
     if (isPlainObject(body)) {
@@ -266,6 +306,26 @@ export function validateIndexAccess(
   const allowedLower = new Set(Array.from(allowed, (s) => s.toLowerCase()));
 
   for (const seg of segments) {
+    // Reject path-injection / illegal characters BEFORE the
+    // membership/pattern/system checks, so this validator is self-contained: its
+    // safety must not depend on a downstream caller URL-encoding the segment. A
+    // `/`, backslash, whitespace, control char, quote, or `< > | %` slipping
+    // through (e.g. in structural-only mode, where membership isn't enforced)
+    // would otherwise enable path injection if interpolated into a request path
+    // unescaped. This is a DENY-list, not an ASCII allow-list: Elasticsearch
+    // permits Unicode index names (e.g. CJK), so a legitimately whitelisted
+    // non-ASCII index must still pass. The wildcard chars `* ?` are deliberately
+    // NOT denied — they're gated by the pattern-membership rule below. Control
+    // chars are matched via the Unicode `\p{Cc}` class (C0+C1+DEL) under the `u`
+    // flag rather than an `\x00-\x1f` literal range, which both widens coverage
+    // and avoids ESLint `no-control-regex` on a literal control escape.
+    if (/[\p{Cc}/\\\s"'`<>|%]/u.test(seg)) {
+      return {
+        valid: false,
+        reason: `Index "${seg}" contains characters that are not allowed in an index name.`,
+      };
+    }
+
     const isMember = allowedLower.has(seg.toLowerCase());
 
     // `_all` / wildcards fan out beyond the named index — allowed ONLY when the

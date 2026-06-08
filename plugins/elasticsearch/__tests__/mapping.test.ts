@@ -553,4 +553,31 @@ describe("collapseMappings — coverage map", () => {
     // A standalone index maps to itself.
     expect(coverage.get("products")).toBe("products");
   });
+
+  test("a data-stream backing index also targeted by an alias resolves to the STREAM, not the alias", () => {
+    // With includeSystem, parseAliases retains the `.ds-…` backing index, so the
+    // alias and the data stream both reference it. Step 1 (data streams) claims it
+    // for the stream; step 2 must NOT re-emit it under the alias or it would
+    // overwrite the coverage entry (last-write-wins) and mis-resolve the index.
+    const { coverage } = collapseMappings(
+      {
+        mapping: { web: { mappings: { properties: { url: { type: "keyword" } } } } },
+        dataStreamMapping: {
+          ".ds-events-000001": { mappings: { properties: { ts: { type: "date" } } } },
+        },
+        dataStreams: {
+          data_streams: [{ name: "events", indices: [{ index_name: ".ds-events-000001" }] }],
+        },
+        aliases: {
+          ".ds-events-000001": { aliases: { mixed: {} } },
+          web: { aliases: { mixed: {} } },
+        },
+      },
+      { includeSystem: true },
+    );
+    // The shared backing index stays owned by its data stream.
+    expect(coverage.get(".ds-events-000001")).toBe("events");
+    // The alias still covers its own, non-claimed member.
+    expect(coverage.get("web")).toBe("mixed");
+  });
 });

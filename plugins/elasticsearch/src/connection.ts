@@ -504,12 +504,10 @@ export function decodeCloudId(cloudId: string): string {
   }
 
   const encoded = trimmed.slice(sep + 1);
-  let decoded: string;
-  try {
-    decoded = Buffer.from(encoded, "base64").toString("utf8");
-  } catch {
-    throw new Error("Invalid Elastic Cloud ID: the base64 segment could not be decoded.");
-  }
+  // `Buffer.from(x, "base64")` never throws — it decodes what it can and drops
+  // invalid characters — so a malformed segment is caught by the `parts.length`
+  // check below rather than by a (dead) try/catch around the decode.
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
   // A valid Cloud ID decodes to the full `domain[:port]$es-uuid$kibana-uuid`
   // triple (kibana-uuid, and occasionally es-uuid, may be empty — but the `$`
   // separators are always present). Require all three parts so a truncated or
@@ -528,6 +526,11 @@ export function decodeCloudId(cloudId: string): string {
   const colonIdx = domainPart.indexOf(":");
   const domain = colonIdx === -1 ? domainPart : domainPart.slice(0, colonIdx);
   const port = colonIdx === -1 ? "" : domainPart.slice(colonIdx + 1);
+  if (port && !/^\d+$/.test(port)) {
+    throw new Error(
+      "Invalid Elastic Cloud ID: the decoded domain carries a non-numeric port.",
+    );
+  }
 
   const host = esUuid && esUuid.length > 0 ? `${esUuid}.${domain}` : domain;
   return `https://${host}${port ? `:${port}` : ""}`;
@@ -645,6 +648,76 @@ export function resolveAuth(
  *
  * Error messages never echo a secret.
  */
+/**
+ * Loopback hosts where plaintext (`?ssl=false`) transport is acceptable — a
+ * local dev cluster never leaves the machine. Everything else is "remote" for
+ * the purposes of the plaintext-credential checks below.
+ */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost") || h === "::1") return true;
+  // The whole 127.0.0.0/8 block is loopback (127.0.0.1 is just the common case),
+  // including the IPv4-mapped-IPv6 form of a v4 loopback address.
+  return /^(?:::ffff:)?127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/**
+ * SigV4 (Amazon OpenSearch Service / IAM-protected domains) is only ever reached
+ * over HTTPS — managed AWS endpoints don't serve plaintext. A SigV4 descriptor
+ * paired with a remote `http://` endpoint (via `?ssl=false`) can only be a
+ * misconfiguration that would put the signed request and `X-Amz-Security-Token`
+ * on the wire in cleartext, so reject it at resolve time rather than sign over
+ * plaintext. Loopback is exempt (a local AWS-compatible mock such as LocalStack
+ * is a valid test target). Basic/API-key over remote plaintext is warned, not
+ * rejected — see {@link warnIfPlaintextCredentials} — because a self-hosted
+ * cluster reachable only over an internal network is a legitimate, if
+ * discouraged, setup.
+ */
+function assertSecureTransportForSigV4(
+  endpoint: string,
+  auth: ElasticsearchAuthDescriptor,
+): void {
+  if (auth.mode !== "sigv4" || !endpoint.startsWith("http://")) return;
+  let host = "";
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    // Unparseable endpoint — the request will fail loudly later; nothing to assert here.
+    return;
+  }
+  if (isLoopbackHost(host)) return;
+  throw new Error(
+    "Invalid Elasticsearch config: SigV4 (AWS) auth requires HTTPS for a remote host; refusing to sign a request over plaintext HTTP (drop `?ssl=false`).",
+  );
+}
+
+/**
+ * Warn — once, at client construction — when Basic or API-key credentials would
+ * be sent over plaintext HTTP to a non-loopback host. Not a hard error: an
+ * internal-network self-hosted cluster is a valid (if discouraged) deployment.
+ * SigV4 is rejected outright upstream in {@link assertSecureTransportForSigV4}.
+ */
+function warnIfPlaintextCredentials(
+  endpoint: string,
+  auth: ElasticsearchAuthDescriptor,
+  logger?: PluginLogger,
+): void {
+  if (!endpoint.startsWith("http://")) return;
+  if (auth.mode !== "basic" && auth.mode !== "apiKey") return;
+  let host = "";
+  try {
+    host = new URL(endpoint).hostname;
+  } catch {
+    // Unparseable endpoint — the fetch will fail loudly later; nothing to warn on here.
+    return;
+  }
+  if (isLoopbackHost(host)) return;
+  logger?.warn(
+    { host, authMode: auth.mode },
+    `Elasticsearch ${auth.mode} credentials will be sent over plaintext HTTP to a non-local host (${host}); use HTTPS (remove \`?ssl=false\`) so they aren't exposed on the wire.`,
+  );
+}
+
 export function resolveElasticsearchConfig(
   config: ElasticsearchPluginConfig,
   options?: ResolveAuthOptions,
@@ -672,8 +745,21 @@ export function resolveElasticsearchConfig(
     );
   }
 
+  // Validate an explicit `engine` against the union at runtime — the admin form
+  // constrains it via a Zod `select`, but a raw static-config caller is otherwise
+  // untyped and a bad value would silently route SQL to the wrong endpoint.
+  if (
+    config.engine !== undefined &&
+    config.engine !== "elasticsearch" &&
+    config.engine !== "opensearch"
+  ) {
+    throw new Error(
+      `Invalid Elasticsearch config: engine must be "elasticsearch" or "opensearch" (got "${String(config.engine)}").`,
+    );
+  }
   const engine: ElasticsearchEngine = config.engine ?? schemeEngine ?? "elasticsearch";
   const auth = resolveAuth(config, options);
+  assertSecureTransportForSigV4(endpoint, auth);
 
   return {
     engine,
@@ -837,6 +923,7 @@ export function createElasticsearchClient(
   options?: ElasticsearchClientOptions,
 ): ElasticsearchClient {
   const { endpoint, auth, engine } = resolved;
+  warnIfPlaintextCredentials(endpoint, auth, options?.logger);
   const secrets = collectAuthSecrets(auth);
   const sqlProfile = engineSqlProfile(engine);
   let closed = false;

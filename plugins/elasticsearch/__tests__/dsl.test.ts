@@ -223,6 +223,66 @@ describe("validateEsDslRequest — adversarial: mutating scripts", () => {
   });
 });
 
+describe("validateEsDslRequest — adversarial: stored-script references", () => {
+  test("denies a stored-script reference (script.id) — body is server-side, unverifiable", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { script_fields: { x: { script: { id: "my_stored_script" } } } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
+
+  test("denies a stored-script reference nested under script_score", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: { query: { function_score: { script_score: { script: { id: "x" } } } } },
+    });
+    expect(result.valid).toBe(false);
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
+
+  test("still allows an inline read-only script (script.source)", () => {
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: { function_score: { script_score: { script: { source: "doc['likes'].value" } } } },
+      },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test("does NOT false-positive on a terms LOOKUP against a field named like a script", () => {
+    // `{ terms: { <field>: { index, id, path } } }` carries a string `id`, and the
+    // looked-up field may legitimately be named `*_script`. The index/path markers
+    // distinguish it from a real stored-script reference.
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: {
+          terms: { deploy_script: { index: "deployments", id: "rel-42", path: "scripts" } },
+        },
+      },
+    });
+    expect(result.valid).toBe(true);
+  });
+
+  test("still denies a stored-script id cloaked behind only ONE terms-lookup marker", () => {
+    // A real terms lookup carries BOTH `index` and `path`. A single bogus marker
+    // (here `index` without `path`) must not exempt a `*_script` value that
+    // otherwise looks like a stored-script reference — otherwise it's a bypass.
+    const result = validateEsDslRequest({
+      endpoint: "_search",
+      body: {
+        query: {
+          script_fields: { x: { script: { id: "evil_stored_script", index: "x" } } },
+        },
+      },
+    });
+    expect(result.valid === false && result.reason).toMatch(/stored-script reference/i);
+  });
+});
+
 describe("isReadEndpoint", () => {
   test("strips surrounding slashes before matching", () => {
     expect(isReadEndpoint("/_search/")).toBe(true);
@@ -290,6 +350,34 @@ describe("validateIndexAccess", () => {
     expect(validateIndexAccess("flights", new Set()).valid).toBe(true);
     expect(validateIndexAccess("anything-not-in-layer", new Set()).valid).toBe(true);
     expect(validateIndexAccess("*", new Set()).valid).toBe(false);
+  });
+
+  test.each([
+    "products/_doc/1/_update",
+    "products/_doc/1",
+    "orders%0a",
+    "orders flights",
+    'a"b',
+    "a<b",
+    "a|b",
+  ])("rejects an out-of-charset index segment %p (path-injection guard)", (idx) => {
+    // Self-contained safety: the validator must reject illegal index-name chars
+    // (slashes, whitespace, control, quotes) on its own — not rely on a downstream
+    // caller URL-encoding the segment. Checked even in structural-only mode.
+    const result = validateIndexAccess(idx, new Set());
+    expect(result.valid).toBe(false);
+    expect(result.reason).toMatch(/not allowed in an index name/);
+  });
+
+  test("allows ordinary date-suffixed concrete index names (dots and hyphens)", () => {
+    expect(validateIndexAccess("logs-2024.01.01", new Set()).valid).toBe(true);
+  });
+
+  test("allows a whitelisted Unicode (non-ASCII) index name (deny-list, not ASCII allow-list)", () => {
+    // Elasticsearch permits Unicode index names; the path-injection guard is a
+    // deny-list of dangerous chars, so a CJK-named whitelisted index still passes.
+    expect(validateIndexAccess("ログ", new Set(["ログ"])).valid).toBe(true);
+    expect(validateIndexAccess("café-logs", new Set()).valid).toBe(true);
   });
 
   test("allows a wildcard index-pattern entity that is an explicit whitelist member (#3269)", () => {

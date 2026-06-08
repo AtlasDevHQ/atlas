@@ -205,11 +205,12 @@ const installRoute = createRoute({
         "Redirect to Platform OAuth authorization page on success, or to " +
         "`/admin/integrations?error=<platform>&reason=<code>` when the install is " +
         "refused before the redirect (browser callers): `plan_upgrade_required` " +
-        "when the workspace's plan tier does not admit the install, or " +
+        "when the workspace's plan tier does not admit the install, " +
+        "`saas_ineligible` when the platform is not available on SaaS (#3301), or " +
         "`plan_limit_reached` (#2998) when a chat integration would exceed the " +
         "plan's chat-integration cap.",
     },
-    400: { description: "Platform is not OAuth-installable, or unknown", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Platform is not OAuth-installable, unknown, or not available on SaaS (`saas_ineligible`, #3301; JSON callers)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Not authenticated", content: { "application/json": { schema: AuthErrorSchema } } },
     403: {
       description:
@@ -400,7 +401,7 @@ const callbackRoute = createRoute({
         "Hard failure (browser caller): `?error=<platform>&reason=<code>` (chat-integration cap reached → " +
         "`reason=plan_limit_reached`). JSON callers receive 400/429/502/503 instead.",
     },
-    400: { description: "Invalid or expired state, or unknown platform (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid or expired state, unknown platform, or platform not available on SaaS (`saas_ineligible`, #3301) (JSON-Accept caller)", content: { "application/json": { schema: ErrorSchema } } },
     403: {
       description:
         "Workspace plan changed mid-OAuth and no longer admits this " +
@@ -493,6 +494,13 @@ interface CatalogRowFromDb extends Record<string, unknown> {
    * from ever reaching a not-yet-cap-gated handler.
    */
   readonly implementation_status?: string;
+  /**
+   * `saas_eligible` (#3301) — `false` marks a row that must never install on a
+   * SaaS deploy (e.g. DuckDB, file-path based and not multi-tenant safe). The
+   * marketplace `/install` route refuses these server-side; the `/install-form`
+   * route mirrors that gate so a known slug can't bypass it directly.
+   */
+  readonly saas_eligible?: boolean | null;
 }
 
 /**
@@ -564,9 +572,10 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
   min_plan: string;
   config_schema: unknown;
   implementation_status: string | null;
+  saas_eligible: boolean | null;
 } | null> {
   const rows = await internalQuery<CatalogRowFromDb>(
-    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status
+    `SELECT slug, install_model, enabled, min_plan, config_schema, implementation_status, saas_eligible
        FROM plugin_catalog
       WHERE slug = $1 AND enabled = true
       LIMIT 1`,
@@ -589,6 +598,7 @@ async function getInstallableCatalogRowBySlug(slug: string): Promise<{
     min_plan: row.min_plan,
     config_schema: row.config_schema ?? null,
     implementation_status: row.implementation_status ?? null,
+    saas_eligible: row.saas_eligible ?? null,
   };
 }
 
@@ -807,6 +817,34 @@ integrations.openapi(installRoute, async (c) =>
       );
     }
 
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // Mirror the /install-form + marketplace gates on this OAuth entrypoint: the
+    // catalog listing hides `saas_eligible = false` rows on SaaS, but a workspace
+    // admin who knows the slug could POST here directly (e.g. github-single-tenant,
+    // an `oauth` row that is `saas_eligible: false`). Refuse before minting any
+    // authorize URL. Browser callers get the same redirect UX as the plan gate;
+    // JSON callers get the structured 400. `=== false` (stale/NULL stays
+    // installable) matches admin-marketplace.ts.
+    if (deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform, deployMode },
+        "Refused OAuth install: platform is not saas_eligible (#3301)",
+      );
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(
+          buildPlatformAdminUrl("error", platform, { reason: "saas_ineligible" }),
+        );
+      }
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
+        400,
+      );
+    }
+
     // ── Plan-tier gate (#2701) ────────────────────────────────────
     // Browser callers expect a redirect-driven UX (clicking Connect on a
     // locked card already routes through the UI, but a direct deep-link
@@ -972,6 +1010,28 @@ integrations.openapi(installFormRoute, async (c) =>
       );
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not installable via this route (OAuth platforms use /install).`, requestId },
+        400,
+      );
+    }
+
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // The marketplace `/available` listing hides `saas_eligible = false` rows on
+    // SaaS, and the `/install` route refuses them server-side. This parallel
+    // form-install route must mirror that gate — otherwise a workspace admin who
+    // knows the slug could POST it here directly and bypass the hidden card. Use
+    // `=== false` (not `!== true`) so a stale/NULL row stays installable, exactly
+    // like the `/install` gate in admin-marketplace.ts. Resolved deploy mode.
+    if (deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform, deployMode },
+        "Refused install-form: platform is not saas_eligible (#3301)",
+      );
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
         400,
       );
     }
@@ -1305,6 +1365,32 @@ integrations.openapi(callbackRoute, async (c) =>
     if (row.install_model !== "oauth" && row.install_model !== "oauth-datasource") {
       return c.json(
         { error: "wrong_install_model", message: `Platform "${platform}" uses install_model "${row.install_model}" — not OAuth-installable via this route.`, requestId },
+        400,
+      );
+    }
+
+    // ── SaaS-eligibility gate (#3301, defense-in-depth) ───────────
+    // The callback is the PERSISTENCE point: a self-redirecting handler can reach
+    // it without re-passing /install, so the saas_eligible refusal must also live
+    // here, before any install record is written, not only at /install. Same gate
+    // as /install (browser redirect / JSON 400); `=== false` keeps stale/NULL rows
+    // installable.
+    if (getConfig()?.deployMode === "saas" && row.saas_eligible === false) {
+      log.warn(
+        { platform },
+        "Refused OAuth callback: platform is not saas_eligible (#3301)",
+      );
+      if (prefersHtml(c.req.raw)) {
+        return c.redirect(
+          buildPlatformAdminUrl("error", platform, { reason: "saas_ineligible" }),
+        );
+      }
+      return c.json(
+        {
+          error: "saas_ineligible",
+          message: `"${platform}" is not available on Atlas Cloud — it can only be configured on a self-hosted deploy.`,
+          requestId,
+        },
         400,
       );
     }

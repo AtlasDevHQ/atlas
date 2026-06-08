@@ -73483,10 +73483,10 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to Platform OAuth authorization page on success, or to `/admin/integrations?error=<platform>&reason=<code>` when the install is refused before the redirect (browser callers): `plan_upgrade_required` when the workspace's plan tier does not admit the install, or `plan_limit_reached` (#2998) when a chat integration would exceed the plan's chat-integration cap."
+            "description": "Redirect to Platform OAuth authorization page on success, or to `/admin/integrations?error=<platform>&reason=<code>` when the install is refused before the redirect (browser callers): `plan_upgrade_required` when the workspace's plan tier does not admit the install, `saas_ineligible` when the platform is not available on SaaS (#3301), or `plan_limit_reached` (#2998) when a chat integration would exceed the plan's chat-integration cap."
           },
           "400": {
-            "description": "Platform is not OAuth-installable, or unknown",
+            "description": "Platform is not OAuth-installable, unknown, or not available on SaaS (`saas_ineligible`, #3301; JSON callers)",
             "content": {
               "application/json": {
                 "schema": {
@@ -74086,7 +74086,7 @@
             "description": "Install complete or failed in a recoverable way — redirected to /admin/integrations. Success: `?installed=<platform>`. Credential write missed: `?reconnect=<platform>`. Hard failure (browser caller): `?error=<platform>&reason=<code>` (chat-integration cap reached → `reason=plan_limit_reached`). JSON callers receive 400/429/502/503 instead."
           },
           "400": {
-            "description": "Invalid or expired state, or unknown platform (JSON-Accept caller)",
+            "description": "Invalid or expired state, unknown platform, or platform not available on SaaS (`saas_ineligible`, #3301) (JSON-Accept caller)",
             "content": {
               "application/json": {
                 "schema": {

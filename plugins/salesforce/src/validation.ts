@@ -33,10 +33,43 @@ export const SENSITIVE_PATTERNS =
  * the literal mid-value and leak trailing tokens.
  */
 function stripStringLiterals(soql: string): string {
-  // "Unrolled loop" form (a non-backslash-non-quote run, then zero or more
-  // [escaped-char + run] groups) — handles SOQL `\'`/`\\` escapes while staying
-  // linear: no alternation-under-star, so no polynomial backtracking (CodeQL).
-  return soql.replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, "''");
+  // Single-pass scan (no regex) — replaces each complete '...' literal with ''.
+  // Done by hand rather than a quoted-string regex so there is no pattern for a
+  // ReDoS analyzer to flag, and it is provably linear. Honors SOQL `\` escapes
+  // (`\'`, `\\`) so an escaped quote doesn't end the literal early. An
+  // unterminated literal is left as-is (mirrors a regex that requires a close).
+  let out = "";
+  let i = 0;
+  const n = soql.length;
+  while (i < n) {
+    if (soql[i] !== "'") {
+      out += soql[i];
+      i++;
+      continue;
+    }
+    // At an opening quote — scan for the close, skipping escaped chars.
+    let j = i + 1;
+    let closed = false;
+    while (j < n) {
+      if (soql[j] === "\\") {
+        j += 2;
+        continue;
+      }
+      if (soql[j] === "'") {
+        closed = true;
+        break;
+      }
+      j++;
+    }
+    if (!closed) {
+      // Unterminated — leave the remainder untouched.
+      out += soql.slice(i);
+      break;
+    }
+    out += "''";
+    i = j + 1;
+  }
+  return out;
 }
 
 /**

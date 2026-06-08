@@ -37,11 +37,14 @@ export const SENSITIVE_PATTERNS =
   /password|secret|credential|connection.?string|SSL|certificate|INVALID_SESSION_ID|LOGIN_MUST_USE_SECURITY_TOKEN|INVALID_LOGIN|INVALID_CLIENT_ID|Authentication failed/i;
 
 /**
- * Strip single-quoted string literals so regex guards don't match keywords
- * embedded in user values (e.g. `WHERE Name = 'delete this'`).
+ * Strip single-quoted string literals so regex guards / FROM extraction / LIMIT
+ * detection don't match keywords embedded in user values (e.g.
+ * `WHERE Name = 'delete this'`, `WHERE Name = 'from X'`, `WHERE Name = 'LIMIT'`).
+ * Handles SOQL backslash escapes (`\'`, `\\`) so an escaped quote doesn't split
+ * the literal mid-value and leak trailing tokens.
  */
 function stripStringLiterals(soql: string): string {
-  return soql.replace(/'[^']*'/g, "''");
+  return soql.replace(/'(?:[^'\\]|\\.)*'/g, "''");
 }
 
 /**
@@ -141,7 +144,10 @@ export function validateSOQL(
     return { valid: true };
   }
 
-  const objects = extractFromObjects(trimmed);
+  // Extract against the literal-stripped form so parens / FROM inside quoted
+  // values (e.g. `WHERE Description = 'order from Supplier'`) can't skew depth
+  // tracking or inject phantom objects that fail the whitelist.
+  const objects = extractFromObjects(stripped);
   if (objects.length === 0) {
     return { valid: false, error: "No FROM clause found in query" };
   }
@@ -159,10 +165,15 @@ export function validateSOQL(
   return { valid: true };
 }
 
-/** Append a LIMIT clause to a SOQL query if one is not already present. */
+/**
+ * Append a LIMIT clause to a SOQL query if one is not already present. Detection
+ * runs against the literal-stripped form and requires `LIMIT <number>`, so the
+ * word LIMIT inside a string value (e.g. `WHERE Name = 'no LIMIT here'`) can't
+ * suppress the auto-cap — every query stays bounded by ROW_LIMIT.
+ */
 export function appendSOQLLimit(soql: string, limit: number): string {
   const trimmed = soql.trim();
-  if (/\bLIMIT\b/i.test(trimmed)) {
+  if (/\bLIMIT\s+\d+\b/i.test(stripStringLiterals(trimmed))) {
     return trimmed;
   }
   return `${trimmed} LIMIT ${limit}`;

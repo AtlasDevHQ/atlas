@@ -65,8 +65,14 @@ import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "./salesforce/
 
 const log = createLogger("integrations.salesforce.tool");
 
-const ROW_LIMIT = parseInt(process.env.ATLAS_ROW_LIMIT ?? "1000", 10);
-const QUERY_TIMEOUT = parseInt(process.env.ATLAS_QUERY_TIMEOUT ?? "30000", 10);
+/** Parse a positive-integer env var, falling back when missing/non-numeric/≤0. */
+function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const ROW_LIMIT = parsePositiveIntEnv(process.env.ATLAS_ROW_LIMIT, 1000);
+const QUERY_TIMEOUT = parsePositiveIntEnv(process.env.ATLAS_QUERY_TIMEOUT, 30000);
 
 /**
  * Semantic-layer connection id the Salesforce object whitelist keys on. Matches

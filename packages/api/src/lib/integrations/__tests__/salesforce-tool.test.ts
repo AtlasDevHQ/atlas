@@ -70,11 +70,16 @@ function makeLoader(
   return { getOrInstantiate };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function runTool<T = unknown>(tool: any, args: unknown): Promise<T> {
-  if (!tool?.execute) throw new Error("tool has no execute");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (await tool.execute(args, undefined as any)) as T;
+/** Narrow shape of the AI SDK tool object exercised by these tests. */
+interface ExecutableTool {
+  execute: (args: unknown, options?: unknown) => Promise<unknown>;
+  inputSchema: { safeParse: (v: unknown) => { success: boolean } };
+}
+
+async function runTool<T = unknown>(tool: unknown, args: unknown): Promise<T> {
+  const t = tool as ExecutableTool;
+  if (!t?.execute) throw new Error("tool has no execute");
+  return (await t.execute(args, undefined)) as T;
 }
 
 function makeDeps(
@@ -189,6 +194,33 @@ describe("querySalesforce — whitelist", () => {
       explanation: "allowed",
     });
     expect(result.status).toBe("ok");
+  });
+
+  it("does not phantom-reject when a string literal contains 'from <word>' (whitelist mode)", async () => {
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(
+      makeDeps(instance, {
+        resolveWhitelist: () => Promise.resolve(new Set(["Account"])),
+      }),
+    );
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account WHERE Description = 'order from Supplier'",
+      explanation: "literal contains from",
+    });
+    expect(result.status).toBe("ok");
+    expect(instance.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("still appends auto-LIMIT when the word LIMIT appears inside a string literal", async () => {
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account WHERE Name = 'no LIMIT here'",
+      explanation: "literal contains LIMIT",
+    });
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT\s+\d+$/i);
   });
 
   it("rejects a DML/mutation SOQL even in structural-only mode (invalid_query)", async () => {
@@ -323,8 +355,7 @@ describe("querySalesforce — failure surfaces", () => {
 describe("querySalesforce — input validation", () => {
   it("rejects an empty soql at the Zod boundary", async () => {
     const tool = createQuerySalesforceTool(makeDeps(makeFakeInstance()));
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const inputSchema = (tool as any).inputSchema as { safeParse: (v: unknown) => { success: boolean } };
+    const { inputSchema } = tool as unknown as ExecutableTool;
     expect(inputSchema.safeParse({ soql: "", explanation: "x" }).success).toBe(false);
     expect(inputSchema.safeParse({ soql: "SELECT Id FROM Account", explanation: "x" }).success).toBe(true);
   });

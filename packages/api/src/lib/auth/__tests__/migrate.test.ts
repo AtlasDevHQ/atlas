@@ -630,8 +630,8 @@ describe("resolveSeedAdminPassword", () => {
       source: "file",
       deployMode: "saas",
     };
-    _setConfigForTest(saasConfig);
     try {
+      _setConfigForTest(saasConfig);
       const { password, generated } = resolveSeedAdminPassword();
       expect(generated).toBe(true);
       expect(password).not.toBe("atlas-dev");

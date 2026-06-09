@@ -17,6 +17,7 @@ import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/
 import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
 import type { AuthResult, AuthenticatedResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
+import { invalidatePasswordGate } from "@atlas/api/lib/auth/password-gate";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { connections } from "@atlas/api/lib/db/connection";
@@ -2518,6 +2519,10 @@ admin.openapi(changePasswordRoute, async (c) => {
             `UPDATE "user" SET password_change_required = false WHERE id = $1`,
             [user.id],
           );
+          // Drop the server-side gate's cached verdict (#3345) so the
+          // user's next request is unblocked immediately rather than
+          // after the cache TTL.
+          invalidatePasswordGate(user.id);
         } catch (flagErr) {
           log.warn(
             {

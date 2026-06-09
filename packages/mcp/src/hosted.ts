@@ -71,6 +71,7 @@ import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
+import { isPasswordChangeRequired } from "@atlas/api/lib/auth/password-gate";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import {
   getOAuthClientScope,
@@ -659,6 +660,46 @@ async function verifyMcpBearer(
     };
   }
   const clientId = azp;
+
+  // Forced-password-change gate (#3345). The OAuth authorize flow accepts a
+  // managed session created with a temp password, so without this check a
+  // flagged user could mint an MCP bearer and keep using the temp credential
+  // indefinitely — the web UI's redirect was the only enforcement point.
+  // Mirrors the REST/agent gate in `authenticateRequest`.
+  try {
+    if (await isPasswordChangeRequired(sub)) {
+      log.warn(
+        { requestId, sub },
+        "MCP request blocked — password change required for the bearer's subject",
+      );
+      return {
+        kind: "fail",
+        status: 403,
+        emitChallengeHeader: false,
+        body: {
+          error: "password_change_required",
+          message:
+            "Your password must be changed before MCP access is allowed. Change it in the Atlas web app, then reconnect.",
+          requestId,
+        },
+      };
+    }
+  } catch (err) {
+    log.error(
+      { requestId, sub, err: err instanceof Error ? err.message : String(err) },
+      "password_change_required lookup failed at the MCP edge — refusing to dispatch (fail-closed)",
+    );
+    return {
+      kind: "fail",
+      status: 503,
+      emitChallengeHeader: false,
+      body: {
+        error: "auth_unavailable",
+        message: "Could not verify account status. Retry shortly.",
+        requestId,
+      },
+    };
+  }
 
   const user = createAtlasUser(sub, "managed", sub, {
     activeOrganizationId: orgIdRaw,

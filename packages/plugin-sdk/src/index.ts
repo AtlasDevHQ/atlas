@@ -69,6 +69,9 @@ export {
 
 export type { CreatePluginOptions } from "./helpers";
 
+export { gateOnSemanticWhitelist, warnIfStructuralOnly } from "./semantic-whitelist";
+export type { SemanticWhitelistSubject, SemanticWhitelistGate } from "./semantic-whitelist";
+
 // ---------------------------------------------------------------------------
 // Peer dependency type re-exports (type-only — erased at runtime, safe even
 // when the optional peer deps are not installed)

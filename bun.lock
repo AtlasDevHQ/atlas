@@ -310,7 +310,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.7",
+      "version": "0.0.8",
       "devDependencies": {
         "ai": "^6.0.193",
         "hono": "^4.12.23",

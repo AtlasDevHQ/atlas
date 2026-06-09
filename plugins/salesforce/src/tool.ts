@@ -38,8 +38,8 @@ const QUERY_TIMEOUT = parseInt(
  */
 export function createQuerySalesforceTool(opts: {
   getConnection: () => { query(soql: string, timeoutMs?: number): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> };
-  getWhitelist: () => Set<string>;
-  connectionId: string;
+  /** Semantic-layer object names. The SDK gate builds its own Set — pass the raw accessor result. */
+  getWhitelist: () => Iterable<string>;
   logger?: PluginLogger;
 }) {
   return tool({
@@ -66,7 +66,9 @@ Rules:
       // `getWhitelist` (scan failed) FAILS CLOSED with the canonical refusal;
       // a legitimately-empty layer passes through and `validateSOQL` applies
       // its structural-only mode.
-      const gate = gateOnSemanticWhitelist(SOQL_WHITELIST_SUBJECT, opts.getWhitelist, opts.logger);
+      const gate = gateOnSemanticWhitelist(SOQL_WHITELIST_SUBJECT, opts.getWhitelist, opts.logger, {
+        soql: soql.slice(0, 200),
+      });
       if (!gate.ok) {
         return { success: false, error: gate.error };
       }

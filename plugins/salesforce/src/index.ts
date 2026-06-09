@@ -224,9 +224,8 @@ export function buildSalesforcePlugin(
           // never object names like "Account", so validateSOQL would reject
           // every legitimate query. Empty-layer (structural-only) vs
           // scan-failure (fail-closed) handling (#3243/#3313) is owned by the
-          // SDK's `gateOnSemanticWhitelist` inside the tool.
-          getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
-          connectionId: "salesforce",
+          // SDK's `gateOnSemanticWhitelist` inside the tool, which also builds the Set.
+          getWhitelist: () => ctx.connections.tables(DATASOURCE_ID),
           logger: ctx.logger,
         });
 

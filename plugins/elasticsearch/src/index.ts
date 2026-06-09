@@ -433,8 +433,8 @@ export function buildElasticsearchPlugin(
           // IDs, not index names, so it can never match a real index like
           // "flights". Empty-layer (structural-only) vs scan-failure
           // (fail-closed) handling (#3243/#3313) is owned by the SDK's
-          // `gateOnSemanticWhitelist` inside the tool.
-          getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
+          // `gateOnSemanticWhitelist` inside the tool, which also builds the Set.
+          getWhitelist: () => ctx.connections.tables(DATASOURCE_ID),
           logger: ctx.logger,
         });
 

@@ -91,7 +91,8 @@ function computeTruncated(
  */
 export function createQueryElasticsearchTool(opts: {
   getConnection: () => DslConnection;
-  getWhitelist: () => Set<string>;
+  /** Semantic-layer index names. The SDK gate builds its own Set — pass the raw accessor result. */
+  getWhitelist: () => Iterable<string>;
   logger?: PluginLogger;
 }) {
   return tool({

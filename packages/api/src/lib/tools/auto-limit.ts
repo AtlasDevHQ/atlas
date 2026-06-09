@@ -130,7 +130,11 @@ export function stripSqlNonClauseText(
           out += sql.slice(i);
           break;
         }
-        out += delim + delim; // blanked, boundary-preserving ($$$$ or $tag$$tag$)
+        // Blank to a fixed empty anonymous dollar-quote: boundary-preserving and
+        // word-char-free. Echoing the real delimiter (`delim + delim`) would leak
+        // the TAG text — a tag literally named `$limit$` would put "limit" back in
+        // the output and re-spoof detection. (CodeRabbit #3329.)
+        out += "$$";
         i = close + delim.length;
         continue;
       }

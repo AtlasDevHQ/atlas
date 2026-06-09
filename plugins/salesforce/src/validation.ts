@@ -8,14 +8,14 @@
  * 3. Object whitelist — FROM object must be in the allowed set
  */
 
-export const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
+export const SOQL_FORBIDDEN_PATTERNS: readonly RegExp[] = Object.freeze([
   /\b(INSERT)\b/i,
   /\b(UPDATE)\b/i,
   /\b(DELETE)\b/i,
   /\b(UPSERT)\b/i,
   /\b(MERGE)\b/i,
   /\b(UNDELETE)\b/i,
-];
+]);
 
 /**
  * Sensitive error patterns — used to scrub error messages before returning

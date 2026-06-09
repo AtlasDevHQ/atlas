@@ -64,8 +64,10 @@ describe("SOQL validator drift-check (core ↔ plugin) — #3325", () => {
   ];
 
   it.each(battery)("validateSOQL parity: %o", ({ soql, allowed }) => {
-    const c = core.validateSOQL(soql, allowed);
-    const p = plugin.validateSOQL(soql, allowed);
+    // Clone the Set per call so a (hypothetical) input mutation by one validator
+    // can't leak into the other and mask drift.
+    const c = core.validateSOQL(soql, new Set(allowed));
+    const p = plugin.validateSOQL(soql, new Set(allowed));
     // The accept/reject decision is the security-critical output and must never
     // diverge — that's the silent-skip failure mode this guard exists for.
     expect(c.valid).toBe(p.valid);

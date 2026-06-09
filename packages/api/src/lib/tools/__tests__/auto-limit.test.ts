@@ -1,55 +1,75 @@
 import { describe, expect, it } from "bun:test";
-import { hasLimitClause, stripSqlStringLiterals } from "../auto-limit";
+import { hasLimitClause, stripSqlNonClauseText } from "../auto-limit";
 
-// Regression coverage for the auto-LIMIT literal bypass (#3325): the presence
-// check must ignore the word LIMIT when it appears inside a string literal, so
-// a crafted value can neither suppress nor spoof the appended row cap.
+// Regression coverage for the auto-LIMIT bypass class (#3325): the presence
+// check must ignore the word LIMIT when it appears anywhere it isn't a real
+// clause — inside a string literal, a quoted identifier, or a comment — so a
+// crafted value can neither suppress nor spoof the appended row cap.
 
-describe("stripSqlStringLiterals", () => {
+describe("stripSqlNonClauseText", () => {
   it("replaces single-quoted literals with empty quotes", () => {
-    expect(stripSqlStringLiterals("WHERE name = 'no LIMIT here'")).toBe(
+    expect(stripSqlNonClauseText("WHERE name = 'no LIMIT here'")).toBe(
       "WHERE name = ''",
     );
   });
 
   it("honors doubled-quote escapes ('') in every dialect", () => {
-    expect(stripSqlStringLiterals("WHERE x = 'it''s LIMIT 5' AND y = 1")).toBe(
+    expect(stripSqlNonClauseText("WHERE x = 'it''s LIMIT 5' AND y = 1")).toBe(
       "WHERE x = '' AND y = 1",
     );
   });
 
-  it("fast-paths a query with no literals (returned unchanged)", () => {
+  it("fast-paths a query with no literals/identifiers/comments", () => {
     const q = "SELECT id FROM users WHERE active = true";
-    expect(stripSqlStringLiterals(q)).toBe(q);
+    expect(stripSqlNonClauseText(q)).toBe(q);
+  });
+
+  it("blanks double-quoted identifiers", () => {
+    expect(stripSqlNonClauseText('SELECT 1 AS "LIMIT" FROM t')).toBe(
+      'SELECT 1 AS "" FROM t',
+    );
+  });
+
+  it("blanks backtick identifiers", () => {
+    expect(stripSqlNonClauseText("SELECT 1 AS `LIMIT` FROM t")).toBe(
+      "SELECT 1 AS `` FROM t",
+    );
+  });
+
+  it("blanks line and block comments", () => {
+    expect(stripSqlNonClauseText("SELECT * FROM t -- LIMIT 5")).toBe(
+      "SELECT * FROM t  ",
+    );
+    expect(stripSqlNonClauseText("SELECT * /* LIMIT 5 */ FROM t")).toBe(
+      "SELECT *   FROM t",
+    );
   });
 
   // Dialect split on backslash: Postgres (standard_conforming_strings=on, the
   // default) treats `\` inside a '...' literal as a literal char; MySQL treats
   // `\'` as an escaped quote. Honoring `\'` unconditionally would mis-pair the
-  // closing quote of a Postgres value ending in `\` — the bug this gating fixes.
+  // closing quote of a Postgres value ending in `\`.
   describe("backslash handling is dialect-gated", () => {
     it("default (Postgres): backslash is a literal char, not an escape", () => {
-      // `'C:\path\'` is the complete value `C:\path\`; the trailing quote closes.
-      expect(stripSqlStringLiterals("x = 'C:\\path\\' AND y = 1")).toBe(
+      expect(stripSqlNonClauseText("x = 'C:\\path\\' AND y = 1")).toBe(
         "x = '' AND y = 1",
       );
     });
 
     it("MySQL (backslashEscapes): `\\'` is an escaped quote inside the literal", () => {
-      // `'a\'b'` is the value `a'b` — the escaped quote does NOT close it.
       expect(
-        stripSqlStringLiterals("x = 'a\\'b' AND y = 1", { backslashEscapes: true }),
+        stripSqlNonClauseText("x = 'a\\'b' AND y = 1", { backslashEscapes: true }),
       ).toBe("x = '' AND y = 1");
     });
   });
 
   it("leaves an unterminated literal intact so a real clause stays visible", () => {
     const input = "SELECT * FROM t WHERE x = 'oops LIMIT 5";
-    expect(stripSqlStringLiterals(input)).toBe(input);
+    expect(stripSqlNonClauseText(input)).toBe(input);
   });
 
   it("preserves an empty string literal", () => {
-    expect(stripSqlStringLiterals("WHERE x = '' AND y = 2")).toBe(
+    expect(stripSqlNonClauseText("WHERE x = '' AND y = 2")).toBe(
       "WHERE x = '' AND y = 2",
     );
   });
@@ -77,10 +97,33 @@ describe("hasLimitClause", () => {
     expect(hasLimitClause("SELECT * FROM t WHERE c = 'LIMIT'")).toBe(false);
   });
 
-  it("still detects a real LIMIT alongside a literal containing the word", () => {
+  it("does NOT treat LIMIT inside a comment as a clause", () => {
+    expect(hasLimitClause("SELECT * FROM t -- LIMIT 5")).toBe(false);
+    expect(hasLimitClause("SELECT * FROM t /* LIMIT 5 */")).toBe(false);
+    // # is a MySQL comment only — gated on backslashEscapes.
+    expect(hasLimitClause("SELECT * FROM t # LIMIT 5", { backslashEscapes: true })).toBe(
+      false,
+    );
+  });
+
+  it("does NOT treat LIMIT inside a quoted identifier as a clause", () => {
+    expect(hasLimitClause('SELECT 1 AS "LIMIT" FROM t')).toBe(false);
+    expect(hasLimitClause("SELECT 1 AS `LIMIT` FROM t", { backslashEscapes: true })).toBe(
+      false,
+    );
+  });
+
+  it("does not mistake a Postgres `#` operator for a comment (would hide a real LIMIT)", () => {
+    // backslashEscapes off (Postgres): `#` is not a comment, so the real LIMIT
+    // after it must still be detected.
+    expect(hasLimitClause("SELECT a # b FROM t LIMIT 5")).toBe(true);
+  });
+
+  it("still detects a real LIMIT alongside a literal/comment containing the word", () => {
     expect(
       hasLimitClause("SELECT * FROM t WHERE name = 'no LIMIT here' LIMIT 100"),
     ).toBe(true);
+    expect(hasLimitClause("SELECT * FROM t /* paginated */ LIMIT 100")).toBe(true);
   });
 
   it("returns false for a query with no LIMIT at all", () => {
@@ -89,9 +132,8 @@ describe("hasLimitClause", () => {
     );
   });
 
-  // The core regression the dialect gating prevents: a Postgres value ending in
-  // `\` must not let a following literal's `LIMIT` text leak through and spoof
-  // detection (→ suppressed cap → uncapped query).
+  // The dialect-gating regression: a Postgres value ending in `\` must not let a
+  // following literal's `LIMIT` text leak through and spoof detection.
   it("Postgres: backslash-bearing literal does not spoof LIMIT detection", () => {
     expect(
       hasLimitClause("SELECT * FROM t WHERE a = 'x\\' AND note = 'no LIMIT here'"),

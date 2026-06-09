@@ -38,7 +38,7 @@
   "license": "MIT",
   "peerDependencies": {
     "jsforce": "^3.10.14",
-    "@useatlas/plugin-sdk": ">=0.0.1"
+    "@useatlas/plugin-sdk": ">=0.0.8"
   },
   "devDependencies": {
     "ai": "^6.0.193",

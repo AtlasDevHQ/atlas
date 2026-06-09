@@ -310,7 +310,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.7",
+      "version": "0.0.8",
       "devDependencies": {
         "ai": "^6.0.193",
         "hono": "^4.12.23",
@@ -616,7 +616,7 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.8",
       },
     },
     "plugins/email": {
@@ -748,7 +748,7 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.8",
         "jsforce": "^3.10.14",
       },
       "optionalPeers": [

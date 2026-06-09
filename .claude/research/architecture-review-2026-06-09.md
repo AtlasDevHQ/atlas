@@ -21,6 +21,8 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 **Wins:** locality — whitelist bugs land in one module; leverage — one interface, three dialects (a fourth dialect gets validation free); fail-closed semantics stated once, continuing the #3232/#3243 arc.
 
+**Scope decision (implementation, this branch):** reading the code narrowed the deep module. The dialect validators' structural rails genuinely differ (ES interleaves membership with its wildcard-pattern rule; SQL adds schema qualification, CTE exclusion, org-scoped hot-reload) — extracting a "membership checker" out of them would be a pass-through (~5 lines reappear per dialect; fails the deletion test). The real duplication is the **load policy**: both plugin tools copied the #3243/#3313 fail-closed try/catch (~20 ln each) and both `initialize()`s copied the structural-only/scan-failed registration warning (~15 ln each), with the security contract living in comments. Shipped as `packages/plugin-sdk/src/semantic-whitelist.ts` — `gateOnSemanticWhitelist` + `warnIfStructuralOnly` + a per-dialect `SemanticWhitelistSubject` vocabulary, with the canonical test set in plugin-sdk. The core SQL path stays as-is: `@atlas/api` doesn't depend on plugin-sdk, and coupling scaffold-bound source to the plugin-sdk publish train isn't worth absorbing five lines. **Publish sequencing:** plugin-sdk 0.0.7 → 0.0.8 bumped here; ES/SF plugin peer ranges moved to `>=0.0.8`; publish plugin-sdk before publishing either plugin (template refs untouched per the publish-then-bump rule).
+
 ---
 
 ## 2. Collapse the Form-install persistence spine — **Strong**

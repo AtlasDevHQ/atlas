@@ -8,8 +8,21 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { gateOnSemanticWhitelist, type SemanticWhitelistSubject } from "@useatlas/plugin-sdk";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "./validation";
+
+/**
+ * The SOQL tool's vocabulary for the SDK's semantic-whitelist load policy
+ * (#3243/#3313 fail-closed / structural-only semantics live in the SDK).
+ * Shared with `initialize()`'s registration-time operator warning.
+ */
+export const SOQL_WHITELIST_SUBJECT: SemanticWhitelistSubject = {
+  toolName: "querySalesforce",
+  member: "object",
+  queryKind: "SOQL queries",
+  logLabel: "SOQL",
+};
 
 const ROW_LIMIT = parseInt(process.env.ATLAS_ROW_LIMIT ?? "1000", 10);
 const QUERY_TIMEOUT = parseInt(
@@ -49,28 +62,17 @@ Rules:
     execute: async ({ soql, explanation }) => {
       const conn = opts.getConnection();
 
-      // `getWhitelist` THROWS when the semantic-layer scan FAILED (#3243): the
-      // object whitelist load is incomplete, so we FAIL CLOSED (refuse) rather
-      // than fall through to validateSOQL's structural-only mode, which would
-      // widen access to any explicitly-named object. A legitimately-empty layer
-      // does NOT throw — it returns `[]` and structural-only still applies (#3313).
-      let allowed: Set<string>;
-      try {
-        allowed = opts.getWhitelist();
-      } catch (err) {
-        opts.logger?.error(
-          { error: err instanceof Error ? err.message : String(err) },
-          "SOQL refused — semantic layer unavailable (scan failed)",
-        );
-        return {
-          success: false,
-          error:
-            "The semantic layer is temporarily unavailable (its scan failed), so object access cannot be verified. Refusing the query to avoid unsafe access — retry once it recovers.",
-        };
+      // The SDK gate owns the load policy (#3243/#3313): a throwing
+      // `getWhitelist` (scan failed) FAILS CLOSED with the canonical refusal;
+      // a legitimately-empty layer passes through and `validateSOQL` applies
+      // its structural-only mode.
+      const gate = gateOnSemanticWhitelist(SOQL_WHITELIST_SUBJECT, opts.getWhitelist, opts.logger);
+      if (!gate.ok) {
+        return { success: false, error: gate.error };
       }
 
       // Validate SOQL
-      const validation = validateSOQL(soql, allowed);
+      const validation = validateSOQL(soql, gate.allowed);
       if (!validation.valid) {
         opts.logger?.debug({ soql: soql.slice(0, 200), error: validation.error }, "SOQL validation rejected");
         return { success: false, error: validation.error };

@@ -29,7 +29,7 @@
  */
 
 import { z } from "zod";
-import { createPlugin } from "@useatlas/plugin-sdk";
+import { createPlugin, warnIfStructuralOnly } from "@useatlas/plugin-sdk";
 import type {
   AtlasDatasourcePlugin,
   ConfigSchemaField,
@@ -49,7 +49,7 @@ import {
   ELASTICSEARCH_FORBIDDEN_PATTERNS,
 } from "./connection";
 import type { ElasticsearchConnection, ElasticsearchPluginConfig } from "./connection";
-import { createQueryElasticsearchTool } from "./tool";
+import { createQueryElasticsearchTool, ES_DSL_WHITELIST_SUBJECT } from "./tool";
 
 /**
  * ES SQL dialect guidance injected into the agent system prompt (under
@@ -431,11 +431,9 @@ export function buildElasticsearchPlugin(
           //
           // `ctx.connections.list()` would be wrong here — it returns CONNECTION
           // IDs, not index names, so it can never match a real index like
-          // "flights". A legitimately-empty semantic layer returns `[]` and
-          // `validateIndexAccess` falls back to its always-on structural rails
-          // (no wildcards / _all / system indices). A semantic-layer scan
-          // FAILURE instead THROWS (#3243) — the tool catches it and fails
-          // CLOSED rather than widening to structural-only (#3313).
+          // "flights". Empty-layer (structural-only) vs scan-failure
+          // (fail-closed) handling (#3243/#3313) is owned by the SDK's
+          // `gateOnSemanticWhitelist` inside the tool.
           getWhitelist: () => new Set(ctx.connections.tables(DATASOURCE_ID)),
           logger: ctx.logger,
         });
@@ -446,23 +444,14 @@ export function buildElasticsearchPlugin(
           tool: esTool,
         });
 
-        // One-time operator warning (#3313): a query tool registered against an
-        // empty whitelist runs in STRUCTURAL-ONLY mode — any explicitly-named,
-        // non-system index the credential can read is queryable. Name the
-        // consequence so operators know to add entity YAMLs. A scan FAILURE is a
-        // different situation: `tables()` throws, and the tool fails closed at
-        // query time (logged there), so the catch below only flags that case.
-        try {
-          if (ctx.connections.tables(DATASOURCE_ID).length === 0) {
-            ctx.logger.warn(
-              "queryElasticsearch registered with an empty semantic-layer whitelist — running in STRUCTURAL-ONLY mode: any explicitly-named, non-system index the credential can read is queryable. Add entity YAMLs to enforce a per-index allow-list.",
-            );
-          }
-        } catch (err) {
-          ctx.logger.warn(
-            `queryElasticsearch: semantic-layer scan failed at registration — DSL queries will fail closed until it recovers (${err instanceof Error ? err.message : String(err)}).`,
-          );
-        }
+        // One-time operator signal (#3313): empty whitelist → STRUCTURAL-ONLY
+        // warning; scan failure → fail-closed-until-recovery warning. The
+        // policy and copy live in the SDK's semantic-whitelist module.
+        warnIfStructuralOnly(
+          ES_DSL_WHITELIST_SUBJECT,
+          () => ctx.connections.tables(DATASOURCE_ID),
+          ctx.logger,
+        );
       }
     },
 

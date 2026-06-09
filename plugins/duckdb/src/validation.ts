@@ -14,7 +14,9 @@ export const DUCKDB_FORBIDDEN_PATTERNS: RegExp[] = [
   /^\s*(CHECKPOINT)\b/i,
   /\b(DESCRIBE|EXPLAIN|SHOW)\b/i,
   // Block file-reading table functions that can access the host filesystem
+  // (#3342 L-5 — read_blob / read_ndjson* / glob round out the family)
   /\b(read_csv_auto|read_csv|read_parquet|read_json|read_json_auto|read_text)\b/i,
+  /\b(read_blob|read_ndjson|read_ndjson_auto|read_ndjson_objects|glob)\b/i,
   /\b(parquet_scan|csv_scan|json_scan)\b/i,
   // Block SET for configuration variables (DuckDB has no session-level read-only guard for :memory:).
   // Anchored to start-of-string (^\s*) to avoid false positives on column names

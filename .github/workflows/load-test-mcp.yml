@@ -126,17 +126,23 @@ jobs:
       - name: Install k6 + jq
         # k6 from the upstream stable apt repo; jq is preinstalled on
         # ubuntu-latest but pinning the install line keeps the workflow
-        # resilient to runner image changes. The keyserver + fingerprint
-        # match the manual install path documented in
+        # resilient to runner image changes. The key is fetched over HTTPS
+        # from dl.k6.io (#3342 L-11 — no plaintext keyserver hop) and the
+        # imported fingerprint is asserted before the repo is trusted. The
+        # URL + fingerprint match the manual install path documented in
         # `eval/load-tests/mcp/README.md` so a CI run reproduces what an
         # operator runs locally.
         run: |
           set -euo pipefail
-          sudo gpg -k
+          curl -fsSL https://dl.k6.io/key.gpg -o /tmp/k6-key.gpg
           sudo gpg --no-default-keyring \
             --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-            --keyserver hkp://keyserver.ubuntu.com:80 \
-            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+            --import /tmp/k6-key.gpg
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --with-colons --fingerprint \
+            | grep -q "C5AD17C747E3415A3642D57D77C6C491D6AC1D69" \
+            || { echo "k6 signing key fingerprint mismatch" >&2; exit 1; }
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
             | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update -qq

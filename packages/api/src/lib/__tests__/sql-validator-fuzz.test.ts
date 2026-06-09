@@ -425,14 +425,13 @@ describe("fuzz: schema-qualified + quoted identifier whitelist", () => {
     expectValid('SELECT * FROM "companies"');
   });
 
-  it("accepts uppercase quoted identifier that normalizes to whitelist", async () => {
-    // See F-20 (case-fold collision) in the phase-3 audit. Current validator
-    // treats `"COMPANIES"` and `companies` as equivalent, which is the
-    // expected current behavior for self-hosted deployments that use
-    // case-insensitive identifiers. Databases with case-sensitive quoted
-    // tables need a dedicated fix; F-20 stays in the audit doc as a P3 tail
-    // item rather than getting its own issue.
-    expectValid('SELECT * FROM "COMPANIES"');
+  it("rejects uppercase QUOTED identifier that case-folds into a whitelist entry (#3342 L-4)", async () => {
+    // F-20 (case-fold collision) closed: a quoted mixed-case identifier is a
+    // DIFFERENT relation than the case-folded whitelist entry on PG, so it
+    // must not ride the lowercase match. Unquoted mixed-case stays accepted
+    // (the database itself case-folds it).
+    expectInvalid('SELECT * FROM "COMPANIES"');
+    expectValid("SELECT * FROM COMPANIES");
   });
 
   it("rejects quoted identifier that is not in the whitelist", async () => {
@@ -607,17 +606,17 @@ describe("fuzz: PostgreSQL dialect escape hatches", () => {
     expectValid("SELECT $tag$ hi $tag$ AS x FROM companies");
   });
 
-  it("does not block pg_read_file (known limitation — DB perms mitigate)", async () => {
-    // See F-21. Relies on the DB user lacking superuser privileges.
-    expectValid("SELECT pg_read_file('/etc/passwd')");
+  it("blocks pg_read_file (#3342 L-3 function denylist)", async () => {
+    // F-21 closed — the AST function-name walk rejects file-access functions.
+    expectInvalid("SELECT pg_read_file('/etc/passwd')");
   });
 
-  it("does not block pg_sleep (mitigated by statement_timeout)", async () => {
-    expectValid("SELECT pg_sleep(29)");
+  it("blocks pg_sleep (#3342 L-3 function denylist)", async () => {
+    expectInvalid("SELECT pg_sleep(29)");
   });
 
-  it("does not block pg_terminate_backend (known limitation)", async () => {
-    expectValid("SELECT pg_terminate_backend(12345)");
+  it("blocks pg_terminate_backend (#3342 L-3 function denylist)", async () => {
+    expectInvalid("SELECT pg_terminate_backend(12345)");
   });
 
   it("does not block generate_series set-returning function", async () => {
@@ -711,22 +710,20 @@ describe("fuzz: MySQL dialect escape hatches", () => {
     );
   });
 
-  it("does not block BENCHMARK (DoS, mitigated by statement_timeout)", async () => {
-    expectValid("SELECT BENCHMARK(1000000, MD5('a'))");
+  it("blocks BENCHMARK (#3342 L-3 function denylist)", async () => {
+    expectInvalid("SELECT BENCHMARK(1000000, MD5('a'))");
   });
 
-  it("does not block SLEEP (mitigated by statement_timeout)", async () => {
-    expectValid("SELECT SLEEP(29)");
+  it("blocks SLEEP (#3342 L-3 function denylist)", async () => {
+    expectInvalid("SELECT SLEEP(29)");
   });
 
   it("does not block GET_LOCK (known limitation — mitigated by connection lifecycle)", async () => {
     expectValid("SELECT GET_LOCK('x', 30)");
   });
 
-  it("does not block LOAD_FILE (known limitation — FILE privilege required)", async () => {
-    // Blocked at the DB permission layer; file reads need FILE priv which
-    // should not be granted to the Atlas user.
-    expectValid("SELECT LOAD_FILE('/etc/passwd')");
+  it("blocks LOAD_FILE (#3342 L-3 function denylist)", async () => {
+    expectInvalid("SELECT LOAD_FILE('/etc/passwd')");
   });
 
   it("accepts SELECT INTO @user_variable (session-local, no persistence)", async () => {

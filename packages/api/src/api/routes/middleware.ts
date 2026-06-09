@@ -293,6 +293,14 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
   const { authResult } = auth;
 
+  // Defense-in-depth (#3342 L-1): `mode: "none"` is the no-auth local-dev
+  // carve-out and must never reach an admin gate in SaaS. Mirrors the
+  // platformAdminAuth guard below — the weaker tier was the unguarded one.
+  if (authResult.mode === "none" && isSaasDeployMode()) {
+    log.error({ requestId }, "mode:\"none\" reached adminAuth under SaaS deploy — rejecting");
+    return c.json({ error: "auth_misconfigured", message: "Admin auth is not configured.", requestId }, 500);
+  }
+
   // Enforce admin role — auth mode "none" (local dev) is an implicit admin
   if (
     authResult.mode !== "none" &&

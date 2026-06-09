@@ -114,7 +114,8 @@ function TextCell({ cell }: { cell: TextReportCell }) {
   return (
     <div className="report-cell">
       <div className="prose prose-zinc max-w-none text-sm prose-headings:tracking-tight prose-h2:mt-0 prose-h2:text-lg prose-h3:text-base dark:prose-invert">
-        <Markdown content={cell.content} />
+        {/* disallowImages (#3342 L-7): unauthenticated public surface. */}
+        <Markdown content={cell.content} disallowImages />
       </div>
     </div>
   );
@@ -146,7 +147,7 @@ function QueryCell({ cell }: { cell: QueryReportCell }) {
             if (part.type === "text") {
               const displayText = parseSuggestions(part.text).text;
               if (!displayText.trim()) return null;
-              return <Markdown key={i} content={displayText} />;
+              return <Markdown key={i} content={displayText} disallowImages />;
             }
             if (isToolUIPart(part)) {
               return <ToolPart key={i} part={part} />;

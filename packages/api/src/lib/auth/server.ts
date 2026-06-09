@@ -842,6 +842,16 @@ export type AuthSecret = string & { readonly __brand: "AuthSecret" };
  * or short input — neither is recoverable at runtime, so failing early
  * beats a cryptographic weakness masquerading as a config quirk.
  */
+/**
+ * Published placeholder secrets that must never reach a production deploy
+ * (#3342 L-6). The `.env.example` value passes the ≥32-char floor, and it
+ * doubles as the at-rest encryption-key fallback — a deploy that shipped it
+ * would have a publicly-known session-signing AND data-encryption key.
+ */
+const KNOWN_DEFAULT_AUTH_SECRETS: ReadonlySet<string> = new Set([
+  "atlas-dev-secret-do-not-use-in-production!!",
+]);
+
 export function parseAuthSecret(raw: string | undefined): AuthSecret {
   if (!raw) {
     throw new Error(
@@ -851,6 +861,20 @@ export function parseAuthSecret(raw: string | undefined): AuthSecret {
   if (raw.length < 32) {
     throw new Error(
       `BETTER_AUTH_SECRET must be at least 32 characters (got ${raw.length}). Use a cryptographically random string.`,
+    );
+  }
+  if (KNOWN_DEFAULT_AUTH_SECRETS.has(raw)) {
+    if (
+      process.env.NODE_ENV === "production" ||
+      process.env.ATLAS_DEPLOY_MODE === "saas"
+    ) {
+      throw new Error(
+        "BETTER_AUTH_SECRET is set to the published .env.example placeholder — refusing to start in production. " +
+          "Generate a dedicated secret (e.g. `openssl rand -base64 33`).",
+      );
+    }
+    log.warn(
+      "BETTER_AUTH_SECRET is the published .env.example placeholder — fine for local dev, refused in production",
     );
   }
   return raw as AuthSecret;

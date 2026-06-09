@@ -90,9 +90,16 @@ export async function validateBYOT(req: Request): Promise<AuthResult> {
   if (!issuer)
     throw new Error("ATLAS_AUTH_ISSUER is required for BYOT mode");
 
+  // #3342 L-2 — an explicitly-set-but-empty audience is a config error, not
+  // a request to skip audience validation. Silently disabling the check made
+  // any token from the issuer valid regardless of its intended audience.
+  // Unset (undefined) remains the documented "no audience check" mode.
   const rawAudience = process.env.ATLAS_AUTH_AUDIENCE;
   if (rawAudience === "") {
-    log.warn("ATLAS_AUTH_AUDIENCE is set to empty string — audience check will be skipped");
+    throw new Error(
+      "ATLAS_AUTH_AUDIENCE is set to an empty string. Set it to the expected JWT audience, " +
+        "or unset it entirely to skip audience validation.",
+    );
   }
   const audience = rawAudience || undefined;
 

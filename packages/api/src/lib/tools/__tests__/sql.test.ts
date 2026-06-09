@@ -384,6 +384,87 @@ describe("validateSQL", () => {
     });
   });
 
+  // ----- Forbidden functions (#3342 L-3) --------------------------------------
+
+  describe("side-effecting / file / network function denylist (#3342 L-3)", () => {
+    it("rejects pg_read_file in a table-less SELECT", async () => {
+      await expectInvalid("SELECT pg_read_file('/etc/passwd')", "not allowed");
+    });
+
+    it("rejects pg_read_file behind obfuscated arguments", async () => {
+      await expectInvalid(
+        "SELECT pg_read_file(chr(47)||chr(101)||chr(116)||chr(99))",
+        "not allowed",
+      );
+    });
+
+    it("rejects schema-qualified pg_catalog.pg_read_file", async () => {
+      await expectInvalid(
+        "SELECT pg_catalog.pg_read_file('/etc/passwd')",
+        "not allowed",
+      );
+    });
+
+    it("rejects lo_import / lo_export", async () => {
+      await expectInvalid("SELECT lo_import('/etc/passwd')", "not allowed");
+      await expectInvalid("SELECT lo_export(123, '/tmp/x')", "not allowed");
+    });
+
+    it("rejects pg_sleep (timing/DoS)", async () => {
+      await expectInvalid("SELECT pg_sleep(60)", "not allowed");
+    });
+
+    it("rejects forbidden functions nested in WHERE clauses", async () => {
+      await expectInvalid(
+        "SELECT id FROM companies WHERE name = pg_read_file('/etc/passwd')",
+        "not allowed",
+      );
+    });
+
+    it("rejects BENCHMARK on MySQL", async () => {
+      process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
+      await expectInvalid("SELECT BENCHMARK(100000000, MD5('x'))", "not allowed");
+    });
+
+    it("rejects LOAD_FILE on MySQL", async () => {
+      process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
+      await expectInvalid("SELECT LOAD_FILE('/etc/passwd')", "not allowed");
+    });
+
+    it("does not false-positive on a string literal containing a forbidden name", async () => {
+      await expectValid(
+        "SELECT id FROM companies WHERE name = 'pg_read_file'",
+      );
+    });
+
+    it("does not block ordinary functions", async () => {
+      await expectValid("SELECT count(*), upper(name) FROM companies");
+    });
+  });
+
+  // ----- Quoted mixed-case identifiers (#3342 L-4) -----------------------------
+
+  describe("quoted mixed-case table identifiers (#3342 L-4)", () => {
+    it("rejects a double-quoted mixed-case table that case-folds into a whitelist entry", async () => {
+      // `"Companies"` is a DIFFERENT relation than `companies` on PG.
+      await expectInvalid('SELECT * FROM "Companies"', "case-sensitive");
+    });
+
+    it("rejects a backtick-quoted mixed-case table on MySQL", async () => {
+      process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
+      await expectInvalid("SELECT * FROM `Companies`", "case-sensitive");
+    });
+
+    it("still accepts unquoted mixed-case names (DB case-folds them)", async () => {
+      await expectValid("SELECT * FROM Companies");
+      await expectValid("SELECT * FROM PUBLIC.Companies");
+    });
+
+    it("still accepts quoted all-lowercase names", async () => {
+      await expectValid('SELECT * FROM "companies"');
+    });
+  });
+
   // ----- PG ONLY keyword (#3346) ---------------------------------------------
 
   describe("PG ONLY table modifier (#3346)", () => {
@@ -543,15 +624,13 @@ describe("validateSQL", () => {
 
   // ----- Known limitations ---------------------------------------------------
 
-  describe("known limitations", () => {
-    it("does not block dangerous PostgreSQL functions (mitigated by statement_timeout and DB permissions)", async () => {
-      // Functions like pg_sleep, pg_read_file, pg_terminate_backend pass
-      // validation because there is no function blocklist. Mitigation:
-      // - pg_sleep: bounded by statement_timeout (default 30s)
-      // - pg_read_file/pg_ls_dir: require superuser or explicit GRANT
-      // - pg_terminate_backend: requires pg_signal_backend role
-      // The DB user should have minimal permissions in production.
-      await expectValid("SELECT pg_sleep(1) FROM companies");
+  describe("formerly known limitations", () => {
+    it("blocks dangerous PostgreSQL functions (#3342 L-3 closed the gap)", async () => {
+      // Previously documented as a known limitation mitigated only by
+      // statement_timeout + DB permissions; the function denylist now
+      // rejects these at validation.
+      await expectInvalid("SELECT pg_sleep(1) FROM companies", "not allowed");
+      await expectInvalid("SELECT pg_terminate_backend(123)", "not allowed");
     });
   });
 

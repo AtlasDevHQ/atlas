@@ -34838,7 +34838,7 @@
                   },
                   "baseUrl": {
                     "type": "string",
-                    "description": "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers.",
+                    "description": "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers. Must be a public HTTPS endpoint unless ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true.",
                     "example": "https://my-deployment.openai.azure.com/openai/deployments/gpt-4o/"
                   },
                   "bedrockRegion": {

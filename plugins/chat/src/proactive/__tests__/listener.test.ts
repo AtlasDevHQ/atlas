@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
+import type { Chat } from "chat";
 import {
   handleProactiveFeedbackSlash,
   PROACTIVE_REACTION,
@@ -349,7 +350,7 @@ function enabledFeedback(collector: FeedbackCollectorFn): FeedbackConfig {
 describe("registerProactiveListener — gating", () => {
   it("does not register when isEnabled() is false at boot", async () => {
     const { chat, isRegistered, isDMRegistered } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => false,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -365,7 +366,7 @@ describe("registerProactiveListener — gating", () => {
 
   it("registers all expected handler types when enabled", async () => {
     const { chat, isRegistered, isDMRegistered, handlerCount, modalCount } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -393,7 +394,7 @@ describe("registerProactiveListener — gating", () => {
 describe("registerProactiveListener — channel-message handler", () => {
   it("reacts and posts the offer card on a confident question", async () => {
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -410,7 +411,7 @@ describe("registerProactiveListener — channel-message handler", () => {
 
   it("does not react when the channel has no channel_proactive_config row (not opted in)", async () => {
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -429,7 +430,7 @@ describe("registerProactiveListener — channel-message handler", () => {
     // is an explicit opt-out. No row at all also means "not opted in"
     // (covered by the prior test).
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -444,7 +445,7 @@ describe("registerProactiveListener — channel-message handler", () => {
 
   it("rate-limits a chatty channel — only the first message reacts", async () => {
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -460,7 +461,7 @@ describe("registerProactiveListener — channel-message handler", () => {
 
   it("does not react to bot messages", async () => {
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -475,7 +476,7 @@ describe("registerProactiveListener — channel-message handler", () => {
 
   it("does not react on low-confidence classification", async () => {
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: noLLM,
       resolveWorkspaceId: defaultResolver,
@@ -511,7 +512,7 @@ describe("registerProactiveListener — reaction-back handler", () => {
       opts.userResolver && opts.executeQueryProactive
         ? linkedOnlyFlow(opts.executeQueryProactive, opts.userResolver)
         : OFF_ANSWER_FLOW;
-    await registerProactiveListener(chat as any, log, {
+    await registerProactiveListener(chat as unknown as Chat, log, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -676,7 +677,7 @@ describe("registerProactiveListener — in-thread reply primitive (#2704)", () =
     linkUrl?: string,
   ) {
     const { chat, invokeMessage, invokeReaction } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -847,7 +848,7 @@ describe("registerProactiveListener — button handlers", () => {
   it("triggers the answer flow when 'Yes, answer' is clicked", async () => {
     const executeQueryProactive: ProactiveExecuteQuery = mock(echoExecute);
     const { chat, invokeMessage, invokeAction } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -875,7 +876,7 @@ describe("registerProactiveListener — button handlers", () => {
   it("consumes the pending entry on 'Not now' without answering", async () => {
     const executeQueryProactive = mock(echoExecute);
     const { chat, invokeMessage, invokeReaction, invokeAction } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -928,7 +929,7 @@ describe("registerProactiveListener — feedback buttons", () => {
       : async (ev) => {
           calls.push(ev);
         };
-    const handle = await registerProactiveListener(chat as any, log, {
+    const handle = await registerProactiveListener(chat as unknown as Chat, log, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -1110,7 +1111,7 @@ describe("registerProactiveListener — feedback buttons", () => {
 
   it("silently no-ops when no feedbackCollector is configured", async () => {
     const { chat, invokeAction } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3142,7 +3143,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     const gate = mock(async () => true);
     const classify = mock(yesLLM);
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify,
       resolveWorkspaceId: defaultResolver,
@@ -3171,7 +3172,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
       async () => {},
     );
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled,
       classify,
       resolveWorkspaceId: defaultResolver,
@@ -3205,7 +3206,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     });
     const classify = mock(yesLLM);
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify,
       resolveWorkspaceId: defaultResolver,
@@ -3229,7 +3230,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     // safe default `offUnions` carries.
     const classify = mock(yesLLM);
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify,
       resolveWorkspaceId: defaultResolver,
@@ -3252,7 +3253,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     // handler) fails loudly here.
     const gate = mock(async () => true);
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3272,7 +3273,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     // up immediately. Two invokeMessage calls = two installGate calls.
     const gate = mock(async () => true);
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3296,7 +3297,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     const gate = mock(async () => false);
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, logger, {
+    await registerProactiveListener(chat as unknown as Chat, logger, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3326,7 +3327,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     const gate = mock(async () => false);
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, logger, {
+    await registerProactiveListener(chat as unknown as Chat, logger, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3355,7 +3356,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     const gate = mock(async () => false);
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, logger, {
+    await registerProactiveListener(chat as unknown as Chat, logger, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3392,7 +3393,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     } as const));
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, logger, {
+    await registerProactiveListener(chat as unknown as Chat, logger, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3430,7 +3431,7 @@ describe("registerProactiveListener — WorkspaceInstallGate (#2655)", () => {
     });
     const logger = makeLogger();
     const { chat, invokeMessage } = makeChat();
-    await registerProactiveListener(chat as any, logger, {
+    await registerProactiveListener(chat as unknown as Chat, logger, {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,
@@ -3471,7 +3472,7 @@ describe("registerProactiveListener — disclosure buttons (#2705)", () => {
     executeQueryProactive: ProactiveExecuteQuery,
   ) {
     const { chat, invokeMessage, invokeReaction, invokeAction } = makeChat();
-    await registerProactiveListener(chat as any, makeLogger(), {
+    await registerProactiveListener(chat as unknown as Chat, makeLogger(), {
       isEnabled: () => true,
       classify: yesLLM,
       resolveWorkspaceId: defaultResolver,

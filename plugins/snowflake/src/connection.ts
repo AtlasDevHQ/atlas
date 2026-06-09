@@ -101,6 +101,7 @@ export function createSnowflakeConnection(
     if (isNotFound) {
       throw new Error(
         "Snowflake support requires the snowflake-sdk package. Install it with: bun add snowflake-sdk",
+        { cause: err },
       );
     }
     throw new Error(

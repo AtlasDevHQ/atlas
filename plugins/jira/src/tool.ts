@@ -103,7 +103,7 @@ export async function executeJiraCreate(
       ).map(([field, msg]) => `${field}: ${msg}`);
       detail = [...messages, ...fieldErrors].join("; ") || `HTTP ${response.status}`;
     } catch {
-      let rawText = "";
+      let rawText: string;
       try {
         rawText = await response.text();
       } catch (textErr) {

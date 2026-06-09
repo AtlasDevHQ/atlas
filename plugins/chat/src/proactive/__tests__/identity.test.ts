@@ -55,7 +55,6 @@ describe("assertWorkspaceId", () => {
     // before casting — silently branding `undefined as WorkspaceId`
     // would re-introduce the silent-global-tenant footgun.
     expect(() =>
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       assertWorkspaceId(undefined as unknown as string),
     ).toThrow(InvalidProactiveIdentityError);
   });

@@ -64,6 +64,7 @@ export function createClickHouseConnection(
     if (isNotFound) {
       throw new Error(
         "ClickHouse support requires the @clickhouse/client package. Install it with: bun add @clickhouse/client",
+        { cause: err },
       );
     }
     throw new Error(

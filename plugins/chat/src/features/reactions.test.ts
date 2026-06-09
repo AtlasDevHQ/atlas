@@ -312,6 +312,7 @@ describe("createReactionLifecycle", () => {
 
 describe("ChatConfigSchema reactions field", () => {
   // Import here to avoid circular deps affecting other test groups
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- intentional require: see circular-dep note above.
   const { ChatConfigSchema } = require("../config");
 
   // Post-#2650 (slice 2 of 1.5.2): chat-adapter activation moved from

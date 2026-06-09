@@ -99,7 +99,7 @@ export async function executeObsidianSearch(
       const errorBody = (await response.json()) as { message?: string; errorCode?: number };
       detail = errorBody.message ?? `HTTP ${response.status}`;
     } catch {
-      let rawText = "";
+      let rawText: string;
       try {
         rawText = await response.text();
       } catch (textErr) {

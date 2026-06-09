@@ -792,6 +792,7 @@ describe("chat plugin lifecycle", () => {
 
   function createTestPlugin() {
     // Dynamic import to avoid top-level side effects
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- intentional require: avoids top-level side effects / keeps plugin construction lazy per test.
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       catalog: SLACK_CATALOG,
@@ -1309,6 +1310,7 @@ describe("chat plugin streaming lifecycle", () => {
   withSlackEnv();
 
   function createStreamingPlugin() {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- intentional require: avoids top-level side effects / keeps plugin construction lazy per test.
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       catalog: SLACK_CATALOG,
@@ -1373,6 +1375,7 @@ describe("chat plugin streaming lifecycle", () => {
     // The return shape validation happens at call time, not init time.
     // This test verifies the plugin still initializes even with a
     // badly-typed executeQueryStream — the error surfaces when a message arrives.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- intentional require: avoids top-level side effects / keeps plugin construction lazy per test.
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
       catalog: SLACK_CATALOG,
@@ -1400,6 +1403,7 @@ describe("chat plugin streaming lifecycle", () => {
   });
 
   it("initializes with streaming disabled (falls back to executeQuery)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- intentional require: avoids top-level side effects / keeps plugin construction lazy per test.
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({
       catalog: SLACK_CATALOG,

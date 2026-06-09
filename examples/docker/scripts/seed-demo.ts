@@ -205,6 +205,10 @@ try {
     "seed-demo: failed —",
     err instanceof Error ? err.stack : err,
   );
-  try { await client.end(); } catch {}
+  try {
+    await client.end();
+  } catch {
+    // intentionally ignored: best-effort connection cleanup on the error path
+  }
   process.exit(1);
 }

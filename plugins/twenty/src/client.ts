@@ -254,7 +254,7 @@ export function parseRetryAfterMs(headerValue: string | null | undefined): numbe
  * to `HTTP <status>`.
  */
 async function readErrorDetail(response: Response): Promise<{ message: string; code?: string }> {
-  let upstreamMessage = "";
+  let upstreamMessage: string;
   let upstreamCode: string | undefined;
   try {
     const body = (await response.clone().json()) as {

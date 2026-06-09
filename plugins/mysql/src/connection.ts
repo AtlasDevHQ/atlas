@@ -51,6 +51,7 @@ export function createMySQLConnection(
     if (isNotFound) {
       throw new Error(
         "MySQL support requires the mysql2 package. Install it with: bun add mysql2",
+        { cause: err },
       );
     }
     throw new Error(

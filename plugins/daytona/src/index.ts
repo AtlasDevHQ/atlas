@@ -70,6 +70,7 @@ function loadDaytonaSdk(): any {
     if (isNotFound) {
       throw new Error(
         "Daytona support requires the @daytonaio/sdk package. Install it with: bun add @daytonaio/sdk",
+        { cause: err },
       );
     }
     throw new Error(

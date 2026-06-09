@@ -59,6 +59,7 @@ export function createDuckDBConnection(
       instancePromise = (async () => {
         let DuckDBInstance: unknown;
         try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           ({ DuckDBInstance } = require("@duckdb/node-api"));
         } catch (err) {
           const isNotFound =
@@ -69,6 +70,7 @@ export function createDuckDBConnection(
           if (isNotFound) {
             throw new Error(
               "DuckDB support requires the @duckdb/node-api package. Install it with: bun add @duckdb/node-api",
+              { cause: err },
             );
           }
           throw new Error(

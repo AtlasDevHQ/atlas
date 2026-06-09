@@ -115,6 +115,44 @@ ambient AWS environment chain (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
 `AWS_SESSION_TOKEN`). Every request is signed fresh (Signature Version 4) with
 the configured region and service.
 
+### Profiling with `atlas init` / `atlas diff`
+
+The CLI semantic-layer profiler supports the same auth modes and engines as the
+plugin, configured through `ATLAS_ES_*` environment variables — credentials are
+**never** carried in the URL
+([#3309](https://github.com/AtlasDevHQ/atlas/issues/3309)):
+
+| Variable | Maps to | Description |
+| -------- | ------- | ----------- |
+| `ATLAS_DATASOURCE_URL` | `url` | `elasticsearch://host[:port]` or `opensearch://host[:port]` |
+| `ATLAS_ES_CLOUD_ID` | `cloudId` | Elastic Cloud ID — the endpoint when no URL is set |
+| `ATLAS_ES_API_KEY` | `apiKey` | Base64 API key |
+| `ATLAS_ES_USERNAME` / `ATLAS_ES_PASSWORD` | `username` / `password` | HTTP Basic (both required) |
+| `ATLAS_ES_AWS_REGION` | `awsRegion` | Selects AWS SigV4; keys come from the ambient `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`) chain |
+| `ATLAS_ES_AWS_SERVICE` | `awsService` | SigV4 service code (default `es`) |
+| `ATLAS_ES_ENGINE` | `engine` | Explicit engine override |
+
+The auth-mode precedence (SigV4 → Basic → API key) is the plugin's — the CLI
+builds the same config shape and hands it to the same resolver.
+
+```bash
+# Basic-secured self-hosted cluster
+export ATLAS_DATASOURCE_URL="elasticsearch://logs.internal:9200?ssl=false"
+export ATLAS_ES_USERNAME="atlas_reader"
+export ATLAS_ES_PASSWORD="…"
+bun run atlas -- init
+
+# Amazon OpenSearch Service via SigV4
+export ATLAS_DATASOURCE_URL="opensearch://search-mydomain.us-east-1.es.amazonaws.com"
+export ATLAS_ES_AWS_REGION="us-east-1"   # keys from the AWS env chain
+bun run atlas -- init
+
+# Elastic Cloud — no URL needed, the Cloud ID names the endpoint
+export ATLAS_ES_CLOUD_ID="my-deployment:…"
+export ATLAS_ES_API_KEY="…"
+bun run atlas -- init
+```
+
 ## SQL query surface
 
 Ask a tabular or aggregate question over a single index in chat and the agent

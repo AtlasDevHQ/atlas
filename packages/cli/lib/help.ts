@@ -14,6 +14,8 @@ export interface SubcommandHelp {
   flags?: Array<{ flag: string; description: string }>;
   subcommands?: Array<{ name: string; description: string }>;
   examples?: string[];
+  /** Free-form lines printed after the examples (env-var contracts, caveats). */
+  notes?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +53,12 @@ export function printSubcommandHelp(help: SubcommandHelp): void {
     console.log("Examples:");
     for (const ex of help.examples) {
       console.log(`  ${ex}`);
+    }
+    console.log();
+  }
+  if (help.notes?.length) {
+    for (const note of help.notes) {
+      console.log(note);
     }
     console.log();
   }
@@ -133,6 +141,20 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas init --csv sales.csv,products.csv",
       "atlas init --org org-123",
     ],
+    notes: [
+      "Elasticsearch / OpenSearch datasources authenticate via environment",
+      "variables — credentials are never carried in the URL:",
+      "  ATLAS_DATASOURCE_URL    elasticsearch://host:9200 or opensearch://host:9200",
+      "  ATLAS_ES_CLOUD_ID       Elastic Cloud ID (endpoint alternative to the URL)",
+      "  ATLAS_ES_API_KEY        Base64 API key",
+      "  ATLAS_ES_USERNAME       HTTP Basic username (with ATLAS_ES_PASSWORD)",
+      "  ATLAS_ES_PASSWORD       HTTP Basic password (with ATLAS_ES_USERNAME)",
+      "  ATLAS_ES_AWS_REGION     Selects AWS SigV4 (Amazon OpenSearch Service);",
+      "                          keys from AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY",
+      "                          (+ AWS_SESSION_TOKEN)",
+      "  ATLAS_ES_AWS_SERVICE    SigV4 service code (default: es)",
+      "  ATLAS_ES_ENGINE         Engine override: elasticsearch | opensearch",
+    ],
   },
   diff: {
     description:
@@ -157,6 +179,10 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas diff",
       "atlas diff --tables users,orders",
       'atlas diff || echo "Schema drift detected!"',
+    ],
+    notes: [
+      "Elasticsearch / OpenSearch datasources use the same ATLAS_ES_* environment",
+      "contract as `atlas init` — see `atlas init --help`.",
     ],
   },
   query: {

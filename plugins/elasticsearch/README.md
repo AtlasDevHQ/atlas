@@ -128,8 +128,15 @@ Atlas profiles an Elasticsearch cluster into the semantic layer straight from
 index `_mapping`s — there is no SQL schema to introspect, so each index becomes
 an entity and each mapped field becomes a dimension.
 
-Because the API key is **not** carried in the `elasticsearch://` URL (the URL
-parser rejects credentials), the CLI reads it from `ATLAS_ES_API_KEY`:
+Because credentials are **not** carried in the `elasticsearch://` /
+`opensearch://` URL (the URL parser rejects them), the CLI reads the same
+auth-mode + engine config the plugin supports from `ATLAS_ES_*` environment
+variables (#3309): `ATLAS_ES_API_KEY` (Base64 API key), `ATLAS_ES_USERNAME` +
+`ATLAS_ES_PASSWORD` (HTTP Basic), or `ATLAS_ES_AWS_REGION` (AWS SigV4 — keys
+from the ambient `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` chain, optional
+`ATLAS_ES_AWS_SERVICE`). `ATLAS_ES_CLOUD_ID` names an Elastic Cloud endpoint
+when there is no URL, and `ATLAS_ES_ENGINE` overrides the engine. Precedence
+(SigV4 → Basic → API key) is the plugin resolver's — never duplicated in the CLI.
 
 ```bash
 export ATLAS_DATASOURCE_URL="elasticsearch://my-cluster.es.io:9243"

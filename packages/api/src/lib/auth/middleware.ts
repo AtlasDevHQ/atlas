@@ -13,6 +13,7 @@ import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { validateApiKey } from "@atlas/api/lib/auth/simple-key";
 import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
+import { checkPasswordChangeGate } from "@atlas/api/lib/auth/password-gate";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import { resolveRateLimitRpm } from "@atlas/api/lib/env-profile";
@@ -463,30 +464,41 @@ export async function authenticateRequest(req: Request): Promise<AuthResult> {
       return validateApiKey(req);
 
     case "managed":
-      return runWithSSOEnforcement(mode, () => (_managedOverride ?? validateManaged)(req));
+      return runWithSSOEnforcement(mode, () => (_managedOverride ?? validateManaged)(req), req);
 
     case "byot":
-      return runWithSSOEnforcement(mode, () => (_byotOverride ?? validateBYOT)(req));
+      return runWithSSOEnforcement(mode, () => (_byotOverride ?? validateBYOT)(req), req);
   }
 }
 
 /**
- * Run a validator and gate the authenticated result through SSO enforcement.
+ * Run a validator and gate the authenticated result through SSO enforcement
+ * and (managed mode only) the forced-password-change gate (#3345).
  *
  * Single entry point for every `SSOEnforceableMode` — managed and byot
  * share the same gate (F-56), and any future enforced mode joins
  * automatically. Centralizes the categorize-and-500 fallback so all
  * enforced modes report uniformly when their validator throws.
+ *
+ * The password gate runs ONLY for `managed` — it enforces a flag on
+ * Atlas-held password credentials; byot users authenticate against an
+ * external IdP and simple-key has no user identity. Exempt paths (the
+ * change-password endpoints) are handled inside `checkPasswordChangeGate`.
  */
 async function runWithSSOEnforcement(
   mode: SSOEnforceableMode,
   validator: () => Promise<AuthResult>,
+  req: Request,
 ): Promise<AuthResult> {
   try {
     const result = await validator();
     if (result.authenticated && result.user) {
       const enforcementCheck = await checkSSOEnforcement(result.user.label, mode);
       if (enforcementCheck) return enforcementCheck;
+      if (mode === "managed") {
+        const passwordGate = await checkPasswordChangeGate(result.user.id, req.url);
+        if (passwordGate) return passwordGate;
+      }
     }
     return result;
   } catch (err) {

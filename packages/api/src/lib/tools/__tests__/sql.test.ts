@@ -384,6 +384,46 @@ describe("validateSQL", () => {
     });
   });
 
+  // ----- PG ONLY keyword (#3346) ---------------------------------------------
+
+  describe("PG ONLY table modifier (#3346)", () => {
+    // node-sql-parser mis-models `FROM ONLY accounts` as table "ONLY" with
+    // alias "accounts" — the real relation drops out of the extracted table
+    // set, silently defeating named RLS policies (whitelist off) and audit
+    // classification. The validator rejects the modifier outright.
+
+    it("rejects SELECT * FROM ONLY <table> on PostgreSQL", async () => {
+      await expectInvalid("SELECT * FROM ONLY accounts", "ONLY");
+    });
+
+    it("rejects FROM ONLY even when the whitelist is disabled", async () => {
+      process.env.ATLAS_TABLE_WHITELIST = "false";
+      await expectInvalid("SELECT * FROM ONLY accounts", "ONLY");
+    });
+
+    it("rejects FROM ONLY inside a subquery", async () => {
+      process.env.ATLAS_TABLE_WHITELIST = "false";
+      await expectInvalid(
+        "SELECT * FROM orders WHERE id IN (SELECT id FROM ONLY accounts)",
+        "ONLY",
+      );
+    });
+
+    it("rejects FROM ONLY even when a CTE is named only (no CTE exemption)", async () => {
+      process.env.ATLAS_TABLE_WHITELIST = "false";
+      await expectInvalid(
+        "WITH only AS (SELECT 1) SELECT * FROM ONLY accounts",
+        "ONLY",
+      );
+    });
+
+    it("allows a table named only on MySQL when whitelist is disabled", async () => {
+      process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
+      process.env.ATLAS_TABLE_WHITELIST = "false";
+      await expectValid("SELECT * FROM only");
+    });
+  });
+
   // ----- Schema-qualified table names ----------------------------------------
 
   describe("schema-qualified table names", () => {

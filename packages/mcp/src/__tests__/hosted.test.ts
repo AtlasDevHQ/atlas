@@ -181,6 +181,20 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   revokeWorkspaceGrant: async () => 0,
 }));
 
+// #3345 — forced-password-change gate at the MCP edge. Defaults to
+// "not flagged" so existing tests pass; the gate tests flip it.
+const mockIsPasswordChangeRequired: Mock<(userId: string) => Promise<boolean>> =
+  mock(async () => false);
+mock.module("@atlas/api/lib/auth/password-gate", () => ({
+  PASSWORD_CHANGE_REQUIRED_ERROR: "password_change_required",
+  isPasswordChangeRequired: (userId: string) => mockIsPasswordChangeRequired(userId),
+  checkPasswordChangeGate: async () => null,
+  invalidatePasswordGate: () => undefined,
+  isPasswordGateExemptPath: () => false,
+  _resetPasswordGateCache: () => undefined,
+  _setPasswordGateLookupOverride: () => undefined,
+}));
+
 const auditedEntries: AdminActionEntry[] = [];
 const mockLogAdminAction: Mock<(entry: AdminActionEntry) => void> = mock(
   (entry: AdminActionEntry) => {
@@ -289,6 +303,8 @@ beforeEach(() => {
   mockGetOAuthClientScope.mockResolvedValue("single");
   mockHasWorkspaceGrant.mockResolvedValue(false);
   mockUserIsWorkspaceMember.mockResolvedValue(false);
+  mockIsPasswordChangeRequired.mockReset();
+  mockIsPasswordChangeRequired.mockResolvedValue(false);
   auditedEntries.length = 0;
   __mockedConfig = {
     datasources: {},
@@ -364,6 +380,63 @@ function bindTokensAB(): void {
 // ── Bearer / authorization ────────────────────────────────────────────
 
 describe("hosted MCP — bearer enforcement", () => {
+  it("returns 403 password_change_required when the bearer's subject is flagged (#3345)", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockIsPasswordChangeRequired.mockResolvedValue(true);
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("password_change_required");
+      expect(mockIsPasswordChangeRequired).toHaveBeenCalledWith(SUB_A);
+    } finally {
+      handle.close();
+    }
+  });
+
+  it("returns 503 when the password-change lookup fails (fail-closed, #3345)", async () => {
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      jti: "jti_a",
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    mockIsPasswordChangeRequired.mockRejectedValue(new Error("db unavailable"));
+
+    const handle = await startServer();
+    try {
+      const res = await fetch(`${handle.url}/mcp/${ORG_A}/sse`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TOKEN_A}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe("auth_unavailable");
+    } finally {
+      handle.close();
+    }
+  });
+
   it("returns 401 when Authorization header is missing", async () => {
     const handle = await startServer();
     try {

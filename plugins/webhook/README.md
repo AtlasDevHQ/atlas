@@ -49,6 +49,7 @@ export default defineConfig({
 | `secret` | `string` | — | API key or HMAC secret |
 | `responseFormat` | `"json" \| "text"` | `"json"` | Response format |
 | `callbackUrl` | `string?` | — | Optional async callback URL |
+| `allowedCallbackHosts` | `string[]?` | — | Extra `host[:port]` values a request-body `callbackUrl` may target (the channel `callbackUrl`'s host is always allowed) |
 | `rateLimitRpm` | `number?` | `60` | Per-channel requests-per-minute cap. Excess returns `429` |
 | `concurrencyLimit` | `number?` | `3` | Per-channel concurrent in-flight cap. Excess returns `429` |
 | `requireTimestamp` | `boolean?` | `false` | api-key channels: require `X-Webhook-Timestamp` and enforce a 5-minute window |
@@ -114,6 +115,18 @@ fail-closed (strict mode).
   "callbackUrl": "https://example.com/callback"
 }
 ```
+
+### Callback URL rules (v0.0.8 — SSRF hardening)
+
+- A request-body `callbackUrl` is accepted only when its host matches the
+  channel `callbackUrl`'s host or an entry in `allowedCallbackHosts`.
+  Channels with neither configured reject request-body callbacks (`400`).
+- Callback targets must be public HTTPS endpoints. Private, loopback,
+  link-local, CGNAT, ULA, and `*.internal` addresses are blocked — the
+  hostname is DNS-resolved and every resolved address must be public.
+- Redirects from the callback endpoint are never followed.
+- Self-hosted deployments delivering to internal/dev endpoints can opt out
+  with `ATLAS_WEBHOOK_ALLOW_INTERNAL_CALLBACKS=true` (also re-allows http).
 
 ### Response (sync)
 

@@ -148,7 +148,11 @@ describe("Email agent-tool — install-present path through the real lazy loader
 
     mockInternalQuery.mockImplementation(async () => [{ config: STORED_CONFIG }]);
 
-    const tool = toolMod.createSendEmailTool();
+    const tool = toolMod.createSendEmailTool({
+      // Recipient gate (#3341): seam keeps the internalQuery call-count
+      // contract (one config read) intact while allowing the fixture recipient.
+      resolveMemberEmails: async () => ["dest@example.com", "another@example.com"],
+    });
 
     const result1 = await withRequestContext(
       {
@@ -211,7 +215,11 @@ describe("Email agent-tool — install-present path through the real lazy loader
 
     mockInternalQuery.mockImplementation(async () => []);
 
-    const tool = toolMod.createSendEmailTool();
+    const tool = toolMod.createSendEmailTool({
+      // Recipient gate (#3341): seam keeps the internalQuery call-count
+      // contract (one config read) intact while allowing the fixture recipient.
+      resolveMemberEmails: async () => ["dest@example.com", "another@example.com"],
+    });
     const result = await withRequestContext(
       {
         requestId: "req-no-install",

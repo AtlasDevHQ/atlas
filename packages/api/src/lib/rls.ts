@@ -8,7 +8,8 @@
  * Security model:
  * - Fail-closed: missing claims block the query
  * - Auth mode "none" + RLS enabled blocks the query
- * - Claim values are SQL-escaped (single quotes doubled) and coerced to string
+ * - Claim values are SQL-escaped (single quotes doubled; backslashes doubled
+ *   on backslash-escaping dialects like MySQL) and coerced to string
  * - AST manipulation ensures syntactic correctness
  * - Custom validators (SOQL, GraphQL) bypass RLS — they must enforce their own
  * - Injection runs after plugin beforeQuery hooks — plugins cannot strip RLS
@@ -193,20 +194,50 @@ export function resolveRLSFilters(
 // ---------------------------------------------------------------------------
 
 /**
+ * FROM-clause modifier keywords that node-sql-parser mis-models as table
+ * names on PostgreSQL-family dialects. `SELECT * FROM ONLY accounts` parses
+ * as `{ table: "ONLY", as: "accounts" }` — the real relation (`accounts`)
+ * is dropped from the extracted table set, so a named RLS policy on
+ * `accounts` would silently not match (#3346). Seeing one of these as a
+ * `from[].table` means the parser's model diverged from what the database
+ * will execute — fail closed.
+ */
+const PG_FROM_MODIFIER_KEYWORDS = new Set(["only"]);
+
+/** True when the parser dialect mis-models PG FROM modifiers (see above). */
+function isPgFamilyDialect(dialect: string): boolean {
+  return !/mysql|mariadb/i.test(dialect);
+}
+
+/**
  * Walk the AST's FROM array to build a map of table_name → alias.
  * If a table has no alias, it maps to the table name itself.
+ *
+ * Throws when a FROM entry's table name is a bare PG FROM-modifier keyword
+ * (`ONLY`) on a PostgreSQL-family dialect — the parser has mis-modeled the
+ * query and RLS targeting would be wrong (#3346, fail-closed).
  */
 function extractTableAliasMap(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
   from: any[],
-  cteNames: Set<string>,
+  cteNames: ReadonlySet<string>,
+  dialect: string,
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const entry of from) {
     if (!entry?.table) continue;
     const tableName =
       typeof entry.table === "string" ? entry.table.toLowerCase() : undefined;
-    if (!tableName || cteNames.has(tableName)) continue;
+    if (!tableName) continue;
+    // Keyword check BEFORE the CTE exemption — a CTE named `only` must not
+    // re-open the FROM ONLY mis-parse (CodeRabbit on #3346).
+    if (isPgFamilyDialect(dialect) && PG_FROM_MODIFIER_KEYWORDS.has(tableName)) {
+      throw new Error(
+        `FROM-clause table resolved to the SQL keyword "${tableName.toUpperCase()}" — ` +
+          `the parser cannot model this query reliably. Rewrite without the ${tableName.toUpperCase()} modifier.`,
+      );
+    }
+    if (cteNames.has(tableName)) continue;
     const alias = entry.as || entry.table;
     map.set(tableName, alias);
   }
@@ -225,8 +256,31 @@ function collectCTENames(ast: Select): Set<string> {
   return names;
 }
 
+/**
+ * Whether the dialect treats `\` as an escape character inside `'...'`
+ * string literals. MySQL/MariaDB do by default (`NO_BACKSLASH_ESCAPES` off);
+ * PostgreSQL with `standard_conforming_strings=on` (the default) does not.
+ */
+function dialectUsesBackslashEscapes(dialect: string): boolean {
+  return /mysql|mariadb/i.test(dialect);
+}
+
+/**
+ * Finish escaping a claim value for emission as a string literal. Values
+ * arrive single-quote-doubled from {@link resolveRLSFilters}; on
+ * backslash-escaping dialects every `\` must additionally be doubled or a
+ * `\`-bearing claim breaks out of the literal (#3336). Doubling backslashes
+ * after quote-doubling is safe: it never creates or destroys a quote, and
+ * it neutralizes a trailing `\` that would otherwise escape the closing `''`.
+ */
+function escapeForDialect(value: string, dialect: string): string {
+  return dialectUsesBackslashEscapes(dialect)
+    ? value.replace(/\\/g, "\\\\")
+    : value;
+}
+
 /** Build an AST condition node for a single RLS filter (= or IN). */
-function buildCondition(tableRef: string, filter: RLSFilter) {
+function buildCondition(tableRef: string, filter: RLSFilter, dialect: string) {
   if (filter.values && filter.values.length > 0) {
     // IN-list for array claims
     return {
@@ -241,7 +295,7 @@ function buildCondition(tableRef: string, filter: RLSFilter) {
         type: "expr_list",
         value: filter.values.map((v) => ({
           type: "single_quote_string",
-          value: v,
+          value: escapeForDialect(v, dialect),
         })),
       },
     };
@@ -257,9 +311,24 @@ function buildCondition(tableRef: string, filter: RLSFilter) {
     },
     right: {
       type: "single_quote_string",
-      value: filter.value,
+      value: escapeForDialect(filter.value, dialect),
     },
   };
+}
+
+/**
+ * Mutable bookkeeping threaded through the injection recursion so
+ * {@link injectRLSConditions} can assert fail-closed afterwards (#3337):
+ *
+ * - `appliedTables` — every filter table an alias was found for (i.e. a
+ *   condition was actually injected somewhere in the statement).
+ * - `cteNames` — every CTE name seen at any nesting level. A filter whose
+ *   table is really a CTE reference is satisfied by injecting into the CTE
+ *   *definition*, so CTE names are exempt from the applied-assertion.
+ */
+interface InjectionTracker {
+  appliedTables: Set<string>;
+  cteNames: Set<string>;
 }
 
 /**
@@ -275,15 +344,24 @@ function injectIntoSelectAST(
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
   dialect: string,
+  tracker: InjectionTracker,
+  /** CTE names visible at this scope (outer WITH clauses + this node's own).
+   *  SQL scoping makes outer CTEs referenceable inside derived subqueries —
+   *  excluding only the LOCAL names treated an outer CTE reference as a real
+   *  table and injected a condition onto it (CodeRabbit on #3337). */
+  visibleCtes: ReadonlySet<string>,
 ): void {
-  const cteNames = collectCTENames(ast);
+  const localCtes = collectCTENames(ast);
+  for (const name of localCtes) tracker.cteNames.add(name);
+  const visible: ReadonlySet<string> =
+    localCtes.size > 0 ? new Set([...visibleCtes, ...localCtes]) : visibleCtes;
 
   // Inject into CTE definitions
   if (Array.isArray(ast.with)) {
     for (const cte of ast.with) {
       const cteAst = cte?.stmt?.ast ?? cte?.stmt;
       if (cteAst && cteAst.type === "select") {
-        injectIntoSelectAST(cteAst, groups, combineWith, dialect);
+        injectIntoSelectAST(cteAst, groups, combineWith, dialect, tracker, visible);
       }
     }
   }
@@ -291,7 +369,7 @@ function injectIntoSelectAST(
   // Build table→alias map from FROM clause
   const from = ast.from;
   if (Array.isArray(from) && from.length > 0) {
-    const aliasMap = extractTableAliasMap(from, cteNames);
+    const aliasMap = extractTableAliasMap(from, visible, dialect);
 
     // Build per-policy-group conditions
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
@@ -302,8 +380,9 @@ function injectIntoSelectAST(
       for (const filter of group.filters) {
         const alias = aliasMap.get(filter.table.toLowerCase());
         if (!alias) continue;
+        tracker.appliedTables.add(filter.table.toLowerCase());
 
-        const condition = buildCondition(alias, filter);
+        const condition = buildCondition(alias, filter, dialect);
         groupCondition = groupCondition
           ? {
               type: "binary_expr",
@@ -349,19 +428,19 @@ function injectIntoSelectAST(
     for (const entry of from) {
       const subAst = entry?.expr?.ast;
       if (subAst && subAst.type === "select") {
-        injectIntoSelectAST(subAst, groups, combineWith, dialect);
+        injectIntoSelectAST(subAst, groups, combineWith, dialect, tracker, visible);
       }
     }
   }
 
   // Recurse into subqueries within the WHERE clause
   if (ast.where) {
-    walkWhereForSubqueries(ast.where, groups, combineWith, dialect);
+    walkWhereForSubqueries(ast.where, groups, combineWith, dialect, tracker, visible);
   }
 
   // Handle UNION (recursively inject into _next)
   if (ast._next) {
-    injectIntoSelectAST(ast._next, groups, combineWith, dialect);
+    injectIntoSelectAST(ast._next, groups, combineWith, dialect, tracker, visible);
   }
 }
 
@@ -375,22 +454,24 @@ function walkWhereForSubqueries(
   groups: RLSFilterGroup[],
   combineWith: "and" | "or",
   dialect: string,
+  tracker: InjectionTracker,
+  visibleCtes: ReadonlySet<string>,
 ): void {
   if (!node || typeof node !== "object") return;
 
   // Subquery in WHERE (e.g., WHERE id IN (SELECT ...))
   if (node.ast && typeof node.ast === "object" && node.ast.type === "select") {
-    injectIntoSelectAST(node.ast, groups, combineWith, dialect);
+    injectIntoSelectAST(node.ast, groups, combineWith, dialect, tracker, visibleCtes);
   }
 
   // Recurse into binary expression children
-  if (node.left) walkWhereForSubqueries(node.left, groups, combineWith, dialect);
-  if (node.right) walkWhereForSubqueries(node.right, groups, combineWith, dialect);
+  if (node.left) walkWhereForSubqueries(node.left, groups, combineWith, dialect, tracker, visibleCtes);
+  if (node.right) walkWhereForSubqueries(node.right, groups, combineWith, dialect, tracker, visibleCtes);
 
   // Recurse into expr_list values (e.g., IN (...subquery...))
   if (node.type === "expr_list" && Array.isArray(node.value)) {
     for (const v of node.value) {
-      walkWhereForSubqueries(v, groups, combineWith, dialect);
+      walkWhereForSubqueries(v, groups, combineWith, dialect, tracker, visibleCtes);
     }
   }
 }
@@ -425,7 +506,32 @@ export function injectRLSConditions(
   });
   const stmt = Array.isArray(ast) ? ast[0] : ast;
 
-  injectIntoSelectAST(stmt, groups, combineWith, dialect);
+  const tracker: InjectionTracker = {
+    appliedTables: new Set<string>(),
+    cteNames: new Set<string>(),
+  };
+  injectIntoSelectAST(stmt, groups, combineWith, dialect, tracker, new Set());
+
+  // Fail-closed assertion (#3337): every resolved filter must have been
+  // applied somewhere in the statement. Filter tables come from
+  // `parser.tableList`, which can include constructs the FROM/JOIN alias
+  // walk models differently — previously those were silently skipped and
+  // the query ran with NO RLS condition for that table. CTE names are
+  // exempt: a "filter" on a CTE reference is satisfied by injecting into
+  // the CTE definition's own FROM tables.
+  const unapplied = [
+    ...new Set(allFilters.map((f) => f.table.toLowerCase())),
+  ].filter(
+    (table) =>
+      !tracker.appliedTables.has(table) && !tracker.cteNames.has(table),
+  );
+  if (unapplied.length > 0) {
+    throw new Error(
+      `RLS condition could not be applied to table(s): ${unapplied.join(", ")}. ` +
+        `The query references the table in a construct RLS injection cannot model — query blocked (fail-closed). ` +
+        `Rewrite using a plain FROM/JOIN reference.`,
+    );
+  }
 
   const result = parser.sqlify(stmt, { database: dialect });
   log.debug({ originalLength: sql.length, resultLength: result.length }, "RLS conditions injected into SQL");

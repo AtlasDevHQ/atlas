@@ -44,12 +44,42 @@ import {
   type GatewayCatalogModel,
 } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requirePermission } from "./admin-router";
 
 const log = createLogger("admin-model-config");
 
 const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, not_found: 404, test_failed: 422 });
+
+/**
+ * SSRF refinement for workspace model `baseUrl` (#3339). A workspace admin is
+ * low-trust in multi-tenant SaaS — without this, `POST /model-config/test`
+ * and the live agent will fetch any URL the admin stores, including cloud
+ * metadata (`169.254.169.254`) and internal services. Routed through the
+ * canonical `isSafeExternalUrl`; self-hosted operators pointing at an
+ * internal OpenAI-compatible endpoint opt out via
+ * `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true` (the shared egress opt-out).
+ */
+const baseUrlIsSafe = (value: string | undefined): boolean => {
+  if (value === undefined) return true;
+  if (isInternalEgressAllowed()) {
+    // Opt-out still requires a parseable http(s) URL.
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      // intentionally ignored: unparseable URL — fail closed below.
+      return false;
+    }
+  }
+  return isSafeExternalUrl(value);
+};
+
+const BASE_URL_SSRF_MESSAGE =
+  "Base URL must be a public HTTPS endpoint (private, loopback, link-local, and internal hosts are blocked). " +
+  "Self-hosted deployments can set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow internal targets.";
 
 // `ModelConfigSchema` is re-exported under its prior local alias from
 // `@useatlas/schemas`. The request-body schemas below keep the strict
@@ -73,8 +103,8 @@ const SetModelConfigBodySchema = z.object({
       "Provider API key. Stored encrypted. Omit to keep the existing key on update. For 'gateway', omit entirely to ride on platform credits. For 'bedrock', supply the JSON-stringified IAM cred bundle.",
     example: "sk-ant-...",
   }),
-  baseUrl: z.string().optional().openapi({
-    description: "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers.",
+  baseUrl: z.string().optional().refine(baseUrlIsSafe, { message: BASE_URL_SSRF_MESSAGE }).openapi({
+    description: "Base URL for Azure OpenAI or custom endpoints. Required for azure-openai and custom providers. Must be a public HTTPS endpoint unless ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true.",
     example: "https://my-deployment.openai.azure.com/openai/deployments/gpt-4o/",
   }),
   bedrockRegion: z.enum(BEDROCK_REGIONS).optional().openapi({
@@ -89,7 +119,7 @@ const TestModelConfigBodySchema = z.object({
   // Optional for `gateway` on platform credits; required for every other case.
   // Cross-field validation lives in the handler (see PUT) and in EE testModelConfig.
   apiKey: z.string().min(1).optional(),
-  baseUrl: z.string().optional(),
+  baseUrl: z.string().optional().refine(baseUrlIsSafe, { message: BASE_URL_SSRF_MESSAGE }),
   bedrockRegion: z.enum(BEDROCK_REGIONS).optional(),
 });
 

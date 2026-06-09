@@ -10,6 +10,13 @@ import { Effect, Schedule, Duration } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { withEffectSpan } from "@atlas/api/lib/tracing";
 import { DeliveryError } from "@atlas/api/lib/effect/errors";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import {
+  guardedFetch,
+  isInternalEgressAllowed,
+  EgressBlockedError,
+  hostForLog,
+} from "@atlas/api/lib/openapi/egress-guard";
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
 import type { EmailRecipient, SlackRecipient, WebhookRecipient, Recipient } from "@atlas/api/lib/scheduled-task-types";
@@ -27,20 +34,6 @@ export interface DeliverySummary {
 
 const EMPTY_SUMMARY: DeliverySummary = { attempted: 0, succeeded: 0, failed: 0 };
 
-/** RFC 5735 / RFC 4193 private and reserved IP ranges. */
-const BLOCKED_HOST_PATTERNS = [
-  /^localhost$/i,
-  /^127\./,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^169\.254\./,
-  /^0\./,
-  /^\[::1\]$/,
-  /^\[fd/i,
-  /^\[fe80:/i,
-];
-
 const BLOCKED_HEADER_NAMES = new Set([
   "authorization",
   "cookie",
@@ -49,21 +42,29 @@ const BLOCKED_HEADER_NAMES = new Set([
   "x-real-ip",
 ]);
 
-/** Returns true if the URL targets a private/internal address. */
-function isBlockedUrl(urlString: string): boolean {
+/**
+ * Returns true if the URL targets a private/internal address (#3340).
+ *
+ * Routed through the canonical {@link isSafeExternalUrl} primitive — the old
+ * regex denylist missed CGNAT/IPv4-mapped/`*.internal` forms and only matched
+ * the literal hostname. Delivery itself goes through {@link guardedFetch},
+ * which re-validates every redirect hop, so a public URL 302-ing to an
+ * internal address is also blocked. Self-hosted operators that legitimately
+ * deliver to internal endpoints opt out via
+ * `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true` (the shared egress opt-out).
+ */
+export function isBlockedUrl(urlString: string): boolean {
+  // Parse/scheme validation applies even under the operator opt-out — the
+  // opt-out relaxes the internal-host policy, not "is this a fetchable URL".
   try {
     const parsed = new URL(urlString);
-    // Block non-HTTPS in production
-    if (process.env.NODE_ENV === "production" && parsed.protocol !== "https:") {
-      return true;
-    }
-    const hostname = parsed.hostname;
-    return BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
   } catch {
-    // intentionally treated as blocked: unparseable URLs cannot be validated
-    log.warn({ url: urlString.slice(0, 100) }, "Unparseable webhook URL — blocked");
+    // intentionally ignored: an unparseable URL cannot be delivered to.
     return true;
   }
+  if (isInternalEgressAllowed()) return false;
+  return !isSafeExternalUrl(urlString);
 }
 
 /** Filter out sensitive header names from user-supplied headers. */
@@ -232,20 +233,36 @@ function deliverToWebhook(
     const payload = formatWebhookPayload(task, result);
     const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
 
+    // guardedFetch re-validates the target before the request leaves the box
+    // and on every redirect hop (manual redirects) — a public recipient that
+    // 302-redirects to an internal address is rejected, not followed (#3340).
     const resp = yield* Effect.tryPromise({
       try: () =>
-        fetch(recipient.url, {
+        guardedFetch(recipient.url, {
           method: "POST",
           headers: { ...safeHeaders, "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         }),
-      catch: (err) =>
-        new DeliveryError({
+      catch: (err) => {
+        if (err instanceof EgressBlockedError) {
+          log.error(
+            { taskId: task.id, host: err.host },
+            "Webhook delivery blocked by egress guard",
+          );
+          return new DeliveryError({
+            message: `Blocked URL (egress guard): ${hostForLog(recipient.url)}`,
+            channel: "webhook",
+            recipient: recipient.url,
+            permanent: true,
+          });
+        }
+        return new DeliveryError({
           message: err instanceof Error ? err.message : String(err),
           channel: "webhook",
           recipient: recipient.url,
           permanent: false,
-        }),
+        });
+      },
     });
 
     if (!resp.ok) {

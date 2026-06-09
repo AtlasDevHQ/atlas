@@ -19,6 +19,7 @@ afterAll(() => {
 
 let mockEnterpriseEnabled = false;
 let mockHasInternalDB = false;
+let mockQueryError: Error | null = null;
 const mockQueryRows: Record<string, unknown>[][] = [];
 
 mock.module("@atlas/api/lib/config", () => ({
@@ -30,7 +31,10 @@ mock.module("@atlas/api/lib/config", () => ({
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
-  internalQuery: async () => mockQueryRows.shift() ?? [],
+  internalQuery: async () => {
+    if (mockQueryError) throw mockQueryError;
+    return mockQueryRows.shift() ?? [];
+  },
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -145,7 +149,50 @@ describe("applyMasking", () => {
     _resetComplianceState();
     mockEnterpriseEnabled = false;
     mockHasInternalDB = false;
+    mockQueryError = null;
     mockQueryRows.length = 0;
+  });
+
+  it("fails closed when the classification load errors (#3348)", async () => {
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryError = new Error("connection terminated unexpectedly");
+
+    const rows = [{ email: "alice@example.com", ssn: "123-45-6789" }];
+    let failure: unknown;
+    try {
+      await run(applyMasking({
+        columns: ["email", "ssn"],
+        rows,
+        tablesAccessed: ["users"],
+        orgId: "org-fail-closed",
+        userRole: "viewer",
+      }));
+    } catch (err) {
+      failure = err;
+    }
+    // The query is blocked — under no circumstances are the raw rows returned.
+    expect(failure).toBeDefined();
+    expect((failure as { _tag?: string })._tag).toBe("EnterpriseUnavailableError");
+    expect(String((failure as Error).message)).toContain("blocked");
+  });
+
+  it("still bypasses for admins when the classification load would error", async () => {
+    // Admins see raw data without touching the classification store —
+    // an internal-DB error must not lock admins out.
+    mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
+    mockQueryError = new Error("connection terminated unexpectedly");
+
+    const rows = [{ email: "alice@example.com" }];
+    const result = await run(applyMasking({
+      columns: ["email"],
+      rows,
+      tablesAccessed: ["users"],
+      orgId: "org-admin-bypass",
+      userRole: "admin",
+    }));
+    expect(result).toBe(rows);
   });
 
   it("returns unmodified rows when enterprise is disabled", async () => {

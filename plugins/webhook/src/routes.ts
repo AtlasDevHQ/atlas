@@ -33,6 +33,11 @@ import {
   type AcquireResult,
   type ChannelThrottle,
 } from "./throttle";
+import {
+  isOverrideHostAllowed,
+  validateCallbackUrl,
+  type ResolveHostAddresses,
+} from "./callback-guard";
 
 // ---------------------------------------------------------------------------
 // Runtime dependency interface
@@ -48,6 +53,8 @@ export interface WebhookRuntimeDeps {
   throttle?: ChannelThrottle;
   /** Nonce cache override for tests; defaults to a fresh in-memory cache. */
   nonceCache?: NonceCache;
+  /** DNS resolver override for tests; defaults to `dns.lookup` (#3347). */
+  resolveHostAddresses?: ResolveHostAddresses;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,36 +73,6 @@ function verifyApiKey(channel: WebhookChannel, request: Request): boolean {
     // intentionally ignored: timingSafeEqual only throws on length mismatch
     // (already filtered above) or non-Buffer args. Fail closed if the
     // runtime contract ever changes.
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Callback URL validation — prevents SSRF via request-body overrides
-// ---------------------------------------------------------------------------
-
-function isAllowedCallbackUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
-    const hostname = parsed.hostname;
-    if (
-      hostname === "localhost" ||
-      hostname === "[::1]" ||
-      hostname.startsWith("127.") ||
-      hostname.startsWith("10.") ||
-      hostname.startsWith("192.168.") ||
-      hostname === "169.254.169.254" ||
-      // 172.16.0.0/12
-      (hostname.startsWith("172.") && (() => {
-        const second = parseInt(hostname.split(".")[1], 10);
-        return second >= 16 && second <= 31;
-      })())
-    ) {
-      return false;
-    }
-    return true;
-  } catch {
     return false;
   }
 }
@@ -248,16 +225,32 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
       return c.json({ error: "Missing or empty query" }, 400);
     }
 
-    // Determine callback URL: request-level overrides channel-level
-    const rawCallbackUrl =
-      (typeof payload.callbackUrl === "string" ? payload.callbackUrl : undefined) ??
-      channel.callbackUrl;
+    // Determine callback URL: request-level overrides channel-level.
+    // A request-body override is allowlisted (#3347): its host must match
+    // the channel callbackUrl's host or one of `allowedCallbackHosts` —
+    // an arbitrary body-supplied fetch target is rejected outright.
+    const overrideCallbackUrl =
+      typeof payload.callbackUrl === "string" ? payload.callbackUrl : undefined;
+    if (overrideCallbackUrl && !isOverrideHostAllowed(overrideCallbackUrl, channel)) {
+      slot.release();
+      log.warn(
+        { channelId, event: "webhook.callback_blocked" },
+        "Request-body callbackUrl host is not in the channel's callback allowlist",
+      );
+      return c.json({ error: "Callback URL host is not allowed for this channel" }, 400);
+    }
+    const rawCallbackUrl = overrideCallbackUrl ?? channel.callbackUrl;
 
-    // Validate callback URL to prevent SSRF
+    // Validate callback URL to prevent SSRF (resolved-IP check, fail-closed)
     let callbackUrl: string | undefined;
     if (rawCallbackUrl) {
-      if (!isAllowedCallbackUrl(rawCallbackUrl)) {
+      const verdict = await validateCallbackUrl(rawCallbackUrl, deps.resolveHostAddresses);
+      if (!verdict.ok) {
         slot.release();
+        log.warn(
+          { channelId, event: "webhook.callback_blocked", reason: verdict.reason },
+          "Callback URL rejected by SSRF guard",
+        );
         return c.json({ error: "Invalid callback URL" }, 400);
       }
       callbackUrl = rawCallbackUrl;
@@ -273,13 +266,31 @@ export function createWebhookRoutes(deps: WebhookRuntimeDeps): Hono {
 
       const deliverCallback = async (payload: Record<string, unknown>) => {
         try {
+          // Re-validate immediately before the request leaves the box
+          // (narrows the validate→fetch TOCTOU window), and never follow
+          // redirects — a public callback 302-ing to an internal address
+          // must not be chased (#3347).
+          const verdict = await validateCallbackUrl(callbackUrl, deps.resolveHostAddresses);
+          if (!verdict.ok) {
+            log.error(
+              { channelId, requestId, reason: verdict.reason },
+              "Callback delivery blocked by SSRF guard",
+            );
+            return;
+          }
           const resp = await fetch(callbackUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
             signal: AbortSignal.timeout(30_000),
+            redirect: "manual",
           });
-          if (!resp.ok) {
+          if (resp.status >= 300 && resp.status < 400) {
+            log.error(
+              { channelId, requestId, status: resp.status },
+              "Callback redirected — redirects are not followed (at-most-once delivery)",
+            );
+          } else if (!resp.ok) {
             log.error({ channelId, requestId, status: resp.status }, "Callback delivery failed");
           }
         } catch (fetchErr) {

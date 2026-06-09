@@ -19,6 +19,13 @@ export const WebhookChannelSchema = z.object({
   /** Optional callback URL for async result delivery. */
   callbackUrl: z.string().url().optional(),
   /**
+   * Hosts (`host[:port]`) a per-request `callbackUrl` override may target,
+   * in addition to the channel `callbackUrl`'s own host. Without a channel
+   * `callbackUrl` or an entry here, request-body callback overrides are
+   * rejected (#3347 — SSRF allowlist).
+   */
+  allowedCallbackHosts: z.array(z.string().min(1)).optional(),
+  /**
    * Per-channel rate limit (requests per minute). Defaults to 60.
    * Caps LLM/sandbox cost when a channel secret leaks.
    */

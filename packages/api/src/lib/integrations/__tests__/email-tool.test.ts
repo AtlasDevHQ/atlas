@@ -317,6 +317,8 @@ describe("createSendEmailTool — execute paths", () => {
         throw new LazyPluginInstallNotFoundError(WSID, CATALOG_ID);
       }),
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
       resolveRequestId: () => "req-no-install",
     });
 
@@ -335,6 +337,8 @@ describe("createSendEmailTool — execute paths", () => {
         throw new EmailDecryptFailureError(WSID, new Error("key version 99 not loaded"));
       }),
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
       resolveRequestId: () => "req-decrypt-99",
     });
 
@@ -365,6 +369,8 @@ describe("createSendEmailTool — execute paths", () => {
     const tool = createSendEmailTool({
       loader,
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
       resolveRequestId: () => "req-sent",
     });
 
@@ -405,6 +411,8 @@ describe("createSendEmailTool — execute paths", () => {
     const tool = createSendEmailTool({
       loader,
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
     });
 
     await runTool(tool, { to: ["a@example.com"], subject: "1", body: "1" });
@@ -425,6 +433,8 @@ describe("createSendEmailTool — execute paths", () => {
         throw new LazyPluginBuilderMissingError(CATALOG_ID);
       }),
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
       resolveRequestId: () => "req-misconfig",
     });
 
@@ -455,6 +465,8 @@ describe("createSendEmailTool — execute paths", () => {
     const tool = createSendEmailTool({
       loader: makeLoader(async () => fakeInstance),
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
       resolveRequestId: () => "req-send-fail",
     });
 
@@ -489,6 +501,8 @@ describe("createSendEmailTool — execute paths", () => {
     const tool = createSendEmailTool({
       loader: makeLoader(async () => fakeInstance),
       resolveWorkspaceId: () => WSID,
+      // Recipient gate (#3341): allow the fixture recipients as workspace members.
+      resolveMemberEmails: async () => ["dest@example.com", "a@example.com", "b@example.com"],
     });
 
     const result = await runTool<{ status: string; message: string }>(tool, {
@@ -522,5 +536,143 @@ describe("createSendEmailTool — execute paths", () => {
     // Must NOT recommend /admin/integrations — they already have it
     // installed; the issue is request context, not the install state.
     expect(result.message).not.toContain("/admin/integrations");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recipient allowlist gate (#3341)
+// ---------------------------------------------------------------------------
+
+describe("sendEmail recipient allowlist (#3341)", () => {
+  const SETTING = "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS";
+  let savedDomains: string | undefined;
+
+  beforeEach(() => {
+    savedDomains = process.env[SETTING];
+    delete process.env[SETTING];
+  });
+
+  afterEach(() => {
+    if (savedDomains === undefined) delete process.env[SETTING];
+    else process.env[SETTING] = savedDomains;
+  });
+
+  function makeNeverLoader() {
+    return {
+      getOrInstantiate: mock(async (): Promise<PluginLike> => {
+        throw new Error("loader must not be reached when the recipient gate blocks");
+      }),
+    };
+  }
+
+  it("blocks a non-member recipient and never reaches the loader", async () => {
+    const loader = makeNeverLoader();
+    const tool = createSendEmailTool({
+      loader,
+      resolveWorkspaceId: () => WSID,
+      resolveMemberEmails: async () => ["member@corp.example"],
+    });
+
+    const result = await runTool<{
+      status: string;
+      message: string;
+      blockedRecipients: string[];
+    }>(tool, {
+      to: ["attacker@evil.example"],
+      subject: "Exfil",
+      body: "rows",
+    });
+
+    expect(result.status).toBe("recipient_blocked");
+    expect(result.blockedRecipients).toEqual(["attacker@evil.example"]);
+    expect(loader.getOrInstantiate).not.toHaveBeenCalled();
+  });
+
+  it("blocks when only SOME recipients are outside the allowlist", async () => {
+    const tool = createSendEmailTool({
+      loader: makeNeverLoader(),
+      resolveWorkspaceId: () => WSID,
+      resolveMemberEmails: async () => ["member@corp.example"],
+    });
+
+    const result = await runTool<{ status: string; blockedRecipients: string[] }>(tool, {
+      to: ["member@corp.example", "outsider@evil.example"],
+      subject: "Hi",
+      body: "Hi",
+    });
+
+    expect(result.status).toBe("recipient_blocked");
+    expect(result.blockedRecipients).toEqual(["outsider@evil.example"]);
+  });
+
+  it("allows workspace members case-insensitively", async () => {
+    const sendMail = mock(() =>
+      Promise.resolve({ messageId: "<ok@example.com>", envelope: {} }),
+    );
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: sendMail,
+    };
+    const tool = createSendEmailTool({
+      loader: { getOrInstantiate: mock(async () => fakeInstance) },
+      resolveWorkspaceId: () => WSID,
+      resolveMemberEmails: async () => ["Member@Corp.Example"],
+    });
+
+    const result = await runTool<{ status: string }>(tool, {
+      to: ["member@corp.example"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("sent");
+  });
+
+  it("allows recipients on an admin-allowlisted domain", async () => {
+    process.env[SETTING] = "partner.example, Other.Example";
+    const sendMail = mock(() =>
+      Promise.resolve({ messageId: "<ok@example.com>", envelope: {} }),
+    );
+    const fakeInstance: EmailPluginInstance = {
+      id: `email:${WSID}`,
+      types: ["action"],
+      version: "0.1.0",
+      name: "Email",
+      sendEmail: sendMail,
+    };
+    const tool = createSendEmailTool({
+      loader: { getOrInstantiate: mock(async () => fakeInstance) },
+      resolveWorkspaceId: () => WSID,
+      resolveMemberEmails: async () => [],
+    });
+
+    const result = await runTool<{ status: string }>(tool, {
+      to: ["anyone@partner.example", "x@other.example"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("sent");
+  });
+
+  it("fails closed when the member list cannot be resolved", async () => {
+    const loader = makeNeverLoader();
+    const tool = createSendEmailTool({
+      loader,
+      resolveWorkspaceId: () => WSID,
+      resolveMemberEmails: async () => {
+        throw new Error("internal DB unavailable");
+      },
+    });
+
+    const result = await runTool<{ status: string; message: string }>(tool, {
+      to: ["member@corp.example"],
+      subject: "Hi",
+      body: "Hi",
+    });
+    expect(result.status).toBe("recipient_blocked");
+    expect(result.message).toMatch(/blocked/i);
+    expect(loader.getOrInstantiate).not.toHaveBeenCalled();
   });
 });

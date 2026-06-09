@@ -30,6 +30,7 @@ import {
   type CrudFailReason,
 } from "@atlas/api/lib/scheduled-tasks";
 import type { TickResult } from "@atlas/api/lib/scheduler/engine";
+import { isBlockedUrl } from "@atlas/api/lib/scheduler/delivery";
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { type AuthEnv } from "./middleware";
@@ -45,7 +46,21 @@ const log = createLogger("scheduled-tasks-routes");
 const RecipientSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("email"), address: z.string().email() }),
   z.object({ type: z.literal("slack"), channel: z.string().min(1), teamId: z.string().optional() }),
-  z.object({ type: z.literal("webhook"), url: z.string().url(), headers: z.record(z.string(), z.string()).optional() }),
+  z.object({
+    type: z.literal("webhook"),
+    // #3340 — registration-time SSRF gate, mirroring the delivery-time
+    // guardedFetch check. `isBlockedUrl` wraps the canonical
+    // isSafeExternalUrl and honors the ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS
+    // operator opt-out for self-hosted internal endpoints.
+    url: z
+      .string()
+      .url()
+      .refine((u) => !isBlockedUrl(u), {
+        message:
+          "Webhook URL must be a public HTTPS endpoint (private, loopback, link-local, and internal hosts are blocked).",
+      }),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
 ]);
 
 // #2512 — coerce empty-string `connectionGroupId` to `null` at the boundary.

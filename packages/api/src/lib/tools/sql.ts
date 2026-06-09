@@ -477,6 +477,31 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
         }
       }
     }
+
+    // F-20 (#3346): reject PG-family queries whose extracted table set
+    // contains the bare keyword ONLY. node-sql-parser mis-models
+    // `SELECT * FROM ONLY accounts` as table "ONLY" with alias "accounts",
+    // dropping the real relation from `tableList` — which silently defeats
+    // the whitelist (when disabled), named RLS policies, and audit
+    // classification. The agent can always drop the inheritance modifier.
+    const guardDialect = parserDatabase(dbType, connectionId, workspaceId);
+    if (!/mysql|mariadb/i.test(guardDialect)) {
+      const tableRefs = parser.tableList(trimmed, { database: guardDialect });
+      for (const ref of tableRefs) {
+        const tableName = ref.split("::").pop()?.toLowerCase();
+        // No CTE exemption: a CTE named `only` would otherwise mask a real
+        // `FROM ONLY accounts` mis-parse (the CTE name and the keyword are
+        // the same lowered token). ONLY is a reserved word in PG anyway —
+        // an unquoted CTE cannot legitimately carry that name.
+        if (tableName === "only") {
+          return {
+            valid: false,
+            error:
+              "The PostgreSQL ONLY table modifier is not supported. Rewrite the query without ONLY (e.g. SELECT ... FROM accounts).",
+          };
+        }
+      }
+    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : "";
     return {

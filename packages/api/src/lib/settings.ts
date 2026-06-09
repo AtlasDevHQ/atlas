@@ -196,6 +196,20 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
   {
+    // #3341 — recipient allowlist for the agent's `sendEmail` tool.
+    // Workspace members are always allowed; this adds extra domains.
+    // Empty (the default) = workspace members only.
+    key: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
+    section: "Security",
+    label: "Email Recipient Domains",
+    description:
+      "Comma-separated domains the agent's sendEmail tool may deliver to, in addition to workspace member addresses (e.g. example.com,partner.example). Empty = workspace members only.",
+    type: "string",
+    default: "",
+    envVar: "ATLAS_EMAIL_ALLOWED_RECIPIENT_DOMAINS",
+    scope: "workspace",
+  },
+  {
     // F-57 — admin user-mutation routes consult this when the target is
     // SCIM-provisioned. `strict` blocks the mutation with 409 SCIM_MANAGED;
     // `override` allows it to proceed and stamps the audit row with

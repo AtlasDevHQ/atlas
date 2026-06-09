@@ -97,6 +97,9 @@ function createTestApp(config: WebhookPluginConfig): Hono {
       replayMode: "strict",
       throttle: createChannelThrottle(),
       nonceCache: createNonceCache(),
+      // Hermetic DNS: every non-literal hostname "resolves" to a public IP
+      // so the SSRF guard's resolved-IP check doesn't hit real DNS in tests.
+      resolveHostAddresses: async () => ["93.184.216.34"],
     }),
   );
   return app;
@@ -1253,8 +1256,20 @@ describe("routes — async mode", () => {
     expect(typeof json.requestId).toBe("string");
   });
 
-  test("returns 202 when callbackUrl is in request body", async () => {
-    const app = createTestApp(createMockConfig());
+  test("returns 202 when callbackUrl is in request body and its host is allowlisted", async () => {
+    const app = createTestApp(
+      createMockConfig({
+        channels: [
+          {
+            channelId: "test-channel",
+            authType: "api-key",
+            secret: TEST_SECRET,
+            responseFormat: "json",
+            allowedCallbackHosts: ["example.com"],
+          },
+        ],
+      }),
+    );
 
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })),
@@ -1275,6 +1290,26 @@ describe("routes — async mode", () => {
     expect(resp.status).toBe(202);
     const json = (await resp.json()) as Record<string, unknown>;
     expect(json.accepted).toBe(true);
+  });
+
+  test("rejects a request-body callbackUrl whose host is not allowlisted (#3347)", async () => {
+    const app = createTestApp(createMockConfig());
+
+    const resp = await app.request("/webhook/test-channel", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": TEST_SECRET,
+      },
+      body: JSON.stringify({
+        query: "how many users?",
+        callbackUrl: "https://attacker.example.net/exfil",
+      }),
+    });
+
+    expect(resp.status).toBe(400);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(json.error).toContain("not allowed");
   });
 
   test("async mode delivers correct payload to callback URL", async () => {
@@ -1383,6 +1418,7 @@ describe("routes — async mode", () => {
             secret: TEST_SECRET,
             responseFormat: "json",
             callbackUrl: "https://channel-level.com/callback",
+            allowedCallbackHosts: ["request-level.com"],
           },
         ],
       }),
@@ -1408,8 +1444,6 @@ describe("routes — async mode", () => {
   });
 
   test("rejects internal/private callbackUrl (SSRF prevention)", async () => {
-    const app = createTestApp(createMockConfig());
-
     const internalUrls = [
       "http://localhost:3001/admin",
       "http://127.0.0.1/secret",
@@ -1417,9 +1451,38 @@ describe("routes — async mode", () => {
       "http://192.168.1.1/router",
       "http://169.254.169.254/latest/meta-data/",
       "http://172.16.0.1/internal",
+      // Forms the old prefix denylist missed (#3347):
+      "https://169.254.1.1/exfil", // rest of 169.254.0.0/16
+      "https://100.64.0.1/cgnat", // CGNAT
+      "https://[::ffff:127.0.0.1]/mapped", // IPv4-mapped IPv6
+      "https://[fd00::1]/ula", // ULA
+      "https://2130706433/decimal", // decimal 127.0.0.1
     ];
 
     for (const callbackUrl of internalUrls) {
+      // Allowlist each host so the request reaches the SSRF guard itself
+      // (otherwise the override-allowlist 400 fires first).
+      const host = (() => {
+        try {
+          return new URL(callbackUrl).host;
+        } catch {
+          return callbackUrl;
+        }
+      })();
+      const app = createTestApp(
+        createMockConfig({
+          channels: [
+            {
+              channelId: "test-channel",
+              authType: "api-key",
+              secret: TEST_SECRET,
+              responseFormat: "json",
+              allowedCallbackHosts: [host],
+            },
+          ],
+        }),
+      );
+
       const resp = await app.request("/webhook/test-channel", {
         method: "POST",
         headers: {
@@ -1433,6 +1496,48 @@ describe("routes — async mode", () => {
       const json = (await resp.json()) as Record<string, unknown>;
       expect(json.error).toContain("Invalid callback URL");
     }
+  });
+
+  test("rejects a channel-level callbackUrl whose host resolves to a private IP (#3347)", async () => {
+    const channelMap = new Map([
+      [
+        "dns-ch",
+        {
+          channelId: "dns-ch",
+          authType: "api-key" as const,
+          secret: TEST_SECRET,
+          responseFormat: "json" as const,
+          callbackUrl: "https://rebind.example.com/hook",
+        },
+      ],
+    ]);
+    const app = new Hono();
+    app.route(
+      "",
+      createWebhookRoutes({
+        channels: channelMap,
+        log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        executeQuery: mock(() => Promise.resolve(defaultQueryResult)),
+        replayMode: "strict",
+        throttle: createChannelThrottle(),
+        nonceCache: createNonceCache(),
+        // The "public" name resolves to an internal address.
+        resolveHostAddresses: async () => ["10.0.0.5"],
+      }),
+    );
+
+    const resp = await app.request("/webhook/dns-ch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Secret": TEST_SECRET,
+      },
+      body: JSON.stringify({ query: "test" }),
+    });
+
+    expect(resp.status).toBe(400);
+    const json = (await resp.json()) as Record<string, unknown>;
+    expect(json.error).toContain("Invalid callback URL");
   });
 
   test("rejects non-string callbackUrl in request body", async () => {
@@ -1484,7 +1589,19 @@ describe("routes — integration payloads", () => {
     ) as unknown as typeof globalThis.fetch;
 
     try {
-      const app = createTestApp(createMockConfig());
+      const app = createTestApp(
+        createMockConfig({
+          channels: [
+            {
+              channelId: "test-channel",
+              authType: "api-key",
+              secret: TEST_SECRET,
+              responseFormat: "json",
+              allowedCallbackHosts: ["n8n.example.com"],
+            },
+          ],
+        }),
+      );
 
       const resp = await app.request("/webhook/test-channel", {
         method: "POST",

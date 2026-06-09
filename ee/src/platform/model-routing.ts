@@ -31,6 +31,8 @@ import {
   getBedrockCatalog,
 } from "@atlas/api/lib/bedrock-catalog";
 import { suggestModelReplacement } from "@atlas/api/lib/byot-deprecation";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { guardedFetch, isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
 import type {
   BedrockCredentialBundle,
   BedrockRegion,
@@ -316,6 +318,20 @@ function validateConfig(
       return Effect.fail(
         new ModelConfigError({
           message: `Base URL must use http:// or https:// (got "${parsed.protocol}").`,
+          code: "validation",
+        }),
+      );
+    }
+    // SSRF gate (#3339): a workspace admin is low-trust in multi-tenant
+    // SaaS, and this URL is fetched by the test endpoint and the live
+    // agent. Route through the canonical guard; self-hosted internal
+    // endpoints opt out via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true.
+    if (!isInternalEgressAllowed() && !isSafeExternalUrl(config.baseUrl)) {
+      return Effect.fail(
+        new ModelConfigError({
+          message:
+            "Base URL must be a public HTTPS endpoint (private, loopback, link-local, and internal hosts are blocked). " +
+            "Self-hosted deployments can set ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true to allow internal targets.",
           code: "validation",
         }),
       );
@@ -791,8 +807,11 @@ export const testModelConfig = (
               if (!config.baseUrl) {
                 throw new Error("Base URL is required.");
               }
+              // #3339 — the only provider arm whose test target is
+              // admin-controlled. guardedFetch re-validates the URL and
+              // every redirect hop against the SSRF guard.
               const url = config.baseUrl.replace(/\/$/, "") + "/chat/completions";
-              const response = await fetch(url, {
+              const response = await guardedFetch(url, {
                 method: "POST",
                 headers: {
                   Authorization: `Bearer ${apiKey}`,

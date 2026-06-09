@@ -615,6 +615,32 @@ describe("audit emission — PUT /api/v1/admin/model-config", () => {
     expect(entry.metadata).not.toHaveProperty("baseUrl");
   });
 
+  it("rejects a link-local (cloud metadata) baseUrl (#3339)", async () => {
+    const res = await app.fetch(
+      adminRequest("PUT", "/api/v1/admin/model-config", {
+        provider: "custom",
+        model: "custom-llm",
+        apiKey: "sk-anything",
+        baseUrl: "http://169.254.169.254/latest/meta-data/",
+      }),
+    );
+    // Schema-level refine rejection (validation hook returns 422).
+    expect(res.status).toBe(422);
+  });
+
+  it("rejects a private-range baseUrl on the test endpoint (#3339)", async () => {
+    const res = await app.fetch(
+      adminRequest("POST", "/api/v1/admin/model-config/test", {
+        provider: "custom",
+        model: "custom-llm",
+        apiKey: "sk-anything",
+        baseUrl: "https://192.168.1.10/v1",
+      }),
+    );
+    // Schema-level refine rejection (validation hook returns 422).
+    expect(res.status).toBe(422);
+  });
+
   it("records hasSecret:false when apiKey is omitted (key-preservation path)", async () => {
     // Caller submits an update WITHOUT apiKey → server keeps the existing
     // encrypted key. The audit row must mark this case distinctly so

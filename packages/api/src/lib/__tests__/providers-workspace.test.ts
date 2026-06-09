@@ -112,6 +112,56 @@ describe("getModelFromWorkspaceConfig — BYOT happy paths", () => {
       }),
     ).toThrow(/Base URL is required/);
   });
+
+  // #3339 — stored baseUrl is re-validated at use time against the SSRF guard.
+  test("custom rejects a link-local (cloud metadata) baseUrl", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        model: "x",
+        baseUrl: "http://169.254.169.254/latest/meta-data/",
+        bedrockRegion: null,
+        credentials: { provider: "custom", apiKey: "custom-key" },
+      }),
+    ).toThrow(/public HTTPS endpoint/);
+  });
+
+  test("custom rejects a private-range baseUrl", () => {
+    expect(() =>
+      getModelFromWorkspaceConfig({
+        model: "x",
+        baseUrl: "https://10.0.0.5/v1",
+        bedrockRegion: null,
+        credentials: { provider: "custom", apiKey: "custom-key" },
+      }),
+    ).toThrow(/public HTTPS endpoint/);
+  });
+
+  test("custom allows an internal baseUrl when the operator opt-out is set", () => {
+    const prev = process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+    process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = "true";
+    try {
+      const model = getModelFromWorkspaceConfig({
+        model: "x",
+        baseUrl: "http://localhost:11434/v1",
+        bedrockRegion: null,
+        credentials: { provider: "custom", apiKey: "custom-key" },
+      });
+      expect(typeof model).toBe("object");
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS;
+      else process.env.ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS = prev;
+    }
+  });
+
+  test("custom allows a public HTTPS baseUrl", () => {
+    const model = getModelFromWorkspaceConfig({
+      model: "x",
+      baseUrl: "https://llm.example.com/v1",
+      bedrockRegion: null,
+      credentials: { provider: "custom", apiKey: "custom-key" },
+    });
+    expect(typeof model).toBe("object");
+  });
 });
 
 describe("getModelFromWorkspaceConfig — bedrock branch", () => {

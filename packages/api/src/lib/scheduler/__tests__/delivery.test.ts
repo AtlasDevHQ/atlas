@@ -227,6 +227,39 @@ describe("delivery dispatcher", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("blocks webhook URLs that pass the old regex but hit the canonical guard (CGNAT)", async () => {
+    // 100.64.0.0/10 (CGNAT) was not in the old BLOCKED_HOST_PATTERNS regex —
+    // the canonical isSafeExternalUrl blocks it (#3340).
+    const task = makeTask({
+      deliveryChannel: "webhook",
+      recipients: [{ type: "webhook", url: "https://100.64.1.1/hook" }],
+    });
+    const summary = await deliverResult(task, makeResult());
+    expect(summary.failed).toBe(1);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("blocks a public webhook that 302-redirects to an internal address (#3340)", async () => {
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { Location: "http://169.254.169.254/latest/meta-data/" },
+      }),
+    );
+
+    const task = makeTask({
+      deliveryChannel: "webhook",
+      recipients: [{ type: "webhook", url: "https://hook.example.com" }],
+    });
+    const summary = await deliverResult(task, makeResult());
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    // The first request goes out; the redirect target must never be fetched.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const calledUrls = mockFetch.mock.calls.map((c) => (c as unknown as [string])[0]);
+    expect(calledUrls).not.toContain("http://169.254.169.254/latest/meta-data/");
+  });
+
   it("delivers to multiple webhook recipients concurrently", async () => {
     const task = makeTask({
       deliveryChannel: "webhook",

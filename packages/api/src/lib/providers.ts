@@ -19,6 +19,8 @@ import { gateway } from "ai";
 import type { LanguageModel } from "ai";
 import type { ModelConfigProvider } from "@useatlas/types";
 import { createLogger } from "./logger";
+import { isSafeExternalUrl } from "@atlas/api/lib/sandbox/validate";
+import { isInternalEgressAllowed } from "@atlas/api/lib/openapi/egress-guard";
 import type { WorkspaceCredentials } from "@atlas/api/lib/auth/credentials";
 
 const log = createLogger("providers");
@@ -473,6 +475,19 @@ export function getModelFromWorkspaceConfig(config: {
       if (!config.baseUrl) {
         throw new Error(
           `Base URL is required for the ${credentials.provider} provider.`,
+        );
+      }
+      // #3339 — re-validate at use time, not just at write time: configs
+      // stored before the SSRF gate existed (or written through a future
+      // path that skips route validation) must not aim the agent's
+      // credentialed requests at internal hosts. Self-hosted internal
+      // endpoints opt out via ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true.
+      if (!isInternalEgressAllowed() && !isSafeExternalUrl(config.baseUrl)) {
+        throw new Error(
+          `Base URL for the ${credentials.provider} provider must be a public HTTPS endpoint ` +
+            `(private, loopback, link-local, and internal hosts are blocked). ` +
+            `Re-save the workspace model configuration with a public endpoint, or set ` +
+            `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true on a self-hosted deployment.`,
         );
       }
       const client = createOpenAI({

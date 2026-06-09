@@ -409,6 +409,14 @@ describe("validateSQL", () => {
       );
     });
 
+    it("rejects FROM ONLY even when a CTE is named only (no CTE exemption)", async () => {
+      process.env.ATLAS_TABLE_WHITELIST = "false";
+      await expectInvalid(
+        "WITH only AS (SELECT 1) SELECT * FROM ONLY accounts",
+        "ONLY",
+      );
+    });
+
     it("allows a table named only on MySQL when whitelist is disabled", async () => {
       process.env.ATLAS_DATASOURCE_URL = "mysql://test:test@localhost:3306/test";
       process.env.ATLAS_TABLE_WHITELIST = "false";

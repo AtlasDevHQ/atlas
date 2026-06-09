@@ -54,6 +54,15 @@ const BLOCKED_HEADER_NAMES = new Set([
  * `ATLAS_OPENAPI_ALLOW_INTERNAL_HOSTS=true` (the shared egress opt-out).
  */
 export function isBlockedUrl(urlString: string): boolean {
+  // Parse/scheme validation applies even under the operator opt-out — the
+  // opt-out relaxes the internal-host policy, not "is this a fetchable URL".
+  try {
+    const parsed = new URL(urlString);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return true;
+  } catch {
+    // intentionally ignored: an unparseable URL cannot be delivered to.
+    return true;
+  }
   if (isInternalEgressAllowed()) return false;
   return !isSafeExternalUrl(urlString);
 }

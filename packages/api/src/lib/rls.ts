@@ -220,7 +220,7 @@ function isPgFamilyDialect(dialect: string): boolean {
 function extractTableAliasMap(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- avoids narrowing boilerplate across the BaseFrom | Join | TableExpr | Dual union members
   from: any[],
-  cteNames: Set<string>,
+  cteNames: ReadonlySet<string>,
   dialect: string,
 ): Map<string, string> {
   const map = new Map<string, string>();
@@ -228,13 +228,16 @@ function extractTableAliasMap(
     if (!entry?.table) continue;
     const tableName =
       typeof entry.table === "string" ? entry.table.toLowerCase() : undefined;
-    if (!tableName || cteNames.has(tableName)) continue;
+    if (!tableName) continue;
+    // Keyword check BEFORE the CTE exemption — a CTE named `only` must not
+    // re-open the FROM ONLY mis-parse (CodeRabbit on #3346).
     if (isPgFamilyDialect(dialect) && PG_FROM_MODIFIER_KEYWORDS.has(tableName)) {
       throw new Error(
         `FROM-clause table resolved to the SQL keyword "${tableName.toUpperCase()}" — ` +
           `the parser cannot model this query reliably. Rewrite without the ${tableName.toUpperCase()} modifier.`,
       );
     }
+    if (cteNames.has(tableName)) continue;
     const alias = entry.as || entry.table;
     map.set(tableName, alias);
   }
@@ -342,16 +345,23 @@ function injectIntoSelectAST(
   combineWith: "and" | "or",
   dialect: string,
   tracker: InjectionTracker,
+  /** CTE names visible at this scope (outer WITH clauses + this node's own).
+   *  SQL scoping makes outer CTEs referenceable inside derived subqueries —
+   *  excluding only the LOCAL names treated an outer CTE reference as a real
+   *  table and injected a condition onto it (CodeRabbit on #3337). */
+  visibleCtes: ReadonlySet<string>,
 ): void {
-  const cteNames = collectCTENames(ast);
-  for (const name of cteNames) tracker.cteNames.add(name);
+  const localCtes = collectCTENames(ast);
+  for (const name of localCtes) tracker.cteNames.add(name);
+  const visible: ReadonlySet<string> =
+    localCtes.size > 0 ? new Set([...visibleCtes, ...localCtes]) : visibleCtes;
 
   // Inject into CTE definitions
   if (Array.isArray(ast.with)) {
     for (const cte of ast.with) {
       const cteAst = cte?.stmt?.ast ?? cte?.stmt;
       if (cteAst && cteAst.type === "select") {
-        injectIntoSelectAST(cteAst, groups, combineWith, dialect, tracker);
+        injectIntoSelectAST(cteAst, groups, combineWith, dialect, tracker, visible);
       }
     }
   }
@@ -359,7 +369,7 @@ function injectIntoSelectAST(
   // Build table→alias map from FROM clause
   const from = ast.from;
   if (Array.isArray(from) && from.length > 0) {
-    const aliasMap = extractTableAliasMap(from, cteNames, dialect);
+    const aliasMap = extractTableAliasMap(from, visible, dialect);
 
     // Build per-policy-group conditions
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructed AST condition nodes don't match Binary type exactly
@@ -418,19 +428,19 @@ function injectIntoSelectAST(
     for (const entry of from) {
       const subAst = entry?.expr?.ast;
       if (subAst && subAst.type === "select") {
-        injectIntoSelectAST(subAst, groups, combineWith, dialect, tracker);
+        injectIntoSelectAST(subAst, groups, combineWith, dialect, tracker, visible);
       }
     }
   }
 
   // Recurse into subqueries within the WHERE clause
   if (ast.where) {
-    walkWhereForSubqueries(ast.where, groups, combineWith, dialect, tracker);
+    walkWhereForSubqueries(ast.where, groups, combineWith, dialect, tracker, visible);
   }
 
   // Handle UNION (recursively inject into _next)
   if (ast._next) {
-    injectIntoSelectAST(ast._next, groups, combineWith, dialect, tracker);
+    injectIntoSelectAST(ast._next, groups, combineWith, dialect, tracker, visible);
   }
 }
 
@@ -445,22 +455,23 @@ function walkWhereForSubqueries(
   combineWith: "and" | "or",
   dialect: string,
   tracker: InjectionTracker,
+  visibleCtes: ReadonlySet<string>,
 ): void {
   if (!node || typeof node !== "object") return;
 
   // Subquery in WHERE (e.g., WHERE id IN (SELECT ...))
   if (node.ast && typeof node.ast === "object" && node.ast.type === "select") {
-    injectIntoSelectAST(node.ast, groups, combineWith, dialect, tracker);
+    injectIntoSelectAST(node.ast, groups, combineWith, dialect, tracker, visibleCtes);
   }
 
   // Recurse into binary expression children
-  if (node.left) walkWhereForSubqueries(node.left, groups, combineWith, dialect, tracker);
-  if (node.right) walkWhereForSubqueries(node.right, groups, combineWith, dialect, tracker);
+  if (node.left) walkWhereForSubqueries(node.left, groups, combineWith, dialect, tracker, visibleCtes);
+  if (node.right) walkWhereForSubqueries(node.right, groups, combineWith, dialect, tracker, visibleCtes);
 
   // Recurse into expr_list values (e.g., IN (...subquery...))
   if (node.type === "expr_list" && Array.isArray(node.value)) {
     for (const v of node.value) {
-      walkWhereForSubqueries(v, groups, combineWith, dialect, tracker);
+      walkWhereForSubqueries(v, groups, combineWith, dialect, tracker, visibleCtes);
     }
   }
 }
@@ -499,7 +510,7 @@ export function injectRLSConditions(
     appliedTables: new Set<string>(),
     cteNames: new Set<string>(),
   };
-  injectIntoSelectAST(stmt, groups, combineWith, dialect, tracker);
+  injectIntoSelectAST(stmt, groups, combineWith, dialect, tracker, new Set());
 
   // Fail-closed assertion (#3337): every resolved filter must have been
   // applied somewhere in the statement. Filter tables come from

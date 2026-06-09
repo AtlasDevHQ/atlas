@@ -1201,6 +1201,29 @@ describe("injectRLSConditions — fail-closed assertion (#3337)", () => {
     expect(result).toContain("acme");
   });
 
+  it("treats outer CTE references inside derived subqueries as CTEs, not tables", () => {
+    // The outer CTE `recent` is referenced inside a derived subquery. The
+    // alias walk must use the accumulated visible-CTE scope — injecting
+    // tenant_id onto `recent` would produce SQL against a relation that may
+    // not expose the column at all.
+    const sql =
+      "WITH recent AS (SELECT id, tenant_id FROM orders) SELECT * FROM (SELECT * FROM recent) x";
+    const result = injectRLSConditions(
+      sql,
+      group(
+        { table: "orders", column: "tenant_id", value: "acme" },
+        { table: "recent", column: "tenant_id", value: "acme" },
+      ),
+      "and",
+      "postgres",
+    );
+    // The CTE definition's `orders` gets the condition; the derived
+    // reference to `recent` must NOT be filtered as if it were a table.
+    expect(result).toContain("tenant_id");
+    const occurrences = result.split("'acme'").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
   it("does not throw when every filter is applied across UNION branches", () => {
     const sql = "SELECT id FROM orders UNION SELECT id FROM returns";
     const result = injectRLSConditions(

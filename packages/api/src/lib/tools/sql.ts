@@ -489,7 +489,11 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
       const tableRefs = parser.tableList(trimmed, { database: guardDialect });
       for (const ref of tableRefs) {
         const tableName = ref.split("::").pop()?.toLowerCase();
-        if (tableName === "only" && !cteNames.has(tableName)) {
+        // No CTE exemption: a CTE named `only` would otherwise mask a real
+        // `FROM ONLY accounts` mis-parse (the CTE name and the keyword are
+        // the same lowered token). ONLY is a reserved word in PG anyway —
+        // an unquoted CTE cannot legitimately carry that name.
+        if (tableName === "only") {
           return {
             valid: false,
             error:

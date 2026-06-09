@@ -45,6 +45,15 @@ const EXEMPT_PATHS = new Set([
 const CACHE_TTL_MS = 30_000;
 
 const _cache = new Map<string, { flagged: boolean; expiresAt: number }>();
+let _writesSinceSweep = 0;
+
+/** Drop expired entries so unique user ids can't accumulate forever in a
+ *  long-lived worker. Amortized: runs every 256 cache writes. */
+function sweepExpiredEntries(now: number): void {
+  for (const [cachedUserId, entry] of _cache) {
+    if (entry.expiresAt <= now) _cache.delete(cachedUserId);
+  }
+}
 
 /** Clear the cached verdict for a user (call after clearing the flag). */
 export function invalidatePasswordGate(userId: string): void {
@@ -88,9 +97,13 @@ export function isPasswordGateExemptPath(pathname: string): boolean {
 export async function isPasswordChangeRequired(userId: string): Promise<boolean> {
   const now = Date.now();
   const cached = _cache.get(userId);
-  if (cached && cached.expiresAt > now) return cached.flagged;
+  if (cached) {
+    if (cached.expiresAt > now) return cached.flagged;
+    _cache.delete(userId);
+  }
   const flagged = await lookupFlag(userId);
   _cache.set(userId, { flagged, expiresAt: now + CACHE_TTL_MS });
+  if ((++_writesSinceSweep & 0xff) === 0) sweepExpiredEntries(now);
   return flagged;
 }
 

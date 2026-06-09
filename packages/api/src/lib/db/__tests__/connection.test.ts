@@ -132,6 +132,13 @@ describe("detectDBType", () => {
     expect(() => detectDBType("clickhouses://localhost:8443/default")).toThrow("@useatlas/clickhouse");
   });
 
+  it("suggests @useatlas/elasticsearch for opensearch:// (no @useatlas/opensearch exists)", () => {
+    expect(() => detectDBType("opensearch://search-domain.us-east-1.es.amazonaws.com")).toThrow(
+      "@useatlas/elasticsearch"
+    );
+    expect(() => detectDBType("elasticsearch://host:9200")).toThrow("@useatlas/elasticsearch");
+  });
+
   it("includes the detected scheme in the error message", () => {
     expect(() => detectDBType("duckdb://:memory:")).toThrow("duckdb://");
     expect(() => detectDBType("clickhouse://localhost")).toThrow("clickhouse://");

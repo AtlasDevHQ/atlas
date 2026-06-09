@@ -65,6 +65,7 @@ import { profileMySQL, profilePostgres } from "@atlas/api/lib/profiler";
 import {
   profileElasticsearch,
   elasticsearchCatalog,
+  elasticsearchConfigFromEnv,
   buildUniqueFileSlugs,
 } from "../../lib/profilers/elasticsearch";
 
@@ -233,10 +234,12 @@ interface DatasourceEntry {
 }
 
 /**
- * Profile an Elasticsearch datasource: fetch every index `_mapping`, transform
- * to entity docs, and write `entities/*.yml` + `catalog.yml`. The API key is
- * read from `ATLAS_ES_API_KEY` (never the URL). No SQL TableProfile pipeline,
- * no LLM enrichment in this slice.
+ * Profile an Elasticsearch / OpenSearch datasource: fetch every index
+ * `_mapping`, transform to entity docs, and write `entities/*.yml` +
+ * `catalog.yml`. Credentials are never read from the URL — the auth mode
+ * (API key / HTTP Basic / AWS SigV4), an optional Elastic Cloud ID, and an
+ * optional engine override come from the `ATLAS_ES_*` env contract (#3309).
+ * No SQL TableProfile pipeline, no LLM enrichment in this slice.
  */
 async function profileElasticsearchDatasource(
   opts: ProfileDatasourceOpts,
@@ -249,13 +252,9 @@ async function profileElasticsearchDatasource(
     );
   }
 
-  const apiKey = process.env.ATLAS_ES_API_KEY;
-  if (!apiKey) {
-    throw new Error(
-      "ATLAS_ES_API_KEY is required to profile an Elasticsearch datasource. " +
-        "Set it to the base64 API key for the cluster.",
-    );
-  }
+  // Throws an actionable, secret-free error when no auth mode (or endpoint)
+  // is configured. An empty url means the endpoint is ATLAS_ES_CLOUD_ID.
+  const esConfig = elasticsearchConfigFromEnv(url || undefined);
 
   const sourceId = id === "default" ? undefined : id;
 
@@ -269,7 +268,8 @@ async function profileElasticsearchDatasource(
       `\nError: ${err instanceof Error ? err.message : String(err)}`,
     );
     console.error(
-      `\nCheck that the elasticsearch:// URL and ATLAS_ES_API_KEY are correct.`,
+      `\nCheck that the endpoint (elasticsearch:// / opensearch:// URL or ` +
+        `ATLAS_ES_CLOUD_ID) and the ATLAS_ES_* credentials are correct.`,
     );
     throw err;
   }
@@ -278,8 +278,7 @@ async function profileElasticsearchDatasource(
   const start = Date.now();
 
   const { entities, errors } = await profileElasticsearch(
-    url,
-    apiKey,
+    esConfig,
     filterTables,
     sourceId ? { group: sourceId } : undefined,
   );
@@ -894,7 +893,13 @@ export function exitMissingDatasourceUrl(): never {
     "  DuckDB:      ATLAS_DATASOURCE_URL=duckdb://path/to/file.duckdb",
   );
   console.error(
-    "  Elasticsearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (+ ATLAS_ES_API_KEY)",
+    "  Elasticsearch / OpenSearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (or opensearch://host:9200),",
+  );
+  console.error(
+    "                 or ATLAS_ES_CLOUD_ID=<cloud-id> for an Elastic Cloud deployment (no URL needed).",
+  );
+  console.error(
+    "                 Auth via ATLAS_ES_API_KEY, ATLAS_ES_USERNAME/ATLAS_ES_PASSWORD, or ATLAS_ES_AWS_REGION (AWS SigV4).",
   );
   console.error(
     "  CSV/Parquet: Use --csv or --parquet flags (no database required)",
@@ -1227,8 +1232,10 @@ Next steps:
     ];
   } else if (sourceArg) {
     // Legacy --source flag: single datasource from env var, output to semantic/{source}/
-    const connStr = process.env.ATLAS_DATASOURCE_URL;
-    if (!connStr) exitMissingDatasourceUrl();
+    // An Elastic Cloud ID names the endpoint without a URL (#3309); trimmed so
+    // a whitespace-only value behaves like unset.
+    const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
+    if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) exitMissingDatasourceUrl();
     // Warn if --source and --demo are used together
     if (demoDataset) {
       console.warn(
@@ -1308,9 +1315,11 @@ Next steps:
       process.exit(1);
     }
   } else {
-    // No config -- fall back to ATLAS_DATASOURCE_URL (backward-compatible single-source behavior)
-    const connStr = process.env.ATLAS_DATASOURCE_URL;
-    if (!connStr) exitMissingDatasourceUrl();
+    // No config -- fall back to ATLAS_DATASOURCE_URL (backward-compatible single-source behavior).
+    // An Elastic Cloud ID names the endpoint without a URL (#3309); trimmed so
+    // a whitespace-only value behaves like unset.
+    const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
+    if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) exitMissingDatasourceUrl();
     datasources = [
       {
         id: "default",
@@ -1333,7 +1342,9 @@ Next steps:
   for (const ds of datasources) {
     let dbType: DBType;
     try {
-      dbType = detectDBType(ds.url);
+      // An empty URL is only produced by the Elastic Cloud ID path —
+      // ATLAS_ES_CLOUD_ID names the endpoint, so there is no scheme to sniff.
+      dbType = ds.url ? detectDBType(ds.url) : "elasticsearch";
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isMultiSource) {

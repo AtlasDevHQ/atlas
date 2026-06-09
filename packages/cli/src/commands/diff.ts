@@ -33,11 +33,17 @@ import {
   formatDiff,
   type EntitySnapshot,
 } from "../../lib/diff";
-import { profileElasticsearch } from "../../lib/profilers/elasticsearch";
+import {
+  profileElasticsearch,
+  elasticsearchConfigFromEnv,
+} from "../../lib/profilers/elasticsearch";
 
 export async function handleDiff(args: string[]): Promise<void> {
-  const connStr = process.env.ATLAS_DATASOURCE_URL;
-  if (!connStr) {
+  // An Elastic Cloud ID names the endpoint without a URL (#3309). Trimmed so
+  // a whitespace-only value behaves like unset (and reaches the Cloud-ID
+  // branch instead of failing scheme detection).
+  const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
+  if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) {
     console.error("Error: ATLAS_DATASOURCE_URL is required for atlas diff.");
     console.error(
       "  PostgreSQL:  ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/dbname",
@@ -52,7 +58,13 @@ export async function handleDiff(args: string[]): Promise<void> {
       "  Salesforce:  ATLAS_DATASOURCE_URL=salesforce://user:pass@login.salesforce.com?token=TOKEN",
     );
     console.error(
-      "  Elasticsearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (+ ATLAS_ES_API_KEY)",
+      "  Elasticsearch / OpenSearch: ATLAS_DATASOURCE_URL=elasticsearch://host:9200 (or opensearch://host:9200),",
+    );
+    console.error(
+      "                 or ATLAS_ES_CLOUD_ID=<cloud-id> for an Elastic Cloud deployment (no URL needed).",
+    );
+    console.error(
+      "                 Auth via ATLAS_ES_API_KEY, ATLAS_ES_USERNAME/ATLAS_ES_PASSWORD, or ATLAS_ES_AWS_REGION (AWS SigV4).",
     );
     process.exit(1);
   }
@@ -82,7 +94,9 @@ export async function handleDiff(args: string[]): Promise<void> {
 
   let dbType: DBType;
   try {
-    dbType = detectDBType(connStr);
+    // An empty connStr is only reachable on the Elastic Cloud ID path —
+    // ATLAS_ES_CLOUD_ID names the endpoint, so there is no scheme to sniff.
+    dbType = connStr ? detectDBType(connStr) : "elasticsearch";
   } catch (err) {
     console.error(
       `\nError: ${err instanceof Error ? err.message : String(err)}`,
@@ -99,9 +113,18 @@ export async function handleDiff(args: string[]): Promise<void> {
     console.error(
       `\nError: ${err instanceof Error ? err.message : String(err)}`,
     );
-    console.error(
-      `\nCheck that ATLAS_DATASOURCE_URL is correct and the server is running.`,
-    );
+    if (dbType === "elasticsearch") {
+      // The endpoint may be a Cloud ID with no URL at all — point at the full
+      // ATLAS_ES_* contract instead of the (possibly absent) URL.
+      console.error(
+        `\nCheck the endpoint (elasticsearch:// / opensearch:// URL or ` +
+          `ATLAS_ES_CLOUD_ID) and the ATLAS_ES_* credentials.`,
+      );
+    } else {
+      console.error(
+        `\nCheck that ATLAS_DATASOURCE_URL is correct and the server is running.`,
+      );
+    }
     process.exit(1);
   }
 
@@ -113,21 +136,14 @@ export async function handleDiff(args: string[]): Promise<void> {
 
   if (dbType === "elasticsearch") {
     // Elasticsearch profiles index mappings into entity docs — no SQL
-    // TableProfile pipeline, no --schema (Postgres-only). The API key is read
-    // from ATLAS_ES_API_KEY, never the URL.
-    const apiKey = process.env.ATLAS_ES_API_KEY;
-    if (!apiKey) {
-      console.error(
-        "Error: ATLAS_ES_API_KEY is required to diff an Elasticsearch datasource.",
-      );
-      process.exit(1);
-    }
-
+    // TableProfile pipeline, no --schema (Postgres-only). Credentials are read
+    // from the ATLAS_ES_* env contract (API key / Basic / SigV4, optional
+    // Cloud ID + engine override), never the URL (#3309).
     console.log(`\nProfiling Elasticsearch mappings...\n`);
     try {
+      const esConfig = elasticsearchConfigFromEnv(connStr || undefined);
       const { entities, errors } = await profileElasticsearch(
-        connStr,
-        apiKey,
+        esConfig,
         filterTables,
       );
       for (const e of errors) {

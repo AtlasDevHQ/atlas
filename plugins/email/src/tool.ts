@@ -96,7 +96,7 @@ export async function executeEmailSend(
       const errorBody = (await response.json()) as { message?: string };
       detail = errorBody.message ?? `HTTP ${response.status}`;
     } catch {
-      let rawText = "";
+      let rawText: string;
       try {
         rawText = await response.text();
       } catch (textErr) {

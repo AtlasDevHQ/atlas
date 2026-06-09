@@ -42,6 +42,7 @@ import {
   RLSError, PluginRejectedError, EnterpriseUnavailableError,
 } from "@atlas/api/lib/effect/errors";
 import { EXECUTE_SQL_TOOL_DESCRIPTION } from "./descriptions";
+import { hasLimitClause } from "./auto-limit";
 import { resolveRoutingPlan, type RoutingMode, type RoutingReason } from "@atlas/api/lib/env-routing";
 import { loadGroupRoutingContext } from "@atlas/api/lib/env-routing/lookup";
 import { mergeMemberResults } from "@atlas/api/lib/multi-env-merger";
@@ -1473,7 +1474,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
         const rowLimit = getRowLimit();
         const queryTimeout = getQueryTimeout();
         let querySql = normalizedMutated;
-        if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
+        if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
           querySql += ` LIMIT ${rowLimit}`;
         }
 
@@ -1882,7 +1883,7 @@ async function executeSqlForConnection({
           const rowLimit = getRowLimit();
           const queryTimeout = getQueryTimeout();
           let querySql = normalizedMutated;
-          if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
+          if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
             querySql += ` LIMIT ${rowLimit}`;
           }
 

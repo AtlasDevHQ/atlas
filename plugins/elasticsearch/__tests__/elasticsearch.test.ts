@@ -2067,6 +2067,10 @@ describe("OpenSearch SQL surface (#3266)", () => {
     );
     const result = await conn.query("SELECT id FROM flights");
     expect(result.rows.slice(0, 3)).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    // The cursor must be closed at the OpenSearch close endpoint once paging
+    // completes — the behavior this test's name promises. OS_URL is a DSN
+    // (opensearch://…?ssl=false); it resolves to the http://localhost:9200 base.
+    expect(closeUrl).toBe("http://localhost:9200/_plugins/_sql/close");
   });
 
   test("a health check against an OpenSearch cluster succeeds (mocked)", async () => {

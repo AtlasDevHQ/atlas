@@ -74,7 +74,9 @@ try {
   try {
     sql = readFileSync(sqlPath, "utf-8");
   } catch (err) {
-    throw new Error(`Failed to read ${sqlPath}: ${err instanceof Error ? err.message : err}`);
+    throw new Error(`Failed to read ${sqlPath}: ${err instanceof Error ? err.message : String(err)}`, {
+      cause: err,
+    });
   }
 
   // Execute inside a transaction

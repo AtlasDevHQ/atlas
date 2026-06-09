@@ -10,13 +10,13 @@ const mockRows = [{ count: 42 }];
 
 // Default execute: calls complete(null, stmt, rows)
 const mockExecute = mock(
-  (opts: { sqlText: string; complete: Function }) => {
+  (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
     opts.complete(null, mockStmt, mockRows);
   },
 );
 const mockConn = { execute: mockExecute };
 
-const mockPoolUse = mock(async (fn: Function) => fn(mockConn));
+const mockPoolUse = mock(async (fn: (conn: unknown) => unknown) => fn(mockConn));
 const mockPoolDrain = mock(() => Promise.resolve());
 const mockPoolClear = mock(() => Promise.resolve());
 const mockCreatePool = mock(() => ({
@@ -51,11 +51,11 @@ beforeEach(() => {
 
   // Re-stub defaults after clearing
   mockExecute.mockImplementation(
-    (opts: { sqlText: string; complete: Function }) => {
+    (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
       opts.complete(null, mockStmt, mockRows);
     },
   );
-  mockPoolUse.mockImplementation(async (fn: Function) => fn(mockConn));
+  mockPoolUse.mockImplementation(async (fn: (conn: unknown) => unknown) => fn(mockConn));
   mockPoolDrain.mockImplementation(() => Promise.resolve());
   mockPoolClear.mockImplementation(() => Promise.resolve());
   mockCreatePool.mockImplementation(() => ({
@@ -570,7 +570,7 @@ describe("connection factory", () => {
 
   test("query tag failure is non-fatal (warns and continues)", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         if (opts.sqlText.includes("QUERY_TAG")) {
           opts.complete(new Error("Insufficient privileges"));
         } else {
@@ -593,7 +593,7 @@ describe("connection factory", () => {
 
   test("execute error wraps with context", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         if (!opts.sqlText.startsWith("ALTER SESSION")) {
           opts.complete(new Error("SQL compilation error"));
         } else {
@@ -610,7 +610,7 @@ describe("connection factory", () => {
 
   test("timeout ALTER SESSION error wraps with context", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         if (opts.sqlText.includes("STATEMENT_TIMEOUT")) {
           opts.complete(new Error("Insufficient privileges"));
         } else {
@@ -641,7 +641,7 @@ describe("connection factory", () => {
 
   test("handles undefined stmt and rows in callback", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         if (!opts.sqlText.startsWith("ALTER SESSION")) {
           // Simulate callback with no stmt or rows
           opts.complete(null, undefined, undefined);
@@ -719,7 +719,7 @@ describe("healthCheck", () => {
 
   test("returns unhealthy when query fails", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         opts.complete(new Error("Connection refused"));
       },
     );
@@ -739,7 +739,7 @@ describe("healthCheck", () => {
 
   test("closes connection after failed health check", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         opts.complete(new Error("Connection refused"));
       },
     );
@@ -761,7 +761,7 @@ describe("healthCheck", () => {
 
   test("returns unhealthy (not throws) when close fails during cleanup", async () => {
     mockExecute.mockImplementation(
-      (opts: { sqlText: string; complete: Function }) => {
+      (opts: { sqlText: string; complete: (err: unknown, stmt?: unknown, rows?: unknown) => void }) => {
         opts.complete(new Error("Connection refused"));
       },
     );

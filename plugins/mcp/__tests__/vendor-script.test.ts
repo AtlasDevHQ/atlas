@@ -10,7 +10,13 @@
  * present).
  */
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,7 +39,7 @@ describe("vendor-oauth-helper.sh", () => {
       mkdirSync(fakeScriptDir, { recursive: true });
       const fakeScript = join(fakeScriptDir, "vendor-oauth-helper.sh");
       // Read + write rather than `cp` so we don't rely on Bun.cp shape.
-      const content = require("node:fs").readFileSync(SCRIPT, "utf8");
+      const content = readFileSync(SCRIPT, "utf8");
       writeFileSync(fakeScript, content, { mode: 0o755 });
       // Note: NO `packages/oauth-helper/src` in the fake tree.
 

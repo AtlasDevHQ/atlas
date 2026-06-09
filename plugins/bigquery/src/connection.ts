@@ -54,6 +54,7 @@ export function createBigQueryConnection(
     if (isNotFound) {
       throw new Error(
         "BigQuery support requires the @google-cloud/bigquery package. Install it with: bun add @google-cloud/bigquery",
+        { cause: err },
       );
     }
     throw new Error(

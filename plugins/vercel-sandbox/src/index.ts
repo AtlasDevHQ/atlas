@@ -182,6 +182,7 @@ async function loadSandboxModule(): Promise<{ Sandbox: SandboxConstructor }> {
       throw new Error(
         "Vercel Sandbox requires the @vercel/sandbox package. " +
           "Install it with: bun add @vercel/sandbox",
+        { cause: err },
       );
     }
     throw new Error(

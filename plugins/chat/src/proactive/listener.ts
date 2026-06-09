@@ -28,7 +28,6 @@ import type {
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   AtlasUserId,
-  ExternalUserId,
   WorkspaceId,
 } from "@useatlas/types/proactive";
 import { classifyMessage } from "./classifier";
@@ -1661,7 +1660,7 @@ async function runAnswerFlow(
       return;
     }
 
-    let allowlist: ReadonlyArray<ProactivePublicDatasetEntry> = [];
+    let allowlist: ReadonlyArray<ProactivePublicDatasetEntry>;
     try {
       allowlist = await flow.getPublicDataset({ workspaceId });
     } catch (err) {

@@ -103,8 +103,10 @@ describe("runtime guards — parameter binding (#2267)", () => {
 describe("runtime guards — validator-layer auto-LIMIT", () => {
   it("appends LIMIT when not already present in the query", () => {
     // Anchored to the actual statement shape in sql.ts so a comment-out
-    // cannot satisfy the pin.
-    expect(sqlSrc).toMatch(/if \(!customValidator && !\/\\bLIMIT\\b\/i\.test\(querySql\)\) \{\s*querySql \+= ` LIMIT \$\{rowLimit\}`;\s*\}/);
+    // cannot satisfy the pin. Detection delegates to hasLimitClause (auto-limit.ts,
+    // #3325) — which strips string literals before the LIMIT word test — but the
+    // append guard itself must stay wired at the call site.
+    expect(sqlSrc).toMatch(/if \(!customValidator && !hasLimitClause\(querySql, \{ backslashEscapes: dbType === "mysql" \}\)\) \{\s*querySql \+= ` LIMIT \$\{rowLimit\}`;\s*\}/);
   });
 
   it("reads row limit from settings cache (hot-reload path) with default 1000", () => {

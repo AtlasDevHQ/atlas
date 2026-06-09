@@ -122,8 +122,7 @@ const positionalArgs = args.filter((a, i) => {
 const VALID_PLATFORMS = ["vercel", "railway", "docker", "other"] as const;
 type Platform = (typeof VALID_PLATFORMS)[number];
 
-const VALID_SANDBOX_CHOICES = ["nsjail", "sidecar", "e2b", "daytona", "none"] as const;
-type SandboxChoice = (typeof VALID_SANDBOX_CHOICES)[number];
+type SandboxChoice = "nsjail" | "sidecar" | "e2b" | "daytona" | "none";
 
 type Template = "docker" | "nextjs-standalone";
 
@@ -581,7 +580,7 @@ async function main() {
 
   // ── 5. API Key ────────────────────────────────────────────────────
   const keyInfo = PROVIDER_KEY_MAP[provider];
-  let apiKey = "";
+  let apiKey: string;
 
   if (useDefaults) {
     apiKey = keyInfo.placeholder;

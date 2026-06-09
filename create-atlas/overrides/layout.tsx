@@ -17,6 +17,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      {/* eslint-disable-next-line @next/next/no-head-element -- App Router root layout: <head> is the correct API here, not next/head (which is Pages Router). */}
       <head>
         <script dangerouslySetInnerHTML={{ __html: buildThemeInitScript() }} />
       </head>

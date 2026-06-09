@@ -68,6 +68,7 @@ function loadE2BSDK(): { Sandbox: any } {
     if (isNotFound) {
       throw new Error(
         "E2B support requires the e2b package. Install it with: bun add e2b",
+        { cause: err },
       );
     }
     throw new Error(

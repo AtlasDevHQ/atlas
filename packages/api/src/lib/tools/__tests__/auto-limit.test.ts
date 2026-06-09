@@ -90,6 +90,15 @@ describe("stripSqlNonClauseText", () => {
       ).toBe("SELECT * FROM t WHERE note = $msg$$msg$");
     });
 
+    // Postgres dollar-quote tags follow unquoted-identifier rules, which allow
+    // diacritic/non-Latin letters — so a Unicode tag must be recognized and
+    // blanked, else a LIMIT inside it leaks past the cap.
+    it("blanks a Unicode-tagged $café$...$café$ literal", () => {
+      expect(
+        stripSqlNonClauseText("SELECT * FROM t WHERE note = $café$no LIMIT here$café$"),
+      ).toBe("SELECT * FROM t WHERE note = $café$$café$");
+    });
+
     it("blanks a multi-line dollar-quoted literal", () => {
       expect(
         stripSqlNonClauseText("SELECT $$first line\nLIMIT 5\nlast line$$ FROM t"),
@@ -199,6 +208,14 @@ describe("hasLimitClause", () => {
   it("does NOT treat LIMIT inside a $tag$...$tag$ dollar-quoted literal as a clause", () => {
     expect(
       hasLimitClause("SELECT * FROM t WHERE note = $msg$no LIMIT here$msg$"),
+    ).toBe(false);
+  });
+
+  // Regression: an ASCII-only tag matcher would miss a Unicode-tagged literal,
+  // letting the inner LIMIT spoof "already limited" and suppress the row cap.
+  it("does NOT treat LIMIT inside a Unicode-tagged $café$...$café$ literal as a clause", () => {
+    expect(
+      hasLimitClause("SELECT * FROM big WHERE note = $café$LIMIT$café$"),
     ).toBe(false);
   });
 

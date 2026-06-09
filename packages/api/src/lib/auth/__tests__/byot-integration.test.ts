@@ -192,7 +192,10 @@ describe("BYOT integration (real JWKS server)", () => {
     }
   });
 
-  it("empty ATLAS_AUTH_AUDIENCE skips audience check (accepts any audience)", async () => {
+  it("empty ATLAS_AUTH_AUDIENCE is a hard config error (#3342 L-2)", async () => {
+    // Pre-L-2 behavior silently skipped audience validation for an
+    // explicitly-set-but-empty value. Now it throws (middleware maps it to
+    // a 500); UNSET remains the documented no-audience-check mode.
     process.env.ATLAS_AUTH_AUDIENCE = "";
     resetJWKSCache();
 
@@ -200,10 +203,16 @@ describe("BYOT integration (real JWKS server)", () => {
       { sub: "user_integ_1" },
       { audience: "any-audience-should-work" },
     );
+    await expect(
+      validateBYOT(makeRequest({ Authorization: `Bearer ${token}` })),
+    ).rejects.toThrow(/ATLAS_AUTH_AUDIENCE/);
+
+    // Unset → audience check skipped, token accepted.
+    delete process.env.ATLAS_AUTH_AUDIENCE;
+    resetJWKSCache();
     const result = await validateBYOT(
       makeRequest({ Authorization: `Bearer ${token}` }),
     );
-
     expect(result.authenticated).toBe(true);
   });
 

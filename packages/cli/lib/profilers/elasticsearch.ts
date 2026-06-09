@@ -80,10 +80,13 @@ export function elasticsearchConfigFromEnv(
     const trimmed = typeof value === "string" ? value.trim() : "";
     return trimmed.length > 0 ? trimmed : undefined;
   };
-  // The password is deliberately NOT trimmed — it is an opaque secret and the
-  // plugin's resolveAuth treats it verbatim.
+  // The password VALUE is deliberately not trimmed — it is an opaque secret
+  // the plugin's resolveAuth treats verbatim (leading/trailing spaces may be
+  // real). But a whitespace-ONLY value is misconfiguration, not a secret, so
+  // the set/unset check trims like every other env var — otherwise it would
+  // count as an auth signal and skip the actionable no-auth error below.
   const password =
-    typeof env.ATLAS_ES_PASSWORD === "string" && env.ATLAS_ES_PASSWORD.length > 0
+    typeof env.ATLAS_ES_PASSWORD === "string" && env.ATLAS_ES_PASSWORD.trim().length > 0
       ? env.ATLAS_ES_PASSWORD
       : undefined;
 

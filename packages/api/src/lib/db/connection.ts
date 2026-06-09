@@ -178,10 +178,13 @@ export function detectDBType(url?: string): DBType {
   const rawScheme = connStr.split("://")[0] || "(empty)";
   // Normalize TLS variants (e.g. clickhouses → clickhouse) for the plugin hint
   const baseScheme = rawScheme.replace(/s$/, "");
+  // Both engines are served by the one @useatlas/elasticsearch plugin — there
+  // is no @useatlas/opensearch package, so the hint must not derive it (#3309).
+  const pluginName = baseScheme === "opensearch" ? "elasticsearch" : baseScheme;
   throw new Error(
     `Unsupported database URL scheme "${rawScheme}://". ` +
     `This adapter is now a plugin. Install the appropriate datasource plugin ` +
-    `(e.g. @useatlas/${baseScheme}) and add it to the plugins array in atlas.config.ts. ` +
+    `(e.g. @useatlas/${pluginName}) and add it to the plugins array in atlas.config.ts. ` +
     `Ensure the plugin is listed before any datasources that use it. ` +
     `Core adapters support postgresql:// and mysql:// only.`
   );

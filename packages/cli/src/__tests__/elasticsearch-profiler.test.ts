@@ -507,8 +507,19 @@ describe("elasticsearchConfigFromEnv", () => {
       elasticsearchConfigFromEnv(URL, {
         ATLAS_ES_API_KEY: "  ",
         ATLAS_ES_USERNAME: "",
+        ATLAS_ES_PASSWORD: "   ",
       }),
     ).toThrow(/No Elasticsearch authentication configured/);
+  });
+
+  test("a password with interior content keeps its leading/trailing whitespace", () => {
+    // Whitespace-ONLY is unset (above), but real surrounding whitespace in an
+    // opaque secret must survive verbatim.
+    const config = elasticsearchConfigFromEnv(URL, {
+      ATLAS_ES_USERNAME: "user",
+      ATLAS_ES_PASSWORD: " pw ",
+    });
+    expect(config.password).toBe(" pw ");
   });
 
   test("a lone username passes through so the plugin resolver rejects the pair", () => {

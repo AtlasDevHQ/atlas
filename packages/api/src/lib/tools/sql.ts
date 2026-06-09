@@ -277,6 +277,92 @@ const FORBIDDEN_PATTERNS = [
   /\bINTO\s+(?:OUTFILE|DUMPFILE)\b/i,
 ];
 
+// #3342 L-3 — side-effecting / file / network / DoS functions that pass the
+// statement-shape layers (a table-less `SELECT pg_read_file(...)` is a valid
+// single SELECT against no whitelisted table). Checked via an AST walk over
+// function-call nodes, NOT regex, so a string literal containing one of these
+// names cannot false-positive. Defense-in-depth: the read-only role + the
+// statement timeout already bound most of these; `dblink` writes over a
+// separate connection, so only role privileges stop it without this list.
+const FORBIDDEN_FUNCTIONS = new Set([
+  // PostgreSQL — filesystem / large-object access
+  "pg_read_file",
+  "pg_read_binary_file",
+  "pg_ls_dir",
+  "pg_stat_file",
+  "pg_logdir_ls",
+  "lo_import",
+  "lo_export",
+  // PostgreSQL — server administration
+  "pg_terminate_backend",
+  "pg_cancel_backend",
+  "pg_reload_conf",
+  "pg_rotate_logfile",
+  "pg_create_restore_point",
+  "pg_switch_wal",
+  "pg_promote",
+  // dblink — side-channel connections (writes bypass the read-only session)
+  "dblink",
+  "dblink_exec",
+  "dblink_connect",
+  "dblink_connect_u",
+  "dblink_open",
+  "dblink_send_query",
+  // DoS / timing
+  "pg_sleep",
+  "pg_sleep_for",
+  "pg_sleep_until",
+  "sleep",
+  "benchmark",
+  // MySQL — filesystem / UDF escapes
+  "load_file",
+  "sys_eval",
+  "sys_exec",
+]);
+
+/**
+ * Extract the call name from a `function` / `aggr_func` AST node.
+ * node-sql-parser 5.x shapes: `aggr_func.name` is a string;
+ * `function.name` is `{ name: [{ value: "pg_read_file" }, ...] }` where a
+ * schema-qualified call (`pg_catalog.pg_read_file`) yields multiple parts —
+ * the last part is the function proper.
+ */
+function functionCallName(node: { name?: unknown }): string | undefined {
+  const name = node.name;
+  if (typeof name === "string") return name.toLowerCase();
+  if (name && typeof name === "object") {
+    const parts = (name as { name?: unknown }).name;
+    if (Array.isArray(parts) && parts.length > 0) {
+      const last = parts[parts.length - 1] as { value?: unknown };
+      if (typeof last?.value === "string") return last.value.toLowerCase();
+    }
+  }
+  return undefined;
+}
+
+/** Walk a statement AST and return the first forbidden function name, if any. */
+function findForbiddenFunction(node: unknown): string | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findForbiddenFunction(child);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!node || typeof node !== "object") return undefined;
+
+  const typed = node as { type?: unknown; name?: unknown };
+  if (typed.type === "function" || typed.type === "aggr_func") {
+    const callName = functionCallName(typed);
+    if (callName && FORBIDDEN_FUNCTIONS.has(callName)) return callName;
+  }
+  for (const value of Object.values(node)) {
+    const found = findForbiddenFunction(value);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 // MySQL-specific patterns — only applied when dbType === "mysql"
 // Note: LOAD DATA/XML is already caught by the base LOAD pattern above
 const MYSQL_FORBIDDEN_PATTERNS = [
@@ -476,6 +562,15 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
           if (typeof name === "string") cteNames.add(name.toLowerCase());
         }
       }
+
+      // #3342 L-3 — block side-effecting / file / network / DoS functions.
+      const forbiddenFn = findForbiddenFunction(stmt);
+      if (forbiddenFn) {
+        return {
+          valid: false,
+          error: `Function "${forbiddenFn}" is not allowed — file, network, administrative, and timing functions are blocked.`,
+        };
+      }
     }
 
     // F-20 (#3346): reject PG-family queries whose extracted table set
@@ -553,11 +648,31 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
       for (const ref of tables) {
         // tableList returns "select::schema::table" format
         const parts = ref.split("::");
-        const tableName = parts.pop()?.toLowerCase();
+        const rawTableName = parts.pop();
+        const tableName = rawTableName?.toLowerCase();
         // node-sql-parser returns "null" (the string) for unqualified tables — filter it out
         const rawSchema = parts.length > 1 ? parts[parts.length - 1]?.toLowerCase() : undefined;
         const schemaName = rawSchema && rawSchema !== "null" ? rawSchema : undefined;
         if (!tableName || cteNames.has(tableName)) continue;
+
+        // #3342 L-4 — quoted mixed-case identifiers resolve to a DIFFERENT
+        // relation than the case-folded whitelist entry (`FROM "Orders"` is
+        // not table `orders` on PG, and table names are case-sensitive on
+        // Linux MySQL). The parser drops quoting info, so detect the quoted
+        // form in the raw SQL: an unquoted mixed-case name (which the DB
+        // case-folds to the whitelist entry on PG) stays accepted.
+        if (
+          rawTableName &&
+          rawTableName !== tableName &&
+          (trimmed.includes(`"${rawTableName}"`) || trimmed.includes(`\`${rawTableName}\``))
+        ) {
+          return {
+            valid: false,
+            error:
+              `Quoted mixed-case table "${rawTableName}" does not match the semantic-layer table ` +
+              `"${tableName}" — quoted identifiers are case-sensitive. Use the unquoted lowercase name.`,
+          };
+        }
 
         const qualifiedName = schemaName ? `${schemaName}.${tableName}` : undefined;
         if (schemaName) {

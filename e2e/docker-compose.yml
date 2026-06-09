@@ -15,7 +15,7 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - e2e_pgdata:/var/lib/postgresql/data
       - ./seeds/pg-seed.sql:/docker-entrypoint-initdb.d/01-seed.sql

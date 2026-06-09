@@ -2256,6 +2256,51 @@ describe("chatPlugin webhook routes", () => {
     expect(body.error).toContain("not yet initialized");
   });
 
+  it("returns 403 when the gchat adapter is wired but JWT verification is unconfigured (#3350)", async () => {
+    // Adapter env present (handler wires) but NEITHER GCHAT_PROJECT_NUMBER
+    // nor GCHAT_PUBSUB_AUDIENCE set — the upstream adapter would process
+    // UNVERIFIED HTTP webhooks after a single warn, so the route must
+    // fail closed instead of dispatching.
+    const snapshot = {
+      sa: process.env.GCHAT_SERVICE_ACCOUNT_JSON,
+      topic: process.env.GCHAT_PUBSUB_TOPIC,
+      project: process.env.GCHAT_PROJECT_NUMBER,
+      audience: process.env.GCHAT_PUBSUB_AUDIENCE,
+    };
+    process.env.GCHAT_SERVICE_ACCOUNT_JSON = JSON.stringify({
+      client_email: "fake@test-project.iam.gserviceaccount.com",
+      private_key: "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n",
+      project_id: "test-project",
+    });
+    process.env.GCHAT_PUBSUB_TOPIC = "projects/test-project/topics/fake-topic";
+    delete process.env.GCHAT_PROJECT_NUMBER;
+    delete process.env.GCHAT_PUBSUB_AUDIENCE;
+
+    const { app, plugin } = await mountPlugin(GCHAT_CATALOG);
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [], tables: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+    try {
+      const resp = await app.request("/webhooks/gchat", { method: "POST", body: "{}" });
+      expect(resp.status).toBe(403);
+      const body = (await resp.json()) as { error: string; requestId?: string };
+      expect(body.error).toContain("verification is not configured");
+      expect(typeof body.requestId).toBe("string");
+    } finally {
+      await plugin.teardown!();
+      if (snapshot.sa === undefined) delete process.env.GCHAT_SERVICE_ACCOUNT_JSON;
+      else process.env.GCHAT_SERVICE_ACCOUNT_JSON = snapshot.sa;
+      if (snapshot.topic === undefined) delete process.env.GCHAT_PUBSUB_TOPIC;
+      else process.env.GCHAT_PUBSUB_TOPIC = snapshot.topic;
+      if (snapshot.project !== undefined) process.env.GCHAT_PROJECT_NUMBER = snapshot.project;
+      if (snapshot.audience !== undefined) process.env.GCHAT_PUBSUB_AUDIENCE = snapshot.audience;
+    }
+  });
+
   it("returns 404 with a requestId when the bridge is initialized but the gchat adapter wasn't wired", async () => {
     // No GCHAT_SERVICE_ACCOUNT_JSON / GCHAT_PUBSUB_TOPIC in the env, so
     // AdapterRegistry returns null for the gchat slot. The runtime 404

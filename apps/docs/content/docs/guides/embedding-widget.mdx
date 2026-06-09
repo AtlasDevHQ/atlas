@@ -617,10 +617,8 @@ window.addEventListener("message", (event) => {
 
   if (event.data?.type === "atlas:error") {
     // Error codes: "UNCAUGHT", "UNHANDLED_REJECTION", "RENDER_FAILED", "LOAD_FAILED"
-    console.error(
-      `Atlas error [${event.data.code}]:`,
-      event.data.message,
-    );
+    // (code only — full error text stays in the iframe's own console)
+    console.error(`Atlas error [${event.data.code}]`);
   }
 });
 ```
@@ -677,11 +675,11 @@ interface AtlasReadyMessage {
   type: "atlas:ready";
 }
 
-/** Widget error — includes error code and human-readable message */
+/** Widget error — opaque code only (the widget cannot know its host
+ *  origin, so the payload never carries error text) */
 interface AtlasErrorMessage {
   type: "atlas:error";
   code: "UNCAUGHT" | "UNHANDLED_REJECTION" | "RENDER_FAILED" | "LOAD_FAILED";
-  message: string;
 }
 
 type WidgetToHostMessage = AtlasReadyMessage | AtlasErrorMessage;
@@ -1066,7 +1064,7 @@ Atlas.on("error", (detail) => {
 
 #### iframe postMessage
 
-The widget emits `atlas:error` messages to the parent window for every error. The payload includes the error code, title, detail, and retryability:
+The widget emits `atlas:error` messages to the parent window for every error. The payload is restricted to an opaque error code and retryability — no message/detail strings, since the widget cannot know its host page's origin and must not broadcast server-derived error text:
 
 ```javascript
 window.addEventListener("message", (event) => {
@@ -1074,15 +1072,13 @@ window.addEventListener("message", (event) => {
   if (event.origin !== "https://your-atlas-api.example.com") return;
 
   if (event.data?.type === "atlas:error") {
-    const { code, message, detail, retryable } = event.data.error;
+    const { code, retryable } = event.data.error;
     // code: ClientErrorCode or ChatErrorCode (e.g. "api_unreachable", "auth_error")
-    // message: user-facing title (e.g. "Unable to connect to Atlas.")
-    // detail: optional secondary context
     // retryable: true for transient errors, false for permanent ones
 
     if (!retryable) {
       // Permanent error — show your own fallback UI or redirect to login
-      showFallbackUI(message);
+      showFallbackUI(code);
     }
   }
 });

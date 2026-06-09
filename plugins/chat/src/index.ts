@@ -523,6 +523,23 @@ function buildChatPlugin(
             );
             return c.json({ error: "Google Chat adapter not configured", requestId }, 404);
           }
+          // Fail closed when JWT verification is unconfigured (#3350). The
+          // upstream adapter treats GCHAT_PROJECT_NUMBER / GCHAT_PUBSUB_AUDIENCE
+          // as optional and, when both are absent, logs one warning and then
+          // processes UNVERIFIED HTTP webhooks — anyone who can reach this
+          // public route could forge Google Chat events. The Pub/Sub pull
+          // path the adapter binds at boot authenticates with the service
+          // account and is unaffected by this gate.
+          if (!process.env.GCHAT_PROJECT_NUMBER && !process.env.GCHAT_PUBSUB_AUDIENCE) {
+            (log ?? console).error(
+              { requestId, adapter: "gchat" },
+              "Google Chat HTTP webhook rejected — JWT verification is not configured. Set GCHAT_PROJECT_NUMBER (direct webhooks) and/or GCHAT_PUBSUB_AUDIENCE (Pub/Sub push) to enable verified inbound HTTP traffic",
+            );
+            return c.json(
+              { error: "Google Chat webhook verification is not configured", requestId },
+              403,
+            );
+          }
           try {
             const response = await handler(c.req.raw, {
               waitUntil: (task: Promise<unknown>) => {

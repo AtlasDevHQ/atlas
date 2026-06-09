@@ -195,7 +195,9 @@ export default async function SharedConversationPage({
                     </p>
                   ) : (
                     <div className="text-zinc-900 dark:text-zinc-100">
-                      <Markdown content={text} />
+                      {/* disallowImages (#3342 L-7): unauthenticated public surface — block
+                          LLM-markdown tracking pixels / viewer-IP leaks. */}
+                      <Markdown content={text} disallowImages />
                     </div>
                   )}
                 </article>

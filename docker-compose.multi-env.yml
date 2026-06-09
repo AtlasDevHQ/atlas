@@ -22,7 +22,7 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./scripts/multi-env-seeds/dev.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
     healthcheck:
@@ -39,7 +39,7 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - ./scripts/multi-env-seeds/staging.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
     healthcheck:
@@ -56,7 +56,7 @@ services:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"
     volumes:
       - ./scripts/multi-env-seeds/prod.sql:/docker-entrypoint-initdb.d/00-seed.sql:ro
     healthcheck:

@@ -273,6 +273,22 @@ describe("validateBYOT()", () => {
     });
   });
 
+  describe("empty ATLAS_AUTH_AUDIENCE is a hard config error (#3342 L-2)", () => {
+    it("throws instead of silently skipping audience validation", async () => {
+      process.env.ATLAS_AUTH_AUDIENCE = "";
+      const token = await signJWT(
+        { sub: "user_123" },
+        { audience: "some-random-audience" },
+      );
+      // The throw is caught by lib/auth/middleware's dispatcher and surfaces
+      // as a 500 "Authentication service error" — fail-closed, never a
+      // token accepted with the audience check disabled.
+      await expect(
+        validateBYOT(makeRequest({ Authorization: `Bearer ${token}` })),
+      ).rejects.toThrow(/ATLAS_AUTH_AUDIENCE/);
+    });
+  });
+
   describe("role extraction from JWT claims", () => {
     it("JWT with role: 'admin' claim propagates to user object", async () => {
       const token = await signJWT({ sub: "user_123", role: "admin" });

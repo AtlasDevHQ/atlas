@@ -72,7 +72,13 @@ export function ErrorBanner({
     };
   }, [info.clientCode, onRetry]);
 
-  // Emit postMessage error event for widget host pages
+  // Emit postMessage error event for widget host pages.
+  //
+  // #3342 L-8 — the widget is embeddable on arbitrary pages, so the host
+  // origin is unknown and `targetOrigin: "*"` is unavoidable. The payload is
+  // therefore restricted to opaque, enumerable codes: no `message`/`detail`
+  // strings, which can carry server-derived error text (host names, request
+  // ids) to whatever frame embeds the widget.
   useEffect(() => {
     try {
       if (typeof window !== "undefined" && window.parent !== window) {
@@ -81,8 +87,6 @@ export function ErrorBanner({
             type: "atlas:error",
             error: {
               code: info.clientCode ?? info.code ?? "unknown",
-              message: info.title,
-              detail: info.detail,
               retryable: info.retryable,
             },
           },
@@ -92,7 +96,7 @@ export function ErrorBanner({
     } catch {
       // Silently ignore postMessage errors (cross-origin restrictions)
     }
-  }, [info.clientCode, info.code, info.title, info.detail, info.retryable]);
+  }, [info.clientCode, info.code, info.retryable]);
 
   // If we were offline but came back online, hide the banner
   if (info.clientCode === "offline" && restoredOnline) {

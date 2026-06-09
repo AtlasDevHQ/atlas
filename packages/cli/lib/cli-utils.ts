@@ -106,7 +106,7 @@ export function detectDBType(url: string): DBType {
   const scheme = url.split("://")[0] || "(empty)";
   throw new Error(
     `Unsupported database URL scheme "${scheme}://". ` +
-      "Supported: postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, salesforce://, elasticsearch://, opensearch://.",
+      "Supported: postgresql:// (or postgres://), mysql:// (or mysql2://), clickhouse:// (or clickhouses://), snowflake://, duckdb://, salesforce://, elasticsearch://, opensearch://.",
   );
 }
 

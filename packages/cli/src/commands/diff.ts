@@ -39,8 +39,10 @@ import {
 } from "../../lib/profilers/elasticsearch";
 
 export async function handleDiff(args: string[]): Promise<void> {
-  // An Elastic Cloud ID names the endpoint without a URL (#3309).
-  const connStr = process.env.ATLAS_DATASOURCE_URL ?? "";
+  // An Elastic Cloud ID names the endpoint without a URL (#3309). Trimmed so
+  // a whitespace-only value behaves like unset (and reaches the Cloud-ID
+  // branch instead of failing scheme detection).
+  const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
   if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) {
     console.error("Error: ATLAS_DATASOURCE_URL is required for atlas diff.");
     console.error(
@@ -111,9 +113,18 @@ export async function handleDiff(args: string[]): Promise<void> {
     console.error(
       `\nError: ${err instanceof Error ? err.message : String(err)}`,
     );
-    console.error(
-      `\nCheck that ATLAS_DATASOURCE_URL is correct and the server is running.`,
-    );
+    if (dbType === "elasticsearch") {
+      // The endpoint may be a Cloud ID with no URL at all — point at the full
+      // ATLAS_ES_* contract instead of the (possibly absent) URL.
+      console.error(
+        `\nCheck the endpoint (elasticsearch:// / opensearch:// URL or ` +
+          `ATLAS_ES_CLOUD_ID) and the ATLAS_ES_* credentials.`,
+      );
+    } else {
+      console.error(
+        `\nCheck that ATLAS_DATASOURCE_URL is correct and the server is running.`,
+      );
+    }
     process.exit(1);
   }
 

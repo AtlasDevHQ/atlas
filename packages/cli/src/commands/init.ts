@@ -1232,8 +1232,9 @@ Next steps:
     ];
   } else if (sourceArg) {
     // Legacy --source flag: single datasource from env var, output to semantic/{source}/
-    // An Elastic Cloud ID names the endpoint without a URL (#3309).
-    const connStr = process.env.ATLAS_DATASOURCE_URL ?? "";
+    // An Elastic Cloud ID names the endpoint without a URL (#3309); trimmed so
+    // a whitespace-only value behaves like unset.
+    const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
     if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) exitMissingDatasourceUrl();
     // Warn if --source and --demo are used together
     if (demoDataset) {
@@ -1315,8 +1316,9 @@ Next steps:
     }
   } else {
     // No config -- fall back to ATLAS_DATASOURCE_URL (backward-compatible single-source behavior).
-    // An Elastic Cloud ID names the endpoint without a URL (#3309).
-    const connStr = process.env.ATLAS_DATASOURCE_URL ?? "";
+    // An Elastic Cloud ID names the endpoint without a URL (#3309); trimmed so
+    // a whitespace-only value behaves like unset.
+    const connStr = (process.env.ATLAS_DATASOURCE_URL ?? "").trim();
     if (!connStr && !process.env.ATLAS_ES_CLOUD_ID) exitMissingDatasourceUrl();
     datasources = [
       {

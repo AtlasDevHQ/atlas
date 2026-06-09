@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/elasticsearch",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Atlas Elasticsearch / OpenSearch datasource plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -38,7 +38,7 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@useatlas/plugin-sdk": ">=0.0.1"
+    "@useatlas/plugin-sdk": ">=0.0.8"
   },
   "devDependencies": {
     "ai": "^6.0.193",

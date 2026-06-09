@@ -1147,7 +1147,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => whitelist,
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(
@@ -1171,7 +1170,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => new Set(["Account"]),
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(
@@ -1193,7 +1191,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => new Set(["Account"]),
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(
@@ -1216,7 +1213,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => new Set(["Account"]),
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(
@@ -1239,7 +1235,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => new Set(["Account"]),
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(
@@ -1262,7 +1257,6 @@ describe("createQuerySalesforceTool", () => {
     const sfTool = createQuerySalesforceTool({
       getConnection: () => conn,
       getWhitelist: () => new Set(["Account"]),
-      connectionId: "salesforce",
     });
 
     const result = await sfTool.execute!(

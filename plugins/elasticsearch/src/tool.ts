@@ -18,10 +18,24 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { gateOnSemanticWhitelist, type SemanticWhitelistSubject } from "@useatlas/plugin-sdk";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type { ElasticsearchDslEndpoint, ElasticsearchDslQueryOptions } from "./connection";
 import { scrubElasticsearchError, SENSITIVE_PATTERNS } from "./connection";
 import { validateEsDslRequest, validateIndexAccess, normalizeDslResponse, isPlainObject } from "./dsl";
+
+/**
+ * The DSL tool's vocabulary for the SDK's semantic-whitelist load policy
+ * (#3243/#3313 fail-closed / structural-only semantics live in the SDK).
+ * Shared with `initialize()`'s registration-time operator warning.
+ */
+export const ES_DSL_WHITELIST_SUBJECT: SemanticWhitelistSubject = {
+  toolName: "queryElasticsearch",
+  member: "index",
+  structuralExposure: "any explicitly-named, non-system index",
+  queryKind: "DSL queries",
+  logLabel: "ES DSL",
+};
 
 /** Parse an integer env var, falling back to `fallback` on missing/garbage. */
 function intEnv(name: string, fallback: number): number {
@@ -77,7 +91,8 @@ function computeTruncated(
  */
 export function createQueryElasticsearchTool(opts: {
   getConnection: () => DslConnection;
-  getWhitelist: () => Set<string>;
+  /** Semantic-layer index names. The SDK gate builds its own Set — pass the raw accessor result. */
+  getWhitelist: () => Iterable<string>;
   logger?: PluginLogger;
 }) {
   return tool({
@@ -119,26 +134,15 @@ Rules:
       const op: ElasticsearchDslEndpoint = endpoint ?? "_search";
 
       // 1. Index whitelist (semantic layer) + always-on structural rails.
-      // `getWhitelist` THROWS when the semantic-layer scan FAILED (#3243): the
-      // whitelist load is incomplete, so we FAIL CLOSED (refuse) rather than
-      // fall through to validateIndexAccess's structural-only mode, which would
-      // widen access to any explicitly-named index. A legitimately-empty layer
-      // does NOT throw — it returns `[]` and structural-only still applies (#3313).
-      let allowed: Set<string>;
-      try {
-        allowed = opts.getWhitelist();
-      } catch (err) {
-        opts.logger?.error(
-          { index, error: err instanceof Error ? err.message : String(err) },
-          "ES DSL refused — semantic layer unavailable (scan failed)",
-        );
-        return {
-          success: false,
-          error:
-            "The semantic layer is temporarily unavailable (its scan failed), so index access cannot be verified. Refusing the query to avoid unsafe access — retry once it recovers.",
-        };
+      // The SDK gate owns the load policy (#3243/#3313): a throwing
+      // `getWhitelist` (scan failed) FAILS CLOSED with the canonical refusal;
+      // a legitimately-empty layer passes through and `validateIndexAccess`
+      // applies its structural-only rails.
+      const gate = gateOnSemanticWhitelist(ES_DSL_WHITELIST_SUBJECT, opts.getWhitelist, opts.logger, { index });
+      if (!gate.ok) {
+        return { success: false, error: gate.error };
       }
-      const indexCheck = validateIndexAccess(index, allowed);
+      const indexCheck = validateIndexAccess(index, gate.allowed);
       if (!indexCheck.valid) {
         opts.logger?.debug({ index, error: indexCheck.reason }, "ES DSL index access rejected");
         return { success: false, error: indexCheck.reason };

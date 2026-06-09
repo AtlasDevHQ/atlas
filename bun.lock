@@ -608,7 +608,7 @@
     },
     "plugins/elasticsearch": {
       "name": "@useatlas/elasticsearch",
-      "version": "0.0.2",
+      "version": "0.0.3",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.193",
@@ -616,7 +616,7 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.8",
       },
     },
     "plugins/email": {
@@ -740,7 +740,7 @@
     },
     "plugins/salesforce": {
       "name": "@useatlas/salesforce",
-      "version": "0.0.5",
+      "version": "0.0.6",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.193",
@@ -748,7 +748,7 @@
         "zod": "^4.4.3",
       },
       "peerDependencies": {
-        "@useatlas/plugin-sdk": ">=0.0.1",
+        "@useatlas/plugin-sdk": ">=0.0.8",
         "jsforce": "^3.10.14",
       },
       "optionalPeers": [

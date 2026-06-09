@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/salesforce",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Atlas Salesforce datasource plugin",
   "type": "module",
   "main": "./src/index.ts",
@@ -38,7 +38,7 @@
   "license": "MIT",
   "peerDependencies": {
     "jsforce": "^3.10.14",
-    "@useatlas/plugin-sdk": ">=0.0.1"
+    "@useatlas/plugin-sdk": ">=0.0.8"
   },
   "devDependencies": {
     "ai": "^6.0.193",

@@ -114,6 +114,31 @@ B and C are not implemented today. Reasons:
 
 Post-#2677 the resolver distinguishes them: case (2) emits a `warn` with `teamId` so the audit catches a write-path that bypassed both `saveInstallation` AND the pg-adapter merge. The warn is rate-limited via a module-scoped `Map<teamId, lastWarnAt>` with a 5-minute dedup window — a stuck-orgId tenant emits one warn per 5 minutes, not one per Slack event. Operator-actionable on first occurrence; bounded log volume thereafter.
 
+## Inbound webhook signature verification posture (#3350 audit, June 2026)
+
+All signature verification is delegated to the out-of-repo `@chat-adapter/*`
+packages (v4.23.0 at audit time). A read of the installed dist code confirmed
+the following per-platform posture. "Fail-closed init" means the adapter
+constructor throws when its secret is missing, so the AdapterRegistry never
+wires it and the in-repo route 404s.
+
+| Platform | Algorithm | Timing-safe compare | Fail-closed on missing secret | Replay protection |
+|----------|-----------|--------------------|-------------------------------|-------------------|
+| Slack | HMAC-SHA256 (`v0:ts:body`) | ✓ `timingSafeEqual` | ✓ throws at init | ✓ 300 s window |
+| Discord | Ed25519 (`discord-interactions`) | ✓ | ✓ throws at init | platform-level |
+| Teams | Bot Framework JWT (MS libs) | ✓ | ✓ throws at init | ✓ JWT claims |
+| WhatsApp | HMAC-SHA256 (`X-Hub-Signature-256`) | ✓ | ✓ throws at init | — |
+| GitHub | HMAC-SHA256 | ✓ | ✓ throws at init | delivery ids |
+| Linear | HMAC-SHA256 | ✓ | ✓ throws at init | ✓ 5 min window |
+| Telegram | secret-token header compare | ✓ | ⚠ adapter treats it as optional — **Atlas's `TELEGRAM_BUILDER` makes `TELEGRAM_WEBHOOK_SECRET` mandatory** (#3154 GAP 3), so the fail-open path is unreachable from this repo's wiring | — |
+| Google Chat | Google OAuth2 JWT | ✓ | ⚠ adapter treats `googleChatProjectNumber` / `pubsubAudience` as optional and processes UNVERIFIED HTTP webhooks when both are absent — **the in-repo `/webhooks/gchat` route fails closed with 403 when neither `GCHAT_PROJECT_NUMBER` nor `GCHAT_PUBSUB_AUDIENCE` is set** (#3350) | ✓ JWT claims (when configured) |
+
+Verification always runs against the raw request body before any payload
+processing; no debug bypass flags were found. Upstream follow-up worth filing
+against the chat-adapter packages: make the Telegram and Google Chat
+constructors throw on missing verification config, matching the other six.
+Re-audit this table whenever the pinned `@chat-adapter/*` version changes.
+
 ## How to update this doc
 
 Any PR that touches the chat-plugin × Atlas boundary updates the table above. The CLAUDE.md checklist enforces this. Concretely:

@@ -261,22 +261,24 @@ export async function testDatabaseConnection(
     }
 
     case "elasticsearch": {
-      // The API key is NOT in the elasticsearch:// URL (the parser rejects
-      // credentials) — it is a separate secret, read from ATLAS_ES_API_KEY.
-      const apiKey = process.env.ATLAS_ES_API_KEY;
-      if (!apiKey) {
-        throw new Error(
-          "ATLAS_ES_API_KEY is required for an Elasticsearch datasource. " +
-            "Set it to the base64 API key for the cluster.",
-        );
-      }
+      // Credentials are NOT in the elasticsearch:// / opensearch:// URL (the
+      // parser rejects them) — the auth mode (API key / Basic / SigV4) and an
+      // optional Elastic Cloud ID come from the ATLAS_ES_* env contract,
+      // mirroring the plugin config (#3309). An empty connStr means the
+      // endpoint is ATLAS_ES_CLOUD_ID.
+      const { elasticsearchConfigFromEnv } = await import("./profilers/elasticsearch");
+      const config = elasticsearchConfigFromEnv(connStr || undefined);
       const {
         resolveElasticsearchConfig,
         createElasticsearchClient,
         scrubElasticsearchError,
+        collectConfigSecrets,
       } = await import("../../../plugins/elasticsearch/src/connection");
+      const secrets = collectConfigSecrets(config);
+      // Ambient AWS creds allowed — the CLI runs in the operator's own shell
+      // (same trust model as the static atlas.config.ts path).
       const client = createElasticsearchClient(
-        resolveElasticsearchConfig({ url: connStr, apiKey }),
+        resolveElasticsearchConfig(config, { allowAmbientAwsCreds: true }),
       );
       try {
         const info = await client.ping(5000);
@@ -289,7 +291,7 @@ export async function testDatabaseConnection(
         // credential, so the caught error is credential-free — preserving the
         // cause chain is safe here.
         throw new Error(
-          `Cannot connect to Elasticsearch: ${scrubElasticsearchError(err, apiKey)}`,
+          `Cannot connect to Elasticsearch: ${scrubElasticsearchError(err, secrets)}`,
           { cause: err },
         );
       } finally {

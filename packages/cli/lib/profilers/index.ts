@@ -26,4 +26,6 @@ export {
   type ElasticsearchProfilingResult,
   type ProfileElasticsearchOptions,
   profileElasticsearch,
+  elasticsearchConfigFromEnv,
+  ELASTICSEARCH_ENV_VARS_HINT,
 } from "./elasticsearch";

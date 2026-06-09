@@ -19,7 +19,7 @@ import type {
   SidecarPythonRequest,
   SidecarPythonResponse,
 } from "@atlas/api/lib/sidecar-types";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { readdirSync, writeFileSync } from "fs";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
@@ -117,11 +117,15 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
  * Shared auth check. Returns a 401 Response if auth fails, null if OK.
  * AUTH_TOKEN is only ever undefined when auth was explicitly disabled via
  * SIDECAR_AUTH_DISABLE=1 — the boot guard above exits otherwise.
+ *
+ * Hash both sides to fixed-length digests so timingSafeEqual never leaks
+ * token length — same convention as the API's simple-key auth.
  */
 function checkAuth(req: Request): Response | null {
   if (!AUTH_TOKEN) return null;
-  const authHeader = req.headers.get("Authorization");
-  if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+  const got = createHash("sha256").update(req.headers.get("Authorization") ?? "").digest();
+  const want = createHash("sha256").update(`Bearer ${AUTH_TOKEN}`).digest();
+  if (!timingSafeEqual(got, want)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
   return null;

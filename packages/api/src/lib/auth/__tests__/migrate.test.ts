@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
+import { _setConfigForTest, type ResolvedConfig } from "@atlas/api/lib/config";
 import { _resetPool } from "@atlas/api/lib/db/internal";
 import { _setAuthInstance } from "@atlas/api/lib/auth/server";
 import {
@@ -613,5 +614,29 @@ describe("resolveSeedAdminPassword", () => {
     const first = resolveSeedAdminPassword().password;
     const second = resolveSeedAdminPassword().password;
     expect(first).not.toBe(second);
+  });
+
+  it("never seeds the published constant when the config file resolves deployMode saas", () => {
+    // The SaaS deploy sets deployMode in atlas.config.ts, not the env var —
+    // the resolver must honor the config-resolved mode too.
+    process.env.NODE_ENV = "development";
+    delete process.env.ATLAS_DEPLOY_MODE;
+    const saasConfig: ResolvedConfig = {
+      datasources: {},
+      tools: ["explore", "executeSQL"],
+      auth: "managed",
+      semanticLayer: "./semantic",
+      maxTotalConnections: 100,
+      source: "file",
+      deployMode: "saas",
+    };
+    _setConfigForTest(saasConfig);
+    try {
+      const { password, generated } = resolveSeedAdminPassword();
+      expect(generated).toBe(true);
+      expect(password).not.toBe("atlas-dev");
+    } finally {
+      _setConfigForTest(null);
+    }
   });
 });

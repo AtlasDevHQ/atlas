@@ -8,6 +8,7 @@
 
 import { randomBytes } from "crypto";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { getConfig } from "@atlas/api/lib/config";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -190,14 +191,21 @@ async function bootstrapAdminUser(): Promise<void> {
  * Resolve the password for the first-boot seeded admin account.
  *
  * The published constant `atlas-dev` is a dev-loop convenience only: in
- * anything production-shaped (`NODE_ENV=production` or `ATLAS_DEPLOY_MODE=saas`)
- * a fresh instance must never boot a platform admin with public credentials,
- * so a random one-time password is generated instead and logged once by the
- * caller. `password_change_required` is stamped in both cases.
+ * anything production-shaped (`NODE_ENV=production`, `ATLAS_DEPLOY_MODE=saas`,
+ * or a config-file `deployMode: "saas"`) a fresh instance must never boot a
+ * platform admin with public credentials, so a random one-time password is
+ * generated instead and logged once by the caller. `password_change_required`
+ * is stamped in both cases.
+ *
+ * The config check matters because the SaaS deploy sets `deployMode` in
+ * `deploy/api/atlas.config.ts` rather than the env var — env-only sniffing
+ * would miss it whenever NODE_ENV isn't also set.
  */
 export function resolveSeedAdminPassword(): { password: string; generated: boolean } {
   const isProductionLike =
-    process.env.NODE_ENV === "production" || process.env.ATLAS_DEPLOY_MODE === "saas";
+    process.env.NODE_ENV === "production" ||
+    process.env.ATLAS_DEPLOY_MODE === "saas" ||
+    getConfig()?.deployMode === "saas";
   if (isProductionLike) {
     return { password: randomBytes(24).toString("base64url"), generated: true };
   }
@@ -243,15 +251,11 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
       return;
     }
 
-    // Mark as requiring password change AND verify the email so the seeded
-    // admin can sign in without a manual SQL update on a fresh DB. The dev
-    // seed only runs when no users exist (idempotency check above), so this
-    // never auto-verifies a real signup.
-    await internalQuery(
-      `UPDATE "user" SET password_change_required = true, "emailVerified" = true WHERE id = $1`,
-      [userId],
-    );
-
+    // Log the credential IMMEDIATELY after creation, before the flag UPDATE
+    // below: the user row already exists at this point, so if a later step
+    // throws, reseeding is skipped on the next boot (userCount > 0) and a
+    // not-yet-logged generated password would be lost — an admin account
+    // nobody can sign in to.
     if (generated) {
       // Deliberately logged in the message text (not a redactable field): this
       // is the operator's only chance to read the bootstrap credential, and a
@@ -263,6 +267,15 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
     } else {
       log.info({ email: adminEmail }, "Dev admin account seeded (password: atlas-dev)");
     }
+
+    // Mark as requiring password change AND verify the email so the seeded
+    // admin can sign in without a manual SQL update on a fresh DB. The dev
+    // seed only runs when no users exist (idempotency check above), so this
+    // never auto-verifies a real signup.
+    await internalQuery(
+      `UPDATE "user" SET password_change_required = true, "emailVerified" = true WHERE id = $1`,
+      [userId],
+    );
 
     // ── 2. Create organization ──────────────────────────────────────
     const createOrg = auth.api.createOrganization as ((opts: {

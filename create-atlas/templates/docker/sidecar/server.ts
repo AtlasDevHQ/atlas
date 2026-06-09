@@ -11,7 +11,7 @@
  *   POST /exec   — { command, timeout? } → { stdout, stderr, exitCode }
  */
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { readdirSync } from "fs";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
@@ -76,10 +76,12 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
 
 async function handleExec(req: Request): Promise<Response> {
   // Auth check — AUTH_TOKEN is only unset when SIDECAR_AUTH_DISABLE=1 was
-  // explicitly given (the boot guard above exits otherwise).
+  // explicitly given (the boot guard above exits otherwise). Hash both sides
+  // to fixed-length digests so timingSafeEqual never leaks token length.
   if (AUTH_TOKEN) {
-    const authHeader = req.headers.get("Authorization");
-    if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+    const got = createHash("sha256").update(req.headers.get("Authorization") ?? "").digest();
+    const want = createHash("sha256").update(`Bearer ${AUTH_TOKEN}`).digest();
+    if (!timingSafeEqual(got, want)) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
   }

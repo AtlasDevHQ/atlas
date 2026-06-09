@@ -1474,7 +1474,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
         const rowLimit = getRowLimit();
         const queryTimeout = getQueryTimeout();
         let querySql = normalizedMutated;
-        if (!customValidator && !hasLimitClause(querySql)) {
+        if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
           querySql += ` LIMIT ${rowLimit}`;
         }
 
@@ -1883,7 +1883,7 @@ async function executeSqlForConnection({
           const rowLimit = getRowLimit();
           const queryTimeout = getQueryTimeout();
           let querySql = normalizedMutated;
-          if (!customValidator && !hasLimitClause(querySql)) {
+          if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
             querySql += ` LIMIT ${rowLimit}`;
           }
 

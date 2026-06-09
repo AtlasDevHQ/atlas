@@ -12,21 +12,38 @@ describe("stripSqlStringLiterals", () => {
     );
   });
 
-  it("honors doubled-quote escapes ('') inside a literal", () => {
+  it("honors doubled-quote escapes ('') in every dialect", () => {
     expect(stripSqlStringLiterals("WHERE x = 'it''s LIMIT 5' AND y = 1")).toBe(
       "WHERE x = '' AND y = 1",
     );
   });
 
-  it("honors MySQL backslash escapes (\\') inside a literal", () => {
-    expect(stripSqlStringLiterals("WHERE x = 'a\\' LIMIT 5 b' AND y = 1")).toBe(
-      "WHERE x = '' AND y = 1",
-    );
+  it("fast-paths a query with no literals (returned unchanged)", () => {
+    const q = "SELECT id FROM users WHERE active = true";
+    expect(stripSqlStringLiterals(q)).toBe(q);
+  });
+
+  // Dialect split on backslash: Postgres (standard_conforming_strings=on, the
+  // default) treats `\` inside a '...' literal as a literal char; MySQL treats
+  // `\'` as an escaped quote. Honoring `\'` unconditionally would mis-pair the
+  // closing quote of a Postgres value ending in `\` — the bug this gating fixes.
+  describe("backslash handling is dialect-gated", () => {
+    it("default (Postgres): backslash is a literal char, not an escape", () => {
+      // `'C:\path\'` is the complete value `C:\path\`; the trailing quote closes.
+      expect(stripSqlStringLiterals("x = 'C:\\path\\' AND y = 1")).toBe(
+        "x = '' AND y = 1",
+      );
+    });
+
+    it("MySQL (backslashEscapes): `\\'` is an escaped quote inside the literal", () => {
+      // `'a\'b'` is the value `a'b` — the escaped quote does NOT close it.
+      expect(
+        stripSqlStringLiterals("x = 'a\\'b' AND y = 1", { backslashEscapes: true }),
+      ).toBe("x = '' AND y = 1");
+    });
   });
 
   it("leaves an unterminated literal intact so a real clause stays visible", () => {
-    // No closing quote — the remainder (including any real LIMIT) is preserved
-    // rather than swallowed, so detection can never mis-strip into a double LIMIT.
     const input = "SELECT * FROM t WHERE x = 'oops LIMIT 5";
     expect(stripSqlStringLiterals(input)).toBe(input);
   });
@@ -70,5 +87,22 @@ describe("hasLimitClause", () => {
     expect(hasLimitClause("SELECT id, name FROM users WHERE active = true")).toBe(
       false,
     );
+  });
+
+  // The core regression the dialect gating prevents: a Postgres value ending in
+  // `\` must not let a following literal's `LIMIT` text leak through and spoof
+  // detection (→ suppressed cap → uncapped query).
+  it("Postgres: backslash-bearing literal does not spoof LIMIT detection", () => {
+    expect(
+      hasLimitClause("SELECT * FROM t WHERE a = 'x\\' AND note = 'no LIMIT here'"),
+    ).toBe(false);
+  });
+
+  it("MySQL: a `\\'`-escaped literal containing LIMIT is correctly stripped", () => {
+    expect(
+      hasLimitClause("SELECT * FROM t WHERE x = 'a\\' no LIMIT b'", {
+        backslashEscapes: true,
+      }),
+    ).toBe(false);
   });
 });

@@ -19,7 +19,10 @@
  *      structural-only)
  */
 
-const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
+// Exported so the cross-package drift-check test (#3325) can assert this list
+// stays byte-for-byte equal to plugins/salesforce/src/validation.ts — the two
+// are deliberately duplicated (core can't import the workspace plugin).
+export const SOQL_FORBIDDEN_PATTERNS: RegExp[] = [
   /\b(INSERT)\b/i,
   /\b(UPDATE)\b/i,
   /\b(DELETE)\b/i,

@@ -6,6 +6,7 @@
  * entry point (server.ts) calls migrateAuthTables() once on startup.
  */
 
+import { randomBytes } from "crypto";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createPlatformAdminUser } from "@atlas/api/lib/auth/admin-user-ops";
@@ -186,6 +187,24 @@ async function bootstrapAdminUser(): Promise<void> {
 }
 
 /**
+ * Resolve the password for the first-boot seeded admin account.
+ *
+ * The published constant `atlas-dev` is a dev-loop convenience only: in
+ * anything production-shaped (`NODE_ENV=production` or `ATLAS_DEPLOY_MODE=saas`)
+ * a fresh instance must never boot a platform admin with public credentials,
+ * so a random one-time password is generated instead and logged once by the
+ * caller. `password_change_required` is stamped in both cases.
+ */
+export function resolveSeedAdminPassword(): { password: string; generated: boolean } {
+  const isProductionLike =
+    process.env.NODE_ENV === "production" || process.env.ATLAS_DEPLOY_MODE === "saas";
+  if (isProductionLike) {
+    return { password: randomBytes(24).toString("base64url"), generated: true };
+  }
+  return { password: "atlas-dev", generated: false };
+}
+
+/**
  * Seed a complete dev environment when no users exist:
  *   1. Platform admin user (ATLAS_ADMIN_EMAIL / atlas-dev)
  *   2. "Atlas" organization with the admin as owner
@@ -211,11 +230,12 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
     // removed; create via core signUpEmail + promote to platform_admin directly
     // (`role` is an input:false additionalField). The dev seed only runs when no
     // users exist (idempotency check above).
+    const { password, generated } = resolveSeedAdminPassword();
     let userId: string;
     try {
       userId = await createPlatformAdminUser(auth.api as Record<string, unknown>, {
         email: adminEmail,
-        password: "atlas-dev",
+        password,
         name: "Atlas Admin",
       });
     } catch (err) {
@@ -232,7 +252,17 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
       [userId],
     );
 
-    log.info({ email: adminEmail }, "Dev admin account seeded (password: atlas-dev)");
+    if (generated) {
+      // Deliberately logged in the message text (not a redactable field): this
+      // is the operator's only chance to read the bootstrap credential, and a
+      // password change is forced at first login.
+      log.warn(
+        { email: adminEmail },
+        `Admin account seeded with a generated one-time password: ${password} — sign in and change it now (password change is required at first login)`,
+      );
+    } else {
+      log.info({ email: adminEmail }, "Dev admin account seeded (password: atlas-dev)");
+    }
 
     // ── 2. Create organization ──────────────────────────────────────
     const createOrg = auth.api.createOrganization as ((opts: {

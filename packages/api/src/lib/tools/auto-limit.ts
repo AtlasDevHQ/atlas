@@ -217,3 +217,16 @@ export function hasLimitClause(
   if (!/\bLIMIT\b/i.test(sql)) return false;
   return /\bLIMIT\b/i.test(stripSqlNonClauseText(sql, opts));
 }
+
+/**
+ * Append the auto-LIMIT row cap to a query. The clause goes on its OWN line:
+ * a same-line append after a trailing `--` (or `#`) line comment would be
+ * swallowed by the comment (`SELECT * FROM t -- LIMIT 1000`) and the query
+ * would run uncapped. A newline terminates any line comment, so the cap is
+ * always effective. Trailing block comments are no hazard either way — an
+ * unterminated slash-star never survives AST validation, and a terminated one
+ * doesn't extend past its close. See #3335.
+ */
+export function appendRowLimit(sql: string, rowLimit: number): string {
+  return `${sql}\nLIMIT ${rowLimit}`;
+}

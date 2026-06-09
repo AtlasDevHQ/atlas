@@ -346,7 +346,7 @@ The `executePython` tool has defense-in-depth across all sandbox backends:
 |----------|---------|-------------|
 | `ATLAS_SANDBOX` | auto-detect | Force sandbox backend: `nsjail` |
 | `ATLAS_SANDBOX_URL` | -- | Sidecar service URL (enables sidecar backend) |
-| `SIDECAR_AUTH_TOKEN` | -- | Shared secret for sidecar auth (set on both services) |
+| `SIDECAR_AUTH_TOKEN` | -- | Shared secret for sidecar auth (set on both services). The sidecar refuses to boot without it unless `SIDECAR_AUTH_DISABLE=1` is set (loopback local dev only) |
 | `ATLAS_NSJAIL_PATH` | -- | Explicit path to nsjail binary |
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |

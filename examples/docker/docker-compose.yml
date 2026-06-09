@@ -48,6 +48,9 @@ services:
   #   environment:
   #     PORT: "8080"
   #     SEMANTIC_DIR: /semantic
+  #     # Required — the sidecar refuses to boot without it. Set the same value
+  #     # on the app service (SIDECAR_AUTH_DISABLE=1 is the loopback-dev-only escape hatch).
+  #     SIDECAR_AUTH_TOKEN: ${SIDECAR_AUTH_TOKEN:?set a shared sidecar secret}
   #   expose:
   #     - "8080"
   #   volumes:

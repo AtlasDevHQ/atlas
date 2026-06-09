@@ -23,6 +23,7 @@ import { randomUUID } from "crypto";
 import { readdirSync, writeFileSync } from "fs";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
+import { resolveSidecarAuth, type SidecarAuthConfig } from "./auth";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 const SEMANTIC_DIR = process.env.SEMANTIC_DIR ?? "/semantic";
@@ -30,7 +31,25 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MB
 
-const AUTH_TOKEN = process.env.SIDECAR_AUTH_TOKEN;
+// Fail closed: no token + no explicit opt-out = refuse to boot. The sidecar
+// is a raw arbitrary-code-execution surface; the command/AST guards live on
+// the API side, so an unauthenticated sidecar must never come up by accident.
+let authConfig: SidecarAuthConfig;
+try {
+  authConfig = resolveSidecarAuth({
+    SIDECAR_AUTH_TOKEN: process.env.SIDECAR_AUTH_TOKEN,
+    SIDECAR_AUTH_DISABLE: process.env.SIDECAR_AUTH_DISABLE,
+  });
+} catch (err) {
+  console.error(`[sandbox-sidecar] ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+if (authConfig.mode === "disabled") {
+  console.warn(
+    "[sandbox-sidecar] auth explicitly disabled via SIDECAR_AUTH_DISABLE=1 — every /exec is unauthenticated. Bind to 127.0.0.1 only.",
+  );
+}
+const AUTH_TOKEN = authConfig.mode === "token" ? authConfig.token : undefined;
 
 let activeExecs = 0;
 const MAX_CONCURRENT = 10;
@@ -94,7 +113,11 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-/** Shared auth check. Returns a 401 Response if auth fails, null if OK. */
+/**
+ * Shared auth check. Returns a 401 Response if auth fails, null if OK.
+ * AUTH_TOKEN is only ever undefined when auth was explicitly disabled via
+ * SIDECAR_AUTH_DISABLE=1 — the boot guard above exits otherwise.
+ */
 function checkAuth(req: Request): Response | null {
   if (!AUTH_TOKEN) return null;
   const authHeader = req.headers.get("Authorization");

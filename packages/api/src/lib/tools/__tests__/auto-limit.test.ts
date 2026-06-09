@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { hasLimitClause, stripSqlNonClauseText } from "../auto-limit";
+import { appendRowLimit, hasLimitClause, stripSqlNonClauseText } from "../auto-limit";
 
 // Regression coverage for the auto-LIMIT bypass class (#3325): the presence
 // check must ignore the word LIMIT when it appears anywhere it isn't a real
@@ -256,5 +256,41 @@ describe("hasLimitClause", () => {
     expect(
       hasLimitClause("SELECT * FROM t WHERE note = $$oops LIMIT 5"),
     ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appendRowLimit (#3335 — trailing line comment must not swallow the cap)
+// ---------------------------------------------------------------------------
+
+describe("appendRowLimit", () => {
+  /** The cap is effective iff a bare LIMIT survives comment/literal blanking. */
+  function effectiveLimit(sql: string, opts?: { backslashEscapes?: boolean }): boolean {
+    return /\bLIMIT 1000\b/i.test(stripSqlNonClauseText(sql, opts));
+  }
+
+  it("appends the cap on its own line", () => {
+    expect(appendRowLimit("SELECT * FROM t", 1000)).toBe("SELECT * FROM t\nLIMIT 1000");
+  });
+
+  it("keeps the cap effective after a trailing -- line comment", () => {
+    const sql = "SELECT * FROM t --";
+    expect(hasLimitClause(sql)).toBe(false);
+    expect(effectiveLimit(appendRowLimit(sql, 1000))).toBe(true);
+  });
+
+  it("keeps the cap effective after a trailing -- comment with text", () => {
+    const sql = "SELECT * FROM t -- just exploring";
+    expect(effectiveLimit(appendRowLimit(sql, 1000))).toBe(true);
+  });
+
+  it("keeps the cap effective after a trailing MySQL # comment", () => {
+    const sql = "SELECT * FROM t #";
+    expect(effectiveLimit(appendRowLimit(sql, 1000), { backslashEscapes: true })).toBe(true);
+  });
+
+  it("keeps the cap effective after a terminated trailing block comment", () => {
+    const sql = "SELECT * FROM t /* note */";
+    expect(effectiveLimit(appendRowLimit(sql, 1000))).toBe(true);
   });
 });

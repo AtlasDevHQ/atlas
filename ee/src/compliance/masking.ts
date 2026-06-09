@@ -19,7 +19,7 @@
 import { Effect, Layer } from "effect";
 import { isEnterpriseEnabled } from "../index";
 import { requireEnterpriseEffect } from "../index";
-import { EnterpriseError } from "@atlas/api/lib/effect/errors";
+import { EnterpriseError, EnterpriseUnavailableError } from "@atlas/api/lib/effect/errors";
 import {
   hasInternalDB,
   internalQuery,
@@ -365,7 +365,16 @@ const getClassificationsForOrg = (
     const cached = _classificationCache.get(orgId);
     if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-    if (!(yield* ready())) return [];
+    // No internal DB configured is a legitimate pass-through (nothing to
+    // classify against). An ensure-table FAILURE is not: `ready()` swallows
+    // it and reports false, which used to read as "no classifications" and
+    // returned unmasked rows (#3348). Propagate the error instead so
+    // applyMasking fails closed.
+    if (!hasInternalDB()) return [];
+    if (!_tableReady) {
+      yield* ensureTable();
+      _tableReady = true;
+    }
 
     const data = yield* Effect.tryPromise({
       try: () => internalQuery<PIIClassificationRow>(
@@ -412,6 +421,8 @@ export interface MaskingContext {
  * Apply PII masking to query results based on column classifications and user role.
  *
  * - Fails open when enterprise is disabled (returns unmodified results).
+ * - Fails CLOSED when the classification load errors (#3348) — a non-admin
+ *   query is blocked rather than served unmasked rows.
  * - Admins/owners always see raw data.
  * - Analysts see partial masks.
  * - Viewers/members see full masks.
@@ -420,7 +431,7 @@ export interface MaskingContext {
  */
 export const applyMasking = (
   ctx: MaskingContext,
-): Effect.Effect<Record<string, unknown>[]> =>
+): Effect.Effect<Record<string, unknown>[], EnterpriseUnavailableError> =>
   Effect.gen(function* () {
     // Fail open when enterprise is disabled — no masking for non-enterprise deployments
     if (!isEnterpriseEnabled()) return ctx.rows;
@@ -431,13 +442,27 @@ export const applyMasking = (
     const role = ctx.userRole ?? "viewer";
     if (role === "admin" || role === "owner") return ctx.rows;
 
+    // #3348 — fail CLOSED when the classification load fails. Returning
+    // `ctx.rows` here (the pre-#3348 behavior) meant a transient internal-DB
+    // blip handed unmasked PII to a non-admin user with only a log.warn.
+    // Matches the approval gate's posture (`ee/src/governance/approval.ts`):
+    // EnterpriseError short-circuits are tolerated, infrastructure errors
+    // block the query. The sql.ts call sites re-throw
+    // EnterpriseUnavailableError, so the query fails with the standard
+    // enterprise_load_failed envelope rather than leaking rows.
     const classifications = yield* getClassificationsForOrg(ctx.orgId).pipe(
       Effect.catchAll((err) => {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err), orgId: ctx.orgId },
-          "Failed to load PII classifications — returning unmasked results",
+          "Failed to load PII classifications — blocking query (fail-closed)",
         );
-        return Effect.succeed([] as PIIClassificationRow[]);
+        return Effect.fail(
+          new EnterpriseUnavailableError({
+            message:
+              "PII masking classifications could not be loaded — query blocked to prevent unmasked-data exposure. Retry shortly or contact your administrator.",
+            tag: "MaskingPolicy",
+          }),
+        );
       }),
     );
 

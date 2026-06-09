@@ -1131,10 +1131,18 @@ export interface MaskingPolicyShape {
    * different-response-shape branch the codified rule permits.
    */
   readonly available: boolean;
-  /** Apply PII masking. No-op returns `ctx.rows` unchanged (fail open). */
+  /**
+   * Apply PII masking. No-op returns `ctx.rows` unchanged (fail open).
+   * The live EE implementation fails with `EnterpriseUnavailableError`
+   * when the classification load errors (#3348 — fail-closed; both
+   * sql.ts call sites re-throw it).
+   */
   readonly applyMasking: (
     ctx: MaskingContext,
-  ) => Effect.Effect<Record<string, unknown>[]>;
+  ) => Effect.Effect<
+    Record<string, unknown>[],
+    import("@atlas/api/lib/effect/errors").EnterpriseUnavailableError
+  >;
   readonly listPIIClassifications: (
     orgId: string,
     connectionGroupId?: string,

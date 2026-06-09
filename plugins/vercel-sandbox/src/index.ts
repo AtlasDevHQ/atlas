@@ -178,7 +178,18 @@ async function loadSandboxModule(): Promise<{ Sandbox: SandboxConstructor }> {
         ? (err as NodeJS.ErrnoException).code
         : undefined;
     // `require()` threw MODULE_NOT_FOUND; dynamic import() throws ERR_MODULE_NOT_FOUND.
-    if (code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND") {
+    const isNotFound =
+      code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
+    // Only surface the install hint when the missing module is THIS package, not
+    // a transitive dep that failed to load (same not-found code, different named
+    // module). Node and bun both name the missing request quoted in the message,
+    // so a transitive failure won't match our own specifier.
+    const ownPackageMissing =
+      isNotFound &&
+      (err instanceof Error ? err.message : String(err)).includes(
+        "'@vercel/sandbox'",
+      );
+    if (ownPackageMissing) {
       throw new Error(
         "Vercel Sandbox requires the @vercel/sandbox package. " +
           "Install it with: bun add @vercel/sandbox",

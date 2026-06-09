@@ -51,7 +51,16 @@ export function createBigQueryConnection(
       typeof err === "object" &&
       "code" in err &&
       (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND";
-    if (isNotFound) {
+    // Only surface the install hint when the missing module is THIS package, not
+    // a transitive dep that failed to load (same MODULE_NOT_FOUND code, different
+    // named module). Node and bun both name the missing request quoted in the
+    // message, so a transitive failure won't match our own specifier.
+    const ownPackageMissing =
+      isNotFound &&
+      (err instanceof Error ? err.message : String(err)).includes(
+        "'@google-cloud/bigquery'",
+      );
+    if (ownPackageMissing) {
       throw new Error(
         "BigQuery support requires the @google-cloud/bigquery package. Install it with: bun add @google-cloud/bigquery",
         { cause: err },

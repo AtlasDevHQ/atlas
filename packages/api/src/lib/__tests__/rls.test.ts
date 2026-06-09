@@ -1054,3 +1054,212 @@ describe("resolveRLSFilters claim type validation", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3336 — MySQL backslash escaping in injected literals
+// ---------------------------------------------------------------------------
+
+describe("injectRLSConditions — backslash escaping (#3336)", () => {
+  function group(...filters: { table: string; column: string; value: string; values?: string[] }[]): RLSFilterGroup[] {
+    return [{ filters }];
+  }
+
+  it("doubles backslashes in scalar values on MySQL", () => {
+    const sql = "SELECT * FROM orders";
+    const result = injectRLSConditions(
+      sql,
+      group({ table: "orders", column: "tenant_id", value: "acme\\corp" }),
+      "and",
+      "mysql",
+    );
+    expect(result).toContain("acme\\\\corp");
+  });
+
+  it("preserves single backslashes on PostgreSQL (standard_conforming_strings)", () => {
+    const sql = "SELECT * FROM orders";
+    const result = injectRLSConditions(
+      sql,
+      group({ table: "orders", column: "tenant_id", value: "acme\\corp" }),
+      "and",
+      "postgres",
+    );
+    expect(result).toContain("acme\\corp");
+    expect(result).not.toContain("acme\\\\corp");
+  });
+
+  it("doubles backslashes in IN-list array values on MySQL", () => {
+    const sql = "SELECT * FROM orders";
+    const groups: RLSFilterGroup[] = [{
+      filters: [{
+        table: "orders",
+        column: "department",
+        value: "a\\b",
+        values: ["a\\b", "c\\d"],
+      }],
+    }];
+    const result = injectRLSConditions(sql, groups, "and", "mysql");
+    expect(result).toContain("a\\\\b");
+    expect(result).toContain("c\\\\d");
+  });
+
+  it("end-to-end: a backslash-bearing claim cannot break out of the literal on MySQL", () => {
+    // Raw claim value ends with a backslash — without doubling, the emitted
+    // literal would be '...\' and the backslash escapes the closing quote,
+    // letting subsequent claim text run as raw SQL.
+    const user: AtlasUser = {
+      id: "user-1",
+      mode: "byot",
+      label: "test",
+      claims: { tenant_id: "x\\' OR '1'='1" },
+    };
+    const rlsConfig: RLSConfig = {
+      enabled: true,
+      policies: [{ tables: ["*"], column: "tenant_id", claim: "tenant_id" }],
+      combineWith: "and",
+    };
+    const filterResult = resolveRLSFilters(user, new Set(["orders"]), rlsConfig);
+    expect("groups" in filterResult).toBe(true);
+    if (!("groups" in filterResult)) return;
+
+    const result = injectRLSConditions(
+      "SELECT * FROM orders",
+      filterResult.groups,
+      filterResult.combineWith,
+      "mysql",
+    );
+
+    // Still a single SELECT when re-parsed with the MySQL grammar — the
+    // value stayed inside the string literal.
+    const p = new Parser();
+    const ast = p.astify(result, { database: "MySQL" });
+    const stmts = Array.isArray(ast) ? ast : [ast];
+    expect(stmts).toHaveLength(1);
+    expect(stmts[0].type).toBe("select");
+    expect(result).toContain("\\\\");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3337 — fail-closed when a resolved filter cannot be applied
+// ---------------------------------------------------------------------------
+
+describe("injectRLSConditions — fail-closed assertion (#3337)", () => {
+  function group(...filters: { table: string; column: string; value: string }[]): RLSFilterGroup[] {
+    return [{ filters }];
+  }
+
+  it("throws when a filter's table is not reachable by the FROM walk", () => {
+    // tableList-style relevance said "missing_table" is in the query, but the
+    // alias walk never finds it — previously a silent skip (no RLS filter).
+    const sql = "SELECT * FROM orders";
+    expect(() =>
+      injectRLSConditions(
+        sql,
+        group(
+          { table: "orders", column: "tenant_id", value: "acme" },
+          { table: "missing_table", column: "tenant_id", value: "acme" },
+        ),
+        "and",
+        "postgres",
+      ),
+    ).toThrow(/could not be applied.*missing_table|missing_table.*could not be applied/i);
+  });
+
+  it("throws for a table referenced only in the SELECT projection subquery", () => {
+    // The projection subquery is not part of the FROM/WHERE walk — the
+    // filter for `orders` cannot be injected, so the query must be blocked
+    // rather than run unfiltered.
+    const sql = "SELECT (SELECT max(total) FROM orders) AS m FROM customers";
+    expect(() =>
+      injectRLSConditions(
+        sql,
+        group(
+          { table: "customers", column: "tenant_id", value: "acme" },
+          { table: "orders", column: "tenant_id", value: "acme" },
+        ),
+        "and",
+        "postgres",
+      ),
+    ).toThrow(/could not be applied/i);
+  });
+
+  it("does not throw for CTE-name filters (wildcard policy over tableList)", () => {
+    // A wildcard policy resolves filters for every tableList entry, which
+    // can include the CTE name itself. The CTE definition's inner tables are
+    // filtered; the CTE-name filter is exempt from the assertion.
+    const sql = "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent";
+    const result = injectRLSConditions(
+      sql,
+      group(
+        { table: "orders", column: "tenant_id", value: "acme" },
+        { table: "recent", column: "tenant_id", value: "acme" },
+      ),
+      "and",
+      "postgres",
+    );
+    expect(result).toContain("tenant_id");
+    expect(result).toContain("acme");
+  });
+
+  it("does not throw when every filter is applied across UNION branches", () => {
+    const sql = "SELECT id FROM orders UNION SELECT id FROM returns";
+    const result = injectRLSConditions(
+      sql,
+      group(
+        { table: "orders", column: "tenant_id", value: "acme" },
+        { table: "returns", column: "tenant_id", value: "acme" },
+      ),
+      "and",
+      "postgres",
+    );
+    expect(result).toContain("tenant_id");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3346 — PG ONLY keyword mis-modeled as a table name
+// ---------------------------------------------------------------------------
+
+describe("injectRLSConditions — PG ONLY keyword (#3346)", () => {
+  function group(...filters: { table: string; column: string; value: string }[]): RLSFilterGroup[] {
+    return [{ filters }];
+  }
+
+  it("rejects FROM ONLY <table> under a wildcard-style filter on PostgreSQL", () => {
+    // node-sql-parser models this as table "ONLY" aliased "accounts";
+    // injection must fail closed rather than trust the mis-parse.
+    const sql = "SELECT * FROM ONLY accounts";
+    expect(() =>
+      injectRLSConditions(
+        sql,
+        group({ table: "only", column: "tenant_id", value: "acme" }),
+        "and",
+        "postgres",
+      ),
+    ).toThrow(/ONLY/i);
+  });
+
+  it("rejects FROM ONLY <table> under a named-table filter on PostgreSQL", () => {
+    const sql = "SELECT * FROM ONLY accounts";
+    expect(() =>
+      injectRLSConditions(
+        sql,
+        group({ table: "accounts", column: "tenant_id", value: "acme" }),
+        "and",
+        "postgres",
+      ),
+    ).toThrow();
+  });
+
+  it("allows a legitimate table named only on MySQL", () => {
+    const sql = "SELECT * FROM only";
+    const result = injectRLSConditions(
+      sql,
+      group({ table: "only", column: "tenant_id", value: "acme" }),
+      "and",
+      "mysql",
+    );
+    expect(result).toContain("tenant_id");
+    expect(result).toContain("acme");
+  });
+});

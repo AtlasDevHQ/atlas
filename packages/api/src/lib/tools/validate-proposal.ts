@@ -10,9 +10,9 @@
 import { tool } from "ai";
 import { z } from "zod";
 import * as yaml from "js-yaml";
-import { validateSQL } from "@atlas/api/lib/tools/sql";
+import { runUserQueryPipeline } from "@atlas/api/lib/tools/sql";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { connections, getDB } from "@atlas/api/lib/db/connection";
+import { connections } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import type { AmendmentPayload } from "@useatlas/types";
@@ -157,41 +157,36 @@ export const validateProposal = tool({
         | undefined;
 
       if (payload.testQuery) {
-        // Validate test query through SQL pipeline before execution
-        const sqlValidation = await validateSQL(payload.testQuery);
-        if (!sqlValidation.valid) {
+        // #3338 — run the LLM-authored test query through the full
+        // production pipeline (per-connection validation → approval → RLS →
+        // auto-LIMIT → audit + masking) instead of a raw `db.query`. The
+        // old path validated against the default datasource but executed
+        // against the org connection, and skipped RLS and the row cap
+        // entirely — an RLS bypass + unbounded-scan vector.
+        const outcome = await runUserQueryPipeline({
+          sql: payload.testQuery,
+          connectionId: "default",
+          explanation: `Semantic amendment proposal test query (${proposalId})`,
+        });
+
+        if (outcome.kind === "ok") {
           testQueryResult = {
-            success: false,
-            error: sqlValidation.error,
+            success: true,
+            rowCount: outcome.rowCount,
+            sampleRows: outcome.rows.slice(0, 3),
           };
-          issues.push(`Test query failed SQL validation: ${sqlValidation.error}`);
-        } else {
-          try {
-            const db = orgId
-              ? connections.getForOrg(orgId)
-              : getDB();
 
-            const result = await db.query(payload.testQuery, 30000);
-            testQueryResult = {
-              success: true,
-              rowCount: result.rows.length,
-              sampleRows: result.rows.slice(0, 3) as Record<string, unknown>[],
-            };
-
-            if (result.rows.length === 0) {
-              issues.push(
-                "Test query returned 0 rows — the amendment may reference incorrect columns",
-              );
-            }
-          } catch (err) {
-            testQueryResult = {
-              success: false,
-              error: err instanceof Error ? err.message : String(err),
-            };
+          if (outcome.rowCount === 0) {
             issues.push(
-              `Test query failed: ${err instanceof Error ? err.message : String(err)}`,
+              "Test query returned 0 rows — the amendment may reference incorrect columns",
             );
           }
+        } else if (outcome.kind === "validation_failed") {
+          testQueryResult = { success: false, error: outcome.message };
+          issues.push(`Test query failed SQL validation: ${outcome.message}`);
+        } else {
+          testQueryResult = { success: false, error: outcome.message };
+          issues.push(`Test query failed: ${outcome.message}`);
         }
       }
 

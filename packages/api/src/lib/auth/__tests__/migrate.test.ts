@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { resetAuthModeCache } from "@atlas/api/lib/auth/detect";
+import { _setConfigForTest, type ResolvedConfig } from "@atlas/api/lib/config";
 import { _resetPool } from "@atlas/api/lib/db/internal";
 import { _setAuthInstance } from "@atlas/api/lib/auth/server";
 import {
   migrateAuthTables,
   resetMigrationState,
   getMigrationError,
+  resolveSeedAdminPassword,
 } from "@atlas/api/lib/auth/migrate";
 
 // ---------------------------------------------------------------------------
@@ -561,5 +563,80 @@ describe("migrateAuthTables", () => {
     expect(newlyRecorded).toContain("0027_organization_saas_columns.sql");
     // Already-applied files do not re-run.
     expect(newlyRecorded).not.toContain("0000_baseline.sql");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seed admin password resolution (#3334 — no default credential in production)
+// ---------------------------------------------------------------------------
+
+describe("resolveSeedAdminPassword", () => {
+  const SEED_ENV_VARS = ["NODE_ENV", "ATLAS_DEPLOY_MODE"] as const;
+  const seedSaved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of SEED_ENV_VARS) seedSaved[key] = process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of SEED_ENV_VARS) {
+      if (seedSaved[key] !== undefined) process.env[key] = seedSaved[key];
+      else delete process.env[key];
+    }
+  });
+
+  it("uses the documented dev password outside production", () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.ATLAS_DEPLOY_MODE;
+    expect(resolveSeedAdminPassword()).toEqual({ password: "atlas-dev", generated: false });
+  });
+
+  it("never seeds the published constant when NODE_ENV=production", () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.ATLAS_DEPLOY_MODE;
+    const { password, generated } = resolveSeedAdminPassword();
+    expect(generated).toBe(true);
+    expect(password).not.toBe("atlas-dev");
+    // 24 random bytes base64url-encoded — 32 chars of entropy
+    expect(password.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it("never seeds the published constant when ATLAS_DEPLOY_MODE=saas", () => {
+    process.env.NODE_ENV = "development";
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    const { password, generated } = resolveSeedAdminPassword();
+    expect(generated).toBe(true);
+    expect(password).not.toBe("atlas-dev");
+  });
+
+  it("generates a fresh password per call (no reusable constant)", () => {
+    process.env.NODE_ENV = "production";
+    const first = resolveSeedAdminPassword().password;
+    const second = resolveSeedAdminPassword().password;
+    expect(first).not.toBe(second);
+  });
+
+  it("never seeds the published constant when the config file resolves deployMode saas", () => {
+    // The SaaS deploy sets deployMode in atlas.config.ts, not the env var —
+    // the resolver must honor the config-resolved mode too.
+    process.env.NODE_ENV = "development";
+    delete process.env.ATLAS_DEPLOY_MODE;
+    const saasConfig: ResolvedConfig = {
+      datasources: {},
+      tools: ["explore", "executeSQL"],
+      auth: "managed",
+      semanticLayer: "./semantic",
+      maxTotalConnections: 100,
+      source: "file",
+      deployMode: "saas",
+    };
+    try {
+      _setConfigForTest(saasConfig);
+      const { password, generated } = resolveSeedAdminPassword();
+      expect(generated).toBe(true);
+      expect(password).not.toBe("atlas-dev");
+    } finally {
+      _setConfigForTest(null);
+    }
   });
 });

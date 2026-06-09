@@ -32,13 +32,17 @@ services:
       context: .
       dockerfile: packages/sandbox-sidecar/Dockerfile
     ports:
-      - "8080:8080"
+      # Loopback only — the sidecar runs with auth disabled in local dev and
+      # must never be reachable from other hosts on the network.
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./semantic:/semantic:ro
     environment:
       SEMANTIC_DIR: /semantic
-      # No SIDECAR_AUTH_TOKEN in local dev — the sandbox is only reachable on localhost.
-      # Production deploys should set SIDECAR_AUTH_TOKEN on both the API and sandbox services.
+      # Local dev runs without a token; the sidecar fails closed otherwise, so
+      # the no-auth mode requires this explicit opt-out. Production deploys must
+      # set SIDECAR_AUTH_TOKEN on both the API and sandbox services instead.
+      SIDECAR_AUTH_DISABLE: "1"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 10s

@@ -11,7 +11,7 @@
  *   POST /exec   — { command, timeout? } → { stdout, stderr, exitCode }
  */
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { readdirSync } from "fs";
 import { mkdir, rm } from "fs/promises";
 import { join } from "path";
@@ -33,7 +33,21 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024; // 1 MB
 
+// Fail closed: the sidecar executes arbitrary commands, so it refuses to
+// boot without auth unless an operator explicitly opts out for loopback dev.
 const AUTH_TOKEN = process.env.SIDECAR_AUTH_TOKEN;
+if (!AUTH_TOKEN && process.env.SIDECAR_AUTH_DISABLE !== "1") {
+  console.error(
+    "[sandbox-sidecar] SIDECAR_AUTH_TOKEN is not set. Set it to a shared secret (matching the API service), " +
+      "or set SIDECAR_AUTH_DISABLE=1 to explicitly run without auth (local loopback dev only).",
+  );
+  process.exit(1);
+}
+if (!AUTH_TOKEN) {
+  console.warn(
+    "[sandbox-sidecar] auth explicitly disabled via SIDECAR_AUTH_DISABLE=1 — every /exec is unauthenticated. Bind to 127.0.0.1 only.",
+  );
+}
 
 let activeExecs = 0;
 const MAX_CONCURRENT = 10;
@@ -61,10 +75,13 @@ async function readLimited(stream: ReadableStream, max: number): Promise<string>
 }
 
 async function handleExec(req: Request): Promise<Response> {
-  // Optional auth check — if SIDECAR_AUTH_TOKEN is set, require it
+  // Auth check — AUTH_TOKEN is only unset when SIDECAR_AUTH_DISABLE=1 was
+  // explicitly given (the boot guard above exits otherwise). Hash both sides
+  // to fixed-length digests so timingSafeEqual never leaks token length.
   if (AUTH_TOKEN) {
-    const authHeader = req.headers.get("Authorization");
-    if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+    const got = createHash("sha256").update(req.headers.get("Authorization") ?? "").digest();
+    const want = createHash("sha256").update(`Bearer ${AUTH_TOKEN}`).digest();
+    if (!timingSafeEqual(got, want)) {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
   }

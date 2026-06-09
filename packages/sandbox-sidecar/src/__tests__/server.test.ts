@@ -91,7 +91,7 @@ async function startServer(opts?: {
   const { readdirSync } = await import("fs");
   const { mkdir, rm } = await import("fs/promises");
   const { join: joinPath } = await import("path");
-  const { randomUUID } = await import("crypto");
+  const { createHash, randomUUID, timingSafeEqual } = await import("crypto");
 
   async function readLimited(stream: ReadableStream, max: number): Promise<string> {
     const reader = stream.getReader();
@@ -116,8 +116,9 @@ async function startServer(opts?: {
 
   async function handleExec(req: Request): Promise<Response> {
     if (AUTH_TOKEN) {
-      const authHeader = req.headers.get("Authorization");
-      if (authHeader !== `Bearer ${AUTH_TOKEN}`) {
+      const got = createHash("sha256").update(req.headers.get("Authorization") ?? "").digest();
+      const want = createHash("sha256").update(`Bearer ${AUTH_TOKEN}`).digest();
+      if (!timingSafeEqual(got, want)) {
         return Response.json({ error: "Unauthorized" }, { status: 401 });
       }
     }

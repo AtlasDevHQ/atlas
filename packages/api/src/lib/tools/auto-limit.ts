@@ -37,6 +37,33 @@ function consumeQuoted(
   return -1;
 }
 
+const isTagStart = (ch: string | undefined): boolean =>
+  ch !== undefined &&
+  ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_");
+const isTagCont = (ch: string | undefined): boolean =>
+  isTagStart(ch) || (ch !== undefined && ch >= "0" && ch <= "9");
+
+/**
+ * Match a PostgreSQL dollar-quote OPENING delimiter at index `i` (where
+ * `sql[i] === "$"`). Returns the full delimiter (`$$` or `$tag$`, tag =
+ * `[A-Za-z_][A-Za-z0-9_]*`) or null if the `$` doesn't open a dollar-quote.
+ *
+ * Positional parameters (`$1`, `$2`, …) never match: the tag must start with
+ * `[A-Za-z_]`, so `$` + digit (or `$` + anything-but-`$`) returns null.
+ *
+ * Linear, no regex, no slicing of the body.
+ */
+function matchDollarTag(sql: string, i: number): string | null {
+  const n = sql.length;
+  let j = i + 1; // char after the opening `$`
+  if (isTagStart(sql[j])) {
+    j++;
+    while (j < n && isTagCont(sql[j])) j++;
+  }
+  if (j < n && sql[j] === "$") return sql.slice(i, j + 1);
+  return null;
+}
+
 /**
  * Blank every region of a SQL string that could contain the word `LIMIT`
  * without it being a real LIMIT clause: string literals, quoted identifiers,
@@ -60,6 +87,11 @@ function consumeQuoted(
  *   - `--` / `#` line comments and slash-star block comments. `--` and block
  *     comments are universal (Postgres + MySQL); `#` is MySQL-only, gated on
  *     `backslashEscapes` so a Postgres `#` operator isn't mistaken for a comment.
+ *   - `$$...$$` / `$tag$...$tag$` Postgres dollar-quoted string literals — handled
+ *     unconditionally (Postgres-only and unambiguous; the syntax doesn't exist in
+ *     MySQL, so there's nothing to mis-strip there). Positional parameters
+ *     (`$1`, `$2`) are not delimiters — the tag must start with `[A-Za-z_]`, so
+ *     `$` + digit never opens a dollar-quote.
  *
  * Unterminated regions leave the remainder intact (the query is malformed and
  * cannot reach here post-AST-validation; this only guards against mis-stripping
@@ -70,13 +102,29 @@ export function stripSqlNonClauseText(
   opts?: { backslashEscapes?: boolean },
 ): string {
   // Fast path: nothing that can hold a spurious keyword.
-  if (!/['"`#]|--|\/\*/.test(sql)) return sql;
+  if (!/['"`#$]|--|\/\*/.test(sql)) return sql;
   const backslashEscapes = opts?.backslashEscapes ?? false;
   let out = "";
   let i = 0;
   const n = sql.length;
   while (i < n) {
     const c = sql[i];
+    // PostgreSQL dollar-quoted literal: $$...$$ or $tag$...$tag$. Checked first
+    // so the inner text (which may contain quotes/comments/LIMIT) is blanked
+    // wholesale. Positional params ($1, $2) fall through (matchDollarTag → null).
+    if (c === "$") {
+      const delim = matchDollarTag(sql, i);
+      if (delim) {
+        const close = sql.indexOf(delim, i + delim.length);
+        if (close === -1) {
+          out += sql.slice(i);
+          break;
+        }
+        out += delim + delim; // blanked, boundary-preserving ($$$$ or $tag$$tag$)
+        i = close + delim.length;
+        continue;
+      }
+    }
     // String literal (') or double-quoted identifier (").
     if (c === "'" || c === '"') {
       const end = consumeQuoted(sql, i, c, backslashEscapes);

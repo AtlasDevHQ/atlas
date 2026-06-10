@@ -634,6 +634,51 @@ describe("admin-openapi-datasources — spec_refresh_interval set / clear / clam
   });
 });
 
+// ── Per-install spec drift mode (#3315) ──────────────────────────────────────
+
+describe("admin-openapi-datasources — spec_drift_mode", () => {
+  it("GET detail surfaces specDriftMode (default strict when the row has no key)", async () => {
+    const body = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      specDriftMode: string;
+    };
+    expect(body.specDriftMode).toBe("strict");
+  });
+
+  it("GET detail coerces a drifted spec_drift_mode value back to strict (never a silent opt-in)", async () => {
+    configExtra = { spec_drift_mode: "yolo" };
+    const body = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {
+      specDriftMode: string;
+    };
+    expect(body.specDriftMode).toBe("strict");
+  });
+
+  it("PATCH opts into auto-refresh, writing only spec_drift_mode (never auth_value)", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specDriftMode: "auto-refresh" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { specDriftMode: string }).toMatchObject({
+      specDriftMode: "auto-refresh",
+    });
+    const update = findConfigUpdate();
+    expect(update?.[0]).toContain("jsonb_build_object('spec_drift_mode'");
+    expect(update?.[0]).not.toContain("auth_value");
+    expect(update?.[1]).toEqual([FIXTURE.owner, "ds-1", CATALOG_ID, "auto-refresh"]);
+  });
+
+  it("PATCH rejects an unknown drift mode with a 400 — no UPDATE issued", async () => {
+    const res = await adminOpenApiDatasources.request("/ds-1", {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ specDriftMode: "lenient" }),
+    });
+    expect(res.status).toBe(400);
+    expect(findConfigUpdate()).toBeUndefined();
+  });
+});
+
 describe("admin-openapi-datasources — env scope (group_id, #3044)", () => {
   it("GET detail surfaces groupId from config (null when ungrouped)", async () => {
     const ungrouped = (await (await adminOpenApiDatasources.request("/ds-1")).json()) as {

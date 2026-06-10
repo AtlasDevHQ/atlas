@@ -113,6 +113,19 @@ The interval is stored per install (it's not a secret, so it's a plain `workspac
 
 A background scheduler walks due installs on their per-install interval, re-probes the spec, and updates the cached snapshot unattended — so once you set `daily` / `weekly` / `<N>h`, the agent's view stays current without anyone clicking **Rediscover schema**. A failed scheduled probe never degrades the live snapshot.
 
+### Query-time drift recovery (`spec_drift_mode`)
+
+Both paths above are time-based. There's a third, **demand-driven** knob for the moment drift actually bites — the agent calls an `operationId` that the upstream added (or renamed to) *after* the last discovery, and the cached snapshot doesn't know it yet:
+
+| Value | Meaning |
+|-------|---------|
+| `strict` (default) | An unknown `operationId` is rejected until the next manual / scheduled rediscovery. |
+| `auto-refresh` | On an unknown `operationId`, Atlas re-probes the spec **once**, and retries the call if the fresh spec contains the operation. |
+
+In `auto-refresh` mode the re-probe runs through the exact same egress-guarded discovery path as **Rediscover schema** (SSRF guard, credential host-match gate), is **rate-limited per install** (at most one re-probe per minute, so a hallucinated `operationId` can't hammer your upstream), and **fails closed** — if the probe fails, the old snapshot stays and the call is rejected as before. If the re-probe finds **breaking** drift, the new snapshot is still adopted (the agent's valid call succeeds) but the [breaking-change alert](#breaking-change-alerts) is raised exactly as a scheduled refresh would raise it — a breaking change is never adopted silently.
+
+Set it via `PATCH /api/v1/admin/openapi-datasources/{installId}` (`{"specDriftMode": "auto-refresh"}`) or as `spec_drift_mode` on the install's `config` in `atlas.config.ts`. The default is `strict`: a re-probe is real upstream traffic triggered by agent input, so each install opts in explicitly.
+
 ### Breaking-change alerts
 
 When a **scheduled** re-discovery finds that the upstream spec **removed or retyped** something the agent relied on — an operation disappeared, an operation re-routed (method/path/auth changed) or became side-effecting, a field the agent reads or sends was removed/retyped, or a new **required** request field appeared — Atlas raises a **breaking-change alert** on the datasource card (Admin → Connections) and writes an audit-log entry (`connection.spec_drift_breaking`). The point is that you learn your upstream API changed under you *before* the agent's calls start failing.
@@ -148,6 +161,7 @@ Advanced overrides (set on the install's `config` via `atlas.config.ts`, not sur
 | `rate_limit_per_minute` | Per-operation rate limit override (default 60) |
 | `request_timeout_ms` | Per-request timeout override; must be ≤ `ATLAS_OPENAPI_TIMEOUT` (the cap), else the operation is rejected |
 | `spec_refresh_interval` | How often to auto-re-discover the spec: `off` (default) / `daily` / `weekly` / `<N>h` (1h–720h, clamped). Also settable from the **Auto-refresh** control on the datasource card. |
+| `spec_drift_mode` | Query-time drift handling: `strict` (default — unknown operations are rejected until the next rediscovery) or `auto-refresh` (re-probe once and retry when the agent hits an operation the cached spec doesn't know). See [Query-time drift recovery](#query-time-drift-recovery-spec_drift_mode). |
 
 ## Pre-wired vendor datasources
 

@@ -18,6 +18,7 @@
  */
 import type { OperationGraph, ResolvedAuth } from "./types";
 import type { RepresentationMode } from "./representation";
+import type { SpecDriftMode } from "./drift-recovery";
 import type { VendorQuirk } from "./vendor-quirk";
 
 /**
@@ -105,6 +106,18 @@ export interface RestDatasource {
    * by any escalation signal. See {@link import("./validate-rest-operation").isSideEffectingOperation}.
    */
   readonly readSafePostOperations?: ReadonlySet<string>;
+  /**
+   * How the install handles upstream spec DRIFT at query time (#3315).
+   * `strict` (the default, also when omitted) — an `operationId` absent from
+   * the cached graph is a hard `unknown-operation` reject, exactly the
+   * pre-#3315 behavior. `auto-refresh` — the `executeRestOperation` tool may
+   * trigger ONE debounced, egress-guarded re-probe (`attemptDriftRecovery`)
+   * and retry the call when the fresh graph contains the operation. Resolved
+   * from `workspace_plugins.config.spec_drift_mode` (PATCH-only, like
+   * `spec_refresh_interval`). Optional so hand-built fixtures default to the
+   * safe `strict` posture without naming the field.
+   */
+  readonly specDriftMode?: SpecDriftMode;
   /**
    * Per-install rate-limit override (calls/min) for the per-operation token
    * bucket. Omitted → {@link import("./validate-rest-operation").DEFAULT_RATE_LIMIT_PER_MINUTE}

@@ -52222,7 +52222,7 @@
         "tags": [
           "Admin — OpenAPI Datasources"
         ],
-        "summary": "Update non-secret install config (representation mode, spec refresh interval)",
+        "summary": "Update non-secret install config (representation mode, spec refresh interval, spec drift mode)",
         "parameters": [
           {
             "schema": {
@@ -52252,6 +52252,15 @@
                     "minLength": 1,
                     "description": "How often Atlas auto-refreshes the cached spec: 'off' (default, no auto-refresh), 'daily', 'weekly', or a custom '<N>h' interval in hours (clamped to 1–720h / 30 days). Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
                     "example": "daily"
+                  },
+                  "specDriftMode": {
+                    "type": "string",
+                    "enum": [
+                      "strict",
+                      "auto-refresh"
+                    ],
+                    "description": "How the agent handles an operationId missing from the cached spec: 'strict' (default) rejects until a manual/scheduled rediscover; 'auto-refresh' re-probes the upstream spec once (rate-limited per install) and retries when the operation now exists. Breaking spec changes still raise the drift alert — they are never adopted silently.",
+                    "example": "auto-refresh"
                   },
                   "groupId": {
                     "type": [

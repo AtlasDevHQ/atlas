@@ -138,6 +138,10 @@ export type RediscoveryResult =
       // a record just built by `buildSpecDiffRecord` always has a `currentProbedAt`,
       // so `summarizeSpecDiffRecord` can't actually return null on this path.
       readonly drift: SpecDiffSummary | null;
+      // The freshly-normalized graph the probe built — carried so the #3315
+      // drift-recovery path can retry the agent's call against it without a
+      // second `buildOperationGraph` pass over the snapshot it just persisted.
+      readonly graph: OperationGraph;
     }
   | { readonly kind: "decrypt_failed" }
   | { readonly kind: "no_url" }
@@ -222,7 +226,7 @@ export async function performRediscovery(
   // Diff against the PRIOR snapshot still in `config` (pre-update). A first-ever
   // discovery / unparseable prior records a baseline (`diff: null`).
   const diffRecord = buildSpecDiffRecord(config, graph, snapshot.probedAt, installId);
-  return { kind: "ok", snapshot, diffRecord, drift: summarizeSpecDiffRecord(diffRecord) };
+  return { kind: "ok", snapshot, diffRecord, drift: summarizeSpecDiffRecord(diffRecord), graph };
 }
 
 /**

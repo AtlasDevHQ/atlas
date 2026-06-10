@@ -42,6 +42,7 @@ import {
   coerceSpecRefreshInterval,
   normalizeSpecRefreshInterval,
 } from "@atlas/api/lib/openapi/spec-refresh";
+import { SPEC_DRIFT_MODES, coerceSpecDriftMode } from "@atlas/api/lib/openapi/drift-recovery";
 import { performRediscovery, persistRediscoverySnapshot } from "@atlas/api/lib/openapi/rediscover";
 import { summarizeSpecDiffRecord } from "@atlas/api/lib/openapi/diff";
 import {
@@ -88,6 +89,9 @@ function summarizeInstall(installId: string, config: Record<string, unknown> | n
     // Per-install spec-refresh interval (#2977). Fail-soft display coercion so a
     // drifted / absent value renders as the `off` default rather than undefined.
     specRefreshInterval: coerceSpecRefreshInterval(c.spec_refresh_interval),
+    // Query-time drift handling (#3315). Fail-soft to `strict` — a drifted value
+    // must never display (or act) as an opt-in to agent-triggered re-probes.
+    specDriftMode: coerceSpecDriftMode(c.spec_drift_mode),
     status,
     snapshot: snapshot
       ? {
@@ -167,7 +171,7 @@ const patchRoute = createRoute({
   method: "patch",
   path: "/{installId}",
   tags: ["Admin — OpenAPI Datasources"],
-  summary: "Update non-secret install config (representation mode, spec refresh interval)",
+  summary: "Update non-secret install config (representation mode, spec refresh interval, spec drift mode)",
   request: {
     params: z.object({ installId: z.string().min(1).openapi({ param: { name: "installId", in: "path" } }) }),
     body: {
@@ -191,6 +195,20 @@ const patchRoute = createRoute({
                     "Out-of-range positive values are clamped; unparseable values are rejected with an actionable error.",
                   example: "daily",
                 }),
+              // #3315 — query-time spec-drift handling. `strict` (default) keeps
+              // the hard unknown-operation reject; `auto-refresh` lets the agent
+              // tool trigger one debounced, egress-guarded re-probe-and-retry.
+              specDriftMode: z
+                .enum(SPEC_DRIFT_MODES)
+                .optional()
+                .openapi({
+                  description:
+                    "How the agent handles an operationId missing from the cached spec: 'strict' " +
+                    "(default) rejects until a manual/scheduled rediscover; 'auto-refresh' re-probes the " +
+                    "upstream spec once (rate-limited per install) and retries when the operation now exists. " +
+                    "Breaking spec changes still raise the drift alert — they are never adopted silently.",
+                  example: "auto-refresh",
+                }),
               // #3044 — cross-environment scope (ADR-0010). A non-empty string
               // scopes the datasource to that connection group; `null` clears the
               // assignment back to workspace-global. Omitted ⇒ left unchanged.
@@ -211,8 +229,12 @@ const patchRoute = createRoute({
               (b) =>
                 b.representationMode !== undefined ||
                 b.specRefreshInterval !== undefined ||
+                b.specDriftMode !== undefined ||
                 b.groupId !== undefined,
-              { message: "Provide representationMode, specRefreshInterval, and/or groupId." },
+              {
+                message:
+                  "Provide representationMode, specRefreshInterval, specDriftMode, and/or groupId.",
+              },
             ),
         },
       },
@@ -518,7 +540,7 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
   runHandler(c, "update openapi datasource", async () => {
     const { orgId, requestId } = c.get("orgContext");
     const { installId } = c.req.valid("param");
-    const { representationMode, specRefreshInterval, groupId } = c.req.valid("json");
+    const { representationMode, specRefreshInterval, specDriftMode, groupId } = c.req.valid("json");
     const row = await loadInstall(orgId, installId);
     if (!row) {
       return c.json({ error: "not_found", message: `No OpenAPI datasource "${installId}".`, requestId }, 404);
@@ -545,6 +567,12 @@ adminOpenApiDatasources.openapi(patchRoute, async (c) =>
       }
       updates.spec_refresh_interval = normalized.value;
       changed.specRefreshInterval = normalized.value;
+    }
+    if (specDriftMode !== undefined) {
+      // #3315 — already a member of SPEC_DRIFT_MODES via the zod enum; stored
+      // verbatim as a non-secret JSONB field, same posture as the interval.
+      updates.spec_drift_mode = specDriftMode;
+      changed.specDriftMode = specDriftMode;
     }
     if (groupId !== undefined) {
       // #3044 — assign (string) or clear (null → JSON null, read back as

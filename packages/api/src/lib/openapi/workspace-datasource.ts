@@ -43,6 +43,7 @@ import {
   isOAuthDatasourceCandidate,
   type DataCandidate,
 } from "./data-candidates";
+import { coerceSpecDriftMode } from "./drift-recovery";
 import { GITHUB_APP_SECRET_FIELDS_SCHEMA } from "@atlas/api/lib/integrations/install/github-oauth-secret-schema";
 import { getGitHubInstallationToken } from "@atlas/api/lib/github/installation-token";
 import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
@@ -521,6 +522,9 @@ function buildDatasource(
     baseUrl,
     auth,
     representationMode: coerceRepresentationMode(decrypted.representation_mode),
+    // #3315 — query-time drift handling. Fail-soft to `strict` (a malformed
+    // value must never opt the install into agent-triggered re-probes).
+    specDriftMode: coerceSpecDriftMode(decrypted.spec_drift_mode),
     writeAllowlist,
     sideEffectingOperations,
     ...(rateLimitPerMinute !== undefined ? { rateLimitPerMinute } : {}),

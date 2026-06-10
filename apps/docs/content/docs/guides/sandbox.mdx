@@ -27,7 +27,7 @@ The page adapts based on deploy mode:
 
 ## SaaS Mode — Execution Environment
 
-In SaaS mode the page is titled **Execution Environment** and presents a card grid with four sandbox providers:
+In SaaS mode the page is titled **Execution Environment** and presents a card grid with five sandbox providers:
 
 ### Atlas Cloud Sandbox
 
@@ -64,6 +64,27 @@ Bring your own Daytona account for cloud-hosted development sandboxes.
 - **API URL** (optional) — Custom API endpoint (defaults to `https://api.daytona.io`)
 
 Validated against the Daytona health endpoint before saving.
+
+### Railway
+
+Bring your own Railway account for ephemeral Railway microVMs (via the
+[`@useatlas/railway-sandbox`](https://github.com/AtlasDevHQ/atlas/tree/main/plugins/railway-sandbox) plugin).
+
+**Credentials:**
+- **API Token** — Railway API token
+- **Environment ID** — The Railway environment sandboxes are created in
+
+Validated against the Railway GraphQL API before saving (the token must be able
+to see the given environment).
+
+<Callout type="warn">
+Railway sandboxes cannot block outbound network egress — Railway has no
+deny-all network mode, so explore commands can reach the internet. The plugin
+always uses Railway's `ISOLATED` mode (never `PRIVATE`) and reports
+`networkIsolation: false` honestly. Suitable for single-tenant deployments
+that accept this trade-off; not for multi-tenant use. Railway also caps
+sandboxes per environment (10 Trial/Free, 50 Hobby, 100 Pro/Enterprise).
+</Callout>
 
 ### Connect / Disconnect Flow
 
@@ -176,7 +197,7 @@ All endpoints require admin authentication.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/admin/sandbox/status` | Get sandbox configuration, available backends, and connected providers |
-| `POST` | `/api/v1/admin/sandbox/connect/{provider}` | Validate and save provider credentials (vercel, e2b, daytona) |
+| `POST` | `/api/v1/admin/sandbox/connect/{provider}` | Validate and save provider credentials (vercel, e2b, daytona, railway) |
 | `DELETE` | `/api/v1/admin/sandbox/disconnect/{provider}` | Remove provider credentials |
 | `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND` | Set workspace sandbox backend |
 | `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_URL` | Set workspace sidecar URL |

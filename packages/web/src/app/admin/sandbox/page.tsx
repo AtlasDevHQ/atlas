@@ -52,12 +52,13 @@ import {
   RotateCcw,
   Save,
   Server,
+  TrainFront,
   Trash2,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
-const SandboxProviderKeySchema = z.enum(["vercel", "e2b", "daytona"]);
+const SandboxProviderKeySchema = z.enum(["vercel", "e2b", "daytona", "railway"]);
 type SandboxProviderKey = z.infer<typeof SandboxProviderKeySchema>;
 
 const SandboxBackendSchema = z.object({
@@ -127,6 +128,16 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
     fields: [
       { key: "apiKey", label: "API Key", type: "password", placeholder: "daytona_...", required: true },
       { key: "apiUrl", label: "API URL", type: "text", placeholder: "https://api.daytona.io", required: false },
+    ],
+  },
+  railway: {
+    label: "Railway",
+    description:
+      "Ephemeral Railway microVMs. Outbound network egress is not blocked — single-tenant use only.",
+    icon: TrainFront,
+    fields: [
+      { key: "token", label: "API Token", type: "password", placeholder: "Railway API token", required: true },
+      { key: "environmentId", label: "Environment ID", type: "text", placeholder: "Environment UUID", required: true },
     ],
   },
 };

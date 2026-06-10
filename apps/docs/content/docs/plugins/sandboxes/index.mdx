@@ -1,6 +1,6 @@
 ---
 title: Sandbox Plugins
-description: Isolate code execution with E2B, Daytona, nsjail, sidecar, and Vercel sandbox plugins.
+description: Isolate code execution with E2B, Daytona, Railway, nsjail, sidecar, and Vercel sandbox plugins.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -8,7 +8,7 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 
 Sandbox plugins provide isolation backends for the `explore` tool. They run user-initiated commands (file listing, grep, cat) in restricted environments to prevent unauthorized filesystem or network access. Each plugin implements the `AtlasSandboxPlugin` interface from `@useatlas/plugin-sdk`.
 
-All five plugins follow the same pattern: validate config via a Zod schema, create an isolated environment, upload semantic layer files, execute commands, and clean up. The differences are in the isolation technology and where the sandbox runs.
+All six plugins follow the same pattern: validate config via a Zod schema, create an isolated environment, upload semantic layer files, execute commands, and clean up. The differences are in the isolation technology and where the sandbox runs.
 
 ## Available Sandbox Plugins
 
@@ -16,6 +16,7 @@ All five plugins follow the same pattern: validate config via a Zod schema, crea
   <Card title="Vercel Sandbox" href="/plugins/sandboxes/vercel-sandbox" description="Firecracker microVM on Vercel infrastructure (priority 100)" />
   <Card title="E2B" href="/plugins/sandboxes/e2b" description="Managed Firecracker microVM via E2B cloud (priority 90)" />
   <Card title="Daytona" href="/plugins/sandboxes/daytona" description="Managed cloud sandbox via Daytona SDK (priority 85)" />
+  <Card title="Railway" href="/plugins/sandboxes/railway" description="Ephemeral Railway microVM — no egress blocking (priority 80)" />
   <Card title="nsjail" href="/plugins/sandboxes/nsjail" description="Linux namespace sandbox on same host (priority 75)" />
   <Card title="Sidecar" href="/plugins/sandboxes/sidecar" description="HTTP-isolated container alongside API (priority 50)" />
 </Cards>
@@ -29,6 +30,7 @@ When multiple sandbox backends are available, Atlas selects the highest-priority
 | [Vercel](/plugins/sandboxes/vercel-sandbox) | 100 | Firecracker microVM | Vercel infrastructure |
 | [E2B](/plugins/sandboxes/e2b) | 90 | Firecracker microVM (managed) | E2B cloud |
 | [Daytona](/plugins/sandboxes/daytona) | 85 | Managed cloud sandbox | Daytona cloud |
+| [Railway](/plugins/sandboxes/railway) | 80 | Ephemeral microVM (no egress blocking) | Railway cloud |
 | [nsjail](/plugins/sandboxes/nsjail) | 75 | Linux namespace sandbox | Same host (Linux only) |
 | **Plugin default** | **60** | `SANDBOX_DEFAULT_PRIORITY` | -- |
 | [Sidecar](/plugins/sandboxes/sidecar) | 50 | HTTP-isolated container | Separate container |
@@ -44,9 +46,10 @@ Use this decision tree to pick the right sandbox for your deployment:
 
 1. **Deploying on Vercel?** Use [Vercel Sandbox](/plugins/sandboxes/vercel-sandbox) -- it is auto-selected as the highest-priority backend and requires no configuration.
 2. **Want managed cloud isolation with no infrastructure?** Use [E2B](/plugins/sandboxes/e2b) or [Daytona](/plugins/sandboxes/daytona). Both provide ephemeral VMs/sandboxes via a managed API.
-3. **Self-hosting on Linux with root access?** Use [nsjail](/plugins/sandboxes/nsjail) -- strong namespace isolation with no external dependencies beyond the nsjail binary.
-4. **Self-hosting on Docker/Railway without root?** Use [Sidecar](/plugins/sandboxes/sidecar) -- deploy the sidecar container alongside the API. No special kernel capabilities needed.
-5. **Local development?** `bun run db:up` starts a sidecar container alongside Postgres -- no plugin needed.
+3. **Already deploying on Railway, single-tenant, and OK with open egress?** Use [Railway](/plugins/sandboxes/railway) -- same-vendor microVMs, but note that outbound network egress cannot be blocked.
+4. **Self-hosting on Linux with root access?** Use [nsjail](/plugins/sandboxes/nsjail) -- strong namespace isolation with no external dependencies beyond the nsjail binary.
+5. **Self-hosting on Docker/Railway without root?** Use [Sidecar](/plugins/sandboxes/sidecar) -- deploy the sidecar container alongside the API. No special kernel capabilities needed.
+6. **Local development?** `bun run db:up` starts a sidecar container alongside Postgres -- no plugin needed.
 
 ## Combining Multiple Sandboxes
 

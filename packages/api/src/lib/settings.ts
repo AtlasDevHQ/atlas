@@ -266,7 +266,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "Sandbox Backend",
     description:
       "Sandbox backend for explore/Python tool isolation. " +
-      "Valid values: vercel-sandbox, sidecar, e2b-sandbox, daytona-sandbox, or a registered plugin ID.",
+      "Valid values: vercel-sandbox, sidecar, e2b-sandbox, daytona-sandbox, railway-sandbox, or a registered plugin ID.",
     type: "string",
     envVar: "ATLAS_SANDBOX_BACKEND",
     scope: "workspace",

@@ -1,0 +1,79 @@
+---
+title: Railway
+description: Ephemeral Railway microVM isolation via the Railway Sandboxes SDK.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Ephemeral microVM isolation via [Railway Sandboxes](https://docs.railway.com/sandboxes). If you already deploy Atlas on Railway, this keeps the explore tool's isolation on the same vendor — native `RAILWAY_API_TOKEN` / `RAILWAY_ENVIRONMENT_ID` credentials, same billing. Semantic layer files are uploaded into the sandbox and commands are executed remotely.
+
+<Callout type="warn">
+**No deny-all egress mode.** Railway sandboxes offer only `ISOLATED` (outbound internet via NAT) and `PRIVATE` (private network + outbound internet) modes — neither blocks outbound traffic, so explore commands can reach the internet. The plugin always uses `ISOLATED` (never `PRIVATE`) and reports `networkIsolation: false`. Suitable for single-tenant / self-hosted deployments that accept this trade-off; **not for multi-tenant use** until Railway ships a no-egress mode.
+</Callout>
+
+## Installation
+
+```bash
+bun add @useatlas/railway-sandbox railway
+```
+
+## Configuration
+
+```typescript
+// atlas.config.ts
+import { defineConfig } from "@atlas/api/lib/config";
+import { railwaySandboxPlugin } from "@useatlas/railway-sandbox";
+
+export default defineConfig({
+  plugins: [
+    // On Railway, RAILWAY_API_TOKEN / RAILWAY_ENVIRONMENT_ID are picked up
+    // automatically — railwaySandboxPlugin({}) is enough.
+    railwaySandboxPlugin({
+      token: process.env.RAILWAY_API_TOKEN!,
+      environmentId: process.env.RAILWAY_ENVIRONMENT_ID!,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `token` | `string` | No | `RAILWAY_API_TOKEN` env | Railway API token |
+| `environmentId` | `string` | No | `RAILWAY_ENVIRONMENT_ID` env | Environment sandboxes are created in |
+| `idleTimeoutMinutes` | `number` | No | `10` | Idle backstop (1–120); Railway destroys the sandbox after this much idle time even if cleanup never runs |
+| `timeoutSec` | `number` | No | `30` | Per-command timeout in seconds |
+
+## Security
+
+| Property | Value |
+|----------|-------|
+| Network isolation | **No** (outbound egress cannot be blocked) |
+| Filesystem isolation | Yes (ephemeral per sandbox) |
+| Unprivileged execution | No |
+| Priority | 80 |
+
+Railway ephemeral microVM in `ISOLATED` mode. Filesystem is ephemeral and isolated, but outbound internet egress is not blocked — Railway has no deny-all network mode.
+
+## Troubleshooting
+
+### `railway` package not found
+
+The `railway` package is an optional peer dependency, lazy-loaded at runtime. Install it explicitly: `bun add railway`.
+
+### Per-environment sandbox cap
+
+Railway caps sandboxes per environment — 10 (Trial/Free), 50 (Hobby), 100 (Pro/Enterprise); only `CREATING`/`RUNNING` sandboxes count. Atlas caches one explore backend per semantic root, so exceeding the cap fails sandbox creation with an error that names the cap. Destroy idle sandboxes, wait for idle timeouts to reap them, or upgrade the plan.
+
+### File upload travels over exec
+
+The Railway SDK has no bulk file API ("use exec or SSH"), so the semantic tree is uploaded as base64 inside batched `exec` commands. Very large semantic layers take correspondingly longer to upload at backend creation.
+
+### Beta SDK
+
+Railway Sandboxes are in Priority Boarding and the SDK "may change in breaking ways between releases". Soak in a staging environment before relying on it.
+
+### Health check API costs
+
+Health checks create (and destroy) a real sandbox with a 1-minute idle backstop. Avoid calling at high frequency — creations bill and count toward the per-environment cap.

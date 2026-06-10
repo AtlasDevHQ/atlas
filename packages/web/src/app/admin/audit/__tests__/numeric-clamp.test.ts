@@ -4,6 +4,7 @@ import {
   isIntInRange,
   RETENTION_CUSTOM_DAYS_MIN,
   RETENTION_HARD_DELETE_DELAY_MIN,
+  RETENTION_INPUT_MAX,
 } from "../numeric-clamp";
 
 describe("isIntInRange", () => {
@@ -32,6 +33,17 @@ describe("isIntInRange", () => {
     expect(isIntInRange("400", 1, 365)).toBe(false);
     expect(isIntInRange("365", 1, 365)).toBe(true);
   });
+
+  test("rejects pasted huge values above the integer cap", () => {
+    // Number("999…9" × 24) is 1e+24 — still an integer per Number.isInteger,
+    // so without the cap it sails through here and dies at the DB column.
+    expect(isIntInRange("999999999999999999999999", 7, RETENTION_INPUT_MAX)).toBe(
+      false,
+    );
+    expect(isIntInRange(String(RETENTION_INPUT_MAX), 7, RETENTION_INPUT_MAX)).toBe(
+      true,
+    );
+  });
 });
 
 describe("clampIntInput", () => {
@@ -58,6 +70,12 @@ describe("clampIntInput", () => {
 
   test("clamps above an optional maximum", () => {
     expect(clampIntInput("400", 1, 365)).toBe("365");
+  });
+
+  test("clamps pasted huge values to the integer cap, never scientific notation", () => {
+    expect(clampIntInput("999999999999999999999999", 7, RETENTION_INPUT_MAX)).toBe(
+      String(RETENTION_INPUT_MAX),
+    );
   });
 });
 

@@ -147,8 +147,29 @@ describe.each(panels)("$name numeric clamp", ({ Component, customDaysLabel, dela
 
     fireEvent.change(customDays, { target: { value: "3" } });
     expect(save.disabled).toBe(true);
+    // The "clearly errored" half of the contract: the field is marked
+    // invalid and the inline hint is visible, not just the Save gate.
+    expect(customDays.getAttribute("aria-invalid")).toBe("true");
+    expect(
+      screen.getByText("Enter a whole number of at least 7 days."),
+    ).toBeTruthy();
 
     fireEvent.change(customDays, { target: { value: "30" } });
+    expect(save.disabled).toBe(false);
+    expect(customDays.getAttribute("aria-invalid")).toBeNull();
+    expect(
+      screen.queryByText("Enter a whole number of at least 7 days."),
+    ).toBeNull();
+  });
+
+  test("a pasted huge value gates save, then blur clamps it to the integer cap", async () => {
+    const { customDays, save } = await renderPanel();
+
+    fireEvent.change(customDays, { target: { value: "999999999999999999999999" } });
+    expect(save.disabled).toBe(true);
+
+    fireEvent.blur(customDays);
+    expect(customDays.value).toBe("2147483647");
     expect(save.disabled).toBe(false);
   });
 

@@ -12,10 +12,25 @@
  * concern, not form-state bookkeeping.
  */
 
-/** Server contract: `retentionDays` must be an integer ≥ 7 when set. */
+/**
+ * Server contract: `retentionDays` must be an integer ≥ 7 when set.
+ * Mirrors `MIN_RETENTION_DAYS` in `ee/src/audit/retention.ts` — the
+ * frontend can't import `@atlas/ee`, so keep the two in sync by hand.
+ */
 export const RETENTION_CUSTOM_DAYS_MIN = 7;
-/** Server contract: `hardDeleteDelayDays` must be an integer ≥ 0. */
+/**
+ * Server contract: `hardDeleteDelayDays` must be an integer ≥ 0.
+ * Mirrors the `hardDeleteDelay < 0` check in `ee/src/audit/retention.ts`.
+ */
 export const RETENTION_HARD_DELETE_DELAY_MIN = 0;
+/**
+ * Upper bound for both fields: the Postgres `integer` column cap. Without
+ * it, a pasted huge value "clamps" to scientific notation (`1e+24`), passes
+ * the integer checks here *and* server-side, and dies at the DB as an
+ * opaque error. Server validation has no explicit max, so the column type
+ * is the real contract.
+ */
+export const RETENTION_INPUT_MAX = 2_147_483_647;
 
 /**
  * Parse a numeric-input string. Returns null for empty/whitespace or

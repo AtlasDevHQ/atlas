@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -10,6 +10,7 @@ import {
   isIntInRange,
   RETENTION_CUSTOM_DAYS_MIN,
   RETENTION_HARD_DELETE_DELAY_MIN,
+  RETENTION_INPUT_MAX,
 } from "./numeric-clamp";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
@@ -94,10 +95,11 @@ function numericFieldErrors(v: RetentionFormValues) {
   return {
     customDays:
       v.preset === "custom" &&
-      !isIntInRange(v.customDays, RETENTION_CUSTOM_DAYS_MIN),
+      !isIntInRange(v.customDays, RETENTION_CUSTOM_DAYS_MIN, RETENTION_INPUT_MAX),
     hardDeleteDelay: !isIntInRange(
       v.hardDeleteDelay,
       RETENTION_HARD_DELETE_DELAY_MIN,
+      RETENTION_INPUT_MAX,
     ),
   };
 }
@@ -155,6 +157,14 @@ export function RetentionPanel() {
       method: "POST",
     });
 
+  // Clear the transient save-success banner on unmount so a state update
+  // doesn't land on a disposed component if the user navigates away mid-flash.
+  useEffect(() => {
+    if (!saveSuccess) return;
+    const handle = setTimeout(() => setSaveSuccess(false), 3000);
+    return () => clearTimeout(handle);
+  }, [saveSuccess]);
+
   async function handleSave() {
     setSaveSuccess(false);
     // Defense-in-depth: the Save button is disabled while a numeric field
@@ -166,8 +176,8 @@ export function RetentionPanel() {
     }
     const result = await form.save();
     if (result.ok) {
+      // Banner auto-clears via the unmount-safe effect above.
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
     }
   }
 
@@ -234,17 +244,15 @@ export function RetentionPanel() {
     );
   }
 
-  if (!form.fields) {
+  if (!form.fields || !form.values) {
     return <LoadingState message="Loading retention settings..." />;
   }
-  const { fields } = form;
+  const { fields, values } = form;
 
   // Out-of-range numeric drafts gate Save; blur clamps them back in range.
-  const fieldErrors = numericFieldErrors({
-    preset: fields.preset.value,
-    customDays: fields.customDays.value,
-    hardDeleteDelay: fields.hardDeleteDelay.value,
-  });
+  // `values` IS the field set — don't rebuild it from `fields`, or a field
+  // added to `numericFieldErrors` silently goes unchecked here.
+  const fieldErrors = numericFieldErrors(values);
   const numericFieldsInvalid = fieldErrors.customDays || fieldErrors.hardDeleteDelay;
 
   return (
@@ -317,7 +325,11 @@ export function RetentionPanel() {
                   onChange={(e) => fields.customDays.set(e.target.value)}
                   onBlur={(e) =>
                     fields.customDays.set(
-                      clampIntInput(e.target.value, RETENTION_CUSTOM_DAYS_MIN),
+                      clampIntInput(
+                        e.target.value,
+                        RETENTION_CUSTOM_DAYS_MIN,
+                        RETENTION_INPUT_MAX,
+                      ),
                     )
                   }
                   aria-invalid={fieldErrors.customDays || undefined}
@@ -341,7 +353,11 @@ export function RetentionPanel() {
                 onChange={(e) => fields.hardDeleteDelay.set(e.target.value)}
                 onBlur={(e) =>
                   fields.hardDeleteDelay.set(
-                    clampIntInput(e.target.value, RETENTION_HARD_DELETE_DELAY_MIN),
+                    clampIntInput(
+                      e.target.value,
+                      RETENTION_HARD_DELETE_DELAY_MIN,
+                      RETENTION_INPUT_MAX,
+                    ),
                   )
                 }
                 aria-invalid={fieldErrors.hardDeleteDelay || undefined}

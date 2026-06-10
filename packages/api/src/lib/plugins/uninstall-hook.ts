@@ -35,11 +35,22 @@
  * own external state (per-workspace OAuth grant vs operator-config
  * credential), which is the correct per-credential semantics.
  *
+ * Each hook runs against a host-side deadline
+ * ({@link ON_UNINSTALL_HOOK_TIMEOUT_MS}) so a hung plugin HTTP call can
+ * never hang the admin DELETE indefinitely; a timeout is recorded as a
+ * failure entry. After the candidates run, the loader entry for
+ * `(workspaceId, catalogId)` is evicted — step 1 warms (and caches) a
+ * credentialed instance, and without the evict the marketplace DELETE
+ * route would leak that socket-holding instance until process restart.
+ * (`WorkspaceInstaller.uninstall` evicts again afterwards; evicting an
+ * absent key is a no-op, so the double-evict is harmless.)
+ *
  * Failure contract: NOTHING in here throws. Builder failures, missing
- * rows, and hook throws are logged (`log.warn` with plugin id +
- * workspaceId) and reported in the returned summary — the caller's
- * install-row removal always proceeds. Callers still wrap the call
- * defensively so even a defect here can't abort an uninstall.
+ * rows, hook throws, hook timeouts, and evict failures are logged
+ * (`log.warn` with plugin id + workspaceId) and — except for evict —
+ * reported in the returned summary; the caller's install-row removal
+ * always proceeds. Callers still wrap the call defensively so even a
+ * defect here can't abort an uninstall.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -49,13 +60,25 @@ import { plugins, type PluginLike, type PluginRegistry, type PluginType } from "
 
 const log = createLogger("plugins:uninstall-hook");
 
-const PLUGIN_TYPES: readonly PluginType[] = [
-  "datasource",
-  "context",
-  "interaction",
-  "action",
-  "sandbox",
-];
+// Record-keyed so a new `PluginType` union member is a compile error here
+// (a missing key fails tsc) instead of a silently-unmatched `<slug>-<type>`
+// candidate id.
+const PLUGIN_TYPE_MAP: Record<PluginType, true> = {
+  datasource: true,
+  context: true,
+  interaction: true,
+  action: true,
+  sandbox: true,
+};
+const PLUGIN_TYPES = Object.keys(PLUGIN_TYPE_MAP) as readonly PluginType[];
+
+/**
+ * Host-side deadline for a single plugin's `onUninstall` hook. A plugin
+ * whose revocation HTTP call hangs (dead upstream, no client timeout)
+ * must not hang the admin DELETE — the hook is raced against this
+ * deadline and a timeout is recorded as a failure entry.
+ */
+export const ON_UNINSTALL_HOOK_TIMEOUT_MS = 15_000;
 
 export interface InvokeOnUninstallArgs {
   /** Workspace the plugin is being uninstalled from. */
@@ -65,9 +88,11 @@ export interface InvokeOnUninstallArgs {
   /** `plugin_catalog.slug` when known (e.g. `jira`). */
   readonly catalogSlug?: string | null;
   /** Test seam — defaults to the process-wide `lazyPluginLoader`. */
-  readonly loader?: Pick<LazyPluginLoader, "hasBuilder" | "getOrInstantiate">;
+  readonly loader?: Pick<LazyPluginLoader, "hasBuilder" | "getOrInstantiate" | "evict">;
   /** Test seam — defaults to the process-wide `plugins` registry. */
   readonly registry?: Pick<PluginRegistry, "get">;
+  /** Test seam — per-hook deadline; defaults to {@link ON_UNINSTALL_HOOK_TIMEOUT_MS}. */
+  readonly hookTimeoutMs?: number;
 }
 
 export interface OnUninstallInvocationResult {
@@ -88,6 +113,7 @@ export async function invokeOnUninstallHook(
   const { workspaceId, catalogId, catalogSlug } = args;
   const loader = args.loader ?? lazyPluginLoader;
   const registry = args.registry ?? plugins;
+  const hookTimeoutMs = args.hookTimeoutMs ?? ON_UNINSTALL_HOOK_TIMEOUT_MS;
 
   const invoked: string[] = [];
   const failures: Array<{ pluginId: string; error: string }> = [];
@@ -130,8 +156,35 @@ export async function invokeOnUninstallHook(
 
   for (const plugin of candidates) {
     if (typeof plugin.onUninstall !== "function") continue;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await plugin.onUninstall(workspaceId);
+      const hookPromise = Promise.resolve(plugin.onUninstall(workspaceId));
+      // A hook that rejects AFTER the deadline already recorded the
+      // timeout would otherwise surface as an unhandled rejection.
+      hookPromise.catch((err: unknown) => {
+        // intentionally swallowed: the race below is the reporting path —
+        // this branch only matters for a post-timeout late rejection.
+        log.debug(
+          {
+            pluginId: plugin.id,
+            workspaceId,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "onUninstall hook rejected (possibly after the host deadline)",
+        );
+      });
+      await Promise.race([
+        hookPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(`onUninstall timed out after ${hookTimeoutMs}ms`),
+              ),
+            hookTimeoutMs,
+          );
+        }),
+      ]);
       invoked.push(plugin.id);
       log.info(
         { pluginId: plugin.id, workspaceId, catalogId },
@@ -142,9 +195,30 @@ export async function invokeOnUninstallHook(
       failures.push({ pluginId: plugin.id, error: message });
       log.warn(
         { pluginId: plugin.id, workspaceId, catalogId, err: message },
-        "onUninstall hook threw — external subscriptions may be orphaned; uninstall proceeds",
+        "onUninstall hook threw or timed out — external subscriptions may be orphaned; uninstall proceeds",
       );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
+  }
+
+  // Step 1 above may have warmed (and cached) a credentialed,
+  // socket-holding instance. `WorkspaceInstaller.uninstall` evicts after
+  // calling this helper, but the marketplace DELETE route does not — so
+  // evict here, covering both paths with one seam. Evicting an absent
+  // key is a no-op inside the loader, so the installer's later evict is
+  // a harmless double-evict.
+  try {
+    await loader.evict(workspaceId, catalogId);
+  } catch (err) {
+    log.warn(
+      {
+        workspaceId,
+        catalogId,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      "onUninstall: loader evict failed — a stale plugin instance may persist until process restart; uninstall proceeds",
+    );
   }
 
   return { invoked, failures };
@@ -162,16 +236,19 @@ interface InstallRowForUninstall extends Record<string, unknown> {
  * the route's `DELETE … RETURNING` so the hook sees the row (and the
  * plugin its credentials) while they still exist.
  *
- * Never throws: a lookup failure (or a missing row — the route's own 404
- * path) logs and returns without invoking anything.
+ * Never throws: a missing row (the route's own 404 path) logs and
+ * returns an empty summary; a lookup FAILURE additionally pushes a
+ * failure entry (keyed by the installation id) so callers can
+ * distinguish "nothing to do" from "could not even look".
  */
 export async function invokeOnUninstallHookForInstallRow(args: {
   readonly workspaceId: string;
   readonly installationId: string;
   /** Test seam — defaults to `internalQuery`. */
   readonly queryFn?: <T = unknown>(sql: string, params?: unknown[]) => Promise<T[]>;
-  readonly loader?: Pick<LazyPluginLoader, "hasBuilder" | "getOrInstantiate">;
+  readonly loader?: Pick<LazyPluginLoader, "hasBuilder" | "getOrInstantiate" | "evict">;
   readonly registry?: Pick<PluginRegistry, "get">;
+  readonly hookTimeoutMs?: number;
 }): Promise<OnUninstallInvocationResult> {
   const { workspaceId, installationId } = args;
   const queryFn = args.queryFn ?? internalQuery;
@@ -187,15 +264,18 @@ export async function invokeOnUninstallHookForInstallRow(args: {
       [installationId, workspaceId],
     );
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     log.warn(
-      {
-        workspaceId,
-        installationId,
-        err: err instanceof Error ? err.message : String(err),
-      },
+      { workspaceId, installationId, err: message },
       "onUninstall: install-row lookup failed — skipping hook (uninstall proceeds)",
     );
-    return { invoked: [], failures: [] };
+    // Keyed by installation id (we never resolved a plugin id) so the
+    // summary is distinguishable from the empty "nothing to do" shape —
+    // mirrors the builder-failure branch in `invokeOnUninstallHook`.
+    return {
+      invoked: [],
+      failures: [{ pluginId: installationId, error: message }],
+    };
   }
 
   if (rows.length === 0) {
@@ -209,5 +289,6 @@ export async function invokeOnUninstallHookForInstallRow(args: {
     catalogSlug: rows[0].slug,
     ...(args.loader ? { loader: args.loader } : {}),
     ...(args.registry ? { registry: args.registry } : {}),
+    ...(args.hookTimeoutMs !== undefined ? { hookTimeoutMs: args.hookTimeoutMs } : {}),
   });
 }

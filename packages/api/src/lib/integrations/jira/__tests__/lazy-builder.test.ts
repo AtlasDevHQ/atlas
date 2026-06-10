@@ -373,3 +373,177 @@ describe("createJiraLazyBuilder — session retry", () => {
     expect(mockEvict).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// onUninstall (#3188) — workspace-attributed webhook revocation
+// ---------------------------------------------------------------------------
+
+describe("createJiraLazyBuilder — onUninstall", () => {
+  const WEBHOOK_URL = `https://api.atlassian.com/ex/jira/${CLOUDID}/rest/api/3/webhook`;
+
+  async function buildInstance(): Promise<JiraPluginInstance> {
+    mockReadCredentialBundle.mockResolvedValueOnce(HAPPY_BUNDLE);
+    const build = builderMod.createJiraLazyBuilder(BUILDER_CONFIG);
+    return (await build({
+      workspaceId: WSID,
+      catalogId: CATALOG_ID,
+      config: { cloudid: CLOUDID, status: "ok" },
+    })) as JiraPluginInstance;
+  }
+
+  it("revokes ONLY webhooks whose callback URL carries this workspace's marker — never unattributable ones", async () => {
+    const instance = await buildInstance();
+
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            values: [
+              // Attributable: Atlas marker for THIS workspace.
+              { id: 1, url: `https://app.useatlas.dev/hooks/jira?atlas_workspace_id=${WSID}` },
+              // Another workspace's marker — must survive.
+              { id: 2, url: "https://app.useatlas.dev/hooks/jira?atlas_workspace_id=ws-other" },
+              // No url field (out-of-band registration) — must survive.
+              { id: 3 },
+              // Unparseable callback URL — must survive (fail-closed).
+              { id: 4, url: "not a url" },
+              // No marker at all — must survive.
+              { id: 5, url: "https://example.com/some-other-tooling" },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(new Response("{}", { status: 202 })),
+    );
+
+    await instance.onUninstall!(WSID);
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [listUrl, listInit] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(listUrl).toBe(WEBHOOK_URL);
+    expect(listInit.method).toBe("GET");
+    expect((listInit.headers as Record<string, string>).Authorization).toBe(
+      "Bearer access-token-from-bundle",
+    );
+    const [deleteUrl, deleteInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect(deleteUrl).toBe(WEBHOOK_URL);
+    expect(deleteInit.method).toBe("DELETE");
+    // The attribution gate: only id 1 — ids 2–5 are not ours to touch.
+    expect(JSON.parse(String(deleteInit.body))).toEqual({ webhookIds: [1] });
+  });
+
+  it("issues NO delete when nothing is attributable to this workspace (zero-revocation is the correct outcome)", async () => {
+    const instance = await buildInstance();
+
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            values: [
+              { id: 2, url: "https://app.useatlas.dev/hooks/jira?atlas_workspace_id=ws-other" },
+              { id: 3 },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    await instance.onUninstall!(WSID);
+
+    // List only — no DELETE call follows.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns cleanly when the token cannot see the dynamic webhook API (403)", async () => {
+    const instance = await buildInstance();
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(new Response("{}", { status: 403 })),
+    );
+    await instance.onUninstall!(WSID);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws on a failing list call so the host records the failure", async () => {
+    const instance = await buildInstance();
+    mockFetch.mockImplementation(() =>
+      Promise.resolve(new Response("{}", { status: 500 })),
+    );
+    await expect(instance.onUninstall!(WSID)).rejects.toThrow(/HTTP 500/);
+  });
+
+  it("throws on a failing revocation so the host records the orphaned subscriptions", async () => {
+    const instance = await buildInstance();
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            values: [
+              { id: 7, url: `https://app.useatlas.dev/hooks/jira?atlas_workspace_id=${WSID}` },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+    mockFetch.mockImplementationOnce(() =>
+      Promise.resolve(new Response("{}", { status: 500 })),
+    );
+    await expect(instance.onUninstall!(WSID)).rejects.toThrow(/may still be delivering/);
+  });
+
+  it("refreshes the token and retries once when the list call 401s", async () => {
+    const instance = await buildInstance();
+
+    let calls = 0;
+    mockFetch.mockImplementation((input: unknown) => {
+      calls++;
+      const url = String(input);
+      if (calls === 1) {
+        return Promise.resolve(new Response("Unauthorized", { status: 401 }));
+      }
+      if (url.endsWith("/rest/api/3/webhook") && calls === 2) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ values: [] }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+
+    await instance.onUninstall!(WSID);
+
+    expect(mockRefreshJiraToken).toHaveBeenCalledTimes(1);
+    // Retry carries the refreshed token.
+    const [, retryInit] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect((retryInit.headers as Record<string, string>).Authorization).toBe(
+      "Bearer refreshed-access-token",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isJiraWebhookAttributableToWorkspace — attribution gate unit pins
+// ---------------------------------------------------------------------------
+
+describe("isJiraWebhookAttributableToWorkspace", () => {
+  it("attributes only an exact workspace-id marker match", () => {
+    const fn = builderMod.isJiraWebhookAttributableToWorkspace;
+    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
+    expect(fn(`https://x.dev/h?other=1&atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
+    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-2`, "ws-1")).toBe(false);
+    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-11`, "ws-1")).toBe(false);
+    expect(fn("https://x.dev/h", "ws-1")).toBe(false);
+  });
+
+  it("fails closed on missing / non-string / unparseable URLs", () => {
+    const fn = builderMod.isJiraWebhookAttributableToWorkspace;
+    expect(fn(undefined, "ws-1")).toBe(false);
+    expect(fn(null, "ws-1")).toBe(false);
+    expect(fn(42, "ws-1")).toBe(false);
+    expect(fn("", "ws-1")).toBe(false);
+    expect(fn("not a url at all", "ws-1")).toBe(false);
+  });
+});

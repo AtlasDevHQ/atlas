@@ -1015,7 +1015,10 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       // the credentials inside its config) to still exist. The helper
       // resolves (catalog_id, slug) from the installation row itself and
       // never throws; the catch wrapper is defense-in-depth so even a
-      // defect in the helper can't abort the uninstall.
+      // defect in the helper can't abort the uninstall. Best-effort and
+      // non-atomic by design: if the row DELETE below fails after the hook
+      // ran, the external webhooks are already revoked — acceptable, since
+      // a re-install re-registers them.
       yield* Effect.promise(async () => {
         try {
           await invokeOnUninstallHookForInstallRow({

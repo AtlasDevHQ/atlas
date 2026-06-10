@@ -635,7 +635,11 @@ export default definePlugin({
 });
 ```
 
-The invocation is **best-effort**: a thrown error is logged by the host (with the plugin id and `workspaceId`) and the uninstall proceeds — never rely on `onUninstall` for load-bearing cleanup. Resolution: the host invokes the hook on the per-workspace instance built by its lazy loader (marketplace/SaaS installs), and on any globally-registered plugin whose `id` equals the uninstalled catalog entry's slug, catalog id, or `<slug>-<type>` (the bundled-plugin naming convention, e.g. `jira-action` for catalog slug `jira`). See `plugins/jira` for a working reference implementation that revokes Jira dynamic webhook subscriptions.
+**The attribution rule — never revoke what you can't attribute to the uninstalling workspace.** The `metadata` filter in the example above is load-bearing, not decoration: the credential your hook authenticates with may also see subscriptions registered by other workspaces or by out-of-band tooling, and the hook fires on *one* workspace's uninstall. Only delete subscriptions you can positively attribute to both your plugin **and** the `workspaceId` being uninstalled — a metadata workspace tag (Stripe), a recorded subscription id persisted at registration time, or a workspace marker embedded in the callback URL for platforms with no metadata field (e.g. Jira: register with `?atlas_workspace_id=<id>` on the callback URL and filter on it at revocation). A hook that finds nothing attributable should revoke nothing — that is the correct outcome, not a bug.
+
+The invocation is **best-effort**: a thrown error is logged by the host (with the plugin id and `workspaceId`) and the uninstall proceeds — never rely on `onUninstall` for load-bearing cleanup. Each invocation also runs against a host-side deadline (15 seconds); a hook that overruns it is recorded as a failure and the uninstall proceeds. Resolution: the host invokes the hook on the per-workspace instance built by its lazy loader (marketplace/SaaS installs), and on any globally-registered plugin whose `id` equals the uninstalled catalog entry's slug, catalog id, or `<slug>-<type>` (the bundled-plugin naming convention, e.g. `jira-action` for catalog slug `jira`). See the per-workspace Jira instance in `packages/api/src/lib/integrations/jira/lazy-builder.ts` for a working reference implementation that revokes only workspace-attributed Jira dynamic webhook subscriptions.
+
+**Coverage carve-outs (be honest with your expectations):** the hook fires on the two plugin-uninstall paths only. It is **not** invoked on datasource disconnects (`WorkspaceInstaller.uninstallDatasource` and the OpenAPI datasource delete route remove datasource installs directly), on onboarding's pre-delete reset, or on a workspace purge — external state tied to those paths is not revoked through this hook.
 
 ### Implementing `teardown()`
 
@@ -886,7 +890,7 @@ async teardown() {
 
 ### `onUninstall(workspaceId)`
 
-Called when a workspace uninstalls the plugin — before the install row and credential stores are removed, so the plugin can still authenticate against the external platform. Use it to revoke webhook subscriptions, OAuth grants, or other per-workspace external state. Best-effort: a thrown error is logged and the uninstall proceeds. See the [Uninstall Contract](#implementing-onuninstall) for details and a full example.
+Called when a workspace uninstalls the plugin — before the install row and credential stores are removed, so the plugin can still authenticate against the external platform. Use it to revoke webhook subscriptions, OAuth grants, or other per-workspace external state — but only state you can positively attribute to the uninstalling workspace; never bulk-delete everything the credential can see. Best-effort: a thrown error is logged and the uninstall proceeds (host-side deadline: 15s). Not invoked on datasource disconnects or a workspace purge. See the [Uninstall Contract](#implementing-onuninstall) for details and a full example.
 
 ```typescript
 async onUninstall(workspaceId: string) {

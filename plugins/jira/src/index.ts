@@ -107,74 +107,32 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
       },
 
       /**
-       * Per-workspace uninstall hook (#3188) — reference implementation.
+       * Per-workspace uninstall hook (#3188) — intentional no-op.
        *
-       * Revokes the dynamic webhook subscriptions this integration
-       * registered with Jira (`/rest/api/3/webhook`) so Jira stops
-       * delivering events for a workspace that no longer has the plugin
-       * installed. Invoked by the host BEFORE the install row and
-       * credentials are removed, so the Basic-auth credential is still
-       * valid here.
+       * This plugin instance is deployment-wide (one operator-config
+       * Basic credential, id `jira-action`) and is invoked whenever ANY
+       * workspace uninstalls the jira catalog entry. It never registers
+       * webhooks — so there is nothing here that can be positively
+       * attributed to (a) this plugin AND (b) the uninstalling
+       * workspace.
        *
-       * Failure semantics: a 403/404 from the list endpoint means this
-       * credential owns no dynamic webhooks (or the deployment doesn't
-       * expose the API) — nothing to revoke, return cleanly. Any other
-       * non-OK response throws; the host logs the failure (plugin id +
-       * workspaceId) and the uninstall proceeds regardless.
+       * The hard rule: never revoke an external subscription you cannot
+       * attribute to both. An earlier draft listed `/rest/api/3/webhook`
+       * and DELETEd every returned id — that nuked subscriptions created
+       * out-of-band by other tooling sharing the bot credential, for
+       * every workspace, on any single workspace's uninstall. If this
+       * plugin ever starts registering webhooks, tag each registration
+       * with a workspace marker (e.g. a `?atlas_workspace_id=<id>` query
+       * param on the callback URL, since Jira webhooks carry no metadata
+       * field) and revoke only the ids that carry the uninstalling
+       * workspace's marker — see the correctly-scoped per-workspace
+       * reference implementation in
+       * `packages/api/src/lib/integrations/jira/lazy-builder.ts`.
        */
       async onUninstall(workspaceId: string): Promise<void> {
-        const auth = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
-        const base = config.host.replace(/\/$/, "");
-        const headers = {
-          Authorization: `Basic ${auth}`,
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        };
-
-        const listResponse = await fetch(`${base}/rest/api/3/webhook`, {
-          method: "GET",
-          headers,
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (listResponse.status === 403 || listResponse.status === 404) {
-          log?.info(
-            { workspaceId, status: listResponse.status },
-            "JIRA onUninstall: credential owns no dynamic webhooks — nothing to revoke",
-          );
-          return;
-        }
-        if (!listResponse.ok) {
-          throw new Error(
-            `JIRA onUninstall: webhook list returned HTTP ${listResponse.status}`,
-          );
-        }
-
-        const parsed = (await listResponse.json()) as {
-          values?: Array<{ id: number }>;
-        };
-        const webhookIds = (parsed.values ?? []).map((v) => v.id);
-        if (webhookIds.length === 0) {
-          log?.info(
-            { workspaceId },
-            "JIRA onUninstall: no webhook subscriptions registered — nothing to revoke",
-          );
-          return;
-        }
-
-        const deleteResponse = await fetch(`${base}/rest/api/3/webhook`, {
-          method: "DELETE",
-          headers,
-          body: JSON.stringify({ webhookIds }),
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (!deleteResponse.ok) {
-          throw new Error(
-            `JIRA onUninstall: webhook revocation returned HTTP ${deleteResponse.status} — ${webhookIds.length} subscription(s) may still be delivering`,
-          );
-        }
-        log?.info(
-          { workspaceId, revoked: webhookIds.length },
-          "JIRA onUninstall: revoked webhook subscriptions",
+        log?.debug(
+          { workspaceId },
+          "JIRA onUninstall: no-op — this operator-config instance registers no per-workspace webhooks, so there is nothing attributable to revoke",
         );
       },
 

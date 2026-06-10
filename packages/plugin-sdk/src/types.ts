@@ -419,10 +419,23 @@ export interface AtlasPluginBase<TConfig = undefined> {
    * delivering events to a workspace that no longer has the plugin
    * installed, and Atlas cannot revoke it for you.
    *
+   * Attribution rule: NEVER revoke an external subscription you cannot
+   * positively attribute to the uninstalling workspace (a recorded id,
+   * a metadata workspace tag, or a workspace marker in the callback
+   * URL). The hook may fire against a credential shared with other
+   * workspaces or out-of-band tooling — bulk-deleting everything the
+   * credential can see destroys state that isn't yours.
+   *
    * Best-effort contract: a thrown error is logged by the host (with
    * plugin id + workspaceId) and does NOT abort the uninstall — the
-   * install-row removal proceeds. Don't rely on this hook for
+   * install-row removal proceeds; each invocation also runs against a
+   * host-side deadline (15s), so don't rely on this hook for
    * load-bearing cleanup.
+   *
+   * Coverage carve-outs: the hook does NOT fire on datasource
+   * disconnects (datasource installs are removed via the
+   * datasource-specific delete paths) or on a workspace purge — only
+   * the two plugin-uninstall paths above invoke it.
    *
    * Resolution: the host invokes the hook on the per-workspace plugin
    * instance built by its lazy loader (SaaS / marketplace installs), and

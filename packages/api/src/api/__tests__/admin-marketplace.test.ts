@@ -65,6 +65,7 @@ const mockInvokeOnUninstallHookForInstallRow: Mock<
 mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
   invokeOnUninstallHook: mock(async () => ({ invoked: [], failures: [] })),
   invokeOnUninstallHookForInstallRow: mockInvokeOnUninstallHookForInstallRow,
+  ON_UNINSTALL_HOOK_TIMEOUT_MS: 15_000,
 }));
 
 // F-42: admin-marketplace.ts imports errorMessage from audit/error-scrub.

@@ -25,6 +25,10 @@ import { Pool } from "pg";
 import { runMigrations } from "@atlas/api/lib/db/migrate";
 import { MANAGED_AUTH_MIGRATIONS } from "@atlas/api/lib/db/internal";
 import { buildFormInstallUpsertSql } from "../persist-form-install";
+import {
+  SALESFORCE_CATALOG_ID,
+  SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL,
+} from "../salesforce-oauth-handler";
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL;
 const describeIfPg = TEST_DB_URL ? describe : describe.skip;
@@ -149,5 +153,48 @@ describeIfPg("form-install spine: workspace_plugins upsert against the live sche
     expect(rows).toHaveLength(1);
     expect(rows[0]?.pillar).toBe("chat");
     expect(rows[0]?.config.chat_id).toBe(`${stamp}-rotated`);
+  }, PG_TEST_TIMEOUT_MS);
+
+  it("salesforce legacy-pillar converge heals a pre-0096 datasource row so the upsert dedupes (#3362)", async () => {
+    const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+    const ws = `ws-sf-converge-${stamp}`;
+    const legacyId = `legacy-${stamp}`;
+
+    // The legacy shape: pre-0096 Salesforce OAuth installs carry
+    // pillar='datasource' with the install_id = catalog_id sentinel
+    // (0092 backfill; migration 0103 converged only the catalog row).
+    await pool.query(
+      `INSERT INTO workspace_plugins
+         (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
+       VALUES ($1, $2, $3, $3, 'datasource',
+               '{"instance_url":"https://old.my.salesforce.com"}'::jsonb, true, NOW())`,
+      [legacyId, ws, SALESFORCE_CATALOG_ID],
+    );
+
+    // Converge runs on every OAuth callback — twice here to pin
+    // idempotence (the NOT EXISTS guard makes the second run a no-op
+    // rather than a singleton-index violation).
+    await pool.query(SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL, [ws, SALESFORCE_CATALOG_ID]);
+    await pool.query(SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL, [ws, SALESFORCE_CATALOG_ID]);
+
+    // The handler's upsert must now take the conflict path against the
+    // converged row: same id back, ONE row total, fresh config.
+    const upsert = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
+      `cand-${stamp}`,
+      ws,
+      SALESFORCE_CATALOG_ID,
+      JSON.stringify({ instance_url: "https://new.my.salesforce.com" }),
+    ]);
+    expect(upsert.rows[0]?.id).toBe(legacyId);
+
+    const rows = await pool.query<{ id: string; pillar: string; iu: string }>(
+      `SELECT id, pillar, config->>'instance_url' AS iu
+         FROM workspace_plugins
+        WHERE workspace_id = $1 AND catalog_id = $2`,
+      [ws, SALESFORCE_CATALOG_ID],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]?.pillar).toBe("action");
+    expect(rows.rows[0]?.iu).toBe("https://new.my.salesforce.com");
   }, PG_TEST_TIMEOUT_MS);
 });

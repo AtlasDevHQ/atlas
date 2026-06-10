@@ -38,17 +38,23 @@ import type { WorkspaceId } from "@useatlas/types";
 // ADR-0003/0005 ordering — install row FIRST, credential bundle SECOND.
 const callOrder: string[] = [];
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  async (sql: string, params?: unknown[]): Promise<unknown[]> => {
-    if (sql.includes("INSERT INTO workspace_plugins")) {
-      callOrder.push("workspace_plugins.insert");
-      // The post-0092 upsert RETURNING id — echo the candidate id back
-      // like real Postgres does on a fresh INSERT.
-      return [{ id: params?.[0] }];
-    }
-    return [];
-  },
-);
+// Default implementation: record call ordering + echo the candidate id
+// back for the post-0092 upsert's RETURNING id, like real Postgres on a
+// fresh INSERT. Single source of truth for both the module-level mock
+// and the beforeEach reset.
+const defaultInternalQueryImpl = async (
+  sql: string,
+  params?: unknown[],
+): Promise<unknown[]> => {
+  if (sql.includes("INSERT INTO workspace_plugins")) {
+    callOrder.push("workspace_plugins.insert");
+    return [{ id: params?.[0] }];
+  }
+  return [];
+};
+
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
+  mock(defaultInternalQueryImpl);
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
@@ -153,15 +159,7 @@ beforeEach(() => {
   setKeys("v1:test-key-one");
   callOrder.length = 0;
   mockInternalQuery.mockClear();
-  mockInternalQuery.mockImplementation(
-    async (sql: string, params?: unknown[]): Promise<unknown[]> => {
-      if (sql.includes("INSERT INTO workspace_plugins")) {
-        callOrder.push("workspace_plugins.insert");
-        return [{ id: params?.[0] }];
-      }
-      return [];
-    },
-  );
+  mockInternalQuery.mockImplementation(defaultInternalQueryImpl);
   mockSaveCredentialBundle.mockClear();
   mockSaveCredentialBundle.mockImplementation(async () => {
     callOrder.push("integration_credentials.save");
@@ -341,6 +339,27 @@ describe("JiraOAuthInstallHandler.handleCallback — happy path", () => {
     );
     const config = JSON.parse(configJson as string);
     expect(config.cloudid).toBe("FIRST-CLOUD");
+  });
+
+  it("uses the existing row's id from RETURNING on a re-install (conflict path)", async () => {
+    // ON CONFLICT ... DO UPDATE RETURNING yields the EXISTING row's id,
+    // not the freshly-generated candidate — InstallRecord.id must carry
+    // the persisted one or downstream lookups chase a phantom id.
+    mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+      if (sql.includes("INSERT INTO workspace_plugins")) {
+        callOrder.push("workspace_plugins.insert");
+        return [{ id: "existing-row-id-456" }];
+      }
+      return [];
+    });
+
+    const handler = new JiraOAuthInstallHandler(JIRA_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "jira");
+
+    const result = await handler.handleCallback("code", stateToken);
+
+    expect(result).not.toBeNull();
+    expect(result!.installRecord.id).toBe("existing-row-id-456");
   });
 });
 

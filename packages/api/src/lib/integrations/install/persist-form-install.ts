@@ -170,6 +170,121 @@ export function parseFormInstall<T>(schema: ParseableFormSchema<T>, formData: un
   return parsed.data;
 }
 
+export interface PersistInstallRecordParams {
+  readonly workspaceId: WorkspaceId;
+  /** Full `plugin_catalog.id` row key ("catalog:salesforce"). */
+  readonly catalogId: string;
+  /** Human-readable Platform name composed into log lines ("Salesforce", "GitHub App"). */
+  readonly displayName: string;
+  /** The caller's own logger so install lines stay attributable per slug. */
+  readonly log: InstallLogger;
+  /**
+   * Config exactly as persisted to `workspace_plugins.config` — already
+   * encrypted where applicable. Encryption stays with the caller
+   * ({@link persistFormInstall} runs the keyset gate + field encryption;
+   * the OAuth handlers persist operator-visible metadata only, their
+   * credentials live in `integration_credentials` per ADR-0005).
+   */
+  readonly config: Record<string, unknown>;
+  /** Candidate row-id generator (handlers inject a fixed one in tests). */
+  readonly newId?: () => string;
+  /** Default `true` — see {@link buildFormInstallUpsertSql}. */
+  readonly updateConfigOnConflict?: boolean;
+  /** Default `'action'` — see {@link buildFormInstallUpsertSql}. */
+  readonly pillar?: "chat" | "action";
+  /** Override for the persist-failure log line. */
+  readonly persistFailureMessage?: string;
+  /**
+   * Extra structured fields merged into the persist-failure log
+   * (per-Platform breadcrumbs like `instanceUrl` / `cloudid`). Never
+   * secrets.
+   */
+  readonly failureLogFields?: Record<string, unknown>;
+}
+
+/**
+ * The persistence core shared by the form spine and the OAuth install
+ * handlers: `workspace_plugins` upsert → returned-id invariant →
+ * unconditional lazy-loader evict. Returns the PERSISTED row id — on a
+ * re-install the upsert's RETURNING yields the existing row's id, not
+ * the freshly-generated candidate, so callers must use this value (not
+ * their own UUID) for {@link InstallRecord.id}.
+ *
+ * Extracted from {@link persistFormInstall} (#3362 review) so the four
+ * OAuth handlers (GitHub App, GitHub single-tenant, Salesforce, Jira)
+ * stop carrying their own copies of the upsert + invariant — the drift
+ * class that produced #3357 in the first place.
+ *
+ * The evict is unconditional: a re-install that rotates credentials
+ * must never keep serving a stale cached PluginLike built from the
+ * pre-upsert config, and `lazyPluginLoader.evict` is a free no-op when
+ * nothing is cached. Fire-and-forget: a failed evict warns but never
+ * fails the install (the DB row is already persisted).
+ */
+export async function persistInstallRecord(params: PersistInstallRecordParams): Promise<string> {
+  const {
+    workspaceId,
+    catalogId,
+    displayName,
+    log,
+    config,
+    newId = () => crypto.randomUUID(),
+    updateConfigOnConflict = true,
+    pillar = "action",
+    persistFailureMessage = `Failed to persist ${displayName} install record — aborting install`,
+    failureLogFields = {},
+  } = params;
+
+  const candidateId = newId();
+  let persistedId: string;
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      buildFormInstallUpsertSql(updateConfigOnConflict, pillar),
+      [candidateId, workspaceId, catalogId, JSON.stringify(config)],
+    );
+    const returned = rows[0]?.id;
+    if (typeof returned !== "string" || returned.length === 0) {
+      // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
+      // by Postgres to emit exactly one row on both paths. Reaching
+      // here means a structural anomaly (driver rewrite, RLS hiding
+      // the result, partial-index miss). Falling back to candidateId
+      // would silently return a WRONG id on the DO UPDATE path
+      // (persisted row keeps its existing id, not the candidate),
+      // and downstream lookups would create phantom updates. Fail
+      // loud so the operator sees the invariant break with a 500.
+      log.error(
+        { workspaceId, candidateId },
+        "workspace_plugins upsert returned no id — Postgres invariant violation",
+      );
+      throw new Error(
+        "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
+      );
+    }
+    persistedId = returned;
+  } catch (err) {
+    log.error(
+      {
+        workspaceId,
+        ...failureLogFields,
+        err: err instanceof Error ? err.message : String(err),
+      },
+      persistFailureMessage,
+    );
+    throw err;
+  }
+
+  try {
+    await lazyPluginLoader.evict(workspaceId, catalogId);
+  } catch (err) {
+    log.warn(
+      { workspaceId, err: err instanceof Error ? err.message : String(err) },
+      `LazyPluginLoader.evict threw after ${displayName} install upsert — DB row is persisted anyway`,
+    );
+  }
+
+  return persistedId;
+}
+
 export interface PersistFormInstallParams {
   readonly workspaceId: WorkspaceId;
   /**
@@ -262,52 +377,19 @@ export async function persistFormInstall(
     ? encryptSecretFields(config, secretFieldsSchema)
     : config;
 
-  // ── 3. Upsert workspace_plugins ─────────────────────────────────────
+  // ── 3+4. Upsert workspace_plugins + lazy-loader evict ───────────────
   // ON CONFLICT updates config (unless the handler opted out) + flips
   // enabled back to true so a re-install after disconnect lands cleanly.
-  const candidateId = newId();
-  let persistedId: string;
-  try {
-    const rows = await internalQuery<{ id: string }>(
-      buildFormInstallUpsertSql(updateConfigOnConflict),
-      [candidateId, workspaceId, catalogId, JSON.stringify(persistedConfig)],
-    );
-    const returned = rows[0]?.id;
-    if (typeof returned !== "string" || returned.length === 0) {
-      // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
-      // by Postgres to emit exactly one row on both paths. Reaching
-      // here means a structural anomaly (driver rewrite, RLS hiding
-      // the result, partial-index miss). Falling back to candidateId
-      // would silently return a WRONG id on the DO UPDATE path
-      // (persisted row keeps its existing id, not the candidate),
-      // and downstream lookups would create phantom updates. Fail
-      // loud so the operator sees the invariant break with a 500.
-      log.error(
-        { workspaceId, candidateId },
-        "workspace_plugins upsert returned no id — Postgres invariant violation",
-      );
-      throw new Error(
-        "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-      );
-    }
-    persistedId = returned;
-  } catch (err) {
-    log.error(
-      { workspaceId, err: err instanceof Error ? err.message : String(err) },
-      persistFailureMessage,
-    );
-    throw err;
-  }
-
-  // ── 4. Evict any cached PluginLike for this (workspace, catalog) ────
-  try {
-    await lazyPluginLoader.evict(workspaceId, catalogId);
-  } catch (err) {
-    log.warn(
-      { workspaceId, err: err instanceof Error ? err.message : String(err) },
-      `LazyPluginLoader.evict threw after ${displayName} install upsert — DB row is persisted anyway`,
-    );
-  }
+  const persistedId = await persistInstallRecord({
+    workspaceId,
+    catalogId,
+    displayName,
+    log,
+    config: persistedConfig,
+    newId,
+    updateConfigOnConflict,
+    persistFailureMessage,
+  });
 
   return { id: persistedId, workspaceId, catalogId: catalogSlug };
 }

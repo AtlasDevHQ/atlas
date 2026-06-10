@@ -49,13 +49,12 @@
  * @see docs/adr/0005-integration-credentials-table.md
  */
 
-import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
-import { buildFormInstallUpsertSql } from "./persist-form-install";
+import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -457,7 +456,6 @@ export class JiraOAuthInstallHandler implements OAuthPlatformInstallHandler {
     // UI / lazy-builder can read it without decrypting the credential
     // bundle. `status: "ok"` is the default; refresh flow flips to
     // `"reconnect_needed"` on permanent failure.
-    const candidateId = crypto.randomUUID();
     const installConfig: Record<string, unknown> = {
       cloudid,
       scopes,
@@ -465,40 +463,21 @@ export class JiraOAuthInstallHandler implements OAuthPlatformInstallHandler {
       ...(primaryResource.url ? { site_url: primaryResource.url } : {}),
       ...(primaryResource.name ? { site_name: primaryResource.name } : {}),
     };
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(buildFormInstallUpsertSql(true), [
-        candidateId,
-        workspaceId,
-        JIRA_CATALOG_ID,
-        JSON.stringify(installConfig),
-      ]);
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        log.error(
-          { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        {
-          workspaceId,
-          cloudid,
-          err: err instanceof Error ? err.message : String(err),
-        },
+    const persistedId = await persistInstallRecord({
+      workspaceId,
+      catalogId: JIRA_CATALOG_ID,
+      displayName: "Jira",
+      log,
+      config: installConfig,
+      persistFailureMessage:
         "Failed to write workspace_plugins install record — aborting Jira install",
-      );
-      throw err;
-    }
+      failureLogFields: { cloudid },
+    });
 
     const installRecord: InstallRecord = {
       // On a re-install the upsert RETURNING yields the existing row's
-      // id, not the freshly-generated candidate — use the persisted one.
+      // id, not a freshly-generated candidate — persistInstallRecord
+      // returns the persisted one.
       id: persistedId,
       workspaceId,
       catalogId: JIRA_SLUG,

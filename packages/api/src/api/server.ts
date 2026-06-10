@@ -97,7 +97,7 @@ if (config.plugins?.length) {
 
   // Build plugin context — gives plugins typed access to Atlas internals
   const { connections } = await import("@atlas/api/lib/db/connection");
-  const { ToolRegistry } = await import("@atlas/api/lib/tools/registry");
+  const { ToolRegistry, defaultRegistry } = await import("@atlas/api/lib/tools/registry");
   const { hasInternalDB, internalQuery, getInternalDB } = await import(
     "@atlas/api/lib/db/internal"
   );
@@ -218,6 +218,25 @@ if (config.plugins?.length) {
   }
 
   if (pluginToolRegistry.size > 0) {
+    // #3326 — a plugin tool that reuses a core tool's name is silently
+    // shadowed: the chat route merges with `ToolRegistry.merge(base, plugin)`
+    // and the base (core) entry wins, so the plugin tool never executes.
+    // Known instance: static-url `querySalesforce` (plugin) vs the OAuth
+    // `querySalesforce` (core, gated on SALESFORCE_CLIENT_ID/SECRET) — in
+    // single-tenant self-host the OAuth tool returns `no_workspace` on every
+    // call, making static Salesforce unqueryable. The configurations are meant
+    // to be mutually exclusive, so surface the conflict loudly at boot instead
+    // of resolving it.
+    for (const name of ToolRegistry.shadowedNames(defaultRegistry, pluginToolRegistry)) {
+      const remediation =
+        name === "querySalesforce"
+          ? " Unset SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET to use the static-url Salesforce tool, or remove the static salesforce:// datasource to use the OAuth per-workspace tool."
+          : "";
+      log.error(
+        { tool: name },
+        `Plugin tool "${name}" is shadowed by a core tool with the same name — the core tool takes precedence and the plugin tool will never run.${remediation}`,
+      );
+    }
     pluginToolRegistry.freeze();
     setPluginTools(pluginToolRegistry);
   }

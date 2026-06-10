@@ -140,6 +140,32 @@ describe("ToolRegistry", () => {
       registry.register({ name: "b", description: "B", tool: makeTool("b") })
     ).toThrow();
   });
+
+  describe("shadowedNames", () => {
+    it("returns overlay names that collide with base (the entries merge() would shadow)", () => {
+      const base = new ToolRegistry();
+      base.register({ name: "querySalesforce", description: "OAuth", tool: makeTool("a") });
+      base.register({ name: "executeSQL", description: "SQL", tool: makeTool("b") });
+      const overlay = new ToolRegistry();
+      overlay.register({ name: "querySalesforce", description: "Static", tool: makeTool("c") });
+      overlay.register({ name: "queryElasticsearch", description: "ES", tool: makeTool("d") });
+
+      expect(ToolRegistry.shadowedNames(base, overlay)).toEqual(["querySalesforce"]);
+      // merge() must agree: the base entry wins for the shadowed name.
+      const merged = ToolRegistry.merge(base, overlay);
+      expect(merged.get("querySalesforce")!.description).toBe("OAuth");
+      expect(merged.get("queryElasticsearch")!.description).toBe("ES");
+    });
+
+    it("returns empty when there is no collision", () => {
+      const base = new ToolRegistry();
+      base.register({ name: "executeSQL", description: "SQL", tool: makeTool("a") });
+      const overlay = new ToolRegistry();
+      overlay.register({ name: "querySalesforce", description: "Static", tool: makeTool("b") });
+      expect(ToolRegistry.shadowedNames(base, overlay)).toEqual([]);
+      expect(ToolRegistry.shadowedNames(base, new ToolRegistry())).toEqual([]);
+    });
+  });
 });
 
 describe("defaultRegistry", () => {

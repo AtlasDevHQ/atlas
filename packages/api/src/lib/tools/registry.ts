@@ -76,6 +76,20 @@ export class ToolRegistry {
   }
 
   /**
+   * Names registered in BOTH `base` and `overlay`. Under {@link merge} the
+   * base entry wins, so each of these overlay entries is shadowed — it will
+   * never be invoked. Pure helper; the caller surfaces the conflict (boot-time
+   * operator warning in `api/server.ts`, #3326).
+   */
+  static shadowedNames(base: ToolRegistry, overlay: ToolRegistry): string[] {
+    const shadowed: string[] = [];
+    for (const [name] of overlay.entries()) {
+      if (base.get(name)) shadowed.push(name);
+    }
+    return shadowed;
+  }
+
+  /**
    * Create a new registry by merging one or more registries on top of a base.
    * Entries in later registries take precedence. The returned registry is
    * **unfrozen** — the caller should freeze it when ready.
@@ -211,12 +225,14 @@ defaultRegistry.register({
 // tool (`@useatlas/salesforce`, registered via the plugin context in self-host
 // static-url mode) needs a `salesforce://` url but NOT the OAuth env, so the two
 // modes don't normally coexist and this env gate keeps them apart.
-// KNOWN EDGE: if an operator sets BOTH a static url AND the OAuth env, both
-// register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives this
-// base entry precedence, so the OAuth tool shadows the static one (and in
-// single-tenant self-host returns `no_workspace`). Tracked as a follow-up; the
-// expected deployments are mutually exclusive. Like sendEmail / createLinearIssue,
-// the workspace + install gate runs at execute time.
+// KNOWN EDGE (#3326): if an operator sets BOTH a static url AND the OAuth env,
+// both register name `querySalesforce`; `ToolRegistry.merge(base, plugin)` gives
+// this base entry precedence, so the OAuth tool shadows the static one (and in
+// single-tenant self-host returns `no_workspace` on every call). The expected
+// deployments are mutually exclusive, so the conflict is surfaced — not
+// resolved: `api/server.ts` detects it at boot via `ToolRegistry.shadowedNames`
+// and logs an operator-facing error naming the remediation. Like sendEmail /
+// createLinearIssue, the workspace + install gate runs at execute time.
 if (isSalesforceOAuthConfigured()) {
   defaultRegistry.register({
     name: "querySalesforce",

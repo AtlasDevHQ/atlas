@@ -399,16 +399,25 @@ describe("createJiraLazyBuilder — onUninstall", () => {
         new Response(
           JSON.stringify({
             values: [
-              // Attributable: Atlas marker for THIS workspace.
-              { id: 1, url: `https://app.useatlas.dev/hooks/jira?atlas_workspace_id=${WSID}` },
+              // Attributable: Atlas callback path + marker for THIS workspace.
+              {
+                id: 1,
+                url: `https://api.useatlas.dev/api/v1/integrations/jira/webhooks?atlas_workspace_id=${WSID}`,
+              },
               // Another workspace's marker — must survive.
-              { id: 2, url: "https://app.useatlas.dev/hooks/jira?atlas_workspace_id=ws-other" },
+              {
+                id: 2,
+                url: "https://api.useatlas.dev/api/v1/integrations/jira/webhooks?atlas_workspace_id=ws-other",
+              },
               // No url field (out-of-band registration) — must survive.
               { id: 3 },
               // Unparseable callback URL — must survive (fail-closed).
               { id: 4, url: "not a url" },
               // No marker at all — must survive.
               { id: 5, url: "https://example.com/some-other-tooling" },
+              // THIS workspace's marker on a NON-Atlas callback path —
+              // must survive: the param alone doesn't prove ownership.
+              { id: 6, url: `https://example.com/intercept?atlas_workspace_id=${WSID}` },
             ],
           }),
           { status: 200 },
@@ -431,7 +440,7 @@ describe("createJiraLazyBuilder — onUninstall", () => {
     const [deleteUrl, deleteInit] = mockFetch.mock.calls[1] as [string, RequestInit];
     expect(deleteUrl).toBe(WEBHOOK_URL);
     expect(deleteInit.method).toBe("DELETE");
-    // The attribution gate: only id 1 — ids 2–5 are not ours to touch.
+    // The attribution gate: only id 1 — ids 2–6 are not ours to touch.
     expect(JSON.parse(String(deleteInit.body))).toEqual({ webhookIds: [1] });
   });
 
@@ -443,7 +452,10 @@ describe("createJiraLazyBuilder — onUninstall", () => {
         new Response(
           JSON.stringify({
             values: [
-              { id: 2, url: "https://app.useatlas.dev/hooks/jira?atlas_workspace_id=ws-other" },
+              {
+                id: 2,
+                url: "https://api.useatlas.dev/api/v1/integrations/jira/webhooks?atlas_workspace_id=ws-other",
+              },
               { id: 3 },
             ],
           }),
@@ -482,7 +494,10 @@ describe("createJiraLazyBuilder — onUninstall", () => {
         new Response(
           JSON.stringify({
             values: [
-              { id: 7, url: `https://app.useatlas.dev/hooks/jira?atlas_workspace_id=${WSID}` },
+              {
+                id: 7,
+                url: `https://api.useatlas.dev/api/v1/integrations/jira/webhooks?atlas_workspace_id=${WSID}`,
+              },
             ],
           }),
           { status: 200 },
@@ -529,13 +544,26 @@ describe("createJiraLazyBuilder — onUninstall", () => {
 // ---------------------------------------------------------------------------
 
 describe("isJiraWebhookAttributableToWorkspace", () => {
-  it("attributes only an exact workspace-id marker match", () => {
+  // Any origin works — ownership is proven by the path, not the host.
+  // (Lazy: builderMod is loaded after the module mocks are installed.)
+  const atlasBase = () => `https://x.dev${builderMod.JIRA_WEBHOOK_CALLBACK_PATH_PREFIX}`;
+
+  it("attributes only an exact workspace-id marker match on the Atlas callback path", () => {
     const fn = builderMod.isJiraWebhookAttributableToWorkspace;
-    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
-    expect(fn(`https://x.dev/h?other=1&atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
-    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-2`, "ws-1")).toBe(false);
-    expect(fn(`https://x.dev/h?atlas_workspace_id=ws-11`, "ws-1")).toBe(false);
-    expect(fn("https://x.dev/h", "ws-1")).toBe(false);
+    expect(fn(`${atlasBase()}?atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
+    expect(fn(`${atlasBase()}?other=1&atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
+    expect(fn(`${atlasBase()}/jira?atlas_workspace_id=ws-1`, "ws-1")).toBe(true);
+    expect(fn(`${atlasBase()}?atlas_workspace_id=ws-2`, "ws-1")).toBe(false);
+    expect(fn(`${atlasBase()}?atlas_workspace_id=ws-11`, "ws-1")).toBe(false);
+    expect(fn(atlasBase(), "ws-1")).toBe(false);
+  });
+
+  it("rejects the workspace marker on a non-Atlas callback path (ownership half)", () => {
+    const fn = builderMod.isJiraWebhookAttributableToWorkspace;
+    expect(fn("https://x.dev/h?atlas_workspace_id=ws-1", "ws-1")).toBe(false);
+    expect(fn("https://example.com/intercept?atlas_workspace_id=ws-1", "ws-1")).toBe(false);
+    // Prefix must match on a path-segment boundary, not as a substring.
+    expect(fn(`${atlasBase()}-evil?atlas_workspace_id=ws-1`, "ws-1")).toBe(false);
   });
 
   it("fails closed on missing / non-string / unparseable URLs", () => {

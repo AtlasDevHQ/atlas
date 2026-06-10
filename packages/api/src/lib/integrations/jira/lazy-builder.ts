@@ -252,15 +252,31 @@ function stringOrName(value: unknown, key: string = "name"): string | undefined 
 export const JIRA_WEBHOOK_WORKSPACE_PARAM = "atlas_workspace_id";
 
 /**
+ * Canonical path prefix for Atlas-registered Jira webhook callback URLs
+ * — the *Atlas ownership* half of attribution (the workspace param is
+ * the other half). Any future registration path MUST build callback
+ * URLs as `<public API base>` + this prefix; revocation refuses to
+ * touch a webhook whose callback path lives anywhere else, even when it
+ * carries the workspace param. A path prefix (not an origin check) is
+ * deliberate: the public origin differs per region (api / api-eu /
+ * api-apac) and operators can rebrand it, which would strand
+ * previously-registered webhooks; the path is uniform and stable.
+ */
+export const JIRA_WEBHOOK_CALLBACK_PATH_PREFIX = "/api/v1/integrations/jira/webhooks";
+
+/**
  * Whether a Jira dynamic webhook's callback URL positively attributes
- * the subscription to (a) Atlas and (b) the given workspace — i.e. it
- * carries `?atlas_workspace_id=<workspaceId>`.
+ * the subscription to (a) Atlas — its path is under
+ * {@link JIRA_WEBHOOK_CALLBACK_PATH_PREFIX} — and (b) the given
+ * workspace — it carries `?atlas_workspace_id=<workspaceId>`. Both
+ * halves must hold: the workspace param alone could appear on a
+ * non-Atlas callback and must not cause revocation.
  *
- * Fail-closed by design: a missing / non-string / unparseable URL, or a
- * marker for a different workspace, all return `false`. Revocation must
- * NEVER delete a subscription it cannot attribute — webhooks created
- * out-of-band (other tooling, another workspace, a human in the Jira
- * admin UI) are not ours to touch.
+ * Fail-closed by design: a missing / non-string / unparseable URL, a
+ * non-Atlas callback path, or a marker for a different workspace, all
+ * return `false`. Revocation must NEVER delete a subscription it cannot
+ * attribute — webhooks created out-of-band (other tooling, another
+ * workspace, a human in the Jira admin UI) are not ours to touch.
  */
 export function isJiraWebhookAttributableToWorkspace(
   callbackUrl: unknown,
@@ -275,6 +291,10 @@ export function isJiraWebhookAttributableToWorkspace(
     // attributed, so the webhook is left alone (fail-closed).
     return false;
   }
+  const isAtlasPath =
+    parsed.pathname === JIRA_WEBHOOK_CALLBACK_PATH_PREFIX ||
+    parsed.pathname.startsWith(`${JIRA_WEBHOOK_CALLBACK_PATH_PREFIX}/`);
+  if (!isAtlasPath) return false;
   return parsed.searchParams.get(JIRA_WEBHOOK_WORKSPACE_PARAM) === workspaceId;
 }
 

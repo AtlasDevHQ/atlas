@@ -3,41 +3,8 @@
  * metadata, and dataset ordering, asserted without rendering.
  */
 import { describe, it, expect } from "bun:test";
-import { shapeResult, MAX_DATA_ROWS } from "../shape-result";
-import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
-import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
-
-function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
-  return {
-    id: "task-123",
-    ownerId: "u1",
-    orgId: null,
-    name: "Daily Revenue",
-    question: "What was yesterday's revenue?",
-    cronExpression: "0 9 * * 1",
-    deliveryChannel: "email",
-    recipients: [],
-    connectionGroupId: null,
-    approvalMode: "auto",
-    enabled: true,
-    lastRunAt: null,
-    nextRunAt: null,
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-function makeResult(overrides: Partial<AgentQueryResult> = {}): AgentQueryResult {
-  return {
-    answer: "Revenue was $1M",
-    sql: ["SELECT SUM(revenue) FROM orders"],
-    data: [{ columns: ["total"], rows: [{ total: 1000000 }] }],
-    steps: 3,
-    usage: { totalTokens: 1500 },
-    ...overrides,
-  };
-}
+import { shapeResult, DEFAULT_DELIVERY_MAX_ROWS } from "../shape-result";
+import { makeTask, makeResult } from "./fixtures";
 
 function makeRows(count: number): Record<string, unknown>[] {
   return Array.from({ length: count }, (_, i) => ({ id: i }));
@@ -69,31 +36,31 @@ describe("shapeResult", () => {
   it("keeps datasets at or below the limit untruncated", () => {
     const shaped = shapeResult(
       makeTask(),
-      makeResult({ data: [{ columns: ["id"], rows: makeRows(MAX_DATA_ROWS) }] }),
+      makeResult({ data: [{ columns: ["id"], rows: makeRows(DEFAULT_DELIVERY_MAX_ROWS) }] }),
     );
-    expect(shaped.datasets[0]!.rows).toHaveLength(MAX_DATA_ROWS);
-    expect(shaped.datasets[0]!.totalRows).toBe(MAX_DATA_ROWS);
+    expect(shaped.datasets[0]!.rows).toHaveLength(DEFAULT_DELIVERY_MAX_ROWS);
+    expect(shaped.datasets[0]!.totalRows).toBe(DEFAULT_DELIVERY_MAX_ROWS);
     expect(shaped.datasets[0]!.truncated).toBe(false);
   });
 
   it("truncates datasets one row over the limit", () => {
     const shaped = shapeResult(
       makeTask(),
-      makeResult({ data: [{ columns: ["id"], rows: makeRows(MAX_DATA_ROWS + 1) }] }),
+      makeResult({ data: [{ columns: ["id"], rows: makeRows(DEFAULT_DELIVERY_MAX_ROWS + 1) }] }),
     );
-    expect(shaped.datasets[0]!.rows).toHaveLength(MAX_DATA_ROWS);
-    expect(shaped.datasets[0]!.totalRows).toBe(MAX_DATA_ROWS + 1);
+    expect(shaped.datasets[0]!.rows).toHaveLength(DEFAULT_DELIVERY_MAX_ROWS);
+    expect(shaped.datasets[0]!.totalRows).toBe(DEFAULT_DELIVERY_MAX_ROWS + 1);
     expect(shaped.datasets[0]!.truncated).toBe(true);
   });
 
-  it("keeps the first MAX_DATA_ROWS rows in order", () => {
+  it("keeps the first maxRows rows in order", () => {
     const shaped = shapeResult(
       makeTask(),
       makeResult({ data: [{ columns: ["id"], rows: makeRows(100) }] }),
     );
     const rows = shaped.datasets[0]!.rows;
     expect(rows[0]).toEqual({ id: 0 });
-    expect(rows[MAX_DATA_ROWS - 1]).toEqual({ id: MAX_DATA_ROWS - 1 });
+    expect(rows[DEFAULT_DELIVERY_MAX_ROWS - 1]).toEqual({ id: DEFAULT_DELIVERY_MAX_ROWS - 1 });
     expect(shaped.datasets[0]!.totalRows).toBe(100);
   });
 
@@ -129,5 +96,38 @@ describe("shapeResult", () => {
     const rows = makeRows(100);
     shapeResult(makeTask(), makeResult({ data: [{ columns: ["id"], rows }] }));
     expect(rows).toHaveLength(100);
+  });
+
+  it("respects an ATLAS_DELIVERY_MAX_ROWS override", () => {
+    const prev = process.env.ATLAS_DELIVERY_MAX_ROWS;
+    process.env.ATLAS_DELIVERY_MAX_ROWS = "10";
+    try {
+      const shaped = shapeResult(
+        makeTask(),
+        makeResult({ data: [{ columns: ["id"], rows: makeRows(20) }] }),
+      );
+      expect(shaped.datasets[0]!.rows).toHaveLength(10);
+      expect(shaped.datasets[0]!.totalRows).toBe(20);
+      expect(shaped.datasets[0]!.truncated).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_DELIVERY_MAX_ROWS;
+      else process.env.ATLAS_DELIVERY_MAX_ROWS = prev;
+    }
+  });
+
+  it("falls back to the default on an invalid override", () => {
+    const prev = process.env.ATLAS_DELIVERY_MAX_ROWS;
+    process.env.ATLAS_DELIVERY_MAX_ROWS = "not-a-number";
+    try {
+      const shaped = shapeResult(
+        makeTask(),
+        makeResult({ data: [{ columns: ["id"], rows: makeRows(DEFAULT_DELIVERY_MAX_ROWS + 1) }] }),
+      );
+      expect(shaped.datasets[0]!.rows).toHaveLength(DEFAULT_DELIVERY_MAX_ROWS);
+      expect(shaped.datasets[0]!.truncated).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_DELIVERY_MAX_ROWS;
+      else process.env.ATLAS_DELIVERY_MAX_ROWS = prev;
+    }
   });
 });

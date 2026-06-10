@@ -91,6 +91,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_QUERY_TIMEOUT",
     scope: "workspace",
   },
+  {
+    key: "ATLAS_DELIVERY_MAX_ROWS",
+    section: "Query Limits",
+    label: "Delivery Row Limit",
+    description: "Maximum rows per dataset in scheduled-delivery reports (1–10000)",
+    type: "number",
+    default: "50",
+    envVar: "ATLAS_DELIVERY_MAX_ROWS",
+    scope: "workspace",
+  },
 
   // Rate Limiting
   {

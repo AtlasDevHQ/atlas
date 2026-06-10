@@ -3,7 +3,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
-import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
+import { makeTask as makeFixtureTask, makeResult } from "./fixtures";
 
 // Mock formatters
 mock.module("../format-email", () => ({
@@ -50,35 +50,11 @@ const mockFetch = mock(() => Promise.resolve(new Response("ok", { status: 200 })
 
 const { deliverResult } = await import("../delivery");
 
+// This file's historical defaults differ from the shared fixture (webhook
+// channel, terse name/question) — preserved via overrides so the dispatcher
+// assertions below stay byte-identical.
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
-  return {
-    id: "task-123",
-    ownerId: "u1",
-    orgId: null,
-    name: "Test Report",
-    question: "Q?",
-    cronExpression: "0 9 * * 1",
-    deliveryChannel: "webhook",
-    recipients: [],
-    connectionGroupId: null,
-    approvalMode: "auto",
-    enabled: true,
-    lastRunAt: null,
-    nextRunAt: null,
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-function makeResult(): AgentQueryResult {
-  return {
-    answer: "Revenue was $1M",
-    sql: ["SELECT SUM(revenue) FROM orders"],
-    data: [{ columns: ["total"], rows: [{ total: 1000000 }] }],
-    steps: 3,
-    usage: { totalTokens: 1500 },
-  };
+  return makeFixtureTask({ name: "Test Report", question: "Q?", deliveryChannel: "webhook", ...overrides });
 }
 
 describe("delivery dispatcher", () => {

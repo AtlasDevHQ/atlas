@@ -3,28 +3,7 @@
  */
 import { describe, it, expect } from "bun:test";
 import { generateDeliveryPreview } from "../preview";
-import type { ScheduledTask } from "@atlas/api/lib/scheduled-task-types";
-
-function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
-  return {
-    id: "task-123",
-    ownerId: "u1",
-    orgId: null,
-    name: "Daily Revenue",
-    question: "What was yesterday's revenue?",
-    cronExpression: "0 9 * * 1",
-    deliveryChannel: "email",
-    recipients: [],
-    connectionGroupId: null,
-    approvalMode: "auto",
-    enabled: true,
-    lastRunAt: null,
-    nextRunAt: "2024-01-01T09:00:00Z",
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
-    ...overrides,
-  };
-}
+import { makeTask } from "./fixtures";
 
 describe("generateDeliveryPreview", () => {
   it("generates email preview with subject and body", () => {

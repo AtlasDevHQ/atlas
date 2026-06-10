@@ -10,12 +10,38 @@
 
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
+import { getSetting } from "@atlas/api/lib/settings";
+import { createLogger } from "@atlas/api/lib/logger";
 
-export const MAX_DATA_ROWS = 50;
+const log = createLogger("scheduler-shape");
+
+export const DEFAULT_DELIVERY_MAX_ROWS = 50;
+const MIN_DELIVERY_MAX_ROWS = 1;
+const MAX_DELIVERY_MAX_ROWS = 10000;
+
+let lastWarnedMaxRows: string | undefined;
+
+/**
+ * Rows-per-dataset cap for delivered reports. Settings/env-overridable via
+ * `ATLAS_DELIVERY_MAX_ROWS` (distinct from `ATLAS_ROW_LIMIT`, the SQL
+ * result cap — a delivered report is a digest, not the full result set).
+ */
+export function getDeliveryMaxRows(): number {
+  const raw = getSetting("ATLAS_DELIVERY_MAX_ROWS") ?? String(DEFAULT_DELIVERY_MAX_ROWS);
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < MIN_DELIVERY_MAX_ROWS || n > MAX_DELIVERY_MAX_ROWS) {
+    if (raw !== lastWarnedMaxRows) {
+      log.warn({ value: raw }, `Invalid ATLAS_DELIVERY_MAX_ROWS value; using default ${DEFAULT_DELIVERY_MAX_ROWS}`);
+      lastWarnedMaxRows = raw;
+    }
+    return DEFAULT_DELIVERY_MAX_ROWS;
+  }
+  return n;
+}
 
 export interface ShapedDataset {
   columns: string[];
-  /** At most {@link MAX_DATA_ROWS} rows. */
+  /** At most {@link getDeliveryMaxRows} rows. */
   rows: Record<string, unknown>[];
   /** Row count before truncation. */
   totalRows: number;
@@ -30,7 +56,7 @@ export interface FormattedResult {
   answer: string;
   sql: string[];
   /**
-   * Datasets in result order, each capped at {@link MAX_DATA_ROWS} rows.
+   * Datasets in result order, each capped at {@link getDeliveryMaxRows} rows.
    * Empty datasets are preserved (the webhook wire format includes them);
    * renderers that hide them keep doing so.
    */
@@ -45,6 +71,7 @@ export function shapeResult(
   task: ScheduledTask,
   result: AgentQueryResult,
 ): FormattedResult {
+  const maxRows = getDeliveryMaxRows();
   return {
     taskId: task.id,
     taskName: task.name,
@@ -52,10 +79,10 @@ export function shapeResult(
     answer: result.answer,
     sql: result.sql,
     datasets: result.data.map(({ columns, rows }) => {
-      const truncated = rows.length > MAX_DATA_ROWS;
+      const truncated = rows.length > maxRows;
       return {
         columns,
-        rows: truncated ? rows.slice(0, MAX_DATA_ROWS) : rows,
+        rows: truncated ? rows.slice(0, maxRows) : rows,
         totalRows: rows.length,
         truncated,
       };

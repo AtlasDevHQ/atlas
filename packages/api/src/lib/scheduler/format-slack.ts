@@ -22,6 +22,11 @@ export function formatSlackReport(
     },
   };
 
+  // formatQueryResponse dedupes and counts rows against what it receives:
+  // datasets identical only in their first maxRows rows collapse into one
+  // block, and the "of N rows" note reports the shaped total, not the raw
+  // result's. Acceptable for a digest surface — Block Kit display is capped
+  // tighter (20 rows) anyway.
   const resultBlocks = formatQueryResponse({
     answer: shaped.answer,
     sql: shaped.sql,

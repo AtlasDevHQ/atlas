@@ -77,7 +77,7 @@ import nodemailer, {
 import { tool } from "ai";
 import { z } from "zod";
 
-import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { decryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -85,13 +85,14 @@ import { getSettingAuto } from "@atlas/api/lib/settings";
 import { resolveOutboundClampRegion } from "@atlas/api/lib/email/delivery";
 import { clampOutbound } from "@atlas/api/lib/staging/clamp";
 import {
-  lazyPluginLoader,
-  LazyPluginBuilderMissingError,
-  LazyPluginInstallNotFoundError,
   type LazyPluginBuilder,
   type LazyPluginBuilderArgs,
-  type LazyPluginLoader,
 } from "@atlas/api/lib/plugins/lazy-loader";
+import {
+  classifyLazyInstantiateError,
+  resolveLazyPluginToolDeps,
+  type LazyPluginToolDeps,
+} from "./_shared/lazy-plugin-tool";
 import type { PluginLike } from "@atlas/api/lib/plugins/registry";
 import {
   EMAIL_CATALOG_ID,
@@ -431,12 +432,10 @@ export async function checkRecipientsAllowed(
  * Test seam — production calls go through the singleton
  * `lazyPluginLoader`. Tests inject a fake loader (and a fake context
  * source) so the tool's execute path can be exercised without booting
- * the loader.
+ * the loader. Base loader/context seams come from the shared
+ * lazy-plugin-tool scaffolding (#3326).
  */
-export interface SendEmailToolDeps {
-  readonly loader?: Pick<LazyPluginLoader, "getOrInstantiate">;
-  readonly resolveWorkspaceId?: () => string | undefined;
-  readonly resolveRequestId?: () => string | undefined;
+export interface SendEmailToolDeps extends LazyPluginToolDeps {
   /** Test seam for the recipient gate's member-email lookup (#3341). */
   readonly resolveMemberEmails?: (workspaceId: string) => Promise<string[]>;
 }
@@ -496,18 +495,8 @@ type SendEmailExecuteResult =
       requestId: string | undefined;
     };
 
-function defaultResolveWorkspaceId(): string | undefined {
-  return getRequestContext()?.user?.activeOrganizationId;
-}
-
-function defaultResolveRequestId(): string | undefined {
-  return getRequestContext()?.requestId;
-}
-
 export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
-  const loader = deps.loader ?? lazyPluginLoader;
-  const resolveWorkspaceId = deps.resolveWorkspaceId ?? defaultResolveWorkspaceId;
-  const resolveRequestId = deps.resolveRequestId ?? defaultResolveRequestId;
+  const { loader, resolveWorkspaceId, resolveRequestId } = resolveLazyPluginToolDeps(deps);
 
   return tool({
     description:
@@ -561,17 +550,8 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
         const raw = await loader.getOrInstantiate(workspaceId, EMAIL_CATALOG_ID);
         instance = raw as EmailPluginInstance;
       } catch (err) {
-        if (err instanceof LazyPluginInstallNotFoundError) {
-          log.info(
-            { workspaceId },
-            "sendEmail rejected — workspace has no Email install",
-          );
-          return {
-            status: "no_install",
-            message:
-              "Install the Email integration at /admin/integrations before sending. No workspace_plugins row is enabled for catalog:email.",
-          };
-        }
+        // Tool-specific class first — the shared classifier files it under
+        // `unknown`, which would lose the dedicated decrypt_failure status.
         if (err instanceof EmailDecryptFailureError) {
           const requestId = resolveRequestId();
           log.error(
@@ -584,39 +564,58 @@ export function createSendEmailTool(deps: SendEmailToolDeps = {}) {
             requestId,
           };
         }
-        if (err instanceof LazyPluginBuilderMissingError) {
-          // Catalog + workspace install present, but no builder. This
-          // is the boot-DAG-misconfigured failure mode — `register.ts`
-          // pairs the form handler with the builder, so the only way
-          // this fires is if `registerBuiltinInstallHandlers` itself
-          // didn't run. Distinct status so the agent stops looping and
-          // surfaces an operator-actionable error.
-          const requestId = resolveRequestId();
-          log.error(
-            { workspaceId, requestId, err: err.message },
-            "sendEmail aborted — Email lazy builder not registered (boot DAG issue)",
-          );
-          return {
-            status: "misconfigured",
-            message: `Email integration is installed but no builder is registered for catalog:email. This is a deploy-side configuration issue; contact your operator. Request id ${requestId ?? "<unset>"}.`,
-            requestId,
-          };
+        switch (classifyLazyInstantiateError(err)) {
+          case "install_not_found": {
+            log.info(
+              { workspaceId },
+              "sendEmail rejected — workspace has no Email install",
+            );
+            return {
+              status: "no_install",
+              message:
+                "Install the Email integration at /admin/integrations before sending. No workspace_plugins row is enabled for catalog:email.",
+            };
+          }
+          case "builder_missing": {
+            // Catalog + workspace install present, but no builder. This
+            // is the boot-DAG-misconfigured failure mode — `register.ts`
+            // pairs the form handler with the builder, so the only way
+            // this fires is if `registerBuiltinInstallHandlers` itself
+            // didn't run. Distinct status so the agent stops looping and
+            // surfaces an operator-actionable error.
+            const requestId = resolveRequestId();
+            log.error(
+              { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+              "sendEmail aborted — Email lazy builder not registered (boot DAG issue)",
+            );
+            return {
+              status: "misconfigured",
+              message: `Email integration is installed but no builder is registered for catalog:email. This is a deploy-side configuration issue; contact your operator. Request id ${requestId ?? "<unset>"}.`,
+              requestId,
+            };
+          }
+          // `reconnect_required` is unreachable for catalog:email (form-installed
+          // SMTP, no OAuth tokens to refresh) — folded into the generic terminal
+          // status rather than given a status the agent copy doesn't support.
+          case "reconnect_required":
+          case "unknown": {
+            // Anything else — config missing fields, builder throwing on
+            // construction. Surfaces as send_failure so the agent has
+            // something actionable. Messages are scrubbed via
+            // `errorMessage()` so a connection string embedded in an
+            // upstream error doesn't leak to the agent's tool-output.
+            const requestId = resolveRequestId();
+            log.error(
+              { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+              "sendEmail aborted — failed to instantiate Email plugin",
+            );
+            return {
+              status: "send_failure",
+              message: `Could not initialise the Email integration: ${errorMessage(err)}`,
+              requestId,
+            };
+          }
         }
-        // Anything else — config missing fields, builder throwing on
-        // construction. Surfaces as send_failure so the agent has
-        // something actionable. Messages are scrubbed via
-        // `errorMessage()` so a connection string embedded in an
-        // upstream error doesn't leak to the agent's tool-output.
-        const requestId = resolveRequestId();
-        log.error(
-          { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
-          "sendEmail aborted — failed to instantiate Email plugin",
-        );
-        return {
-          status: "send_failure",
-          message: `Could not initialise the Email integration: ${errorMessage(err)}`,
-          requestId,
-        };
       }
 
       try {

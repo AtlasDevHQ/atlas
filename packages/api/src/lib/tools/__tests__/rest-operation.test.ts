@@ -512,7 +512,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
       datasource(), // no specDriftMode → strict
       async () => {
         recoveryCalls++;
-        return { kind: "refreshed", graph, operationFound: true, breaking: false };
+        return { kind: "refreshed", graph, operationFound: true };
       },
     );
     expect(result.status).toBe("unknown_operation");
@@ -530,7 +530,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
       stale,
       async (workspaceId, installId, operationId) => {
         calls.push({ workspaceId, installId, operationId });
-        return { kind: "refreshed", graph, operationFound: true, breaking: false };
+        return { kind: "refreshed", graph, operationFound: true };
       },
     );
     expect(calls).toEqual([{ workspaceId: "default", installId: "twenty", operationId: "findManyPeople" }]);
@@ -548,7 +548,7 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
       { operationId: "trulyGone" },
       stale,
       // Refreshed fine, but the asked-for operation is still not in the graph.
-      async () => ({ kind: "refreshed", graph, operationFound: false, breaking: false }),
+      async () => ({ kind: "refreshed", graph, operationFound: false }),
     );
     expect(result.status).toBe("unknown_operation");
     if (result.status !== "unknown_operation") return;
@@ -595,5 +595,64 @@ describe("executeRestOperation — spec-drift recovery (#3315)", () => {
     });
     expect(result.status).toBe("ok");
     expect(recoveryCalls).toBe(0);
+  });
+
+  it("a recovered ALLOWLISTED WRITE is staged for confirmation on the retry — never dispatched", async () => {
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("createOnePerson"),
+      writeAllowlist: new Set(["createOnePerson"]),
+    });
+    const result = await callWithRecovery(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      stale,
+      async () => ({ kind: "refreshed", graph, operationFound: true }),
+    );
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.operationId).toBe("createOnePerson");
+    expect(result.confirm.token.length).toBeGreaterThan(0);
+    // The retry's full safety stack held: the write was staged, never fired.
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("a recovered NON-allowlisted write rejects writes_disabled on the retry — never dispatched", async () => {
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("createOnePerson"),
+      // No write allowlist — default-deny must survive the recovery retry.
+    });
+    const result = await callWithRecovery(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      stale,
+      async () => ({ kind: "refreshed", graph, operationFound: true }),
+    );
+    expect(result.status).toBe("writes_disabled");
+    if (result.status !== "writes_disabled") return;
+    expect(result.method).toBe("POST");
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("the retry uses the recovery's re-guarded fresh base URL when one is supplied", async () => {
+    // The stale resolve points at a dead port; recovery supplies the live mock
+    // base (as it would after a legitimate servers[0].url move that re-passed
+    // the egress guard) — the retry succeeds only if the fresh base is used.
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("findManyPeople"),
+      baseUrl: "http://127.0.0.1:9",
+    });
+    const result = await callWithRecovery(
+      { operationId: "findManyPeople" },
+      stale,
+      async () => ({
+        kind: "refreshed",
+        graph,
+        operationFound: true,
+        baseUrl: mock.restBaseUrl,
+      }),
+    );
+    expect(result.status).toBe("ok");
+    expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
   });
 });

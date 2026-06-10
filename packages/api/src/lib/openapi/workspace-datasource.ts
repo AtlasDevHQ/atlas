@@ -26,7 +26,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { decryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
-import { normalizeGroupId, type RestDatasource } from "./datasource";
+import { normalizeGroupId, resolveBaseUrl, type RestDatasource } from "./datasource";
 import {
   OPENAPI_GENERIC_CONFIG_SCHEMA,
   coerceRepresentationMode,
@@ -367,41 +367,6 @@ async function resolveInstallAuth(
     return { kind: "skip", reconnectable: false };
   }
   return { kind: "ok", auth: authResult.auth };
-}
-
-function stripTrailingSlash(s: string): string {
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
-/**
- * Resolve the operations base URL the client executes against:
- *   1. `base_url_override` wins (the dev/staging escape hatch).
- *   2. else the spec's `servers[0].url`, resolved against the spec URL when
- *      relative (a spec at `https://x/openapi.json` with `servers: ["/rest"]`
- *      → `https://x/rest`).
- *   3. else the spec URL's origin (last-resort fallback).
- */
-function resolveBaseUrl(
-  openapiUrl: string,
-  graph: OperationGraph,
-  override: string | undefined,
-): string {
-  if (override && override.length > 0) return stripTrailingSlash(override);
-  const serverUrl = graph.servers[0]?.url;
-  if (serverUrl) {
-    try {
-      return stripTrailingSlash(new URL(serverUrl, openapiUrl).toString());
-    } catch {
-      // intentionally ignored: fall through to the origin fallback below.
-    }
-  }
-  try {
-    return new URL(openapiUrl).origin;
-  } catch {
-    // intentionally ignored: a malformed openapi_url can't be salvaged here;
-    // return it verbatim so the client surfaces a clear transport error.
-    return openapiUrl;
-  }
 }
 
 /**

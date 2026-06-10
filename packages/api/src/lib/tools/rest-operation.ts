@@ -529,16 +529,19 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         };
       }
       log.info(
-        { operationId, datasource: datasource.id, breaking: recovery.breaking },
+        { operationId, datasource: datasource.id },
         "executeRestOperation drift recovery found the operation in the refreshed spec — retrying once",
       );
-      // Retry with ONLY the graph swapped: auth/baseUrl/allowlists stay from the
-      // current resolve. Deliberate — the old baseUrl already passed the egress
-      // guard, so a hostile fresh spec can't redirect this retry to a new host;
-      // a legitimately changed servers[0].url takes effect on the next full
-      // resolve (which re-runs assertBaseUrlAllowed), and guardedFetch remains
-      // the execution-time backstop either way.
-      return runOnce({ ...datasource, graph: recovery.graph });
+      // Retry with the fresh graph, and the fresh base URL ONLY when recovery
+      // re-derived one that re-passed the egress guard (a legitimately moved
+      // servers[0].url is followed; a hostile/blocked one is dropped and the
+      // already-validated old base stays). Auth/allowlists stay from the
+      // current resolve; guardedFetch remains the execution-time backstop.
+      return runOnce({
+        ...datasource,
+        graph: recovery.graph,
+        ...(recovery.baseUrl !== undefined ? { baseUrl: recovery.baseUrl } : {}),
+      });
     },
   });
 }

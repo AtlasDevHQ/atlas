@@ -20,8 +20,11 @@ const {
   DEFAULT_SPEC_DRIFT_MODE,
   DRIFT_REPROBE_COOLDOWN_MS,
   _resetDriftRecoveryState,
+  _driftRecoveryCooldownSize,
 } = await import("../drift-recovery");
+const { OPENAPI_GENERIC_CATALOG_ID } = await import("../catalog");
 
+type RawInstallRow = import("../drift-recovery").RawInstallRow;
 type OperationGraph = import("../types").OperationGraph;
 type OpenApiSnapshot = import("../catalog").OpenApiSnapshot;
 type SpecDiffRecord = import("../diff").SpecDiffRecord;
@@ -47,6 +50,18 @@ function graphWith(...operationIds: string[]): OperationGraph {
     schemas: new Map(),
     servers: [],
   } as unknown as OperationGraph;
+}
+
+/**
+ * A re-probeable generic install row: auto-refresh mode (the attempt enforces
+ * the opt-in on the loaded config) + the generic catalog id. Tests override
+ * fields to exercise the refusal gates.
+ */
+function genericRow(config: Record<string, unknown> = {}): RawInstallRow {
+  return {
+    config: { spec_drift_mode: "auto-refresh", ...config },
+    catalogId: OPENAPI_GENERIC_CATALOG_ID,
+  };
 }
 
 const ZERO_COUNTS = {
@@ -127,7 +142,7 @@ describe("attemptDriftRecovery", () => {
   it("refreshes, persists, and reports the operation found in the fresh graph", async () => {
     const { persistCalls, persist } = recorder();
     const outcome = await attemptDriftRecovery("ws-1", "ds-1", "newOp", {
-      loadRawConfig: async () => ({ openapi_url: "https://api.example.com/spec" }),
+      loadRawConfig: async () => genericRow({ openapi_url: "https://api.example.com/spec" }),
       rediscover: async () => okResult(graphWith("newOp"), cleanDiff),
       persist,
       now: () => NOW,
@@ -135,7 +150,6 @@ describe("attemptDriftRecovery", () => {
     expect(outcome.kind).toBe("refreshed");
     if (outcome.kind !== "refreshed") return;
     expect(outcome.operationFound).toBe(true);
-    expect(outcome.breaking).toBe(false);
     expect(persistCalls).toHaveLength(1);
     expect(persistCalls[0].workspaceId).toBe("ws-1");
     expect(persistCalls[0].installId).toBe("ds-1");
@@ -144,7 +158,7 @@ describe("attemptDriftRecovery", () => {
   it("reports operationFound: false when the fresh graph still lacks the operation", async () => {
     const { persist } = recorder();
     const outcome = await attemptDriftRecovery("ws-1", "ds-1", "stillMissing", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("otherOp"), cleanDiff),
       persist,
       now: () => NOW,
@@ -154,30 +168,33 @@ describe("attemptDriftRecovery", () => {
     expect(outcome.operationFound).toBe(false);
   });
 
-  it("RAISES the persisted drift alert on breaking drift (scheduled semantics — never silently adopted)", async () => {
+  it("RAISES the persisted drift alert on breaking drift, recording the drift-recovery trigger", async () => {
     const { persistCalls, persist } = recorder();
     const outcome = await attemptDriftRecovery("ws-1", "ds-1", "newOp", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("newOp"), breakingDiff),
       persist,
       now: () => NOW,
     });
     expect(outcome.kind).toBe("refreshed");
-    if (outcome.kind !== "refreshed") return;
-    expect(outcome.breaking).toBe(true);
-    expect(persistCalls[0].alertWrite?.op).toBe("raise");
+    const write = persistCalls[0].alertWrite;
+    expect(write?.op).toBe("raise");
+    if (write?.op !== "raise") return;
+    // The unattended trigger is recorded so audit/UI can tell a query-time
+    // recovery refresh apart from the Tier-2 scheduler's.
+    expect(write.record.trigger).toBe("drift-recovery");
   });
 
   it("CLEARS a standing alert on a clean refresh and LEAVES it on a baseline", async () => {
     const { persistCalls, persist } = recorder();
     await attemptDriftRecovery("ws-1", "ds-clean", "x", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("x"), cleanDiff),
       persist,
       now: () => NOW,
     });
     await attemptDriftRecovery("ws-1", "ds-baseline", "x", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("x"), null),
       persist,
       now: () => NOW,
@@ -189,7 +206,7 @@ describe("attemptDriftRecovery", () => {
     let rediscoverCalls = 0;
     const { persist } = recorder();
     const deps = {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => {
         rediscoverCalls++;
         return okResult(graphWith("op"), cleanDiff);
@@ -211,7 +228,7 @@ describe("attemptDriftRecovery", () => {
     const { persist } = recorder();
     let nowMs = NOW;
     const deps = {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("op"), cleanDiff),
       persist,
       now: () => nowMs,
@@ -227,7 +244,7 @@ describe("attemptDriftRecovery", () => {
     let rediscoverCalls = 0;
     const { persist } = recorder();
     const deps = {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async (): Promise<RediscoveryResult> => {
         rediscoverCalls++;
         return { kind: "probe_failed", reason: "unreachable", message: "upstream down" };
@@ -252,7 +269,7 @@ describe("attemptDriftRecovery", () => {
     ];
     for (const [i, result] of outcomes.entries()) {
       const outcome = await attemptDriftRecovery("ws-1", `ds-${i}`, "op", {
-        loadRawConfig: async () => ({}),
+        loadRawConfig: async () => genericRow(),
         rediscover: async () => result,
         persist,
         now: () => NOW,
@@ -286,7 +303,7 @@ describe("attemptDriftRecovery", () => {
   it("never throws: an unexpected rediscover fault and a persist fault both fail closed", async () => {
     const { persist } = recorder();
     const crashed = await attemptDriftRecovery("ws-1", "ds-crash", "op", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => {
         throw new Error("unexpected fault");
       },
@@ -296,7 +313,7 @@ describe("attemptDriftRecovery", () => {
     expect(crashed).toEqual({ kind: "not_refreshed", reason: "unexpected" });
 
     const persistFailed = await attemptDriftRecovery("ws-1", "ds-persist", "op", {
-      loadRawConfig: async () => ({}),
+      loadRawConfig: async () => genericRow(),
       rediscover: async () => okResult(graphWith("op"), cleanDiff),
       persist: async () => {
         throw new Error("write failed");
@@ -304,5 +321,100 @@ describe("attemptDriftRecovery", () => {
       now: () => NOW,
     });
     expect(persistFailed).toEqual({ kind: "not_refreshed", reason: "persist_failed" });
+  });
+
+  it("REFUSES when the freshly-loaded config is strict — the opt-in is enforced here, not just in the tool", async () => {
+    let rediscoverCalls = 0;
+    const { persistCalls, persist } = recorder();
+    for (const config of [{}, { spec_drift_mode: "strict" }, { spec_drift_mode: "garbage" }]) {
+      _resetDriftRecoveryState();
+      const outcome = await attemptDriftRecovery("ws-1", "ds-1", "op", {
+        loadRawConfig: async () => ({ config, catalogId: OPENAPI_GENERIC_CATALOG_ID }),
+        rediscover: async () => {
+          rediscoverCalls++;
+          return okResult(graphWith("op"), cleanDiff);
+        },
+        persist,
+        now: () => NOW,
+      });
+      expect(outcome).toEqual({ kind: "not_refreshed", reason: "drift_mode_strict" });
+    }
+    expect(rediscoverCalls).toBe(0);
+    expect(persistCalls).toHaveLength(0);
+  });
+
+  it("REFUSES a non-generic install (built-in data candidate) with the distinct unsupported_catalog reason", async () => {
+    let rediscoverCalls = 0;
+    const { persist } = recorder();
+    const outcome = await attemptDriftRecovery("ws-1", "ds-stripe", "op", {
+      loadRawConfig: async () => ({
+        config: { spec_drift_mode: "auto-refresh" },
+        catalogId: "catalog:stripe-data",
+      }),
+      rediscover: async () => {
+        rediscoverCalls++;
+        return okResult(graphWith("op"), cleanDiff);
+      },
+      persist,
+      now: () => NOW,
+    });
+    expect(outcome).toEqual({ kind: "not_refreshed", reason: "unsupported_catalog" });
+    expect(rediscoverCalls).toBe(0);
+  });
+
+  it("sweeps expired cooldown stamps so the map tracks the active window, not process lifetime", async () => {
+    const { persist } = recorder();
+    let nowMs = NOW;
+    const deps = {
+      loadRawConfig: async () => genericRow(),
+      rediscover: async () => okResult(graphWith("op"), cleanDiff),
+      persist,
+      now: () => nowMs,
+    };
+    await attemptDriftRecovery("ws-1", "ds-1", "op", deps);
+    await attemptDriftRecovery("ws-1", "ds-2", "op", deps);
+    expect(_driftRecoveryCooldownSize()).toBe(2);
+    // One window later, a new attempt's sweep evicts both stale stamps and
+    // leaves only its own.
+    nowMs = NOW + DRIFT_REPROBE_COOLDOWN_MS;
+    await attemptDriftRecovery("ws-1", "ds-3", "op", deps);
+    expect(_driftRecoveryCooldownSize()).toBe(1);
+  });
+
+  it("re-derives the operations base URL from the FRESH spec when it passes the egress guard", async () => {
+    const { persist } = recorder();
+    const graph = {
+      operations: new Map([["op", { operationId: "op" }]]),
+      schemas: new Map(),
+      servers: [{ url: "https://api.example.com/v2/" }],
+    } as unknown as OperationGraph;
+    const outcome = await attemptDriftRecovery("ws-1", "ds-1", "op", {
+      loadRawConfig: async () => genericRow({ openapi_url: "https://api.example.com/openapi.json" }),
+      rediscover: async () => okResult(graph, cleanDiff),
+      persist,
+      now: () => NOW,
+    });
+    expect(outcome.kind).toBe("refreshed");
+    if (outcome.kind !== "refreshed") return;
+    // Trailing slash stripped, exactly like the resolver's derivation.
+    expect(outcome.baseUrl).toBe("https://api.example.com/v2");
+  });
+
+  it("OMITS the fresh base URL when the new spec's server target is egress-blocked (retry keeps the old base)", async () => {
+    const { persist } = recorder();
+    const graph = {
+      operations: new Map([["op", { operationId: "op" }]]),
+      schemas: new Map(),
+      servers: [{ url: "https://127.0.0.1/internal" }],
+    } as unknown as OperationGraph;
+    const outcome = await attemptDriftRecovery("ws-1", "ds-1", "op", {
+      loadRawConfig: async () => genericRow({ openapi_url: "https://api.example.com/openapi.json" }),
+      rediscover: async () => okResult(graph, cleanDiff),
+      persist,
+      now: () => NOW,
+    });
+    expect(outcome.kind).toBe("refreshed");
+    if (outcome.kind !== "refreshed") return;
+    expect(outcome.baseUrl).toBeUndefined();
   });
 });

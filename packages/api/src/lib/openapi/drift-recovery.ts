@@ -32,22 +32,31 @@
  *     like the validator's token buckets — the goal is throttling a runaway
  *     loop, not distributed coordination.
  *   - **Breaking drift is never silently adopted.** The alert lifecycle runs
- *     with `scheduled`-trigger semantics ({@link resolveDriftAlertWrite}):
- *     this is an UNATTENDED refresh (no admin is looking at an inline diff), so
- *     breaking drift RAISES the persisted admin pill exactly like the Tier-2
- *     scheduler's would. The fresh snapshot still persists — the agent's valid
+ *     with the unattended `drift-recovery` trigger ({@link resolveDriftAlertWrite}):
+ *     no admin is looking at an inline diff, so breaking drift RAISES the
+ *     persisted admin pill exactly like the Tier-2 scheduler's would — with the
+ *     trigger recorded on the record so the two unattended paths stay
+ *     distinguishable. The fresh snapshot still persists — the agent's valid
  *     call succeeds — but the operator is told the contract moved.
+ *   - **The opt-in is enforced here, not only in the calling tool.** The
+ *     attempt re-reads `spec_drift_mode` off the freshly-loaded config and
+ *     refuses (`drift_mode_strict`) unless it is `auto-refresh` — so no future
+ *     caller can re-probe a strict install, and an admin flipping the mode
+ *     mid-conversation is honored.
  *
  * Scope: generic `openapi-generic` installs only. Built-in data candidates
  * (stripe-data, …) pin code-resident spec URLs refreshed via their own shared
  * cache — an unknown operation there is not recoverable by a per-install
- * re-probe, so {@link attemptDriftRecovery} simply finds no row and reports
- * `install_not_found` (the caller falls back to the plain rejection).
+ * re-probe, so {@link attemptDriftRecovery} refuses with the distinct
+ * `unsupported_catalog` reason (logged for the operator; the caller falls back
+ * to the plain rejection).
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { resolveDriftAlertWrite } from "./breaking-change";
 import { OPENAPI_GENERIC_CATALOG_ID } from "./catalog";
+import { resolveBaseUrl } from "./datasource";
+import { assertBaseUrlAllowed, EgressBlockedError, hostForLog } from "./egress-guard";
 import type { performRediscovery, persistRediscoverySnapshot } from "./rediscover";
 import type { OperationGraph } from "./types";
 
@@ -110,9 +119,26 @@ function cooldownKey(workspaceId: string, installId: string): string {
   return `${workspaceId}\x00${installId}`;
 }
 
+/**
+ * Drop every stamp older than the cooldown window. Run on each attempt so the
+ * map's size is bounded by the installs active within the LAST window, instead
+ * of growing one entry per (workspace, install) for the process lifetime. The
+ * sweep is O(map size), which the sweep itself keeps small.
+ */
+function sweepExpiredStamps(nowMs: number): void {
+  for (const [key, stampedMs] of lastAttemptMs) {
+    if (nowMs - stampedMs >= DRIFT_REPROBE_COOLDOWN_MS) lastAttemptMs.delete(key);
+  }
+}
+
 /** Clear all cooldown stamps. For tests. */
 export function _resetDriftRecoveryState(): void {
   lastAttemptMs.clear();
+}
+
+/** Current cooldown-stamp count. For tests (asserting the sweep evicts). */
+export function _driftRecoveryCooldownSize(): number {
+  return lastAttemptMs.size;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -124,32 +150,48 @@ export type DriftRecoveryOutcome =
   /**
    * The re-probe succeeded and the fresh snapshot + diff + alert write were
    * persisted. `operationFound` says whether the operation the agent asked for
-   * exists in the FRESH graph (the caller retries only when it does);
-   * `breaking` carries the classification so the caller can log it.
+   * exists in the FRESH graph (the caller retries only when it does).
+   * `baseUrl` is the fresh spec's re-derived operations base URL, present ONLY
+   * when it re-passed the egress guard — so a retry can follow a legitimately
+   * moved `servers[0].url` without ever widening egress; omitted (keep the old
+   * base) when derivation fails or the guard blocks it.
    */
   | {
       readonly kind: "refreshed";
       readonly graph: OperationGraph;
       readonly operationFound: boolean;
-      readonly breaking: boolean;
+      readonly baseUrl?: string;
     }
   /** An attempt ran for this install within {@link DRIFT_REPROBE_COOLDOWN_MS} — skipped. */
   | { readonly kind: "cooldown" }
-  /** No generic OpenAPI install row for this (workspace, install) — nothing to re-probe. */
+  /** No OpenAPI datasource install row for this (workspace, install) — nothing to re-probe. */
   | { readonly kind: "install_not_found" }
   /**
-   * The re-probe ran but could not produce a fresh snapshot (decrypt failure,
-   * missing URL, unsupported auth, probe failure, persist failure, or an
-   * unexpected fault). The old snapshot is untouched — fail closed. `reason`
-   * is a stable tag for logs/tests, never surfaced verbatim to the user.
+   * The re-probe was refused or could not produce a fresh snapshot: the
+   * install isn't a re-probeable generic row (`unsupported_catalog` — built-in
+   * data candidates pin code-resident specs), its CURRENT config doesn't opt
+   * into auto-refresh (`drift_mode_strict` — enforced here, not just in the
+   * tool, so no caller can re-probe a strict install), or the probe/persist
+   * path failed (decrypt failure, missing URL, unsupported auth, probe
+   * failure, persist failure, unexpected fault). The old snapshot is untouched
+   * — fail closed. `reason` is a stable tag for logs/tests, never surfaced
+   * verbatim to the user.
    */
   | { readonly kind: "not_refreshed"; readonly reason: string };
+
+/** The tenant-scoped install row the loader returns. */
+export interface RawInstallRow {
+  /** Raw (encrypted) `workspace_plugins.config` JSONB; `{}` for a NULL column. */
+  readonly config: Record<string, unknown>;
+  /** The row's `catalog_id`, so the attempt can refuse non-generic installs. */
+  readonly catalogId: string | null;
+}
 
 /** Raw-config loader seam. Production reads the tenant-scoped install row. */
 export type LoadRawInstallConfig = (
   workspaceId: string,
   installId: string,
-) => Promise<Record<string, unknown> | null>;
+) => Promise<RawInstallRow | null>;
 
 /** Test/override seams for {@link attemptDriftRecovery}. Production omits them. */
 export interface AttemptDriftRecoveryDeps {
@@ -167,6 +209,10 @@ export interface AttemptDriftRecoveryDeps {
  * Tenant-scoped raw-config read for the default loader. Mirrors the admin
  * route's `loadInstall` WHERE clause (every conjunct is load-bearing tenant
  * isolation) but lives here because `lib/` may not import from `api/routes/`.
+ * Deliberately NOT filtered by catalog — the row's `catalog_id` is returned so
+ * {@link attemptDriftRecovery} can tell "no such install" (`install_not_found`)
+ * apart from "a built-in data candidate that recovery can't re-probe"
+ * (`unsupported_catalog`) instead of conflating both into a silent miss.
  * `db/internal` is imported lazily so this module's static graph stays free of
  * the DB module (the same posture as `workspace-datasource.ts::defaultQuery` —
  * tool tests partial-mock heavily and must not drag the pool in at import time).
@@ -174,20 +220,20 @@ export interface AttemptDriftRecoveryDeps {
 async function defaultLoadRawConfig(
   workspaceId: string,
   installId: string,
-): Promise<Record<string, unknown> | null> {
+): Promise<RawInstallRow | null> {
   const { internalQuery } = await import("@atlas/api/lib/db/internal");
-  const rows = await internalQuery<{ config: Record<string, unknown> | null }>(
-    `SELECT config
+  const rows = await internalQuery<{ config: Record<string, unknown> | null; catalog_id: string | null }>(
+    `SELECT config, catalog_id
        FROM workspace_plugins
       WHERE workspace_id = $1 AND install_id = $2
-        AND catalog_id = $3 AND pillar = 'datasource'
+        AND pillar = 'datasource'
         AND status != 'archived'
       LIMIT 1`,
-    [workspaceId, installId, OPENAPI_GENERIC_CATALOG_ID],
+    [workspaceId, installId],
   );
   const row = rows[0];
   if (row === undefined) return null;
-  return row.config ?? {};
+  return { config: row.config ?? {}, catalogId: row.catalog_id ?? null };
 }
 
 /**
@@ -206,6 +252,9 @@ export async function attemptDriftRecovery(
   const nowMs = now();
 
   // ── Storm guard — stamp the attempt BEFORE probing so failures debounce too.
+  // The sweep first: expired stamps are dropped so the map's size tracks the
+  // installs active within the last window, not the process lifetime.
+  sweepExpiredStamps(nowMs);
   const key = cooldownKey(workspaceId, installId);
   const last = lastAttemptMs.get(key);
   if (last !== undefined && nowMs - last < DRIFT_REPROBE_COOLDOWN_MS) {
@@ -214,9 +263,9 @@ export async function attemptDriftRecovery(
   lastAttemptMs.set(key, nowMs);
 
   // ── Fresh raw config (the prior snapshot the diff compares against).
-  let rawConfig: Record<string, unknown> | null;
+  let row: RawInstallRow | null;
   try {
-    rawConfig = await (deps.loadRawConfig ?? defaultLoadRawConfig)(workspaceId, installId);
+    row = await (deps.loadRawConfig ?? defaultLoadRawConfig)(workspaceId, installId);
   } catch (err) {
     log.warn(
       { workspaceId, installId, err: err instanceof Error ? err.message : String(err) },
@@ -224,7 +273,32 @@ export async function attemptDriftRecovery(
     );
     return { kind: "not_refreshed", reason: "config_load_failed" };
   }
-  if (rawConfig === null) return { kind: "install_not_found" };
+  if (row === null) return { kind: "install_not_found" };
+
+  // ── Catalog gate: only generic installs are re-probeable (performRediscovery
+  // decrypts with the generic schema; data candidates pin code-resident specs).
+  // Named distinctly from install_not_found so operators can see "auto-refresh
+  // can't help this datasource type" rather than a silent miss.
+  if (row.catalogId !== OPENAPI_GENERIC_CATALOG_ID) {
+    log.info(
+      { workspaceId, installId, operationId, catalogId: row.catalogId },
+      "Drift recovery skipped: install is not a generic OpenAPI datasource (built-in specs are not re-probeable per install)",
+    );
+    return { kind: "not_refreshed", reason: "unsupported_catalog" };
+  }
+
+  // ── Mode gate, enforced HERE on the freshly-loaded config — not only in the
+  // calling tool. This makes the opt-in un-bypassable by future direct callers
+  // AND honors an admin flipping the install back to strict between the tool's
+  // resolve and this attempt (the tool's own check is just the fast path).
+  const rawConfig = row.config;
+  if (coerceSpecDriftMode(rawConfig.spec_drift_mode) !== "auto-refresh") {
+    log.info(
+      { workspaceId, installId, operationId },
+      "Drift recovery skipped: install's current spec_drift_mode is strict",
+    );
+    return { kind: "not_refreshed", reason: "drift_mode_strict" };
+  }
 
   // ── Re-probe via the shared core: the SAME egress-guarded, SSRF-checked,
   // credential-gated path the manual route and the scheduler use.
@@ -251,13 +325,15 @@ export async function attemptDriftRecovery(
     return { kind: "not_refreshed", reason: result.kind };
   }
 
-  // ── Alert lifecycle with `scheduled` semantics: this is an UNATTENDED
-  // refresh (no admin is looking at an inline diff), so breaking drift must
-  // RAISE the persisted pill — the "never silently adopt a breaking change"
-  // contract. A clean refresh clears a standing alert; a baseline leaves it.
+  // ── Alert lifecycle: drift-recovery is an UNATTENDED trigger (no admin is
+  // looking at an inline diff), so breaking drift RAISES the persisted pill —
+  // the "never silently adopt a breaking change" contract — with the trigger
+  // recorded on the raised record so audit/UI can tell it apart from the
+  // Tier-2 scheduler's refreshes. A clean refresh clears a standing alert; a
+  // baseline leaves it.
   const { write, assessment } = resolveDriftAlertWrite(
     result.diffRecord,
-    "scheduled",
+    "drift-recovery",
     new Date(nowMs).toISOString(),
   );
 
@@ -276,6 +352,40 @@ export async function attemptDriftRecovery(
     return { kind: "not_refreshed", reason: "persist_failed" };
   }
 
+  // ── Re-derive the operations base URL from the FRESH spec, exactly as the
+  // resolver does, and re-run the egress guard on it. Surfaced only when it
+  // passes, so a retry can follow a legitimately moved `servers[0].url` while
+  // a hostile fresh spec (private/internal target) is dropped — the caller
+  // then keeps its already-validated old base. `openapi_url` and
+  // `base_url_override` are plain (non-secret) JSONB fields.
+  let freshBaseUrl: string | undefined;
+  const openapiUrl = typeof rawConfig.openapi_url === "string" ? rawConfig.openapi_url : "";
+  if (openapiUrl.length > 0) {
+    const candidate = resolveBaseUrl(
+      openapiUrl,
+      result.graph,
+      typeof rawConfig.base_url_override === "string" ? rawConfig.base_url_override : undefined,
+    );
+    try {
+      assertBaseUrlAllowed(candidate);
+      freshBaseUrl = candidate;
+    } catch (err) {
+      if (err instanceof EgressBlockedError) {
+        log.warn(
+          { workspaceId, installId, host: hostForLog(candidate) },
+          "Drift recovery: fresh spec's base URL is blocked (private/internal) — retry keeps the old base",
+        );
+      } else {
+        // Never-throws contract: an unexpected guard fault degrades to
+        // keep-old-base rather than crashing the chat turn.
+        log.warn(
+          { workspaceId, installId, err: err instanceof Error ? err.message : String(err) },
+          "Drift recovery: base-URL guard failed unexpectedly — retry keeps the old base",
+        );
+      }
+    }
+  }
+
   const operationFound = result.graph.operations.has(operationId);
   log.info(
     {
@@ -288,5 +398,10 @@ export async function attemptDriftRecovery(
     },
     "Drift recovery refreshed the spec snapshot from the query path",
   );
-  return { kind: "refreshed", graph: result.graph, operationFound, breaking: assessment.breaking };
+  return {
+    kind: "refreshed",
+    graph: result.graph,
+    operationFound,
+    ...(freshBaseUrl !== undefined ? { baseUrl: freshBaseUrl } : {}),
+  };
 }

@@ -49,15 +49,14 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 ---
 
-## 4. Deepen admin config pages behind `useConfigForm` — **Strong**
+## 4. Deepen admin config pages behind `useConfigForm` — **Shipped** → wins #89
 
-**Files:** `packages/web/src/app/admin/{proactive-chat,connections,approval,compliance,semantic,…}/page.tsx` — 16 pages
+Shipped as `packages/web/src/ui/hooks/use-config-form.ts` + migrations of proactive-chat and both audit retention panels. Implementation survey narrowed the candidate sharply: the original "16 pages" count conflated the hand-wired config-form loop with CRUD-of-many dialogs, action pages, and react-hook-form surfaces. Remainder notes for future passes:
 
-**Problem:** Sixteen admin pages hand-wire the same load → per-field `useState` → hand-rolled dirty compare → manual reset-on-refetch → save loop on top of `useAdminFetch`/`useAdminMutation` (~150–250 lines per page; e.g. proactive-chat is ~40% state bookkeeping). The dirty/reset logic is a module with no interface; forgetting a field in a dirty compare is a silent bug.
-
-**Solution:** A `useConfigForm<T>` hook absorbs the loop — returns `{ fields, dirty, reset, save, saving, error }`. Natural successor to win #1 (`useAdminMutation`) and wins #29–31 (structured-error passthrough).
-
-**Wins:** dirty/reset semantics in one hook; one interface, 16 pages; ~1,500 lines of bookkeeping deleted; hook testable without rendering pages.
+- **email-provider** (`admin/email-provider/page.tsx`) — has the loop, but its reset key is deliberately *narrower* than data identity (`provider|fromAddress|installedAt` — secrets are never echoed back, so values intentionally don't mirror server state), and the reset also clears page-level test/error state. Fitting it would need a `resetKey` override + post-reset callback on the hook — add those options only when a second consumer wants them.
+- **branding** (`admin/branding/page.tsx`), **model-config** (`ui/components/admin/model-provider-section.tsx`) — already delegate dirty/reset to react-hook-form (zod per-field validation, `FormField` context). Converting RHF → `useConfigForm` is a rewrite, not a deepening; revisit only if RHF gets retired.
+- **sandbox** (`admin/sandbox/page.tsx`, self-hosted view) — dirty flag exists but the save conditionally fans out to *two* settings endpoints (`ATLAS_SANDBOX_BACKEND`, `ATLAS_SANDBOX_URL`) or a reset call; multi-endpoint saves are out of the hook's scope by design.
+- **sso enforcement, residency, custom-domain, cache, scheduler** — action/confirm flows without a form-state copy; **approval, compliance, connections, semantic, settings, scim, ip-allowlist, oauth-clients, roles, prompts** — CRUD-of-many via dialogs (dialog reset-on-open is a different loop). Candidate 5 (`usePaginatedTable`) covers the list halves of these.
 
 ---
 

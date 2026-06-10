@@ -104,7 +104,18 @@ export function useAdminFetch<T>(
         }
         throw fetchError;
       }
-      const json: unknown = await res.json();
+      let json: unknown;
+      try {
+        json = await res.json();
+      } catch {
+        // A misconfigured proxy can return a 2xx with a non-JSON body —
+        // `res.json()` throws an unhelpful "Unexpected token" SyntaxError.
+        // Normalize to actionable copy (mirrors the starter-prompts fix,
+        // PR #1511).
+        throw buildFetchError({
+          message: `Server returned a non-JSON response from ${path}. Check your proxy / deploy configuration.`,
+        });
+      }
 
       if (opts?.schema) {
         const parsed = opts.schema.safeParse(json);

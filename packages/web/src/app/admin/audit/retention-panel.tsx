@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useConfigForm } from "@/ui/hooks/use-config-form";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -66,21 +67,55 @@ function daysFromPreset(preset: RetentionPreset, customDays: number): number | n
   return customDays;
 }
 
+// Wire + form shapes for the policy config-form loop. The GET response is
+// typed (not Zod-validated) to match the previous behavior of casting the
+// parsed JSON — the canonical shape lives in `@useatlas/types`.
+interface PolicyResponse {
+  policy: RetentionPolicy | null;
+}
+
+interface RetentionFormValues extends Record<string, unknown> {
+  preset: RetentionPreset;
+  customDays: number;
+  hardDeleteDelay: number;
+}
+
 // ── Component ─────────────────────────────────────────────────────
 
 export function RetentionPanel() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [policy, setPolicy] = useState<RetentionPolicy | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Form state
-  const [preset, setPreset] = useState<RetentionPreset>("unlimited");
-  const [customDays, setCustomDays] = useState(90);
-  const [hardDeleteDelay, setHardDeleteDelay] = useState(30);
+  const form = useConfigForm<
+    PolicyResponse,
+    RetentionFormValues,
+    { policy: RetentionPolicy }
+  >({
+    path: "/api/v1/admin/audit/retention",
+    saveMethod: "PUT",
+    toForm: (d) => {
+      if (!d.policy) {
+        return { preset: "unlimited", customDays: 90, hardDeleteDelay: 30 };
+      }
+      const pr = presetFromDays(d.policy.retentionDays);
+      return {
+        preset: pr,
+        customDays:
+          pr === "custom" && d.policy.retentionDays !== null
+            ? d.policy.retentionDays
+            : 90,
+        hardDeleteDelay: d.policy.hardDeleteDelayDays,
+      };
+    },
+    toPayload: (v) => ({
+      retentionDays: daysFromPreset(v.preset, v.customDays),
+      hardDeleteDelayDays: v.hardDeleteDelay,
+    }),
+  });
+
+  const policy = form.data?.policy ?? null;
 
   // Export state
   const [exporting, setExporting] = useState(false);
@@ -92,70 +127,16 @@ export function RetentionPanel() {
   // Purge state
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
 
-  // Mutation hooks
-  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
-    useAdminMutation<{ policy: RetentionPolicy }>({
-      path: "/api/v1/admin/audit/retention",
-      method: "PUT",
-    });
-
   const { mutate: purgeMutate, saving: purging, error: purgeError, clearError: clearPurgeError } =
     useAdminMutation<{ results: Array<{ orgId: string; softDeletedCount: number }> }>({
       path: "/api/v1/admin/audit/retention/purge",
       method: "POST",
     });
 
-  // Fetch current policy
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchPolicy() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/audit/retention`, { credentials });
-        if (!res.ok) {
-          if (res.status === 403) {
-            if (!cancelled) setError("Enterprise license required for audit retention settings.");
-            return;
-          }
-          const e = await extractFetchError(res);
-          if (!cancelled) setError(e.message);
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          const p = data.policy as RetentionPolicy | null;
-          setPolicy(p);
-          if (p) {
-            const pr = presetFromDays(p.retentionDays);
-            setPreset(pr);
-            if (pr === "custom" && p.retentionDays !== null) {
-              setCustomDays(p.retentionDays);
-            }
-            setHardDeleteDelay(p.hardDeleteDelayDays);
-          }
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load retention policy");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchPolicy();
-    return () => { cancelled = true; };
-  }, [apiUrl, credentials]);
-
   async function handleSave() {
     setSaveSuccess(false);
-    clearSaveError();
-    const retentionDays = daysFromPreset(preset, customDays);
-    const result = await saveMutate({
-      body: { retentionDays, hardDeleteDelayDays: hardDeleteDelay },
-    });
-    if (result.ok && result.data) {
-      setPolicy(result.data.policy);
+    const result = await form.save();
+    if (result.ok) {
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     }
@@ -208,13 +189,26 @@ export function RetentionPanel() {
     }
   }
 
-  if (loading) {
+  if (form.loading) {
     return <LoadingState message="Loading retention settings..." />;
   }
 
-  if (error) {
-    return <ErrorBanner message={error} />;
+  if (form.loadError) {
+    return (
+      <ErrorBanner
+        message={
+          form.loadError.status === 403
+            ? "Enterprise license required for audit retention settings."
+            : form.loadError.message
+        }
+      />
+    );
   }
+
+  if (!form.fields) {
+    return <LoadingState message="Loading retention settings..." />;
+  }
+  const { fields } = form;
 
   return (
     <div className="space-y-6">
@@ -259,8 +253,8 @@ export function RetentionPanel() {
             <div className="space-y-2">
               <Label htmlFor="retention-preset">Retention period</Label>
               <Select
-                value={preset}
-                onValueChange={(v) => setPreset(v as RetentionPreset)}
+                value={fields.preset.value}
+                onValueChange={(v) => fields.preset.set(v as RetentionPreset)}
               >
                 <SelectTrigger id="retention-preset" className="w-full">
                   <SelectValue />
@@ -275,15 +269,15 @@ export function RetentionPanel() {
               </Select>
             </div>
 
-            {preset === "custom" && (
+            {fields.preset.value === "custom" && (
               <div className="space-y-2">
                 <Label htmlFor="custom-days">Custom days (min 7)</Label>
                 <Input
                   id="custom-days"
                   type="number"
                   min={7}
-                  value={customDays}
-                  onChange={(e) => setCustomDays(parseInt(e.target.value, 10) || 7)}
+                  value={fields.customDays.value}
+                  onChange={(e) => fields.customDays.set(parseInt(e.target.value, 10) || 7)}
                   className="w-full"
                 />
               </div>
@@ -295,8 +289,8 @@ export function RetentionPanel() {
                 id="hard-delete-delay"
                 type="number"
                 min={0}
-                value={hardDeleteDelay}
-                onChange={(e) => setHardDeleteDelay(parseInt(e.target.value, 10) || 0)}
+                value={fields.hardDeleteDelay.value}
+                onChange={(e) => fields.hardDeleteDelay.set(parseInt(e.target.value, 10) || 0)}
                 className="w-full"
               />
               <p className="text-xs text-muted-foreground">
@@ -306,17 +300,17 @@ export function RetentionPanel() {
           </div>
 
           <MutationErrorSurface
-            error={saveError}
+            error={form.error}
             feature="Audit Retention"
-            onRetry={clearSaveError}
+            onRetry={form.clearError}
           />
           {saveSuccess && (
             <p className="text-sm text-green-600">Retention policy saved successfully.</p>
           )}
 
           <div className="flex items-center gap-3">
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? "Saving..." : "Save Policy"}
+            <Button onClick={handleSave} disabled={form.saving}>
+              {form.saving ? "Saving..." : "Save Policy"}
             </Button>
             <AlertDialog>
               <AlertDialogTrigger asChild>

@@ -44,9 +44,12 @@ import type { WorkspaceId } from "@useatlas/types";
 const callOrder: string[] = [];
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  async (sql: string): Promise<unknown[]> => {
+  async (sql: string, params?: unknown[]): Promise<unknown[]> => {
     if (sql.includes("INSERT INTO workspace_plugins")) {
       callOrder.push("workspace_plugins.insert");
+      // The post-0092 upsert RETURNING id — echo the candidate id back
+      // like real Postgres does on a fresh INSERT.
+      return [{ id: params?.[0] }];
     }
     return [];
   },
@@ -127,12 +130,15 @@ beforeEach(() => {
   // Restore the default implementation that records call ordering;
   // mockClear() preserves the implementation, but explicit per-test
   // overrides may have replaced it.
-  mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
-    if (sql.includes("INSERT INTO workspace_plugins")) {
-      callOrder.push("workspace_plugins.insert");
-    }
-    return [];
-  });
+  mockInternalQuery.mockImplementation(
+    async (sql: string, params?: unknown[]): Promise<unknown[]> => {
+      if (sql.includes("INSERT INTO workspace_plugins")) {
+        callOrder.push("workspace_plugins.insert");
+        return [{ id: params?.[0] }];
+      }
+      return [];
+    },
+  );
   mockSaveCredentialBundle.mockClear();
   mockSaveCredentialBundle.mockImplementation(async () => {
     callOrder.push("integration_credentials.save");

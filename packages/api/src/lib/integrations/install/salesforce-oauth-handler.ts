@@ -66,6 +66,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
+import { buildFormInstallUpsertSql } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -389,22 +390,32 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
     // `status: "ok"` is the default; the refresh-token flow flips it to
     // `"reconnect_needed"` on refresh_token revocation. The admin UI
     // reads this field to render the Reconnect affordance.
-    const installId = crypto.randomUUID();
+    const candidateId = crypto.randomUUID();
     const installConfig: Record<string, unknown> = {
       instance_url: tokens.instance_url,
       scopes,
       status: "ok",
       ...(idParts ? { org_id: idParts.orgId, org_user_id: idParts.userId } : {}),
     };
+    let persistedId: string;
     try {
-      await internalQuery(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true`,
-        [installId, workspaceId, SALESFORCE_CATALOG_ID, JSON.stringify(installConfig)],
-      );
+      const rows = await internalQuery<{ id: string }>(buildFormInstallUpsertSql(true), [
+        candidateId,
+        workspaceId,
+        SALESFORCE_CATALOG_ID,
+        JSON.stringify(installConfig),
+      ]);
+      const returned = rows[0]?.id;
+      if (typeof returned !== "string" || returned.length === 0) {
+        log.error(
+          { workspaceId, candidateId },
+          "workspace_plugins upsert returned no id — Postgres invariant violation",
+        );
+        throw new Error(
+          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
+        );
+      }
+      persistedId = returned;
     } catch (err) {
       log.error(
         {
@@ -418,7 +429,9 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
     }
 
     const installRecord: InstallRecord = {
-      id: installId,
+      // On a re-install the upsert RETURNING yields the existing row's
+      // id, not the freshly-generated candidate — use the persisted one.
+      id: persistedId,
       workspaceId,
       catalogId: SALESFORCE_SLUG,
     };

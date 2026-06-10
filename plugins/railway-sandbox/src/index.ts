@@ -224,6 +224,10 @@ const SANDBOX_SEMANTIC_DIR = "/atlas/semantic";
 // travel as base64 inside exec commands. Keep each command comfortably under
 // API payload limits; base64 inflates content 4/3.
 const UPLOAD_BATCH_MAX_CHARS = 180_000;
+// Files whose base64 exceeds this are split across append (`>>`) chunks so no
+// single command can blow past the batch cap. Multiple of 4 so every chunk is
+// independently base64-decodable (only the final chunk may carry padding).
+const UPLOAD_CHUNK_MAX_CHARS = 160_000;
 // Uploads can carry the whole semantic tree — give them more headroom than
 // a single explore command gets.
 const UPLOAD_TIMEOUT_SEC = 120;
@@ -241,20 +245,36 @@ export function buildUploadBatches(
   let lines: string[] = [];
   let size = 0;
 
-  for (const f of files) {
-    const b64 = f.content.toString("base64");
-    const line = `printf '%s' '${b64}' | base64 -d > ${shellQuote(`${SANDBOX_ROOT_DIR}/${f.path}`)}`;
-    if (size + line.length > UPLOAD_BATCH_MAX_CHARS && lines.length > 0) {
+  const flush = () => {
+    if (lines.length > 0) {
       batches.push(`set -e\n${lines.join("\n")}`);
       lines = [];
       size = 0;
     }
+  };
+  const push = (line: string) => {
+    if (size + line.length > UPLOAD_BATCH_MAX_CHARS && lines.length > 0) flush();
     lines.push(line);
     size += line.length;
+  };
+
+  for (const f of files) {
+    const b64 = f.content.toString("base64");
+    const target = shellQuote(`${SANDBOX_ROOT_DIR}/${f.path}`);
+    if (b64.length <= UPLOAD_CHUNK_MAX_CHARS) {
+      push(`printf '%s' '${b64}' | base64 -d > ${target}`);
+      continue;
+    }
+    // Oversized file: first chunk truncates (`>`), the rest append (`>>`).
+    // Chunk order is preserved — lines within a batch and batches themselves
+    // both execute sequentially.
+    for (let i = 0; i < b64.length; i += UPLOAD_CHUNK_MAX_CHARS) {
+      const part = b64.slice(i, i + UPLOAD_CHUNK_MAX_CHARS);
+      const redirect = i === 0 ? ">" : ">>";
+      push(`printf '%s' '${part}' | base64 -d ${redirect} ${target}`);
+    }
   }
-  if (lines.length > 0) {
-    batches.push(`set -e\n${lines.join("\n")}`);
-  }
+  flush();
   return batches;
 }
 
@@ -325,6 +345,46 @@ function appendNote(stderr: string, note: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Shared sandbox helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build Sandbox.create() options. ISOLATED is the most restrictive mode
+ * Railway offers — outbound internet egress is still allowed (see module
+ * docs). PRIVATE is never used: the explore tool must not reach other
+ * services on the Railway private network.
+ */
+function buildCreateOpts(
+  config: RailwaySandboxConfig,
+  idleTimeoutMinutes: number,
+): Record<string, unknown> {
+  const createOpts: Record<string, unknown> = {
+    networkIsolation: "ISOLATED",
+    idleTimeoutMinutes,
+  };
+  if (config.token) createOpts.token = config.token;
+  if (config.environmentId) createOpts.environmentId = config.environmentId;
+  return createOpts;
+}
+
+/** Destroy a sandbox, logging (never throwing) on failure. */
+async function destroyQuietly(
+  sandbox: RailwaySandboxInstance,
+  log: { warn(msg: string): void } | undefined,
+  context: string,
+): Promise<void> {
+  try {
+    await sandbox.destroy();
+  } catch (destroyErr) {
+    log?.warn(
+      `[railway-sandbox] Failed to destroy sandbox ${context}: ${
+        destroyErr instanceof Error ? destroyErr.message : String(destroyErr)
+      }`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Backend factory
 // ---------------------------------------------------------------------------
 
@@ -357,35 +417,13 @@ async function createRailwayExploreBackend(
     );
   }
 
-  // 3. Create the sandbox. ISOLATED is the most restrictive mode Railway
-  // offers — outbound internet egress is still allowed (see module docs).
-  // PRIVATE is never used here: the explore tool must not reach other
-  // services on the Railway private network.
-  const createOpts: Record<string, unknown> = {
-    networkIsolation: "ISOLATED",
-    idleTimeoutMinutes: config.idleTimeoutMinutes,
-  };
-  if (config.token) createOpts.token = config.token;
-  if (config.environmentId) createOpts.environmentId = config.environmentId;
-
+  // 3. Create the sandbox (ISOLATED mode — see buildCreateOpts).
   let sandbox: RailwaySandboxInstance;
   try {
-    sandbox = await Sandbox.create(createOpts);
+    sandbox = await Sandbox.create(buildCreateOpts(config, config.idleTimeoutMinutes));
   } catch (err) {
     throw new Error(createErrorMessage(err), { cause: err });
   }
-
-  const destroyQuietly = async (context: string) => {
-    try {
-      await sandbox.destroy();
-    } catch (destroyErr) {
-      log?.warn(
-        `[railway-sandbox] Failed to destroy sandbox ${context}: ${
-          destroyErr instanceof Error ? destroyErr.message : String(destroyErr)
-        }`,
-      );
-    }
-  };
 
   // 4. Upload the semantic tree; tear the sandbox down if the upload fails
   // so a half-initialized microVM never lingers (and never bills past the
@@ -393,7 +431,7 @@ async function createRailwayExploreBackend(
   try {
     await uploadSemanticFiles(sandbox, files);
   } catch (err) {
-    await destroyQuietly("after upload failure");
+    await destroyQuietly(sandbox, log, "after upload failure");
     throw err instanceof Error
       ? err
       : new Error(`Failed to upload semantic files: ${String(err)}`);
@@ -431,7 +469,7 @@ async function createRailwayExploreBackend(
       }
     },
     close: async () => {
-      await destroyQuietly("on close");
+      await destroyQuietly(sandbox, log, "on close");
     },
   };
 }
@@ -495,36 +533,18 @@ export function buildRailwaySandboxPlugin(
       // as the vercel-sandbox plugin's health check).
       let sandbox: RailwaySandboxInstance | null = null;
       let timer: ReturnType<typeof setTimeout>;
-      const destroyQuietly = async (sb: RailwaySandboxInstance) => {
-        try {
-          await sb.destroy();
-        } catch (destroyErr) {
-          log?.warn(
-            `[railway-sandbox] Failed to destroy health-check sandbox: ${
-              destroyErr instanceof Error ? destroyErr.message : String(destroyErr)
-            }`,
-          );
-        }
-      };
       try {
         const result = await Promise.race([
           (async () => {
             const { Sandbox } = await loadRailwaySdk();
 
-            const createOpts: Record<string, unknown> = {
-              networkIsolation: "ISOLATED",
-              // Short backstop — a health-check sandbox should never outlive
-              // its check by more than a minute even if destroy() fails.
-              idleTimeoutMinutes: 1,
-            };
-            if (config.token) createOpts.token = config.token;
-            if (config.environmentId) createOpts.environmentId = config.environmentId;
-
-            sandbox = await Sandbox.create(createOpts);
+            // Short backstop — a health-check sandbox should never outlive
+            // its check by more than a minute even if destroy() fails.
+            sandbox = await Sandbox.create(buildCreateOpts(config, 1));
             const res = await sandbox.exec("echo railway-ok", {
               timeoutSec: config.timeoutSec,
             });
-            await destroyQuietly(sandbox);
+            await destroyQuietly(sandbox, log, "after health check");
             sandbox = null;
 
             if (res.exitCode === 0 && (res.stdout ?? "").includes("railway-ok")) {
@@ -532,7 +552,7 @@ export function buildRailwaySandboxPlugin(
             }
             return {
               healthy: false as const,
-              message: `Sandbox test command failed (exit ${res.exitCode})`,
+              message: `Sandbox test command failed (exit ${res.exitCode ?? "unknown"})`,
             };
           })(),
           new Promise<"timeout">((resolve) => {
@@ -546,13 +566,13 @@ export function buildRailwaySandboxPlugin(
           // TS narrows `sandbox` to null (the IIFE ends with sandbox = null) but
           // the race means it may not have run to completion.
           const sb = sandbox as RailwaySandboxInstance | null;
-          if (sb) await destroyQuietly(sb);
+          if (sb) await destroyQuietly(sb, log, "after health-check timeout");
           return { healthy: false, message: `Health check timed out after ${TIMEOUT}ms`, latencyMs };
         }
         return { ...result, latencyMs };
       } catch (err) {
         const sb = sandbox as RailwaySandboxInstance | null;
-        if (sb) await destroyQuietly(sb);
+        if (sb) await destroyQuietly(sb, log, "after health-check failure");
         return {
           healthy: false,
           message: err instanceof Error ? err.message : String(err),

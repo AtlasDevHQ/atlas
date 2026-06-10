@@ -390,14 +390,34 @@ describe("buildUploadBatches", () => {
   });
 
   test("splits when the batch size cap is exceeded", () => {
-    // ~150KB raw → ~200KB base64 each; two files must land in two batches
-    const big = Buffer.alloc(150_000, "x");
+    // ~100KB raw → ~134KB base64 each (under the chunk cap); two files cannot
+    // share one 180KB batch, so they land in two batches
+    const big = Buffer.alloc(100_000, "x");
     const files = [
       { path: "semantic/a.yml", content: big },
       { path: "semantic/b.yml", content: big },
     ];
     const batches = buildUploadBatches(files);
     expect(batches.length).toBe(2);
+  });
+
+  test("chunks a single file whose base64 exceeds the cap across > and >> appends", () => {
+    // 150KB raw → 200KB base64 → must split into 160KB + 40KB chunks; no
+    // single command may exceed the batch cap
+    const big = Buffer.alloc(150_000, "x");
+    const batches = buildUploadBatches([{ path: "semantic/huge.yml", content: big }]);
+    const lines = batches.flatMap((b) => b.split("\n")).filter((l) => l.includes("base64 -d"));
+    expect(lines.length).toBe(2);
+    expect(lines[0]).toContain("base64 -d > '/atlas/semantic/huge.yml'");
+    expect(lines[1]).toContain("base64 -d >> '/atlas/semantic/huge.yml'");
+    for (const batch of batches) {
+      expect(batch.length).toBeLessThanOrEqual(180_000 + 100);
+    }
+    // The chunks reassemble to the original content
+    const b64 = lines
+      .map((l) => /printf '%s' '([A-Za-z0-9+/=]+)'/.exec(l)?.[1] ?? "")
+      .join("");
+    expect(Buffer.from(b64, "base64").equals(big)).toBe(true);
   });
 
   test("quotes paths containing single quotes", () => {

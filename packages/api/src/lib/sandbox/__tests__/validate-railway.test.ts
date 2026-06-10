@@ -92,6 +92,20 @@ describe("validateRailwayCredentials — failure shapes", () => {
     }
   });
 
+  it("scrubs control chars and truncates upstream GraphQL error text", async () => {
+    globalThis.fetch = mockFetchJson({
+      errors: [{ message: `bad\u0007token\u001b[31m ${"x".repeat(500)}` }],
+    });
+    const result = await validateRailwayCredentials("rw_bad", "env-1");
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain("bad token");
+      expect(result.error).not.toContain("\u0007");
+      expect(result.error).not.toContain("\u001b");
+      expect(result.error).not.toContain("x".repeat(300));
+    }
+  });
+
   it("treats a null environment as not found", async () => {
     globalThis.fetch = mockFetchJson({ data: { environment: null } });
     const result = await validateRailwayCredentials("rw_tok", "env-missing");

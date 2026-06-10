@@ -293,8 +293,13 @@ export async function validateRailwayCredentials(
     }
     const data = (await res.json().catch(() => ({}))) as RailwayGraphQLResponse;
     // Railway's GraphQL API reports auth/scope failures as 200 + errors[].
+    // The upstream message is useful ("Not Authorized" vs "Environment not
+    // found") but is external content — truncate and strip control chars
+    // before embedding it in the admin-facing error.
     if (data.errors && data.errors.length > 0) {
-      const detail = data.errors[0]?.message ?? "unknown error";
+      const raw = data.errors[0]?.message ?? "unknown error";
+      // eslint-disable-next-line no-control-regex -- scrubbing control chars from external content is the point
+      const detail = raw.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200);
       return {
         valid: false,
         error: environmentId

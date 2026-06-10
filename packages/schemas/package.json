@@ -25,6 +25,7 @@
     "./mcp-usage": "./src/mcp-usage.ts",
     "./platform": "./src/platform.ts",
     "./residency": "./src/residency.ts",
+    "./sandbox": "./src/sandbox.ts",
     "./sla": "./src/sla.ts"
   },
   "main": "./src/index.ts",

@@ -6,6 +6,7 @@
  * `packages/api/src/lib/github/store.ts`.
  */
 
+import { SANDBOX_PROVIDER_KEYS, type SandboxProviderKey } from "@useatlas/schemas";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { encryptSecret, decryptSecret, type OpaqueSecret } from "@atlas/api/lib/db/secret-encryption";
 import { activeKeyVersion } from "@atlas/api/lib/db/encryption-keys";
@@ -17,9 +18,11 @@ const log = createLogger("sandbox-credentials");
 // Types
 // ---------------------------------------------------------------------------
 
-export const SANDBOX_PROVIDERS = ["vercel", "e2b", "daytona", "railway"] as const;
+// Canonical vocabulary lives in `@useatlas/schemas` (#3371) — re-exported
+// under the historical names so existing call sites don't churn.
+export const SANDBOX_PROVIDERS = SANDBOX_PROVIDER_KEYS;
 
-export type SandboxProvider = (typeof SANDBOX_PROVIDERS)[number];
+export type SandboxProvider = SandboxProviderKey;
 
 export interface SandboxCredential {
   id: string;

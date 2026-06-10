@@ -14,5 +14,6 @@ export * from "./mcp-prompts";
 export * from "./mcp-usage";
 export * from "./platform";
 export * from "./residency";
+export * from "./sandbox";
 export * from "./security";
 export * from "./sla";

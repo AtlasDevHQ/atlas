@@ -22,6 +22,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { normalizeSandboxBackendValue } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withSpan } from "@atlas/api/lib/tracing";
@@ -335,8 +336,11 @@ export function markSidecarFailed(): void {
 }
 
 function getExploreBackend(semanticRoot: string, orgId?: string): Promise<ExploreBackend> {
-  // Workspace override changes the effective backend, so include it in the cache key
-  const wsOverride = orgId ? getSetting("ATLAS_SANDBOX_BACKEND", orgId) : undefined;
+  // Workspace override changes the effective backend, so include it in the cache key.
+  // Normalize legacy stored provider keys ("e2b") to backend ids ("e2b-sandbox")
+  // BEFORE building the cache key, so both spellings share one entry (#3375).
+  const rawOverride = orgId ? getSetting("ATLAS_SANDBOX_BACKEND", orgId) : undefined;
+  const wsOverride = rawOverride ? normalizeSandboxBackendValue(rawOverride) : undefined;
   const cacheKeyVal = wsOverride ? `${semanticRoot}\0${wsOverride}` : semanticRoot;
 
   let promise = backendCache.get(cacheKeyVal);

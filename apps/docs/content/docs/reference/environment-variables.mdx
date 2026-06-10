@@ -476,7 +476,7 @@ Explore tool isolation backends (also used by `executePython` when nsjail is act
 | `ATLAS_NSJAIL_TIME_LIMIT` | explore: `10`, python: `30` | nsjail per-command time limit in seconds. **Defaults differ per backend**: the explore tool (semantic FS sandbox) uses 10s, the Python tool (`executePython`) uses 30s. Setting this env var overrides both backends with the same value |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | explore: `256`, python: `512` | nsjail per-command memory limit in MB. **Defaults differ per backend**: explore uses 256 MB, Python uses 512 MB (data-science workloads need more headroom). Setting this env var overrides both backends with the same value |
 | `ATLAS_SANDBOX_PRIORITY` | — | Comma-separated backend priority order (e.g. `sidecar,nsjail,just-bash`). Valid values: `vercel-sandbox`, `nsjail`, `sidecar`, `just-bash`. Plugin backends always take highest priority. See [Configuration](/reference/config#sandbox) |
-| `ATLAS_SANDBOX_BACKEND` | — | SaaS admin-facing selector for the workspace's sandbox backend: `vercel-sandbox`, `sidecar`, `e2b-sandbox`, `daytona-sandbox`, or a plugin ID. Set via the Settings UI in the hosted product; self-hosted operators typically use `ATLAS_SANDBOX_PRIORITY` instead |
+| `ATLAS_SANDBOX_BACKEND` | — | SaaS admin-facing selector for the workspace's sandbox backend: `vercel-sandbox`, `sidecar`, `e2b-sandbox`, `daytona-sandbox`, `railway-sandbox`, or a plugin ID (legacy bare provider keys like `e2b` are normalized to their backend IDs on read). Set via the Settings UI in the hosted product; self-hosted operators typically use `ATLAS_SANDBOX_PRIORITY` instead |
 
 <Tabs items={["Docker Compose (dev)", "Production sidecar", "nsjail (self-hosted)"]}>
 <Tab value="Docker Compose (dev)">

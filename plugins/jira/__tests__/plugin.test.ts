@@ -397,13 +397,13 @@ describe("jiraPlugin — onUninstall", () => {
       { status: 500, body: {} },
     ]);
     const plugin = jiraPlugin(VALID_CONFIG);
-    expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 500/);
+    await expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 500/);
   });
 
   test("throws on a failing list call (non-403/404)", async () => {
     installFetchSequence([{ status: 502, body: {} }]);
     const plugin = jiraPlugin(VALID_CONFIG);
-    expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 502/);
+    await expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 502/);
   });
 });
 

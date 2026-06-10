@@ -291,7 +291,21 @@ export async function validateRailwayCredentials(
       }
       return { valid: false, error: `Railway API returned ${status}` };
     }
-    const data = (await res.json().catch(() => ({}))) as RailwayGraphQLResponse;
+    // Validity here is decided by the BODY (GraphQL reports failures as 200 +
+    // errors[]), unlike the status-code-driven providers above — so a parse
+    // failure must fail closed, not default to an empty (error-free, thus
+    // "valid") object.
+    let data: RailwayGraphQLResponse;
+    try {
+      data = (await res.json()) as RailwayGraphQLResponse;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err: msg }, "Railway credential validation returned a non-JSON response");
+      return {
+        valid: false,
+        error: "Railway API returned an unexpected non-JSON response — retry in a moment",
+      };
+    }
     // Railway's GraphQL API reports auth/scope failures as 200 + errors[].
     // The upstream message is useful ("Not Authorized" vs "Environment not
     // found") but is external content — truncate and strip control chars

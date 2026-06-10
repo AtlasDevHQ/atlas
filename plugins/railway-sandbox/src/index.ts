@@ -161,6 +161,15 @@ export function collectSemanticFiles(
   logger?: { warn(msg: string): void },
 ): { path: string; content: Buffer }[] {
   const results: { path: string; content: Buffer }[] = [];
+  // Resolve the root once so the symlink containment check compares real
+  // paths via path.relative — a bare startsWith(localDir) would accept
+  // prefix collisions like `${localDir}_evil/…`.
+  const semanticRoot = fs.realpathSync(localDir);
+
+  function isInsideSemanticRoot(realPath: string): boolean {
+    const rel = path.relative(semanticRoot, realPath);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  }
 
   function walk(dir: string, relative: string) {
     let entries: fs.Dirent[];
@@ -177,7 +186,7 @@ export function collectSemanticFiles(
       if (entry.isSymbolicLink()) {
         try {
           const realPath = fs.realpathSync(localPath);
-          if (!realPath.startsWith(localDir)) {
+          if (!isInsideSemanticRoot(realPath)) {
             logger?.warn(`[railway-sandbox] Skipping symlink escaping semantic root: ${localPath} -> ${realPath}`);
             continue;
           }
@@ -571,11 +580,13 @@ export function buildRailwaySandboxPlugin(
         }
         return { ...result, latencyMs };
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.warn(`[railway-sandbox] Health check failed: ${msg}`);
         const sb = sandbox as RailwaySandboxInstance | null;
         if (sb) await destroyQuietly(sb, log, "after health-check failure");
         return {
           healthy: false,
-          message: err instanceof Error ? err.message : String(err),
+          message: msg,
           latencyMs: Math.round(performance.now() - start),
         };
       }

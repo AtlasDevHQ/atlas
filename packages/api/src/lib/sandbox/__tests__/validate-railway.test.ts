@@ -113,6 +113,18 @@ describe("validateRailwayCredentials — failure shapes", () => {
     if (!result.valid) expect(result.error).toContain("not found");
   });
 
+  it("fails closed on a non-JSON 200 response (no environmentId path)", async () => {
+    globalThis.fetch = mock(async (): Promise<Response> => {
+      return new Response("<html>gateway error</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as FetchFn;
+    const result = await validateRailwayCredentials("rw_tok");
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toContain("non-JSON");
+  });
+
   it("maps HTTP 401 to an invalid-token error", async () => {
     globalThis.fetch = mockFetchJson({}, 401);
     const result = await validateRailwayCredentials("rw_bad");

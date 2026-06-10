@@ -241,6 +241,29 @@ describe("sandbox.create", () => {
     }
   });
 
+  test("skips symlinks targeting a prefix-collision sibling of the semantic root", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plugin = railwaySandboxPlugin({} as any);
+    const base = `/tmp/railway-sandbox-prefix-${Date.now()}`;
+    const { mkdirSync, writeFileSync, symlinkSync, rmSync } = await import("fs");
+    // `${base}/semantic_evil` shares the `${base}/semantic` string prefix —
+    // a bare startsWith() containment check would accept it
+    mkdirSync(`${base}/semantic`, { recursive: true });
+    mkdirSync(`${base}/semantic_evil`, { recursive: true });
+    writeFileSync(`${base}/semantic/real.yml`, "table: real\n");
+    writeFileSync(`${base}/semantic_evil/secret.yml`, "secret: yes\n");
+    symlinkSync(`${base}/semantic_evil/secret.yml`, `${base}/semantic/leak.yml`);
+    try {
+      await plugin.sandbox.create(`${base}/semantic`);
+      const uploads = mockExec.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(uploads).toContain("real.yml");
+      expect(uploads).not.toContain("leak.yml");
+      expect(uploads).not.toContain(Buffer.from("secret: yes\n").toString("base64"));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("destroys the sandbox when the upload fails", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const plugin = railwaySandboxPlugin({} as any);

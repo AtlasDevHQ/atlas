@@ -25,6 +25,7 @@ import {
   checkStrictPluginSecrets,
 } from "@atlas/api/lib/plugins/secrets";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
 import { getConfig } from "@atlas/api/lib/config";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
@@ -1008,6 +1009,34 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       const { orgId } = c.var.orgContext;
       const { id } = c.req.valid("param");
 
+      // #3188 — per-workspace `onUninstall` plugin hook. MUST run before
+      // the DELETE below: the hook lets the plugin revoke external webhook
+      // subscriptions / OAuth grants, which requires the install row (and
+      // the credentials inside its config) to still exist. The helper
+      // resolves (catalog_id, slug) from the installation row itself and
+      // never throws; the catch wrapper is defense-in-depth so even a
+      // defect in the helper can't abort the uninstall. Best-effort and
+      // non-atomic by design: if the row DELETE below fails after the hook
+      // ran, the external webhooks are already revoked — acceptable, since
+      // a re-install re-registers them.
+      yield* Effect.promise(async () => {
+        try {
+          await invokeOnUninstallHookForInstallRow({
+            workspaceId: orgId,
+            installationId: id,
+          });
+        } catch (err) {
+          log.warn(
+            {
+              orgId,
+              installationId: id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "onUninstall hook invocation failed — external subscriptions may be orphaned; uninstall proceeds",
+          );
+        }
+      });
+
       // DELETE ... RETURNING exposes catalog_id from the deleted row tuple,
       // which we scalar-lookup against plugin_catalog (untouched by this
       // statement) to capture slug alongside the uninstall. The subselect
@@ -1064,15 +1093,15 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       //     only at server shutdown (see PluginRegistry.teardownAll). No DB
       //     rows to clean.
       //   • Webhook subscriptions registered with external platforms (Slack,
-      //     GitHub, Stripe, …) are invisible to Atlas — the plugin author's
-      //     `teardown()` is the only place to unsubscribe, but that runs at
-      //     server shutdown, not on a per-workspace uninstall. EXPECTATION:
-      //     a plugin that subscribes an external webhook MUST revoke it from
-      //     the route or hook that owns the resource (uninstall is a DB-row
-      //     removal, not a process event). Atlas cannot revoke it for you;
-      //     an un-revoked webhook keeps delivering events to a workspace that
-      //     no longer has the plugin installed. Documented in the uninstall
-      //     contract (apps/docs/.../authoring-guide.mdx#uninstall-contract).
+      //     GitHub, Stripe, …) are invisible to Atlas — the per-workspace
+      //     `onUninstall(workspaceId)` SDK hook (#3188, invoked above BEFORE
+      //     the DELETE so credentials still exist) is the seam a plugin
+      //     implements to revoke them. The invocation is best-effort: a
+      //     throwing hook is logged and the uninstall proceeds, so a plugin
+      //     that doesn't implement the hook (or whose revocation fails)
+      //     still leaves the external subscription delivering events to a
+      //     workspace that no longer has the plugin installed. Documented in
+      //     the uninstall contract (apps/docs/.../authoring-guide.mdx#uninstall-contract).
       //
       // Failure mode: the two DELETEs are deliberately NOT atomic. If this
       // cleanup rejects after workspace_plugins has already committed, the

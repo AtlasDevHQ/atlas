@@ -115,6 +115,15 @@ export interface PluginLike {
   initialize?(ctx: PluginContextLike): Promise<void>;
   healthCheck?(): Promise<PluginHealthResult>;
   teardown?(): Promise<void>;
+  /**
+   * Per-workspace uninstall hook (#3188). Structural mirror of the SDK's
+   * `AtlasPluginBase.onUninstall`. Invoked by both uninstall paths (the
+   * marketplace DELETE route and `WorkspaceInstaller.uninstall`) BEFORE
+   * the install row + credential stores are removed, via
+   * `lib/plugins/uninstall-hook.ts`. Best-effort: a throw is logged and
+   * never aborts the uninstall.
+   */
+  onUninstall?(workspaceId: string): Promise<void> | void;
   getConfigSchema?(): ConfigSchemaField[];
   // Additional properties from specific plugin types are accessed via
   // type-narrowing in wiring.ts using structural checks.

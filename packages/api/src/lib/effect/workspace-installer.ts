@@ -57,6 +57,7 @@ import {
   parseConfigSchema,
 } from "@atlas/api/lib/plugins/secrets";
 import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
+import { invokeOnUninstallHook } from "@atlas/api/lib/plugins/uninstall-hook";
 import type {
   CatalogRowForDispatch,
   CredentialResult,
@@ -1148,6 +1149,37 @@ function makeWorkspaceInstallerService(): WorkspaceInstallerShape {
           }),
         );
       }
+
+      // #3188 — per-workspace `onUninstall` plugin hook. MUST run before
+      // the two-store teardown below: the hook's whole purpose is to let
+      // the plugin revoke external webhook subscriptions / OAuth grants,
+      // which requires the install row + credentials to still exist so
+      // the plugin can authenticate against the external platform.
+      // Best-effort: the helper never throws by contract, and the extra
+      // catchAll is defense-in-depth so even a defect in the helper
+      // can't abort the uninstall.
+      yield* Effect.tryPromise({
+        try: () =>
+          invokeOnUninstallHook({
+            workspaceId,
+            catalogId: catalog.id,
+            catalogSlug: catalog.slug,
+          }),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            {
+              workspaceId,
+              catalogSlug,
+              catalogId: catalog.id,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "WorkspaceInstaller.uninstall: onUninstall hook invocation failed — external subscriptions may be orphaned; uninstall proceeds",
+          );
+          return Effect.succeed(undefined);
+        }),
+      );
 
       // ── Two-store teardown (ADR-0003 order is load-bearing) ──────
       // 1) Credential row FIRST — credentials must not outlive the

@@ -237,6 +237,159 @@ function stringOrName(value: unknown, key: string = "name"): string | undefined 
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// onUninstall — workspace-attributed webhook revocation (#3188)
+// ---------------------------------------------------------------------------
+
+/**
+ * Query-param marker stamped onto the callback URL of any dynamic
+ * webhook Atlas registers with Jira on behalf of a workspace. Jira's
+ * dynamic webhook API (`/rest/api/3/webhook`) carries no metadata
+ * field (unlike e.g. Stripe webhook endpoints), so the callback URL is
+ * the only attribution channel: registration appends
+ * `?atlas_workspace_id=<workspaceId>` and revocation filters on it.
+ */
+export const JIRA_WEBHOOK_WORKSPACE_PARAM = "atlas_workspace_id";
+
+/**
+ * Canonical path prefix for Atlas-registered Jira webhook callback URLs
+ * — the *Atlas ownership* half of attribution (the workspace param is
+ * the other half). Any future registration path MUST build callback
+ * URLs as `<public API base>` + this prefix; revocation refuses to
+ * touch a webhook whose callback path lives anywhere else, even when it
+ * carries the workspace param. A path prefix (not an origin check) is
+ * deliberate: the public origin differs per region (api / api-eu /
+ * api-apac) and operators can rebrand it, which would strand
+ * previously-registered webhooks; the path is uniform and stable.
+ */
+export const JIRA_WEBHOOK_CALLBACK_PATH_PREFIX = "/api/v1/integrations/jira/webhooks";
+
+/**
+ * Whether a Jira dynamic webhook's callback URL positively attributes
+ * the subscription to (a) Atlas — its path is under
+ * {@link JIRA_WEBHOOK_CALLBACK_PATH_PREFIX} — and (b) the given
+ * workspace — it carries `?atlas_workspace_id=<workspaceId>`. Both
+ * halves must hold: the workspace param alone could appear on a
+ * non-Atlas callback and must not cause revocation.
+ *
+ * Fail-closed by design: a missing / non-string / unparseable URL, a
+ * non-Atlas callback path, or a marker for a different workspace, all
+ * return `false`. Revocation must NEVER delete a subscription it cannot
+ * attribute — webhooks created out-of-band (other tooling, another
+ * workspace, a human in the Jira admin UI) are not ours to touch.
+ */
+export function isJiraWebhookAttributableToWorkspace(
+  callbackUrl: unknown,
+  workspaceId: string,
+): boolean {
+  if (typeof callbackUrl !== "string" || callbackUrl.length === 0) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(callbackUrl);
+  } catch {
+    // intentionally ignored: an unparseable callback URL cannot be
+    // attributed, so the webhook is left alone (fail-closed).
+    return false;
+  }
+  const isAtlasPath =
+    parsed.pathname === JIRA_WEBHOOK_CALLBACK_PATH_PREFIX ||
+    parsed.pathname.startsWith(`${JIRA_WEBHOOK_CALLBACK_PATH_PREFIX}/`);
+  if (!isAtlasPath) return false;
+  return parsed.searchParams.get(JIRA_WEBHOOK_WORKSPACE_PARAM) === workspaceId;
+}
+
+/**
+ * List the credential's dynamic webhooks and revoke ONLY the ones whose
+ * callback URL attributes them to this workspace (see
+ * {@link isJiraWebhookAttributableToWorkspace}). Today the lazy-built
+ * Jira instance registers no webhooks, so this typically revokes zero —
+ * which is the safe, correct outcome; it becomes load-bearing the day a
+ * registration path lands.
+ *
+ * 401 throws {@link JiraUnauthorizedError} so the shared OAuth retry
+ * harness can refresh and retry once. 403/404 from the list endpoint
+ * mean the token can't see (or the deployment doesn't expose) the
+ * dynamic webhook API — nothing attributable to revoke, return cleanly.
+ * Any other non-OK response throws; the host's uninstall-hook seam logs
+ * it and the uninstall proceeds.
+ */
+async function runWebhookRevocation(
+  baseUrl: string,
+  accessToken: string,
+  workspaceId: string,
+  timeoutMs: number,
+): Promise<number> {
+  const headers = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+
+  const listResponse = await fetch(`${baseUrl}/rest/api/3/webhook`, {
+    method: "GET",
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (listResponse.status === 401) {
+    throw new JiraUnauthorizedError(
+      "Jira webhook list returned 401 — access token rejected",
+    );
+  }
+  if (listResponse.status === 403 || listResponse.status === 404) {
+    log.info(
+      { workspaceId, status: listResponse.status },
+      "Jira onUninstall: dynamic webhook API not visible to this token — nothing attributable to revoke",
+    );
+    return 0;
+  }
+  if (!listResponse.ok) {
+    throw new Error(
+      `Jira onUninstall: webhook list returned HTTP ${listResponse.status}`,
+    );
+  }
+
+  const parsed = (await listResponse.json()) as {
+    values?: Array<{ id?: unknown; url?: unknown }>;
+  };
+  const values = Array.isArray(parsed.values) ? parsed.values : [];
+  // ATTRIBUTION GATE — only ids whose callback URL carries THIS
+  // workspace's marker. Everything else (other workspaces, out-of-band
+  // registrations, missing url field) is left untouched.
+  const webhookIds = values
+    .filter((v) => isJiraWebhookAttributableToWorkspace(v.url, workspaceId))
+    .map((v) => v.id)
+    .filter((id): id is number => typeof id === "number");
+  if (webhookIds.length === 0) {
+    log.info(
+      { workspaceId, listed: values.length },
+      "Jira onUninstall: no webhook subscriptions attributable to this workspace — nothing to revoke",
+    );
+    return 0;
+  }
+
+  const deleteResponse = await fetch(`${baseUrl}/rest/api/3/webhook`, {
+    method: "DELETE",
+    headers,
+    body: JSON.stringify({ webhookIds }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (deleteResponse.status === 401) {
+    throw new JiraUnauthorizedError(
+      "Jira webhook revocation returned 401 — access token rejected",
+    );
+  }
+  if (!deleteResponse.ok) {
+    throw new Error(
+      `Jira onUninstall: webhook revocation returned HTTP ${deleteResponse.status} — ${webhookIds.length} subscription(s) may still be delivering`,
+    );
+  }
+  log.info(
+    { workspaceId, revoked: webhookIds.length },
+    "Jira onUninstall: revoked workspace-attributed webhook subscriptions",
+  );
+  return webhookIds.length;
+}
+
 /**
  * Factory returning a {@link LazyPluginBuilder} closed over operator
  * Jira OAuth App config. Tests inject a custom config; boot wiring in
@@ -330,6 +483,24 @@ export function createJiraLazyBuilder(
 
       async queryJira(jql: string, timeoutMs = 30_000): Promise<JiraQueryResult> {
         return withRetry((ctx) => runJqlSearch(ctx.baseUrl, ctx.accessToken, jql, timeoutMs));
+      },
+
+      /**
+       * Per-workspace uninstall hook (#3188) — reference implementation
+       * for the attribution rule: never revoke an external subscription
+       * you cannot positively attribute to the uninstalling workspace.
+       *
+       * Invoked by `lib/plugins/uninstall-hook.ts` BEFORE the install
+       * row and `integration_credentials` bundle are deleted, so this
+       * workspace's own OAuth token (DB-stored, never operator env —
+       * see the per-tenant credential rule) is still valid. Runs through
+       * the shared OAuth retry harness so an expired access token gets
+       * one refresh + retry, same as `queryJira`.
+       */
+      async onUninstall(uninstallWorkspaceId: string): Promise<void> {
+        await withRetry((ctx) =>
+          runWebhookRevocation(ctx.baseUrl, ctx.accessToken, uninstallWorkspaceId, 10_000),
+        );
       },
 
       async teardown(): Promise<void> {

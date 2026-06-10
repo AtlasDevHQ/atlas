@@ -24,7 +24,7 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
+import type { AtlasActionPlugin, PluginAction, PluginLogger } from "@useatlas/plugin-sdk";
 import { createJiraTool } from "./tool";
 import type { JiraPluginConfig } from "./tool";
 
@@ -78,6 +78,10 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
   create(config) {
     const jiraTool = createJiraTool(config);
 
+    // Captured at initialize() so onUninstall can log through the
+    // host-scoped child logger. Null until the host initializes us.
+    let log: PluginLogger | null = null;
+
     const action: PluginAction = {
       name: "createJiraTicket",
       description: PLUGIN_DESCRIPTION,
@@ -98,7 +102,38 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
       actions: [action],
 
       async initialize(ctx) {
+        log = ctx.logger;
         ctx.logger.info(`JIRA plugin initialized for project ${config.projectKey}`);
+      },
+
+      /**
+       * Per-workspace uninstall hook (#3188) — intentional no-op.
+       *
+       * This plugin instance is deployment-wide (one operator-config
+       * Basic credential, id `jira-action`) and is invoked whenever ANY
+       * workspace uninstalls the jira catalog entry. It never registers
+       * webhooks — so there is nothing here that can be positively
+       * attributed to (a) this plugin AND (b) the uninstalling
+       * workspace.
+       *
+       * The hard rule: never revoke an external subscription you cannot
+       * attribute to both. An earlier draft listed `/rest/api/3/webhook`
+       * and DELETEd every returned id — that nuked subscriptions created
+       * out-of-band by other tooling sharing the bot credential, for
+       * every workspace, on any single workspace's uninstall. If this
+       * plugin ever starts registering webhooks, tag each registration
+       * with a workspace marker (e.g. a `?atlas_workspace_id=<id>` query
+       * param on the callback URL, since Jira webhooks carry no metadata
+       * field) and revoke only the ids that carry the uninstalling
+       * workspace's marker — see the correctly-scoped per-workspace
+       * reference implementation in
+       * `packages/api/src/lib/integrations/jira/lazy-builder.ts`.
+       */
+      async onUninstall(workspaceId: string): Promise<void> {
+        log?.debug(
+          { workspaceId },
+          "JIRA onUninstall: no-op — this operator-config instance registers no per-workspace webhooks, so there is nothing attributable to revoke",
+        );
       },
 
       async healthCheck() {

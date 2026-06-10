@@ -403,6 +403,50 @@ export interface AtlasPluginBase<TConfig = undefined> {
   teardown?(): Promise<void>;
 
   /**
+   * Per-workspace uninstall hook (#3188). Invoked when a workspace
+   * uninstalls this plugin — on both uninstall paths (the marketplace
+   * `DELETE /api/v1/admin/marketplace/:id` route and
+   * `WorkspaceInstaller.uninstall`) — BEFORE Atlas removes the install
+   * row and credential stores. At call time the plugin can therefore
+   * still authenticate against the external platform to revoke webhook
+   * subscriptions, OAuth grants, or any other external state it
+   * registered for that workspace.
+   *
+   * Contrast with {@link teardown}, which runs once at process shutdown:
+   * `onUninstall` is per-workspace and fires at uninstall time. A plugin
+   * that registers an external webhook subscription (Slack, GitHub,
+   * Stripe, …) MUST revoke it here — an un-revoked webhook keeps
+   * delivering events to a workspace that no longer has the plugin
+   * installed, and Atlas cannot revoke it for you.
+   *
+   * Attribution rule: NEVER revoke an external subscription you cannot
+   * positively attribute to the uninstalling workspace (a recorded id,
+   * a metadata workspace tag, or a workspace marker in the callback
+   * URL). The hook may fire against a credential shared with other
+   * workspaces or out-of-band tooling — bulk-deleting everything the
+   * credential can see destroys state that isn't yours.
+   *
+   * Best-effort contract: a thrown error is logged by the host (with
+   * plugin id + workspaceId) and does NOT abort the uninstall — the
+   * install-row removal proceeds; each invocation also runs against a
+   * host-side deadline (15s), so don't rely on this hook for
+   * load-bearing cleanup.
+   *
+   * Coverage carve-outs: the hook does NOT fire on datasource
+   * disconnects (datasource installs are removed via the
+   * datasource-specific delete paths) or on a workspace purge — only
+   * the two plugin-uninstall paths above invoke it.
+   *
+   * Resolution: the host invokes the hook on the per-workspace plugin
+   * instance built by its lazy loader (SaaS / marketplace installs), and
+   * on any globally-registered plugin whose `id` equals the uninstalled
+   * catalog entry's slug, catalog id, or `<slug>-<type>` (the naming
+   * convention used by the bundled plugins, e.g. `jira-action` for
+   * catalog slug `jira`).
+   */
+  onUninstall?(workspaceId: string): Promise<void> | void;
+
+  /**
    * Agent lifecycle and HTTP hooks using the matcher + handler pattern.
    * Matchers are optional — omit to always fire.
    */

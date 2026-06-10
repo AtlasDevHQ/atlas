@@ -329,6 +329,44 @@ describe("jiraPlugin — initialize", () => {
 });
 
 // ---------------------------------------------------------------------------
+// onUninstall (#3188) — intentional no-op on this operator-config instance
+// ---------------------------------------------------------------------------
+
+describe("jiraPlugin — onUninstall", () => {
+  // This deployment-wide instance (one operator-config Basic credential,
+  // id "jira-action") is invoked whenever ANY workspace uninstalls the
+  // jira catalog entry, and it never registers webhooks — so nothing it
+  // could list from /rest/api/3/webhook is attributable to (a) itself AND
+  // (b) the uninstalling workspace. The hook is therefore a deliberate
+  // no-op. An earlier draft bulk-DELETEd every id the list returned,
+  // destroying subscriptions registered out-of-band by other tooling
+  // sharing the bot credential. These tests pin the attribution rule:
+  // no webhook API call is EVER issued from here.
+
+  test("never calls the Jira webhook API — unattributable subscriptions must not be deleted", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls.push(typeof input === "string" ? input : (input as Request).url);
+      // Even a tempting list response full of webhook ids must go unread.
+      return new Response(JSON.stringify({ values: [{ id: 7 }, { id: 9 }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+
+    const plugin = jiraPlugin(VALID_CONFIG);
+    await plugin.onUninstall!("ws-1");
+
+    expect(calls).toEqual([]);
+  });
+
+  test("resolves cleanly so the host records it as invoked, not failed", async () => {
+    const plugin = jiraPlugin(VALID_CONFIG);
+    await expect(plugin.onUninstall!("ws-2")).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // textToADF (extracted helper)
 // ---------------------------------------------------------------------------
 

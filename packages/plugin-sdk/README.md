@@ -117,6 +117,7 @@ All plugins share these fields from `AtlasPluginBase`:
 | `initialize(ctx)` | `(AtlasPluginContext) => Promise<void>` | No | Called once at server boot. Throw to block startup |
 | `healthCheck()` | `() => Promise<PluginHealthResult>` | No | Periodic health probe |
 | `teardown()` | `() => Promise<void>` | No | Graceful shutdown (LIFO order) |
+| `onUninstall(workspaceId)` | `(string) => Promise<void> \| void` | No | Per-workspace uninstall hook — revoke external webhook subscriptions / OAuth grants the plugin registered for that workspace |
 | `hooks` | `PluginHooks` | No | Agent lifecycle and HTTP hooks |
 | `schema` | `Record<string, PluginTableDefinition>` | No | Declarative table definitions for the internal DB |
 
@@ -124,6 +125,7 @@ All plugins share these fields from `AtlasPluginBase`:
 
 ```
 register → initialize(ctx) → healthCheck() → ... → teardown()
+                          └── onUninstall(workspaceId)   (per-workspace, at uninstall time)
 ```
 
 1. **Register** — Plugins are listed in the `plugins` array in `atlas.config.ts`. Config is validated at factory call time (before server starts).
@@ -134,7 +136,8 @@ register → initialize(ctx) → healthCheck() → ... → teardown()
    - `ctx.logger` — Pino-compatible child logger scoped to the plugin.
    - `ctx.config` — Resolved Atlas configuration.
 3. **Health check** — Periodic probe. Return `{ healthy: false, message }` to signal degradation. Never throw. Results surface in the `plugins` component of `GET /api/health` — a failing probe shifts the top-level status to `degraded` (HTTP 200, never 503).
-4. **Teardown** — Graceful shutdown in reverse registration order (LIFO). Use `teardown()` to release state Atlas can't see — external webhook subscriptions, third-party connections, drained queues. **Note:** `teardown()` runs on server shutdown, *not* on a per-workspace uninstall (uninstall is a DB-row removal, not a process event).
+4. **Teardown** — Graceful shutdown in reverse registration order (LIFO). Use `teardown()` to release process-level state — third-party connections, drained queues, timers. **Note:** `teardown()` runs on server shutdown, *not* on a per-workspace uninstall (uninstall is a DB-row removal, not a process event) — per-workspace cleanup belongs in `onUninstall`.
+5. **Per-workspace uninstall** — `onUninstall(workspaceId)` fires when a workspace uninstalls the plugin (both the marketplace `DELETE` route and `WorkspaceInstaller.uninstall`), **before** Atlas removes the install row and credential stores — so the plugin can still authenticate against the external platform. Use it to revoke webhook subscriptions, OAuth grants, or any other external state registered for that workspace. **Attribution rule: never revoke a subscription you can't positively attribute to the uninstalling workspace** (recorded id, metadata tag, or workspace marker in the callback URL) — the credential may be shared with other workspaces or out-of-band tooling. Best-effort: a thrown error is logged with the plugin id + workspaceId and the uninstall proceeds (each invocation also runs against a 15s host-side deadline); never rely on it for load-bearing cleanup. It does **not** fire on datasource disconnects or a workspace purge — only the two plugin-uninstall paths above. See `packages/api/src/lib/integrations/jira/lazy-builder.ts` for a reference implementation (revokes only workspace-attributed Jira dynamic webhook subscriptions).
 
 > **v1.1 note:** `AtlasPluginContext` will gain `executeQuery`, `conversations`, and `actions` fields for full host-level decoupling. Currently, interaction plugins that need these inject them via config callbacks.
 
@@ -148,7 +151,7 @@ register → initialize(ctx) → healthCheck() → ... → teardown()
 | `scheduled_tasks` rows tagged with the plugin's `catalog_id` | No (deleted) | Scoped by `(plugin_id, org_id)` so cleanup never crosses workspaces. `scheduled_task_runs` cascade via FK. **Cleanup runs in a separate statement after the install row is removed; partial failure leaves the uninstall committed and is recorded as a `cleanupFailed: true` audit event.** |
 | `plugin_<pluginId>_*` tables (declared via `schema`) | **Yes** (retained) | Reinstall picks up where it left off — cached digest history, sync cursors, etc. Hard-reset only via workspace purge. |
 | In-process hook registrations | **Not detached** on uninstall — `teardown()` runs only at server shutdown | Hooks become inert for the uninstalled workspace because dispatch checks `workspace_plugins` for the installation. |
-| Webhook subscriptions registered with external platforms | **Yes** (unless your `teardown()` removes them) | Atlas has no visibility into external state. Note `teardown()` is server-shutdown only — for per-workspace cleanup, do it inside the route or hook that owns the resource. |
+| Webhook subscriptions registered with external platforms | **Yes — unless your `onUninstall(workspaceId)` revokes them** | Atlas has no visibility into external state. Implement `onUninstall` to revoke the subscription — it fires before the install row and credentials are removed, so your plugin can still authenticate. Revoke only subscriptions attributable to the uninstalling workspace. An un-revoked webhook keeps delivering events to a workspace that no longer has the plugin installed. Note the hook fires only on plugin uninstalls — datasource disconnects and workspace purges skip it. |
 
 If your plugin creates `scheduled_tasks` rows, set `plugin_id = $catalogId` and `org_id = $orgId` on insert so the uninstall cleanup picks them up. Untagged tasks (`plugin_id IS NULL`) are treated as user-created and survive uninstall. See the [authoring guide](https://docs.useatlas.dev/plugins/authoring-guide#uninstall-contract) for the full lifecycle.
 

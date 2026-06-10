@@ -56,6 +56,8 @@ const HttpsUrlSchema = z
         const u = new URL(raw);
         return u.protocol === "https:";
       } catch {
+        // intentionally ignored: URL constructor throw is the negative
+        // validation signal — the user sees the .refine message.
         return false;
       }
     },

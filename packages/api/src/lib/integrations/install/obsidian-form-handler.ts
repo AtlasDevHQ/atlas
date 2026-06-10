@@ -52,6 +52,8 @@ const ApiUrlSchema = z
         new URL(raw);
         return true;
       } catch {
+        // intentionally ignored: URL constructor throw is the negative
+        // validation signal — the user sees the .refine message.
         return false;
       }
     },

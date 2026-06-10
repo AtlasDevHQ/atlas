@@ -1,0 +1,54 @@
+{
+  "name": "@useatlas/railway-sandbox",
+  "version": "0.0.1",
+  "description": "Atlas Railway sandbox plugin",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test __tests__/railway-sandbox.test.ts"
+  },
+  "keywords": [
+    "atlas",
+    "text-to-sql",
+    "plugin",
+    "sandbox",
+    "railway"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "plugins/railway-sandbox"
+  },
+  "homepage": "https://docs.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "railway": ">=0.1.0",
+    "@useatlas/plugin-sdk": ">=0.0.1"
+  },
+  "devDependencies": {
+    "ai": "^6.0.193",
+    "hono": "^4.12.23",
+    "zod": "^4.4.3",
+    "@useatlas/plugin-sdk": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "railway": {
+      "optional": true
+    }
+  }
+}

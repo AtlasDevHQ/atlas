@@ -310,7 +310,7 @@
     },
     "packages/plugin-sdk": {
       "name": "@useatlas/plugin-sdk",
-      "version": "0.0.8",
+      "version": "0.0.9",
       "devDependencies": {
         "ai": "^6.0.193",
         "hono": "^4.12.23",
@@ -737,6 +737,23 @@
         "ai": "^6.0.0",
         "zod": "^4.0.0",
       },
+    },
+    "plugins/railway-sandbox": {
+      "name": "@useatlas/railway-sandbox",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@useatlas/plugin-sdk": "workspace:*",
+        "ai": "^6.0.193",
+        "hono": "^4.12.23",
+        "zod": "^4.4.3",
+      },
+      "peerDependencies": {
+        "@useatlas/plugin-sdk": ">=0.0.1",
+        "railway": ">=0.1.0",
+      },
+      "optionalPeers": [
+        "railway",
+      ],
     },
     "plugins/salesforce": {
       "name": "@useatlas/salesforce",
@@ -2130,6 +2147,8 @@
     "@useatlas/obsidian-reader": ["@useatlas/obsidian-reader@workspace:plugins/obsidian-reader"],
 
     "@useatlas/plugin-sdk": ["@useatlas/plugin-sdk@workspace:packages/plugin-sdk"],
+
+    "@useatlas/railway-sandbox": ["@useatlas/railway-sandbox@workspace:plugins/railway-sandbox"],
 
     "@useatlas/react": ["@useatlas/react@workspace:packages/react"],
 

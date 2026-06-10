@@ -1,8 +1,8 @@
 /**
  * Sandbox credential storage.
  *
- * Stores per-org BYOC sandbox provider credentials (Vercel, E2B, Daytona)
- * in the internal database. Follows the same pattern as
+ * Stores per-org BYOC sandbox provider credentials (Vercel, E2B, Daytona,
+ * Railway) in the internal database. Follows the same pattern as
  * `packages/api/src/lib/github/store.ts`.
  */
 
@@ -17,7 +17,7 @@ const log = createLogger("sandbox-credentials");
 // Types
 // ---------------------------------------------------------------------------
 
-export const SANDBOX_PROVIDERS = ["vercel", "e2b", "daytona"] as const;
+export const SANDBOX_PROVIDERS = ["vercel", "e2b", "daytona", "railway"] as const;
 
 export type SandboxProvider = (typeof SANDBOX_PROVIDERS)[number];
 

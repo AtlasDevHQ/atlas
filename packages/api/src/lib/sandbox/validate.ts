@@ -245,6 +245,104 @@ export async function validateDaytonaCredentials(
 }
 
 // ---------------------------------------------------------------------------
+// Railway
+// ---------------------------------------------------------------------------
+
+/** Railway public GraphQL API — fixed endpoint, no user-supplied URL (no SSRF surface). */
+const RAILWAY_GRAPHQL_ENDPOINT = "https://backboard.railway.com/graphql/v2";
+
+interface RailwayGraphQLResponse {
+  data?: {
+    environment?: { id?: string; name?: string } | null;
+    me?: { name?: string | null } | null;
+  } | null;
+  errors?: { message?: string }[];
+}
+
+export async function validateRailwayCredentials(
+  token: string,
+  environmentId?: string,
+): Promise<ValidationResult> {
+  // When an environment ID is supplied, verify the token can actually see
+  // that environment — the sandbox SDK creates sandboxes there, and the `me`
+  // query is rejected for workspace/project-scoped tokens. Without one, fall
+  // back to `me` (account tokens).
+  const body = environmentId
+    ? {
+        query: "query ($id: String!) { environment(id: $id) { id name } }",
+        variables: { id: environmentId },
+      }
+    : { query: "query { me { name } }" };
+
+  try {
+    const res = await fetch(RAILWAY_GRAPHQL_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(VALIDATION_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const status = res.status;
+      if (status === 401 || status === 403) {
+        return { valid: false, error: "Invalid API token — check your Railway token" };
+      }
+      return { valid: false, error: `Railway API returned ${status}` };
+    }
+    // Validity here is decided by the BODY (GraphQL reports failures as 200 +
+    // errors[]), unlike the status-code-driven providers above — so a parse
+    // failure must fail closed, not default to an empty (error-free, thus
+    // "valid") object.
+    let data: RailwayGraphQLResponse;
+    try {
+      data = (await res.json()) as RailwayGraphQLResponse;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err: msg }, "Railway credential validation returned a non-JSON response");
+      return {
+        valid: false,
+        error: "Railway API returned an unexpected non-JSON response — retry in a moment",
+      };
+    }
+    // Railway's GraphQL API reports auth/scope failures as 200 + errors[].
+    // The upstream message is useful ("Not Authorized" vs "Environment not
+    // found") but is external content — truncate and strip control chars
+    // before embedding it in the admin-facing error.
+    if (data.errors && data.errors.length > 0) {
+      const raw = data.errors[0]?.message ?? "unknown error";
+      // eslint-disable-next-line no-control-regex -- scrubbing control chars from external content is the point
+      const detail = raw.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200);
+      return {
+        valid: false,
+        error: environmentId
+          ? `Railway rejected the token for environment ${environmentId}: ${detail}. ` +
+            "Verify the token's scope includes that environment."
+          : `Railway rejected the token: ${detail}. ` +
+            "Workspace/project-scoped tokens require an Environment ID.",
+      };
+    }
+    if (environmentId) {
+      const env = data.data?.environment;
+      if (!env?.id) {
+        return {
+          valid: false,
+          error: `Environment ${environmentId} not found — verify the Environment ID`,
+        };
+      }
+      return { valid: true, displayName: env.name ? `Railway (${env.name})` : "Railway" };
+    }
+    const name = data.data?.me?.name;
+    return { valid: true, displayName: name ? `Railway (${name})` : "Railway" };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Railway credential validation failed");
+    return { valid: false, error: `Could not reach Railway API: ${msg}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -278,6 +376,17 @@ export async function validateCredentials(
       }
       const apiUrl = typeof credentials.apiUrl === "string" ? credentials.apiUrl : undefined;
       return validateDaytonaCredentials(apiKey, apiUrl);
+    }
+    case "railway": {
+      const token = credentials.token;
+      if (typeof token !== "string" || !token) {
+        return { valid: false, error: "API token is required" };
+      }
+      const environmentId =
+        typeof credentials.environmentId === "string" && credentials.environmentId
+          ? credentials.environmentId
+          : undefined;
+      return validateRailwayCredentials(token, environmentId);
     }
     default:
       return { valid: false, error: `Unknown sandbox provider: ${provider}` };

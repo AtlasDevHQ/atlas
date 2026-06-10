@@ -24,6 +24,7 @@ on:
       - 'nsjail-v*'
       - 'sidecar-v*'
       - 'vercel-sandbox-v*'
+      - 'railway-sandbox-v*'
       # Plugins — interaction
       - 'chat-v*'
       - 'slack-v*'
@@ -150,6 +151,10 @@ jobs:
       - name: Publish @useatlas/vercel-sandbox
         if: startsWith(github.ref, 'refs/tags/vercel-sandbox-v')
         run: cd plugins/vercel-sandbox && npm publish --access public --provenance
+
+      - name: Publish @useatlas/railway-sandbox
+        if: startsWith(github.ref, 'refs/tags/railway-sandbox-v')
+        run: cd plugins/railway-sandbox && npm publish --access public --provenance
 
       # Interaction
       - name: Publish @useatlas/chat

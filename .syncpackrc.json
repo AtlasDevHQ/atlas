@@ -47,6 +47,7 @@
         "@useatlas/nsjail",
         "@useatlas/sidecar",
         "@useatlas/vercel-sandbox",
+        "@useatlas/railway-sandbox",
         "@useatlas/teams",
         "@useatlas/webhook",
         "@useatlas/webhook-action",

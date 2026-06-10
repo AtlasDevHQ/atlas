@@ -46427,7 +46427,8 @@
                             "enum": [
                               "vercel",
                               "e2b",
-                              "daytona"
+                              "daytona",
+                              "railway"
                             ]
                           },
                           "displayName": {

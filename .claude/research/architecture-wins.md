@@ -2534,7 +2534,7 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 **Date:** 2026-06-10
 **Issue:** none (architecture-review-2026-06-09.md candidate 4)
-**PR:** TBD
+**PR:** #3356
 
 **Problem:** Admin config pages hand-wired the same load → per-field `useState` → hand-rolled dirty compare → manual reset-on-refetch → save loop on top of `useAdminFetch`/`useAdminMutation`. Proactive-chat (the worst offender, ~40% state bookkeeping) listed every field four times — useState, reset effect, dirty compare, save payload — so adding a field to the form but forgetting it in the dirty compare was a silent bug (Save stays disabled, or stays enabled forever). The two audit retention panels additionally hand-rolled the entire fetch lifecycle (cancelled flag, loading/error state, manual JSON cast) that `useAdminFetch` already owns.
 

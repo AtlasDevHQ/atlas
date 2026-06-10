@@ -5,6 +5,12 @@ import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useConfigForm } from "@/ui/hooks/use-config-form";
+import {
+  clampIntInput,
+  isIntInRange,
+  RETENTION_CUSTOM_DAYS_MIN,
+  RETENTION_HARD_DELETE_DELAY_MIN,
+} from "./numeric-clamp";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -74,10 +80,26 @@ interface PolicyResponse {
   policy: RetentionPolicy | null;
 }
 
+// Numeric fields are strings so intermediate values ("3" en route to "30",
+// or an emptied field) can exist while focused; blur clamps them and Save
+// is gated on `isIntInRange` (#3361).
 interface RetentionFormValues extends Record<string, unknown> {
   preset: RetentionPreset;
-  customDays: number;
-  hardDeleteDelay: number;
+  customDays: string;
+  hardDeleteDelay: string;
+}
+
+/** Per-field range checks — drive the Save gate and the inline hints. */
+function numericFieldErrors(v: RetentionFormValues) {
+  return {
+    customDays:
+      v.preset === "custom" &&
+      !isIntInRange(v.customDays, RETENTION_CUSTOM_DAYS_MIN),
+    hardDeleteDelay: !isIntInRange(
+      v.hardDeleteDelay,
+      RETENTION_HARD_DELETE_DELAY_MIN,
+    ),
+  };
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -97,21 +119,21 @@ export function RetentionPanel() {
     saveMethod: "PUT",
     toForm: (d) => {
       if (!d.policy) {
-        return { preset: "unlimited", customDays: 90, hardDeleteDelay: 30 };
+        return { preset: "unlimited", customDays: "90", hardDeleteDelay: "30" };
       }
       const pr = presetFromDays(d.policy.retentionDays);
       return {
         preset: pr,
         customDays:
           pr === "custom" && d.policy.retentionDays !== null
-            ? d.policy.retentionDays
-            : 90,
-        hardDeleteDelay: d.policy.hardDeleteDelayDays,
+            ? String(d.policy.retentionDays)
+            : "90",
+        hardDeleteDelay: String(d.policy.hardDeleteDelayDays),
       };
     },
     toPayload: (v) => ({
-      retentionDays: daysFromPreset(v.preset, v.customDays),
-      hardDeleteDelayDays: v.hardDeleteDelay,
+      retentionDays: daysFromPreset(v.preset, Number(v.customDays)),
+      hardDeleteDelayDays: Number(v.hardDeleteDelay),
     }),
   });
 
@@ -135,6 +157,13 @@ export function RetentionPanel() {
 
   async function handleSave() {
     setSaveSuccess(false);
+    // Defense-in-depth: the Save button is disabled while a numeric field
+    // is out of range, but guard direct calls too so an out-of-range draft
+    // can never reach the server as a 400.
+    if (form.values) {
+      const errs = numericFieldErrors(form.values);
+      if (errs.customDays || errs.hardDeleteDelay) return;
+    }
     const result = await form.save();
     if (result.ok) {
       setSaveSuccess(true);
@@ -210,6 +239,14 @@ export function RetentionPanel() {
   }
   const { fields } = form;
 
+  // Out-of-range numeric drafts gate Save; blur clamps them back in range.
+  const fieldErrors = numericFieldErrors({
+    preset: fields.preset.value,
+    customDays: fields.customDays.value,
+    hardDeleteDelay: fields.hardDeleteDelay.value,
+  });
+  const numericFieldsInvalid = fieldErrors.customDays || fieldErrors.hardDeleteDelay;
+
   return (
     <div className="space-y-6">
       {/* Status cards */}
@@ -275,11 +312,22 @@ export function RetentionPanel() {
                 <Input
                   id="custom-days"
                   type="number"
-                  min={7}
+                  min={RETENTION_CUSTOM_DAYS_MIN}
                   value={fields.customDays.value}
-                  onChange={(e) => fields.customDays.set(parseInt(e.target.value, 10) || 7)}
+                  onChange={(e) => fields.customDays.set(e.target.value)}
+                  onBlur={(e) =>
+                    fields.customDays.set(
+                      clampIntInput(e.target.value, RETENTION_CUSTOM_DAYS_MIN),
+                    )
+                  }
+                  aria-invalid={fieldErrors.customDays || undefined}
                   className="w-full"
                 />
+                {fieldErrors.customDays && (
+                  <p className="text-xs text-destructive">
+                    Enter a whole number of at least 7 days.
+                  </p>
+                )}
               </div>
             )}
 
@@ -288,11 +336,22 @@ export function RetentionPanel() {
               <Input
                 id="hard-delete-delay"
                 type="number"
-                min={0}
+                min={RETENTION_HARD_DELETE_DELAY_MIN}
                 value={fields.hardDeleteDelay.value}
-                onChange={(e) => fields.hardDeleteDelay.set(parseInt(e.target.value, 10) || 0)}
+                onChange={(e) => fields.hardDeleteDelay.set(e.target.value)}
+                onBlur={(e) =>
+                  fields.hardDeleteDelay.set(
+                    clampIntInput(e.target.value, RETENTION_HARD_DELETE_DELAY_MIN),
+                  )
+                }
+                aria-invalid={fieldErrors.hardDeleteDelay || undefined}
                 className="w-full"
               />
+              {fieldErrors.hardDeleteDelay && (
+                <p className="text-xs text-destructive">
+                  Enter a whole number of days (0 or more).
+                </p>
+              )}
               <p className="text-xs text-muted-foreground">
                 Days after soft-delete before permanent removal. Default 30.
               </p>
@@ -309,7 +368,7 @@ export function RetentionPanel() {
           )}
 
           <div className="flex items-center gap-3">
-            <Button onClick={handleSave} disabled={form.saving}>
+            <Button onClick={handleSave} disabled={form.saving || numericFieldsInvalid}>
               {form.saving ? "Saving..." : "Save Policy"}
             </Button>
             <AlertDialog>

@@ -55,3 +55,45 @@ Re-run the grep (and check `SaasCrm`'s union form) when adding or removing a fla
 ## Deploy mode is enterprise-gated
 
 `ATLAS_DEPLOY_MODE=saas` requires `/ee`. Without enterprise enabled, deploy mode always resolves to `self-hosted`. The frontend reads `deployMode` from the API to branch admin UX.
+
+## Deploy-mode parity contract
+
+Outcome of the #3374 drift audit. The recurring bug class: a feature surface (admin control, settings flag, install path, marketplace listing) exists in both deploy modes but its runtime consumer is only wired in one — so one mode shows controls that silently do nothing, or applies gates meant for the other mode (exemplars: #3370, #3295, #3301, #3375–#3379). These rules exist to make that class un-writable, or at least un-reviewable-past.
+
+### Rule 1 — every admin-visible write names its runtime reader, in both modes
+
+Before shipping any admin mutation (settings PUT, connect/install endpoint, config save), the PR must be able to answer: **what non-test code reads this value at runtime, on SaaS and on self-hosted?** A display-only reader (status endpoint echoing the stored value back to the UI) does not count — that's how #3370 shipped a four-provider connect flow whose credentials nothing consumed. If one mode has no reader, either wire it or gate the surface out of that mode in the same PR; "stored for future use" requires explicit UI copy saying so.
+
+The same test applies in reverse when *removing* a reader: if runtime code stops consuming a stored value, the admin surface that writes it must go (or be re-scoped) in the same PR.
+
+### Rule 2 — where deploy-mode branches may live
+
+Mode branch points are expensive (each one is half of a potential drift pair), so they're restricted to the blessed sources of truth and their direct consumers:
+
+- **API:** branch on capability via `yield* TheTag` (Noop layers short-circuit), or — for the rare value-level boolean — `isEnterpriseEnabled()` / `getConfig()?.deployMode` from `lib/effect/enterprise-config.ts` / the resolved config. Never `process.env.ATLAS_DEPLOY_MODE` reads scattered in feature code, and never `hasInternalDB()` as a deploy-mode proxy (it gates *storage*, not mode).
+- **Web:** `useDeployMode()` only. Its resolution can be a **guess** (hostname fallback while loading / on fetch error / `enabled: false`), so consumers commit to it by risk tier: purely cosmetic read-only branches (copy, icons) may render from the guess; a component that swaps whole mode-specific views renders a neutral/loading state until `loading === false`; and a flow that *writes* mode-specific values (e.g. a settings vocabulary that differs per mode) must not save while `loading` is `true` or `error` is non-null — a guessed mode never decides what gets persisted (#3378).
+- **Deploy pins:** SaaS-specific runtime defaults (sandbox priority, plugin catalog) live in `deploy/api/atlas.config.ts`, not in code-level `if (saas)` branches.
+
+A web mode branch and the API route it talks to form a **pair**: whatever the UI hides in a mode, the API must reject in that mode (and vice versa). Hiding in the UI alone is not a gate — `saas_eligible` got this right only after #3301 added the install-time refusal to match the listing filter.
+
+### Rule 3 — one value vocabulary per setting, end to end
+
+A stored value must mean the same thing to every reader and every writer, in both modes. The sandbox page wrote provider keys (`"e2b"`) into a setting whose runtime reader matches backend ids (`"e2b-sandbox"`) — both sides worked in isolation and the feature was silently inert (#3375). When a setting's value set is an enum consumed by both `@atlas/api` and `@atlas/web`, it belongs in `@useatlas/schemas`/`@useatlas/types` (see #3371), and the settings-registry `description` documents the canonical value set.
+
+### Rule 4 — `saasVisible` is a read+write contract, not a display hint
+
+If a setting is hidden from SaaS workspace admins on `GET /admin/settings`, the PUT/DELETE path must enforce the same boundary — an invisible-but-writable setting is undebuggable (written once, no UI to see or clear it). A dedicated admin page that needs to write a flagged key on SaaS (today: the sandbox page's `ATLAS_SANDBOX_BACKEND`) means the flag value is wrong or the flag semantics need a second axis — decide explicitly, don't rely on the gate's absence (#3376 tracks the decision).
+
+### Rule 5 — docs state mode scope explicitly
+
+A guide for a surface that behaves differently per mode says so per mode; "works on Atlas" claims that are true in only one mode are class-6 drift. When a parity bug is fixed or scoped (e.g. a feature declared SaaS-only), the docs change rides the same PR — same discipline as the chat-plugin contract table.
+
+### Review checklist (the short form)
+
+For any PR touching an admin surface, a settings key, an install path, or a `useDeployMode()`/Tag branch:
+
+1. Name the runtime reader of every new write, per mode (Rule 1).
+2. If the UI hides/shows something by mode, point to the API gate that matches it (Rule 2).
+3. If a setting's value set changed, confirm every reader and writer share the vocabulary (Rule 3).
+4. If a setting is `saasVisible: false`, confirm the write path enforces it (Rule 4).
+5. If mode behavior changed, the docs say which mode (Rule 5).

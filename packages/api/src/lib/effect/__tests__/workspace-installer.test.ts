@@ -73,6 +73,7 @@ const slackDeleteCalls: string[] = [];
 const mockDeleteSlackInstallation: Mock<(teamId: string) => Promise<void>> = mock(
   async (teamId: string) => {
     slackDeleteCalls.push(teamId);
+    teardownSequence.push("slackDelete");
   },
 );
 
@@ -132,6 +133,32 @@ mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mock(() => Promise.resolve()),
   deleteDiscordInstallation: mock(() => Promise.resolve()),
   deleteDiscordInstallationByOrg: mockDeleteDiscordInstallationByOrg,
+}));
+
+// Per-workspace onUninstall hook (#3188) — capture invocations so the
+// uninstall tests can assert the hook fires with the right identifiers
+// and BEFORE the credential-store teardown. A shared sequence log lets
+// ordering assertions stay cheap. Mock ALL exports of the module.
+const onUninstallHookCalls: Array<{
+  workspaceId: string;
+  catalogId: string;
+  catalogSlug?: string | null;
+}> = [];
+const teardownSequence: string[] = [];
+const mockInvokeOnUninstallHook: Mock<
+  (args: { workspaceId: string; catalogId: string; catalogSlug?: string | null }) => Promise<{
+    invoked: string[];
+    failures: Array<{ pluginId: string; error: string }>;
+  }>
+> = mock(async (args) => {
+  onUninstallHookCalls.push(args);
+  teardownSequence.push("onUninstall");
+  return { invoked: [], failures: [] };
+});
+
+mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
+  invokeOnUninstallHook: mockInvokeOnUninstallHook,
+  invokeOnUninstallHookForInstallRow: mock(async () => ({ invoked: [], failures: [] })),
 }));
 
 // Install handler dispatch — let tests inject per-slug handlers.
@@ -237,7 +264,15 @@ function resetState() {
   twentyDeleteCalls.length = 0;
   bridgeRegisterCalls.length = 0;
   bridgeUnregisterCalls.length = 0;
+  onUninstallHookCalls.length = 0;
+  teardownSequence.length = 0;
   dispatchHandlers.clear();
+  mockInvokeOnUninstallHook.mockClear();
+  mockInvokeOnUninstallHook.mockImplementation(async (args) => {
+    onUninstallHookCalls.push(args);
+    teardownSequence.push("onUninstall");
+    return { invoked: [], failures: [] };
+  });
   mockInternalQuery.mockClear();
   mockDeleteSlackInstallation.mockClear();
   mockDeleteCredentialBundle.mockClear();
@@ -996,6 +1031,68 @@ describe("WorkspaceInstaller.uninstall", () => {
     );
     expect(wpIdx).toBeGreaterThanOrEqual(0);
     expect(stIdx).toBeGreaterThan(wpIdx);
+  });
+
+  // ── #3188 — per-workspace onUninstall hook ─────────────────────────
+
+  it("invokes the onUninstall hook with (workspaceId, catalogId, slug) BEFORE credential teardown (#3188)", async () => {
+    queueCatalogLookup("slack", { pillar: "chat", install_model: "oauth" });
+    queueInstallLookup(WSID, "catalog:slack", {
+      id: "install-1",
+      install_id: "install-1",
+      team_id: "T-team-123",
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM workspace_plugins"),
+      rows: [],
+    });
+
+    const installer = await getLiveService();
+    await runEffect(installer.uninstall(WSID, "slack"));
+
+    expect(onUninstallHookCalls).toEqual([
+      { workspaceId: WSID, catalogId: "catalog:slack", catalogSlug: "slack" },
+    ]);
+    // The hook must run while credentials still exist — before the
+    // chat_cache (Slack) credential delete.
+    expect(teardownSequence).toEqual(["onUninstall", "slackDelete"]);
+  });
+
+  it("does not invoke the hook when no install row exists (#3188)", async () => {
+    queueCatalogLookup("slack", { pillar: "chat", install_model: "oauth" });
+    queueInstallLookup(WSID, "catalog:slack", null);
+    const installer = await getLiveService();
+    const exit = await Effect.runPromiseExit(installer.uninstall(WSID, "slack"));
+    expect(exit._tag).toBe("Failure");
+    expect(onUninstallHookCalls).toEqual([]);
+  });
+
+  it("uninstall still succeeds when the hook invocation rejects (#3188)", async () => {
+    // The helper never rejects by contract, but the call site is
+    // defense-in-depth wrapped — a defect must not abort the uninstall.
+    mockInvokeOnUninstallHook.mockImplementation(async () => {
+      throw new Error("hook helper defect");
+    });
+    queueCatalogLookup("slack", { pillar: "chat", install_model: "oauth" });
+    queueInstallLookup(WSID, "catalog:slack", {
+      id: "install-1",
+      install_id: "install-1",
+      team_id: "T-team-123",
+    });
+    internalQueryResponses.push({
+      match: (sql) => sql.includes("DELETE FROM workspace_plugins"),
+      rows: [],
+    });
+
+    const installer = await getLiveService();
+    await runEffect(installer.uninstall(WSID, "slack"));
+
+    // Both stores were still cleared.
+    expect(slackDeleteCalls).toEqual(["T-team-123"]);
+    const deleteSqlIdx = internalQueryCalls.findIndex((c) =>
+      c.sql.includes("DELETE FROM workspace_plugins"),
+    );
+    expect(deleteSqlIdx).toBeGreaterThanOrEqual(0);
   });
 });
 

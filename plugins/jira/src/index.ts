@@ -24,7 +24,7 @@
 
 import { z } from "zod";
 import { createPlugin } from "@useatlas/plugin-sdk";
-import type { AtlasActionPlugin, PluginAction } from "@useatlas/plugin-sdk";
+import type { AtlasActionPlugin, PluginAction, PluginLogger } from "@useatlas/plugin-sdk";
 import { createJiraTool } from "./tool";
 import type { JiraPluginConfig } from "./tool";
 
@@ -78,6 +78,10 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
   create(config) {
     const jiraTool = createJiraTool(config);
 
+    // Captured at initialize() so onUninstall can log through the
+    // host-scoped child logger. Null until the host initializes us.
+    let log: PluginLogger | null = null;
+
     const action: PluginAction = {
       name: "createJiraTicket",
       description: PLUGIN_DESCRIPTION,
@@ -98,7 +102,80 @@ export const jiraPlugin = createPlugin<JiraPluginConfig, AtlasActionPlugin<JiraP
       actions: [action],
 
       async initialize(ctx) {
+        log = ctx.logger;
         ctx.logger.info(`JIRA plugin initialized for project ${config.projectKey}`);
+      },
+
+      /**
+       * Per-workspace uninstall hook (#3188) — reference implementation.
+       *
+       * Revokes the dynamic webhook subscriptions this integration
+       * registered with Jira (`/rest/api/3/webhook`) so Jira stops
+       * delivering events for a workspace that no longer has the plugin
+       * installed. Invoked by the host BEFORE the install row and
+       * credentials are removed, so the Basic-auth credential is still
+       * valid here.
+       *
+       * Failure semantics: a 403/404 from the list endpoint means this
+       * credential owns no dynamic webhooks (or the deployment doesn't
+       * expose the API) — nothing to revoke, return cleanly. Any other
+       * non-OK response throws; the host logs the failure (plugin id +
+       * workspaceId) and the uninstall proceeds regardless.
+       */
+      async onUninstall(workspaceId: string): Promise<void> {
+        const auth = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
+        const base = config.host.replace(/\/$/, "");
+        const headers = {
+          Authorization: `Basic ${auth}`,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        };
+
+        const listResponse = await fetch(`${base}/rest/api/3/webhook`, {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (listResponse.status === 403 || listResponse.status === 404) {
+          log?.info(
+            { workspaceId, status: listResponse.status },
+            "JIRA onUninstall: credential owns no dynamic webhooks — nothing to revoke",
+          );
+          return;
+        }
+        if (!listResponse.ok) {
+          throw new Error(
+            `JIRA onUninstall: webhook list returned HTTP ${listResponse.status}`,
+          );
+        }
+
+        const parsed = (await listResponse.json()) as {
+          values?: Array<{ id: number }>;
+        };
+        const webhookIds = (parsed.values ?? []).map((v) => v.id);
+        if (webhookIds.length === 0) {
+          log?.info(
+            { workspaceId },
+            "JIRA onUninstall: no webhook subscriptions registered — nothing to revoke",
+          );
+          return;
+        }
+
+        const deleteResponse = await fetch(`${base}/rest/api/3/webhook`, {
+          method: "DELETE",
+          headers,
+          body: JSON.stringify({ webhookIds }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!deleteResponse.ok) {
+          throw new Error(
+            `JIRA onUninstall: webhook revocation returned HTTP ${deleteResponse.status} — ${webhookIds.length} subscription(s) may still be delivering`,
+          );
+        }
+        log?.info(
+          { workspaceId, revoked: webhookIds.length },
+          "JIRA onUninstall: revoked webhook subscriptions",
+        );
       },
 
       async healthCheck() {

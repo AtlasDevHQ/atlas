@@ -35,6 +35,9 @@ function validatePluginShape(plugin: AtlasPlugin): void {
       throw new Error(`Invalid plugin type "${t}" — must be one of: datasource, context, interaction, action, sandbox`);
     }
   }
+  if (plugin.onUninstall !== undefined && typeof plugin.onUninstall !== "function") {
+    throw new Error('Plugin "onUninstall" must be a function when provided');
+  }
 
   // Variant-specific structural checks — validate for each declared type
   if (plugin.types.includes("datasource")) {

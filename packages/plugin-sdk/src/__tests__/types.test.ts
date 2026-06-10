@@ -441,6 +441,42 @@ describe("definePlugin validation", () => {
 
     } as any)).toThrow('must have a "contextProvider"');
   });
+
+  // ── onUninstall lifecycle hook (#3188) ──────────────────────────────
+
+  test("accepts a plugin defining onUninstall (type-checks, returns unchanged)", async () => {
+    const revoked: string[] = [];
+    const plugin = definePlugin({
+      id: "test-int-uninstall",
+      types: ["interaction"],
+      version: "1.0.0",
+      async onUninstall(workspaceId: string) {
+        revoked.push(workspaceId);
+      },
+    } satisfies AtlasInteractionPlugin);
+    expect(plugin.id).toBe("test-int-uninstall");
+    expect(typeof plugin.onUninstall).toBe("function");
+    await plugin.onUninstall?.("ws-1");
+    expect(revoked).toEqual(["ws-1"]);
+  });
+
+  test("a plugin without onUninstall still compiles and validates (backward compat)", () => {
+    const plugin: AtlasInteractionPlugin = definePlugin({
+      id: "test-int-no-uninstall",
+      types: ["interaction"],
+      version: "1.0.0",
+    } satisfies AtlasInteractionPlugin);
+    expect(plugin.onUninstall).toBeUndefined();
+  });
+
+  test("throws when onUninstall is not a function", () => {
+    expect(() => definePlugin({
+      id: "test",
+      types: ["interaction"],
+      version: "1.0.0",
+      onUninstall: "not-a-function",
+    } as any)).toThrow('"onUninstall" must be a function when provided');
+  });
 });
 
 // ---------------------------------------------------------------------------

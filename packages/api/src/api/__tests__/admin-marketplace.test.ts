@@ -36,6 +36,37 @@ mock.module("@atlas/api/lib/audit", async () => {
   };
 });
 
+// #3188 — per-workspace onUninstall hook. The DELETE route calls
+// invokeOnUninstallHookForInstallRow BEFORE the workspace_plugins DELETE
+// so the plugin can still authenticate to revoke external subscriptions.
+// Captured here (with a flag recording whether the DELETE had already
+// run at call time) so tests can assert args + ordering. Mock ALL
+// exports of the module.
+const onUninstallRouteCalls: Array<{
+  workspaceId: string;
+  installationId: string;
+  deleteAlreadyRan: boolean;
+}> = [];
+const mockInvokeOnUninstallHookForInstallRow: Mock<
+  (args: { workspaceId: string; installationId: string }) => Promise<{
+    invoked: string[];
+    failures: Array<{ pluginId: string; error: string }>;
+  }>
+> = mock(async (args) => {
+  onUninstallRouteCalls.push({
+    workspaceId: args.workspaceId,
+    installationId: args.installationId,
+    deleteAlreadyRan:
+      findCapturedQuery("DELETE FROM workspace_plugins") !== undefined,
+  });
+  return { invoked: [], failures: [] };
+});
+
+mock.module("@atlas/api/lib/plugins/uninstall-hook", () => ({
+  invokeOnUninstallHook: mock(async () => ({ invoked: [], failures: [] })),
+  invokeOnUninstallHookForInstallRow: mockInvokeOnUninstallHookForInstallRow,
+}));
+
 // F-42: admin-marketplace.ts imports errorMessage from audit/error-scrub.
 // The real module imports Cause/Option from "effect", which the shim below
 // doesn't export — load a minimal inline replica that just does the
@@ -608,6 +639,18 @@ describe("Workspace Plugin Marketplace", () => {
     mockQueryResults = new Map();
     capturedQueries = [];
     mockLogAdminAction.mockClear();
+    // #3188 — reset onUninstall hook capture + default implementation.
+    onUninstallRouteCalls.length = 0;
+    mockInvokeOnUninstallHookForInstallRow.mockClear();
+    mockInvokeOnUninstallHookForInstallRow.mockImplementation(async (args) => {
+      onUninstallRouteCalls.push({
+        workspaceId: args.workspaceId,
+        installationId: args.installationId,
+        deleteAlreadyRan:
+          findCapturedQuery("DELETE FROM workspace_plugins") !== undefined,
+      });
+      return { invoked: [], failures: [] };
+    });
     // Default to an unresolved deploy mode (self-hosted behavior) so the
     // plan-only tests below are unaffected by the #3301 saas_eligible gate.
     mockDeployMode = undefined;
@@ -1019,6 +1062,45 @@ describe("Workspace Plugin Marketplace", () => {
       const body = await json(res);
       expect(body.deleted).toBe(true);
       expect(body.scheduledTasksDeleted).toBe(0);
+    });
+
+    // ── #3188 — per-workspace onUninstall hook ───────────────────────
+
+    it("invokes the onUninstall hook with (workspaceId, installationId) BEFORE the DELETE (#3188)", async () => {
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+
+      expect(onUninstallRouteCalls).toEqual([
+        {
+          workspaceId: "org-1",
+          installationId: "inst-1",
+          // The hook must fire while the install row (and its config-held
+          // credentials) still exists — i.e. before the DELETE statement.
+          deleteAlreadyRan: false,
+        },
+      ]);
+    });
+
+    it("uninstall still succeeds (200) when the hook invocation rejects (#3188)", async () => {
+      // The helper never rejects by contract, but the route wraps the call
+      // defensively — a defect must not abort the uninstall.
+      mockInvokeOnUninstallHookForInstallRow.mockImplementation(async () => {
+        throw new Error("hook helper defect");
+      });
+      setQueryResult("DELETE FROM workspace_plugins WHERE id", [
+        { id: "inst-1", catalog_id: "cat-1", slug: "bigquery" },
+      ]);
+
+      const app = buildWorkspaceApp();
+      const res = await app.request("/marketplace/inst-1", { method: "DELETE" });
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.deleted).toBe(true);
     });
 
     it("does not query scheduled_tasks when installation is missing (404)", async () => {

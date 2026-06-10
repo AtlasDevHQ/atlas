@@ -588,7 +588,7 @@ When an admin removes a plugin from a workspace via `DELETE /api/v1/admin/market
 |-------|----------|-----|
 | `plugin_<pluginId>_*` tables declared via the `schema` property | **Yes** | Reinstalling the plugin should pick up where it left off — cached digest history, sync cursors, whatever your plugin persists. Operators who need a hard reset use the workspace purge path, not uninstall. |
 | Catalog row in `plugin_catalog` | **Yes** | The catalog is platform-scoped. Uninstall is a per-workspace operation; the catalog only goes away when an admin explicitly deletes it. |
-| Webhook subscriptions you registered with external platforms (Slack, GitHub, etc.) | **Yes — your plugin must revoke them** | Atlas has no visibility into your plugin's external state and cannot revoke a third-party webhook for you. **Expectation:** revoke the subscription from the route or hook that owns it as part of the uninstall flow (see below) — `teardown()` runs only at server shutdown, not on a per-workspace uninstall, so it is not a substitute. An un-revoked webhook keeps delivering events to a workspace that no longer has the plugin installed. |
+| Webhook subscriptions you registered with external platforms (Slack, GitHub, etc.) | **Yes — unless your `onUninstall(workspaceId)` revokes them** | Atlas has no visibility into your plugin's external state and cannot revoke a third-party webhook for you. **Expectation:** implement the [`onUninstall(workspaceId)` lifecycle hook](#implementing-onuninstall) — it fires on both uninstall paths *before* the install row and credentials are removed, so your plugin can still authenticate against the external platform. `teardown()` runs only at server shutdown, not on a per-workspace uninstall, so it is not a substitute. An un-revoked webhook keeps delivering events to a workspace that no longer has the plugin installed. |
 | Encrypted credentials in `workspace_plugins.config` | **No — removed with the row** | The config blob lives on the `workspace_plugins` row and is deleted with it. There is no separate credential store to clean up. |
 
 ### Tagging scheduled tasks for cleanup
@@ -614,25 +614,44 @@ Because the `scheduled_tasks` cleanup is best-effort (and the older `WorkspaceIn
 
 This is an operator concern, not a plugin-author one — but it's why a missed cleanup no longer silently fires forever. You still get the cleanest result by tagging tasks correctly (above) and revoking external webhooks yourself (below).
 
+### Implementing `onUninstall()`
+
+`onUninstall(workspaceId)` is the per-workspace counterpart to `teardown()`. Atlas invokes it on **both** uninstall paths — the marketplace `DELETE /api/v1/admin/marketplace/:id` route and `WorkspaceInstaller.uninstall` — **before** the install row and credential stores are removed, so your plugin can still authenticate against the external platform while revoking state it registered for that workspace:
+
+```typescript
+export default definePlugin({
+  id: "stripe-action",
+  // ...
+  async onUninstall(workspaceId: string) {
+    // The install row + credentials still exist — revoke the external
+    // webhook subscription this workspace's install registered.
+    const endpoints = await stripe.webhookEndpoints.list();
+    for (const ep of endpoints.data) {
+      if (ep.metadata?.atlasWorkspaceId === workspaceId) {
+        await stripe.webhookEndpoints.del(ep.id);
+      }
+    }
+  },
+});
+```
+
+The invocation is **best-effort**: a thrown error is logged by the host (with the plugin id and `workspaceId`) and the uninstall proceeds — never rely on `onUninstall` for load-bearing cleanup. Resolution: the host invokes the hook on the per-workspace instance built by its lazy loader (marketplace/SaaS installs), and on any globally-registered plugin whose `id` equals the uninstalled catalog entry's slug, catalog id, or `<slug>-<type>` (the bundled-plugin naming convention, e.g. `jira-action` for catalog slug `jira`). See `plugins/jira` for a working reference implementation that revokes Jira dynamic webhook subscriptions.
+
 ### Implementing `teardown()`
 
-Use `teardown()` to release any state Atlas can't see:
+Use `teardown()` to release any process-level state Atlas can't see:
 
 ```typescript
 export default definePlugin({
   id: "stripe-action",
   // ...
   async teardown() {
-    // Unsubscribe any external webhooks registered during initialize()
-    if (this._webhookId) {
-      await stripe.webhookEndpoints.del(this._webhookId);
-    }
     // Close long-lived connections, drain queues, flush caches, etc.
   },
 });
 ```
 
-`teardown()` runs at server shutdown (LIFO order across all plugins). It is **not** invoked on a per-workspace uninstall — uninstall is a DB-row removal, not a process-level event. If you need workspace-scoped cleanup of external state, do it inside the route or hook that owns the resource (e.g., revoke an OAuth token before the row goes away).
+`teardown()` runs at server shutdown (LIFO order across all plugins). It is **not** invoked on a per-workspace uninstall — uninstall is a DB-row removal, not a process-level event. Workspace-scoped cleanup of external state belongs in [`onUninstall(workspaceId)`](#implementing-onuninstall) (above).
 
 ## Hooks
 
@@ -862,6 +881,16 @@ Called during graceful shutdown in reverse registration order (LIFO). Use it to 
 ```typescript
 async teardown() {
   await this.pool.end();
+},
+```
+
+### `onUninstall(workspaceId)`
+
+Called when a workspace uninstalls the plugin — before the install row and credential stores are removed, so the plugin can still authenticate against the external platform. Use it to revoke webhook subscriptions, OAuth grants, or other per-workspace external state. Best-effort: a thrown error is logged and the uninstall proceeds. See the [Uninstall Contract](#implementing-onuninstall) for details and a full example.
+
+```typescript
+async onUninstall(workspaceId: string) {
+  await revokeExternalWebhooksFor(workspaceId);
 },
 ```
 

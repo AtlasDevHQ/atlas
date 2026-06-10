@@ -329,6 +329,85 @@ describe("jiraPlugin — initialize", () => {
 });
 
 // ---------------------------------------------------------------------------
+// onUninstall (#3188) — per-workspace external webhook revocation
+// ---------------------------------------------------------------------------
+
+describe("jiraPlugin — onUninstall", () => {
+  /** Sequenced fetch mock: each call pops the next canned response. */
+  function installFetchSequence(
+    responses: Array<{ status: number; body?: unknown }>,
+  ): Array<{ url: string; init?: RequestInit }> {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: typeof input === "string" ? input : (input as Request).url,
+        init,
+      });
+      const next = responses.shift() ?? { status: 500, body: {} };
+      return new Response(JSON.stringify(next.body ?? {}), {
+        status: next.status,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof globalThis.fetch;
+    return calls;
+  }
+
+  test("lists then revokes the registered webhook subscriptions", async () => {
+    const calls = installFetchSequence([
+      { status: 200, body: { values: [{ id: 7 }, { id: 9 }] } },
+      { status: 202, body: {} },
+    ]);
+
+    const plugin = jiraPlugin(VALID_CONFIG);
+    await plugin.onUninstall!("ws-1");
+
+    expect(calls).toHaveLength(2);
+    // List call — GET against the dynamic webhook API.
+    expect(calls[0].url).toBe("https://myco.atlassian.net/rest/api/3/webhook");
+    expect(calls[0].init?.method).toBe("GET");
+    // Revocation call — DELETE with the ids the list returned.
+    expect(calls[1].url).toBe("https://myco.atlassian.net/rest/api/3/webhook");
+    expect(calls[1].init?.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ webhookIds: [7, 9] });
+    // Both calls authenticate with the plugin's Basic credential.
+    const headers = calls[1].init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(
+      `Basic ${Buffer.from("bot@myco.com:test-token-123").toString("base64")}`,
+    );
+  });
+
+  test("no-ops cleanly when the credential owns no dynamic webhooks (403)", async () => {
+    const calls = installFetchSequence([{ status: 403, body: {} }]);
+    const plugin = jiraPlugin(VALID_CONFIG);
+    await plugin.onUninstall!("ws-1");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("no-ops cleanly when zero webhooks are registered", async () => {
+    const calls = installFetchSequence([{ status: 200, body: { values: [] } }]);
+    const plugin = jiraPlugin(VALID_CONFIG);
+    await plugin.onUninstall!("ws-1");
+    // No DELETE issued.
+    expect(calls).toHaveLength(1);
+  });
+
+  test("throws on a failing revocation so the host can log the orphaned subscription", async () => {
+    installFetchSequence([
+      { status: 200, body: { values: [{ id: 7 }] } },
+      { status: 500, body: {} },
+    ]);
+    const plugin = jiraPlugin(VALID_CONFIG);
+    expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 500/);
+  });
+
+  test("throws on a failing list call (non-403/404)", async () => {
+    installFetchSequence([{ status: 502, body: {} }]);
+    const plugin = jiraPlugin(VALID_CONFIG);
+    expect(plugin.onUninstall!("ws-1")).rejects.toThrow(/HTTP 502/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // textToADF (extracted helper)
 // ---------------------------------------------------------------------------
 

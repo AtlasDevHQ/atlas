@@ -702,7 +702,7 @@ The hook's own `error: string | null` state is explicitly unchanged — out of s
 
 **Date:** 2026-04-19
 **Issue:** #1615 (primary), #1617, #1616
-**PR:** TBD
+**PR:** #3356
 
 **Problem:** #1614 (win #29) widened `MutateResult.error` from `string` to `FetchError` so mutation *callbacks* could branch on `code === "enterprise_required"` and feed structured errors into `AdminContentWrapper`. The hook-level `error: string | null` state was explicitly out-of-scope and stayed flat. ~40 admin pages (api-keys, scheduled-tasks, ip-allowlist, connections, platform/plugins, sandbox, approval, plugins, branding, roles, settings, residency, users, prompts, scim, sso, sessions, billing, compliance, cache, email-provider, integrations, model-config, semantic editor, custom-domain, audit retention, platform/*, dashboards, starter-prompts, scheduled-task dialog, version history, SSO dialogs, etc.) read `mutation.error` directly — for those pages, EE-gated endpoints 403ing with `enterprise_required` rendered a generic banner instead of `EnterpriseUpsell`, and `requestId` was dropped from banner copy. Same #1595 class, different surface.
 
@@ -766,7 +766,7 @@ Phase 1 migration (this PR) covers 5 highest-value pages — the ones called out
 
 **Date:** 2026-04-19
 **Issue:** #1642
-**PR:** TBD
+**PR:** #3356
 
 **Problem:** Type-design-analyzer review of PR #1641 surfaced parallel Zod schemas describing the same wire shapes — one inside the API route (for `@hono/zod-openapi` response validation) and one inside the web admin client (for `useAdminFetch` runtime parsing). A field rename on either side type-checked cleanly while the other kept the old key, so drift went undetected until a runtime response arrived shaped differently than the parser expected. The abuse surface alone had six duplicated schemas (`AbuseEvent`, `AbuseStatus`, `AbuseThresholdConfig`, `AbuseCounters`, `AbuseInstance`, `AbuseDetail`); the issue mapped 15+ comparable pairs across the admin surface (approval, custom-domain, integrations, billing, SLA, backups, regions, audit analytics).
 

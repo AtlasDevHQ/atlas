@@ -27,6 +27,7 @@ import { decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import type { ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { WorkspaceId } from "@useatlas/types";
 import { z } from "zod";
+import * as actualDbInternal from "@atlas/api/lib/db/internal";
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   async (sql: string, params?: unknown[]) => {
@@ -38,7 +39,11 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   },
 );
 
+// Mock all exports (CLAUDE.md partial-mock rule): spread the real module
+// so every named export (MANAGED_AUTH_MIGRATIONS, _resetPool, …) stays
+// importable, overriding only the three seams the spine touches.
 mock.module("@atlas/api/lib/db/internal", () => ({
+  ...actualDbInternal,
   internalQuery: mockInternalQuery,
   hasInternalDB: mock(() => true),
   getInternalDB: mock(() => ({ query: mock(() => Promise.resolve({ rows: [] })) })),

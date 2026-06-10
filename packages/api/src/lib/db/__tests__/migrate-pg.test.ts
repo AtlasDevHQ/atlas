@@ -1893,6 +1893,111 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       }
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Form-install persistence spine — the upsert SQL is valid against the
+  // live post-migration schema.
+  //
+  // The spine's SQL is imported and executed VERBATIM (the readFileSync
+  // pattern above, applied to code instead of a migration file): drift in
+  // `buildFormInstallUpsertSql` fails here, not a hand-rolled copy. This
+  // is exactly the class of regression the spine consolidation fixed —
+  // the pre-spine Email/Webhook/Obsidian handlers carried a pre-0092
+  // INSERT (no install_id/pillar, bare `ON CONFLICT (workspace_id,
+  // catalog_id)`) that relied on the 0092 BEFORE INSERT trigger and the
+  // global unique index, BOTH dropped by 0096 — every install attempt
+  // failed with 42P10 at plan time, invisible to the mock-pool handler
+  // tests.
+  // ─────────────────────────────────────────────────────────────────────
+  describe("form-install spine: workspace_plugins upsert against the live schema", () => {
+    beforeAll(async () => {
+      // Action catalog rows aren't seeded by migrations (catalog-seeder
+      // runs at boot) — seed one for the FK target.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ('catalog:spine-email', 'Email', 'spine-email', 'integration', 'action', 'form')
+         ON CONFLICT (id) DO NOTHING`,
+      );
+    });
+
+    it("both spine variants plan + execute, and the conflict path returns the existing row id", async () => {
+      const { buildFormInstallUpsertSql } = await import(
+        "@atlas/api/lib/integrations/install/persist-form-install"
+      );
+      const stamp = `${Date.now()}${Math.floor(Math.random() * 1e6)}`;
+      const ws = `ws-spine-${stamp}`;
+
+      // Fresh INSERT (config-updating variant) — returns the candidate id.
+      const fresh = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
+        `spine-a-${stamp}`,
+        ws,
+        "catalog:spine-email",
+        JSON.stringify({ host: "smtp.example.com" }),
+      ]);
+      expect(fresh.rows[0]?.id).toBe(`spine-a-${stamp}`);
+
+      // Re-install (conflict path) — config updates, id stays the
+      // existing row's (the returned-id invariant the handlers rely on).
+      const conflict = await pool.query<{ id: string }>(buildFormInstallUpsertSql(true), [
+        `spine-b-${stamp}`,
+        ws,
+        "catalog:spine-email",
+        JSON.stringify({ host: "smtp2.example.com" }),
+      ]);
+      expect(conflict.rows[0]?.id).toBe(`spine-a-${stamp}`);
+
+      // Non-config-updating variant (Twenty) — keeps the stored config.
+      const stub = await pool.query<{ id: string }>(buildFormInstallUpsertSql(false), [
+        `spine-c-${stamp}`,
+        ws,
+        "catalog:spine-email",
+        JSON.stringify({}),
+      ]);
+      expect(stub.rows[0]?.id).toBe(`spine-a-${stamp}`);
+
+      const { rows } = await pool.query<{
+        install_id: string;
+        pillar: string;
+        config: { host?: string };
+        enabled: boolean;
+        status: string;
+      }>(
+        `SELECT install_id, pillar, config, enabled, status
+           FROM workspace_plugins WHERE workspace_id = $1`,
+        [ws],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.install_id).toBe(`spine-a-${stamp}`);
+      expect(rows[0]?.pillar).toBe("action");
+      // The stub variant did NOT clobber the config the second install wrote.
+      expect(rows[0]?.config.host).toBe("smtp2.example.com");
+      expect(rows[0]?.enabled).toBe(true);
+      expect(rows[0]?.status).toBe("published");
+    }, PG_TEST_TIMEOUT_MS);
+
+    it("the pre-spine legacy shape is rejected by the live schema (42P10 — regression documentation)", async () => {
+      // The exact SQL the Email/Webhook/Obsidian handlers carried before
+      // the spine. If this ever starts SUCCEEDING, a non-partial unique
+      // on (workspace_id, catalog_id) has been reintroduced — datasource
+      // multi-instance installs would break; investigate before relying
+      // on it.
+      let err: { code?: string } | null = null;
+      try {
+        await pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+           VALUES ($1, $2, $3, $4::jsonb, true, NOW())
+           ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+             SET config = EXCLUDED.config,
+                 enabled = true
+           RETURNING id`,
+          [`spine-legacy-${Date.now()}`, `ws-spine-legacy`, "catalog:spine-email", "{}"],
+        );
+      } catch (e) {
+        err = e as { code?: string };
+      }
+      expect(err?.code).toBe("42P10");
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

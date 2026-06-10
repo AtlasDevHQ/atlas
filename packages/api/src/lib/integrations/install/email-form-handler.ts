@@ -2,7 +2,7 @@
  * `EmailFormInstallHandler` — first {@link FormBasedInstallHandler}
  * implementation. SMTP credentials submitted by a workspace admin
  * persist into `workspace_plugins.config` with `password` encrypted
- * at rest via {@link encryptSecretFields}; operational fields
+ * at rest via `encryptSecretFields`; operational fields
  * (host / port / username / fromAddress / secure) stay plaintext so
  * admin-UI reads don't need a decrypt.
  *
@@ -17,22 +17,25 @@
  * failures at the worst moment. The first send-email tool call
  * surfaces real errors with the full path intact.
  *
+ * Persistence (keyset gate → encrypt → upsert → id invariant → lazy-
+ * loader evict) lives on the shared spine — see
+ * {@link persistFormInstall}. The evict matters here: a re-install
+ * that rotates SMTP credentials must not keep the stale in-memory
+ * transport from before the upsert.
+ *
  * @see ./types.ts — {@link FormBasedInstallHandler}
- * @see ../../plugins/secrets.ts — {@link encryptSecretFields}
+ * @see ./persist-form-install.ts — {@link persistFormInstall}
  */
 
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
-import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   EMAIL_CATALOG_ID,
   EMAIL_SECRET_FIELDS_SCHEMA,
   EmailFormDataSchema,
 } from "./email-secret-schema";
+import { persistFormInstall } from "./persist-form-install";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -72,31 +75,11 @@ export class EmailFormInstallHandler implements FormBasedInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialWritten: boolean;
   }> {
-    // ── 1. Validate the form against the SMTP schema ───────────────
     const parsed = EmailFormDataSchema.safeParse(formData);
     if (!parsed.success) {
       throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
     }
     const config = parsed.data;
-
-    // ── 2. SaaS keyset gate ─────────────────────────────────────────
-    // `encryptSecret` falls back to plaintext when no key is
-    // configured (dev convenience). Boot logs a one-shot warning,
-    // but a missed log in SaaS would leak the password plaintext.
-    // Refuse the install per-call so a misconfigured deploy fails
-    // closed at the credential boundary.
-    if (
-      process.env.ATLAS_DEPLOY_MODE === "saas" &&
-      !getEncryptionKeyset()
-    ) {
-      log.error(
-        { workspaceId },
-        "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext password)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
 
     if (config.secure === false) {
       log.warn(
@@ -105,82 +88,24 @@ export class EmailFormInstallHandler implements FormBasedInstallHandler {
       );
     }
 
-    // ── 3. Encrypt secret fields (password) at rest ─────────────────
-    const encryptedConfig = encryptSecretFields(config, EMAIL_SECRET_FIELDS_SCHEMA);
-
-    // ── 4. Upsert workspace_plugins ─────────────────────────────────
-    // ON CONFLICT updates config + flips enabled back to true so a
-    // re-install after disconnect lands cleanly. `installed_at` is
-    // NOT bumped on conflict (matches the Slack OAuth handler) — the
-    // column tracks the first install, not the most recent edit.
-    //
-    // `RETURNING id` returns the persisted id — on a fresh INSERT
-    // it's the one we generated, on a CONFLICT it's the row's
-    // existing id (NOT the freshly-generated one). Callers that
-    // treat `installId` as a stable identifier for the saved row
-    // would otherwise read a phantom id on re-installs.
-    const candidateId = this.newId();
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-        [candidateId, workspaceId, EMAIL_CATALOG_ID, JSON.stringify(encryptedConfig)],
-      );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
-        // by Postgres to emit exactly one row on both paths. Reaching
-        // here means a structural anomaly (driver rewrite, RLS hiding
-        // the result, partial-index miss). Falling back to candidateId
-        // would silently return a WRONG id on the DO UPDATE path
-        // (persisted row keeps its existing id, not the candidate),
-        // and downstream lookups would create phantom updates. Fail
-        // loud so the operator sees the invariant break with a 500.
-        log.error(
-          { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist Email install record — aborting install",
-      );
-      throw err;
-    }
-
-    // Evict any cached PluginLike for this (workspace, catalog) so the
-    // next tool dispatch rebuilds the transport against the freshly-
-    // persisted config. Without this, a re-install that rotates SMTP
-    // credentials (host / port / user / password / fromAddress) keeps
-    // the stale in-memory transport from before the upsert. Fire-and-
-    // forget — `evict` swallows teardown errors internally.
-    try {
-      await lazyPluginLoader.evict(workspaceId, EMAIL_CATALOG_ID);
-    } catch (err) {
-      log.warn(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "LazyPluginLoader.evict threw after Email install upsert — DB row is persisted anyway",
-      );
-    }
+    const installRecord = await persistFormInstall({
+      workspaceId,
+      catalogId: EMAIL_CATALOG_ID,
+      catalogSlug: EMAIL_SLUG,
+      displayName: "Email",
+      log,
+      config,
+      secretFieldsSchema: EMAIL_SECRET_FIELDS_SCHEMA,
+      plaintextSecretLabel: "password",
+      newId: this.newId,
+      evictAfterPersist: true,
+    });
 
     log.info(
-      { workspaceId, installId: persistedId, host: config.host, port: config.port },
+      { workspaceId, installId: installRecord.id, host: config.host, port: config.port },
       "Email install completed",
     );
-    return {
-      installRecord: { id: persistedId, workspaceId, catalogId: EMAIL_SLUG },
-      credentialWritten: true,
-    };
+    return { installRecord, credentialWritten: true };
   }
 }
 

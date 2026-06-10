@@ -3,10 +3,11 @@
  *
  * Mirrors the Email shape exactly: an admin submits a destination
  * URL + HMAC signing secret + retry policy, the handler validates,
- * encrypts the secret via {@link encryptSecretFields}, and upserts
+ * encrypts the secret via `encryptSecretFields`, and upserts
  * `workspace_plugins.config`. The plugin code (under
  * `plugins/webhook-action/`) reads the same JSONB at lazy-load time
- * and decrypts via `decryptSecretFields`.
+ * and decrypts via `decryptSecretFields`. Persistence lives on the
+ * shared spine — see {@link persistFormInstall}.
  *
  * URL validation pins https — webhooks routinely carry sensitive
  * analysis output, and http destinations would leak that traffic in
@@ -16,18 +17,17 @@
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
  * @see ./email-form-handler.ts — first form handler, shape canon
- * @see ../../plugins/secrets.ts — {@link encryptSecretFields}
+ * @see ./persist-form-install.ts — {@link persistFormInstall}
  */
 
 import crypto from "crypto";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
-import { encryptSecretFields, type ConfigSchema } from "@atlas/api/lib/plugins/secrets";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { type ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { WorkspaceId } from "@useatlas/types";
 import { FormInstallValidationError } from "./email-form-handler";
+import { persistFormInstall } from "./persist-form-install";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -123,68 +123,23 @@ export class WebhookFormInstallHandler implements FormBasedInstallHandler {
     }
     const config = parsed.data;
 
-    if (
-      process.env.ATLAS_DEPLOY_MODE === "saas" &&
-      !getEncryptionKeyset()
-    ) {
-      log.error(
-        { workspaceId },
-        "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext signing_secret)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
-
-    const encryptedConfig = encryptSecretFields(config, WEBHOOK_SECRET_FIELDS_SCHEMA);
-
-    const candidateId = this.newId();
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-        [candidateId, workspaceId, WEBHOOK_CATALOG_ID, JSON.stringify(encryptedConfig)],
-      );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
-        // by Postgres to emit exactly one row on both paths. Reaching
-        // here means a structural anomaly (driver rewrite, RLS hiding
-        // the result, partial-index miss). Falling back to candidateId
-        // would silently return a WRONG id on the DO UPDATE path
-        // (persisted row keeps its existing id, not the candidate),
-        // and downstream lookups would create phantom updates. Fail
-        // loud so the operator sees the invariant break with a 500.
-        log.error(
-          { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist Webhook install record — aborting install",
-      );
-      throw err;
-    }
+    const installRecord = await persistFormInstall({
+      workspaceId,
+      catalogId: WEBHOOK_CATALOG_ID,
+      catalogSlug: WEBHOOK_SLUG,
+      displayName: "Webhook",
+      log,
+      config,
+      secretFieldsSchema: WEBHOOK_SECRET_FIELDS_SCHEMA,
+      plaintextSecretLabel: "signing_secret",
+      newId: this.newId,
+    });
 
     log.info(
-      { workspaceId, installId: persistedId, host: safeHost(config.url) },
+      { workspaceId, installId: installRecord.id, host: safeHost(config.url) },
       "Webhook install completed",
     );
-    return {
-      installRecord: { id: persistedId, workspaceId, catalogId: WEBHOOK_SLUG },
-      credentialWritten: true,
-    };
+    return { installRecord, credentialWritten: true };
   }
 }
 

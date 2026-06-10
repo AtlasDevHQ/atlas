@@ -29,13 +29,11 @@
  * @see docs/adr/0007-unified-install-pipeline.md
  */
 
-import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { encryptSecretFields } from "@atlas/api/lib/plugins/secrets";
 import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
-import { lazyPluginLoader } from "@atlas/api/lib/plugins/lazy-loader";
+import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -197,52 +195,15 @@ export class GitHubSingleTenantOAuthInstallHandler implements OAuthPlatformInsta
     };
     const encryptedConfig = encryptSecretFields(installConfig, GITHUB_APP_SECRET_FIELDS_SCHEMA);
 
-    const candidateId = crypto.randomUUID();
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'action', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true
-         RETURNING id`,
-        [
-          candidateId,
-          workspaceId,
-          GITHUB_SINGLE_TENANT_CATALOG_ID,
-          JSON.stringify(encryptedConfig),
-        ],
-      );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        log.error(
-          { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to persist GitHub single-tenant install record — aborting install",
-      );
-      throw err;
-    }
-
-    try {
-      await lazyPluginLoader.evict(workspaceId, GITHUB_SINGLE_TENANT_CATALOG_ID);
-    } catch (err) {
-      log.warn(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        "LazyPluginLoader.evict threw after GitHub single-tenant install upsert — DB row is persisted anyway",
-      );
-    }
+    // Upsert + returned-id invariant + lazy-loader evict — shared with
+    // the form spine and the other OAuth handlers (#3362 review).
+    const persistedId = await persistInstallRecord({
+      workspaceId,
+      catalogId: GITHUB_SINGLE_TENANT_CATALOG_ID,
+      displayName: "GitHub single-tenant",
+      log,
+      config: encryptedConfig,
+    });
 
     log.info(
       { workspaceId, installId: persistedId },

@@ -43,14 +43,23 @@ import type { WorkspaceId } from "@useatlas/types";
 // still succeed.
 const callOrder: string[] = [];
 
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  async (sql: string): Promise<unknown[]> => {
-    if (sql.includes("INSERT INTO workspace_plugins")) {
-      callOrder.push("workspace_plugins.insert");
-    }
-    return [];
-  },
-);
+// Default implementation: record call ordering + echo the candidate id
+// back for the post-0092 upsert's RETURNING id, like real Postgres on a
+// fresh INSERT. Single source of truth for both the module-level mock
+// and the beforeEach reset.
+const defaultInternalQueryImpl = async (
+  sql: string,
+  params?: unknown[],
+): Promise<unknown[]> => {
+  if (sql.includes("INSERT INTO workspace_plugins")) {
+    callOrder.push("workspace_plugins.insert");
+    return [{ id: params?.[0] }];
+  }
+  return [];
+};
+
+const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
+  mock(defaultInternalQueryImpl);
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
@@ -127,12 +136,7 @@ beforeEach(() => {
   // Restore the default implementation that records call ordering;
   // mockClear() preserves the implementation, but explicit per-test
   // overrides may have replaced it.
-  mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
-    if (sql.includes("INSERT INTO workspace_plugins")) {
-      callOrder.push("workspace_plugins.insert");
-    }
-    return [];
-  });
+  mockInternalQuery.mockImplementation(defaultInternalQueryImpl);
   mockSaveCredentialBundle.mockClear();
   mockSaveCredentialBundle.mockImplementation(async () => {
     callOrder.push("integration_credentials.save");
@@ -242,9 +246,17 @@ describe("SalesforceOAuthInstallHandler.handleCallback — happy path", () => {
     expect(init.body).toContain("code=auth-code-xyz");
     expect(init.body).toContain("client_id=test-sf-client-id");
 
-    // workspace_plugins INSERT — happens BEFORE the credential store write.
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-    const [sql, params] = mockInternalQuery.mock.calls[0];
+    // Legacy-pillar converge UPDATE first (ADR-0014 carve-out — heals
+    // pre-0096 rows stuck on pillar='datasource' so the singleton-index
+    // upsert below can dedupe against them), then the workspace_plugins
+    // INSERT — both BEFORE the credential store write.
+    expect(mockInternalQuery).toHaveBeenCalledTimes(2);
+    const [convergeSql, convergeParams] = mockInternalQuery.mock.calls[0];
+    expect(convergeSql).toContain("SET pillar = 'action'");
+    expect(convergeSql).toContain("pillar = 'datasource'");
+    expect((convergeParams as unknown[])[0]).toBe(WSID);
+    expect((convergeParams as unknown[])[1]).toBe("catalog:salesforce");
+    const [sql, params] = mockInternalQuery.mock.calls[1];
     expect(sql).toContain("INSERT INTO workspace_plugins");
     expect((params as unknown[])[1]).toBe(WSID);
     expect((params as unknown[])[2]).toBe("catalog:salesforce");
@@ -277,7 +289,11 @@ describe("SalesforceOAuthInstallHandler.handleCallback — happy path", () => {
 
     await handler.handleCallback("auth-code-xyz", stateToken);
 
-    const [, params] = mockInternalQuery.mock.calls[0];
+    const insertCall = mockInternalQuery.mock.calls.find(([sql]) =>
+      (sql as string).includes("INSERT INTO workspace_plugins"),
+    );
+    expect(insertCall).toBeDefined();
+    const [, params] = insertCall!;
     const configJson = (params as unknown[]).find(
       (p) => typeof p === "string" && p.startsWith("{") && p.includes("instance_url"),
     );
@@ -290,6 +306,27 @@ describe("SalesforceOAuthInstallHandler.handleCallback — happy path", () => {
       scopes: "api refresh_token offline_access",
       status: "ok",
     });
+  });
+
+  it("uses the existing row's id from RETURNING on a re-install (conflict path)", async () => {
+    // ON CONFLICT ... DO UPDATE RETURNING yields the EXISTING row's id,
+    // not the freshly-generated candidate — InstallRecord.id must carry
+    // the persisted one or downstream lookups chase a phantom id.
+    mockInternalQuery.mockImplementation(async (sql: string): Promise<unknown[]> => {
+      if (sql.includes("INSERT INTO workspace_plugins")) {
+        callOrder.push("workspace_plugins.insert");
+        return [{ id: "existing-row-id-123" }];
+      }
+      return [];
+    });
+
+    const handler = new SalesforceOAuthInstallHandler(SF_CONFIG);
+    const stateToken = mintOAuthStateToken(WSID, "salesforce");
+
+    const result = await handler.handleCallback("auth-code-xyz", stateToken);
+
+    expect(result).not.toBeNull();
+    expect(result!.installRecord.id).toBe("existing-row-id-123");
   });
 });
 

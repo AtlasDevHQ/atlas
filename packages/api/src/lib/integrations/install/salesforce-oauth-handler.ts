@@ -59,13 +59,13 @@
  * @see docs/adr/0005-integration-credentials-table.md
  */
 
-import crypto from "crypto";
 import { Data } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { PlatformOAuthExchangeError } from "@atlas/api/lib/effect/errors";
 import { saveCredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
 import type { CredentialBundle } from "@atlas/api/lib/integrations/credentials/store";
+import { persistInstallRecord } from "./persist-form-install";
 import type { WorkspaceId } from "@useatlas/types";
 import {
   mintOAuthStateToken,
@@ -135,6 +135,35 @@ export interface SalesforceOAuthHandlerConfig {
 }
 
 const DEFAULT_LOGIN_URL = "https://login.salesforce.com";
+
+/**
+ * Legacy-pillar converge (deliberate ADR-0014 divergence): pre-0096
+ * Salesforce OAuth install rows carry `pillar='datasource'` — the
+ * catalog row's ADR-0006 pillar at 0092-backfill time (migration
+ * 0103's backstory; 0103 converged only the CATALOG row). The
+ * `workspace_plugins_singleton` unique index covers chat/action only,
+ * so without this converge the install upsert would INSERT a duplicate
+ * (workspace_id, catalog_id) row beside the legacy one instead of
+ * updating it — and LazyPluginLoader's un-ordered `LIMIT 1` read would
+ * then serve an arbitrary row's config. NOT EXISTS guards the
+ * singleton index (never converge beside an existing chat/action row);
+ * no-op on fresh installs. Safe per ADR-0014: Salesforce is
+ * handler-managed, never bridge-managed, so a datasource-pillar row
+ * here can only be the legacy OAuth shape — and the pre-0096 unique
+ * index guarantees at most one.
+ *
+ * Exported so the colocated real-Postgres suite executes this exact
+ * string against the live schema — mocked handler tests can't see
+ * plan-time SQL errors (the drift class that produced #3357).
+ */
+export const SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL = `UPDATE workspace_plugins
+    SET pillar = 'action'
+  WHERE workspace_id = $1 AND catalog_id = $2 AND pillar = 'datasource'
+    AND NOT EXISTS (
+      SELECT 1 FROM workspace_plugins
+       WHERE workspace_id = $1 AND catalog_id = $2
+         AND pillar IN ('chat', 'action')
+    )`;
 
 /**
  * Strip a trailing slash so URL concatenation stays clean. The login
@@ -389,36 +418,37 @@ export class SalesforceOAuthInstallHandler implements OAuthPlatformInstallHandle
     // `status: "ok"` is the default; the refresh-token flow flips it to
     // `"reconnect_needed"` on refresh_token revocation. The admin UI
     // reads this field to render the Reconnect affordance.
-    const installId = crypto.randomUUID();
     const installConfig: Record<string, unknown> = {
       instance_url: tokens.instance_url,
       scopes,
       status: "ok",
       ...(idParts ? { org_id: idParts.orgId, org_user_id: idParts.userId } : {}),
     };
-    try {
-      await internalQuery(
-        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) DO UPDATE
-           SET config = EXCLUDED.config,
-               enabled = true`,
-        [installId, workspaceId, SALESFORCE_CATALOG_ID, JSON.stringify(installConfig)],
-      );
-    } catch (err) {
-      log.error(
-        {
-          workspaceId,
-          instanceUrl: tokens.instance_url,
-          err: err instanceof Error ? err.message : String(err),
-        },
+
+    // Heal any pre-0096 pillar='datasource' row so the singleton-index
+    // upsert below can dedupe against it — see
+    // {@link SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL} for the full story.
+    await internalQuery(SALESFORCE_LEGACY_PILLAR_CONVERGE_SQL, [
+      workspaceId,
+      SALESFORCE_CATALOG_ID,
+    ]);
+
+    const persistedId = await persistInstallRecord({
+      workspaceId,
+      catalogId: SALESFORCE_CATALOG_ID,
+      displayName: "Salesforce",
+      log,
+      config: installConfig,
+      persistFailureMessage:
         "Failed to write workspace_plugins install record — aborting Salesforce install",
-      );
-      throw err;
-    }
+      failureLogFields: { instanceUrl: tokens.instance_url },
+    });
 
     const installRecord: InstallRecord = {
-      id: installId,
+      // On a re-install the upsert RETURNING yields the existing row's
+      // id, not a freshly-generated candidate — persistInstallRecord
+      // returns the persisted one.
+      id: persistedId,
       workspaceId,
       catalogId: SALESFORCE_SLUG,
     };

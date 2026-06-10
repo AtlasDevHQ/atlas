@@ -2534,7 +2534,7 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 **Date:** 2026-06-10
 **Issue:** — (architecture-review 2026-06-09, candidate 6)
-**PR:** #TBD
+**PR:** #3360
 
 **Problem:** The three scheduled-delivery formatters (`format-email.ts`, `format-slack.ts`, `format-webhook.ts`) each re-derived metadata (task name/question, steps, tokens, timestamp) from `(task, result)`, and the 50-row table truncation rule lived only in the email copy. The webhook path shipped `result.data` to recipient URLs **unbounded** — a 100k-row agent result became a 100k-row JSON POST. (The review's claim that Slack was also unbounded didn't survive contact: `formatSlackReport` delegates to `formatQueryResponse`, which already caps tables at 20 rows / 3000 chars for Block Kit limits — the live bug was webhook-only.)
 

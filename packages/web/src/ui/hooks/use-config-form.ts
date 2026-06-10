@@ -87,10 +87,10 @@ export interface UseConfigFormReturn<
   /** Discard edits — restore values to the server-derived baseline. */
   reset: () => void;
   /**
-   * Save the current values: `toPayload(values, data)` → mutation →
-   * refetch on success (which re-baselines the form, flipping `dirty`
-   * back to false). Resolves with the same discriminated result as
-   * `useAdminMutation.mutate()`.
+   * Save the current values: `toPayload(values, data)` → mutation → the
+   * mutation's success invalidation refetches the GET, which re-baselines
+   * the form, flipping `dirty` back to false. Resolves with the same
+   * discriminated result as `useAdminMutation.mutate()`.
    */
   save: () => Promise<MutateResult<TResponse>>;
   /** True while a save is in flight. */
@@ -141,10 +141,15 @@ export function useConfigForm<
     options.schema ? { schema: options.schema } : undefined,
   );
 
+  // No explicit `invalidates: refetch` — useAdminMutation's onSuccess already
+  // invalidates every admin-fetch query, which refetches this one and drives
+  // the re-baseline. Passing refetch as well just cancels that in-flight GET
+  // and dispatches a second one. The save test below ("re-baselines after a
+  // successful save") guards this coupling if the broad invalidation is ever
+  // narrowed.
   const mutation = useAdminMutation<TResponse>({
     path: options.savePath ?? options.path,
     method: options.saveMethod ?? "PUT",
-    invalidates: refetch,
   });
 
   // Re-baseline when the fetched data changes — the React-sanctioned

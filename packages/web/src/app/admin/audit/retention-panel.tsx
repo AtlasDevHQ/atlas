@@ -197,7 +197,7 @@ export function RetentionPanel() {
     return (
       <ErrorBanner
         message={
-          form.loadError.status === 403
+          form.loadError.code === "enterprise_required"
             ? "Enterprise license required for audit retention settings."
             : form.loadError.message
         }

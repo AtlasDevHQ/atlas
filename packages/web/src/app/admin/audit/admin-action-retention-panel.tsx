@@ -264,7 +264,7 @@ export function AdminActionRetentionPanel() {
     return (
       <ErrorBanner
         message={
-          form.loadError.status === 403
+          form.loadError.code === "enterprise_required"
             ? "Enterprise license required for admin-action retention settings."
             : form.loadError.message
         }

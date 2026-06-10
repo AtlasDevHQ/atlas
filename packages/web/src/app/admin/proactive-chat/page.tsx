@@ -27,7 +27,7 @@
  * routed by `<AdminContentWrapper feature="Proactive Chat">`.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Bot,
   Hash,
@@ -39,6 +39,10 @@ import {
 import { z } from "zod";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import {
+  useConfigForm,
+  type UseConfigFormReturn,
+} from "@/ui/hooks/use-config-form";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -132,21 +136,58 @@ function Hero() {
   );
 }
 
+// Form-value shape: numeric cap is held as the raw input string so typing
+// stays free-form; `toPayload` parses it at save time.
+interface WorkspaceFormValues extends Record<string, unknown> {
+  enabled: boolean;
+  sensitivity: Sensitivity;
+  classifierMode: ClassifierMode;
+  announcementChannelId: string;
+  monthlyCap: string;
+}
+
+type WorkspaceConfigForm = UseConfigFormReturn<
+  WorkspaceConfig,
+  WorkspaceFormValues
+>;
+
 function PageBody() {
-  const { data, loading, error, refetch } = useAdminFetch<WorkspaceConfig>(
-    "/api/v1/admin/proactive/workspace",
-    { schema: WorkspaceConfigSchema },
-  );
+  const form = useConfigForm<WorkspaceConfig, WorkspaceFormValues>({
+    path: "/api/v1/admin/proactive/workspace",
+    schema: WorkspaceConfigSchema,
+    saveMethod: "PUT",
+    toForm: (data) => ({
+      enabled: data.enabled,
+      sensitivity: data.sensitivity,
+      classifierMode: data.classifierMode,
+      announcementChannelId: data.announcementChannelId ?? "",
+      monthlyCap:
+        data.monthlyClassifierCap === null
+          ? ""
+          : String(data.monthlyClassifierCap),
+    }),
+    toPayload: (v) => ({
+      enabled: v.enabled,
+      sensitivity: v.sensitivity,
+      classifierMode: v.classifierMode,
+      announcementChannelId:
+        v.announcementChannelId.trim() === ""
+          ? null
+          : v.announcementChannelId.trim(),
+      monthlyClassifierCap:
+        v.monthlyCap.trim() === "" ? null : Number(v.monthlyCap),
+    }),
+  });
 
   return (
     <AdminContentWrapper
-      loading={loading}
-      error={error}
+      loading={form.loading}
+      error={form.loadError}
       feature="Proactive Chat"
-      onRetry={refetch}
+      onRetry={form.refetch}
       loadingMessage="Loading proactive-chat settings..."
     >
-      {data ? <ConfigForm initial={data} refetchWorkspace={refetch} /> : null}
+      {form.fields ? <ConfigForm form={form} /> : null}
     </AdminContentWrapper>
   );
 }
@@ -155,69 +196,19 @@ function PageBody() {
 // Workspace config form
 // ---------------------------------------------------------------------------
 
-interface ConfigFormProps {
-  initial: WorkspaceConfig;
-  refetchWorkspace: () => void;
-}
-
-function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
-  const [enabled, setEnabled] = useState(initial.enabled);
-  const [sensitivity, setSensitivity] = useState<Sensitivity>(initial.sensitivity);
-  const [classifierMode, setClassifierMode] = useState<ClassifierMode>(
-    initial.classifierMode,
-  );
-  const [announcementChannelId, setAnnouncementChannelId] = useState(
-    initial.announcementChannelId ?? "",
-  );
-  const [monthlyCap, setMonthlyCap] = useState<string>(
-    initial.monthlyClassifierCap === null ? "" : String(initial.monthlyClassifierCap),
-  );
-
-  // Reset form state when the fetched row changes — happens after a refetch
-  // following save or after the master toggle drops into a different shape.
-  useEffect(() => {
-    setEnabled(initial.enabled);
-    setSensitivity(initial.sensitivity);
-    setClassifierMode(initial.classifierMode);
-    setAnnouncementChannelId(initial.announcementChannelId ?? "");
-    setMonthlyCap(
-      initial.monthlyClassifierCap === null
-        ? ""
-        : String(initial.monthlyClassifierCap),
-    );
-  }, [initial]);
-
-  const save = useAdminMutation({
-    path: "/api/v1/admin/proactive/workspace",
-    method: "PUT",
-    invalidates: refetchWorkspace,
-  });
+function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
+  const { fields, values } = form;
+  if (!fields || !values) return null;
 
   const monthlyCapNumeric =
-    monthlyCap.trim() === "" ? null : Number(monthlyCap);
+    values.monthlyCap.trim() === "" ? null : Number(values.monthlyCap);
   const monthlyCapInvalid =
     monthlyCapNumeric !== null &&
     (!Number.isInteger(monthlyCapNumeric) || monthlyCapNumeric < 0);
 
-  const dirty =
-    enabled !== initial.enabled ||
-    sensitivity !== initial.sensitivity ||
-    classifierMode !== initial.classifierMode ||
-    announcementChannelId !== (initial.announcementChannelId ?? "") ||
-    monthlyCapNumeric !== initial.monthlyClassifierCap;
-
   async function handleSave() {
     if (monthlyCapInvalid) return;
-    await save.mutate({
-      body: {
-        enabled,
-        sensitivity,
-        classifierMode,
-        announcementChannelId:
-          announcementChannelId.trim() === "" ? null : announcementChannelId.trim(),
-        monthlyClassifierCap: monthlyCapNumeric,
-      },
-    });
+    await form.save();
   }
 
   return (
@@ -227,7 +218,10 @@ function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
           title="Activation"
           description="Master switch — controls whether Atlas ever speaks up on its own."
         />
-        <MasterToggleRow enabled={enabled} onToggle={setEnabled} />
+        <MasterToggleRow
+          enabled={fields.enabled.value}
+          onToggle={fields.enabled.set}
+        />
       </section>
 
       <section>
@@ -236,25 +230,28 @@ function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
           description="Workspace defaults applied unless a channel override says otherwise."
         />
         <div className="space-y-6">
-          <SensitivityRadio value={sensitivity} onChange={setSensitivity} />
+          <SensitivityRadio
+            value={fields.sensitivity.value}
+            onChange={fields.sensitivity.set}
+          />
           <ClassifierModeRadio
-            value={classifierMode}
-            onChange={setClassifierMode}
+            value={fields.classifierMode.value}
+            onChange={fields.classifierMode.set}
           />
           <AnnouncementChannelField
-            value={announcementChannelId}
-            onChange={setAnnouncementChannelId}
+            value={fields.announcementChannelId.value}
+            onChange={fields.announcementChannelId.set}
           />
           <MonthlyCapField
-            value={monthlyCap}
-            onChange={setMonthlyCap}
+            value={fields.monthlyCap.value}
+            onChange={fields.monthlyCap.set}
             invalid={monthlyCapInvalid}
           />
         </div>
       </section>
 
       <MutationErrorSurface
-        error={save.error}
+        error={form.error}
         feature="Proactive Chat"
         variant="inline"
         inlinePrefix="Save failed."
@@ -269,11 +266,11 @@ function ConfigForm({ initial, refetchWorkspace }: ConfigFormProps) {
         <Button
           type="button"
           onClick={handleSave}
-          disabled={save.saving || monthlyCapInvalid || !dirty}
+          disabled={form.saving || monthlyCapInvalid || !form.dirty}
           size="sm"
         >
-          {save.saving && <Loader2 className="mr-1.5 size-3 animate-spin" />}
-          {dirty ? "Save changes" : "Saved"}
+          {form.saving && <Loader2 className="mr-1.5 size-3 animate-spin" />}
+          {form.dirty ? "Save changes" : "Saved"}
         </Button>
       </footer>
 

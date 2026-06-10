@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { AuditRetentionPolicy } from "@useatlas/types";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useConfigForm } from "@/ui/hooks/use-config-form";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -94,21 +95,55 @@ async function safeJson<T>(res: Response): Promise<T | undefined> {
   }
 }
 
+// Wire + form shapes for the policy config-form loop. The GET response is
+// typed (not Zod-validated) to match the previous behavior of casting the
+// parsed JSON — the canonical shape lives in `@useatlas/types`.
+interface PolicyResponse {
+  policy: AuditRetentionPolicy | null;
+}
+
+interface AdminActionRetentionFormValues extends Record<string, unknown> {
+  preset: RetentionPreset;
+  customDays: number;
+  hardDeleteDelay: number;
+}
+
 // ── Component ─────────────────────────────────────────────────────
 
 export function AdminActionRetentionPanel() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [policy, setPolicy] = useState<AuditRetentionPolicy | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Policy form state
-  const [preset, setPreset] = useState<RetentionPreset>("2555");
-  const [customDays, setCustomDays] = useState(2555);
-  const [hardDeleteDelay, setHardDeleteDelay] = useState(30);
+  const form = useConfigForm<
+    PolicyResponse,
+    AdminActionRetentionFormValues,
+    { policy: AuditRetentionPolicy }
+  >({
+    path: "/api/v1/admin/audit/admin-action-retention",
+    saveMethod: "PUT",
+    toForm: (d) => {
+      if (!d.policy) {
+        return { preset: "2555", customDays: 2555, hardDeleteDelay: 30 };
+      }
+      const pr = presetFromDays(d.policy.retentionDays);
+      return {
+        preset: pr,
+        customDays:
+          pr === "custom" && d.policy.retentionDays !== null
+            ? d.policy.retentionDays
+            : 2555,
+        hardDeleteDelay: d.policy.hardDeleteDelayDays,
+      };
+    },
+    toPayload: (v) => ({
+      retentionDays: daysFromPreset(v.preset, v.customDays),
+      hardDeleteDelayDays: v.hardDeleteDelay,
+    }),
+  });
+
+  const policy = form.data?.policy ?? null;
 
   // Purge state
   const [purgeResult, setPurgeResult] = useState<string | null>(null);
@@ -123,12 +158,6 @@ export function AdminActionRetentionPanel() {
   const [eraseDialogOpen, setEraseDialogOpen] = useState(false);
 
   // Mutation hooks
-  const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
-    useAdminMutation<{ policy: AuditRetentionPolicy }>({
-      path: "/api/v1/admin/audit/admin-action-retention",
-      method: "PUT",
-    });
-
   const { mutate: purgeMutate, saving: purging, error: purgeError, clearError: clearPurgeError } =
     useAdminMutation<{ results: Array<{ orgId: string; deletedCount: number }> }>({
       path: "/api/v1/admin/audit/admin-action-retention/purge",
@@ -141,52 +170,6 @@ export function AdminActionRetentionPanel() {
       method: "POST",
     });
 
-  // Fetch current policy
-  useEffect(() => {
-    let cancelled = false;
-    async function fetchPolicy() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/audit/admin-action-retention`, { credentials });
-        if (!res.ok) {
-          if (res.status === 403) {
-            if (!cancelled) setError("Enterprise license required for admin-action retention settings.");
-            return;
-          }
-          const e = await extractFetchError(res);
-          if (!cancelled) setError(e.message);
-          return;
-        }
-        const data = await safeJson<{ policy: AuditRetentionPolicy | null }>(res);
-        if (!data) {
-          if (!cancelled) setError("Server returned a non-JSON response. Check your proxy / deploy configuration.");
-          return;
-        }
-        if (!cancelled) {
-          const p = data.policy;
-          setPolicy(p);
-          if (p) {
-            const pr = presetFromDays(p.retentionDays);
-            setPreset(pr);
-            if (pr === "custom" && p.retentionDays !== null) {
-              setCustomDays(p.retentionDays);
-            }
-            setHardDeleteDelay(p.hardDeleteDelayDays);
-          }
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load admin-action retention policy");
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchPolicy();
-    return () => { cancelled = true; };
-  }, [apiUrl, credentials]);
-
   // Clear the transient save-success banner on unmount so a state update
   // doesn't land on a disposed component if the user navigates away mid-flash.
   useEffect(() => {
@@ -197,13 +180,8 @@ export function AdminActionRetentionPanel() {
 
   async function handleSave() {
     setSaveSuccess(false);
-    clearSaveError();
-    const retentionDays = daysFromPreset(preset, customDays);
-    const result = await saveMutate({
-      body: { retentionDays, hardDeleteDelayDays: hardDeleteDelay },
-    });
-    if (result.ok && result.data) {
-      setPolicy(result.data.policy);
+    const result = await form.save();
+    if (result.ok) {
       // Banner auto-clears via the unmount-safe effect above.
       setSaveSuccess(true);
     }
@@ -278,13 +256,26 @@ export function AdminActionRetentionPanel() {
     }
   }
 
-  if (loading) {
+  if (form.loading) {
     return <LoadingState message="Loading admin-action retention settings..." />;
   }
 
-  if (error) {
-    return <ErrorBanner message={error} />;
+  if (form.loadError) {
+    return (
+      <ErrorBanner
+        message={
+          form.loadError.code === "enterprise_required"
+            ? "Enterprise license required for admin-action retention settings."
+            : form.loadError.message
+        }
+      />
+    );
   }
+
+  if (!form.fields) {
+    return <LoadingState message="Loading admin-action retention settings..." />;
+  }
+  const { fields } = form;
 
   return (
     <div className="space-y-6">
@@ -339,13 +330,13 @@ export function AdminActionRetentionPanel() {
             <div className="space-y-2">
               <Label htmlFor="admin-action-retention-preset">Retention period</Label>
               <Select
-                value={preset}
+                value={fields.preset.value}
                 onValueChange={(v) => {
                   // Runtime guard — SelectItem `value` strings and the
                   // `RETENTION_PRESETS` tuple are two sources of truth;
                   // an invalid value can only mean a future SelectItem
                   // typo, which we swallow rather than cast-and-pray.
-                  if (isRetentionPreset(v)) setPreset(v);
+                  if (isRetentionPreset(v)) fields.preset.set(v);
                 }}
               >
                 <SelectTrigger id="admin-action-retention-preset" className="w-full">
@@ -361,19 +352,19 @@ export function AdminActionRetentionPanel() {
               </Select>
             </div>
 
-            {preset === "custom" && (
+            {fields.preset.value === "custom" && (
               <div className="space-y-2">
                 <Label htmlFor="admin-action-custom-days">Custom days (min 7)</Label>
                 <Input
                   id="admin-action-custom-days"
                   type="number"
                   min={7}
-                  value={customDays}
+                  value={fields.customDays.value}
                   onChange={(e) => {
                     const v = e.target.value;
                     if (v === "") return;
                     const n = Number.parseInt(v, 10);
-                    if (Number.isFinite(n) && n >= 7) setCustomDays(n);
+                    if (Number.isFinite(n) && n >= 7) fields.customDays.set(n);
                   }}
                   className="w-full"
                 />
@@ -389,12 +380,12 @@ export function AdminActionRetentionPanel() {
                 id="admin-action-hard-delete-delay"
                 type="number"
                 min={0}
-                value={hardDeleteDelay}
+                value={fields.hardDeleteDelay.value}
                 onChange={(e) => {
                   const v = e.target.value;
                   if (v === "") return;
                   const n = Number.parseInt(v, 10);
-                  if (Number.isFinite(n) && n >= 0) setHardDeleteDelay(n);
+                  if (Number.isFinite(n) && n >= 0) fields.hardDeleteDelay.set(n);
                 }}
                 className="w-full"
               />
@@ -405,17 +396,17 @@ export function AdminActionRetentionPanel() {
           </div>
 
           <MutationErrorSurface
-            error={saveError}
+            error={form.error}
             feature="Admin Action Retention"
-            onRetry={clearSaveError}
+            onRetry={form.clearError}
           />
           {saveSuccess && (
             <p className="text-sm text-green-600">Admin-action retention policy saved successfully.</p>
           )}
 
           <div className="flex items-center gap-3">
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? "Saving..." : "Save Policy"}
+            <Button onClick={handleSave} disabled={form.saving}>
+              {form.saving ? "Saving..." : "Save Policy"}
             </Button>
             <AlertDialog>
               <AlertDialogTrigger asChild>

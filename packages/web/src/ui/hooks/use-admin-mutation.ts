@@ -293,7 +293,17 @@ export function useAdminMutation<TResponse = unknown>(
       if (res.status === 204 || !contentType?.includes("application/json")) {
         return undefined;
       }
-      return (await res.json()) as TResponse;
+      try {
+        return (await res.json()) as TResponse;
+      } catch {
+        // Mirror the read-path guard in use-admin-fetch: a misconfigured
+        // proxy can return a 2xx claiming JSON with a non-JSON body, and the
+        // raw SyntaxError would surface as a generic "Request failed".
+        const fetchError = buildFetchError({
+          message: `Server returned a non-JSON response from ${path}. Check your proxy / deploy configuration.`,
+        });
+        throw Object.assign(new Error(fetchError.message), { fetchError });
+      }
     },
     onSuccess: () => {
       // Invalidate all admin-fetch queries so useAdminFetch consumers get fresh data.

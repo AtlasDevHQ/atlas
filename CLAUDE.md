@@ -289,7 +289,7 @@ export default defineConfig({
 ```
 
 ### Admin Page Hooks
-Admin pages use two shared hooks — never hand-roll fetch/mutation logic:
+Admin pages use shared hooks — never hand-roll fetch/mutation logic:
 ```typescript
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -298,6 +298,17 @@ const { data, loading, error, refetch } = useAdminFetch<T>("/api/v1/admin/...");
 const { mutate, saving, error } = useAdminMutation<T>({
   path: "/api/v1/admin/...", method: "POST", invalidates: refetch,
 });
+```
+Config-form pages (load one settings object → edit fields → dirty-gated save → reset on refetch) use `useConfigForm` instead of wiring those two by hand — `toForm` is the single statement of the field set, and the dirty compare derives from it so a new field can't be forgotten:
+```typescript
+import { useConfigForm } from "@/ui/hooks/use-config-form";
+
+const form = useConfigForm<WireConfig, FormValues>({
+  path: "/api/v1/admin/...", schema: WireConfigSchema,
+  toForm: (d) => ({ enabled: d.enabled, cap: d.cap === null ? "" : String(d.cap) }),
+  toPayload: (v) => ({ enabled: v.enabled, cap: v.cap === "" ? null : Number(v.cap) }),
+});
+// form.fields.enabled.{value,set} · form.{data,loading,loadError,refetch,values,dirty,reset,save,saving,error}
 ```
 
 ## Template Sync

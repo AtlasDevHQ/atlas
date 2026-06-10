@@ -26,8 +26,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { type ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { WorkspaceId } from "@useatlas/types";
-import { FormInstallValidationError } from "./email-form-handler";
-import { persistFormInstall } from "./persist-form-install";
+import { parseFormInstall, persistFormInstall } from "./persist-form-install";
+import { safeHost } from "./safe-host";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -36,7 +36,6 @@ import type {
 
 const log = createLogger("integrations.install.obsidian");
 
-const OBSIDIAN_CATALOG_ID = "catalog:obsidian";
 const OBSIDIAN_SLUG: CatalogId = "obsidian";
 
 /** Default Obsidian Local REST API endpoint (loopback, the plugin's stock binding). */
@@ -71,7 +70,12 @@ export const ObsidianFormDataSchema = z
 
 export type ObsidianFormData = z.infer<typeof ObsidianFormDataSchema>;
 
-const OBSIDIAN_SECRET_FIELDS_SCHEMA: ConfigSchema & {
+/**
+ * Exported (unlike the original module-local const) so decrypt-side
+ * consumers and cross-schema-agreement tests can pin the secret-field
+ * routing against {@link ObsidianFormDataSchema}.
+ */
+export const OBSIDIAN_SECRET_FIELDS_SCHEMA: ConfigSchema & {
   state: "parsed";
   fields: ReadonlyArray<ConfigSchemaField & { key: keyof ObsidianFormData }>;
 } = {
@@ -103,22 +107,16 @@ export class ObsidianFormInstallHandler implements FormBasedInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialWritten: boolean;
   }> {
-    const parsed = ObsidianFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const config = parsed.data;
+    const config = parseFormInstall(ObsidianFormDataSchema, formData);
 
     const installRecord = await persistFormInstall({
       workspaceId,
-      catalogId: OBSIDIAN_CATALOG_ID,
       catalogSlug: OBSIDIAN_SLUG,
       displayName: "Obsidian",
       log,
       config,
       secretFieldsSchema: OBSIDIAN_SECRET_FIELDS_SCHEMA,
-      plaintextSecretLabel: "api_key",
-      newId: this.newId,
+      newId: () => this.newId(),
     });
 
     log.info(
@@ -126,13 +124,5 @@ export class ObsidianFormInstallHandler implements FormBasedInstallHandler {
       "Obsidian install completed",
     );
     return { installRecord, credentialWritten: true };
-  }
-}
-
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "<unparseable>";
   }
 }

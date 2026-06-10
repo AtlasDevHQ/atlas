@@ -26,8 +26,8 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { type ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import type { WorkspaceId } from "@useatlas/types";
-import { FormInstallValidationError } from "./email-form-handler";
-import { persistFormInstall } from "./persist-form-install";
+import { parseFormInstall, persistFormInstall } from "./persist-form-install";
+import { safeHost } from "./safe-host";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -35,9 +35,6 @@ import type {
 } from "./types";
 
 const log = createLogger("integrations.install.webhook");
-
-/** Stable `plugin_catalog.id` for Webhook — `catalog:${slug}` per the seeder. */
-const WEBHOOK_CATALOG_ID = "catalog:webhook";
 
 /** Catalog slug — the dispatch key in {@link registerFormHandler}. */
 const WEBHOOK_SLUG: CatalogId = "webhook";
@@ -84,7 +81,13 @@ export const WebhookFormDataSchema = z
 
 export type WebhookFormData = z.infer<typeof WebhookFormDataSchema>;
 
-const WEBHOOK_SECRET_FIELDS_SCHEMA: ConfigSchema & {
+/**
+ * Exported (unlike the original module-local const) so decrypt-side
+ * consumers and cross-schema-agreement tests can pin the secret-field
+ * routing against {@link WebhookFormDataSchema} — the email family's
+ * Zod↔secret-schema drift test needs both halves importable.
+ */
+export const WEBHOOK_SECRET_FIELDS_SCHEMA: ConfigSchema & {
   state: "parsed";
   fields: ReadonlyArray<ConfigSchemaField & { key: keyof WebhookFormData }>;
 } = {
@@ -117,22 +120,16 @@ export class WebhookFormInstallHandler implements FormBasedInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialWritten: boolean;
   }> {
-    const parsed = WebhookFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const config = parsed.data;
+    const config = parseFormInstall(WebhookFormDataSchema, formData);
 
     const installRecord = await persistFormInstall({
       workspaceId,
-      catalogId: WEBHOOK_CATALOG_ID,
       catalogSlug: WEBHOOK_SLUG,
       displayName: "Webhook",
       log,
       config,
       secretFieldsSchema: WEBHOOK_SECRET_FIELDS_SCHEMA,
-      plaintextSecretLabel: "signing_secret",
-      newId: this.newId,
+      newId: () => this.newId(),
     });
 
     log.info(
@@ -140,14 +137,5 @@ export class WebhookFormInstallHandler implements FormBasedInstallHandler {
       "Webhook install completed",
     );
     return { installRecord, credentialWritten: true };
-  }
-}
-
-/** Best-effort host extraction for log breadcrumbs — never throws. */
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return "<unparseable>";
   }
 }

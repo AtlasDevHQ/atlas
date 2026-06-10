@@ -41,8 +41,12 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceId } from "@useatlas/types";
 import { saveTwentyIntegration } from "@atlas/api/lib/integrations/twenty/store";
-import { FormInstallValidationError } from "./email-form-handler";
-import { assertSaasEncryptionKeyset, persistFormInstall } from "./persist-form-install";
+import {
+  assertSaasEncryptionKeyset,
+  parseFormInstall,
+  persistFormInstall,
+} from "./persist-form-install";
+import { safeHost } from "./safe-host";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -58,6 +62,8 @@ export const TWENTY_SLUG: CatalogId = "twenty";
  * Stable `plugin_catalog.id` for Twenty. The seeder derives row ids
  * as `catalog:${slug}` (see `catalog-seeder.ts::upsertEntry`), so the
  * FK target in `workspace_plugins.catalog_id` is `catalog:twenty`.
+ * (The spine derives the same id from {@link TWENTY_SLUG}; this export
+ * remains for the dispatcher/store call sites that key on it.)
  */
 export const TWENTY_CATALOG_ID = "catalog:twenty";
 
@@ -129,11 +135,7 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     readonly credentialWritten: boolean;
   }> {
     // ── 1. Validate the form against the Twenty schema ──────────────
-    const parsed = TwentyFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const { apiKey, baseUrl } = parsed.data;
+    const { apiKey, baseUrl } = parseFormInstall(TwentyFormDataSchema, formData);
 
     // ── 2. SaaS keyset gate — BEFORE the credential write ────────────
     assertSaasEncryptionKeyset(log, workspaceId, "api_key");
@@ -162,13 +164,12 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     // (the failure log below says so).
     const installRecord = await persistFormInstall({
       workspaceId,
-      catalogId: TWENTY_CATALOG_ID,
       catalogSlug: TWENTY_SLUG,
       displayName: "Twenty",
       log,
       config: {},
       plaintextSecretLabel: "api_key",
-      newId: this.newId,
+      newId: () => this.newId(),
       updateConfigOnConflict: false,
       persistFailureMessage:
         "Failed to persist Twenty install record — twenty_integrations row is persisted (retrying the install is safe; the credential write is idempotent)",
@@ -183,17 +184,5 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
       "Twenty admin-UI install completed",
     );
     return { installRecord, credentialWritten: true };
-  }
-}
-
-/** Best-effort host extraction for log breadcrumbs — never throws. */
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    // intentionally ignored: log breadcrumb only — URL was already
-    // validated by zod refine above, so reaching this branch implies
-    // a malformed log entry, not a malformed user input.
-    return "<unparseable>";
   }
 }

@@ -44,12 +44,14 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceId } from "@useatlas/types";
 import {
-  LINEAR_APIKEY_CATALOG_ID,
   LINEAR_APIKEY_SECRET_FIELDS_SCHEMA,
   LinearApiKeyFormDataSchema,
 } from "./linear-apikey-secret-schema";
-import { FormInstallValidationError } from "./email-form-handler";
-import { persistFormInstall } from "./persist-form-install";
+import {
+  FormInstallValidationError,
+  parseFormInstall,
+  persistFormInstall,
+} from "./persist-form-install";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -58,8 +60,7 @@ import type {
 
 // Re-export the validation error class for callers that catch with
 // `instanceof`. {@link FormInstallValidationError} is the canonical
-// throw type for every form-based install handler — declared in the
-// Email module first per #2697.
+// throw type for every form-based install handler.
 export { FormInstallValidationError };
 
 const log = createLogger("integrations.install.linear-apikey");
@@ -88,23 +89,16 @@ export class LinearApiKeyFormInstallHandler implements FormBasedInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialWritten: boolean;
   }> {
-    const parsed = LinearApiKeyFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const config = parsed.data;
+    const config = parseFormInstall(LinearApiKeyFormDataSchema, formData);
 
     const installRecord = await persistFormInstall({
       workspaceId,
-      catalogId: LINEAR_APIKEY_CATALOG_ID,
       catalogSlug: LINEAR_APIKEY_SLUG,
       displayName: "Linear API-key",
       log,
       config,
       secretFieldsSchema: LINEAR_APIKEY_SECRET_FIELDS_SCHEMA,
-      plaintextSecretLabel: "api_key",
-      newId: this.newId,
-      evictAfterPersist: true,
+      newId: () => this.newId(),
     });
 
     log.info(

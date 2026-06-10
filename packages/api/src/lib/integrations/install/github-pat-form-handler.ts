@@ -22,9 +22,9 @@
  * path intact (HTTP 401 vs API rate-limit vs network).
  *
  * Persistence lives on the shared spine — see {@link persistFormInstall}.
- * The evict rides along even though the GitHub action tool ships in a
- * follow-up PR, so re-installs that rotate the PAT don't leave a stale
- * in-memory instance behind once the tool lands.
+ * The spine's unconditional evict means re-installs that rotate the PAT
+ * never leave a stale in-memory instance behind once the GitHub action
+ * tool (follow-up PR) lands its lazy builder.
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
  * @see ./github-pat-secret-schema.ts — shared form + secret schema
@@ -36,12 +36,14 @@ import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceId } from "@useatlas/types";
 import {
-  GITHUB_PAT_CATALOG_ID,
   GITHUB_PAT_SECRET_FIELDS_SCHEMA,
   GitHubPatFormDataSchema,
 } from "./github-pat-secret-schema";
-import { FormInstallValidationError } from "./email-form-handler";
-import { persistFormInstall } from "./persist-form-install";
+import {
+  FormInstallValidationError,
+  parseFormInstall,
+  persistFormInstall,
+} from "./persist-form-install";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -50,8 +52,7 @@ import type {
 
 // Re-export the validation error class for callers that catch with
 // `instanceof`. {@link FormInstallValidationError} is the canonical
-// throw type for every form-based install handler — declared in the
-// Email module first per #2697.
+// throw type for every form-based install handler.
 export { FormInstallValidationError };
 
 const log = createLogger("integrations.install.github-pat");
@@ -78,23 +79,16 @@ export class GitHubPatFormInstallHandler implements FormBasedInstallHandler {
     readonly installRecord: InstallRecord;
     readonly credentialWritten: boolean;
   }> {
-    const parsed = GitHubPatFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const config = parsed.data;
+    const config = parseFormInstall(GitHubPatFormDataSchema, formData);
 
     const installRecord = await persistFormInstall({
       workspaceId,
-      catalogId: GITHUB_PAT_CATALOG_ID,
       catalogSlug: GITHUB_PAT_SLUG,
       displayName: "GitHub PAT",
       log,
       config,
       secretFieldsSchema: GITHUB_PAT_SECRET_FIELDS_SCHEMA,
-      plaintextSecretLabel: "pat",
-      newId: this.newId,
-      evictAfterPersist: true,
+      newId: () => this.newId(),
     });
 
     log.info(

@@ -1,23 +1,23 @@
 /**
  * Tests for the shared form-install persistence spine —
  * {@link persistFormInstall} + {@link assertSaasEncryptionKeyset} +
- * {@link buildFormInstallUpsertSql}.
+ * {@link parseFormInstall} + {@link buildFormInstallUpsertSql}.
  *
  * The spine owns the behavior the six single-instance form handlers
  * (Email / Webhook / Obsidian / Linear API-key / GitHub PAT / Twenty)
  * used to each carry a copy of: SaaS keyset gate, selective-field
  * encryption, the post-0092 `workspace_plugins` upsert, the
- * returned-id invariant, and the optional lazy-loader evict. Each
- * behavior is pinned ONCE here; the per-handler tests keep covering
- * their parse-and-validate remainder (and the full path through the
- * spine, since they mock the same `db/internal` seam).
+ * returned-id invariant, and the lazy-loader evict. Each behavior is
+ * pinned ONCE here; the per-handler tests keep covering their
+ * parse-and-validate remainder (and the full path through the spine,
+ * since they mock the same `db/internal` seam).
  *
  * SQL-shape note: the upsert must name `install_id` + `pillar` and
  * spell the partial-index predicate on the conflict target — the
  * pre-spine Email/Webhook/Obsidian copies used the pre-0092 shape and
  * failed against the live schema with 42P10 (no arbiter index). The
  * real-Postgres execution of {@link buildFormInstallUpsertSql} lives
- * in `db/__tests__/migrate-pg.test.ts`; here we pin the string shape
+ * in `./persist-form-install-pg.test.ts`; here we pin the string shape
  * so a regression is visible without a live Postgres.
  */
 
@@ -26,6 +26,7 @@ import { _resetEncryptionKeyCache } from "@atlas/api/lib/db/encryption-keys";
 import { decryptSecret } from "@atlas/api/lib/db/secret-encryption";
 import type { ConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import type { WorkspaceId } from "@useatlas/types";
+import { z } from "zod";
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
   async (sql: string, params?: unknown[]) => {
@@ -69,39 +70,48 @@ type SpineModule = typeof import("../persist-form-install");
 let persistFormInstall!: SpineModule["persistFormInstall"];
 let assertSaasEncryptionKeyset!: SpineModule["assertSaasEncryptionKeyset"];
 let buildFormInstallUpsertSql!: SpineModule["buildFormInstallUpsertSql"];
+let parseFormInstall!: SpineModule["parseFormInstall"];
+let FormInstallValidationError!: SpineModule["FormInstallValidationError"];
 
 beforeAll(async () => {
   const mod = await import("../persist-form-install");
   persistFormInstall = mod.persistFormInstall;
   assertSaasEncryptionKeyset = mod.assertSaasEncryptionKeyset;
   buildFormInstallUpsertSql = mod.buildFormInstallUpsertSql;
+  parseFormInstall = mod.parseFormInstall;
+  FormInstallValidationError = mod.FormInstallValidationError;
 });
 
 const ORIGINAL_ENV = { ...process.env };
 
-// Logger stub — capture calls so log-or-rethrow behavior is assertable.
+// Logger stub — satisfies the spine's narrowed InstallLogger (Pick of
+// error/warn) without casts, and captures calls so log-or-rethrow
+// behavior is assertable.
 function makeLog() {
-  const calls: Array<{ level: string; msg: string }> = [];
-  const log = {
-    error: (_obj: unknown, msg: string) => calls.push({ level: "error", msg }),
-    warn: (_obj: unknown, msg: string) => calls.push({ level: "warn", msg }),
-    info: (_obj: unknown, msg: string) => calls.push({ level: "info", msg }),
-    debug: () => {},
-  } as unknown as Parameters<typeof persistFormInstall>[0]["log"];
-  return { log, calls };
+  const calls: Array<{ level: string; msg: string; fields: Record<string, unknown> }> = [];
+  const record =
+    (level: string) =>
+    (objOrMsg: unknown, msg?: string): void => {
+      calls.push({
+        level,
+        msg: typeof objOrMsg === "string" ? objOrMsg : (msg ?? ""),
+        fields: typeof objOrMsg === "object" && objOrMsg !== null
+          ? (objOrMsg as Record<string, unknown>)
+          : {},
+      });
+    };
+  return { log: { error: record("error"), warn: record("warn") }, calls };
 }
 
 function baseParams(overrides: Partial<Parameters<typeof persistFormInstall>[0]> = {}) {
   const { log } = makeLog();
   return {
     workspaceId: WSID,
-    catalogId: "catalog:spine-test",
     catalogSlug: "spine-test",
     displayName: "Spine Test",
     log,
     config: { host: "example.com", token: "plaintext-token-xyz" },
     secretFieldsSchema: SECRET_SCHEMA,
-    plaintextSecretLabel: "token",
     newId: () => "candidate-1",
     ...overrides,
   };
@@ -131,6 +141,32 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
+// Parse step
+// ---------------------------------------------------------------------------
+
+describe("parseFormInstall", () => {
+  const Schema = z.object({ name: z.string().min(1, "name is required") }).strict();
+
+  it("returns the parsed data on success", () => {
+    expect(parseFormInstall(Schema, { name: "ok" })).toEqual({ name: "ok" });
+  });
+
+  it("throws FormInstallValidationError with field detail on failure", () => {
+    let caught: unknown;
+    try {
+      parseFormInstall(Schema, { name: "", extra: 1 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const e = caught as InstanceType<typeof FormInstallValidationError>;
+    expect(e.fieldErrors.name).toBeDefined();
+    // .strict() unrecognized-key reports land in formErrors.
+    expect(e.formErrors.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // SaaS keyset gate
 // ---------------------------------------------------------------------------
 
@@ -145,18 +181,48 @@ describe("assertSaasEncryptionKeyset / spine keyset gate", () => {
       /Encryption keyset unavailable in SaaS mode/,
     );
     expect(mockInternalQuery).not.toHaveBeenCalled();
-    // The refusal names the credential field (breadcrumb, never the value).
+    // The refusal names the credential field, DERIVED from the schema's
+    // secret:true key (breadcrumb, never the value).
     expect(calls.some((c) => c.level === "error" && c.msg.includes("plaintext token"))).toBe(true);
   });
 
-  it("standalone gate throws under SaaS + keyless (Twenty gates its credential-table write)", () => {
+  it("an explicit plaintextSecretLabel overrides the derived one (Twenty's schema-less path)", async () => {
     delete process.env.ATLAS_ENCRYPTION_KEYS;
     process.env.ATLAS_DEPLOY_MODE = "saas";
     _resetEncryptionKeyCache();
-    const { log } = makeLog();
-    expect(() => assertSaasEncryptionKeyset(log, WSID, "api_key")).toThrow(
+
+    const { log, calls } = makeLog();
+    await expect(
+      persistFormInstall(
+        baseParams({ log, config: {}, secretFieldsSchema: undefined, plaintextSecretLabel: "api_key" }),
+      ),
+    ).rejects.toThrow(/Encryption keyset unavailable/);
+    expect(calls.some((c) => c.msg.includes("plaintext api_key"))).toBe(true);
+  });
+
+  it("standalone gate throws under SaaS + keyless, sanitizing the label out of the message", () => {
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    _resetEncryptionKeyCache();
+    const { log, calls } = makeLog();
+    // The label lands in the log MESSAGE — a config-derived value must
+    // not be able to splice newlines/forged content into it.
+    expect(() => assertSaasEncryptionKeyset(log, WSID, "x) — ok\nforged=1")).toThrow(
       /Encryption keyset unavailable/,
     );
+    const refusal = calls.find((c) => c.level === "error");
+    expect(refusal?.msg).not.toContain("\n");
+    expect(refusal?.msg).not.toContain("forged=1");
+  });
+
+  it("extraLogFields ride along on the refusal log (OpenAPI per-candidate attribution)", () => {
+    delete process.env.ATLAS_ENCRYPTION_KEYS;
+    process.env.ATLAS_DEPLOY_MODE = "saas";
+    _resetEncryptionKeyCache();
+    const { log, calls } = makeLog();
+    expect(() => assertSaasEncryptionKeyset(log, WSID, "auth_value", { catalogSlug: "stripe-data" }))
+      .toThrow(/Encryption keyset unavailable/);
+    expect(calls[0]?.fields.catalogSlug).toBe("stripe-data");
   });
 
   it("self-hosted keyless deploys pass the gate (dev passthrough parity)", async () => {
@@ -183,7 +249,7 @@ describe("persistFormInstall — selective-field encryption", () => {
 
   it("persists config as-is when no secret schema is given (Twenty's {} stub)", async () => {
     await persistFormInstall(
-      baseParams({ config: {}, secretFieldsSchema: undefined }),
+      baseParams({ config: {}, secretFieldsSchema: undefined, plaintextSecretLabel: "api_key" }),
     );
     const [, params] = mockInternalQuery.mock.calls[0];
     expect(JSON.parse((params as unknown[])[3] as string)).toEqual({});
@@ -195,7 +261,7 @@ describe("persistFormInstall — selective-field encryption", () => {
 // ---------------------------------------------------------------------------
 
 describe("persistFormInstall — workspace_plugins upsert", () => {
-  it("uses the post-0092 shape: explicit install_id + pillar='action' + partial-index conflict target", async () => {
+  it("uses the post-0092 shape and derives the catalog:<slug> FK from the slug", async () => {
     await persistFormInstall(baseParams());
     const [sql, params] = mockInternalQuery.mock.calls[0];
     expect(sql).toContain("INSERT INTO workspace_plugins");
@@ -209,6 +275,8 @@ describe("persistFormInstall — workspace_plugins upsert", () => {
     const p = params as unknown[];
     expect(p[0]).toBe("candidate-1");
     expect(p[1]).toBe(WSID);
+    // One param at the seam — the FK is derived, so a mismatched
+    // catalogId/catalogSlug pair is unrepresentable.
     expect(p[2]).toBe("catalog:spine-test");
   });
 
@@ -255,24 +323,19 @@ describe("persistFormInstall — workspace_plugins upsert", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Post-persist evict hook
+// Post-persist evict
 // ---------------------------------------------------------------------------
 
 describe("persistFormInstall — lazy-loader evict", () => {
-  it("evicts the (workspace, catalog) plugin cache when evictAfterPersist is set", async () => {
-    await persistFormInstall(baseParams({ evictAfterPersist: true }));
-    expect(evictMock).toHaveBeenCalledWith(WSID, "catalog:spine-test");
-  });
-
-  it("does not evict by default", async () => {
+  it("always evicts the (workspace, catalog) plugin cache after a persist", async () => {
     await persistFormInstall(baseParams());
-    expect(evictMock).not.toHaveBeenCalled();
+    expect(evictMock).toHaveBeenCalledWith(WSID, "catalog:spine-test");
   });
 
   it("an evict failure warns but never fails the install (DB row already persisted)", async () => {
     evictMock.mockImplementation(() => Promise.reject(new Error("teardown blew up")));
     const { log, calls } = makeLog();
-    const result = await persistFormInstall(baseParams({ log, evictAfterPersist: true }));
+    const result = await persistFormInstall(baseParams({ log }));
     expect(result.id).toBe("candidate-1");
     expect(
       calls.some((c) => c.level === "warn" && c.msg.includes("Spine Test install upsert")),
@@ -281,25 +344,31 @@ describe("persistFormInstall — lazy-loader evict", () => {
 
   it("evict runs after the upsert, never on the failure path", async () => {
     mockInternalQuery.mockImplementation(() => Promise.reject(new Error("boom")));
-    await expect(persistFormInstall(baseParams({ evictAfterPersist: true }))).rejects.toThrow(
-      "boom",
-    );
+    await expect(persistFormInstall(baseParams())).rejects.toThrow("boom");
     expect(evictMock).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// SQL builder — both variants stay parseable-by-inspection here; the real-PG
-// execution lives in db/__tests__/migrate-pg.test.ts.
+// SQL builder — both knob variants and both pillars stay inspectable here;
+// the real-PG execution lives in ./persist-form-install-pg.test.ts.
 // ---------------------------------------------------------------------------
 
 describe("buildFormInstallUpsertSql", () => {
-  it("both variants target the partial singleton index and RETURNING id", () => {
+  it("every variant targets the partial singleton index and RETURNING id", () => {
     for (const updateConfig of [true, false]) {
-      const sql = buildFormInstallUpsertSql(updateConfig);
-      expect(sql).toContain("ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')");
-      expect(sql).toContain("RETURNING id");
-      expect(sql).toContain("'action'");
+      for (const pillar of ["chat", "action"] as const) {
+        const sql = buildFormInstallUpsertSql(updateConfig, pillar);
+        expect(sql).toContain(
+          "ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')",
+        );
+        expect(sql).toContain("RETURNING id");
+        expect(sql).toContain(`'${pillar}'`);
+      }
     }
+  });
+
+  it("defaults to the action pillar (the form spine's only value today)", () => {
+    expect(buildFormInstallUpsertSql(true)).toContain("'action'");
   });
 });

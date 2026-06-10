@@ -1508,8 +1508,13 @@ export const workspacePlugins = pgTable(
     workspaceId: text("workspace_id").notNull(),
     catalogId: text("catalog_id").notNull().references(() => pluginCatalog.id, { onDelete: "cascade" }),
     // 0092 / #2739 — per-instance install identifier.
-    //  - chat/action installs: catalog_id sentinel (singleton enforced
-    //    by `workspace_plugins_singleton` partial unique).
+    //  - chat/action installs: singleton enforced by the
+    //    `workspace_plugins_singleton` partial unique. Rows backfilled
+    //    by 0092 carry the catalog_id sentinel; every post-#2739
+    //    writer (Slack/Telegram/static-bots, the form-install spine in
+    //    integrations/install/persist-form-install.ts) writes the row
+    //    id — both conventions coexist, so never join/filter on
+    //    install_id for these pillars; key on (workspace_id, catalog_id).
     //  - datasource installs (#2743 / #2744): user-facing id like
     //    `prod-us`, multi-instance per (workspace, catalog).
     installId: text("install_id").notNull(),

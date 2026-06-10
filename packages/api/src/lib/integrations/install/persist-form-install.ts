@@ -5,7 +5,7 @@
  * Email / Webhook / Obsidian / Linear API-key / GitHub PAT / Twenty all
  * repeated the same sequence after their per-Platform Zod parse: SaaS
  * keyset gate → `encryptSecretFields` → `workspace_plugins` upsert →
- * returned-id invariant check → optional lazy-loader evict. Five-plus
+ * returned-id invariant check → lazy-loader evict. Five-plus
  * copies of that spine meant five places for the Workspace Install
  * write path to be wrong — and three of them WERE wrong: the Email /
  * Webhook / Obsidian copies still carried the pre-0092 INSERT shape
@@ -15,8 +15,9 @@
  * specification") because 0096 dropped both the column-filling BEFORE
  * INSERT trigger and the non-partial unique index that shape relied
  * on. The spine writes the one canonical post-0092 shape (explicit
- * `install_id` + `pillar='action'`, partial-index conflict target),
- * pinned against real Postgres in `db/__tests__/migrate-pg.test.ts`.
+ * `install_id` + denormalized `pillar`, partial-index conflict
+ * target), pinned against real Postgres in
+ * `__tests__/persist-form-install-pg.test.ts`.
  *
  * Intentionally NOT on this spine (different persistence shapes):
  *   - `DatasourceFormInstallHandler` — `pillar='datasource'`,
@@ -38,17 +39,30 @@ import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import type { WorkspaceId } from "@useatlas/types";
 import type { CatalogId, InstallRecord } from "./types";
 
-type InstallLogger = ReturnType<typeof createLogger>;
+/**
+ * The spine only writes log lines — narrow to exactly the levels it
+ * uses so test loggers and lightweight scoped loggers satisfy the type
+ * without casting (precedent: `_shared/oauth-retry.ts`'s RetryLogger).
+ */
+type InstallLogger = Pick<ReturnType<typeof createLogger>, "error" | "warn">;
 
 /**
  * The canonical single-instance form-install upsert (post-0092 shape,
  * #2739). `install_id` is named explicitly (= the candidate row id,
- * matching the Linear / GitHub PAT / Twenty convention) and
- * `pillar='action'` is denormalized so the partial unique index
- * `workspace_plugins_singleton` — the only `(workspace_id, catalog_id)`
- * unique gate left after 0096 — can arbitrate the conflict. The WHERE
- * clause on the conflict target is load-bearing: Postgres only infers a
- * partial index as the arbiter when the predicate is spelled out.
+ * matching the convention of every working writer — Slack, Telegram,
+ * Linear, GitHub PAT, Twenty; pre-0096 rows backfilled by 0092 carry
+ * the older `install_id = catalog_id` sentinel and are healed to the
+ * existing row id never being touched on conflict) and `pillar` is
+ * denormalized so the partial unique index `workspace_plugins_singleton`
+ * — the only `(workspace_id, catalog_id)` unique gate left after 0096 —
+ * can arbitrate the conflict. The WHERE clause on the conflict target
+ * is load-bearing: Postgres only infers a partial index as the arbiter
+ * when the predicate is spelled out.
+ *
+ * `pillar` is a parameter (defaulting to `'action'`, the only value the
+ * form spine writes today) so the five static-bot chat handlers and the
+ * #3357 Salesforce/Jira fix can converge on this single tested artifact
+ * instead of hand-rolling an eleventh copy.
  *
  * `RETURNING id` returns the persisted id — on a fresh INSERT it's the
  * one we generated, on a CONFLICT it's the row's existing id (NOT the
@@ -60,12 +74,15 @@ type InstallLogger = ReturnType<typeof createLogger>;
  * handler) — the column tracks the first install, not the most recent
  * edit.
  *
- * Exported so the real-Postgres migration smoke executes this exact
- * string against the live schema — the drift class that broke the
- * pre-spine Email/Webhook/Obsidian copies (mock-based handler tests
- * can't see plan-time SQL errors).
+ * Exported so the real-Postgres smoke executes this exact string
+ * against the live schema — the drift class that broke the pre-spine
+ * Email/Webhook/Obsidian copies (mock-based handler tests can't see
+ * plan-time SQL errors).
  */
-export function buildFormInstallUpsertSql(updateConfigOnConflict: boolean): string {
+export function buildFormInstallUpsertSql(
+  updateConfigOnConflict: boolean,
+  pillar: "chat" | "action" = "action",
+): string {
   // Twenty keeps the existing row's config on re-install — its config
   // is a catalog-binding stub (credential lives in twenty_integrations).
   const conflictSet = updateConfigOnConflict
@@ -74,7 +91,7 @@ export function buildFormInstallUpsertSql(updateConfigOnConflict: boolean): stri
     : `SET enabled = true`;
   return `INSERT INTO workspace_plugins
            (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'action', $4::jsonb, true, NOW())
+         VALUES ($1, $2, $3, $1, '${pillar}', $4::jsonb, true, NOW())
          ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
          DO UPDATE
            ${conflictSet}
@@ -89,22 +106,30 @@ export function buildFormInstallUpsertSql(updateConfigOnConflict: boolean): stri
  * credential boundary.
  *
  * Runs inside {@link persistFormInstall}; exported for handlers that
- * write a credential store BEFORE the workspace_plugins upsert (Twenty's
- * `twenty_integrations` row) and must gate that earlier write too.
+ * must gate an EARLIER write — Twenty's `twenty_integrations` credential
+ * row lands before the catalog upsert, and Email's TLS-disabled warn
+ * must not fire for an install the gate refuses.
  *
  * @param plaintextSecretLabel - the credential field named in the
  *   refusal log line ("password", "api_key", "pat", …). Log breadcrumb
- *   only — never the secret value itself.
+ *   only — never the secret value itself. Sanitized to a word-ish token
+ *   because it lands in the log MESSAGE: this is an exported seam, and
+ *   a future caller passing a config-derived label must not be able to
+ *   splice newlines/control chars into the alertable refusal string.
+ * @param extraLogFields - additional structured fields for the refusal
+ *   log (the shared OpenAPI install core attributes per-candidate slugs).
  */
 export function assertSaasEncryptionKeyset(
   log: InstallLogger,
   workspaceId: WorkspaceId,
   plaintextSecretLabel: string,
+  extraLogFields: Record<string, unknown> = {},
 ): void {
   if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
+    const label = plaintextSecretLabel.replace(/[^\w./-]/g, "_");
     log.error(
-      { workspaceId },
-      `Refusing form install: SaaS mode + no encryption keyset (would persist plaintext ${plaintextSecretLabel})`,
+      { workspaceId, ...extraLogFields },
+      `Refusing form install: SaaS mode + no encryption keyset (would persist plaintext ${label})`,
     );
     throw new Error(
       "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. Set ATLAS_ENCRYPTION_KEYS and retry.",
@@ -112,11 +137,47 @@ export function assertSaasEncryptionKeyset(
   }
 }
 
+/**
+ * Structural subset of a Zod schema's `safeParse` — kept structural so
+ * the spine doesn't pin a zod version, and so `.strict()` / `.refine()`
+ * / `.transform()` wrappers all satisfy it.
+ */
+interface ParseableFormSchema<T> {
+  safeParse(data: unknown):
+    | { success: true; data: T }
+    | {
+        success: false;
+        error: {
+          flatten(): {
+            fieldErrors: Record<string, string[] | undefined>;
+            formErrors: string[];
+          };
+        };
+      };
+}
+
+/**
+ * The canonical parse-or-throw step every form handler starts with:
+ * validate `formData` against the handler's Zod schema and throw
+ * {@link FormInstallValidationError} (the single error type the route's
+ * `instanceof` catch maps to a field-level 400) on failure.
+ */
+export function parseFormInstall<T>(schema: ParseableFormSchema<T>, formData: unknown): T {
+  const parsed = schema.safeParse(formData);
+  if (!parsed.success) {
+    throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
 export interface PersistFormInstallParams {
   readonly workspaceId: WorkspaceId;
-  /** `plugin_catalog.id` FK — `catalog:<slug>` per the seeder. */
-  readonly catalogId: string;
-  /** Bare catalog slug — becomes {@link InstallRecord.catalogId}. */
+  /**
+   * Bare catalog slug — the dispatch key and {@link InstallRecord.catalogId}.
+   * The `plugin_catalog.id` FK is derived as `catalog:<slug>` (the
+   * seeder's invariant, `catalog-seeder.ts::upsertEntry`) so a handler
+   * can never pass a mismatched id/slug pair.
+   */
   readonly catalogSlug: CatalogId;
   /** Human-readable Platform name composed into log lines ("Email", "GitHub PAT"). */
   readonly displayName: string;
@@ -131,8 +192,12 @@ export interface PersistFormInstallParams {
    * `twenty_integrations` table, the config here is a `{}` stub).
    */
   readonly secretFieldsSchema?: ConfigSchema;
-  /** Credential field named in the SaaS keyset-gate refusal log. */
-  readonly plaintextSecretLabel: string;
+  /**
+   * Credential field named in the SaaS keyset-gate refusal log. Derived
+   * from the schema's `secret: true` field keys when omitted; required
+   * in spirit for schema-less callers (falls back to "credential").
+   */
+  readonly plaintextSecretLabel?: string;
   /** Candidate row-id generator (handlers inject a fixed one in tests). */
   readonly newId: () => string;
   /**
@@ -140,15 +205,6 @@ export interface PersistFormInstallParams {
    * existing row's config rather than overwrite it with the stub.
    */
   readonly updateConfigOnConflict?: boolean;
-  /**
-   * Evict the cached PluginLike for this (workspace, catalog) after the
-   * upsert so the next tool dispatch rebuilds against the freshly-
-   * persisted config. Without this, a re-install that rotates
-   * credentials keeps the stale in-memory instance from before the
-   * upsert. Fire-and-forget — a failed evict warns but never fails the
-   * install (the DB row is already persisted).
-   */
-  readonly evictAfterPersist?: boolean;
   /**
    * Override for the persist-failure log line. Twenty uses it to
    * document partial-write recovery (its credential row lands first and
@@ -160,17 +216,25 @@ export interface PersistFormInstallParams {
 
 /**
  * The shared spine: SaaS keyset gate → encrypt secret fields →
- * `workspace_plugins` upsert → returned-id invariant → optional
- * lazy-loader evict. Handlers shrink to parse-and-validate + one call;
- * the per-Platform completion `log.info` (host/port/owner breadcrumbs)
+ * `workspace_plugins` upsert → returned-id invariant → lazy-loader
+ * evict. Handlers shrink to parse-and-validate + one call; the
+ * per-Platform completion `log.info` (host/port/owner breadcrumbs)
  * stays with the handler.
+ *
+ * The evict is unconditional: a re-install that rotates credentials
+ * must never keep serving a stale cached PluginLike built from the
+ * pre-upsert config, and `lazyPluginLoader.evict` is a free no-op when
+ * nothing is cached — so there is no consumer for which skipping it
+ * would be right (the pre-spine Webhook/Obsidian copies skipped it and
+ * carried exactly that stale-instance bug, latent until their lazy
+ * builders register). Fire-and-forget: a failed evict warns but never
+ * fails the install (the DB row is already persisted).
  */
 export async function persistFormInstall(
   params: PersistFormInstallParams,
 ): Promise<InstallRecord> {
   const {
     workspaceId,
-    catalogId,
     catalogSlug,
     displayName,
     log,
@@ -179,12 +243,19 @@ export async function persistFormInstall(
     plaintextSecretLabel,
     newId,
     updateConfigOnConflict = true,
-    evictAfterPersist = false,
     persistFailureMessage = `Failed to persist ${displayName} install record — aborting install`,
   } = params;
 
+  // The seeder derives every catalog row id as `catalog:${slug}` — one
+  // param, so a mismatched id/slug pair is unrepresentable at the seam.
+  const catalogId = `catalog:${catalogSlug}`;
+
   // ── 1. SaaS keyset gate ─────────────────────────────────────────────
-  assertSaasEncryptionKeyset(log, workspaceId, plaintextSecretLabel);
+  assertSaasEncryptionKeyset(
+    log,
+    workspaceId,
+    plaintextSecretLabel ?? deriveSecretLabel(secretFieldsSchema),
+  );
 
   // ── 2. Encrypt secret fields at rest ────────────────────────────────
   const persistedConfig = secretFieldsSchema
@@ -228,17 +299,82 @@ export async function persistFormInstall(
     throw err;
   }
 
-  // ── 4. Optional post-persist evict ──────────────────────────────────
-  if (evictAfterPersist) {
-    try {
-      await lazyPluginLoader.evict(workspaceId, catalogId);
-    } catch (err) {
-      log.warn(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
-        `LazyPluginLoader.evict threw after ${displayName} install upsert — DB row is persisted anyway`,
-      );
-    }
+  // ── 4. Evict any cached PluginLike for this (workspace, catalog) ────
+  try {
+    await lazyPluginLoader.evict(workspaceId, catalogId);
+  } catch (err) {
+    log.warn(
+      { workspaceId, err: err instanceof Error ? err.message : String(err) },
+      `LazyPluginLoader.evict threw after ${displayName} install upsert — DB row is persisted anyway`,
+    );
   }
 
   return { id: persistedId, workspaceId, catalogId: catalogSlug };
+}
+
+/** The `secret: true` field keys of a parsed schema — the gate-log breadcrumb. */
+function deriveSecretLabel(schema: ConfigSchema | undefined): string {
+  if (schema?.state === "parsed") {
+    const keys = schema.fields.filter((f) => f.secret === true).map((f) => f.key);
+    if (keys.length > 0) return keys.join("/");
+  }
+  return "credential";
+}
+
+/**
+ * Validation failure surface for every form-based install handler.
+ * `kind` is the catalog `install_model` value so every handler throws
+ * the same class — the route's catch is a single
+ * `instanceof FormInstallValidationError` check rather than a growing
+ * list of per-Platform error types. (Declared in the Email module first
+ * per #2697; moved here with the spine so {@link parseFormInstall} can
+ * throw it without an email-handler import cycle. `email-form-handler`
+ * re-exports it, so existing import sites keep compiling.)
+ *
+ * `fieldErrors` is normalized at construction: only fields with
+ * actual issues land in the map (Zod's `flatten().fieldErrors`
+ * carries `string[] | undefined` values; we drop the undefineds so
+ * the public contract is clean).
+ *
+ * `formErrors` carries top-level issues — `.strict()` "unrecognized
+ * key" reports, schema-level `.refine` failures — that don't bind to
+ * any single field. The route surfaces both so the admin UI can
+ * render a generic banner alongside per-field messages.
+ *
+ * Tagged class rather than `Data.TaggedError` because this throws out
+ * through the legacy Hono handler — `runHandler`'s typed-error mapper
+ * doesn't currently know about install-handler-internal tagged
+ * errors; the route catches via `instanceof` and emits the 400
+ * directly. Promoting to a tagged Effect error is a follow-up once
+ * the dispatch grows.
+ */
+export class FormInstallValidationError extends Error {
+  readonly _tag = "FormInstallValidationError" as const;
+  readonly fieldErrors: Readonly<Record<string, readonly string[]>>;
+  readonly formErrors: readonly string[];
+
+  constructor(input: {
+    fieldErrors: Record<string, string[] | undefined>;
+    formErrors?: readonly string[];
+  }) {
+    super("Form install validation failed");
+    this.name = "FormInstallValidationError";
+    const cleaned: Record<string, readonly string[]> = {};
+    for (const [k, v] of Object.entries(input.fieldErrors)) {
+      if (v && v.length > 0) cleaned[k] = v;
+    }
+    this.fieldErrors = cleaned;
+    this.formErrors = input.formErrors ?? [];
+  }
+
+  /** Build from `parsed.error.flatten()` — the canonical Zod adapter. */
+  static fromZodFlatten(flat: {
+    fieldErrors: Record<string, string[] | undefined>;
+    formErrors: string[];
+  }): FormInstallValidationError {
+    return new FormInstallValidationError({
+      fieldErrors: flat.fieldErrors,
+      formErrors: flat.formErrors,
+    });
+  }
 }

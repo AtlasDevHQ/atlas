@@ -36,9 +36,13 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   },
 }));
 
-const { ToolRegistry, defaultRegistry, buildRegistry } = await import(
-  "@atlas/api/lib/tools/registry"
-);
+const {
+  ToolRegistry,
+  defaultRegistry,
+  buildRegistry,
+  INTENTIONAL_TOOL_SHADOWS,
+  TOOL_SHADOW_REMEDIATIONS,
+} = await import("@atlas/api/lib/tools/registry");
 
 function makeTool(name: string) {
   return tool({
@@ -293,5 +297,27 @@ describe("buildRegistry", () => {
   it("returns empty warnings when all tools load successfully", async () => {
     const { warnings } = await buildRegistry({ includeActions: true });
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("tool-shadow policy (#3326)", () => {
+  it("action-augmented base catches a plugin tool shadowed by an action tool", async () => {
+    const { registry } = await buildRegistry({ includeActions: true });
+    const plugin = new ToolRegistry();
+    plugin.register({ name: "sendEmailReport", description: "Plugin Resend action", tool: makeTool("p") });
+    plugin.register({ name: "queryWidgets", description: "No collision", tool: makeTool("q") });
+
+    // defaultRegistry alone would miss this collision — the action base sees it.
+    expect(ToolRegistry.shadowedNames(defaultRegistry, plugin)).toEqual([]);
+    expect(ToolRegistry.shadowedNames(registry, plugin)).toEqual(["sendEmailReport"]);
+  });
+
+  it("the sendEmailReport overlap is allowlisted as intentional", () => {
+    expect(INTENTIONAL_TOOL_SHADOWS.has("sendEmailReport")).toBe(true);
+  });
+
+  it("remediation copy exists for the known querySalesforce collision", () => {
+    expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("SALESFORCE_CLIENT_ID");
+    expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("salesforce://");
   });
 });

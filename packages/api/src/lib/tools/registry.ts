@@ -243,6 +243,39 @@ if (isSalesforceOAuthConfigured()) {
 
 defaultRegistry.freeze();
 
+// ---------------------------------------------------------------------------
+// Tool-name shadow policy (#3326)
+//
+// `api/server.ts` warns at boot when a plugin tool is shadowed by a core/action
+// tool of the same name (`ToolRegistry.shadowedNames`). The per-name knowledge
+// lives here, next to the registration sites, so the generic boot loop stays
+// tool-agnostic.
+// ---------------------------------------------------------------------------
+
+/**
+ * Known-INTENTIONAL overlaps — the same capability registered by two wiring
+ * paths, where the core/action entry winning the merge is by design. The boot
+ * warning skips these.
+ *
+ * - `sendEmailReport`: the operator-env action (`tools/actions/email.ts`) and
+ *   the `plugins/email` Resend plugin both register this name with
+ *   `actionType: "email:send"` — same Resend-backed report sender (see the
+ *   coexistence note in `integrations/email-tool.ts`).
+ */
+export const INTENTIONAL_TOOL_SHADOWS: ReadonlySet<string> = new Set(["sendEmailReport"]);
+
+/**
+ * Operator remediation copy for known tool-name collisions, keyed by tool
+ * name. Appended to the generic boot warning when the shadowed name matches.
+ *
+ * - `querySalesforce`: the static-url plugin tool vs the OAuth per-workspace
+ *   tool (the KNOWN EDGE above) — the deployments are mutually exclusive.
+ */
+export const TOOL_SHADOW_REMEDIATIONS: Readonly<Record<string, string>> = {
+  querySalesforce:
+    "Unset SALESFORCE_CLIENT_ID/SALESFORCE_CLIENT_SECRET to use the static-url Salesforce tool, or remove the static salesforce:// datasource to use the OAuth per-workspace tool.",
+};
+
 interface BuildRegistryResult {
   registry: ToolRegistry;
   warnings: string[];

@@ -2530,7 +2530,34 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 ---
 
-## 89. Admin config-form loop behind `useConfigForm` — dirty/reset semantics stated once
+## 89. One shaped result behind the three scheduled-delivery renderers (review 2026-06-09, candidate 6)
+
+**Date:** 2026-06-10
+**Issue:** — (architecture-review 2026-06-09, candidate 6)
+**PR:** #3360
+
+**Problem:** The three scheduled-delivery formatters (`format-email.ts`, `format-slack.ts`, `format-webhook.ts`) each re-derived metadata (task name/question, steps, tokens, timestamp) from `(task, result)`, and the 50-row table truncation rule lived only in the email copy. The webhook path shipped `result.data` to recipient URLs **unbounded** — a 100k-row agent result became a 100k-row JSON POST. (The review's claim that Slack was also unbounded didn't survive contact: `formatSlackReport` delegates to `formatQueryResponse`, which already caps tables at 20 rows / 3000 chars for Block Kit limits — the live bug was webhook-only.)
+
+**Solution:** `packages/api/src/lib/scheduler/shape-result.ts` owns `shapeResult(task, result) → FormattedResult`: per-dataset truncation (default 50 rows, settings/env-overridable via `ATLAS_DELIVERY_MAX_ROWS`) with `totalRows`/`truncated` accounting, the raw answer (fallback copy stays presentational), and one `generatedAt` timestamp shared by all channels. The three renderers become thin adapters (HTML / Block Kit / JSON) consuming only the shaped result; `delivery.ts` shapes once per delivery and threads `FormattedResult` through the per-recipient Effects; `preview.ts` rides the same seam. The shape is tested directly (truncation boundary at 50/51, per-dataset independence, order preservation, metadata, no source mutation) without rendering.
+
+**Scope correction vs. the review card:** "section ordering decided once" was dropped — email orders data-before-SQL while Slack orders SQL-before-data, and both wire formats had to stay byte-compatible, so layout remains a renderer concern. The module owns the *shape* (what data each channel may show), not the layout. It still passes the deletion test: deleting it would re-scatter the truncation rule and its accounting across three renderers, one of which had already lost it.
+
+**Behavior changes (deliberate, called out in the PR):**
+- Webhook datasets are now capped at 50 rows, with additive `totalRows`/`truncated` fields per dataset so consumers can detect the cap instead of silently losing rows.
+- Slack's "Showing first 20 of N rows" note now counts N against the shaped 50-row dataset rather than the raw result (display was already capped at 20 rows, so no rows readers saw are lost). A second-order consequence of the same pre-truncation: `dedupeDatasets` now collapses datasets that are identical only in their first 50 rows — acceptable for a digest surface, documented at the call site.
+- Email and Slack rendered output is otherwise byte-identical; the email truncation note text is unchanged.
+- Post-review follow-up (same PR): the cap became settings/env-configurable (`ATLAS_DELIVERY_MAX_ROWS`, default 50, registered in the admin settings registry), the exported constant was renamed `DEFAULT_DELIVERY_MAX_ROWS` to stop colliding with `slack/format.ts`'s unrelated `MAX_DATA_ROWS = 20`, and the six copy-pasted `makeTask`/`makeResult` test fixtures consolidated into `__tests__/fixtures.ts`.
+
+**Impact:**
+- The webhook unbounded-payload bug is fixed at the seam where the rule belongs, not patched in a third copy.
+- A fourth delivery channel gets truncation, metadata, and the shared timestamp for free by consuming `FormattedResult`.
+- Truncation semantics have one canonical test file (`shape-result.test.ts`); the renderer tests shrink to layout concerns.
+
+**Category:** Deep module extraction — three renderers that each re-derived cross-channel policy from raw inputs now consume one shaped result, moving a misplaced (and once-missing) safety rule to the single module that owns it.
+
+---
+
+## 90. Admin config-form loop behind `useConfigForm` — dirty/reset semantics stated once
 
 **Date:** 2026-06-10
 **Issue:** none (architecture-review-2026-06-09.md candidate 4)

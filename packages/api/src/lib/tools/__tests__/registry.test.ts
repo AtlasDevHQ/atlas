@@ -36,9 +36,13 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
   },
 }));
 
-const { ToolRegistry, defaultRegistry, buildRegistry } = await import(
-  "@atlas/api/lib/tools/registry"
-);
+const {
+  ToolRegistry,
+  defaultRegistry,
+  buildRegistry,
+  INTENTIONAL_TOOL_SHADOWS,
+  TOOL_SHADOW_REMEDIATIONS,
+} = await import("@atlas/api/lib/tools/registry");
 
 function makeTool(name: string) {
   return tool({
@@ -139,6 +143,32 @@ describe("ToolRegistry", () => {
     expect(() =>
       registry.register({ name: "b", description: "B", tool: makeTool("b") })
     ).toThrow();
+  });
+
+  describe("shadowedNames", () => {
+    it("returns overlay names that collide with base (the entries merge() would shadow)", () => {
+      const base = new ToolRegistry();
+      base.register({ name: "querySalesforce", description: "OAuth", tool: makeTool("a") });
+      base.register({ name: "executeSQL", description: "SQL", tool: makeTool("b") });
+      const overlay = new ToolRegistry();
+      overlay.register({ name: "querySalesforce", description: "Static", tool: makeTool("c") });
+      overlay.register({ name: "queryElasticsearch", description: "ES", tool: makeTool("d") });
+
+      expect(ToolRegistry.shadowedNames(base, overlay)).toEqual(["querySalesforce"]);
+      // merge() must agree: the base entry wins for the shadowed name.
+      const merged = ToolRegistry.merge(base, overlay);
+      expect(merged.get("querySalesforce")!.description).toBe("OAuth");
+      expect(merged.get("queryElasticsearch")!.description).toBe("ES");
+    });
+
+    it("returns empty when there is no collision", () => {
+      const base = new ToolRegistry();
+      base.register({ name: "executeSQL", description: "SQL", tool: makeTool("a") });
+      const overlay = new ToolRegistry();
+      overlay.register({ name: "querySalesforce", description: "Static", tool: makeTool("b") });
+      expect(ToolRegistry.shadowedNames(base, overlay)).toEqual([]);
+      expect(ToolRegistry.shadowedNames(base, new ToolRegistry())).toEqual([]);
+    });
   });
 });
 
@@ -267,5 +297,27 @@ describe("buildRegistry", () => {
   it("returns empty warnings when all tools load successfully", async () => {
     const { warnings } = await buildRegistry({ includeActions: true });
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("tool-shadow policy (#3326)", () => {
+  it("action-augmented base catches a plugin tool shadowed by an action tool", async () => {
+    const { registry } = await buildRegistry({ includeActions: true });
+    const plugin = new ToolRegistry();
+    plugin.register({ name: "sendEmailReport", description: "Plugin Resend action", tool: makeTool("p") });
+    plugin.register({ name: "queryWidgets", description: "No collision", tool: makeTool("q") });
+
+    // defaultRegistry alone would miss this collision — the action base sees it.
+    expect(ToolRegistry.shadowedNames(defaultRegistry, plugin)).toEqual([]);
+    expect(ToolRegistry.shadowedNames(registry, plugin)).toEqual(["sendEmailReport"]);
+  });
+
+  it("the sendEmailReport overlap is allowlisted as intentional", () => {
+    expect(INTENTIONAL_TOOL_SHADOWS.has("sendEmailReport")).toBe(true);
+  });
+
+  it("remediation copy exists for the known querySalesforce collision", () => {
+    expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("SALESFORCE_CLIENT_ID");
+    expect(TOOL_SHADOW_REMEDIATIONS.querySalesforce).toContain("salesforce://");
   });
 });

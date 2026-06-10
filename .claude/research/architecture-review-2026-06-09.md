@@ -49,7 +49,7 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 ---
 
-## 4. Deepen admin config pages behind `useConfigForm` — **Shipped** → wins #89
+## 4. Deepen admin config pages behind `useConfigForm` — **Shipped** → wins #90
 
 Shipped as `packages/web/src/ui/hooks/use-config-form.ts` + migrations of proactive-chat and both audit retention panels. Implementation survey narrowed the candidate sharply: the original "16 pages" count conflated the hand-wired config-form loop with CRUD-of-many dialogs, action pages, and react-hook-form surfaces. Remainder notes for future passes:
 
@@ -69,18 +69,6 @@ Shipped as `packages/web/src/ui/hooks/use-config-form.ts` + migrations of proact
 **Solution:** A `usePaginatedTable<T>` hook owns the loop, composing with the existing nuqs `search-params.ts` convention. Pairs naturally with candidate 4.
 
 **Wins:** cancellation bugs fixed once; ~360 lines deleted.
-
----
-
-## 6. One shaped result behind three scheduled-delivery renderers — **Worth exploring**
-
-**Files:** `packages/api/src/lib/scheduler/format-email.ts` (103 ln), `format-slack.ts` (36 ln), `format-webhook.ts` (38 ln)
-
-**Problem:** Three delivery formatters each re-derive section ordering and metadata from `(task, result)`; row truncation (`MAX_DATA_ROWS = 50`) exists only in the email copy, so Slack and webhook recipients get unbounded tables — the rule lives in the wrong module.
-
-**Solution:** A shaping module produces one `FormattedResult` (truncation, ordering, metadata decided once); the three renderers become thin adapters to HTML / Block Kit / JSON.
-
-**Wins:** truncation rule stated once; three adapters prove the seam is real; shape testable without rendering.
 
 ---
 

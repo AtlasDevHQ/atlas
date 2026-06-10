@@ -53,14 +53,13 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
-  lazyPluginLoader,
-  LazyPluginBuilderMissingError,
-  LazyPluginInstallNotFoundError,
-  type LazyPluginLoader,
-} from "@atlas/api/lib/plugins/lazy-loader";
+  classifyLazyInstantiateError,
+  resolveLazyPluginToolDeps,
+  type LazyPluginToolDeps,
+} from "./_shared/lazy-plugin-tool";
+import type { SalesforcePluginInstance } from "./salesforce/lazy-builder";
 import { SALESFORCE_CATALOG_ID } from "./install/salesforce-oauth-handler";
 import { IntegrationReconnectRequiredError } from "./install/salesforce-token-refresh";
-import type { SalesforcePluginInstance } from "./salesforce/lazy-builder";
 import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "./salesforce/soql-validation";
 
 const log = createLogger("integrations.salesforce.tool");
@@ -79,12 +78,13 @@ const QUERY_TIMEOUT = parsePositiveIntEnv(process.env.ATLAS_QUERY_TIMEOUT, 30000
  * the static plugin's `DATASOURCE_ID` so the self-host filesystem path reads the
  * same entity YAMLs.
  *
- * CAVEAT (tracked separately): the OAuth/SaaS path has no entity profiling wired
- * yet, so the org whitelist under this key is always empty → structural-only
- * (fail-OPEN to SELECT-only/no-DML, never fail-closed). When SaaS Salesforce
- * object profiling lands, the org entities will likely be keyed by the per-
- * install connection id, not this static-mode constant — so this binding must be
- * revisited then for per-object enforcement to actually apply.
+ * CAVEAT (deferred to the profiler-seam work, PRD #3303 / #3326 item 2): the
+ * OAuth/SaaS path has no entity profiling wired yet, so the org whitelist under
+ * this key is always empty → structural-only (fail-OPEN to SELECT-only/no-DML,
+ * never fail-closed). SaaS Salesforce object profiling lands with the datasource
+ * profiler seam (provisionally v0.0.14), which decides how org entities are
+ * keyed (likely the per-install connection id, not this static-mode constant) —
+ * revisit this binding there for per-object enforcement to actually apply.
  */
 const SALESFORCE_CONNECTION_ID = "salesforce-datasource";
 
@@ -99,12 +99,10 @@ Use querySalesforce to run a read-only SOQL query against the workspace's connec
 /**
  * Test seam — production calls go through the singleton `lazyPluginLoader` and
  * the request-context-derived whitelist. Tests inject fakes so the execute path
- * runs without booting the loader or the semantic layer.
+ * runs without booting the loader or the semantic layer. Base loader/context
+ * seams come from the shared lazy-plugin-tool scaffolding (#3326).
  */
-export interface QuerySalesforceToolDeps {
-  readonly loader?: Pick<LazyPluginLoader, "getOrInstantiate">;
-  readonly resolveWorkspaceId?: () => string | undefined;
-  readonly resolveRequestId?: () => string | undefined;
+export interface QuerySalesforceToolDeps extends LazyPluginToolDeps {
   /**
    * Resolve the Salesforce object whitelist. MUST throw when a semantic-layer
    * directory scan failed so the tool can fail closed (`scan_unavailable`); a
@@ -138,14 +136,6 @@ type QuerySalesforceExecuteResult =
   | { status: "misconfigured"; message: string; requestId: string | undefined }
   | { status: "query_failure"; message: string; requestId: string | undefined };
 
-function defaultResolveWorkspaceId(): string | undefined {
-  return getRequestContext()?.user?.activeOrganizationId;
-}
-
-function defaultResolveRequestId(): string | undefined {
-  return getRequestContext()?.requestId;
-}
-
 /**
  * Default whitelist resolution, mirroring `executeSQL` (tools/sql.ts): org-scoped
  * (DB-backed) when an org context exists, else filesystem-backed STRICT (throws
@@ -172,9 +162,7 @@ async function defaultResolveWhitelist(): Promise<Set<string>> {
 }
 
 export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
-  const loader = deps.loader ?? lazyPluginLoader;
-  const resolveWorkspaceId = deps.resolveWorkspaceId ?? defaultResolveWorkspaceId;
-  const resolveRequestId = deps.resolveRequestId ?? defaultResolveRequestId;
+  const { loader, resolveWorkspaceId, resolveRequestId } = resolveLazyPluginToolDeps(deps);
   const resolveWhitelist = deps.resolveWhitelist ?? defaultResolveWhitelist;
 
   return tool({
@@ -243,64 +231,68 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
         const raw = await loader.getOrInstantiate(workspaceId, SALESFORCE_CATALOG_ID);
         instance = raw as SalesforcePluginInstance;
       } catch (err) {
-        if (err instanceof LazyPluginInstallNotFoundError) {
-          log.info(
-            { workspaceId },
-            "querySalesforce rejected — workspace has no Salesforce OAuth install",
-          );
-          return {
-            status: "no_install",
-            message:
-              "Install the Salesforce integration at /admin/integrations before querying. No workspace_plugins row is enabled for catalog:salesforce.",
-          };
+        switch (classifyLazyInstantiateError(err)) {
+          case "install_not_found": {
+            log.info(
+              { workspaceId },
+              "querySalesforce rejected — workspace has no Salesforce OAuth install",
+            );
+            return {
+              status: "no_install",
+              message:
+                "Install the Salesforce integration at /admin/integrations before querying. No workspace_plugins row is enabled for catalog:salesforce.",
+            };
+          }
+          case "reconnect_required": {
+            log.warn(
+              { workspaceId, err: err instanceof Error ? err.message : String(err) },
+              "querySalesforce aborted — Salesforce OAuth install needs Reconnect",
+            );
+            return {
+              status: "reconnect_required",
+              message:
+                "Salesforce install needs to be reconnected. Open /admin/integrations and click Reconnect on the Salesforce card.",
+            };
+          }
+          case "builder_missing": {
+            const requestId = resolveRequestId();
+            log.error(
+              { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+              "querySalesforce aborted — Salesforce lazy builder not registered (boot DAG issue)",
+            );
+            return {
+              status: "misconfigured",
+              message: `Salesforce integration is installed but no builder is registered for catalog:salesforce. This is a deploy-side configuration issue (SALESFORCE_CLIENT_ID/SECRET likely unset); contact your operator. Request id ${requestId ?? "<unset>"}.`,
+              requestId,
+            };
+          }
+          case "unknown": {
+            // Credential decrypt failure, missing bundle / instance_url, or
+            // construction error — surfaced as query_failure so the agent stops
+            // looping. These can carry auth/credential substrings (decrypt errors,
+            // INVALID_CLIENT_ID, …), so gate on SENSITIVE_PATTERNS exactly like the
+            // query-execution branch below — `errorMessage()` only strips
+            // connection-string userinfo, not those tokens.
+            const requestId = resolveRequestId();
+            const instErr = err instanceof Error ? err.message : String(err);
+            log.error(
+              { workspaceId, requestId, err: instErr },
+              "querySalesforce aborted — failed to instantiate Salesforce plugin",
+            );
+            if (SENSITIVE_PATTERNS.test(instErr)) {
+              return {
+                status: "query_failure",
+                message: `Could not initialise the Salesforce integration — check server logs for details. Request id ${requestId ?? "<unset>"}.`,
+                requestId,
+              };
+            }
+            return {
+              status: "query_failure",
+              message: `Could not initialise the Salesforce integration: ${errorMessage(err)}`,
+              requestId,
+            };
+          }
         }
-        if (err instanceof IntegrationReconnectRequiredError) {
-          log.warn(
-            { workspaceId, err: err.message },
-            "querySalesforce aborted — Salesforce OAuth install needs Reconnect",
-          );
-          return {
-            status: "reconnect_required",
-            message:
-              "Salesforce install needs to be reconnected. Open /admin/integrations and click Reconnect on the Salesforce card.",
-          };
-        }
-        if (err instanceof LazyPluginBuilderMissingError) {
-          const requestId = resolveRequestId();
-          log.error(
-            { workspaceId, requestId, err: err.message },
-            "querySalesforce aborted — Salesforce lazy builder not registered (boot DAG issue)",
-          );
-          return {
-            status: "misconfigured",
-            message: `Salesforce integration is installed but no builder is registered for catalog:salesforce. This is a deploy-side configuration issue (SALESFORCE_CLIENT_ID/SECRET likely unset); contact your operator. Request id ${requestId ?? "<unset>"}.`,
-            requestId,
-          };
-        }
-        // Credential decrypt failure, missing bundle / instance_url, or
-        // construction error — surfaced as query_failure so the agent stops
-        // looping. These can carry auth/credential substrings (decrypt errors,
-        // INVALID_CLIENT_ID, …), so gate on SENSITIVE_PATTERNS exactly like the
-        // query-execution branch below — `errorMessage()` only strips
-        // connection-string userinfo, not those tokens.
-        const requestId = resolveRequestId();
-        const instErr = err instanceof Error ? err.message : String(err);
-        log.error(
-          { workspaceId, requestId, err: instErr },
-          "querySalesforce aborted — failed to instantiate Salesforce plugin",
-        );
-        if (SENSITIVE_PATTERNS.test(instErr)) {
-          return {
-            status: "query_failure",
-            message: `Could not initialise the Salesforce integration — check server logs for details. Request id ${requestId ?? "<unset>"}.`,
-            requestId,
-          };
-        }
-        return {
-          status: "query_failure",
-          message: `Could not initialise the Salesforce integration: ${errorMessage(err)}`,
-          requestId,
-        };
       }
 
       // ── 5. Execute the query ──

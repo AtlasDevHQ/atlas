@@ -1,11 +1,13 @@
 /**
- * Webhook formatter for scheduled task results.
+ * Webhook renderer for scheduled task results.
  *
- * Produces a structured JSON payload with all query data.
+ * Produces a structured JSON payload from the pre-shaped
+ * {@link FormattedResult}. Datasets are capped at the shared
+ * scheduled-delivery row limit; `totalRows`/`truncated` let consumers
+ * detect when rows were dropped.
  */
 
-import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
-import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
+import type { FormattedResult, ShapedDataset } from "./shape-result";
 
 export interface WebhookPayload {
   taskId: string;
@@ -13,25 +15,22 @@ export interface WebhookPayload {
   question: string;
   answer: string;
   sql: string[];
-  data: { columns: string[]; rows: Record<string, unknown>[] }[];
+  data: ShapedDataset[];
   steps: number;
   usage: { totalTokens: number };
   timestamp: string;
 }
 
-export function formatWebhookPayload(
-  task: ScheduledTask,
-  result: AgentQueryResult,
-): WebhookPayload {
+export function formatWebhookPayload(shaped: FormattedResult): WebhookPayload {
   return {
-    taskId: task.id,
-    taskName: task.name,
-    question: task.question,
-    answer: result.answer || "",
-    sql: result.sql,
-    data: result.data,
-    steps: result.steps,
-    usage: result.usage,
-    timestamp: new Date().toISOString(),
+    taskId: shaped.taskId,
+    taskName: shaped.taskName,
+    question: shaped.question,
+    answer: shaped.answer,
+    sql: shaped.sql,
+    data: shaped.datasets,
+    steps: shaped.steps,
+    usage: { totalTokens: shaped.totalTokens },
+    timestamp: shaped.generatedAt,
   };
 }

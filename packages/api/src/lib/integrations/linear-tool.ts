@@ -56,14 +56,14 @@
 import { tool } from "ai";
 import { z } from "zod";
 
-import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { createLogger } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
-  lazyPluginLoader,
-  LazyPluginBuilderMissingError,
-  LazyPluginInstallNotFoundError,
-  type LazyPluginLoader,
-} from "@atlas/api/lib/plugins/lazy-loader";
+  classifyLazyInstantiateError,
+  resolveLazyPluginToolDeps,
+  tryInstantiate,
+  type LazyPluginToolDeps,
+} from "./_shared/lazy-plugin-tool";
 import {
   LINEAR_CATALOG_ID,
   LINEAR_APIKEY_CATALOG_ID,
@@ -91,13 +91,9 @@ Use createLinearIssue to create a new Linear issue based on the agent's findings
  * Test seam — production calls go through the singleton
  * `lazyPluginLoader`. Tests inject a fake loader (and a fake context
  * source) so the tool's execute path can be exercised without booting
- * the loader.
+ * the loader. The shape is exactly the shared lazy-plugin-tool seam (#3326).
  */
-export interface CreateLinearIssueToolDeps {
-  readonly loader?: Pick<LazyPluginLoader, "getOrInstantiate">;
-  readonly resolveWorkspaceId?: () => string | undefined;
-  readonly resolveRequestId?: () => string | undefined;
-}
+export type CreateLinearIssueToolDeps = LazyPluginToolDeps;
 
 const CreateLinearIssueInput = z.object({
   title: z
@@ -160,42 +156,8 @@ type CreateLinearIssueExecuteResult =
       requestId: string | undefined;
     };
 
-function defaultResolveWorkspaceId(): string | undefined {
-  return getRequestContext()?.user?.activeOrganizationId;
-}
-
-function defaultResolveRequestId(): string | undefined {
-  return getRequestContext()?.requestId;
-}
-
-/**
- * Try to instantiate a Linear plugin for `(workspaceId, catalogId)`.
- * Returns:
- *   - `instance` on success
- *   - `null` on `LazyPluginInstallNotFoundError` (no enabled install row)
- *   - throws on every other class so the caller can branch into
- *     decrypt_failure / misconfigured / reconnect_required / create_failure
- */
-async function tryInstantiate(
-  loader: Pick<LazyPluginLoader, "getOrInstantiate">,
-  workspaceId: string,
-  catalogId: string,
-): Promise<LinearPluginInstance | null> {
-  try {
-    const raw = await loader.getOrInstantiate(workspaceId, catalogId);
-    return raw as LinearPluginInstance;
-  } catch (err) {
-    if (err instanceof LazyPluginInstallNotFoundError) {
-      return null;
-    }
-    throw err;
-  }
-}
-
 export function createCreateLinearIssueTool(deps: CreateLinearIssueToolDeps = {}) {
-  const loader = deps.loader ?? lazyPluginLoader;
-  const resolveWorkspaceId = deps.resolveWorkspaceId ?? defaultResolveWorkspaceId;
-  const resolveRequestId = deps.resolveRequestId ?? defaultResolveRequestId;
+  const { loader, resolveWorkspaceId, resolveRequestId } = resolveLazyPluginToolDeps(deps);
 
   return tool({
     description:
@@ -231,24 +193,18 @@ export function createCreateLinearIssueTool(deps: CreateLinearIssueToolDeps = {}
       let instance: LinearPluginInstance | null;
 
       try {
-        instance = await tryInstantiate(loader, workspaceId, LINEAR_CATALOG_ID);
+        instance = await tryInstantiate<LinearPluginInstance>(loader, workspaceId, LINEAR_CATALOG_ID);
         if (!instance) {
-          instance = await tryInstantiate(loader, workspaceId, LINEAR_APIKEY_CATALOG_ID);
+          instance = await tryInstantiate<LinearPluginInstance>(
+            loader,
+            workspaceId,
+            LINEAR_APIKEY_CATALOG_ID,
+          );
           if (instance) mode = "apikey";
         }
       } catch (err) {
-        if (err instanceof IntegrationReconnectRequiredError) {
-          log.warn(
-            { workspaceId, err: err.message },
-            "createLinearIssue aborted — Linear OAuth install needs Reconnect",
-          );
-          return {
-            status: "reconnect_required",
-            mode: "oauth",
-            message:
-              "Linear install needs to be reconnected. Open /admin/integrations and click Reconnect on the Linear (OAuth) card.",
-          };
-        }
+        // Tool-specific classes first — the shared classifier files them under
+        // `unknown`, which would lose their dedicated statuses.
         if (err instanceof LinearApiKeyDecryptFailureError) {
           const requestId = resolveRequestId();
           log.error(
@@ -273,28 +229,48 @@ export function createCreateLinearIssueTool(deps: CreateLinearIssueToolDeps = {}
             requestId,
           };
         }
-        if (err instanceof LazyPluginBuilderMissingError) {
-          const requestId = resolveRequestId();
-          log.error(
-            { workspaceId, requestId, err: err.message },
-            "createLinearIssue aborted — Linear lazy builder not registered (boot DAG issue)",
-          );
-          return {
-            status: "misconfigured",
-            message: `Linear integration is installed but no builder is registered. This is a deploy-side configuration issue; contact your operator. Request id ${requestId ?? "<unset>"}.`,
-            requestId,
-          };
+        switch (classifyLazyInstantiateError(err)) {
+          case "reconnect_required": {
+            log.warn(
+              { workspaceId, err: err instanceof Error ? err.message : String(err) },
+              "createLinearIssue aborted — Linear OAuth install needs Reconnect",
+            );
+            return {
+              status: "reconnect_required",
+              mode: "oauth",
+              message:
+                "Linear install needs to be reconnected. Open /admin/integrations and click Reconnect on the Linear (OAuth) card.",
+            };
+          }
+          case "builder_missing": {
+            const requestId = resolveRequestId();
+            log.error(
+              { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+              "createLinearIssue aborted — Linear lazy builder not registered (boot DAG issue)",
+            );
+            return {
+              status: "misconfigured",
+              message: `Linear integration is installed but no builder is registered. This is a deploy-side configuration issue; contact your operator. Request id ${requestId ?? "<unset>"}.`,
+              requestId,
+            };
+          }
+          // `install_not_found` is unreachable here — `tryInstantiate` maps it
+          // to `null` (the dual-catalog fallback) — so it shares the terminal
+          // branch rather than inventing a second no_install path.
+          case "install_not_found":
+          case "unknown": {
+            const requestId = resolveRequestId();
+            log.error(
+              { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
+              "createLinearIssue aborted — failed to instantiate Linear plugin",
+            );
+            return {
+              status: "create_failure",
+              message: `Could not initialise the Linear integration: ${errorMessage(err)}`,
+              requestId,
+            };
+          }
         }
-        const requestId = resolveRequestId();
-        log.error(
-          { workspaceId, requestId, err: err instanceof Error ? err.message : String(err) },
-          "createLinearIssue aborted — failed to instantiate Linear plugin",
-        );
-        return {
-          status: "create_failure",
-          message: `Could not initialise the Linear integration: ${errorMessage(err)}`,
-          requestId,
-        };
       }
 
       if (!instance) {

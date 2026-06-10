@@ -107,11 +107,14 @@ export function coerceSpecDriftMode(raw: unknown): SpecDriftMode {
 export const DRIFT_REPROBE_COOLDOWN_MS = 60_000;
 
 /**
- * Last attempt stamp per `(workspaceId, installId)`. The stamp is written when
- * an attempt STARTS (not on success), so failed probes and still-unknown
- * outcomes debounce too — the storm guard's whole point. `\x00` cannot appear
- * in either id, so the joined key never collides across the two dimensions
- * (same convention as the validator's bucket keys).
+ * Last re-probe stamp per `(workspaceId, installId)`. The stamp is written
+ * when a RE-PROBE starts (immediately before the upstream call) — not on
+ * success, so failed probes and still-unknown outcomes debounce too — and
+ * NOT on a refusal (strict mode, wrong catalog, missing row, load failure):
+ * those never touch the upstream, and burning the window on them would make
+ * an admin's strict→auto-refresh flip wait out a cooldown it never spent.
+ * `\x00` cannot appear in either id, so the joined key never collides across
+ * the two dimensions (same convention as the validator's bucket keys).
  */
 const lastAttemptMs = new Map<string, number>();
 
@@ -251,16 +254,16 @@ export async function attemptDriftRecovery(
   const now = deps.now ?? Date.now;
   const nowMs = now();
 
-  // ── Storm guard — stamp the attempt BEFORE probing so failures debounce too.
-  // The sweep first: expired stamps are dropped so the map's size tracks the
-  // installs active within the last window, not the process lifetime.
+  // ── Storm-guard pre-check (the stamp itself is written further down, only
+  // on the path that actually re-probes). The sweep first: expired stamps are
+  // dropped so the map's size tracks the installs active within the last
+  // window, not the process lifetime.
   sweepExpiredStamps(nowMs);
   const key = cooldownKey(workspaceId, installId);
   const last = lastAttemptMs.get(key);
   if (last !== undefined && nowMs - last < DRIFT_REPROBE_COOLDOWN_MS) {
     return { kind: "cooldown" };
   }
-  lastAttemptMs.set(key, nowMs);
 
   // ── Fresh raw config (the prior snapshot the diff compares against).
   let row: RawInstallRow | null;
@@ -299,6 +302,18 @@ export async function attemptDriftRecovery(
     );
     return { kind: "not_refreshed", reason: "drift_mode_strict" };
   }
+
+  // ── Stamp the cooldown NOW — before the upstream probe, so a failed or
+  // still-unknown probe debounces too, but after every refusal gate, so a
+  // strict-mode / wrong-catalog / missing-row refusal never burns the window
+  // (an admin's strict→auto-refresh flip takes effect immediately). The
+  // config load above awaited, so a concurrent attempt may have stamped in
+  // the meantime — re-check before claiming the window.
+  const stampedMeanwhile = lastAttemptMs.get(key);
+  if (stampedMeanwhile !== undefined && nowMs - stampedMeanwhile < DRIFT_REPROBE_COOLDOWN_MS) {
+    return { kind: "cooldown" };
+  }
+  lastAttemptMs.set(key, nowMs);
 
   // ── Re-probe via the shared core: the SAME egress-guarded, SSRF-checked,
   // credential-gated path the manual route and the scheduler use.

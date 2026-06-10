@@ -343,6 +343,27 @@ describe("attemptDriftRecovery", () => {
     expect(persistCalls).toHaveLength(0);
   });
 
+  it("a refusal does NOT burn the cooldown: flipping strict → auto-refresh takes effect immediately", async () => {
+    const { persist } = recorder();
+    let mode = "strict";
+    const deps = {
+      loadRawConfig: async () => ({
+        config: { spec_drift_mode: mode },
+        catalogId: OPENAPI_GENERIC_CATALOG_ID,
+      }),
+      rediscover: async () => okResult(graphWith("op"), cleanDiff),
+      persist,
+      now: () => NOW,
+    };
+    const refused = await attemptDriftRecovery("ws-1", "ds-1", "op", deps);
+    expect(refused).toEqual({ kind: "not_refreshed", reason: "drift_mode_strict" });
+    expect(_driftRecoveryCooldownSize()).toBe(0);
+    // Admin flips the mode; the very next attempt (same instant) re-probes.
+    mode = "auto-refresh";
+    const recovered = await attemptDriftRecovery("ws-1", "ds-1", "op", deps);
+    expect(recovered.kind).toBe("refreshed");
+  });
+
   it("REFUSES a non-generic install (built-in data candidate) with the distinct unsupported_catalog reason", async () => {
     let rediscoverCalls = 0;
     const { persist } = recorder();

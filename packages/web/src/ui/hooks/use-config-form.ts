@@ -160,13 +160,11 @@ export function useConfigForm<
   const [prevData, setPrevData] = useState<TData | null | undefined>(undefined);
   const [baseline, setBaseline] = useState<TValues | null>(null);
   const [values, setValues] = useState<TValues | null>(null);
-  if (data !== prevData) {
+  if (data !== null && data !== prevData) {
     setPrevData(data);
-    if (data !== null) {
-      const next = options.toForm(data);
-      setBaseline(next);
-      setValues(next);
-    }
+    const next = options.toForm(data);
+    setBaseline(next);
+    setValues(next);
   }
 
   function setField<K extends keyof TValues>(key: K, next: TValues[K]) {

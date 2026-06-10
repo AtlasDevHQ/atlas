@@ -308,7 +308,7 @@ const form = useConfigForm<WireConfig, FormValues>({
   toForm: (d) => ({ enabled: d.enabled, cap: d.cap === null ? "" : String(d.cap) }),
   toPayload: (v) => ({ enabled: v.enabled, cap: v.cap === "" ? null : Number(v.cap) }),
 });
-// form.fields.enabled.{value,set} · form.{dirty,reset,save,saving,error,loadError}
+// form.fields.enabled.{value,set} · form.{data,loading,loadError,refetch,values,dirty,reset,save,saving,error}
 ```
 
 ## Template Sync

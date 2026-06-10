@@ -7,6 +7,7 @@
 
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
+import { shapeResult } from "./shape-result";
 import { formatEmailReport } from "./format-email";
 import { formatSlackReport } from "./format-slack";
 import { formatWebhookPayload } from "./format-webhook";
@@ -46,20 +47,21 @@ const MOCK_RESULT: AgentQueryResult = {
 export function generateDeliveryPreview(task: ScheduledTask): DeliveryPreview {
   const channel = task.deliveryChannel;
   const preview: DeliveryPreview = { channel };
+  const shaped = shapeResult(task, MOCK_RESULT);
 
   switch (channel) {
     case "email": {
-      const { subject, body } = formatEmailReport(task, MOCK_RESULT);
+      const { subject, body } = formatEmailReport(shaped);
       preview.email = { subject, body };
       break;
     }
     case "slack": {
-      const { text, blocks } = formatSlackReport(task, MOCK_RESULT);
+      const { text, blocks } = formatSlackReport(shaped);
       preview.slack = { text, blocks };
       break;
     }
     case "webhook": {
-      preview.webhook = formatWebhookPayload(task, MOCK_RESULT);
+      preview.webhook = formatWebhookPayload(shaped);
       break;
     }
     default: {

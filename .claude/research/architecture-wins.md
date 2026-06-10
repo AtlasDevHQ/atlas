@@ -2577,3 +2577,26 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - A future config page is `useConfigForm` + JSX — no bookkeeping to hand-wire or forget.
 
 **Category:** Tightly-coupled page-level state machines consolidated into a deep hook with a small interface — the natural successor to win #1 (`useAdminMutation`), with honest scope: the seam absorbed the pages that have the loop and documented the ones that don't.
+
+---
+
+## 91. One persistence spine behind six Form-install handlers — and the collapse surfaced that half of them were already broken
+
+**Date:** 2026-06-10
+**Issue:** — (architecture-review-2026-06-09, candidate 2); follow-up #3357 (Salesforce/Jira OAuth share the bug)
+**PR:** #3358
+
+**Problem:** Every single-instance Form install handler repeated the same spine after its per-Platform Zod parse: SaaS keyset gate → `encryptSecretFields` → `workspace_plugins` upsert → returned-id invariant check → (for Email/Linear/GitHub-PAT) lazy-loader evict — ~80 lines × 6 handlers (email/webhook are 95% identical). The Workspace Install write path had six places to be wrong. **And it was wrong, three times, in exactly the way the review predicted:** the Email / Webhook / Obsidian copies still carried the pre-0092 INSERT shape (no `install_id`/`pillar`, bare `ON CONFLICT (workspace_id, catalog_id)`), which depended on a BEFORE INSERT trigger and a non-partial unique index that migration 0096 dropped. Against the live schema, every Email / Webhook / Obsidian install attempt fails at plan time with 42P10 ("no unique or exclusion constraint matching the ON CONFLICT specification") — a hard 500 on a customer-facing install path. The per-handler tests mock `internalQuery`, so no test could see a plan-time SQL error; the copies that got pivoted in #2739 (Linear, GitHub PAT, Twenty) worked, the ones that didn't silently rotted.
+
+**Solution:** One `persistFormInstall` module (`integrations/install/persist-form-install.ts`) owns the spine: keyset gate (`assertSaasEncryptionKeyset`, also exported standalone so Twenty can gate its `twenty_integrations` credential write *before* any byte persists), optional `encryptSecretFields`, the canonical post-0092 upsert (explicit `install_id` + parameterized `pillar`, partial-index conflict target — exported as `buildFormInstallUpsertSql` so tests execute the real string), the returned-id invariant, and an unconditional post-persist lazy-loader evict (warn-never-fail; a free no-op when nothing is cached, closing the latent Webhook/Obsidian stale-instance-on-rotation bug the old opt-in copies carried). Handlers shrink to parse-and-validate + one call + their per-Platform completion log. Two data-shaped knobs absorb the genuine variation: `updateConfigOnConflict: false` (Twenty's re-install must keep the existing row's config) and `persistFailureMessage` (Twenty's documents its partial-write recovery semantics).
+
+**Deliberately NOT on the spine** (the deletion-test boundary): `DatasourceFormInstallHandler` + its `ElasticsearchFormInstallHandler` subclass (pillar `datasource`, `status='draft'`, fixed per-workspace `install_id`, catalog-schema-driven mask/restore — the ADR-0013 `createFromConfig` bridge is already its own deep module), and `persistOpenApiDatasourceInstall` + `DataCandidateFormInstallHandler` (multi-instance fresh-`install_id`-per-submit, probe-on-install — already consolidated in #3028). Forcing either onto the chat/action singleton spine would have meant knobs for pillar, status, conflict target, and probe hooks — a shallow seam.
+
+**Impact:**
+- **Email / Webhook / Obsidian installs work again.** The consolidation *was* the bug fix: pivoting the three stale copies onto the one canonical upsert is what candidate 2's "five places to be wrong" warning was about. Wire formats and DB rows for the already-working handlers (Linear, GitHub PAT, Twenty) are unchanged.
+- **The SQL is now pinned against real Postgres.** A module-colocated `persist-form-install-pg.test.ts` (chat-cap-pg precedent) executes `buildFormInstallUpsertSql` verbatim against the fully-migrated schema for both pillars (fresh insert, conflict-returns-existing-id, config-preserving variant), while `migrate-pg.test.ts` keeps the pure schema property: the legacy shape's 42P10 rejection as regression documentation — the exact test class whose absence let three handlers rot invisibly behind mock pools.
+- **One spine test** (`persist-form-install.test.ts`, 20 cases) covers parse/gate/encrypt/upsert/invariant/evict once; the six per-handler suites keep covering their parse/validate remainder and still pass through the spine unchanged (they mock the same `db/internal` seam).
+- ~300 lines of duplicated persistence deleted; a seventh single-instance Form install is parse + one call.
+- **Follow-up filed, not folded in:** the Salesforce and Jira OAuth handlers carry the same broken pre-0092 upsert shape — same fix, different handler family (OAuth, not Form), tracked separately.
+
+**Category:** Consolidation that doubled as an outage fix — six copies of a security-adjacent write path collapse behind one deep module, and the act of collapsing exposed that the three oldest copies had silently broken when the schema contract moved under them; the spine's SQL is now a single exported artifact executed verbatim against real Postgres.

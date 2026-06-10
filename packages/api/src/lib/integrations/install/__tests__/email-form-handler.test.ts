@@ -2,7 +2,7 @@
  * Tests for {@link EmailFormInstallHandler} — slice 7 of #2649 (issue #2660).
  *
  * Covers the contract documented on {@link FormBasedInstallHandler}:
- * validation rejection emits `EmailFormValidationError` with per-field
+ * validation rejection emits `FormInstallValidationError` with per-field
  * detail; happy path encrypts only the `password` field (secret-marked
  * in the inline schema) and round-trips back to the same plaintext;
  * `workspace_plugins` row is upserted under the canonical `catalog:email`
@@ -42,14 +42,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 const WSID = "ws-email-1" as WorkspaceId;
 
 type EmailFormInstallHandlerCtor = typeof import("../email-form-handler").EmailFormInstallHandler;
-type EmailFormValidationErrorCtor = typeof import("../email-form-handler").EmailFormValidationError;
+type FormInstallValidationErrorCtor = typeof import("../email-form-handler").FormInstallValidationError;
 let EmailFormInstallHandler!: EmailFormInstallHandlerCtor;
-let EmailFormValidationError!: EmailFormValidationErrorCtor;
+let FormInstallValidationError!: FormInstallValidationErrorCtor;
 
 beforeAll(async () => {
   const mod = await import("../email-form-handler");
   EmailFormInstallHandler = mod.EmailFormInstallHandler;
-  EmailFormValidationError = mod.EmailFormValidationError;
+  FormInstallValidationError = mod.FormInstallValidationError;
 });
 
 const ORIGINAL_ENV = { ...process.env };
@@ -102,7 +102,7 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("EmailFormInstallHandler.validateConfig — input validation", () => {
-  it("rejects entirely missing fields with EmailFormValidationError", async () => {
+  it("rejects entirely missing fields with FormInstallValidationError", async () => {
     const handler = new EmailFormInstallHandler();
     let caught: unknown;
     try {
@@ -110,8 +110,8 @@ describe("EmailFormInstallHandler.validateConfig — input validation", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(EmailFormValidationError);
-    const errs = (caught as InstanceType<typeof EmailFormValidationError>).fieldErrors;
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const errs = (caught as InstanceType<typeof FormInstallValidationError>).fieldErrors;
     // Required field detection — at least the primary credentials must surface.
     expect(errs.host).toBeDefined();
     expect(errs.username).toBeDefined();
@@ -129,8 +129,8 @@ describe("EmailFormInstallHandler.validateConfig — input validation", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(EmailFormValidationError);
-    const errs = (caught as InstanceType<typeof EmailFormValidationError>).fieldErrors;
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const errs = (caught as InstanceType<typeof FormInstallValidationError>).fieldErrors;
     expect(errs.fromAddress).toBeDefined();
   });
 
@@ -142,8 +142,8 @@ describe("EmailFormInstallHandler.validateConfig — input validation", () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(EmailFormValidationError);
-    const errs = (caught as InstanceType<typeof EmailFormValidationError>).fieldErrors;
+    expect(caught).toBeInstanceOf(FormInstallValidationError);
+    const errs = (caught as InstanceType<typeof FormInstallValidationError>).fieldErrors;
     expect(errs.port).toBeDefined();
   });
 

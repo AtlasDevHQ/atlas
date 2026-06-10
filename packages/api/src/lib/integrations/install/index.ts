@@ -89,11 +89,17 @@ export type {
 export {
   EmailFormInstallHandler,
   EmailFormDataSchema,
-  EmailFormValidationError,
   FormInstallValidationError,
   type EmailFormData,
   type EmailFormInstallHandlerOptions,
 } from "./email-form-handler";
+export {
+  persistFormInstall,
+  parseFormInstall,
+  assertSaasEncryptionKeyset,
+  buildFormInstallUpsertSql,
+  type PersistFormInstallParams,
+} from "./persist-form-install";
 export {
   registerBuiltinInstallHandlers,
   _resetRegistrationLatch,

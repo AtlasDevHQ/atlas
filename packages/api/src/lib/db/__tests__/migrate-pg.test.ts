@@ -1893,6 +1893,51 @@ describeIfPg("migrate-pg (real Postgres)", () => {
       }
     }, PG_TEST_TIMEOUT_MS);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Form-install singleton upsert — schema-side pin.
+  //
+  // The form-install spine's upsert is executed VERBATIM against the
+  // live schema in `integrations/install/__tests__/
+  // persist-form-install-pg.test.ts` (module-colocated per the
+  // chat-cap-pg precedent). What stays HERE is the pure schema
+  // property that consolidation was forced by: the pre-spine legacy
+  // INSERT shape must keep being rejected at plan time.
+  // ─────────────────────────────────────────────────────────────────────
+  describe("form-install singleton upsert: legacy-shape rejection (schema property)", () => {
+    beforeAll(async () => {
+      // Action catalog rows aren't seeded by migrations (catalog-seeder
+      // runs at boot) — seed one for the FK target.
+      await pool.query(
+        `INSERT INTO plugin_catalog (id, name, slug, type, pillar, install_model)
+         VALUES ('catalog:spine-email', 'Email', 'spine-email', 'integration', 'action', 'form')
+         ON CONFLICT (id) DO NOTHING`,
+      );
+    });
+
+    it("the pre-spine legacy shape is rejected by the live schema (42P10 — regression documentation)", async () => {
+      // The exact SQL the Email/Webhook/Obsidian handlers carried before
+      // the spine. If this ever starts SUCCEEDING, a non-partial unique
+      // on (workspace_id, catalog_id) has been reintroduced — datasource
+      // multi-instance installs would break; investigate before relying
+      // on it.
+      let err: { code?: string } | null = null;
+      try {
+        await pool.query(
+          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, enabled, installed_at)
+           VALUES ($1, $2, $3, $4::jsonb, true, NOW())
+           ON CONFLICT (workspace_id, catalog_id) DO UPDATE
+             SET config = EXCLUDED.config,
+                 enabled = true
+           RETURNING id`,
+          [`spine-legacy-${Date.now()}`, `ws-spine-legacy`, "catalog:spine-email", "{}"],
+        );
+      } catch (e) {
+        err = e as { code?: string };
+      }
+      expect(err?.code).toBe("42P10");
+    }, PG_TEST_TIMEOUT_MS);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

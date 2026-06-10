@@ -13,7 +13,10 @@
  *     is what the SaaS dispatcher consults at flush time.
  *   2. `workspace_plugins` — the catalog install record (ADR-0003 dual
  *     store). Enables the catalog UI's "Installed" state + the
- *     standard catalog DELETE teardown path.
+ *     standard catalog DELETE teardown path. Persisted via the shared
+ *     spine ({@link persistFormInstall}) with an empty config stub —
+ *     the credential is never duplicated into `config`, and a conflict
+ *     re-install keeps the existing row's config untouched.
  *
  * **No Atlas-SaaS leak in defaults.** The form requires `baseUrl` —
  * there is no default `https://crm.useatlas.dev`. That URL is Atlas's
@@ -22,25 +25,28 @@
  * deployment carries `crm.useatlas.dev` separately via
  * `ATLAS_TWENTY_BASE_URL` / `TWENTY_BASE_URL`.
  *
- * **SaaS-mode keyset gate.** When `ATLAS_DEPLOY_MODE=saas` and no
- * encryption keyset is configured, `encryptSecret` falls back to
- * plaintext (dev convenience). Boot logs a one-shot warning, but a
- * missed log in SaaS would leak the apiKey plaintext. Refuse the
- * install per-call so a misconfigured SaaS deploy fails closed at the
- * credential boundary. Mirrors the EmailFormInstallHandler posture.
+ * **SaaS-mode keyset gate.** Checked explicitly BEFORE the
+ * `twenty_integrations` write (the spine re-checks before the catalog
+ * upsert, but by then the credential row would already exist) — a
+ * misconfigured SaaS deploy must fail closed before any credential
+ * byte is persisted. See {@link assertSaasEncryptionKeyset}.
  *
  * @see ./types.ts — {@link FormBasedInstallHandler}
+ * @see ./persist-form-install.ts — {@link persistFormInstall}
  * @see ../twenty/store.ts — `saveTwentyIntegration` (credential table)
  */
 
 import crypto from "crypto";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { internalQuery } from "@atlas/api/lib/db/internal";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
 import type { WorkspaceId } from "@useatlas/types";
 import { saveTwentyIntegration } from "@atlas/api/lib/integrations/twenty/store";
-import { FormInstallValidationError } from "./email-form-handler";
+import {
+  assertSaasEncryptionKeyset,
+  parseFormInstall,
+  persistFormInstall,
+} from "./persist-form-install";
+import { safeHost } from "./safe-host";
 import type {
   CatalogId,
   FormBasedInstallHandler,
@@ -56,6 +62,8 @@ export const TWENTY_SLUG: CatalogId = "twenty";
  * Stable `plugin_catalog.id` for Twenty. The seeder derives row ids
  * as `catalog:${slug}` (see `catalog-seeder.ts::upsertEntry`), so the
  * FK target in `workspace_plugins.catalog_id` is `catalog:twenty`.
+ * (The spine derives the same id from {@link TWENTY_SLUG}; this export
+ * remains for the dispatcher/store call sites that key on it.)
  */
 export const TWENTY_CATALOG_ID = "catalog:twenty";
 
@@ -127,26 +135,10 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     readonly credentialWritten: boolean;
   }> {
     // ── 1. Validate the form against the Twenty schema ──────────────
-    const parsed = TwentyFormDataSchema.safeParse(formData);
-    if (!parsed.success) {
-      throw FormInstallValidationError.fromZodFlatten(parsed.error.flatten());
-    }
-    const { apiKey, baseUrl } = parsed.data;
+    const { apiKey, baseUrl } = parseFormInstall(TwentyFormDataSchema, formData);
 
-    // ── 2. SaaS keyset gate ─────────────────────────────────────────
-    // Refuse the install when SaaS mode + no keyset — encryptSecret
-    // would otherwise silently persist plaintext. Mirrors the Email +
-    // Linear API-key handler posture.
-    if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
-      log.error(
-        { workspaceId },
-        "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext api_key)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
-          "Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
+    // ── 2. SaaS keyset gate — BEFORE the credential write ────────────
+    assertSaasEncryptionKeyset(log, workspaceId, "api_key");
 
     // ── 3. Write the credential row in twenty_integrations ──────────
     // Encryption happens inside the store; we never see ciphertext at
@@ -164,90 +156,33 @@ export class TwentyFormInstallHandler implements FormBasedInstallHandler {
     }
 
     // ── 4. Upsert workspace_plugins (catalog install record) ────────
-    // The credential is NOT duplicated here — it lives in the
-    // dedicated `twenty_integrations` table. The workspace_plugins
-    // row carries only catalog binding state so the admin UI's
-    // catalog card reflects "Installed" and the standard catalog
-    // DELETE path (which removes the workspace_plugins row) flows
-    // through.
-    //
-    // Pillar='action' + install_id named explicitly per the
-    // `workspace_plugins` partial unique index on
-    // `(workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')`.
-    // `RETURNING id` lets us pick up the existing id rather than a
-    // phantom freshly-generated one on conflict.
-    const candidateId = this.newId();
-    let persistedId: string;
-    try {
-      const rows = await internalQuery<{ id: string }>(
-        `INSERT INTO workspace_plugins
-           (id, workspace_id, catalog_id, install_id, pillar, config, enabled, installed_at)
-         VALUES ($1, $2, $3, $1, 'action', $4::jsonb, true, NOW())
-         ON CONFLICT (workspace_id, catalog_id) WHERE pillar IN ('chat', 'action')
-         DO UPDATE
-           SET enabled = true
-         RETURNING id`,
-        [
-          candidateId,
-          workspaceId,
-          TWENTY_CATALOG_ID,
-          // Empty config — credentials live in twenty_integrations.
-          JSON.stringify({}),
-        ],
-      );
-      const returned = rows[0]?.id;
-      if (typeof returned !== "string" || returned.length === 0) {
-        // INSERT ... ON CONFLICT ... DO UPDATE RETURNING is guaranteed
-        // by Postgres to emit exactly one row on both paths. Reaching
-        // here means a structural anomaly (driver rewrite, RLS hiding
-        // the result, partial-index miss). Falling back to candidateId
-        // would silently return a WRONG id on the DO UPDATE path
-        // (persisted row keeps its existing id, not the candidate),
-        // and downstream lookups would create phantom updates. Fail
-        // loud so the operator sees the invariant break with a 500.
-        log.error(
-          { workspaceId, candidateId },
-          "workspace_plugins upsert returned no id — Postgres invariant violation",
-        );
-        throw new Error(
-          "workspace_plugins upsert returned no id from RETURNING — likely a driver/RLS/query-rewrite anomaly",
-        );
-      }
-      persistedId = returned;
-    } catch (err) {
-      log.error(
-        { workspaceId, err: err instanceof Error ? err.message : String(err) },
+    // Empty config — credentials live in twenty_integrations; the
+    // workspace_plugins row carries only catalog binding state. On
+    // the spine's failure path the twenty_integrations row is NOT
+    // rolled back — the credential is the load-bearing artefact; the
+    // catalog row is a UI mirror, and re-running the install heals it
+    // (the failure log below says so).
+    const installRecord = await persistFormInstall({
+      workspaceId,
+      catalogSlug: TWENTY_SLUG,
+      displayName: "Twenty",
+      log,
+      config: {},
+      plaintextSecretLabel: "api_key",
+      newId: () => this.newId(),
+      updateConfigOnConflict: false,
+      persistFailureMessage:
         "Failed to persist Twenty install record — twenty_integrations row is persisted (retrying the install is safe; the credential write is idempotent)",
-      );
-      // Don't roll back the twenty_integrations row — the credential
-      // is the load-bearing artefact; the catalog row is a UI mirror.
-      // Re-running the install heals the catalog row.
-      throw err;
-    }
+    });
 
     log.info(
       {
         workspaceId,
-        installId: persistedId,
+        installId: installRecord.id,
         baseUrlHost: safeHost(baseUrl),
       },
       "Twenty admin-UI install completed",
     );
-    return {
-      installRecord: { id: persistedId, workspaceId, catalogId: TWENTY_SLUG },
-      credentialWritten: true,
-    };
-  }
-}
-
-/** Best-effort host extraction for log breadcrumbs — never throws. */
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    // intentionally ignored: log breadcrumb only — URL was already
-    // validated by zod refine above, so reaching this branch implies
-    // a malformed log entry, not a malformed user input.
-    return "<unparseable>";
+    return { installRecord, credentialWritten: true };
   }
 }

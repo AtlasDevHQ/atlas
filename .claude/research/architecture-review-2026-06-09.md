@@ -25,15 +25,7 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 ---
 
-## 2. Collapse the Form-install persistence spine — **Strong**
-
-**Files:** `packages/api/src/lib/integrations/install/{email,webhook,obsidian,linear-apikey,github-pat}-form-handler.ts`
-
-**Problem:** Every Form install handler repeats the same spine: Zod parse → SaaS keyset gate → `encryptSecretFields` → `workspace_plugins` upsert → returned-id invariant check (~80 lines × 5 ≈ 400 duplicated lines; email/webhook are 95% identical). The Workspace Install write path has five places to be wrong.
-
-**Solution:** One `persistFormInstall` module owns the spine (keyset gate, encrypt, upsert, id invariant, optional post-persist hook for Email's lazy-evict). Handlers shrink to parse-and-validate + one call.
-
-**Wins:** upsert invariant lives once; ~320 lines deleted; one spine test; a sixth Form install is parse + one call.
+## 2. Collapse the Form-install persistence spine — **Strong** ← *shipped; see architecture-wins.md #91*
 
 ---
 
@@ -49,7 +41,7 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 ---
 
-## 4. Deepen admin config pages behind `useConfigForm` — **Shipped** → wins #90
+## 4. Deepen admin config pages behind `useConfigForm` — **Shipped** → wins #91
 
 Shipped as `packages/web/src/ui/hooks/use-config-form.ts` + migrations of proactive-chat and both audit retention panels. Implementation survey narrowed the candidate sharply: the original "16 pages" count conflated the hand-wired config-form loop with CRUD-of-many dialogs, action pages, and react-hook-form surfaces. Remainder notes for future passes:
 
@@ -86,7 +78,7 @@ Shipped as `packages/web/src/ui/hooks/use-config-form.ts` + migrations of proact
 
 ## Top recommendation
 
-**Candidate 1** — it sits on the security spine (whitelist enforcement is a CLAUDE.md core rule), the duplication is days old so consolidation is cheapest now, and it completes the arc wins #87–#88 started: one resolver, one fail-closed signal, one membership semantic. Candidate 2 is the best second: equally mechanical, ~320 lines back immediately.
+**Candidate 1** — it sits on the security spine (whitelist enforcement is a CLAUDE.md core rule), the duplication is days old so consolidation is cheapest now, and it completes the arc wins #87–#88 started: one resolver, one fail-closed signal, one membership semantic. Candidate 2 (shipped — wins #91) was the best second: equally mechanical, ~320 lines back immediately.
 
 ## Explicitly not surfaced (explored, judged not worth a card)
 

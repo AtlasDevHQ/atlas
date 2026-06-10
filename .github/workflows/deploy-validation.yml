@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Manual lever: lets an operator/agent re-create required check runs when
+  # GitHub drops pull_request event deliveries (observed 2026-06-10 on #3358).
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -39,7 +39,8 @@ import crypto from "crypto";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { assertSaasEncryptionKeyset } from "./persist-form-install";
+import { safeHost } from "./safe-host";
 import { isPlaintextCredentialRisk } from "@atlas/api/lib/db/secret-encryption";
 import { encryptSecretFields, parseConfigSchema } from "@atlas/api/lib/plugins/secrets";
 import { assertBaseUrlAllowed, EgressBlockedError } from "@atlas/api/lib/openapi/egress-guard";
@@ -328,16 +329,9 @@ export async function persistOpenApiDatasourceInstall(
   } = params;
 
   // ── SaaS keyset gate ──────────────────────────────────────────────
-  if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
-    log.error(
-      { workspaceId, catalogSlug },
-      "Refusing form install: SaaS mode + no encryption keyset (would persist plaintext auth_value)",
-    );
-    throw new Error(
-      "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
-        "Set ATLAS_ENCRYPTION_KEYS and retry.",
-    );
-  }
+  // Shared fail-closed gate (see persist-form-install.ts); catalogSlug
+  // rides along so per-candidate installs stay attributable in the log.
+  assertSaasEncryptionKeyset(log, workspaceId, "auth_value", { catalogSlug });
 
   // ── Self-hosted plaintext-credential warning (non-fatal) ──────────
   // The SaaS gate above hard-fails. A self-hosted prod-like deploy with a
@@ -502,15 +496,4 @@ export async function persistOpenApiDatasourceInstall(
     installRecord: { id: persistedId, workspaceId, catalogId: catalogSlug },
     credentialWritten: authKind !== "none",
   };
-}
-
-/** Best-effort host extraction for log breadcrumbs — never throws, never leaks the path. */
-function safeHost(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    // intentionally ignored: log breadcrumb only — the URL was already
-    // validated by the zod refine above.
-    return "<unparseable>";
-  }
 }

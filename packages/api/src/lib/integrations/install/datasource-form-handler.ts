@@ -53,7 +53,7 @@
 import crypto from "crypto";
 import { createLogger } from "@atlas/api/lib/logger";
 import { internalQuery } from "@atlas/api/lib/db/internal";
-import { getEncryptionKeyset } from "@atlas/api/lib/db/encryption-keys";
+import { assertSaasEncryptionKeyset } from "./persist-form-install";
 import { isPlaintextCredentialRisk } from "@atlas/api/lib/db/secret-encryption";
 import {
   encryptSecretFields,
@@ -179,21 +179,10 @@ export class DatasourceFormInstallHandler implements FormBasedInstallHandler {
     }
 
     // ── 4. SaaS keyset gate ─────────────────────────────────────────
-    // `encryptSecret` falls back to plaintext when no key is configured (dev
-    // convenience). In SaaS that would leak the credential — refuse the install
-    // so a misconfigured deploy fails closed at the credential boundary. Checked
+    // Shared fail-closed gate (see persist-form-install.ts). Checked
     // BEFORE the existing-row read so a re-save under misconfigured SaaS surfaces
     // this actionable message rather than an opaque decrypt failure.
-    if (process.env.ATLAS_DEPLOY_MODE === "saas" && !getEncryptionKeyset()) {
-      this.log.error(
-        { workspaceId },
-        "Refusing datasource install: SaaS mode + no encryption keyset (would persist a plaintext credential)",
-      );
-      throw new Error(
-        "Encryption keyset unavailable in SaaS mode — refusing to persist plaintext credentials. " +
-          "Set ATLAS_ENCRYPTION_KEYS and retry.",
-      );
-    }
+    assertSaasEncryptionKeyset(this.log, workspaceId, "credential");
 
     // ── 5. Restore masked secrets against the existing install ──────
     // Read the current row (if any) so an unchanged masked secret round-trips

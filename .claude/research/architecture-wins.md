@@ -2533,8 +2533,8 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 ## 89. One persistence spine behind six Form-install handlers — and the collapse surfaced that half of them were already broken
 
 **Date:** 2026-06-10
-**Issue:** — (architecture-review-2026-06-09, candidate 2)
-**PR:** #TBD
+**Issue:** — (architecture-review-2026-06-09, candidate 2); follow-up #3357 (Salesforce/Jira OAuth share the bug)
+**PR:** #3358
 
 **Problem:** Every single-instance Form install handler repeated the same spine after its per-Platform Zod parse: SaaS keyset gate → `encryptSecretFields` → `workspace_plugins` upsert → returned-id invariant check → (for Email/Linear/GitHub-PAT) lazy-loader evict — ~80 lines × 6 handlers (email/webhook are 95% identical). The Workspace Install write path had six places to be wrong. **And it was wrong, three times, in exactly the way the review predicted:** the Email / Webhook / Obsidian copies still carried the pre-0092 INSERT shape (no `install_id`/`pillar`, bare `ON CONFLICT (workspace_id, catalog_id)`), which depended on a BEFORE INSERT trigger and a non-partial unique index that migration 0096 dropped. Against the live schema, every Email / Webhook / Obsidian install attempt fails at plan time with 42P10 ("no unique or exclusion constraint matching the ON CONFLICT specification") — a hard 500 on a customer-facing install path. The per-handler tests mock `internalQuery`, so no test could see a plan-time SQL error; the copies that got pivoted in #2739 (Linear, GitHub PAT, Twenty) worked, the ones that didn't silently rotted.
 

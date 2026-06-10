@@ -2600,3 +2600,24 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - **Follow-up filed, not folded in:** the Salesforce and Jira OAuth handlers carry the same broken pre-0092 upsert shape — same fix, different handler family (OAuth, not Form), tracked separately.
 
 **Category:** Consolidation that doubled as an outage fix — six copies of a security-adjacent write path collapse behind one deep module, and the act of collapsing exposed that the three oldest copies had silently broken when the schema contract moved under them; the spine's SQL is now a single exported artifact executed verbatim against real Postgres.
+
+---
+
+## 92. Per-workspace `onUninstall` closes the orphaned-webhook surface — plugin uninstall finally has a revocation seam (#3188)
+
+**Date:** 2026-06-10
+**Issue:** #3188
+**PR:** #3365 (plugin-sdk 0.0.9)
+
+**Problem:** The uninstall contract (admin-marketplace.ts) documented that external webhook subscriptions a plugin registered (Slack/GitHub/Stripe/Jira) are invisible to Atlas and never revoked — `teardown()` only runs at server shutdown, not per-workspace. An un-revoked webhook keeps delivering events to a workspace that no longer has the plugin installed, and there was no SDK hook an author could implement to do the right thing.
+
+**Solution:** `AtlasPluginBase` gains an **optional** `onUninstall(workspaceId)` lifecycle hook (backward compatible). One host-side module (`lib/plugins/uninstall-hook.ts`) owns invocation: resolves both lazy per-workspace instances and globally-registered plugins (exact slug + `<slug>-<type>`), dedupes, races each hook against a 15s deadline, converts throws/timeouts into per-plugin failure entries, and evicts the lazy-loader entry afterward — closing the cache leak where the route path's hook lookup warmed a credentialed, socket-holding instance it never released. Both uninstall paths (marketplace DELETE route, `WorkspaceInstaller.uninstall`) invoke it **before** install-row and credential removal, best-effort: a hook failure is logged and never aborts the uninstall. The per-workspace Jira instance is the reference implementation, revoking only webhooks attributable by **both halves**: the canonical Atlas callback path prefix (`JIRA_WEBHOOK_CALLBACK_PATH_PREFIX` — ownership; chosen over origin allowlisting because the public origin differs per region and can be rebranded, stranding registered webhooks) and the `atlas_workspace_id` param (workspace) — fail-closed on anything else, segment-anchored so `/...-evil` can't pass.
+
+**Deliberately NOT wired:** the operator-config `jira-action` plugin's hook is an explicit logged no-op — it registers no webhooks, shares one deployment-wide credential, and its first-draft bulk-delete (every webhook the credential could see, on ANY workspace's uninstall) was exactly the cross-workspace destruction the review caught. Uninstall variants outside the two paths (datasource disconnect, onboarding pre-delete, workspace purge) skip the hook; the SDK docs name those carve-outs instead of promising universal coverage.
+
+**Impact:**
+- Plugin authors finally have the seam: revoke external state at uninstall, with documented best-effort semantics and the attribution rule ("never revoke what you can't attribute to the uninstalling workspace") stated in the JSDoc, README, and authoring guide.
+- Ordering is asserted through real seams on both paths (hook before DELETE / before credential teardown via captured query + teardown sequences), so dropping the call from either path fails a test; throw→proceed, timeout→failure-entry, and eviction are each pinned.
+- Publish discipline held: SDK bumped to 0.0.9 with zero ref bumps in-PR (exact-pin sequencing), no new value exports for scaffold-bound code.
+
+**Category:** A lifecycle gap closed with one deep host-side module — optional contract extension, two call sites behind one invoker, and a reference implementation whose review cycle (bulk-delete → workspace-param-only → path+param fail-closed attribution) is itself the documentation of why the attribution rule exists.

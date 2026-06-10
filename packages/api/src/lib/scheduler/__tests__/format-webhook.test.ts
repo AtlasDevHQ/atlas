@@ -3,44 +3,12 @@
  */
 import { describe, it, expect } from "bun:test";
 import { formatWebhookPayload } from "../format-webhook";
-import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
-import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
-
-function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
-  return {
-    id: "task-123",
-    ownerId: "u1",
-    orgId: null,
-    name: "Daily Revenue",
-    question: "What was yesterday's revenue?",
-    cronExpression: "0 9 * * 1",
-    deliveryChannel: "webhook",
-    recipients: [],
-    connectionGroupId: null,
-    approvalMode: "auto",
-    enabled: true,
-    lastRunAt: null,
-    nextRunAt: null,
-    createdAt: "2024-01-01T00:00:00Z",
-    updatedAt: "2024-01-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-function makeResult(overrides: Partial<AgentQueryResult> = {}): AgentQueryResult {
-  return {
-    answer: "Revenue was $1M",
-    sql: ["SELECT SUM(revenue) FROM orders"],
-    data: [{ columns: ["total"], rows: [{ total: 1000000 }] }],
-    steps: 3,
-    usage: { totalTokens: 1500 },
-    ...overrides,
-  };
-}
+import { shapeResult } from "../shape-result";
+import { makeTask, makeResult } from "./fixtures";
 
 describe("formatWebhookPayload", () => {
   it("includes all required fields", () => {
-    const payload = formatWebhookPayload(makeTask(), makeResult());
+    const payload = formatWebhookPayload(shapeResult(makeTask(), makeResult()));
     expect(payload.taskId).toBe("task-123");
     expect(payload.taskName).toBe("Daily Revenue");
     expect(payload.question).toBe("What was yesterday's revenue?");
@@ -53,27 +21,33 @@ describe("formatWebhookPayload", () => {
   });
 
   it("includes ISO timestamp", () => {
-    const payload = formatWebhookPayload(makeTask(), makeResult());
+    const payload = formatWebhookPayload(shapeResult(makeTask(), makeResult()));
     expect(() => new Date(payload.timestamp)).not.toThrow();
     expect(payload.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("handles empty answer", () => {
-    const payload = formatWebhookPayload(makeTask(), makeResult({ answer: "" }));
+    const payload = formatWebhookPayload(shapeResult(makeTask(), makeResult({ answer: "" })));
     expect(payload.answer).toBe("");
   });
 
   it("handles empty data", () => {
-    const payload = formatWebhookPayload(makeTask(), makeResult({ data: [] }));
+    const payload = formatWebhookPayload(shapeResult(makeTask(), makeResult({ data: [] })));
     expect(payload.data).toEqual([]);
   });
 
-  it("preserves full data without truncation", () => {
+  it("caps datasets at the shared row limit and signals truncation", () => {
     const rows = Array.from({ length: 100 }, (_, i) => ({ id: i }));
-    const payload = formatWebhookPayload(
-      makeTask(),
-      makeResult({ data: [{ columns: ["id"], rows }] }),
-    );
-    expect(payload.data[0].rows.length).toBe(100);
+    const payload = formatWebhookPayload(shapeResult(makeTask(),
+      makeResult({ data: [{ columns: ["id"], rows }] })));
+    expect(payload.data[0].rows.length).toBe(50);
+    expect(payload.data[0].totalRows).toBe(100);
+    expect(payload.data[0].truncated).toBe(true);
+  });
+
+  it("does not flag untruncated datasets", () => {
+    const payload = formatWebhookPayload(shapeResult(makeTask(), makeResult()));
+    expect(payload.data[0].totalRows).toBe(1);
+    expect(payload.data[0].truncated).toBe(false);
   });
 });

@@ -20,6 +20,7 @@ import {
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
 import type { EmailRecipient, SlackRecipient, WebhookRecipient, Recipient } from "@atlas/api/lib/scheduled-task-types";
+import { shapeResult, type FormattedResult } from "./shape-result";
 import { formatEmailReport } from "./format-email";
 import { formatSlackReport } from "./format-slack";
 import { formatWebhookPayload } from "./format-webhook";
@@ -97,11 +98,10 @@ function isHttpPermanent(status: number): boolean {
 
 function deliverToEmail(
   recipient: EmailRecipient,
-  task: ScheduledTask,
-  result: AgentQueryResult,
+  shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
   return Effect.gen(function* () {
-    const { subject, body } = formatEmailReport(task, result);
+    const { subject, body } = formatEmailReport(shaped);
 
     const { sendEmail } = yield* Effect.tryPromise({
       try: () => import("@atlas/api/lib/email/delivery"),
@@ -127,7 +127,7 @@ function deliverToEmail(
 
     if (!deliveryResult.success) {
       log.error(
-        { taskId: task.id, recipient: recipient.address, provider: deliveryResult.provider, error: deliveryResult.error },
+        { taskId: shaped.taskId, recipient: recipient.address, provider: deliveryResult.provider, error: deliveryResult.error },
         "Email delivery failed",
       );
       return yield* Effect.fail(
@@ -140,17 +140,16 @@ function deliverToEmail(
       );
     }
 
-    log.info({ taskId: task.id, recipient: recipient.address, provider: deliveryResult.provider }, "Email delivered");
+    log.info({ taskId: shaped.taskId, recipient: recipient.address, provider: deliveryResult.provider }, "Email delivered");
   });
 }
 
 function deliverToSlack(
   recipient: SlackRecipient,
-  task: ScheduledTask,
-  result: AgentQueryResult,
+  shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
   return Effect.gen(function* () {
-    const { text, blocks } = formatSlackReport(task, result);
+    const { text, blocks } = formatSlackReport(shaped);
 
     let token: string | null = null;
     if (recipient.teamId) {
@@ -179,7 +178,7 @@ function deliverToSlack(
       token = process.env.SLACK_BOT_TOKEN ?? null;
     }
     if (!token) {
-      log.warn({ taskId: task.id, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
+      log.warn({ taskId: shaped.taskId, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
       return yield* Effect.fail(
         new DeliveryError({ message: "No Slack bot token", channel: "slack", recipient: recipient.channel, permanent: true }),
       );
@@ -207,30 +206,29 @@ function deliverToSlack(
     });
 
     if (!resp.ok) {
-      log.error({ taskId: task.id, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
+      log.error({ taskId: shaped.taskId, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
       return yield* Effect.fail(
         new DeliveryError({ message: resp.error ?? "Slack API error", channel: "slack", recipient: recipient.channel, permanent: false }),
       );
     }
 
-    log.info({ taskId: task.id, channel: recipient.channel }, "Slack message delivered");
+    log.info({ taskId: shaped.taskId, channel: recipient.channel }, "Slack message delivered");
   });
 }
 
 function deliverToWebhook(
   recipient: WebhookRecipient,
-  task: ScheduledTask,
-  result: AgentQueryResult,
+  shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
   return Effect.gen(function* () {
     if (isBlockedUrl(recipient.url)) {
-      log.error({ taskId: task.id, url: recipient.url }, "Webhook URL blocked — targets private/internal address");
+      log.error({ taskId: shaped.taskId, url: recipient.url }, "Webhook URL blocked — targets private/internal address");
       return yield* Effect.fail(
         new DeliveryError({ message: "Blocked URL", channel: "webhook", recipient: recipient.url, permanent: true }),
       );
     }
 
-    const payload = formatWebhookPayload(task, result);
+    const payload = formatWebhookPayload(shaped);
     const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
 
     // guardedFetch re-validates the target before the request leaves the box
@@ -246,7 +244,7 @@ function deliverToWebhook(
       catch: (err) => {
         if (err instanceof EgressBlockedError) {
           log.error(
-            { taskId: task.id, host: err.host },
+            { taskId: shaped.taskId, host: err.host },
             "Webhook delivery blocked by egress guard",
           );
           return new DeliveryError({
@@ -268,7 +266,7 @@ function deliverToWebhook(
     if (!resp.ok) {
       const text = yield* Effect.promise(() => resp.text().catch(() => ""));
       log.error(
-        { taskId: task.id, url: recipient.url, status: resp.status, body: text.slice(0, 200) },
+        { taskId: shaped.taskId, url: recipient.url, status: resp.status, body: text.slice(0, 200) },
         "Webhook delivery failed",
       );
       return yield* Effect.fail(
@@ -281,7 +279,7 @@ function deliverToWebhook(
       );
     }
 
-    log.info({ taskId: task.id, url: recipient.url }, "Webhook delivered");
+    log.info({ taskId: shaped.taskId, url: recipient.url }, "Webhook delivered");
   });
 }
 
@@ -289,23 +287,22 @@ function deliverToWebhook(
 
 function deliverySingle(
   recipient: Recipient,
-  task: ScheduledTask,
-  result: AgentQueryResult,
+  shaped: FormattedResult,
 ): Effect.Effect<void, DeliveryError> {
   const inner = (() => {
     switch (recipient.type) {
       case "email":
-        return deliverToEmail(recipient, task, result);
+        return deliverToEmail(recipient, shaped);
       case "slack":
-        return deliverToSlack(recipient, task, result);
+        return deliverToSlack(recipient, shaped);
       case "webhook":
-        return deliverToWebhook(recipient, task, result);
+        return deliverToWebhook(recipient, shaped);
     }
   })();
   return withEffectSpan(
     "atlas.scheduler.delivery",
     {
-      "atlas.task_id": task.id,
+      "atlas.task_id": shaped.taskId,
       "atlas.channel": recipient.type,
     },
     inner,
@@ -336,6 +333,10 @@ export async function deliverResult(
     return EMPTY_SUMMARY;
   }
 
+  // Shape once — truncation and report metadata are decided here, then the
+  // per-channel renderers only lay out the shared FormattedResult.
+  const shaped = shapeResult(task, result);
+
   // Deliver to all recipients concurrently, with per-recipient retry.
   // Permanent errors (blocked URL, missing credentials, HTTP 4xx) fail immediately.
   // Transient errors (network, HTTP 5xx) get exponential backoff retry.
@@ -343,7 +344,7 @@ export async function deliverResult(
     Effect.forEach(
       channelRecipients,
       (recipient) =>
-        deliverySingle(recipient, task, result).pipe(
+        deliverySingle(recipient, shaped).pipe(
           Effect.retry({
             schedule: retryPolicy,
             while: (err) => !err.permanent,

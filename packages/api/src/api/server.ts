@@ -97,7 +97,13 @@ if (config.plugins?.length) {
 
   // Build plugin context — gives plugins typed access to Atlas internals
   const { connections } = await import("@atlas/api/lib/db/connection");
-  const { ToolRegistry } = await import("@atlas/api/lib/tools/registry");
+  const {
+    ToolRegistry,
+    defaultRegistry,
+    buildRegistry,
+    INTENTIONAL_TOOL_SHADOWS,
+    TOOL_SHADOW_REMEDIATIONS,
+  } = await import("@atlas/api/lib/tools/registry");
   const { hasInternalDB, internalQuery, getInternalDB } = await import(
     "@atlas/api/lib/db/internal"
   );
@@ -218,6 +224,44 @@ if (config.plugins?.length) {
   }
 
   if (pluginToolRegistry.size > 0) {
+    // #3326 — a plugin tool that reuses a core tool's name is silently
+    // shadowed: the chat route merges with `ToolRegistry.merge(base, plugin)`
+    // and the base (core/action) entry wins, so the plugin tool never
+    // executes. Known instance: static-url `querySalesforce` (plugin) vs the
+    // OAuth `querySalesforce` (core, gated on SALESFORCE_CLIENT_ID/SECRET) —
+    // in single-tenant self-host the OAuth tool returns `no_workspace` on
+    // every call, making static Salesforce unqueryable. The configurations
+    // are meant to be mutually exclusive, so surface the conflict loudly at
+    // boot instead of resolving it. Per-name remediation copy and the
+    // intentional-overlap allowlist live next to the registration sites in
+    // tools/registry.ts.
+    //
+    // The base mirrors what chat.ts actually merges against: the action-
+    // augmented registry when ATLAS_ACTIONS_ENABLED, else defaultRegistry —
+    // so action-tool collisions (e.g. a plugin reusing an action name) are
+    // covered too.
+    let shadowBase = defaultRegistry;
+    if (process.env.ATLAS_ACTIONS_ENABLED === "true") {
+      try {
+        const { registry } = await buildRegistry({ includeActions: true });
+        shadowBase = registry;
+      } catch (err) {
+        // Non-fatal here — chat.ts handles (and reports) the same failure per
+        // request; the shadow check just degrades to the core-tool base.
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Tool-shadow check: buildRegistry failed — checking against core tools only",
+        );
+      }
+    }
+    for (const name of ToolRegistry.shadowedNames(shadowBase, pluginToolRegistry)) {
+      if (INTENTIONAL_TOOL_SHADOWS.has(name)) continue;
+      const remediation = TOOL_SHADOW_REMEDIATIONS[name];
+      log.error(
+        { tool: name },
+        `Plugin tool "${name}" is shadowed by a core tool with the same name — the core tool takes precedence and the plugin tool will never run.${remediation ? ` ${remediation}` : ""}`,
+      );
+    }
     pluginToolRegistry.freeze();
     setPluginTools(pluginToolRegistry);
   }

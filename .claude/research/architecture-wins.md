@@ -2530,7 +2530,34 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 ---
 
-## 89. One persistence spine behind six Form-install handlers — and the collapse surfaced that half of them were already broken
+## 89. One shaped result behind the three scheduled-delivery renderers (review 2026-06-09, candidate 6)
+
+**Date:** 2026-06-10
+**Issue:** — (architecture-review 2026-06-09, candidate 6)
+**PR:** #3360
+
+**Problem:** The three scheduled-delivery formatters (`format-email.ts`, `format-slack.ts`, `format-webhook.ts`) each re-derived metadata (task name/question, steps, tokens, timestamp) from `(task, result)`, and the 50-row table truncation rule lived only in the email copy. The webhook path shipped `result.data` to recipient URLs **unbounded** — a 100k-row agent result became a 100k-row JSON POST. (The review's claim that Slack was also unbounded didn't survive contact: `formatSlackReport` delegates to `formatQueryResponse`, which already caps tables at 20 rows / 3000 chars for Block Kit limits — the live bug was webhook-only.)
+
+**Solution:** `packages/api/src/lib/scheduler/shape-result.ts` owns `shapeResult(task, result) → FormattedResult`: per-dataset truncation (default 50 rows, settings/env-overridable via `ATLAS_DELIVERY_MAX_ROWS`) with `totalRows`/`truncated` accounting, the raw answer (fallback copy stays presentational), and one `generatedAt` timestamp shared by all channels. The three renderers become thin adapters (HTML / Block Kit / JSON) consuming only the shaped result; `delivery.ts` shapes once per delivery and threads `FormattedResult` through the per-recipient Effects; `preview.ts` rides the same seam. The shape is tested directly (truncation boundary at 50/51, per-dataset independence, order preservation, metadata, no source mutation) without rendering.
+
+**Scope correction vs. the review card:** "section ordering decided once" was dropped — email orders data-before-SQL while Slack orders SQL-before-data, and both wire formats had to stay byte-compatible, so layout remains a renderer concern. The module owns the *shape* (what data each channel may show), not the layout. It still passes the deletion test: deleting it would re-scatter the truncation rule and its accounting across three renderers, one of which had already lost it.
+
+**Behavior changes (deliberate, called out in the PR):**
+- Webhook datasets are now capped at 50 rows, with additive `totalRows`/`truncated` fields per dataset so consumers can detect the cap instead of silently losing rows.
+- Slack's "Showing first 20 of N rows" note now counts N against the shaped 50-row dataset rather than the raw result (display was already capped at 20 rows, so no rows readers saw are lost). A second-order consequence of the same pre-truncation: `dedupeDatasets` now collapses datasets that are identical only in their first 50 rows — acceptable for a digest surface, documented at the call site.
+- Email and Slack rendered output is otherwise byte-identical; the email truncation note text is unchanged.
+- Post-review follow-up (same PR): the cap became settings/env-configurable (`ATLAS_DELIVERY_MAX_ROWS`, default 50, registered in the admin settings registry), the exported constant was renamed `DEFAULT_DELIVERY_MAX_ROWS` to stop colliding with `slack/format.ts`'s unrelated `MAX_DATA_ROWS = 20`, and the six copy-pasted `makeTask`/`makeResult` test fixtures consolidated into `__tests__/fixtures.ts`.
+
+**Impact:**
+- The webhook unbounded-payload bug is fixed at the seam where the rule belongs, not patched in a third copy.
+- A fourth delivery channel gets truncation, metadata, and the shared timestamp for free by consuming `FormattedResult`.
+- Truncation semantics have one canonical test file (`shape-result.test.ts`); the renderer tests shrink to layout concerns.
+
+**Category:** Deep module extraction — three renderers that each re-derived cross-channel policy from raw inputs now consume one shaped result, moving a misplaced (and once-missing) safety rule to the single module that owns it.
+
+---
+
+## 90. One persistence spine behind six Form-install handlers — and the collapse surfaced that half of them were already broken
 
 **Date:** 2026-06-10
 **Issue:** — (architecture-review-2026-06-09, candidate 2); follow-up #3357 (Salesforce/Jira OAuth share the bug)
@@ -2538,14 +2565,14 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 
 **Problem:** Every single-instance Form install handler repeated the same spine after its per-Platform Zod parse: SaaS keyset gate → `encryptSecretFields` → `workspace_plugins` upsert → returned-id invariant check → (for Email/Linear/GitHub-PAT) lazy-loader evict — ~80 lines × 6 handlers (email/webhook are 95% identical). The Workspace Install write path had six places to be wrong. **And it was wrong, three times, in exactly the way the review predicted:** the Email / Webhook / Obsidian copies still carried the pre-0092 INSERT shape (no `install_id`/`pillar`, bare `ON CONFLICT (workspace_id, catalog_id)`), which depended on a BEFORE INSERT trigger and a non-partial unique index that migration 0096 dropped. Against the live schema, every Email / Webhook / Obsidian install attempt fails at plan time with 42P10 ("no unique or exclusion constraint matching the ON CONFLICT specification") — a hard 500 on a customer-facing install path. The per-handler tests mock `internalQuery`, so no test could see a plan-time SQL error; the copies that got pivoted in #2739 (Linear, GitHub PAT, Twenty) worked, the ones that didn't silently rotted.
 
-**Solution:** One `persistFormInstall` module (`integrations/install/persist-form-install.ts`) owns the spine: keyset gate (`assertSaasEncryptionKeyset`, also exported standalone so Twenty can gate its `twenty_integrations` credential write *before* any byte persists), optional `encryptSecretFields`, the canonical post-0092 upsert (explicit `install_id` + `pillar='action'`, partial-index conflict target — exported as `buildFormInstallUpsertSql` so tests execute the real string), the returned-id invariant, and the optional post-persist lazy-loader evict (warn-never-fail). Handlers shrink to parse-and-validate + one call + their per-Platform completion log. Two data-shaped knobs absorb the genuine variation: `updateConfigOnConflict: false` (Twenty's re-install must keep the existing row's config) and `persistFailureMessage` (Twenty's documents its partial-write recovery semantics).
+**Solution:** One `persistFormInstall` module (`integrations/install/persist-form-install.ts`) owns the spine: keyset gate (`assertSaasEncryptionKeyset`, also exported standalone so Twenty can gate its `twenty_integrations` credential write *before* any byte persists), optional `encryptSecretFields`, the canonical post-0092 upsert (explicit `install_id` + parameterized `pillar`, partial-index conflict target — exported as `buildFormInstallUpsertSql` so tests execute the real string), the returned-id invariant, and an unconditional post-persist lazy-loader evict (warn-never-fail; a free no-op when nothing is cached, closing the latent Webhook/Obsidian stale-instance-on-rotation bug the old opt-in copies carried). Handlers shrink to parse-and-validate + one call + their per-Platform completion log. Two data-shaped knobs absorb the genuine variation: `updateConfigOnConflict: false` (Twenty's re-install must keep the existing row's config) and `persistFailureMessage` (Twenty's documents its partial-write recovery semantics).
 
 **Deliberately NOT on the spine** (the deletion-test boundary): `DatasourceFormInstallHandler` + its `ElasticsearchFormInstallHandler` subclass (pillar `datasource`, `status='draft'`, fixed per-workspace `install_id`, catalog-schema-driven mask/restore — the ADR-0013 `createFromConfig` bridge is already its own deep module), and `persistOpenApiDatasourceInstall` + `DataCandidateFormInstallHandler` (multi-instance fresh-`install_id`-per-submit, probe-on-install — already consolidated in #3028). Forcing either onto the chat/action singleton spine would have meant knobs for pillar, status, conflict target, and probe hooks — a shallow seam.
 
 **Impact:**
 - **Email / Webhook / Obsidian installs work again.** The consolidation *was* the bug fix: pivoting the three stale copies onto the one canonical upsert is what candidate 2's "five places to be wrong" warning was about. Wire formats and DB rows for the already-working handlers (Linear, GitHub PAT, Twenty) are unchanged.
-- **The SQL is now pinned against real Postgres.** `migrate-pg.test.ts` executes `buildFormInstallUpsertSql` verbatim against the fully-migrated schema (fresh insert, conflict-returns-existing-id, config-preserving variant) and pins the legacy shape's 42P10 rejection as regression documentation — the exact test class whose absence let three handlers rot invisibly behind mock pools.
-- **One spine test** (`persist-form-install.test.ts`, 16 cases) covers gate/encrypt/upsert/invariant/evict once; the six per-handler suites keep covering their parse/validate remainder and still pass through the spine unchanged (they mock the same `db/internal` seam).
+- **The SQL is now pinned against real Postgres.** A module-colocated `persist-form-install-pg.test.ts` (chat-cap-pg precedent) executes `buildFormInstallUpsertSql` verbatim against the fully-migrated schema for both pillars (fresh insert, conflict-returns-existing-id, config-preserving variant), while `migrate-pg.test.ts` keeps the pure schema property: the legacy shape's 42P10 rejection as regression documentation — the exact test class whose absence let three handlers rot invisibly behind mock pools.
+- **One spine test** (`persist-form-install.test.ts`, 20 cases) covers parse/gate/encrypt/upsert/invariant/evict once; the six per-handler suites keep covering their parse/validate remainder and still pass through the spine unchanged (they mock the same `db/internal` seam).
 - ~300 lines of duplicated persistence deleted; a seventh single-instance Form install is parse + one call.
 - **Follow-up filed, not folded in:** the Salesforce and Jira OAuth handlers carry the same broken pre-0092 upsert shape — same fix, different handler family (OAuth, not Form), tracked separately.
 

@@ -362,6 +362,29 @@ describe("useAdminMutation", () => {
     }
   });
 
+  test("2xx claiming JSON with a non-JSON body surfaces actionable proxy copy, not a SyntaxError", async () => {
+    mockFetch(new Response("<html>gateway</html>", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    let mutateResult: MutateResult<unknown>;
+    await act(async () => {
+      mutateResult = await result.current.mutate();
+    });
+
+    expect(mutateResult!.ok).toBe(false);
+    if (!mutateResult!.ok) {
+      expect(mutateResult!.error.message).toContain("non-JSON response");
+      expect(mutateResult!.error.message).toContain("/api/v1/admin/test");
+    }
+  });
+
   /* ---------------------------------------------------------------- */
   /*  Per-item mutation tracking (itemId / isMutating)                  */
   /* ---------------------------------------------------------------- */

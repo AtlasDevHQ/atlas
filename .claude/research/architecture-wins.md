@@ -2554,3 +2554,26 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 - Truncation semantics have one canonical test file (`shape-result.test.ts`); the renderer tests shrink to layout concerns.
 
 **Category:** Deep module extraction — three renderers that each re-derived cross-channel policy from raw inputs now consume one shaped result, moving a misplaced (and once-missing) safety rule to the single module that owns it.
+
+---
+
+## 90. Admin config-form loop behind `useConfigForm` — dirty/reset semantics stated once
+
+**Date:** 2026-06-10
+**Issue:** none (architecture-review-2026-06-09.md candidate 4)
+**PR:** #3356
+
+**Problem:** Admin config pages hand-wired the same load → per-field `useState` → hand-rolled dirty compare → manual reset-on-refetch → save loop on top of `useAdminFetch`/`useAdminMutation`. Proactive-chat (the worst offender, ~40% state bookkeeping) listed every field four times — useState, reset effect, dirty compare, save payload — so adding a field to the form but forgetting it in the dirty compare was a silent bug (Save stays disabled, or stays enabled forever). The two audit retention panels additionally hand-rolled the entire fetch lifecycle (cancelled flag, loading/error state, manual JSON cast) that `useAdminFetch` already owns.
+
+**Solution:** `packages/web/src/ui/hooks/use-config-form.ts` — `useConfigForm<TData, TValues>` composes `useAdminFetch` + `useAdminMutation` and returns `{ fields, values, dirty, reset, save, saving, error }` plus the load side (`data, loading, loadError, refetch`). One declaration (`toForm`) is the canonical statement of what the form edits: its keys drive both the per-field accessors **and** the deep-equality dirty compare, so a field cannot be editable yet missing from the compare. `toPayload` owns the save-time transformations (trim, `"" → null`, string → number). Re-baseline rides TanStack Query's structural sharing — the form resets exactly when fetched content actually changes (post-save invalidation refetch) and never clobbers in-flight edits on a no-change background refetch.
+
+The implementation survey narrowed the candidate's "16 pages" to the surfaces that genuinely contain this loop — migrated: **proactive-chat**, **audit/retention-panel**, **audit/admin-action-retention-panel**. The remainder are CRUD-of-many dialogs, action/confirm flows, react-hook-form surfaces, or multi-endpoint saves — documented per-page in the review doc entry rather than forced through the seam.
+
+**Impact:**
+- Dirty/reset semantics live in one hook with 10 direct tests (no page rendering): canonical compare, deep array participation, save → invalidate → re-baseline, edit preservation across no-change refetches, save-failure state retention.
+- Both retention panels dropped their hand-rolled fetch lifecycle (~45 lines each) and gained the platform behaviors they were missing: TanStack caching/dedup, window-focus revalidation, MFA-gate routing — while keeping their bespoke 403 banner copy via an explicit `loadError.status` map.
+- Proactive-chat's field list went from four statements per field to two (`toForm`/`toPayload`); the dirty compare can no longer drift from the field set.
+- Bonus hardening: `useAdminFetch` now normalizes 2xx-non-JSON bodies (misconfigured proxy) into actionable copy for **all** consumers, generalizing the panel-local #1511 fix instead of losing it in migration.
+- A future config page is `useConfigForm` + JSX — no bookkeeping to hand-wire or forget.
+
+**Category:** Tightly-coupled page-level state machines consolidated into a deep hook with a small interface — the natural successor to win #1 (`useAdminMutation`), with honest scope: the seam absorbed the pages that have the loop and documented the ones that don't.

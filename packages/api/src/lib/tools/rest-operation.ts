@@ -53,6 +53,10 @@ import {
   type RestOperationPolicy,
 } from "@atlas/api/lib/openapi/validate-rest-operation";
 import {
+  attemptDriftRecovery,
+  type DriftRecoveryOutcome,
+} from "@atlas/api/lib/openapi/drift-recovery";
+import {
   buildRestWriteSummary,
   mintRestConfirmToken,
   type RestWriteConfirmRequest,
@@ -97,7 +101,14 @@ export type ExecuteRestOperationResult =
    */
   | { status: "datasource_unavailable"; message: string }
   | { status: "datasource_not_found"; message: string; availableDatasources: string[] }
-  | { status: "unknown_operation"; message: string; availableOperations: string[] }
+  /**
+   * `specRefreshed` (#3315): present + `true` when the datasource's
+   * `auto-refresh` drift mode just re-probed the upstream spec and the
+   * operation is STILL not there — the agent should trust
+   * `availableOperations` (now fresh) rather than retrying, and may tell the
+   * user the API's spec may have changed.
+   */
+  | { status: "unknown_operation"; message: string; availableOperations: string[]; specRefreshed?: boolean }
   | { status: "writes_disabled"; message: string; method: string }
   | { status: "invalid_params"; message: string; missingParams?: string[]; unexpectedParams?: string[] }
   | { status: "rate_limited"; message: string; retryAfterMs?: number }
@@ -164,6 +175,12 @@ export interface ExecuteRestOperationDeps {
   readonly resolveDatasource?: () => Promise<RestDatasource | null>;
   /** `fetch` override threaded into the slice-0 client (tests). */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /**
+   * Drift-recovery override (tests). Defaults to the real
+   * {@link attemptDriftRecovery} — the debounced, egress-guarded re-probe the
+   * `auto-refresh` drift mode runs on `unknown-operation` (#3315).
+   */
+  readonly driftRecovery?: typeof attemptDriftRecovery;
 }
 
 /**
@@ -273,197 +290,258 @@ export function createExecuteRestOperationTool(deps: ExecuteRestOperationDeps = 
         ...(body !== undefined ? { body } : {}),
       };
 
-      // Peek the method so we only debit the per-operation rate quota for calls
-      // that actually hit the upstream (reads here; the confirmed write later).
-      // Staging a write for confirmation must not burn quota. An unknown op falls
-      // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
-      const peeked = datasource.graph.operations.get(operationId);
-      // Side-effecting (#3008) GET/HEADs count as writes here too, so they are
-      // staged for confirmation (dispatch:false) rather than run immediately. A
-      // candidate-declared read-safe POST (#3035) is demoted to a read by the same
-      // predicate, so it dispatches immediately (debits the read quota) rather than
-      // staging for a confirm that would be refused.
-      const isWrite = peeked
-        ? isSideEffectingOperation(
-            peeked,
-            datasource.sideEffectingOperations,
-            datasource.readSafePostOperations,
-          )
-        : false;
+      // One validation + dispatch pass against a given datasource shape. Hoisted
+      // into a closure so the #3315 drift-recovery path can retry EXACTLY once
+      // with a freshly re-probed graph swapped in — no duplicated safety stack.
+      const runOnce = async (ds: RestDatasource): Promise<ExecuteRestOperationResult> => {
+        // Peek the method so we only debit the per-operation rate quota for calls
+        // that actually hit the upstream (reads here; the confirmed write later).
+        // Staging a write for confirmation must not burn quota. An unknown op falls
+        // to `dispatch: true`, but layer 1 rejects it before the quota is touched.
+        const peeked = ds.graph.operations.get(operationId);
+        // Side-effecting (#3008) GET/HEADs count as writes here too, so they are
+        // staged for confirmation (dispatch:false) rather than run immediately. A
+        // candidate-declared read-safe POST (#3035) is demoted to a read by the same
+        // predicate, so it dispatches immediately (debits the read quota) rather than
+        // staging for a confirm that would be refused.
+        const isWrite = peeked
+          ? isSideEffectingOperation(
+              peeked,
+              ds.sideEffectingOperations,
+              ds.readSafePostOperations,
+            )
+          : false;
 
-      const policy: RestOperationPolicy = {
-        // The rate-limit bucket is keyed (workspace, datasource, operation). In
-        // the normal agent path an absent org short-circuits to `no_datasource`
-        // before reaching here (datasources resolve from the org); the `"default"`
-        // sentinel is only reachable via an injected resolver (tests), where the
-        // `datasourceId` dimension still uniquely scopes the bucket.
-        workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
-        datasourceId: datasource.id,
-        writeAllowlist: datasource.writeAllowlist,
-        sideEffectingOperations: datasource.sideEffectingOperations,
-        ...(datasource.readSafePostOperations !== undefined
-          ? { readSafePostOperations: datasource.readSafePostOperations }
-          : {}),
-        dispatch: !isWrite,
-        ...(datasource.rateLimitPerMinute !== undefined
-          ? { rateLimitPerMinute: datasource.rateLimitPerMinute }
-          : {}),
-        ...(datasource.requestTimeoutMs !== undefined
-          ? { requestedTimeoutMs: datasource.requestTimeoutMs }
-          : {}),
-      };
+        const policy: RestOperationPolicy = {
+          // The rate-limit bucket is keyed (workspace, datasource, operation). In
+          // the normal agent path an absent org short-circuits to `no_datasource`
+          // before reaching here (datasources resolve from the org); the `"default"`
+          // sentinel is only reachable via an injected resolver (tests), where the
+          // `datasourceId` dimension still uniquely scopes the bucket.
+          workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
+          datasourceId: ds.id,
+          writeAllowlist: ds.writeAllowlist,
+          sideEffectingOperations: ds.sideEffectingOperations,
+          ...(ds.readSafePostOperations !== undefined
+            ? { readSafePostOperations: ds.readSafePostOperations }
+            : {}),
+          dispatch: !isWrite,
+          ...(ds.rateLimitPerMinute !== undefined
+            ? { rateLimitPerMinute: ds.rateLimitPerMinute }
+            : {}),
+          ...(ds.requestTimeoutMs !== undefined
+            ? { requestedTimeoutMs: ds.requestTimeoutMs }
+            : {}),
+        };
 
-      const verdict = validateRestOperation(datasource.graph, operationId, params, policy);
-      if (!verdict.allowed) {
-        const { error } = verdict;
-        switch (error.reason) {
-          case "unknown-operation":
-            return {
-              status: "unknown_operation",
-              message: error.message,
-              availableOperations: [...(error.availableOperations ?? [])],
-            };
-          case "writes-disabled":
-            return {
-              status: "writes_disabled",
-              method: peeked?.method ?? "WRITE",
-              message: error.message,
-            };
-          case "invalid-params":
-            return {
-              status: "invalid_params",
-              message: error.message,
-              ...(error.missingParams ? { missingParams: [...error.missingParams] } : {}),
-              ...(error.unexpectedParams ? { unexpectedParams: [...error.unexpectedParams] } : {}),
-            };
-          case "rate-limit-exceeded":
-            return {
-              status: "rate_limited",
-              message: error.message,
-              ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
-            };
-          case "timeout-exceeded":
-            // A misconfigured per-install timeout is an operator concern, not an
-            // agent one — surface it as a client_error so the model stops.
-            return { status: "client_error", reason: "timeout", message: error.message };
-          default: {
-            // Fail closed: a future RestValidationReason that isn't handled must NOT
-            // fall through to dispatch — surface it as a client_error so the agent stops.
-            const _exhaustive: never = error.reason;
+        const verdict = validateRestOperation(ds.graph, operationId, params, policy);
+        if (!verdict.allowed) {
+          const { error } = verdict;
+          switch (error.reason) {
+            case "unknown-operation":
+              return {
+                status: "unknown_operation",
+                message: error.message,
+                availableOperations: [...(error.availableOperations ?? [])],
+              };
+            case "writes-disabled":
+              return {
+                status: "writes_disabled",
+                method: peeked?.method ?? "WRITE",
+                message: error.message,
+              };
+            case "invalid-params":
+              return {
+                status: "invalid_params",
+                message: error.message,
+                ...(error.missingParams ? { missingParams: [...error.missingParams] } : {}),
+                ...(error.unexpectedParams ? { unexpectedParams: [...error.unexpectedParams] } : {}),
+              };
+            case "rate-limit-exceeded":
+              return {
+                status: "rate_limited",
+                message: error.message,
+                ...(error.retryAfterMs !== undefined ? { retryAfterMs: error.retryAfterMs } : {}),
+              };
+            case "timeout-exceeded":
+              // A misconfigured per-install timeout is an operator concern, not an
+              // agent one — surface it as a client_error so the model stops.
+              return { status: "client_error", reason: "timeout", message: error.message };
+            default: {
+              // Fail closed: a future RestValidationReason that isn't handled must NOT
+              // fall through to dispatch — surface it as a client_error so the agent stops.
+              const _exhaustive: never = error.reason;
+              return {
+                status: "client_error",
+                reason: "unexpected",
+                message: `Operation "${operationId}" was rejected by an unhandled validation rule (${String(_exhaustive)}).`,
+              };
+            }
+          }
+        }
+
+        // Allowlisted write — stage for confirm-before-write; never dispatch here.
+        if (verdict.requiresConfirmation) {
+          // #3007: mint the single-use confirm token binding this exact staged write.
+          // If no signing key is configured the gate can't be enforced, so we refuse
+          // to stage rather than offer an unverifiable confirm (the oauth-state-token
+          // fail-loud stance) — surfaced as a client_error so the agent stops cleanly.
+          let token: string;
+          try {
+            token = mintRestConfirmToken({
+              workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
+              datasourceId: ds.id,
+              operationId,
+              params,
+            });
+          } catch (err) {
+            const requestId = getRequestContext()?.requestId;
+            const message = err instanceof Error ? err.message : String(err);
+            log.error(
+              { operationId, datasource: ds.id, requestId, err: message },
+              "executeRestOperation could not mint a confirm token",
+            );
             return {
               status: "client_error",
               reason: "unexpected",
-              message: `Operation "${operationId}" was rejected by an unhandled validation rule (${String(_exhaustive)}).`,
+              message:
+                "Could not stage this write for confirmation — the server is missing a signing key for confirm tokens. " +
+                "Tell the user the write can't be confirmed right now; do not claim it ran.",
             };
           }
-        }
-      }
-
-      // Allowlisted write — stage for confirm-before-write; never dispatch here.
-      if (verdict.requiresConfirmation) {
-        // #3007: mint the single-use confirm token binding this exact staged write.
-        // If no signing key is configured the gate can't be enforced, so we refuse
-        // to stage rather than offer an unverifiable confirm (the oauth-state-token
-        // fail-loud stance) — surfaced as a client_error so the agent stops cleanly.
-        let token: string;
-        try {
-          token = mintRestConfirmToken({
-            workspaceId: getRequestContext()?.user?.activeOrganizationId ?? "default",
-            datasourceId: datasource.id,
+          const confirm: RestWriteConfirmRequest = {
+            datasourceId: ds.id,
             operationId,
-            params,
+            ...(pathParams ? { pathParams } : {}),
+            ...(query ? { query } : {}),
+            ...(header ? { header } : {}),
+            ...(body !== undefined ? { body } : {}),
+            token,
+          };
+          log.info(
+            { operationId, method: verdict.operation.method, datasource: ds.id },
+            "executeRestOperation staged a write for confirmation",
+          );
+          return {
+            status: "needs_confirmation",
+            method: verdict.operation.method,
+            operationId,
+            datasourceId: ds.id,
+            datasourceName: ds.displayName,
+            summary: buildRestWriteSummary(verdict.operation, ds.displayName),
+            confirm,
+          };
+        }
+
+        try {
+          const result = await executeOperation(ds.graph, operationId, params, ds.auth, {
+            baseUrl: ds.baseUrl,
+            timeoutMs: verdict.timeoutMs,
+            // Slice 6a (#3028): a built-in data-candidate datasource (e.g. Stripe)
+            // carries a declarative quirk — required headers / query param-shaping
+            // (expand[]). The client applies it through its header/query seams.
+            ...(ds.quirk ? { quirk: ds.quirk } : {}),
+            ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
           });
+
+          if (result.status >= 200 && result.status < 300) {
+            return { status: "ok", httpStatus: result.status, body: result.body };
+          }
+          // Non-2xx is not a transport error — surface it so the agent can adjust.
+          log.info(
+            { operationId, httpStatus: result.status, datasource: ds.id },
+            "executeRestOperation upstream non-2xx",
+          );
+          return {
+            status: "http_error",
+            httpStatus: result.status,
+            body: result.body,
+            message: `Upstream returned HTTP ${result.status} for "${operationId}".`,
+          };
         } catch (err) {
+          if (err instanceof OpenApiClientError) {
+            log.warn(
+              { operationId, reason: err.reason, datasource: ds.id },
+              "executeRestOperation client fault",
+            );
+            return {
+              status: "client_error",
+              reason: err.reason,
+              message: err.message,
+            };
+          }
           const requestId = getRequestContext()?.requestId;
           const message = err instanceof Error ? err.message : String(err);
           log.error(
-            { operationId, datasource: datasource.id, requestId, err: message },
-            "executeRestOperation could not mint a confirm token",
+            { operationId, requestId, err: message, datasource: ds.id },
+            "executeRestOperation unexpected failure",
           );
+          // Not an OpenApiClientError — a code bug / OOM / etc. Classify it as
+          // `unexpected`, never `network`: a deterministic internal failure must
+          // not read to the agent as a transient transport fault worth retrying.
           return {
             status: "client_error",
             reason: "unexpected",
-            message:
-              "Could not stage this write for confirmation — the server is missing a signing key for confirm tokens. " +
-              "Tell the user the write can't be confirmed right now; do not claim it ran.",
+            message: `Unexpected internal error executing "${operationId}": ${message}`,
           };
         }
-        const confirm: RestWriteConfirmRequest = {
-          datasourceId: datasource.id,
-          operationId,
-          ...(pathParams ? { pathParams } : {}),
-          ...(query ? { query } : {}),
-          ...(header ? { header } : {}),
-          ...(body !== undefined ? { body } : {}),
-          token,
-        };
-        log.info(
-          { operationId, method: verdict.operation.method, datasource: datasource.id },
-          "executeRestOperation staged a write for confirmation",
-        );
-        return {
-          status: "needs_confirmation",
-          method: verdict.operation.method,
-          operationId,
-          datasourceId: datasource.id,
-          datasourceName: datasource.displayName,
-          summary: buildRestWriteSummary(verdict.operation, datasource.displayName),
-          confirm,
-        };
-      }
+      };
 
+      const first = await runOnce(datasource);
+      if (first.status !== "unknown_operation") return first;
+
+      // ── #3315 — query-time spec-drift recovery. The operation isn't in the
+      // CACHED graph; in `auto-refresh` mode the upstream spec may have
+      // legitimately changed, so attempt ONE debounced, egress-guarded re-probe
+      // and retry iff the fresh graph contains the operation. `strict` (the
+      // default, including an absent field) preserves the hard reject exactly.
+      if (datasource.specDriftMode !== "auto-refresh") return first;
+      const recover = deps.driftRecovery ?? attemptDriftRecovery;
+      const workspaceId = getRequestContext()?.user?.activeOrganizationId ?? "default";
+      let recovery: DriftRecoveryOutcome;
       try {
-        const result = await executeOperation(datasource.graph, operationId, params, datasource.auth, {
-          baseUrl: datasource.baseUrl,
-          timeoutMs: verdict.timeoutMs,
-          // Slice 6a (#3028): a built-in data-candidate datasource (e.g. Stripe)
-          // carries a declarative quirk — required headers / query param-shaping
-          // (expand[]). The client applies it through its header/query seams.
-          ...(datasource.quirk ? { quirk: datasource.quirk } : {}),
-          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-        });
-
-        if (result.status >= 200 && result.status < 300) {
-          return { status: "ok", httpStatus: result.status, body: result.body };
-        }
-        // Non-2xx is not a transport error — surface it so the agent can adjust.
-        log.info(
-          { operationId, httpStatus: result.status, datasource: datasource.id },
-          "executeRestOperation upstream non-2xx",
-        );
-        return {
-          status: "http_error",
-          httpStatus: result.status,
-          body: result.body,
-          message: `Upstream returned HTTP ${result.status} for "${operationId}".`,
-        };
+        recovery = await recover(workspaceId, datasource.id, operationId);
       } catch (err) {
-        if (err instanceof OpenApiClientError) {
-          log.warn(
-            { operationId, reason: err.reason, datasource: datasource.id },
-            "executeRestOperation client fault",
-          );
-          return {
-            status: "client_error",
-            reason: err.reason,
-            message: err.message,
-          };
-        }
-        const requestId = getRequestContext()?.requestId;
+        // attemptDriftRecovery's contract is never-throws; this guards an
+        // injected seam. Fail closed — the original rejection stands.
         const message = err instanceof Error ? err.message : String(err);
-        log.error(
-          { operationId, requestId, err: message, datasource: datasource.id },
-          "executeRestOperation unexpected failure",
+        log.warn(
+          { operationId, datasource: datasource.id, err: message },
+          "executeRestOperation drift-recovery attempt threw — returning the original rejection",
         );
-        // Not an OpenApiClientError — a code bug / OOM / etc. Classify it as
-        // `unexpected`, never `network`: a deterministic internal failure must
-        // not read to the agent as a transient transport fault worth retrying.
+        return first;
+      }
+      // Cooldown / row gone / probe failure: the old snapshot is untouched and
+      // the original rejection (with its availableOperations hint) stands.
+      if (recovery.kind !== "refreshed") return first;
+      if (!recovery.operationFound) {
+        // The spec WAS just re-checked and the operation still isn't there —
+        // tell the agent the list is fresh so it stops retrying, and that the
+        // upstream contract may have changed (it may relay that to the user).
         return {
-          status: "client_error",
-          reason: "unexpected",
-          message: `Unexpected internal error executing "${operationId}": ${message}`,
+          status: "unknown_operation",
+          specRefreshed: true,
+          message:
+            `Unknown operationId "${operationId}". The upstream spec was just re-checked (it may have ` +
+            `changed) and this operation is still not present — pick from availableOperations (now fresh); ` +
+            `do not retry "${operationId}".`,
+          availableOperations: [...recovery.graph.operations.keys()].toSorted(),
         };
       }
+      log.info(
+        { operationId, datasource: datasource.id },
+        "executeRestOperation drift recovery found the operation in the refreshed spec — retrying once",
+      );
+      // Retry with the fresh graph, and the fresh base URL ONLY when recovery
+      // re-derived one that re-passed the egress guard (a legitimately moved
+      // servers[0].url is followed; a hostile/blocked one is dropped and the
+      // already-validated old base stays). Auth/allowlists stay from the
+      // current resolve; guardedFetch remains the execution-time backstop.
+      return runOnce({
+        ...datasource,
+        graph: recovery.graph,
+        ...(recovery.baseUrl !== undefined ? { baseUrl: recovery.baseUrl } : {}),
+      });
     },
   });
 }

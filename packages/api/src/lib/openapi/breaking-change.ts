@@ -307,6 +307,12 @@ export interface SpecDriftAlertRecord {
   readonly counts: DiffCounts;
   /** ISO-8601 instant an admin acknowledged the signal; `null` while unacknowledged. */
   readonly acknowledgedAt: string | null;
+  /**
+   * Which unattended trigger raised the signal (`scheduled` | `drift-recovery`).
+   * Optional: records raised before #3315 carry no trigger — the projection
+   * omits the field rather than inventing one.
+   */
+  readonly trigger?: RediscoveryTrigger;
 }
 
 /**
@@ -319,6 +325,7 @@ export function buildDriftAlertRecord(
   diffRecord: SpecDiffRecord,
   assessment: BreakingAssessment,
   raisedAt: string,
+  trigger?: RediscoveryTrigger,
 ): SpecDriftAlertRecord {
   return {
     raisedAt,
@@ -328,11 +335,26 @@ export function buildDriftAlertRecord(
     reasons: assessment.reasons.slice(0, MAX_STORED_DRIFT_REASONS),
     counts: diffRecord.diff?.counts ?? ZERO_COUNTS,
     acknowledgedAt: null,
+    ...(trigger !== undefined ? { trigger } : {}),
   };
 }
 
-/** Which trigger drove the re-discovery — only `scheduled` raises a persisted pill (AC2). */
-export type RediscoveryTrigger = "manual" | "scheduled";
+/**
+ * Which trigger drove the re-discovery. The UNATTENDED triggers — `scheduled`
+ * (the Tier-2 timer loop) and `drift-recovery` (a query-time re-probe off an
+ * unknown operationId, #3315) — raise the persisted pill on breaking drift;
+ * `manual` ("Refresh now") never does, because the admin is already looking at
+ * the inline diff (AC2). The trigger is recorded on the raised record so
+ * audit/UI consumers can tell the two unattended paths apart.
+ */
+export type RediscoveryTrigger = "manual" | "scheduled" | "drift-recovery";
+
+/** Every {@link RediscoveryTrigger}, as a Set for fail-soft read-back validation. */
+const REDISCOVERY_TRIGGERS: ReadonlySet<string> = new Set<RediscoveryTrigger>([
+  "manual",
+  "scheduled",
+  "drift-recovery",
+]);
 
 /**
  * The write the persistence layer should apply to the `openapi_drift_alert` field:
@@ -360,11 +382,12 @@ export interface DriftSignalResolution {
  *     no comparison ran, so `leave`. "Clear on a clean refresh" requires a real,
  *     clean comparison; an absent/dropped one is neither clean nor breaking, and
  *     must not silently dismiss a standing alert (real drift may have gone unseen).
- *   - BREAKING + `scheduled`: `raise` — the unattended path is the one that must
- *     warn the customer before calls fail.
+ *   - BREAKING + an UNATTENDED trigger (`scheduled` / `drift-recovery`): `raise`
+ *     — the unattended paths are the ones that must warn the customer before
+ *     calls fail; the trigger is recorded on the raised record.
  *   - BREAKING + `manual`: `leave` — "Refresh now" shows the inline diff (the admin
  *     is already looking), so it doesn't raise a redundant persisted pill.
- *   - CLEAN (unchanged or additive-only), manual OR scheduled: `clear` — a clean
+ *   - CLEAN (unchanged or additive-only), any trigger: `clear` — a clean
  *     re-discovery is the "all good now" signal that dismisses any standing alert.
  */
 export function resolveDriftAlertWrite(
@@ -378,9 +401,12 @@ export function resolveDriftAlertWrite(
   }
   const assessment = classifyBreakingChanges(diff);
   if (assessment.breaking) {
-    return trigger === "scheduled"
-      ? { assessment, write: { op: "raise", record: buildDriftAlertRecord(diffRecord, assessment, raisedAt) } }
-      : { assessment, write: { op: "leave" } };
+    return trigger === "manual"
+      ? { assessment, write: { op: "leave" } }
+      : {
+          assessment,
+          write: { op: "raise", record: buildDriftAlertRecord(diffRecord, assessment, raisedAt, trigger) },
+        };
   }
   return { assessment, write: { op: "clear" } };
 }
@@ -402,6 +428,8 @@ export interface SpecDriftAlertSummary {
   readonly reasons: ReadonlyArray<BreakingReason>;
   readonly counts: DiffCounts;
   readonly acknowledgedAt: string | null;
+  /** Which trigger raised the signal; omitted for pre-#3315 records (or a drifted value). */
+  readonly trigger?: RediscoveryTrigger;
 }
 
 /**
@@ -483,5 +511,9 @@ export function projectDriftAlert(raw: unknown): SpecDriftAlertSummary | null {
     reasons,
     counts: coerceCounts(r.counts),
     acknowledgedAt: typeof r.acknowledgedAt === "string" ? r.acknowledgedAt : null,
+    // Fail-soft: only a recognized trigger value projects; junk is omitted.
+    ...(typeof r.trigger === "string" && REDISCOVERY_TRIGGERS.has(r.trigger)
+      ? { trigger: r.trigger as RediscoveryTrigger }
+      : {}),
   };
 }

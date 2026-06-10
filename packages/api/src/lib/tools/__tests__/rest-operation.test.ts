@@ -478,3 +478,181 @@ describe("executeRestOperation — multi-datasource routing", () => {
     expect(result.status).toBe("no_datasource");
   });
 });
+
+// ── Query-time spec-drift recovery (#3315) ──────────────────────────────────
+// In `auto-refresh` drift mode an unknown operationId triggers ONE debounced
+// re-probe (injected here via the `driftRecovery` seam) and a single retry when
+// the fresh graph contains the operation. `strict` (the default) never probes.
+describe("executeRestOperation — spec-drift recovery (#3315)", () => {
+  type DriftRecoveryFn = NonNullable<
+    import("../rest-operation").ExecuteRestOperationDeps["driftRecovery"]
+  >;
+
+  /** The twenty graph minus one operation — the "stale cached snapshot" shape. */
+  function graphWithout(opId: string): typeof graph {
+    const operations = new Map(graph.operations);
+    operations.delete(opId);
+    return { ...graph, operations };
+  }
+
+  async function callWithRecovery(
+    input: Record<string, unknown>,
+    ds: RestDatasource,
+    driftRecovery: DriftRecoveryFn,
+  ): Promise<ExecuteRestOperationResult> {
+    const t = createExecuteRestOperationTool({ resolveDatasource: async () => ds, driftRecovery });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ToolCallOptions stub
+    return (await t.execute!(input as any, { toolCallId: "t1", messages: [] } as any)) as ExecuteRestOperationResult;
+  }
+
+  it("strict mode (the default fixture) never attempts recovery", async () => {
+    let recoveryCalls = 0;
+    const result = await callWithRecovery(
+      { operationId: "noSuchOperation" },
+      datasource(), // no specDriftMode → strict
+      async () => {
+        recoveryCalls++;
+        return { kind: "refreshed", graph, operationFound: true };
+      },
+    );
+    expect(result.status).toBe("unknown_operation");
+    if (result.status !== "unknown_operation") return;
+    expect(result.specRefreshed).toBeUndefined();
+    expect(recoveryCalls).toBe(0);
+  });
+
+  it("auto-refresh: recovers the operation from the fresh graph and the retry succeeds", async () => {
+    // The cached graph lacks findManyPeople; the "upstream" (recovery) has it.
+    const stale = datasource({ specDriftMode: "auto-refresh", graph: graphWithout("findManyPeople") });
+    const calls: Array<{ workspaceId: string; installId: string; operationId: string }> = [];
+    const result = await callWithRecovery(
+      { operationId: "findManyPeople" },
+      stale,
+      async (workspaceId, installId, operationId) => {
+        calls.push({ workspaceId, installId, operationId });
+        return { kind: "refreshed", graph, operationFound: true };
+      },
+    );
+    expect(calls).toEqual([{ workspaceId: "default", installId: "twenty", operationId: "findManyPeople" }]);
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.httpStatus).toBe(200);
+    // The retry actually dispatched to the upstream with the original auth.
+    const req = mock.matching("/rest/people").at(-1);
+    expect(req?.headers["authorization"]).toBe("Bearer test-token");
+  });
+
+  it("auto-refresh: still-unknown after a refresh rejects with specRefreshed + the FRESH operation list", async () => {
+    const stale = datasource({ specDriftMode: "auto-refresh", graph: graphWithout("findManyPeople") });
+    const result = await callWithRecovery(
+      { operationId: "trulyGone" },
+      stale,
+      // Refreshed fine, but the asked-for operation is still not in the graph.
+      async () => ({ kind: "refreshed", graph, operationFound: false }),
+    );
+    expect(result.status).toBe("unknown_operation");
+    if (result.status !== "unknown_operation") return;
+    expect(result.specRefreshed).toBe(true);
+    expect(result.message).toContain("re-checked");
+    // The hint reflects the FRESH graph (findManyPeople is back), not the stale one.
+    expect(result.availableOperations).toContain("findManyPeople");
+    expect(mock.requests).toHaveLength(0); // nothing dispatched
+  });
+
+  it("auto-refresh: a cooldown / failed recovery leaves the original rejection standing", async () => {
+    const stale = datasource({ specDriftMode: "auto-refresh", graph: graphWithout("findManyPeople") });
+    for (const outcome of [
+      { kind: "cooldown" } as const,
+      { kind: "install_not_found" } as const,
+      { kind: "not_refreshed", reason: "probe_failed" } as const,
+    ]) {
+      const result = await callWithRecovery({ operationId: "findManyPeople" }, stale, async () => outcome);
+      expect(result.status).toBe("unknown_operation");
+      if (result.status !== "unknown_operation") continue;
+      expect(result.specRefreshed).toBeUndefined();
+      // The stale graph's hint — recovery produced nothing fresher.
+      expect(result.availableOperations).not.toContain("findManyPeople");
+    }
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("auto-refresh: a throwing recovery seam fails closed to the original rejection", async () => {
+    const stale = datasource({ specDriftMode: "auto-refresh", graph: graphWithout("findManyPeople") });
+    const result = await callWithRecovery({ operationId: "findManyPeople" }, stale, async () => {
+      throw new Error("seam blew up");
+    });
+    expect(result.status).toBe("unknown_operation");
+    if (result.status !== "unknown_operation") return;
+    expect(result.specRefreshed).toBeUndefined();
+  });
+
+  it("auto-refresh: a KNOWN operation never touches the recovery seam", async () => {
+    let recoveryCalls = 0;
+    const ds = datasource({ specDriftMode: "auto-refresh" });
+    const result = await callWithRecovery({ operationId: "findManyPeople" }, ds, async () => {
+      recoveryCalls++;
+      return { kind: "cooldown" };
+    });
+    expect(result.status).toBe("ok");
+    expect(recoveryCalls).toBe(0);
+  });
+
+  it("a recovered ALLOWLISTED WRITE is staged for confirmation on the retry — never dispatched", async () => {
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("createOnePerson"),
+      writeAllowlist: new Set(["createOnePerson"]),
+    });
+    const result = await callWithRecovery(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      stale,
+      async () => ({ kind: "refreshed", graph, operationFound: true }),
+    );
+    expect(result.status).toBe("needs_confirmation");
+    if (result.status !== "needs_confirmation") return;
+    expect(result.operationId).toBe("createOnePerson");
+    expect(result.confirm.token.length).toBeGreaterThan(0);
+    // The retry's full safety stack held: the write was staged, never fired.
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("a recovered NON-allowlisted write rejects writes_disabled on the retry — never dispatched", async () => {
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("createOnePerson"),
+      // No write allowlist — default-deny must survive the recovery retry.
+    });
+    const result = await callWithRecovery(
+      { operationId: "createOnePerson", body: { name: { firstName: "Ada" } } },
+      stale,
+      async () => ({ kind: "refreshed", graph, operationFound: true }),
+    );
+    expect(result.status).toBe("writes_disabled");
+    if (result.status !== "writes_disabled") return;
+    expect(result.method).toBe("POST");
+    expect(mock.requests).toHaveLength(0);
+  });
+
+  it("the retry uses the recovery's re-guarded fresh base URL when one is supplied", async () => {
+    // The stale resolve points at a dead port; recovery supplies the live mock
+    // base (as it would after a legitimate servers[0].url move that re-passed
+    // the egress guard) — the retry succeeds only if the fresh base is used.
+    const stale = datasource({
+      specDriftMode: "auto-refresh",
+      graph: graphWithout("findManyPeople"),
+      baseUrl: "http://127.0.0.1:9",
+    });
+    const result = await callWithRecovery(
+      { operationId: "findManyPeople" },
+      stale,
+      async () => ({
+        kind: "refreshed",
+        graph,
+        operationFound: true,
+        baseUrl: mock.restBaseUrl,
+      }),
+    );
+    expect(result.status).toBe("ok");
+    expect(mock.matching("/rest/people").length).toBeGreaterThan(0);
+  });
+});

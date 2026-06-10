@@ -18,6 +18,7 @@
  */
 import type { OperationGraph, ResolvedAuth } from "./types";
 import type { RepresentationMode } from "./representation";
+import type { SpecDriftMode } from "./drift-recovery";
 import type { VendorQuirk } from "./vendor-quirk";
 
 /**
@@ -35,6 +36,46 @@ import type { VendorQuirk } from "./vendor-quirk";
  */
 export function normalizeGroupId(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+function stripTrailingSlash(s: string): string {
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+/**
+ * Resolve the operations base URL the client executes against:
+ *   1. `base_url_override` wins (the dev/staging escape hatch).
+ *   2. else the spec's `servers[0].url`, resolved against the spec URL when
+ *      relative (a spec at `https://x/openapi.json` with `servers: ["/rest"]`
+ *      → `https://x/rest`).
+ *   3. else the spec URL's origin (last-resort fallback).
+ *
+ * Lives here (not in `workspace-datasource.ts`, its original home) so both the
+ * resolver and the #3315 drift-recovery path derive the base URL identically
+ * without an import cycle. Callers MUST still pass the result through
+ * `assertBaseUrlAllowed` — this function derives, it does not authorize.
+ */
+export function resolveBaseUrl(
+  openapiUrl: string,
+  graph: OperationGraph,
+  override: string | undefined,
+): string {
+  if (override && override.length > 0) return stripTrailingSlash(override);
+  const serverUrl = graph.servers[0]?.url;
+  if (serverUrl) {
+    try {
+      return stripTrailingSlash(new URL(serverUrl, openapiUrl).toString());
+    } catch {
+      // intentionally ignored: fall through to the origin fallback below.
+    }
+  }
+  try {
+    return new URL(openapiUrl).origin;
+  } catch {
+    // intentionally ignored: a malformed openapi_url can't be salvaged here;
+    // return it verbatim so the client surfaces a clear transport error.
+    return openapiUrl;
+  }
 }
 
 /**
@@ -105,6 +146,18 @@ export interface RestDatasource {
    * by any escalation signal. See {@link import("./validate-rest-operation").isSideEffectingOperation}.
    */
   readonly readSafePostOperations?: ReadonlySet<string>;
+  /**
+   * How the install handles upstream spec DRIFT at query time (#3315).
+   * `strict` (the default, also when omitted) — an `operationId` absent from
+   * the cached graph is a hard `unknown-operation` reject, exactly the
+   * pre-#3315 behavior. `auto-refresh` — the `executeRestOperation` tool may
+   * trigger ONE debounced, egress-guarded re-probe (`attemptDriftRecovery`)
+   * and retry the call when the fresh graph contains the operation. Resolved
+   * from `workspace_plugins.config.spec_drift_mode` (PATCH-only, like
+   * `spec_refresh_interval`). Optional so hand-built fixtures default to the
+   * safe `strict` posture without naming the field.
+   */
+  readonly specDriftMode?: SpecDriftMode;
   /**
    * Per-install rate-limit override (calls/min) for the per-operation token
    * bucket. Omitted → {@link import("./validate-rest-operation").DEFAULT_RATE_LIMIT_PER_MINUTE}

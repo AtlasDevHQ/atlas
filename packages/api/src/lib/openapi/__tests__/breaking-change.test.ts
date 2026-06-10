@@ -819,6 +819,17 @@ describe("resolveDriftAlertWrite — signal lifecycle decision", () => {
       expect(write.record.acknowledgedAt).toBeNull();
       expect(write.record.breakingCount).toBeGreaterThan(0);
       expect(write.record.reasons.length).toBeGreaterThan(0);
+      // The unattended trigger is recorded on the raised record (#3315).
+      expect(write.record.trigger).toBe("scheduled");
+    }
+  });
+
+  it("RAISES on breaking drift from the DRIFT-RECOVERY path, recording the distinct trigger", () => {
+    const { assessment, write } = resolveDriftAlertWrite(breakingRecord(), "drift-recovery", RAISED_AT);
+    expect(assessment.breaking).toBe(true);
+    expect(write.op).toBe("raise");
+    if (write.op === "raise") {
+      expect(write.record.trigger).toBe("drift-recovery");
     }
   });
 

@@ -147,8 +147,16 @@ function changedDrift(operationsAdded: number): SpecDiffSummary {
 
 const diffRecord: SpecDiffRecord = { previousProbedAt: null, currentProbedAt: NOW_ISO, diff: null };
 
+// Minimal graph stub for the ok-result fixtures — the scheduler never reads it
+// (the `graph` field exists for the #3315 drift-recovery retry path).
+const stubGraph = {
+  operations: new Map(),
+  schemas: new Map(),
+  servers: [],
+} as unknown as import("@atlas/api/lib/openapi/types").OperationGraph;
+
 function okResult(operationCount = 3, drift: SpecDiffSummary | null = null): RediscoveryResult {
-  return { kind: "ok", snapshot: snapshot(operationCount), diffRecord, drift };
+  return { kind: "ok", snapshot: snapshot(operationCount), diffRecord, drift, graph: stubGraph };
 }
 
 /** Recording fakes for the persistence seams. */
@@ -578,7 +586,13 @@ function okResultWithDiff(diff: OperationGraphDiff | null): RediscoveryResult {
     currentProbedAt: NOW_ISO,
     diff,
   };
-  return { kind: "ok", snapshot: snapshot(3), diffRecord: record, drift: changedDrift(diff?.counts.operationsAdded ?? 0) };
+  return {
+    kind: "ok",
+    snapshot: snapshot(3),
+    diffRecord: record,
+    drift: changedDrift(diff?.counts.operationsAdded ?? 0),
+    graph: stubGraph,
+  };
 }
 
 describe("openapi install rediscover — breaking-change drift signal (#2979)", () => {

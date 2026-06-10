@@ -73,18 +73,6 @@ Vocabulary per the skill: module / interface / seam / deep / shallow / locality 
 
 ---
 
-## 6. One shaped result behind three scheduled-delivery renderers — **Worth exploring**
-
-**Files:** `packages/api/src/lib/scheduler/format-email.ts` (103 ln), `format-slack.ts` (36 ln), `format-webhook.ts` (38 ln)
-
-**Problem:** Three delivery formatters each re-derive section ordering and metadata from `(task, result)`; row truncation (`MAX_DATA_ROWS = 50`) exists only in the email copy, so Slack and webhook recipients get unbounded tables — the rule lives in the wrong module.
-
-**Solution:** A shaping module produces one `FormattedResult` (truncation, ordering, metadata decided once); the three renderers become thin adapters to HTML / Block Kit / JSON.
-
-**Wins:** truncation rule stated once; three adapters prove the seam is real; shape testable without rendering.
-
----
-
 ## 7. One module for Conversation-scope state in the web client — **Worth exploring**
 
 **Files:** `packages/web/src/ui/components/chat/env-picker.tsx` (~2,000 effective ln), `packages/web/src/lib/stores/chat-routing-preference-store.ts`, `packages/web/src/ui/hooks/use-conversations.ts` (129–150)

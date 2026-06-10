@@ -1,32 +1,30 @@
 /**
- * Email formatter for scheduled task results.
+ * Email renderer for scheduled task results.
  *
- * Produces inline-styled HTML suitable for email clients (no external CSS).
+ * Produces inline-styled HTML suitable for email clients (no external CSS)
+ * from a pre-shaped {@link FormattedResult} — truncation and metadata are
+ * decided in `shape-result.ts`, layout and escaping here.
  */
 
-import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
-import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
-
-const MAX_DATA_ROWS = 50;
+import type { FormattedResult } from "./shape-result";
 
 export function formatEmailReport(
-  task: ScheduledTask,
-  result: AgentQueryResult,
+  shaped: FormattedResult,
 ): { subject: string; body: string } {
-  const subject = `Atlas Report: ${task.name}`;
+  const subject = `Atlas Report: ${shaped.taskName}`;
 
   const sections: string[] = [];
 
   // Header
   sections.push(`
     <div style="background:#f8f9fa;padding:16px 24px;border-bottom:2px solid #e9ecef;">
-      <h2 style="margin:0;color:#212529;font-size:20px;">${escapeHtml(task.name)}</h2>
-      <p style="margin:4px 0 0;color:#6c757d;font-size:14px;">Question: ${escapeHtml(task.question)}</p>
+      <h2 style="margin:0;color:#212529;font-size:20px;">${escapeHtml(shaped.taskName)}</h2>
+      <p style="margin:4px 0 0;color:#6c757d;font-size:14px;">Question: ${escapeHtml(shaped.question)}</p>
     </div>
   `);
 
   // Answer
-  const answer = result.answer || "No answer generated.";
+  const answer = shaped.answer || "No answer generated.";
   sections.push(`
     <div style="padding:16px 24px;">
       <h3 style="margin:0 0 8px;color:#495057;font-size:16px;">Answer</h3>
@@ -35,17 +33,14 @@ export function formatEmailReport(
   `);
 
   // Data tables
-  for (const dataset of result.data) {
+  for (const dataset of shaped.datasets) {
     if (!dataset.columns.length || !dataset.rows.length) continue;
-
-    const displayRows = dataset.rows.slice(0, MAX_DATA_ROWS);
-    const truncated = dataset.rows.length > MAX_DATA_ROWS;
 
     const headerCells = dataset.columns
       .map((col) => `<th style="padding:8px 12px;text-align:left;border-bottom:2px solid #dee2e6;background:#f8f9fa;font-size:12px;color:#495057;">${escapeHtml(col)}</th>`)
       .join("");
 
-    const bodyRows = displayRows
+    const bodyRows = dataset.rows
       .map((row) => {
         const cells = dataset.columns
           .map((col) => `<td style="padding:6px 12px;border-bottom:1px solid #e9ecef;font-size:13px;color:#212529;">${escapeHtml(String(row[col] ?? ""))}</td>`)
@@ -61,16 +56,16 @@ export function formatEmailReport(
           <tbody>${bodyRows}</tbody>
         </table>
     `;
-    if (truncated) {
-      tableHtml += `<p style="margin:4px 0 0;color:#6c757d;font-size:12px;">Showing first ${MAX_DATA_ROWS} of ${dataset.rows.length} rows</p>`;
+    if (dataset.truncated) {
+      tableHtml += `<p style="margin:4px 0 0;color:#6c757d;font-size:12px;">Showing first ${dataset.rows.length} of ${dataset.totalRows} rows</p>`;
     }
     tableHtml += `</div>`;
     sections.push(tableHtml);
   }
 
   // SQL
-  if (result.sql.length > 0) {
-    const sqlText = result.sql.join("\n\n");
+  if (shaped.sql.length > 0) {
+    const sqlText = shaped.sql.join("\n\n");
     sections.push(`
       <div style="padding:0 24px 16px;">
         <h3 style="margin:0 0 8px;color:#495057;font-size:14px;">SQL</h3>
@@ -82,7 +77,7 @@ export function formatEmailReport(
   // Footer
   sections.push(`
     <div style="border-top:1px solid #e9ecef;padding:12px 24px;color:#adb5bd;font-size:12px;">
-      ${result.steps} steps &middot; ${result.usage.totalTokens.toLocaleString()} tokens &middot; ${new Date().toISOString()}
+      ${shaped.steps} steps &middot; ${shaped.totalTokens.toLocaleString()} tokens &middot; ${shaped.generatedAt}
     </div>
   `);
 

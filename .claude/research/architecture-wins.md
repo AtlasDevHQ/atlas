@@ -2527,3 +2527,29 @@ The admin form is a shared, type-aware `<ConfigSchemaFields>` renderer (extracte
 - **Builds on #3232's seam without churn.** Win #87 introduced `getEntityDirs` as the single layout-traversal point and filed this as the hardening follow-up; this slice turns its lossy `rootScanFailed` boolean into the typed `failedScans` the later group-namespace slices (#3240/#3245) can extend.
 
 **Category:** Security-boundary hardening / fail-closed — a discovery-layer failure that was silently swallowed and then *inverted the partition decision* (widening a connection onto the default group's whitelist) becomes a typed signal threaded into a single resolver that fails closed on it, with the swallowed-error path that picked the wrong boundary deleted, not merely logged.
+
+---
+
+## 89. One shaped result behind the three scheduled-delivery renderers (review 2026-06-09, candidate 6)
+
+**Date:** 2026-06-10
+**Issue:** — (architecture-review 2026-06-09, candidate 6)
+**PR:** #TBD
+
+**Problem:** The three scheduled-delivery formatters (`format-email.ts`, `format-slack.ts`, `format-webhook.ts`) each re-derived metadata (task name/question, steps, tokens, timestamp) from `(task, result)`, and the 50-row table truncation rule lived only in the email copy. The webhook path shipped `result.data` to recipient URLs **unbounded** — a 100k-row agent result became a 100k-row JSON POST. (The review's claim that Slack was also unbounded didn't survive contact: `formatSlackReport` delegates to `formatQueryResponse`, which already caps tables at 20 rows / 3000 chars for Block Kit limits — the live bug was webhook-only.)
+
+**Solution:** `packages/api/src/lib/scheduler/shape-result.ts` owns `shapeResult(task, result) → FormattedResult`: per-dataset truncation at `MAX_DATA_ROWS = 50` with `totalRows`/`truncated` accounting, the raw answer (fallback copy stays presentational), and one `generatedAt` timestamp shared by all channels. The three renderers become thin adapters (HTML / Block Kit / JSON) consuming only the shaped result; `delivery.ts` shapes once per delivery and threads `FormattedResult` through the per-recipient Effects; `preview.ts` rides the same seam. The shape is tested directly (truncation boundary at 50/51, per-dataset independence, order preservation, metadata, no source mutation) without rendering.
+
+**Scope correction vs. the review card:** "section ordering decided once" was dropped — email orders data-before-SQL while Slack orders SQL-before-data, and both wire formats had to stay byte-compatible, so layout remains a renderer concern. The module owns the *shape* (what data each channel may show), not the layout. It still passes the deletion test: deleting it would re-scatter the truncation rule and its accounting across three renderers, one of which had already lost it.
+
+**Behavior changes (deliberate, called out in the PR):**
+- Webhook datasets are now capped at 50 rows, with additive `totalRows`/`truncated` fields per dataset so consumers can detect the cap instead of silently losing rows.
+- Slack's "Showing first 20 of N rows" note now counts N against the shaped 50-row dataset rather than the raw result (display was already capped at 20 rows, so no rows readers saw are lost).
+- Email and Slack rendered output is otherwise byte-identical; the email truncation note text is unchanged.
+
+**Impact:**
+- The webhook unbounded-payload bug is fixed at the seam where the rule belongs, not patched in a third copy.
+- A fourth delivery channel gets truncation, metadata, and the shared timestamp for free by consuming `FormattedResult`.
+- Truncation semantics have one canonical test file (`shape-result.test.ts`); the renderer tests shrink to layout concerns.
+
+**Category:** Deep module extraction — three renderers that each re-derived cross-channel policy from raw inputs now consume one shaped result, moving a misplaced (and once-missing) safety rule to the single module that owns it.

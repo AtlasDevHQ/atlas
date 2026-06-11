@@ -731,6 +731,46 @@ describe("settings module", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // saasVisible / saasWritable metadata (#3376)
+  // ---------------------------------------------------------------------------
+
+  describe("saasVisible / saasWritable metadata (#3376)", () => {
+    // Pins the split-axis flags on the real registry: the SaaS
+    // /admin/sandbox page saves these keys through the generic
+    // PUT /admin/settings/{key} route, which rejects writes when the
+    // effective saasWritable (saasWritable ?? saasVisible ?? true) is
+    // false. If either flag drifts, the sandbox page's save path on
+    // SaaS breaks (#3375 regression vector).
+    it("sandbox keys are hidden from the generic page but writable on SaaS", () => {
+      for (const key of ["ATLAS_SANDBOX_BACKEND", "ATLAS_SANDBOX_URL"]) {
+        const def = getSettingDefinition(key);
+        expect(def).toBeDefined();
+        expect(def!.saasVisible).toBe(false);
+        expect(def!.saasWritable).toBe(true);
+      }
+    });
+
+    it("ATLAS_DEMO_INDUSTRY inherits un-writability from saasVisible: false", () => {
+      const def = getSettingDefinition("ATLAS_DEMO_INDUSTRY");
+      expect(def).toBeDefined();
+      expect(def!.saasVisible).toBe(false);
+      // No explicit saasWritable — effective writability inherits the
+      // hidden flag, so SaaS workspace admins cannot write it.
+      expect(def!.saasWritable).toBeUndefined();
+    });
+
+    it("only dedicated-page keys split the axes (saasVisible: false + saasWritable: true)", () => {
+      const splitKeys = getSettingsRegistry()
+        .filter((s) => s.saasVisible === false && s.saasWritable === true)
+        .map((s) => s.key)
+        .toSorted();
+      // Append here ONLY when a dedicated SaaS admin page is the writer
+      // for the key (parity contract Rule 4, enterprise-gating.md).
+      expect(splitKeys).toEqual(["ATLAS_SANDBOX_BACKEND", "ATLAS_SANDBOX_URL"]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // getSettingDefinition
   // ---------------------------------------------------------------------------
 

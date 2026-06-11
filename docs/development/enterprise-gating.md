@@ -82,7 +82,12 @@ A stored value must mean the same thing to every reader and every writer, in bot
 
 ### Rule 4 — `saasVisible` is a read+write contract, not a display hint
 
-If a setting is hidden from SaaS workspace admins on `GET /admin/settings`, the PUT/DELETE path must enforce the same boundary — an invisible-but-writable setting is undebuggable (written once, no UI to see or clear it). A dedicated admin page that needs to write a flagged key on SaaS (today: the sandbox page's `ATLAS_SANDBOX_BACKEND`) means the flag value is wrong or the flag semantics need a second axis — decide explicitly, don't rely on the gate's absence (#3376 tracks the decision).
+If a setting is hidden from SaaS workspace admins on `GET /admin/settings`, the PUT/DELETE path must enforce the same boundary — an invisible-but-writable setting is undebuggable (written once, no UI to see or clear it). The decided semantics (#3376) are two axes on `SettingDefinition`:
+
+- **`saasVisible`** is the read/display axis: it controls whether the key appears on the generic `GET /admin/settings` listing for SaaS workspace admins. Defaults to `true`.
+- **`saasWritable`** is the write axis: PUT and DELETE on `/admin/settings/{key}` reject (403) for SaaS workspace admins when the *effective* value is `false`. When unset it **defaults to the `saasVisible` value**, so for most keys visibility and writability remain a single decision and hidden ⇒ un-writable holds automatically.
+
+A key managed by a dedicated admin page on SaaS (today: `ATLAS_SANDBOX_BACKEND` and `ATLAS_SANDBOX_URL` via `/admin/sandbox`) uses the split — `saasVisible: false, saasWritable: true` — so it stays off the generic settings page but its own surface keeps saving through the same PUT route. Platform admins and self-hosted deployments are never restricted by either flag, and both flags are registry-internal (stripped from the GET response).
 
 ### Rule 5 — docs state mode scope explicitly
 
@@ -95,5 +100,5 @@ For any PR touching an admin surface, a settings key, an install path, or a `use
 1. Name the runtime reader of every new write, per mode (Rule 1).
 2. If the UI hides/shows something by mode, point to the API gate that matches it (Rule 2).
 3. If a setting's value set changed, confirm every reader and writer share the vocabulary (Rule 3).
-4. If a setting is `saasVisible: false`, confirm the write path enforces it (Rule 4).
+4. If a setting is `saasVisible: false`, decide its effective `saasWritable` explicitly — omit it to inherit hidden ⇒ un-writable, or set `saasWritable: true` only when a dedicated page is the writer (Rule 4).
 5. If mode behavior changed, the docs say which mode (Rule 5).

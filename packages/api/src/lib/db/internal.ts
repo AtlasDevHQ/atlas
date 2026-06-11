@@ -1151,11 +1151,31 @@ export function insertLearnedPattern(pattern: {
 }
 
 /**
- * Parse the auto-approve threshold from env. Returns a value > 1 (disabled) if
- * not set or invalid. Single source of truth for the threshold logic.
+ * Lazily resolve `getSetting` from the settings module.
+ *
+ * settings.ts statically imports db/internal.ts (hasInternalDB /
+ * internalQuery), so a static import here would create a module cycle —
+ * same lazy-require pattern settings.ts itself uses for config/logger.
  */
-export function getAutoApproveThreshold(): number {
-  const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
+function requireGetSetting(): (key: string, orgId?: string) => string | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency (settings.ts imports db/internal.ts)
+  const { getSetting } = require("@atlas/api/lib/settings") as {
+    getSetting: (key: string, orgId?: string) => string | undefined;
+  };
+  return getSetting;
+}
+
+/**
+ * Parse the auto-approve threshold. Returns a value > 1 (disabled) if not
+ * set or invalid. Single source of truth for the threshold logic.
+ *
+ * Workspace-scoped (#3392): resolved via getSetting(key, orgId) so a
+ * per-workspace DB override written from the admin settings page wins
+ * over the platform override / env var / default.
+ */
+export function getAutoApproveThreshold(orgId?: string): number {
+  const getSetting = requireGetSetting();
+  const raw = getSetting("ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD", orgId);
   if (!raw) return 2; // Disabled by default
   const parsed = parseFloat(raw);
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
@@ -1177,9 +1197,13 @@ const VALID_AMENDMENT_TYPES: ReadonlySet<string> = new Set([
  * Parse the comma-separated list of amendment types eligible for auto-approval.
  * Defaults to `update_description,add_dimension` when `ATLAS_EXPERT_AUTO_APPROVE_TYPES` is not set.
  * Unrecognized type names are logged and ignored.
+ *
+ * Workspace-scoped (#3392): resolved via getSetting(key, orgId) — see
+ * getAutoApproveThreshold.
  */
-export function getAutoApproveTypes(): Set<string> {
-  const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_TYPES ?? DEFAULT_AUTO_APPROVE_TYPES;
+export function getAutoApproveTypes(orgId?: string): Set<string> {
+  const getSetting = requireGetSetting();
+  const raw = getSetting("ATLAS_EXPERT_AUTO_APPROVE_TYPES", orgId) ?? DEFAULT_AUTO_APPROVE_TYPES;
   const tokens = raw.split(",").map((t) => t.trim()).filter(Boolean);
   const result = new Set<string>();
   for (const t of tokens) {
@@ -1213,8 +1237,12 @@ export async function insertSemanticAmendment(amendment: {
    */
   connectionGroupId?: string | null;
 }): Promise<{ id: string; status: "approved" | "pending" }> {
-  const threshold = getAutoApproveThreshold();
-  const allowedTypes = getAutoApproveTypes();
+  // #3392 — thread the amendment's org through so a per-workspace
+  // auto-approve override (admin settings page) governs its own proposals.
+  // null orgId (self-hosted / global scope) resolves at the platform tier.
+  const settingsOrgId = amendment.orgId ?? undefined;
+  const threshold = getAutoApproveThreshold(settingsOrgId);
+  const allowedTypes = getAutoApproveTypes(settingsOrgId);
   const rawType = amendment.amendmentPayload.amendmentType;
   const amendmentType = typeof rawType === "string" ? rawType : undefined;
 

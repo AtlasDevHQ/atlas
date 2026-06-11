@@ -273,14 +273,14 @@ The expert agent can run on a schedule, automatically analyzing your semantic la
 
 ### Enabling the Scheduler
 
-Set these environment variables or configure through the admin Settings page under **Intelligence**:
+Set these environment variables or configure through the admin Settings pages under **Intelligence**. The two scheduler settings are platform-wide — the scheduler is one process-global background job, so they live on **Platform Settings** and changes require a restart. The two auto-approve settings are workspace-scoped — they live on **Workspace Settings**, are read per proposal, and a per-workspace override takes effect without a restart.
 
-| Setting | Env var | Default | Description |
-|---------|---------|---------|-------------|
-| Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic analysis |
-| Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between runs |
-| Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value and an eligible type are auto-applied |
-| Auto-Approve Types | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
+| Setting | Env var | Scope | Default | Description |
+|---------|---------|-------|---------|-------------|
+| Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | Platform (restart) | `false` | Enable periodic analysis |
+| Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | Platform (restart) | `24` | Hours between runs |
+| Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | Workspace | (disabled) | Proposals with confidence ≥ this value and an eligible type are auto-applied |
+| Auto-Approve Types | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | Workspace | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 
 ### Cached Profiles
 

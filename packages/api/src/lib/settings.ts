@@ -385,6 +385,15 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   },
 
   // Semantic Expert
+  //
+  // Scope split (#3392): the scheduler pair is PLATFORM-scoped — the expert
+  // scheduler is a single process-global fiber forked once at boot
+  // (`makeSchedulerLive` in lib/effect/layers.ts); there is no per-workspace
+  // tick, so a workspace override would have nothing to apply to. Both are
+  // consumed once at boot, hence `requiresRestart`. The auto-approve pair
+  // below stays WORKSPACE-scoped: it is read per proposal in
+  // `insertSemanticAmendment` (lib/db/internal.ts), which has the
+  // amendment's orgId in scope.
   {
     key: "ATLAS_EXPERT_SCHEDULER_ENABLED",
     section: "Intelligence",
@@ -393,7 +402,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "boolean",
     default: "false",
     envVar: "ATLAS_EXPERT_SCHEDULER_ENABLED",
-    scope: "workspace",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
@@ -403,7 +414,9 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "24",
     envVar: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
-    scope: "workspace",
+    requiresRestart: true,
+    scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",

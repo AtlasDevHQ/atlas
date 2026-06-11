@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 
 const log = createLogger("semantic-expert-scheduler");
 
@@ -23,20 +24,29 @@ export interface ExpertTickResult {
 /**
  * Check whether the expert scheduler is enabled.
  *
- * Reads from the env var — the settings system wraps this with
- * per-workspace overrides at the layer level.
+ * Platform-scoped (#3392): the scheduler is a single process-global fiber
+ * forked once at boot by `makeSchedulerLive` (lib/effect/layers.ts) — there
+ * is no per-workspace tick, so this key takes no workspace override.
+ * Resolved via getSetting() so a platform-level DB override (admin
+ * settings page) wins over the env var (platform DB override > env >
+ * default). Consumed once at boot — changes require a restart
+ * (`requiresRestart` in the registry); the scheduler layer sequences
+ * after `loadSettings()` so the DB override is visible here.
  */
 export function isExpertSchedulerEnabled(): boolean {
-  const v = process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
+  const v = getSetting("ATLAS_EXPERT_SCHEDULER_ENABLED");
   return v === "true" || v === "1";
 }
 
 /**
  * Get the scheduler interval in milliseconds.
- * Reads ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS, defaults to 24.
+ *
+ * Resolves ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS through getSetting()
+ * (platform DB override > env > registry default of 24). Platform-scoped
+ * and boot-consumed — see isExpertSchedulerEnabled.
  */
 export function getExpertSchedulerIntervalMs(): number {
-  const raw = process.env.ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS;
+  const raw = getSetting("ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS");
   if (!raw) return DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS;
   const hours = parseFloat(raw);
   if (!Number.isFinite(hours) || hours <= 0) return DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS;

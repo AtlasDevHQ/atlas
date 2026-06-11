@@ -34,6 +34,7 @@ import {
   maskSecretFields,
   parseConfigSchema,
 } from "@atlas/api/lib/plugins/secrets";
+import { hasFormInstallHandler } from "@atlas/api/lib/integrations/install";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -124,6 +125,23 @@ const CatalogEntryResponseSchema = z.object({
    * org" + "instance URL" detail rows without a second round-trip.
    */
   installConfig: z.record(z.string(), z.unknown()).nullable(),
+  /**
+   * Whether this row can be installed through the schema-driven
+   * form-install (`POST /:platform/install-form`) — i.e. its
+   * `installModel` is `form` AND a form-install handler is actually
+   * registered for the slug ({@link hasFormInstallHandler}, the same
+   * registry the install route's dispatch consults). Emitted ONLY on
+   * the `?pillar=datasource` listing (#3387); the default (no-pillar)
+   * response stays byte-identical and omits the key entirely.
+   *
+   * The Add-datasource picker derives its form-install tiles from this
+   * flag instead of a hardcoded slug list, so a catalog row without a
+   * registered handler (postgres/mysql — native URL-form path;
+   * demo-postgres — auto-installed; duckdb — deliberately handler-less,
+   * `atlas.config.ts`-only) can never render a submittable tile.
+   * Derivation is deploy-mode agnostic — no `deployMode` branch.
+   */
+  formInstallable: z.boolean().optional(),
 });
 
 const CatalogResponseSchema = z.object({
@@ -254,6 +272,18 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
         pillar: row.pillar,
         implementationStatus: row.implementationStatus,
         installConfig,
+        // `formInstallable` (#3387): pillar listing only — the default
+        // branch must stay byte-identical (pinned by the exact-body test),
+        // so the key is omitted entirely there, not set to false. Derived
+        // from the live form-handler registry (the same source the
+        // /install-form dispatch consults), never from a parallel slug
+        // list, and never from deploy mode.
+        ...(pillar === undefined
+          ? {}
+          : {
+              formInstallable:
+                row.installModel === "form" && hasFormInstallHandler(row.slug),
+            }),
       };
     });
 

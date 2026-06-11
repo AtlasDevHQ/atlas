@@ -205,9 +205,11 @@ const mockGetInstallHandler = mock((catalogRow: { slug: string; install_model: s
 // "mock all exports" rule.
 mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mockGetInstallHandler,
+  hasFormInstallHandler: mock(() => false),
   registerOAuthHandler: mock(() => {}),
   registerFormHandler: mock(() => {}),
   registerStaticBotHandler: mock(() => {}),
+  registerOAuthDatasourceHandler: mock(() => {}),
   _resetInstallHandlerRegistries: mock(() => {}),
 }));
 

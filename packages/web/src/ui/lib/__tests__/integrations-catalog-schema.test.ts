@@ -54,4 +54,43 @@ describe("IntegrationsCatalogResponseSchema — install models (#3377/#3384)", (
       expect(parsed.data.catalog.length).toBe(2);
     }
   });
+
+  // ── formInstallable (#3387) ────────────────────────────────────────────
+  // The `?pillar=datasource` listing carries a server-derived per-row
+  // `formInstallable`; the default listing omits it. Both shapes must
+  // parse, and the flag must survive the access-union transform so the
+  // Add picker can read it.
+  it("passes formInstallable through the transform when present", () => {
+    const parsed = IntegrationsCatalogResponseSchema.safeParse({
+      catalog: [
+        entry({
+          id: "catalog:clickhouse",
+          slug: "clickhouse",
+          installModel: "form",
+          formInstallable: true,
+        }),
+        entry({
+          id: "catalog:duckdb",
+          slug: "duckdb",
+          installModel: "form",
+          formInstallable: false,
+        }),
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.catalog[0]?.formInstallable).toBe(true);
+      expect(parsed.data.catalog[1]?.formInstallable).toBe(false);
+    }
+  });
+
+  it("parses rows without formInstallable (default listing / older API)", () => {
+    const parsed = IntegrationsCatalogResponseSchema.safeParse({
+      catalog: [entry({ installModel: "oauth" })],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.catalog[0]?.formInstallable).toBeUndefined();
+    }
+  });
 });

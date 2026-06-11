@@ -15,6 +15,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 import { validateManaged } from "../managed";
+import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 import { _setAuthInstance } from "../server";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock return type is intentionally untyped to simulate Better Auth session responses
@@ -368,6 +369,93 @@ describe("validateManaged()", () => {
       if (!result.authenticated) {
         expect(result.error).toBe("Session expired (idle timeout)");
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // #3406 — workspace-tier resolution of the session-timeout keys
+  //
+  // ATLAS_SESSION_IDLE/ABSOLUTE_TIMEOUT are workspace-scoped: an org-scoped
+  // override row must govern sessions whose activeOrganizationId is that
+  // org, and must not leak to sessions in other workspaces. setSetting
+  // works through this file's db/internal mock (hasInternalDB flipped on)
+  // and writes the real in-process settings cache that getSetting reads.
+  // -------------------------------------------------------------------------
+
+  describe("session timeout workspace overrides (#3406)", () => {
+    beforeEach(() => {
+      mockHasInternalDB = true;
+      _resetSettingsCache();
+    });
+
+    afterEach(() => {
+      mockHasInternalDB = false;
+      _resetSettingsCache();
+      delete process.env.ATLAS_SESSION_IDLE_TIMEOUT;
+    });
+
+    function orgSession(orgId: string, updatedAt: string) {
+      const now = new Date().toISOString();
+      return {
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: {
+          id: "sess_abc",
+          userId: "usr_123",
+          activeOrganizationId: orgId,
+          updatedAt,
+          createdAt: now,
+        },
+      };
+    }
+
+    it("rejects a session idle past its workspace's override", async () => {
+      await setSetting("ATLAS_SESSION_IDLE_TIMEOUT", "60", "test", "org-a");
+      mockGetSession.mockResolvedValueOnce(
+        orgSession("org-a", new Date(Date.now() - 120_000).toISOString()),
+      );
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.error).toBe("Session expired (idle timeout)");
+      }
+    });
+
+    it("another workspace's override does not govern this session", async () => {
+      await setSetting("ATLAS_SESSION_IDLE_TIMEOUT", "60", "test", "org-other");
+      mockGetSession.mockResolvedValueOnce(
+        orgSession("org-a", new Date(Date.now() - 120_000).toISOString()),
+      );
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(true);
+    });
+
+    it("rejects a session past its workspace's absolute timeout override", async () => {
+      await setSetting("ATLAS_SESSION_ABSOLUTE_TIMEOUT", "60", "test", "org-a");
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: {
+          id: "sess_abc",
+          userId: "usr_123",
+          activeOrganizationId: "org-a",
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date(Date.now() - 120_000).toISOString(),
+        },
+      });
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.error).toBe("Session expired");
+      }
+    });
+
+    it("workspace override wins over a looser env value", async () => {
+      process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
+      await setSetting("ATLAS_SESSION_IDLE_TIMEOUT", "60", "test", "org-a");
+      mockGetSession.mockResolvedValueOnce(
+        orgSession("org-a", new Date(Date.now() - 120_000).toISOString()),
+      );
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
     });
   });
 

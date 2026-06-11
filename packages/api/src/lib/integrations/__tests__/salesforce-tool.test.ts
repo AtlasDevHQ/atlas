@@ -410,6 +410,42 @@ describe("querySalesforce — ATLAS_ROW_LIMIT lazy resolution (#3400)", () => {
     expect(calledSoql).toMatch(/LIMIT 5$/);
   });
 
+  it("honors a workspace-scoped override for the tool's workspace (#3406)", async () => {
+    enableInternalDB();
+    // Platform row says 50; the tool's workspace overrides to 3 — the
+    // workspace tier must win for the workspace the SOQL runs in.
+    await setSetting("ATLAS_ROW_LIMIT", "50", "admin-test");
+    await setSetting("ATLAS_ROW_LIMIT", "3", "admin-test", WSID);
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "workspace override honored",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 3$/);
+  });
+
+  it("ignores another workspace's override — falls through to the platform row (#3406)", async () => {
+    enableInternalDB();
+    await setSetting("ATLAS_ROW_LIMIT", "50", "admin-test");
+    await setSetting("ATLAS_ROW_LIMIT", "3", "admin-test", "ws-other");
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "foreign workspace override ignored",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 50$/);
+  });
+
   it("computes `truncated` against the DB override, not an import-time value", async () => {
     enableInternalDB();
     await setSetting("ATLAS_ROW_LIMIT", "1", "admin-test");
@@ -526,6 +562,22 @@ describe("querySalesforce — ATLAS_QUERY_TIMEOUT lazy resolution (#3402)", () =
 
     expect(result.status).toBe("ok");
     expect(instance.query.mock.calls[0]?.[1]).toBe(5000);
+  });
+
+  it("honors a workspace-scoped override for the tool's workspace (#3406)", async () => {
+    enableInternalDB();
+    await setSetting("ATLAS_QUERY_TIMEOUT", "50000", "admin-test");
+    await setSetting("ATLAS_QUERY_TIMEOUT", "4000", "admin-test", WSID);
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "workspace timeout override honored",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(instance.query.mock.calls[0]?.[1]).toBe(4000);
   });
 
   it("falls back to the env var when no DB override exists", async () => {

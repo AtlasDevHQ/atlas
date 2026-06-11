@@ -111,11 +111,11 @@ describe("runtime guards — validator-layer auto-LIMIT", () => {
     expect(sqlSrc).toMatch(/if \(!customValidator && !hasLimitClause\(querySql, \{ backslashEscapes: dbType === "mysql" \}\)\) \{\s*querySql = appendRowLimit\(querySql, rowLimit\);\s*\}/);
   });
 
-  it("reads row limit from settings cache (hot-reload path) with default 1000", () => {
-    expect(sqlSrc).toContain('getSetting("ATLAS_ROW_LIMIT") ?? "1000"');
+  it("reads row limit from settings cache (hot-reload path, org-threaded #3406) with default 1000", () => {
+    expect(sqlSrc).toContain('getSetting("ATLAS_ROW_LIMIT", orgId) ?? "1000"');
   });
 
-  it("reads query timeout from settings cache with default 30000ms", () => {
-    expect(sqlSrc).toContain('getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000"');
+  it("reads query timeout from settings cache (org-threaded #3406) with default 30000ms", () => {
+    expect(sqlSrc).toContain('getSetting("ATLAS_QUERY_TIMEOUT", orgId) ?? "30000"');
   });
 });

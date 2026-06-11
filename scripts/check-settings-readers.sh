@@ -59,6 +59,10 @@
 #     a second non-compliant reader of an already-compliant key (e.g. an
 #     env-frozen module-level read alongside a getSetting reader, #3400) is
 #     invisible to this check.
+#   - reader presence, not org threading: a workspace-scoped key whose
+#     readers call getSetting without the call site's orgId (skipping the
+#     workspace tier, #3406) passes this check. Org threading is review
+#     discipline — see parity Rule 1 in docs/development/enterprise-gating.md.
 
 set -euo pipefail
 

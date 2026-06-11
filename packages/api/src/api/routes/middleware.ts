@@ -129,7 +129,7 @@ async function rateLimitAndIPCheck(
 ): Promise<{ body: Record<string, unknown>; status: number; headers?: Record<string, string> } | null> {
   const ip = getClientIP(req);
   const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-  const rateCheck = checkRateLimit(rateLimitKey, { bucket });
+  const rateCheck = checkRateLimit(rateLimitKey, { bucket, orgId: authResult.user?.activeOrganizationId });
   if (!rateCheck.allowed) {
     const retryAfterSeconds = Math.ceil((rateCheck.retryAfterMs ?? 60000) / 1000);
     return {

@@ -2,9 +2,11 @@
  * Unit tests for the shared delivery shaping module — truncation,
  * metadata, and dataset ordering, asserted without rendering.
  */
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterEach } from "bun:test";
 import { shapeResult, DEFAULT_DELIVERY_MAX_ROWS } from "../shape-result";
 import { makeTask, makeResult } from "./fixtures";
+import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
+import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 
 function makeRows(count: number): Record<string, unknown>[] {
   return Array.from({ length: count }, (_, i) => ({ id: i }));
@@ -101,6 +103,53 @@ describe("shapeResult", () => {
     const rows = makeRows(100);
     shapeResult(makeTask(), makeResult({ data: [{ columns: ["id"], rows }] }));
     expect(rows).toHaveLength(100);
+  });
+
+  describe("workspace-scoped ATLAS_DELIVERY_MAX_ROWS override (#3406)", () => {
+    const origDbUrl = process.env.DATABASE_URL;
+    const mockPool: InternalPool = {
+      query: async () => ({ rows: [] }),
+      async connect() {
+        return { query: async () => ({ rows: [] }), release() {} };
+      },
+      end: async () => {},
+      on: () => {},
+    };
+
+    afterEach(() => {
+      if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
+      else delete process.env.DATABASE_URL;
+      _resetPool(null);
+      _resetSettingsCache();
+    });
+
+    function enableInternalDB() {
+      process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+      _resetPool(mockPool);
+      _resetSettingsCache();
+    }
+
+    it("honors the task's workspace override", async () => {
+      enableInternalDB();
+      await setSetting("ATLAS_DELIVERY_MAX_ROWS", "5", "test", "org-7");
+      const shaped = shapeResult(
+        makeTask({ orgId: "org-7" }),
+        makeResult({ data: [{ columns: ["id"], rows: makeRows(20) }] }),
+      );
+      expect(shaped.datasets[0]!.rows).toHaveLength(5);
+      expect(shaped.datasets[0]!.truncated).toBe(true);
+    });
+
+    it("another workspace's override does not apply to an org-less task", async () => {
+      enableInternalDB();
+      await setSetting("ATLAS_DELIVERY_MAX_ROWS", "5", "test", "org-7");
+      const shaped = shapeResult(
+        makeTask(),
+        makeResult({ data: [{ columns: ["id"], rows: makeRows(20) }] }),
+      );
+      expect(shaped.datasets[0]!.rows).toHaveLength(20);
+      expect(shaped.datasets[0]!.truncated).toBe(false);
+    });
   });
 
   it("respects an ATLAS_DELIVERY_MAX_ROWS override", () => {

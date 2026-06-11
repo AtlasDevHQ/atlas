@@ -38,15 +38,19 @@ let lastWarnedRpmValue: string | undefined;
 let lastWarnedChatRpmValue: string | undefined;
 let lastWarnedAdminRpmValue: string | undefined;
 
-function getRpmLimit(): number {
-  // Precedence: platform DB override > env var > deploy-env profile default.
-  // `getSetting` is called WITHOUT an orgId here, so only a platform-level DB
-  // override (Tier 2) is consulted — never a workspace-level one — and it
-  // returns the env var (Tier 3) when no DB override is set. It yields
-  // `undefined` only when neither is set, at which point the env-profile
-  // default fills the gap (`resolveRateLimitRpm` → `undefined` for the
-  // production/development profiles, so self-hosted stays disabled-by-default).
-  const raw = getSetting("ATLAS_RATE_LIMIT_RPM") ?? resolveRateLimitRpm();
+function getRpmLimit(orgId?: string): number {
+  // Precedence: workspace DB override > platform DB override > env var >
+  // deploy-env profile default. The key is workspace-scoped, so authed
+  // callers thread their org (#3406) and a per-workspace override (incl.
+  // `0` = disabled, which also disables that workspace's sub-buckets)
+  // applies; pre-auth callers pass no orgId and resolve the platform tier.
+  // On SaaS the key is SAAS_IMMUTABLE so no DB override of either tier can
+  // exist — the boot guard's raw env read is unaffected. getSetting yields
+  // `undefined` only when no override and no env var are set, at which
+  // point the env-profile default fills the gap (`resolveRateLimitRpm` →
+  // `undefined` for production/development, so self-hosted stays
+  // disabled-by-default).
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM", orgId) ?? resolveRateLimitRpm();
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
@@ -80,13 +84,15 @@ function getRpmLimit(): number {
  * default bucket); when the global limit is disabled all sub-buckets are
  * also disabled regardless of override.
  */
-function getRpmLimitForBucket(bucket: RateLimitBucket): number {
-  const baseLimit = getRpmLimit();
+function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
+  const baseLimit = getRpmLimit(orgId);
   if (bucket === "default") return baseLimit;
   if (baseLimit === 0) return 0;
 
   if (bucket === "chat") {
-    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT");
+    // orgId threads the workspace tier of the workspace-scoped sub-bucket
+    // keys (#3406). Pre-auth callers have no org — platform/env resolution.
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT", orgId);
     if (raw === undefined || raw === "") {
       // Default: cap at 1/4 of the global RPM, with a floor of 5/min so a
       // very low ATLAS_RATE_LIMIT_RPM doesn't push the chat ceiling to 0.
@@ -97,7 +103,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
       if (raw !== lastWarnedChatRpmValue) {
         log.warn(
           { value: raw },
-          "Invalid ATLAS_RATE_LIMIT_RPM_CHAT; falling back to derived default max(5, RPM/4)",
+          "ATLAS_RATE_LIMIT_RPM_CHAT must be positive (set ATLAS_RATE_LIMIT_RPM=0 to disable rate limiting entirely); falling back to derived default max(5, RPM/4)",
         );
         lastWarnedChatRpmValue = raw;
       }
@@ -107,7 +113,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
   }
 
   if (bucket === "admin") {
-    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN");
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN", orgId);
     if (raw === undefined || raw === "") {
       // Default: at least 60/min — one request per second — so interactive
       // admin forms aren't throttled at a base RPM tuned for public traffic.
@@ -118,7 +124,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
       if (raw !== lastWarnedAdminRpmValue) {
         log.warn(
           { value: raw },
-          "Invalid ATLAS_RATE_LIMIT_RPM_ADMIN; falling back to derived default max(60, RPM)",
+          "ATLAS_RATE_LIMIT_RPM_ADMIN must be positive (set ATLAS_RATE_LIMIT_RPM=0 to disable rate limiting entirely); falling back to derived default max(60, RPM)",
         );
         lastWarnedAdminRpmValue = raw;
       }
@@ -196,13 +202,13 @@ export function getClientIP(req: Request): string | null {
  */
 export function checkRateLimit(
   key: string,
-  options?: { bucket?: RateLimitBucket },
+  options?: { bucket?: RateLimitBucket; orgId?: string },
 ): {
   allowed: boolean;
   retryAfterMs?: number;
 } {
   const bucket = options?.bucket ?? "default";
-  const limit = getRpmLimitForBucket(bucket);
+  const limit = getRpmLimitForBucket(bucket, options?.orgId);
   if (limit === 0) return { allowed: true };
 
   const bucketedKey = BUCKET_PREFIX[bucket] + key;

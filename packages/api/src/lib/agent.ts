@@ -65,13 +65,19 @@ const MAX_MAX_STEPS = 100;
 let lastWarnedMaxSteps: string | undefined;
 
 /**
- * Read agent max steps from settings cache (DB override > env var > default).
- * Exported so the canonical-eval `--mcp-llm` mode (#2119) can clamp its
- * LLM-driven dispatch loop to the same operator-controlled budget the
- * production agent loop honours.
+ * Read agent max steps from settings cache (workspace DB override >
+ * platform DB override > env var > default). Exported so the canonical-eval
+ * `--mcp-llm` mode (#2119) can clamp its LLM-driven dispatch loop to the
+ * same operator-controlled budget the production agent loop honours.
+ *
+ * `orgId` threads the workspace tier (#3406); when omitted it falls back to
+ * the request context's active organization, so in-request callers resolve
+ * the workspace override automatically and out-of-request callers (the
+ * canonical eval) keep the platform/env resolution.
  */
-export function getAgentMaxSteps(): number {
-  const raw = getSetting("ATLAS_AGENT_MAX_STEPS") ?? String(DEFAULT_MAX_STEPS);
+export function getAgentMaxSteps(orgId?: string): number {
+  const effectiveOrgId = orgId ?? getRequestContext()?.user?.activeOrganizationId;
+  const raw = getSetting("ATLAS_AGENT_MAX_STEPS", effectiveOrgId) ?? String(DEFAULT_MAX_STEPS);
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < MIN_MAX_STEPS || n > MAX_MAX_STEPS) {
     if (raw !== lastWarnedMaxSteps) {

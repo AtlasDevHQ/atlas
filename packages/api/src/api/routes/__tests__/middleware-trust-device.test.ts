@@ -34,13 +34,13 @@ let authUser: typeof adminUser | typeof platformUser = adminUser;
 // Populated by every middleware run; `beforeEach` resets it.
 const checkRateLimitCalls: Array<{
   key: string;
-  options?: { bucket?: string };
+  options?: { bucket?: string; orgId?: string };
 }> = [];
 
 mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: () =>
     Promise.resolve({ authenticated: true, mode: "managed", user: authUser }),
-  checkRateLimit: (key: string, options?: { bucket?: string }) => {
+  checkRateLimit: (key: string, options?: { bucket?: string; orgId?: string }) => {
     checkRateLimitCalls.push({ key, options });
     return { allowed: true };
   },
@@ -311,7 +311,9 @@ describe("auth middleware → checkRateLimit bucket routing (#2485, F-74)", () =
     await adminAuth(c as never, async () => {});
 
     expect(checkRateLimitCalls.length).toBe(1);
-    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin" });
+    // orgId rides along since #3406 so the workspace tier of the
+    // rate-limit sub-bucket keys resolves for the authed org.
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin", orgId: "org-1" });
   });
 
   it("platformAdminAuth debits the admin bucket", async () => {
@@ -321,7 +323,7 @@ describe("auth middleware → checkRateLimit bucket routing (#2485, F-74)", () =
     await platformAdminAuth(c as never, async () => {});
 
     expect(checkRateLimitCalls.length).toBe(1);
-    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin" });
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "admin", orgId: "org-1" });
   });
 
   it("standardAuth debits the default bucket (no options arg)", async () => {
@@ -333,6 +335,6 @@ describe("auth middleware → checkRateLimit bucket routing (#2485, F-74)", () =
     // when invoked without an explicit bucket — the parameter default
     // turns into an explicit option object at the call site.
     expect(checkRateLimitCalls.length).toBe(1);
-    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "default" });
+    expect(checkRateLimitCalls[0]!.options).toEqual({ bucket: "default", orgId: "org-1" });
   });
 });

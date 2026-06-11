@@ -46,6 +46,18 @@ export interface SettingDefinition {
   scope: SettingScope;
   /** Whether this setting is visible to workspace admins in SaaS mode. Defaults to true. Platform admins always see all settings. */
   saasVisible?: boolean;
+  /**
+   * #3376 — whether SaaS workspace admins may write (PUT/DELETE) this
+   * setting. When unset, the effective value defaults to `saasVisible`
+   * (itself defaulting to true), so visibility and writability stay one
+   * axis unless a key explicitly splits them. Keys managed by a dedicated
+   * admin page on SaaS (e.g. the sandbox keys via /admin/sandbox) set
+   * `saasVisible: false, saasWritable: true`: hidden from the generic
+   * settings page, but still writable through their own surface.
+   * Platform admins and self-hosted deployments are never restricted
+   * by this flag.
+   */
+  saasWritable?: boolean;
 }
 
 export interface SettingWithValue extends SettingDefinition {
@@ -259,7 +271,13 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
-  // Sandbox — managed via dedicated /admin/sandbox page in SaaS mode
+  // Sandbox — managed via dedicated /admin/sandbox page in SaaS mode.
+  // ATLAS_SANDBOX_BACKEND splits the axes (#3376): hidden from the
+  // generic settings page (the sandbox page is the canonical surface),
+  // but the SaaS sandbox view saves it through PUT /admin/settings/{key},
+  // so SaaS workspace admins keep write access to it. ATLAS_SANDBOX_URL
+  // is written ONLY by the self-hosted view, so it inherits hidden ⇒
+  // un-writable on SaaS (no surface needs the exception — #3390 review).
   {
     key: "ATLAS_SANDBOX_BACKEND",
     section: "Sandbox",
@@ -274,6 +292,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_SANDBOX_BACKEND",
     scope: "workspace",
     saasVisible: false,
+    saasWritable: true,
   },
   {
     key: "ATLAS_SANDBOX_URL",

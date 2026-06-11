@@ -3551,8 +3551,8 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
     ? allSettings.filter((s) => s.saasVisible !== false)
     : allSettings;
 
-  // Strip internal-only saasVisible field from response
-  const settings = filtered.map(({ saasVisible: _, ...rest }) => rest);
+  // Strip internal-only saasVisible/saasWritable fields from response
+  const settings = filtered.map(({ saasVisible: _v, saasWritable: _w, ...rest }) => rest);
 
   // Resolve regional API URL for the workspace (if residency is configured).
   // Wrapped in try-catch so a transient DB error doesn't break the entire settings response.
@@ -3603,6 +3603,18 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   if (def.scope === "platform" && orgId && !isPlatformAdmin) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  // #3376 — `saasVisible` is a read+write contract (parity Rule 4): a key
+  // hidden from SaaS workspace admins on GET must not stay silently
+  // writable. Effective writability is `saasWritable`, defaulting to
+  // `saasVisible` (itself defaulting to true). The sandbox keys split the
+  // axes (`saasVisible: false, saasWritable: true`) because the dedicated
+  // /admin/sandbox page writes them through this route on SaaS. Mirrors
+  // the GET filter's mode probe (resolved config deployMode + role).
+  const saasWritable = def.saasWritable ?? def.saasVisible ?? true;
+  if (!saasWritable && !isPlatformAdmin && (getConfig()?.deployMode ?? "self-hosted") === "saas") {
+    return c.json({ error: "forbidden", message: `"${key}" is managed by Atlas in SaaS mode and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   let body: { value?: unknown };
@@ -3699,6 +3711,14 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   if (def.scope === "platform" && orgId && !isPlatformAdmin) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  // #3376 — same write gate as PUT: DELETE clears an override, which is a
+  // write. A SaaS workspace admin must not be able to reset a key they
+  // cannot see or set. See the PUT handler for the axis semantics.
+  const saasWritable = def.saasWritable ?? def.saasVisible ?? true;
+  if (!saasWritable && !isPlatformAdmin && (getConfig()?.deployMode ?? "self-hosted") === "saas") {
+    return c.json({ error: "forbidden", message: `"${key}" is managed by Atlas in SaaS mode and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;

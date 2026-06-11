@@ -82,6 +82,33 @@ const settingsRegistryData = [
     envVar: "ANTHROPIC_API_KEY",
     scope: "platform",
   },
+  // #3376 — split-axis key: hidden from the generic settings page but
+  // writable on SaaS because the dedicated /admin/sandbox page saves it
+  // through PUT /admin/settings/{key}. Mirrors the real registry entry.
+  {
+    key: "ATLAS_SANDBOX_BACKEND",
+    section: "Sandbox",
+    label: "Sandbox Backend",
+    description: "Sandbox backend",
+    type: "string",
+    envVar: "ATLAS_SANDBOX_BACKEND",
+    scope: "workspace",
+    saasVisible: false,
+    saasWritable: true,
+  },
+  // #3376 — hidden key with no explicit saasWritable: effective
+  // writability inherits saasVisible=false, so SaaS workspace admins
+  // can neither see nor write it.
+  {
+    key: "ATLAS_DEMO_INDUSTRY",
+    section: "Demo",
+    label: "Demo Industry",
+    description: "Demo industry",
+    type: "string",
+    envVar: "ATLAS_DEMO_INDUSTRY",
+    scope: "workspace",
+    saasVisible: false,
+  },
 ];
 
 const mockGetSettingsForAdmin = mock(() => [
@@ -532,6 +559,167 @@ describe("admin settings routes", () => {
       expect(mockSetSetting).toHaveBeenCalledTimes(1);
       // Self-hosted: no orgId
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "admin-1", undefined);
+    });
+  });
+
+  // ─── SaaS write gate (#3376) ────────────────────────────────────
+
+  describe("saasWritable enforcement (#3376)", () => {
+    // Mock a SaaS workspace admin (org-scoped, role=admin, not platform_admin)
+    function asSaasWorkspaceAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+    }
+
+    function asSaasPlatformAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      // Runs after the outer beforeEach (which resets to null), so every
+      // test in this block starts in SaaS mode unless it overrides.
+      mockConfigOverride = { deployMode: "saas" };
+    });
+
+    it("SaaS workspace admin PUT on a hidden key (saasWritable inherits saasVisible=false) → 403", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "healthcare" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string };
+      expect(data.error).toBe("forbidden");
+      expect(data.message).toContain("managed by Atlas in SaaS mode");
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("SaaS workspace admin DELETE on a hidden key → 403", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("forbidden");
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    // Pins the /admin/sandbox save path: the sandbox page writes
+    // ATLAS_SANDBOX_BACKEND through this route on SaaS (#3375/#3376).
+    // If the split flag regresses to plain saasVisible enforcement,
+    // this test fails before the sandbox page breaks in prod.
+    it("SaaS workspace admin PUT on ATLAS_SANDBOX_BACKEND (saasVisible:false, saasWritable:true) succeeds", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "vercel-sandbox" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_SANDBOX_BACKEND", "vercel-sandbox", "ws-admin-1", "org-1");
+    });
+
+    it("SaaS workspace admin DELETE on ATLAS_SANDBOX_BACKEND succeeds", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_SANDBOX_BACKEND", "ws-admin-1", "org-1");
+    });
+
+    it("SaaS platform admin PUT on a hidden key succeeds (flag never restricts platform admins)", async () => {
+      asSaasPlatformAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "ecommerce" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it("self-hosted workspace admin PUT on a hidden key is unaffected", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "cybersecurity" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it("self-hosted workspace admin DELETE on a hidden key is unaffected", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it("unresolved config (getConfig() → null) is treated as self-hosted — write allowed", async () => {
+      mockConfigOverride = null;
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "saas" }),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it("SaaS workspace admin PUT on a visible workspace key still succeeds", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+
+    it("secret check still fires under SaaS (unchanged by the write gate)", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ANTHROPIC_API_KEY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "sk-new" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("Secret settings");
+    });
+
+    it("platform-scope check still fires under SaaS (unchanged by the write gate)", async () => {
+      asSaasWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("platform-level setting");
     });
   });
 

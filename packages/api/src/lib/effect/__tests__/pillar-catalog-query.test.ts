@@ -14,8 +14,9 @@
  *    up Postgres.
  */
 
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Effect, Layer } from "effect";
+import { _setConfigForTest, type ResolvedConfig } from "@atlas/api/lib/config";
 import { IMPLEMENTATION_STATUSES, PILLARS, type Pillar } from "@useatlas/types";
 import {
   PillarCatalogQuery,
@@ -512,6 +513,56 @@ describe("PillarCatalogQueryLive", () => {
     expect(calls[0]!.sql).not.toContain("type IN");
   });
 
+  // ── Pillar-scoped install-status listing (#3377) ──────────────────────
+  //
+  // `withInstallStatusFor(workspaceId, "datasource")` backs the
+  // `?pillar=datasource` catalog listing the /admin/connections Add
+  // picker reads. It must swap the legacy-type filter for the pillar
+  // predicate (or every datasource row would be filtered out) while the
+  // no-pillar default stays byte-identical (next test).
+  it("withInstallStatusFor with a pillar: filters by pillar, not legacy type", async () => {
+    const clickhouseRow = {
+      ...SLACK_ROW,
+      id: "catalog:clickhouse",
+      slug: "clickhouse",
+      name: "ClickHouse",
+      type: "datasource",
+      install_model: "form",
+      pillar: "datasource",
+    };
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM organization"),
+        rows: [{ plan_tier: "starter", is_operator_workspace: false }],
+      },
+      {
+        matcher: (sql) => sql.includes("FROM plugin_catalog"),
+        rows: [clickhouseRow],
+      },
+      { matcher: (sql) => sql.includes("FROM workspace_plugins"), rows: [] },
+    ]);
+
+    const result = (await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.withInstallStatusFor("org-1", "datasource");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    )) as readonly CatalogEntryWithState[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0]!.slug).toBe("clickhouse");
+    expect(result[0]!.pillar).toBe("datasource");
+    expect(result[0]!.state).toBe("accessible");
+
+    const catalogCall = calls.find((c) => c.sql.includes("FROM plugin_catalog"))!;
+    expect(catalogCall.sql).toContain("pillar = $1");
+    expect(catalogCall.params[0]).toBe("datasource");
+    expect(catalogCall.sql).not.toContain("type IN");
+    // Install rows still scoped to the workspace.
+    const wpCall = calls.find((c) => c.sql.includes("FROM workspace_plugins"))!;
+    expect(wpCall.params[0]).toBe("org-1");
+  });
+
   it("withInstallStatusFor: still narrows by legacy type for byte-identical wire output", async () => {
     const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
       {
@@ -534,6 +585,88 @@ describe("PillarCatalogQueryLive", () => {
       c.sql.includes("FROM plugin_catalog"),
     )!;
     expect(catalogCall.sql).toContain("type IN ('chat', 'integration')");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. SaaS deploy-mode gate (#3377 / #3301)
+// ---------------------------------------------------------------------------
+//
+// On SaaS, every catalog read must carry `saas_eligible = true` so
+// non-eligible rows (DuckDB — file-path based, not multi-tenant safe)
+// never surface; the pillar-scoped listing the Connections Add picker
+// reads (#3377) inherits the same gate, keeping the picker and the
+// marketplace in agreement about which datasources exist on SaaS.
+
+describe("PillarCatalogQueryLive — SaaS deploy-mode gate", () => {
+  const saasConfig: ResolvedConfig = {
+    datasources: {},
+    tools: ["explore", "executeSQL"],
+    auth: "managed",
+    semanticLayer: "./semantic",
+    maxTotalConnections: 100,
+    source: "file",
+    deployMode: "saas",
+  };
+
+  beforeEach(() => {
+    _setConfigForTest(saasConfig);
+  });
+
+  afterEach(() => {
+    _setConfigForTest(null);
+  });
+
+  it("withInstallStatusFor(orgId, 'datasource') filters to saas_eligible rows", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM organization"),
+        rows: [{ plan_tier: "starter", is_operator_workspace: false }],
+      },
+      { matcher: (sql) => sql.includes("FROM plugin_catalog"), rows: [] },
+      { matcher: (sql) => sql.includes("FROM workspace_plugins"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.withInstallStatusFor("org-1", "datasource");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    const catalogCall = calls.find((c) => c.sql.includes("FROM plugin_catalog"))!;
+    expect(catalogCall.sql).toContain("saas_eligible = true");
+    expect(catalogCall.sql).toContain("pillar = $1");
+  });
+
+  it("default withInstallStatusFor carries the same saas_eligible gate", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      {
+        matcher: (sql) => sql.includes("FROM organization"),
+        rows: [{ plan_tier: "starter", is_operator_workspace: false }],
+      },
+      { matcher: (sql) => sql.includes("FROM plugin_catalog"), rows: [] },
+      { matcher: (sql) => sql.includes("FROM workspace_plugins"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.withInstallStatusFor("org-1");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    const catalogCall = calls.find((c) => c.sql.includes("FROM plugin_catalog"))!;
+    expect(catalogCall.sql).toContain("saas_eligible = true");
+  });
+
+  it("getByPillar('datasource') filters to saas_eligible rows", async () => {
+    const { layer: dbLayer, calls } = makeFakeInternalDBLayer([
+      { matcher: (sql) => sql.includes("FROM plugin_catalog"), rows: [] },
+    ]);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const facade = yield* PillarCatalogQuery;
+        return yield* facade.getByPillar("datasource");
+      }).pipe(Effect.provide(PillarCatalogQueryLive.pipe(Layer.provide(dbLayer)))),
+    );
+    expect(calls[0]!.sql).toContain("saas_eligible = true");
   });
 });
 

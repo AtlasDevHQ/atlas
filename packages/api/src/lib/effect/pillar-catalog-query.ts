@@ -152,12 +152,22 @@ export interface PillarCatalogQueryShape {
   /**
    * Join catalog × workspace_plugins for the given workspace, apply
    * the install-status machine, and return one annotated row per
-   * catalog entry. Excludes legacy types (`datasource`, `context`,
-   * `interaction`, `action`, `sandbox`) — only `chat` + `integration`
-   * are surfaced today. Slice 5 (#2746) folds Datasource rows in.
+   * catalog entry.
+   *
+   * Default (no `pillar`): excludes legacy types (`datasource`,
+   * `context`, `interaction`, `action`, `sandbox`) — only `chat` +
+   * `integration` are surfaced, byte-identical to the pre-#3377 wire
+   * output.
+   *
+   * With `pillar`: restricts to that pillar instead of the legacy-type
+   * filter, so a `datasource` caller (the `/admin/connections` Add
+   * picker, #3377) gets catalog rows + install status for plugin
+   * datasources. The deploy-mode gate (`saas_eligible = true` on SaaS)
+   * applies in both branches via `buildCatalogWhere`.
    */
   readonly withInstallStatusFor: (
     workspaceId: string,
+    pillar?: Pillar,
   ) => Effect.Effect<readonly CatalogEntryWithState[], Error>;
 }
 
@@ -460,9 +470,27 @@ function buildPillarCatalogQueryService(
       });
 
     const withInstallStatusFor: PillarCatalogQueryShape["withInstallStatusFor"] =
-      (workspaceId) =>
+      (workspaceId, pillar) =>
         Effect.tryPromise({
           try: async () => {
+            // Pillar-scoped callers (#3377) swap the legacy-type filter
+            // for a pillar predicate; the default branch stays
+            // byte-identical to the pre-#3377 catalog read.
+            const catalogQuery =
+              pillar === undefined
+                ? db.query<CatalogRow>(
+                    `SELECT ${CATALOG_COLUMNS}
+                   FROM plugin_catalog
+                  WHERE ${buildCatalogWhere("", true)}
+                  ORDER BY type ASC, name ASC`,
+                  )
+                : db.query<CatalogRow>(
+                    `SELECT ${CATALOG_COLUMNS}
+                   FROM plugin_catalog
+                  WHERE ${buildCatalogWhere("pillar = $1", false)}
+                  ORDER BY type ASC, name ASC`,
+                    [pillar],
+                  );
             // Three independent reads — `Promise.all` lets them ride the
             // same connection-acquire latency. Matches the pre-slice-3
             // route's parallel-fetch behavior.
@@ -471,12 +499,7 @@ function buildPillarCatalogQueryService(
                 "SELECT plan_tier, is_operator_workspace FROM organization WHERE id = $1",
                 [workspaceId],
               ),
-              db.query<CatalogRow>(
-                `SELECT ${CATALOG_COLUMNS}
-                   FROM plugin_catalog
-                  WHERE ${buildCatalogWhere("", true)}
-                  ORDER BY type ASC, name ASC`,
-              ),
+              catalogQuery,
               db.query<InstallRow>(
                 `SELECT id, catalog_id, install_id, workspace_id, pillar,
                         installed_at, installed_by, enabled, config,

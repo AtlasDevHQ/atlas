@@ -26,7 +26,10 @@ import type { CatalogEntryWithState } from "@atlas/api/lib/effect/pillar-catalog
 // ---------------------------------------------------------------------------
 
 const mockWithInstallStatusFor: Mock<
-  (workspaceId: string) => Effect.Effect<readonly CatalogEntryWithState[], Error>
+  (
+    workspaceId: string,
+    pillar?: "datasource" | "chat" | "action",
+  ) => Effect.Effect<readonly CatalogEntryWithState[], Error>
 > = mock(() => Effect.succeed([] as readonly CatalogEntryWithState[]));
 
 let mockHasInternalDB = true;
@@ -38,7 +41,8 @@ mock.module("@atlas/api/lib/effect/pillar-catalog-query", () => ({
   ...realPillarFacade,
   // Replace the Live Layer with a test layer that delegates to the mock.
   PillarCatalogQueryLive: realPillarFacade.createPillarCatalogQueryTestLayer({
-    withInstallStatusFor: (workspaceId) => mockWithInstallStatusFor(workspaceId),
+    withInstallStatusFor: (workspaceId, pillar) =>
+      mockWithInstallStatusFor(workspaceId, pillar),
     getByPillar: () =>
       Effect.fail(new Error("test: getByPillar not used by this route")),
     getBySlug: () =>
@@ -198,10 +202,107 @@ describe("GET /api/v1/integrations/catalog", () => {
   });
 
   describe("facade invocation", () => {
-    it("calls withInstallStatusFor with the caller's orgId", async () => {
+    it("calls withInstallStatusFor with the caller's orgId and no pillar by default", async () => {
       const app = buildApp();
       await app.request("/integrations/catalog");
-      expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1");
+      expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1", undefined);
+    });
+
+    it("forwards ?pillar=datasource to the facade (#3377)", async () => {
+      const app = buildApp();
+      await app.request("/integrations/catalog?pillar=datasource");
+      expect(mockWithInstallStatusFor).toHaveBeenCalledWith("org-1", "datasource");
+    });
+
+    it("rejects unknown pillar values with 422 (only 'datasource' is exposed)", async () => {
+      const app = buildApp();
+      for (const bad of ["chat", "action", "bogus"]) {
+        const res = await app.request(`/integrations/catalog?pillar=${bad}`);
+        // 422 via the shared validationHook (`Invalid query parameters`).
+        expect(res.status).toBe(422);
+      }
+      expect(mockWithInstallStatusFor).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("default-path wire stability (#3377)", () => {
+    // The pillar param is additive: the no-param response must stay
+    // byte-identical to the pre-#3377 output. Pin the exact serialized
+    // body for a representative row so any projection drift (added /
+    // renamed / reordered field) fails loudly here.
+    it("emits a byte-identical body for the default (no pillar) listing", async () => {
+      const row = makeRichRow({ state: "accessible", planAccessible: true });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      expect(res.status).toBe(200);
+      const bodyText = await res.text();
+      expect(bodyText).toBe(
+        JSON.stringify({
+          catalog: [
+            {
+              id: "catalog:slack",
+              slug: "slack",
+              type: "chat",
+              installModel: "oauth",
+              name: "Slack",
+              description: "Connect Slack",
+              iconUrl: null,
+              minPlan: "starter",
+              configSchema: null,
+              installed: false,
+              installedAt: null,
+              installedBy: null,
+              installStatus: null,
+              upsellOnly: false,
+              accessible: true,
+              upgradeRequired: null,
+              pillar: "chat",
+              implementationStatus: "available",
+              installConfig: null,
+            },
+          ],
+        }),
+      );
+    });
+  });
+
+  describe("datasource pillar projection (#3377)", () => {
+    it("projects datasource rows (type='datasource') through the same envelope", async () => {
+      const row = makeRichRow({
+        id: "catalog:clickhouse",
+        slug: "clickhouse",
+        name: "ClickHouse",
+        description: "Connect a ClickHouse instance as an analytics datasource.",
+        type: "datasource",
+        installModel: "form",
+        pillar: "datasource",
+        configSchema: [
+          { key: "url", type: "string", secret: true, required: true },
+          { key: "description", type: "string" },
+        ],
+        state: "accessible",
+        planAccessible: true,
+      });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog?pillar=datasource");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const entry = body.catalog[0];
+      expect(entry.slug).toBe("clickhouse");
+      expect(entry.type).toBe("datasource");
+      expect(entry.pillar).toBe("datasource");
+      expect(entry.installModel).toBe("form");
+      // The Add picker's FormInstallModal renders from configSchema —
+      // it must survive the projection untouched.
+      expect(entry.configSchema).toEqual([
+        { key: "url", type: "string", secret: true, required: true },
+        { key: "description", type: "string" },
+      ]);
+      expect(entry.installed).toBe(false);
     });
   });
 

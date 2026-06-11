@@ -149,6 +149,34 @@ describe("detectDBType", () => {
       "Unsupported database URL"
     );
   });
+
+  // #3377 — the remediation copy must stay deploy-agnostic. SaaS admins
+  // have no atlas.config.ts, so the in-product path (the marketplace
+  // form-install on Admin → Connections) must be offered first;
+  // atlas.config.ts remains the config-managed alternative, never the
+  // only prescription.
+  it("error copy offers the admin-console install path (#3377)", () => {
+    expect(() => detectDBType("clickhouse://localhost:8123/default")).toThrow(
+      "admin console"
+    );
+    expect(() => detectDBType("clickhouse://localhost:8123/default")).toThrow(
+      "Admin → Connections"
+    );
+  });
+
+  it("error copy keeps atlas.config.ts as a config-managed alternative, not the only remedy", () => {
+    try {
+      detectDBType("snowflake://user:pass@account/db");
+      throw new Error("expected detectDBType to throw");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toContain("atlas.config.ts");
+      expect(message).toContain("on a config-managed deploy");
+      // Regression guard against the pre-#3377 copy that prescribed the
+      // config edit unconditionally.
+      expect(message).not.toContain("Install the appropriate datasource plugin");
+    }
+  });
 });
 
 describe("ConnectionRegistry.has()", () => {

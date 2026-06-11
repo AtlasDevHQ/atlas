@@ -61,15 +61,19 @@ const CURATED_SLUGS = new Set(CURATED.map((c) => c.slug));
  *  - `salesforce` installs via OAuth from its own block on the page.
  *  - `openapi-generic` is the "Custom REST API" tile below.
  *  - Curated REST candidates (Stripe/Notion/GitHub) render in "Popular APIs".
- *  DuckDB is intentionally NOT client-filtered: on SaaS the server already
- *  hides it (`saas_eligible = false`, #3301), keeping the two admin surfaces
- *  in agreement without the picker re-deriving deploy mode. */
+ *  - `duckdb` has NO registered form-install handler (it's a local file —
+ *    `atlas.config.ts`-only on self-hosted; on SaaS the server already hides
+ *    the row via `saas_eligible = false`, #3301). Rendering its tile would
+ *    recreate the exact class-2 dead end #3377 removes: the submit would
+ *    throw "No form-based install handler registered" server-side. Drop the
+ *    exclusion if/when `register.ts` gains a duckdb DatasourceFormInstallHandler. */
 const FORM_TILE_EXCLUDED: ReadonlySet<string> = new Set([
   "postgres",
   "mysql",
   "demo-postgres",
   "salesforce",
   "openapi-generic",
+  "duckdb",
   ...CURATED_SLUGS,
 ]);
 

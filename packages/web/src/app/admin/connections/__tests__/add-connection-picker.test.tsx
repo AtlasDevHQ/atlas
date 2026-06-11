@@ -179,13 +179,16 @@ describe("AddConnectionPicker — datasource tile routing (#3377)", () => {
     expect(screen.getByTestId("add-curated-stripe-data")).toBeTruthy();
   });
 
-  test("DuckDB renders only when the server returns it (SaaS filters it out server-side)", () => {
-    // Self-hosted: the row is in the listing, so the tile shows.
+  test("DuckDB never renders a tile (no form handler; SaaS additionally server-filters it)", () => {
+    // Self-hosted: the catalog row exists, but there is no registered
+    // form-install handler for duckdb — a tile would dead-end in a 500
+    // (the class-2 path #3377 removes). Neither group offers it.
     renderPicker();
-    expect(screen.getByTestId("add-ds-duckdb")).toBeTruthy();
+    expect(screen.queryByTestId("add-ds-duckdb")).toBeNull();
+    expect(screen.queryByTestId("add-db-duckdb")).toBeNull();
     cleanup();
     // SaaS: the server omits the `saas_eligible = false` row entirely
-    // (#3301) — the picker renders no DuckDB surface at all.
+    // (#3301) — same result, enforced one layer earlier.
     fetchState = {
       data: { catalog: selfHostedCatalog().filter((e) => e.slug !== "duckdb") },
       loading: false,

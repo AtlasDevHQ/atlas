@@ -91,7 +91,7 @@ Archived groups become read-only tombstones — they can no longer be renamed, a
 
 **Actions:**
 - **Add datasource** — Opens a picker with three groups:
-  - **Databases** — PostgreSQL and MySQL connect through a URL form (with optional schema and description; the URL field supports a show/hide toggle for credential safety). Plugin datasources (ClickHouse, Snowflake, BigQuery, Elasticsearch, …) connect through a schema-driven install form — the same marketplace form-install as Admin → Integrations — with credential fields encrypted at rest. These register immediately and are queryable without a reload. On SaaS, datasources that aren't multi-tenant safe (e.g. DuckDB) don't appear
+  - **Databases** — PostgreSQL and MySQL connect through a URL form (with optional schema and description; the URL field supports a show/hide toggle for credential safety). Plugin datasources (ClickHouse, Snowflake, BigQuery, Elasticsearch, …) connect through a schema-driven install form — the same marketplace form-install as Admin → Integrations — with credential fields encrypted at rest. These register immediately and are queryable without a reload. DuckDB doesn't appear in the picker — it connects via `atlas.config.ts` on self-hosted deploys and isn't available on SaaS at all (not multi-tenant safe)
   - **Popular APIs** — Curated REST datasources (Stripe, Notion, GitHub) with a one-credential form or OAuth
   - **Custom** — Any REST API with an OpenAPI 3.x spec
 - **Edit connection** — Update an existing connection's URL, type, or description

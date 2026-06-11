@@ -741,13 +741,18 @@ describe("settings module", () => {
     // effective saasWritable (saasWritable ?? saasVisible ?? true) is
     // false. If either flag drifts, the sandbox page's save path on
     // SaaS breaks (#3375 regression vector).
-    it("sandbox keys are hidden from the generic page but writable on SaaS", () => {
-      for (const key of ["ATLAS_SANDBOX_BACKEND", "ATLAS_SANDBOX_URL"]) {
-        const def = getSettingDefinition(key);
-        expect(def).toBeDefined();
-        expect(def!.saasVisible).toBe(false);
-        expect(def!.saasWritable).toBe(true);
-      }
+    it("ATLAS_SANDBOX_BACKEND is hidden from the generic page but writable on SaaS", () => {
+      const def = getSettingDefinition("ATLAS_SANDBOX_BACKEND");
+      expect(def).toBeDefined();
+      expect(def!.saasVisible).toBe(false);
+      expect(def!.saasWritable).toBe(true);
+    });
+
+    it("ATLAS_SANDBOX_URL inherits un-writability — only the self-hosted view writes it (#3390 review)", () => {
+      const def = getSettingDefinition("ATLAS_SANDBOX_URL");
+      expect(def).toBeDefined();
+      expect(def!.saasVisible).toBe(false);
+      expect(def!.saasWritable).toBeUndefined();
     });
 
     it("ATLAS_DEMO_INDUSTRY inherits un-writability from saasVisible: false", () => {
@@ -766,7 +771,7 @@ describe("settings module", () => {
         .toSorted();
       // Append here ONLY when a dedicated SaaS admin page is the writer
       // for the key (parity contract Rule 4, enterprise-gating.md).
-      expect(splitKeys).toEqual(["ATLAS_SANDBOX_BACKEND", "ATLAS_SANDBOX_URL"]);
+      expect(splitKeys).toEqual(["ATLAS_SANDBOX_BACKEND"]);
     });
   });
 

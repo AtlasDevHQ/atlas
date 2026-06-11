@@ -87,7 +87,7 @@ If a setting is hidden from SaaS workspace admins on `GET /admin/settings`, the 
 - **`saasVisible`** is the read/display axis: it controls whether the key appears on the generic `GET /admin/settings` listing for SaaS workspace admins. Defaults to `true`.
 - **`saasWritable`** is the write axis: PUT and DELETE on `/admin/settings/{key}` reject (403) for SaaS workspace admins when the *effective* value is `false`. When unset it **defaults to the `saasVisible` value**, so for most keys visibility and writability remain a single decision and hidden ⇒ un-writable holds automatically.
 
-A key managed by a dedicated admin page on SaaS (today: `ATLAS_SANDBOX_BACKEND` and `ATLAS_SANDBOX_URL` via `/admin/sandbox`) uses the split — `saasVisible: false, saasWritable: true` — so it stays off the generic settings page but its own surface keeps saving through the same PUT route. Platform admins and self-hosted deployments are never restricted by either flag, and both flags are registry-internal (stripped from the GET response).
+A key managed by a dedicated admin page on SaaS (today: `ATLAS_SANDBOX_BACKEND` via `/admin/sandbox` — its sibling `ATLAS_SANDBOX_URL` is written only by the self-hosted view, so it inherits hidden ⇒ un-writable) uses the split — `saasVisible: false, saasWritable: true` — so it stays off the generic settings page but its own surface keeps saving through the same PUT route. Platform admins and self-hosted deployments are never restricted by either flag, and both flags are registry-internal (stripped from the GET response).
 
 ### Rule 5 — docs state mode scope explicitly
 

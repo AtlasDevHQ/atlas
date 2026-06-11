@@ -272,10 +272,12 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
   },
 
   // Sandbox — managed via dedicated /admin/sandbox page in SaaS mode.
-  // `saasVisible: false, saasWritable: true` (#3376): hidden from the
+  // ATLAS_SANDBOX_BACKEND splits the axes (#3376): hidden from the
   // generic settings page (the sandbox page is the canonical surface),
-  // but the sandbox page saves through PUT /admin/settings/{key}, so
-  // SaaS workspace admins must keep write access.
+  // but the SaaS sandbox view saves it through PUT /admin/settings/{key},
+  // so SaaS workspace admins keep write access to it. ATLAS_SANDBOX_URL
+  // is written ONLY by the self-hosted view, so it inherits hidden ⇒
+  // un-writable on SaaS (no surface needs the exception — #3390 review).
   {
     key: "ATLAS_SANDBOX_BACKEND",
     section: "Sandbox",
@@ -302,7 +304,6 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_SANDBOX_URL",
     scope: "workspace",
     saasVisible: false,
-    saasWritable: true,
   },
 
   // Platform

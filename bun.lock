@@ -390,7 +390,7 @@
     },
     "packages/schemas": {
       "name": "@useatlas/schemas",
-      "version": "0.0.2",
+      "version": "0.0.3",
       "dependencies": {
         "@useatlas/types": "workspace:*",
         "zod": "^4.4.3",

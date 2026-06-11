@@ -131,6 +131,7 @@ let byocCalls: Array<{ orgId: string; backendId: string }> = [];
 mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   sandboxProviderForBackendId: () => null,
   missingCredentialFields: () => [],
+  _scrubCredentialValuesForTest: (text: string) => text,
   isProviderRuntimeAvailable: async () => false,
   getProviderRuntimeAvailability: async () => ({
     vercel: true,

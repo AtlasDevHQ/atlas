@@ -203,6 +203,46 @@ describe("tryCreateByocBackend — not engaged (falls through to operator chain)
     });
     expect(backend).toBeNull();
   });
+
+  it("fails closed (throws) when the runtime is installed but fails to load", async () => {
+    // Installed-but-broken is a deployment defect, not the stable
+    // "not installed" state — the org's selection must not silently route
+    // to the operator chain.
+    const brokenLoader: ModuleLoader = async () => {
+      throw new Error("incompatible plugin init crashed"); // no not-found code
+    };
+    let thrown: unknown;
+    try {
+      await tryCreateByocBackend("org-1", "e2b-sandbox", SEMANTIC_ROOT, {
+        getCredential: async () => makeCredential("e2b", { apiKey: "e2b_key" }),
+        load: brokenLoader,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("runtime failed to load");
+    expect(((thrown as Error).cause as Error).message).toContain("init crashed");
+  });
+});
+
+describe("scrubCredentialValues", () => {
+  it("redacts stored credential values echoed by provider error text", async () => {
+    const { _scrubCredentialValuesForTest } = await import("../runtime");
+    const scrubbed = _scrubCredentialValuesForTest(
+      "Unauthorized: API key 'e2b_sk_secret123' is invalid (key e2b_sk_secret123 revoked)",
+      { apiKey: "e2b_sk_secret123" },
+    );
+    expect(scrubbed).not.toContain("e2b_sk_secret123");
+    expect(scrubbed).toContain("[REDACTED]");
+  });
+
+  it("skips short values that would shred ordinary words", async () => {
+    const { _scrubCredentialValuesForTest } = await import("../runtime");
+    expect(
+      _scrubCredentialValuesForTest("a team error", { teamId: "team" }),
+    ).toBe("a team error");
+  });
 });
 
 describe("tryCreateByocBackend — engaged", () => {

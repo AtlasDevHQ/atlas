@@ -16,9 +16,11 @@
  *                org-credential path, per the #2850 seam).
  *   • backend  — BYOC engaged: backend built from the org's decrypted
  *                credentials, on the org's own provider account.
- *   • throws   — BYOC engaged but construction failed. Callers must fail
- *                closed (surface the error) rather than silently degrade to
- *                the operator's account: the admin selected this provider
+ *   • throws   — BYOC engaged but construction failed, or the runtime is
+ *                installed yet failed to load (a deployment defect, not the
+ *                stable "not installed" state). Callers must fail closed
+ *                (surface the error) rather than silently degrade to the
+ *                operator's account: the admin selected this provider
  *                expecting isolation on their own infrastructure.
  *
  * Credentials are decrypted by `credentials.ts` (db/secret-encryption.ts).
@@ -221,7 +223,10 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
 };
 
 /** Per-process probe cache — module installation can't change at runtime. */
-const runtimeAvailabilityCache = new Map<SandboxProviderKey, Promise<boolean>>();
+const runtimeAvailabilityCache = new Map<
+  SandboxProviderKey,
+  Promise<RuntimeProbeResult>
+>();
 
 function isModuleNotFound(err: unknown): boolean {
   const code =
@@ -231,24 +236,29 @@ function isModuleNotFound(err: unknown): boolean {
   return code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
 }
 
+type RuntimeProbeResult =
+  | { available: true }
+  | { available: false; reason: "not-installed" }
+  | { available: false; reason: "load-failed"; module: string; error: unknown };
+
 /**
- * Whether this deployment can construct BYOC backends for a provider
- * (plugin package + provider SDK resolvable).
+ * Probe a provider's required modules. Two distinct negative outcomes:
  *
- * Only not-found results are cached: module installation can't change at
- * runtime, but an installed module whose import failed transiently (init
- * throw, resource pressure) must not be pinned "unavailable" for the
- * process lifetime — that would flip both the engagement rule and the
- * admin status to a silent operator-chain fallback with no recovery short
- * of a restart.
+ *   • `not-installed` — module resolution failed. Stable per process and
+ *     cached; this is the state the admin UI surfaces as "Unavailable".
+ *   • `load-failed`   — the module resolved but its import threw (broken
+ *     install, incompatible version, transient init failure). NOT cached,
+ *     so the next probe retries; engaged BYOC callers treat it as a
+ *     deployment defect and fail closed rather than silently running the
+ *     org's workload on the operator chain.
  */
-export function isProviderRuntimeAvailable(
+function probeProviderRuntime(
   provider: SandboxProviderKey,
-  load: ModuleLoader = dynamicImport,
-): Promise<boolean> {
+  load: ModuleLoader,
+): Promise<RuntimeProbeResult> {
   const cached = runtimeAvailabilityCache.get(provider);
   if (cached) return cached;
-  const probe = (async () => {
+  const probe = (async (): Promise<RuntimeProbeResult> => {
     for (const specifier of PROVIDER_RUNTIMES[provider].requiredModules) {
       try {
         await load(specifier);
@@ -258,20 +268,34 @@ export function isProviderRuntimeAvailable(
             { provider, module: specifier },
             "BYOC provider runtime module not installed",
           );
-          return false;
+          return { available: false, reason: "not-installed" };
         }
         runtimeAvailabilityCache.delete(provider); // retry on next probe
         log.warn(
           { provider, module: specifier, err: err instanceof Error ? err.message : String(err) },
-          "BYOC provider runtime module is installed but failed to load — treating as unavailable for this request",
+          "BYOC provider runtime module is installed but failed to load",
         );
-        return false;
+        return { available: false, reason: "load-failed", module: specifier, error: err };
       }
     }
-    return true;
+    return { available: true };
   })();
   runtimeAvailabilityCache.set(provider, probe);
   return probe;
+}
+
+/**
+ * Whether this deployment can construct BYOC backends for a provider
+ * (plugin package + provider SDK resolvable). Boolean view of the probe
+ * for the status endpoint — a load-failed runtime reports unavailable
+ * here, while the engagement path in `tryCreateByocBackend` fails closed
+ * on it instead of falling through.
+ */
+export async function isProviderRuntimeAvailable(
+  provider: SandboxProviderKey,
+  load: ModuleLoader = dynamicImport,
+): Promise<boolean> {
+  return (await probeProviderRuntime(provider, load)).available;
 }
 
 /** All providers' runtime availability, keyed by provider (status endpoint). */
@@ -290,6 +314,28 @@ export async function getProviderRuntimeAvailability(
 export function _resetRuntimeAvailabilityCacheForTest(): void {
   runtimeAvailabilityCache.clear();
 }
+
+/**
+ * Replace every stored credential value appearing in `text` with a redaction
+ * marker. Exact-match against the org's own decrypted values — no pattern
+ * guessing — so a provider SDK error that echoes the rejected key can be
+ * logged without retaining the secret. Short values (< 6 chars) are skipped:
+ * they can't meaningfully be secrets and would shred ordinary words.
+ */
+function scrubCredentialValues(
+  text: string,
+  credentials: Record<string, unknown>,
+): string {
+  let scrubbed = text;
+  for (const value of Object.values(credentials)) {
+    if (typeof value === "string" && value.length >= 6) {
+      scrubbed = scrubbed.split(value).join("[REDACTED]");
+    }
+  }
+  return scrubbed;
+}
+
+export const _scrubCredentialValuesForTest = scrubCredentialValues;
 
 // ---------------------------------------------------------------------------
 // Backend construction
@@ -335,7 +381,24 @@ export async function tryCreateByocBackend(
     return null;
   }
 
-  if (!(await isProviderRuntimeAvailable(provider, load))) {
+  const probe = await probeProviderRuntime(provider, load);
+  if (!probe.available) {
+    if (probe.reason === "load-failed") {
+      // The org did everything right (connected + selected + complete creds)
+      // and the runtime IS installed — it just failed to load. That's a
+      // deployment defect; fail closed instead of silently running the
+      // org's workload on the operator chain.
+      log.error(
+        { orgId, provider, module: probe.module },
+        "BYOC provider runtime is installed but failed to load — failing closed",
+      );
+      throw new Error(
+        `Your connected ${provider} sandbox runtime failed to load on this server. ` +
+          "This is a deployment problem, not a credentials problem — contact your operator, " +
+          "or switch back to the platform default.",
+        { cause: probe.error },
+      );
+    }
     log.warn(
       { orgId, provider },
       "BYOC provider runtime is not installed in this deployment — using operator chain",
@@ -354,12 +417,18 @@ export async function tryCreateByocBackend(
     log.info({ orgId, provider, backendId }, "BYOC sandbox backend created from org credentials");
     return backend;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    // Provider SDK errors can echo the rejected credential. The stored
+    // values are in scope, so scrub them by exact match before the detail
+    // reaches the operator log — keeps the log diagnosable without
+    // retaining a decrypted org secret.
+    const detail = scrubCredentialValues(
+      err instanceof Error ? err.message : String(err),
+      credential.credentials,
+    );
     log.error({ orgId, provider, err: detail }, "BYOC sandbox backend creation failed");
-    // The thrown message is surfaced as agent tool output. Provider SDK
-    // errors can echo the rejected API key, and the error-scrub layer only
-    // handles URL-embedded credentials — so keep the detail in the operator
-    // log (above) and on `cause`, never in the message itself.
+    // The thrown message is surfaced as agent tool output, and the
+    // error-scrub layer only handles URL-embedded credentials — so the
+    // message stays generic; the raw error rides on `cause` only.
     throw new Error(
       `Your connected ${provider} sandbox failed to start. ` +
         "Check the provider credentials on the Sandbox admin page, or switch back to the platform default.",

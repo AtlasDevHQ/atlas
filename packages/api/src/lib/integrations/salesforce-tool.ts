@@ -66,14 +66,6 @@ import { validateSOQL, appendSOQLLimit, SENSITIVE_PATTERNS } from "./salesforce/
 
 const log = createLogger("integrations.salesforce.tool");
 
-/** Parse a positive-integer env var, falling back when missing/non-numeric/≤0. */
-function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(raw ?? "", 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const QUERY_TIMEOUT = parsePositiveIntEnv(process.env.ATLAS_QUERY_TIMEOUT, 30000);
-
 let lastWarnedRowLimit: string | undefined;
 
 /**
@@ -93,6 +85,30 @@ function getRowLimit(): number {
       lastWarnedRowLimit = raw;
     }
     return 1000;
+  }
+  return n;
+}
+
+let lastWarnedQueryTimeout: string | undefined;
+
+/**
+ * Read query timeout from settings cache (DB override > env var > default).
+ * Resolved per call — not frozen at module import — so platform DB overrides
+ * of `ATLAS_QUERY_TIMEOUT` written via the admin UI take effect without a
+ * restart. Copies `getQueryTimeout()` in `tools/sql.ts` exactly (including
+ * the no-orgId `getSetting` resolution and warn-once invalid-value handling)
+ * so SQL and SOQL query timeouts share one vocabulary of truth (parity
+ * Rule 3, #3402 — the `ATLAS_QUERY_TIMEOUT` sibling of #3400).
+ */
+function getQueryTimeout(): number {
+  const raw = getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000";
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedQueryTimeout) {
+      log.warn({ value: raw }, "Invalid ATLAS_QUERY_TIMEOUT value; using default 30000ms");
+      lastWarnedQueryTimeout = raw;
+    }
+    return 30000;
   }
   return n;
 }
@@ -323,7 +339,8 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
       // ── 5. Execute the query ──
       const start = performance.now();
       try {
-        const result = await instance.query(querySoql, QUERY_TIMEOUT);
+        // Query timeout resolved lazily per call (#3402), like the row limit.
+        const result = await instance.query(querySoql, getQueryTimeout());
         const durationMs = Math.round(performance.now() - start);
         const truncated = result.rows.length >= rowLimit;
         log.debug(

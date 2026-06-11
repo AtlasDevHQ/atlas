@@ -1012,7 +1012,10 @@ export default defineConfig({
   // workload in that org's account, and fails closed (no silent fallback to
   // the operator account) if it can't start. Only the vercel BYOC runtime is
   // installed in this image today; E2B/Daytona/Railway cards report
-  // "Unavailable" until their plugin packages + SDKs ship here.
+  // "Unavailable" until their SDKs are installed here (the plugin workspace
+  // packages already ship in the image; their optional-peer SDKs — e2b,
+  // @daytonaio/sdk, railway — don't). `/api/v1/admin/sandbox/status`'s
+  // providerRuntimeAvailability is the live source of truth.
   sandbox: {
     priority: ["vercel-sandbox"],
   },

@@ -265,8 +265,9 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
 
       // A connected BYOC provider is *usable* when its stored credentials
       // carry every runtime-required field AND this deployment can construct
-      // its backend. Mirrors the explore runtime's engagement rule (#3370)
-      // so `activeBackend`/`isActive` report what actually runs.
+      // its backend. Manual mirror of the explore runtime's engagement gates
+      // in `tryCreateByocBackend` (#3370) so `activeBackend`/`isActive`
+      // report what actually runs — a gate added there must be added here.
       const usableByocBackendIds = new Set(
         credentials
           .filter(
@@ -306,7 +307,16 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           displayName: cred.displayName,
           connectedAt: cred.connectedAt,
           validatedAt: cred.validatedAt,
-          isActive: workspaceOverride === backendId && activeBackend === backendId,
+          // Requires the usable-BYOC gate on top of the override/activeBackend
+          // match: for vercel, `activeBackend` can resolve to "vercel-sandbox"
+          // via the *operator's* built-in backend even when this row's stored
+          // credentials can't run (needsReconnect) — without the gate the row
+          // would read "Live" while explore actually executes on the
+          // operator's account (#3370 review).
+          isActive:
+            workspaceOverride === backendId &&
+            activeBackend === backendId &&
+            usableByocBackendIds.has(backendId),
           needsReconnect:
             missingCredentialFields(cred.provider, cred.credentials).length > 0,
         };

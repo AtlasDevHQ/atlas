@@ -11,7 +11,7 @@
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
 import { sandboxErrorDetail, safeError } from "./backends/shared";
-import { vercelSandboxAccess } from "./backends/detect";
+import { vercelSandboxAccess, type RedactedSecret } from "./backends/detect";
 import * as path from "path";
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -85,12 +85,14 @@ const SANDBOX_SEMANTIC_CWD = "/vercel/sandbox/semantic";
 /**
  * Explicit Vercel API credentials for sandbox creation. When provided
  * (the BYOC per-org path, #3370), they replace the operator-level env-var
- * detection entirely — values must never be logged.
+ * detection entirely. The token carries the same RedactedSecret brand as
+ * the operator path's VercelSandboxAccess, so an accidental structured log
+ * of this object can't leak it — it's revealed only at Sandbox.create.
  */
 export interface VercelSandboxAccessOverride {
   teamId: string;
   projectId: string;
-  token: string;
+  token: RedactedSecret;
 }
 
 export async function createSandboxBackend(
@@ -116,16 +118,14 @@ export async function createSandboxBackend(
   // VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN are set we're running
   // off-Vercel (e.g. Railway) and pass explicit operator credentials; on
   // Vercel itself, OIDC handles auth automatically and these are undefined.
-  const access = accessOverride ? undefined : vercelSandboxAccess();
-  const explicitAccess = accessOverride
-    ? { ...accessOverride }
-    : access
-      ? {
-          teamId: access.teamId,
-          projectId: access.projectId,
-          token: access.token.reveal(),
-        }
-      : undefined;
+  const access = accessOverride ?? vercelSandboxAccess();
+  const explicitAccess = access
+    ? {
+        teamId: access.teamId,
+        projectId: access.projectId,
+        token: access.token.reveal(),
+      }
+    : undefined;
   let sandbox: InstanceType<typeof Sandbox>;
   try {
     sandbox = await Sandbox.create({

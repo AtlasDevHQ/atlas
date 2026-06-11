@@ -6,12 +6,14 @@
  * this module is the runtime consumer. `tryCreateByocBackend` is called from
  * the explore tool's workspace-override branch and returns:
  *
- *   • `null`   — BYOC is *not engaged* for this (org, backend): no stored
- *                credentials, credentials missing runtime-required fields,
- *                or the provider runtime isn't installed in this deployment.
- *                The caller falls through to the operator-configured chain
- *                (the operator *instance* — never operator credentials
- *                injected into an org-credential path, per the #2850 seam).
+ *   • `null`   — BYOC is *not engaged* for this (org, backend): the backend
+ *                id isn't a BYOC provider's id (the common case — built-ins
+ *                and custom plugin ids), no stored credentials, credentials
+ *                missing runtime-required fields, or the provider runtime
+ *                isn't installed in this deployment. The caller falls
+ *                through to the operator-configured chain (the operator
+ *                *instance* — never operator credentials injected into an
+ *                org-credential path, per the #2850 seam).
  *   • backend  — BYOC engaged: backend built from the org's decrypted
  *                credentials, on the org's own provider account.
  *   • throws   — BYOC engaged but construction failed. Callers must fail
@@ -19,9 +21,12 @@
  *                the operator's account: the admin selected this provider
  *                expecting isolation on their own infrastructure.
  *
- * Credentials are decrypted by `credentials.ts` (db/secret-encryption.ts);
- * this module never logs credential values — only provider names and the
- * *names* of missing fields.
+ * Credentials are decrypted by `credentials.ts` (db/secret-encryption.ts).
+ * This module never logs *stored* credential values — only provider names
+ * and the *names* of missing fields. Provider SDK error text (which may
+ * echo a rejected key) is confined to operator-level logs and the thrown
+ * error's `cause`; the thrown *message* — which becomes agent tool output —
+ * stays generic.
  */
 
 import {
@@ -29,6 +34,7 @@ import {
   type SandboxProviderKey,
 } from "@useatlas/schemas";
 import type { ExploreBackend } from "@atlas/api/lib/tools/backends/types";
+import { redactedSecret, type RedactedSecret } from "@atlas/api/lib/tools/backends/detect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   getSandboxCredentialByProvider,
@@ -146,31 +152,43 @@ function pluginRuntime(
         );
       }
       const plugin = factory(mapConfig(credentials)) as SandboxPluginLike;
+      // Same guard one level deeper: a factory from an incompatible plugin
+      // version could return a differently-shaped object, and without this
+      // check the resulting TypeError would be misreported to the admin as
+      // a credentials problem.
+      if (typeof plugin?.sandbox?.create !== "function") {
+        throw new Error(
+          `${packageName}'s ${factoryExport}() returned a plugin without sandbox.create() — incompatible plugin version installed`,
+        );
+      }
       return await plugin.sandbox.create(semanticRoot);
     },
   };
 }
 
 const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
-  // Vercel uses the in-tree backend (@vercel/sandbox is a regular dependency
-  // of @atlas/api, so this provider is runtime-available in every deployment).
-  // The published @useatlas/vercel-sandbox plugin's access-token mode passes
-  // an `accessToken` field @vercel/sandbox v2 ignores — the SDK requires the
-  // full { token, teamId, projectId } triple, which the in-tree backend
-  // forwards correctly.
+  // Vercel uses the in-tree backend. @vercel/sandbox is an
+  // *optionalDependency* of @atlas/api — installed in every supported
+  // deployment, but probed here so a deployment where the optional install
+  // failed reports the card as Unavailable instead of failing at the first
+  // explore call. The published @useatlas/vercel-sandbox plugin's
+  // access-token mode (as of 0.0.5) passes an `accessToken` field
+  // @vercel/sandbox v2 ignores — the SDK requires the full
+  // { token, teamId, projectId } triple, which the in-tree backend forwards
+  // correctly.
   vercel: {
-    requiredModules: [],
+    requiredModules: ["@vercel/sandbox"],
     async create(semanticRoot, credentials, load) {
       const mod = (await load("@atlas/api/lib/tools/explore-sandbox")) as {
         createSandboxBackend(
           semanticRoot: string,
-          access?: { teamId: string; projectId: string; token: string },
+          access?: { teamId: string; projectId: string; token: RedactedSecret },
         ): Promise<ExploreBackend>;
       };
       return await mod.createSandboxBackend(semanticRoot, {
         teamId: credentials.teamId as string,
         projectId: credentials.projectId as string,
-        token: credentials.accessToken as string,
+        token: redactedSecret(credentials.accessToken as string),
       });
     },
   },
@@ -205,33 +223,55 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
 /** Per-process probe cache — module installation can't change at runtime. */
 const runtimeAvailabilityCache = new Map<SandboxProviderKey, Promise<boolean>>();
 
+function isModuleNotFound(err: unknown): boolean {
+  const code =
+    err != null && typeof err === "object" && "code" in err
+      ? (err as NodeJS.ErrnoException).code
+      : undefined;
+  return code === "MODULE_NOT_FOUND" || code === "ERR_MODULE_NOT_FOUND";
+}
+
 /**
  * Whether this deployment can construct BYOC backends for a provider
- * (plugin package + provider SDK resolvable). Vercel is always available.
+ * (plugin package + provider SDK resolvable).
+ *
+ * Only not-found results are cached: module installation can't change at
+ * runtime, but an installed module whose import failed transiently (init
+ * throw, resource pressure) must not be pinned "unavailable" for the
+ * process lifetime — that would flip both the engagement rule and the
+ * admin status to a silent operator-chain fallback with no recovery short
+ * of a restart.
  */
 export function isProviderRuntimeAvailable(
   provider: SandboxProviderKey,
   load: ModuleLoader = dynamicImport,
 ): Promise<boolean> {
-  let cached = runtimeAvailabilityCache.get(provider);
-  if (!cached) {
-    cached = (async () => {
-      for (const specifier of PROVIDER_RUNTIMES[provider].requiredModules) {
-        try {
-          await load(specifier);
-        } catch (err) {
+  const cached = runtimeAvailabilityCache.get(provider);
+  if (cached) return cached;
+  const probe = (async () => {
+    for (const specifier of PROVIDER_RUNTIMES[provider].requiredModules) {
+      try {
+        await load(specifier);
+      } catch (err) {
+        if (isModuleNotFound(err)) {
           log.debug(
-            { provider, module: specifier, err: err instanceof Error ? err.message : String(err) },
-            "BYOC provider runtime module not resolvable",
+            { provider, module: specifier },
+            "BYOC provider runtime module not installed",
           );
           return false;
         }
+        runtimeAvailabilityCache.delete(provider); // retry on next probe
+        log.warn(
+          { provider, module: specifier, err: err instanceof Error ? err.message : String(err) },
+          "BYOC provider runtime module is installed but failed to load — treating as unavailable for this request",
+        );
+        return false;
       }
-      return true;
-    })();
-    runtimeAvailabilityCache.set(provider, cached);
-  }
-  return cached;
+    }
+    return true;
+  })();
+  runtimeAvailabilityCache.set(provider, probe);
+  return probe;
 }
 
 /** All providers' runtime availability, keyed by provider (status endpoint). */

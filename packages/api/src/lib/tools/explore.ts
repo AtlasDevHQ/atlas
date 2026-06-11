@@ -319,17 +319,20 @@ const backendCache = new Map<string, Promise<ExploreBackend>>();
 /**
  * Cache keys created under an org, for targeted invalidation when that org's
  * BYOC sandbox credentials change (#3370). Mirrors how the ConnectionRegistry
- * drains a workspace's pools on datasource credential edits (#3114).
+ * drains a workspace's pools on datasource credential edits
+ * (drainWorkspacePool, #3109).
  */
 const orgBackendKeys = new Map<string, Set<string>>();
 
 /** Best-effort close of a cached backend's resources (logs, never throws). */
-function closeCachedBackend(promise: Promise<ExploreBackend>): void {
+function closeCachedBackend(promise: Promise<ExploreBackend>, cacheKey: string): void {
   promise
     .then((backend) => backend.close?.())
     .catch((err) => {
-      log.debug(
-        { err: errorMessage(err) },
+      // warn, not debug: for BYOC backends a failed teardown leaves a remote
+      // sandbox billing the org's provider account until its idle timeout.
+      log.warn(
+        { err: errorMessage(err), cacheKey },
         "Failed to close invalidated explore backend",
       );
     });
@@ -340,8 +343,8 @@ export function invalidateExploreBackend(): void {
   // Close before clearing — BYOC backends (#3370) hold live remote sandboxes
   // (E2B/Daytona/Railway containers, Vercel sessions) that would otherwise
   // bill until the provider's idle timeout reaps them.
-  for (const cached of backendCache.values()) {
-    closeCachedBackend(cached);
+  for (const [key, cached] of backendCache) {
+    closeCachedBackend(cached, key);
   }
   backendCache.clear();
   orgBackendKeys.clear();
@@ -352,6 +355,10 @@ export function invalidateExploreBackend(): void {
  * Drop (and close) every cached backend created for an org. Called when the
  * org's BYOC sandbox credentials are saved or deleted so the next explore
  * call rebuilds against the new credential state.
+ *
+ * Per-process only: in a multi-replica deployment, other replicas keep
+ * their cached backend until restart or their own invalidation — same
+ * limitation as the ConnectionRegistry workspace-pool drain it mirrors.
  */
 export function invalidateOrgExploreBackends(orgId: string): void {
   const keys = orgBackendKeys.get(orgId);
@@ -361,7 +368,7 @@ export function invalidateOrgExploreBackends(orgId: string): void {
     const cached = backendCache.get(key);
     if (cached) {
       backendCache.delete(key);
-      closeCachedBackend(cached);
+      closeCachedBackend(cached, key);
     }
   }
 }
@@ -370,8 +377,8 @@ export function invalidateOrgExploreBackends(orgId: string): void {
  *  Called from explore-nsjail.ts on exit code 109 (sandbox setup failure). */
 export function markNsjailFailed(): void {
   _nsjailFailed = true;
-  for (const cached of backendCache.values()) {
-    closeCachedBackend(cached);
+  for (const [key, cached] of backendCache) {
+    closeCachedBackend(cached, key);
   }
   backendCache.clear();
   orgBackendKeys.clear();
@@ -625,7 +632,12 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
       }
       return createBashBackend(semanticRoot);
     })().catch((err) => {
-      backendCache.delete(cacheKeyVal); // allow retry on next call
+      // Identity-guarded: if invalidation already evicted this promise and a
+      // newer backend was cached under the same key, deleting blindly would
+      // orphan that live backend (it would never be close()d).
+      if (backendCache.get(cacheKeyVal) === promise) {
+        backendCache.delete(cacheKeyVal); // allow retry on next call
+      }
       throw err;
     });
     backendCache.set(cacheKeyVal, promise);

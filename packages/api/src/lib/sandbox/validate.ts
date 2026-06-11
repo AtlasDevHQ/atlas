@@ -385,8 +385,7 @@ export async function validateCredentials(
       if (typeof teamId !== "string" || !teamId) {
         return { valid: false, error: "Team ID is required" };
       }
-      // Required for runtime use — @vercel/sandbox needs the full
-      // token/teamId/projectId triple (#3370).
+      // Runtime-required — see REQUIRED_CREDENTIAL_FIELDS in sandbox/runtime.ts (#3370).
       if (typeof projectId !== "string" || !projectId) {
         return { valid: false, error: "Project ID is required" };
       }
@@ -412,8 +411,8 @@ export async function validateCredentials(
       if (typeof token !== "string" || !token) {
         return { valid: false, error: "API token is required" };
       }
-      // Required for runtime use — the BYOC path never falls back to the
-      // operator's RAILWAY_ENVIRONMENT_ID env var (#2850 seam, #3370).
+      // Runtime-required — the BYOC path never env-falls-back (#2850 seam);
+      // see REQUIRED_CREDENTIAL_FIELDS in sandbox/runtime.ts (#3370).
       const environmentId = credentials.environmentId;
       if (typeof environmentId !== "string" || !environmentId) {
         return { valid: false, error: "Environment ID is required" };

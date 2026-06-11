@@ -113,8 +113,27 @@ describe("missingCredentialFields", () => {
 });
 
 describe("isProviderRuntimeAvailable", () => {
-  it("vercel is always available (in-tree backend)", async () => {
-    expect(await isProviderRuntimeAvailable("vercel", fakeLoader({}))).toBe(true);
+  it("vercel requires @vercel/sandbox (an optionalDependency) to be resolvable", async () => {
+    expect(
+      await isProviderRuntimeAvailable("vercel", fakeLoader({ "@vercel/sandbox": {} })),
+    ).toBe(true);
+    _resetRuntimeAvailabilityCacheForTest();
+    // A deployment where the optional install failed must report Unavailable
+    // instead of failing at the first explore call.
+    expect(await isProviderRuntimeAvailable("vercel", fakeLoader({}))).toBe(false);
+  });
+
+  it("does not cache a transient (non-not-found) load failure", async () => {
+    let calls = 0;
+    const flakyLoader: ModuleLoader = async (specifier) => {
+      if (specifier !== "@vercel/sandbox") throw new Error("unexpected module");
+      calls++;
+      if (calls === 1) throw new Error("init failed under resource pressure");
+      return {};
+    };
+    expect(await isProviderRuntimeAvailable("vercel", flakyLoader)).toBe(false);
+    // Not-found is cached; transient failure is not — next probe retries.
+    expect(await isProviderRuntimeAvailable("vercel", flakyLoader)).toBe(true);
   });
 
   it("e2b requires both the plugin package and the SDK", async () => {
@@ -133,7 +152,9 @@ describe("isProviderRuntimeAvailable", () => {
   });
 
   it("getProviderRuntimeAvailability reports every provider", async () => {
-    const availability = await getProviderRuntimeAvailability(fakeLoader({}));
+    const availability = await getProviderRuntimeAvailability(
+      fakeLoader({ "@vercel/sandbox": {} }),
+    );
     expect(availability).toEqual({
       vercel: true,
       e2b: false,
@@ -236,7 +257,10 @@ describe("tryCreateByocBackend — engaged", () => {
   });
 
   it("builds the vercel backend via the in-tree explore-sandbox with the stored triple", async () => {
-    const createCalls: Array<{ root: string; access: unknown }> = [];
+    const createCalls: Array<{
+      root: string;
+      access: { teamId: string; projectId: string; token: { reveal(): string; toJSON(): string } };
+    }> = [];
     const backend = await tryCreateByocBackend(
       "org-1",
       "vercel-sandbox",
@@ -249,8 +273,9 @@ describe("tryCreateByocBackend — engaged", () => {
             projectId: "prj_1",
           }),
         load: fakeLoader({
+          "@vercel/sandbox": {},
           "@atlas/api/lib/tools/explore-sandbox": {
-            createSandboxBackend: async (root: string, access: unknown) => {
+            createSandboxBackend: async (root: string, access: (typeof createCalls)[number]["access"]) => {
               createCalls.push({ root, access });
               return {
                 exec: async () => ({ stdout: "vercel-byoc", stderr: "", exitCode: 0 }),
@@ -261,12 +286,35 @@ describe("tryCreateByocBackend — engaged", () => {
       },
     );
     expect(backend).not.toBeNull();
-    expect(createCalls).toEqual([
-      {
-        root: SEMANTIC_ROOT,
-        access: { teamId: "team_1", projectId: "prj_1", token: "vc_tok" },
-      },
-    ]);
+    expect(createCalls.length).toBe(1);
+    expect(createCalls[0].root).toBe(SEMANTIC_ROOT);
+    expect(createCalls[0].access.teamId).toBe("team_1");
+    expect(createCalls[0].access.projectId).toBe("prj_1");
+    // The token is RedactedSecret-branded: revealable at the create site,
+    // but serializing it (e.g. an accidental structured log) leaks nothing.
+    expect(createCalls[0].access.token.reveal()).toBe("vc_tok");
+    expect(JSON.stringify(createCalls[0].access)).not.toContain("vc_tok");
+  });
+
+  it("throws an incompatible-version error when the factory returns a shapeless plugin", async () => {
+    let thrown: unknown;
+    try {
+      await tryCreateByocBackend("org-1", "e2b-sandbox", SEMANTIC_ROOT, {
+        getCredential: async () => makeCredential("e2b", { apiKey: "k" }),
+        load: fakeLoader({
+          "@useatlas/e2b": { e2bSandboxPlugin: () => ({ notASandbox: true }) },
+          e2b: {},
+        }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    // Misreporting this as a credentials problem would send the admin to the
+    // wrong fix — the cause names the real (deployment) issue.
+    expect(((thrown as Error).cause as Error).message).toMatch(
+      /without sandbox\.create\(\).*incompatible plugin version/,
+    );
   });
 
   it("throws (fail-closed) without echoing the provider error into the message", async () => {

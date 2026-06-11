@@ -109,9 +109,15 @@ export const SandboxStatusSchema = z.object({
   connectedProviders: z.array(SandboxConnectedProviderSchema),
   /**
    * Whether this deployment can run each BYOC provider at runtime (provider
-   * plugin + SDK installed; `vercel` is always available). Providers absent
-   * or false cannot execute even with valid stored credentials (#3370).
-   * Optional: absent on responses from API versions predating the field.
+   * plugin + SDK resolvable). `false` means the provider cannot execute even
+   * with valid stored credentials (#3370). Consumers treat an absent key —
+   * and the absent field on API versions predating it — as *unknown* and
+   * assume usable: the optimistic default keeps older-API admin pages
+   * functional, and the connect/explore paths enforce the real check
+   * server-side. Keys are deliberately `z.string()` rather than
+   * `SandboxProviderKeySchema`: an enum-keyed record would make a newer API
+   * (with a fifth provider) fail this whole parse on an older web bundle
+   * during the deploy-overlap window.
    */
   providerRuntimeAvailability: z.record(z.string(), z.boolean()).optional(),
 });

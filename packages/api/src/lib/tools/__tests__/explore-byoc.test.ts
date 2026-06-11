@@ -49,7 +49,12 @@ mock.module("@atlas/api/lib/logger", () => ({
 const realSemanticSync = await import("@atlas/api/lib/semantic/sync");
 mock.module("@atlas/api/lib/semantic/sync", () => ({
   ...realSemanticSync,
-  ensureOrgModeSemanticRoot: async () => realSemanticSync.getSemanticRoot(),
+  // Mode-dependent like the real implementation (`.orgs/{org}/modes/{mode}`)
+  // so an org accumulates one cache key per atlasMode — the invalidation
+  // tests below depend on that multiplicity. Org-context tests only use
+  // mocked backends, so the path never touches the filesystem.
+  ensureOrgModeSemanticRoot: async (orgId: string, mode: string) =>
+    `${realSemanticSync.getSemanticRoot()}/.orgs/${orgId}/modes/${mode}`,
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({
@@ -263,6 +268,13 @@ describe("explore BYOC backend selection", () => {
     expect(result).toContain("Explore tool is unavailable");
     expect(result).toContain("e2b sandbox failed to start");
     expect(result).not.toContain("[operator-e2b]");
+
+    // The rejected promise must be evicted, not cached: after the admin
+    // fixes the credentials, the next explore call re-attempts instead of
+    // replaying the failure until process restart.
+    mockByocResult = { kind: "backend", create: () => makeMockBackend("byoc-recovered") };
+    const retried = await mod.explore.execute({ command: "ls" }, toolOpts);
+    expect(retried).toContain("[byoc-recovered]");
   });
 
   it("does not consult BYOC without an org context", async () => {
@@ -315,6 +327,43 @@ describe("explore BYOC backend selection", () => {
     // close() is fire-and-forget — give the microtask queue a tick
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(closed).toBe(1);
+  });
+
+  it("invalidation covers every mode's cached backend for the org", async () => {
+    // Each atlasMode gets its own semantic root, hence its own cache key.
+    // A regression that tracks only the most recent key would leave the
+    // other mode's backend running on deleted/revoked credentials.
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+
+    let created = 0;
+    let closed = 0;
+    mockByocResult = {
+      kind: "backend",
+      create: () => {
+        created++;
+        return makeMockBackend(`byoc-${created}`, () => {
+          closed++;
+        });
+      },
+    };
+
+    const mod = await freshExploreModule();
+
+    mockRequestContext = { user: { activeOrganizationId: "org-1" }, atlasMode: "published" };
+    expect(await mod.explore.execute({ command: "ls" }, toolOpts)).toContain("[byoc-1]");
+    mockRequestContext = { user: { activeOrganizationId: "org-1" }, atlasMode: "developer" };
+    expect(await mod.explore.execute({ command: "ls" }, toolOpts)).toContain("[byoc-2]");
+    expect(created).toBe(2);
+
+    mod.invalidateOrgExploreBackends("org-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closed).toBe(2);
+
+    // Both modes rebuild fresh
+    expect(await mod.explore.execute({ command: "ls" }, toolOpts)).toContain("[byoc-3]");
+    mockRequestContext = { user: { activeOrganizationId: "org-1" }, atlasMode: "published" };
+    expect(await mod.explore.execute({ command: "ls" }, toolOpts)).toContain("[byoc-4]");
+    expect(created).toBe(4);
   });
 
   it("invalidating a different org leaves the cached backend in place", async () => {

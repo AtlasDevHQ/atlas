@@ -212,6 +212,7 @@ beforeEach(() => {
 describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => {
   it("legacy provider-key override 'e2b' resolves to the e2b-sandbox backend", async () => {
     mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b");
+    mockRuntimeAvailability.e2b = true;
     mockSandboxPlugins = [{ id: "e2b-sandbox", name: "E2B" }];
     mockCredentials = [makeCredential("e2b")];
 
@@ -226,6 +227,7 @@ describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => 
 
   it("canonical backend-id override 'e2b-sandbox' resolves identically", async () => {
     mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+    mockRuntimeAvailability.e2b = true;
     mockSandboxPlugins = [{ id: "e2b-sandbox", name: "E2B" }];
     mockCredentials = [makeCredential("e2b")];
 
@@ -240,6 +242,8 @@ describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => 
 
   it("only the selected provider row is active when several are connected", async () => {
     mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b");
+    mockRuntimeAvailability.e2b = true;
+    mockRuntimeAvailability.daytona = true;
     mockSandboxPlugins = [
       { id: "e2b-sandbox", name: "E2B" },
       { id: "daytona-sandbox", name: "Daytona" },
@@ -319,12 +323,21 @@ describe("GET /api/v1/admin/sandbox/status — BYOC runtime resolution (#3370)",
     legacy.credentials = { accessToken: "tok", teamId: "team_1" }; // pre-projectId row
     mockCredentials = [legacy];
     // vercel-sandbox is also a built-in here (useVercelSandbox → true), so
-    // activeBackend stays vercel-sandbox via the operator path — but the
-    // row itself must say the stored credentials can't run.
+    // activeBackend resolves to vercel-sandbox via the OPERATOR path. The
+    // row must not read "Live" off that coincidence — the org's stored
+    // credentials aren't what's running. Vercel is the one provider whose
+    // BYOC backend id collides with a built-in name, so manual testing on
+    // the other providers won't catch this.
     const status = await getStatus();
+    expect(status.activeBackend).toBe("vercel-sandbox");
     expect(status.connectedProviders).toEqual([
-      expect.objectContaining({ provider: "vercel", needsReconnect: true }),
+      expect.objectContaining({
+        provider: "vercel",
+        needsReconnect: true,
+        isActive: false,
+      }),
     ]);
+    expectNoContradiction(status);
   });
 
   it("a complete vercel triple reports needsReconnect false", async () => {

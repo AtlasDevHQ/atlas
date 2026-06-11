@@ -110,6 +110,9 @@ jobs:
       - name: Check test-file discipline (1.5.4 / #2796)
         run: bash scripts/check-test-discipline.sh
 
+      - name: Check settings-registry reader presence (#3382)
+        run: bash scripts/check-settings-readers.sh
+
   lint:
     name: lint
     runs-on: ubuntu-latest

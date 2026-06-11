@@ -55,6 +55,10 @@
 #     together in practice; if you hit this, keep the key on the call line.
 #   - R2 resolves const names textually across the whole evidence set, not
 #     via the module graph.
+#   - per-key reader PRESENCE only: one compliant reader satisfies a key, so
+#     a second non-compliant reader of an already-compliant key (e.g. an
+#     env-frozen module-level read alongside a getSetting reader, #3400) is
+#     invisible to this check.
 
 set -euo pipefail
 

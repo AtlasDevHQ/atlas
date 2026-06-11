@@ -103,7 +103,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
       if (raw !== lastWarnedChatRpmValue) {
         log.warn(
           { value: raw },
-          "Invalid ATLAS_RATE_LIMIT_RPM_CHAT; falling back to derived default max(5, RPM/4)",
+          "ATLAS_RATE_LIMIT_RPM_CHAT must be positive (set ATLAS_RATE_LIMIT_RPM=0 to disable rate limiting entirely); falling back to derived default max(5, RPM/4)",
         );
         lastWarnedChatRpmValue = raw;
       }
@@ -124,7 +124,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
       if (raw !== lastWarnedAdminRpmValue) {
         log.warn(
           { value: raw },
-          "Invalid ATLAS_RATE_LIMIT_RPM_ADMIN; falling back to derived default max(60, RPM)",
+          "ATLAS_RATE_LIMIT_RPM_ADMIN must be positive (set ATLAS_RATE_LIMIT_RPM=0 to disable rate limiting entirely); falling back to derived default max(60, RPM)",
         );
         lastWarnedAdminRpmValue = raw;
       }

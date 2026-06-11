@@ -429,6 +429,25 @@ describe("validateManaged()", () => {
       expect(result.authenticated).toBe(true);
     });
 
+    it("rejects a session past its workspace's absolute timeout override", async () => {
+      await setSetting("ATLAS_SESSION_ABSOLUTE_TIMEOUT", "60", "test", "org-a");
+      mockGetSession.mockResolvedValueOnce({
+        user: { id: "usr_123", email: "alice@example.com" },
+        session: {
+          id: "sess_abc",
+          userId: "usr_123",
+          activeOrganizationId: "org-a",
+          updatedAt: new Date().toISOString(),
+          createdAt: new Date(Date.now() - 120_000).toISOString(),
+        },
+      });
+      const result = await validateManaged(makeRequest());
+      expect(result.authenticated).toBe(false);
+      if (!result.authenticated) {
+        expect(result.error).toBe("Session expired");
+      }
+    });
+
     it("workspace override wins over a looser env value", async () => {
       process.env.ATLAS_SESSION_IDLE_TIMEOUT = "3600";
       await setSetting("ATLAS_SESSION_IDLE_TIMEOUT", "60", "test", "org-a");

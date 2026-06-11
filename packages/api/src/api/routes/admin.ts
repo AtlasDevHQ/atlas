@@ -3542,10 +3542,20 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   const { authResult } = await adminAuthAndContext(c, "admin:settings");
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  const allSettings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
   const config = getConfig();
   const deployMode = config?.deployMode ?? "self-hosted";
+
+  // #3395 — showAll (platform-scoped settings included) matches the write
+  // classification: on SaaS only platform admins see everything; a no-org
+  // non-platform-admin session is a workspace admin there, same as the
+  // PUT/DELETE gates (#3389). A no-org self-hosted admin keeps showAll
+  // (global overrides are the legitimate self-hosted admin path). The mode
+  // probe here is GET's display-only permissive `getConfig()?.deployMode`
+  // read — NOT the fail-closed isSaasModeForGuard(), which is reserved for
+  // write paths (Rule 4).
+  const showAll = isPlatformAdmin || (!orgId && deployMode !== "saas");
+  const allSettings = getSettingsForAdmin(orgId, showAll);
 
   // In SaaS mode, workspace admins only see settings they can control.
   // Platform admins and self-hosted mode see everything.
@@ -3612,6 +3622,17 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   if (def.scope === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  // #3395 — workspace-scope sibling of the gate above: with no org context,
+  // a workspace-scoped write would land on the global (org_id IS NULL) row
+  // — the tier-2 default resolution applies to EVERY workspace. On SaaS a
+  // no-org non-platform-admin session is a workspace admin (#3389
+  // classification) and must never reach that row; self-hosted no-org
+  // admins keep it (global overrides are the legitimate self-hosted admin
+  // path). Same fail-closed mode probe as the gate above.
+  if (def.scope === "workspace" && !isPlatformAdmin && !orgId && isSaasModeForGuard()) {
+    return c.json({ error: "forbidden", message: `"${key}" is a workspace-scoped setting and this session has no active workspace; its global default cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   // #3376 — `saasVisible` is a read+write contract (parity Rule 4): a key
@@ -3725,6 +3746,13 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   if (def.scope === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  // #3395 — same workspace-scope/no-org gate as PUT: clearing the global
+  // (org_id IS NULL) override of a workspace-scoped key is a write to the
+  // tier-2 default every workspace resolves through. See the PUT handler.
+  if (def.scope === "workspace" && !isPlatformAdmin && !orgId && isSaasModeForGuard()) {
+    return c.json({ error: "forbidden", message: `"${key}" is a workspace-scoped setting and this session has no active workspace; its global default cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   // #3376 — same write gate as PUT: DELETE clears an override, which is a

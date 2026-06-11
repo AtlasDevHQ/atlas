@@ -46,6 +46,7 @@ import {
 } from "@/ui/lib/admin-schemas";
 import { extractFetchError, friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import type { DeployMode } from "@/ui/lib/types";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -615,9 +616,19 @@ function SelfHostedPlugins() {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function PluginsPage() {
-  const { deployMode } = useDeployMode();
+  const {
+    deployMode,
+    loading: modeLoading,
+    error: modeError,
+    resolved: modeResolved,
+  } = useDeployMode();
   const router = useRouter();
-  const isSaas = deployMode === "saas";
+  // View-swapping consumer (deploy-mode parity contract Rule 2, #3378):
+  // redirecting away IS the SaaS view here, so it must only fire on the
+  // server-confirmed mode — a hostname guess on a custom-domain self-host
+  // (loading window or settings-fetch failure) must not bounce a platform
+  // admin off this page.
+  const isSaas = modeResolved && deployMode === "saas";
 
   // SaaS mode: plugins are managed via dedicated admin pages (Connections,
   // Integrations, Sandbox, etc.) — redirect to admin overview. Must live in
@@ -627,6 +638,33 @@ export default function PluginsPage() {
   }, [isSaas, router]);
 
   if (isSaas) return null;
+
+  // Neutral state until the mode resolves — including the version-skew case
+  // where the settings response lacks deployMode (loading:false, error:null,
+  // resolved:false). This page may NOT fall through to a guessed view: the
+  // self-hosted plugin surface carries enable/disable/config mutations whose
+  // backing routes are platform-gated but not deploy-mode-gated, so
+  // committing on an unresolved mode would expose a self-hosted-only write
+  // surface on SaaS (#3391 review; parity contract Rule 2).
+  if (modeLoading || (!modeResolved && !modeError)) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <LoadingState />
+      </div>
+    );
+  }
+
+  // Settings-fetch error: surface it rather than committing to either mode's
+  // view. The wrapper's error surface includes the standard retry affordance.
+  if (!modeResolved && modeError) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <AdminContentWrapper loading={false} error={modeError}>
+          {null}
+        </AdminContentWrapper>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">

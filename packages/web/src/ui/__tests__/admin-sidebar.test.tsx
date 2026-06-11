@@ -26,7 +26,7 @@ mock.module("@/ui/hooks/use-branding", () => ({
 
 // Mock useDeployMode — default to self-hosted
 mock.module("@/ui/hooks/use-deploy-mode", () => ({
-  useDeployMode: () => ({ deployMode: "self-hosted", loading: false }),
+  useDeployMode: () => ({ deployMode: "self-hosted", loading: false, error: null, resolved: true }),
 }));
 
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)

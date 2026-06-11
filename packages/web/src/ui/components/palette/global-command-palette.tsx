@@ -49,8 +49,13 @@ export function GlobalCommandPalette({
   // `/platform/plugin-registry`). Without this guard the palette mounted
   // on the chat shell would fire `/api/v1/admin/settings` for every signed-
   // in member/viewer and 403 on each chat load.
-  const { deployMode } = useDeployMode({ enabled: isPlatformAdmin });
-  const isSaas = deployMode === "saas";
+  const { deployMode, resolved: modeResolved } = useDeployMode({ enabled: isPlatformAdmin });
+  // `null` while the mode is still a hostname guess (loading / fetch error /
+  // fetch disabled) — `buildAdminPaletteGroups` then hides mode-specific
+  // items in both directions instead of committing to the guess (deploy-mode
+  // parity contract Rule 2, #3378). For non-platform-admins (`enabled:
+  // false`) the mode never resolves, but their admin groups are `[]` anyway.
+  const isSaas = modeResolved ? deployMode === "saas" : null;
 
   // Cmd/Ctrl-K (and `?` outside an input) toggle the palette. Also listen
   // for the existing PALETTE_EVENT so the chat help menu's "Open command

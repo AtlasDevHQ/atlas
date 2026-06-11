@@ -81,7 +81,7 @@ export function AdminSidebar() {
   const pathname = usePathname();
   const userRole = useUserRole();
   const { branding } = useBranding();
-  const { deployMode } = useDeployMode();
+  const { deployMode, resolved: modeResolved } = useDeployMode();
   const { mode, setMode, isAdmin } = useMode();
   const pendingCount = usePendingAmendmentCount();
   const isSaas = deployMode === "saas";
@@ -114,8 +114,13 @@ export function AdminSidebar() {
       ...group,
       items: group.items
         .filter((item) => !item.requiredRole || item.requiredRole === userRole)
-        .filter((item) => !item.selfHostedOnly || !isSaas)
-        .filter((item) => !item.saasOnly || isSaas)
+        // Mode-specific nav items gate navigation to whole mode-specific
+        // views, so they only appear once the deploy mode is server-confirmed
+        // (deploy-mode parity contract Rule 2, #3378). Until then the neutral
+        // state is "mode-agnostic items only" — a hostname guess must not
+        // surface (or hide) the wrong mode's pages.
+        .filter((item) => !item.selfHostedOnly || (modeResolved && !isSaas))
+        .filter((item) => !item.saasOnly || (modeResolved && isSaas))
         .map((item) =>
           item.href === "/admin/semantic/improve" && pendingCount > 0
             ? { ...item, badge: pendingCount }

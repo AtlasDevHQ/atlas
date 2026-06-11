@@ -32,7 +32,7 @@ mock.module("@/ui/context", () => ({
 }));
 
 mock.module("@/ui/hooks/use-deploy-mode", () => ({
-  useDeployMode: () => ({ deployMode: "saas", loading: false, error: null }),
+  useDeployMode: () => ({ deployMode: "saas", loading: false, error: null, resolved: true }),
 }));
 
 mock.module("@/ui/hooks/use-demo-readonly", () => ({

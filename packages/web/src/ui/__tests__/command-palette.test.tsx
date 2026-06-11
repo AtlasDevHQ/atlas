@@ -20,7 +20,7 @@ mock.module("@/ui/hooks/use-platform-admin-guard", () => ({
 }));
 
 mock.module("@/ui/hooks/use-deploy-mode", () => ({
-  useDeployMode: () => ({ deployMode: "self-hosted", loading: false }),
+  useDeployMode: () => ({ deployMode: "self-hosted", loading: false, error: null, resolved: true }),
 }));
 
 mock.module("@/ui/hooks/use-admin-fetch", () => ({

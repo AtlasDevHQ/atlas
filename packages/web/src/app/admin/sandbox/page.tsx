@@ -148,7 +148,22 @@ function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
 // ── Page ──────────────────────────────────────────────────────────
 
 export default function SandboxPage() {
-  const { deployMode } = useDeployMode();
+  // View-swapping consumer (deploy-mode parity contract Rule 2, #3378): this
+  // page swaps whole mode-specific views AND writes mode-specific values
+  // (ATLAS_SANDBOX_BACKEND vocabulary differs per view), so it must never
+  // commit to a guessed mode. Mode loading/error are folded into the
+  // AdminContentWrapper below — neither view (and neither view's save path)
+  // renders until the mode is authoritative. `resolved` (not just
+  // loading/error) is the authoritative signal: a settings response missing
+  // `deployMode` (frontend/API version skew) reports loading:false,
+  // error:null, resolved:false, and must hold the neutral state rather than
+  // render a guessed view's save path (#3391 review).
+  const {
+    deployMode,
+    loading: modeLoading,
+    error: modeError,
+    resolved: modeResolved,
+  } = useDeployMode();
   const isSaas = deployMode === "saas";
 
   const { data, loading, error, refetch } = useAdminFetch(
@@ -188,6 +203,8 @@ export default function SandboxPage() {
   return (
     <div className="p-6">
       <ErrorBoundary>
+        {/* Heading copy is cosmetic-tier (Rule 2) — it may render from the
+            hostname guess while the mode resolves. */}
         <div className="mx-auto mb-8 max-w-3xl">
           <h1 className="text-2xl font-semibold tracking-tight">
             {isSaas ? "Execution Environment" : "Sandbox"}
@@ -200,8 +217,8 @@ export default function SandboxPage() {
         </div>
 
         <AdminContentWrapper
-          loading={loading}
-          error={error}
+          loading={loading || modeLoading || (!modeResolved && !modeError)}
+          error={error ?? modeError}
           isEmpty={!data}
           emptyIcon={Box}
           emptyTitle="Sandbox unavailable"

@@ -26,7 +26,7 @@ mock.module("@/ui/hooks/use-branding", () => ({
 
 // Mock useDeployMode — SaaS mode for this test file
 mock.module("@/ui/hooks/use-deploy-mode", () => ({
-  useDeployMode: () => ({ deployMode: "saas", loading: false }),
+  useDeployMode: () => ({ deployMode: "saas", loading: false, error: null, resolved: true }),
 }));
 
 // Mock shadcn sidebar

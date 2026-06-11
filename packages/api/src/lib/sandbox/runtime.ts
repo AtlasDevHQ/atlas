@@ -1,6 +1,6 @@
 /**
- * BYOC sandbox runtime — builds per-org explore backends from stored
- * `sandbox_credentials` rows (#3370).
+ * BYOC sandbox runtime — builds per-org explore and Python backends from
+ * stored `sandbox_credentials` rows (#3370, #3410).
  *
  * The /admin/sandbox connect flow validates and stores provider credentials;
  * this module is the runtime consumer. `tryCreateByocBackend` is called from
@@ -23,6 +23,15 @@
  *                operator's account: the admin selected this provider
  *                expecting isolation on their own infrastructure.
  *
+ * `tryCreateByocPythonBackend` (#3410) is the Python-tool counterpart with the
+ * same tri-state contract, plus a capability gate: only providers in
+ * `PYTHON_CAPABLE_PROVIDERS` can run Python (see that constant for why), and
+ * an incapable provider is *not engaged* for Python — the tool falls through
+ * to the operator chain while explore stays on the org's account. Python
+ * backends are per-request (python.ts builds a fresh one each call and
+ * re-reads credentials), so unlike explore there is no cached backend to
+ * drain on credential edits.
+ *
  * Credentials are decrypted by `credentials.ts` (db/secret-encryption.ts).
  * This module never logs *stored* credential values — only provider names
  * and the *names* of missing fields. Provider SDK error text (which may
@@ -36,6 +45,9 @@ import {
   type SandboxProviderKey,
 } from "@useatlas/schemas";
 import type { ExploreBackend } from "@atlas/api/lib/tools/backends/types";
+import type { PythonBackend } from "@atlas/api/lib/tools/python";
+import type { PythonSandboxOptions } from "@atlas/api/lib/tools/python-sandbox";
+import type { SandboxNetworkPolicy } from "@atlas/api/lib/tools/backends/network-allowlist";
 import { redactedSecret, type RedactedSecret } from "@atlas/api/lib/tools/backends/detect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -350,19 +362,18 @@ export interface ByocDeps {
 }
 
 /**
- * Build a BYOC explore backend for `(orgId, backendId)` from stored
- * credentials. Returns `null` when BYOC is not engaged (see module docs);
- * throws when engaged but construction fails — callers fail closed.
+ * Shared engagement gate for explore and Python BYOC paths. Returns the
+ * stored credential when BYOC is engaged for `(orgId, provider)` — stored
+ * credentials present, runtime-required fields complete, provider runtime
+ * loadable. Returns `null` when not engaged (caller falls through to the
+ * operator chain); throws (fail closed) when the runtime is installed but
+ * failed to load — a deployment defect, not the stable "not installed" state.
  */
-export async function tryCreateByocBackend(
+async function resolveEngagedCredential(
   orgId: string,
-  backendId: string,
-  semanticRoot: string,
-  deps: ByocDeps = {},
-): Promise<ExploreBackend | null> {
-  const provider = sandboxProviderForBackendId(backendId);
-  if (!provider) return null;
-
+  provider: SandboxProviderKey,
+  deps: ByocDeps,
+): Promise<SandboxCredential | null> {
   const getCredential = deps.getCredential ?? getSandboxCredentialByProvider;
   const load = deps.load ?? dynamicImport;
 
@@ -406,6 +417,27 @@ export async function tryCreateByocBackend(
     return null;
   }
 
+  return credential;
+}
+
+/**
+ * Build a BYOC explore backend for `(orgId, backendId)` from stored
+ * credentials. Returns `null` when BYOC is not engaged (see module docs);
+ * throws when engaged but construction fails — callers fail closed.
+ */
+export async function tryCreateByocBackend(
+  orgId: string,
+  backendId: string,
+  semanticRoot: string,
+  deps: ByocDeps = {},
+): Promise<ExploreBackend | null> {
+  const provider = sandboxProviderForBackendId(backendId);
+  if (!provider) return null;
+
+  const load = deps.load ?? dynamicImport;
+  const credential = await resolveEngagedCredential(orgId, provider, deps);
+  if (!credential) return null;
+
   // Engaged: from here on, errors propagate (fail closed — never silently
   // run the org's workload on the operator's provider account).
   try {
@@ -435,4 +467,123 @@ export async function tryCreateByocBackend(
       { cause: err },
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Python backend construction (#3410)
+// ---------------------------------------------------------------------------
+
+/**
+ * Providers whose BYOC credentials can run the *Python* tool. Python needs
+ * more than the explore-shaped exec surface the plugin SDK exposes — file
+ * upload, a Python interpreter, package install, and the per-request egress
+ * allowlist (#2927) — so support is per-provider:
+ *
+ *   • vercel — supported: the in-tree python-sandbox backend creates the
+ *     sandbox directly via @vercel/sandbox (runtime "python3.13"), the same
+ *     in-tree path explore's vercel runtime uses.
+ *   • e2b / daytona / railway — not yet: their backends come from sandbox
+ *     plugins whose contract is explore-only (`sandbox.create()` →
+ *     `exec(command)`); a Python surface is a plugin-SDK capability
+ *     follow-up split out of #3410.
+ *
+ * An unsupported provider is *not engaged* for Python — the tool falls
+ * through to the operator chain (and the docs say so) rather than failing
+ * closed: the org's explore isolation still applies, and hard-erroring
+ * Python for every e2b/daytona/railway org would break the tool with no
+ * recovery path the org controls.
+ */
+const PYTHON_CAPABLE_PROVIDERS: ReadonlySet<SandboxProviderKey> = new Set(["vercel"]);
+
+/** Whether a BYOC provider's selection covers the Python tool (#3410). */
+export function providerSupportsPython(provider: SandboxProviderKey): boolean {
+  return PYTHON_CAPABLE_PROVIDERS.has(provider);
+}
+
+/**
+ * Build a BYOC Python backend for `(orgId, backendId)` from stored
+ * credentials. Same tri-state contract as {@link tryCreateByocBackend}:
+ * `null` when not engaged (non-BYOC id, provider without Python support,
+ * no/incomplete credentials, runtime not installed); throws when engaged
+ * but unusable — callers fail closed, never the operator chain.
+ *
+ * `networkPolicy` is the per-request REST egress allowlist computed by the
+ * caller from the request's resolved datasource (#2927 layer 0) — the org's
+ * own sandbox gets the same egress bound as the platform one.
+ *
+ * Construction is lazy (the sandbox is created on first `exec`), so provider
+ * failures surface as `{ success: false }` results rather than throws; the
+ * wrapper below scrubs stored credential values from those error messages
+ * before they reach agent tool output.
+ */
+export async function tryCreateByocPythonBackend(
+  orgId: string,
+  backendId: string,
+  options: { readonly networkPolicy?: SandboxNetworkPolicy } = {},
+  deps: ByocDeps = {},
+): Promise<PythonBackend | null> {
+  const provider = sandboxProviderForBackendId(backendId);
+  if (!provider) return null;
+
+  if (!providerSupportsPython(provider)) {
+    log.debug(
+      { orgId, provider, backendId },
+      "BYOC provider has no Python runtime support — Python uses the operator chain (explore still runs on org credentials)",
+    );
+    return null;
+  }
+
+  const load = deps.load ?? dynamicImport;
+  const credential = await resolveEngagedCredential(orgId, provider, deps);
+  if (!credential) return null;
+
+  // Engaged: errors from here propagate (fail closed). Only vercel is
+  // python-capable today, so construction goes straight to the in-tree
+  // python-sandbox backend with the stored triple as an access override —
+  // the analogue of the vercel ProviderRuntime above.
+  let inner: PythonBackend;
+  try {
+    const mod = (await load("@atlas/api/lib/tools/python-sandbox")) as {
+      createPythonSandboxBackend(options?: PythonSandboxOptions): PythonBackend;
+    };
+    inner = mod.createPythonSandboxBackend({
+      ...(options.networkPolicy ? { networkPolicy: options.networkPolicy } : {}),
+      access: {
+        teamId: credential.credentials.teamId as string,
+        projectId: credential.credentials.projectId as string,
+        token: redactedSecret(credential.credentials.accessToken as string),
+      },
+    });
+  } catch (err) {
+    const detail = scrubCredentialValues(
+      err instanceof Error ? err.message : String(err),
+      credential.credentials,
+    );
+    log.error({ orgId, provider, err: detail }, "BYOC Python backend creation failed");
+    throw new Error(
+      `Your connected ${provider} sandbox failed to start. ` +
+        "Check the provider credentials on the Sandbox admin page, or switch back to the platform default.",
+      { cause: err },
+    );
+  }
+
+  log.info({ orgId, provider, backendId }, "BYOC Python backend created from org credentials");
+
+  return {
+    exec: async (code, data) => {
+      const result = await inner.exec(code, data);
+      if (!result.success) {
+        // Provider error text can echo the rejected credential (the lazy
+        // backend maps infra failures to result objects, so the explore
+        // path's throw-site scrub never sees them). Exact-match scrub
+        // against the org's own stored values before the message becomes
+        // agent tool output.
+        return {
+          ...result,
+          error: scrubCredentialValues(result.error, credential.credentials),
+        };
+      }
+      return result;
+    },
+  };
 }

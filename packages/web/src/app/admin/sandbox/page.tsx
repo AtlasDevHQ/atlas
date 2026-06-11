@@ -215,7 +215,7 @@ export default function SandboxPage() {
           <p className="mt-1 text-sm text-muted-foreground">
             {isSaas
               ? "Atlas runs code in isolated sandboxes. Use the managed one, or connect your own cloud."
-              : "Choose how the explore and Python tools execute commands for this workspace."}
+              : "Choose how the explore tool executes commands for this workspace. The Python tool follows the platform-level sandbox configuration."}
           </p>
         </div>
 
@@ -724,7 +724,7 @@ function SelfHostedSandboxView({
     <section>
       <SectionHeading
         title="Backend"
-        description="Select which backend executes explore and Python tool calls."
+        description="Select which backend executes explore tool calls. The Python tool follows the platform-level sandbox configuration."
       />
       <Shell
         icon={Server}

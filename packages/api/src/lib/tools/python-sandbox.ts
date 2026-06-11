@@ -26,6 +26,7 @@
 import { Effect, Data, Duration, Schedule } from "effect";
 import type { PythonBackend, PythonResult } from "./python";
 import type { SandboxNetworkPolicy } from "./backends/network-allowlist";
+import type { VercelSandboxAccessOverride } from "./explore-sandbox";
 import { PYTHON_SECURITY_AND_SETUP } from "./python-wrapper";
 import { sandboxErrorDetail, safeError, MAX_OUTPUT } from "./backends/shared";
 import { vercelSandboxAccess } from "./backends/detect";
@@ -50,6 +51,14 @@ export interface PythonSandboxOptions {
    * authenticated read path stays the host-side `executeRestOperation` tool).
    */
   readonly networkPolicy?: SandboxNetworkPolicy;
+  /**
+   * Explicit Vercel API credentials for sandbox creation — the BYOC per-org
+   * path (#3410). When provided they replace the operator-level env-var
+   * detection entirely (never merged with it, per the #2850 seam), mirroring
+   * explore-sandbox.ts's `accessOverride`. The token is RedactedSecret-
+   * branded: revealed only at `Sandbox.create`, serializes to "[REDACTED]".
+   */
+  readonly access?: VercelSandboxAccessOverride;
 }
 
 /** Default Python execution timeout in ms. */
@@ -196,6 +205,11 @@ export function createPythonSandboxBackend(
   // never carry tenant B's host (#2927, layer 0).
   const lockdownPolicy: SandboxNetworkPolicy = options.networkPolicy ?? "deny-all";
 
+  // Per-org BYOC access override (#3410), captured for the same per-request
+  // scoping reason: this backend can only ever create sandboxes on the
+  // account whose credentials it was constructed with.
+  const accessOverride = options.access;
+
   interface SandboxInstance {
     sandbox: InstanceType<(typeof import("@vercel/sandbox"))["Sandbox"]>;
     packagesInstalled: boolean;
@@ -216,11 +230,12 @@ export function createPythonSandboxBackend(
         },
       });
 
-      // 2. Create sandbox with retry for transient failures. Off-Vercel
-      // (e.g. Railway) requires explicit VERCEL_TEAM_ID/VERCEL_PROJECT_ID/
-      // VERCEL_TOKEN; on Vercel proper, OIDC handles auth and `access` is
-      // undefined.
-      const access = vercelSandboxAccess();
+      // 2. Create sandbox with retry for transient failures. A BYOC access
+      // override (per-org credentials, #3410) takes precedence and is used
+      // verbatim. Otherwise: off-Vercel (e.g. Railway) requires explicit
+      // VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN; on Vercel proper,
+      // OIDC handles auth and `access` is undefined.
+      const access = accessOverride ?? vercelSandboxAccess();
       const explicitAccess = access
         ? {
             teamId: access.teamId,

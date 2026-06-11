@@ -231,6 +231,35 @@ describe("createPythonSandboxBackend", () => {
     expect(createOpts.token).toBe("vercel-token");
   });
 
+  it("a BYOC access override replaces operator env credentials entirely (#3410)", async () => {
+    // Operator env creds set — the override must win, never merge (#2850 seam).
+    process.env.VERCEL_TEAM_ID = "operator_team";
+    process.env.VERCEL_PROJECT_ID = "operator_prj";
+    process.env.VERCEL_TOKEN = "operator-token";
+
+    setupSandboxMock();
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+    const { redactedSecret } = await import("@atlas/api/lib/tools/backends/detect");
+    const backend = mod.createPythonSandboxBackend({
+      access: {
+        teamId: "org_team",
+        projectId: "org_prj",
+        token: redactedSecret("org-token"),
+      },
+    });
+    await backend.exec("print(1)");
+
+    expect(mockCreateCalls.length).toBe(1);
+    const createOpts = mockCreateCalls[0] as {
+      teamId?: string;
+      projectId?: string;
+      token?: string;
+    };
+    expect(createOpts.teamId).toBe("org_team");
+    expect(createOpts.projectId).toBe("org_prj");
+    expect(createOpts.token).toBe("org-token");
+  });
+
   it("writes wrapper, user code, and data files to sandbox", async () => {
     setupSandboxMock();
     const backend = await freshBackend();

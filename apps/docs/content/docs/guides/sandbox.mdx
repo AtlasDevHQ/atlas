@@ -109,8 +109,9 @@ Credentials are stored per-workspace in the `sandbox_credentials` table. Each wo
 
 ### How BYOC Runs at Runtime
 
-A connected provider executes **explore** commands on your own account when
-all of the following hold:
+A connected provider executes **explore** commands — and, for providers with
+Python support (see the matrix below), **Python** executions — on your own
+account when all of the following hold:
 
 1. The provider is **selected** (its backend ID is the workspace's
    `ATLAS_SANDBOX_BACKEND` override) — connecting alone does not switch
@@ -135,10 +136,33 @@ that instead of showing the provider as live.
 
 Editing or disconnecting credentials tears down any cached sandbox for the
 workspace immediately; the next explore call rebuilds against the new state.
+(Python sandboxes are created per-request and re-read credentials on every
+call, so they pick up changes without a teardown step.)
 
-<Callout type="warn">
-The **Python tool** currently always runs on the platform sandbox — BYOC
-selection applies to the explore tool only.
+### Python Tool Coverage
+
+BYOC coverage for the **Python tool** is per-provider — Python needs more
+than the explore-shaped command surface (file upload, a Python interpreter,
+and the per-request REST egress allowlist):
+
+| Provider | Explore | Python |
+|----------|---------|--------|
+| Vercel Sandbox | Your account | Your account |
+| E2B | Your account | Platform sandbox |
+| Daytona | Your account | Platform sandbox |
+| Railway | Your account | Platform sandbox |
+
+With a connected **Vercel** provider selected, Python runs on your Vercel
+account with the same engagement and fail-closed rules as explore: if your
+sandbox can't start, the Python tool errors rather than silently falling back
+to the platform sandbox, and the egress allowlist for REST datasources is
+applied to your sandbox exactly as it would be to the managed one.
+
+<Callout type="info">
+E2B, Daytona, and Railway sandboxes are explore-only today — their plugin
+interface has no Python execution surface yet. With one of these selected,
+explore runs on your account while Python falls back to the platform
+sandbox.
 </Callout>
 
 ---
@@ -158,6 +182,12 @@ In self-hosted mode, the page shows the original dropdown UI:
 3. Click **Save**
 
 To return to the platform default, select **Use platform default** from the dropdown, or click **Reset to default**.
+
+<Callout type="info">
+The workspace backend override applies to the **explore** tool. The **Python**
+tool follows the platform-level sandbox configuration (the environment-driven
+priority chain below) — it is not affected by this dropdown.
+</Callout>
 
 ### Sidecar Configuration
 

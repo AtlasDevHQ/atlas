@@ -90,7 +90,10 @@ Retiring an environment (e.g. EU replica goes away, `staging` shuts down) goes t
 Archived groups become read-only tombstones — they can no longer be renamed, assigned new members, or re-archived (the API returns 409). **Dashboard cards keep their group reference and keep rendering against the archived environment** — that's intentional for the initial cascade slice; plan to edit or remove cards that reference an archived group afterwards. See [Archiving a group](/semantic-layer/multi-env#archiving-a-group) for the full semantics.
 
 **Actions:**
-- **Add connection** — Create a new datasource with URL, database type, and optional description. For PostgreSQL, an optional schema field is also available. The URL field supports a show/hide toggle for credential safety
+- **Add datasource** — Opens a picker with three groups:
+  - **Databases** — PostgreSQL and MySQL connect through a URL form (with optional schema and description; the URL field supports a show/hide toggle for credential safety). Plugin datasources (ClickHouse, Snowflake, BigQuery, Elasticsearch, …) connect through a schema-driven install form — the same marketplace form-install as Admin → Integrations — with credential fields encrypted at rest. These register immediately and are queryable without a reload. On SaaS, datasources that aren't multi-tenant safe (e.g. DuckDB) don't appear
+  - **Popular APIs** — Curated REST datasources (Stripe, Notion, GitHub) with a one-credential form or OAuth
+  - **Custom** — Any REST API with an OpenAPI 3.x spec
 - **Edit connection** — Update an existing connection's URL, type, or description
 - **Delete connection** — Remove a connection (with confirmation dialog). The default connection cannot be deleted
 - **Test connection** — Runs a health check query against the datasource and reports latency and status

@@ -93,10 +93,11 @@ const listActionsRoute = createRoute({
         },
       },
     },
-    400: { description: "Invalid filter parameter", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid `from`/`to` date filter (unparseable date)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters (e.g. non-numeric `limit`/`offset`) — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -110,10 +111,11 @@ const exportActionsRoute = createRoute({
   request: { query: ActionFilterQuerySchema.omit({ limit: true, offset: true }) },
   responses: {
     200: { description: "CSV file", content: { "text/csv": { schema: z.string() } } },
-    400: { description: "Invalid filter parameter", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid `from`/`to` date filter (unparseable date)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });

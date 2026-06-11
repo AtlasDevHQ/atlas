@@ -271,10 +271,11 @@ const dataAccessReportRoute = createRoute({
   request: { query: ReportQuerySchema },
   responses: {
     200: { description: "Data access report", content: { "application/json": { schema: DataAccessReportSchema } } },
-    400: { description: "Invalid parameters", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid date values (unparseable `startDate`/`endDate`, or `startDate` after `endDate`)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters (missing `startDate`/`endDate`, or unknown `format`) — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -288,10 +289,11 @@ const userActivityReportRoute = createRoute({
   request: { query: ReportQuerySchema },
   responses: {
     200: { description: "User activity report", content: { "application/json": { schema: UserActivityReportSchema } } },
-    400: { description: "Invalid parameters", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid date values (unparseable `startDate`/`endDate`, or `startDate` after `endDate`)", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters (missing `startDate`/`endDate`, or unknown `format`) — rejected by request validation", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });

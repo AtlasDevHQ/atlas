@@ -248,7 +248,7 @@ const catalogRoute = createRoute({
     400: { description: "Missing BYOT key for the requested provider", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required — or upstream rejected the BYOT key", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
-    422: { description: "Stored BYOT key cannot be decrypted (likely key-rotation drift)", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters (unknown `provider`/`refresh` value, rejected by request validation), or stored BYOT key cannot be decrypted (likely key-rotation drift)", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limited — by Atlas or by upstream provider", content: { "application/json": { schema: AuthErrorSchema } } },
     503: { description: "Upstream provider unavailable", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },

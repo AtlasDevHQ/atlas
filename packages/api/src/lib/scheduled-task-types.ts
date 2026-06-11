@@ -13,6 +13,31 @@ export {
   DELIVERY_STATUSES,
   isRecipient,
 } from "@useatlas/types/scheduled-task";
+
+import { DELIVERY_STATUSES } from "@useatlas/types/scheduled-task";
+
+/**
+ * Runtime accept-list for `scheduled_task_runs.delivery_status` (#3379).
+ *
+ * Extends the published `DELIVERY_STATUSES` with `"failed_permanent"` —
+ * written by the executor when ALL delivery failures in a run were permanent
+ * (misconfiguration: no email sender, no Slack token, blocked webhook URL),
+ * so the run history can distinguish "fix your config" from "retry later".
+ *
+ * The new value lives HERE (scaffold-bound source) rather than in the
+ * `DELIVERY_STATUSES` value export of `@useatlas/types`, because that package
+ * is consumed from the npm registry by scaffold builds and a value change
+ * would drift until the next publish + ref bump. The union type in
+ * `@useatlas/types` carries `"failed_permanent"` type-only for the same
+ * reason. Annotated `readonly string[]` (not `satisfies readonly
+ * DeliveryStatus[]`) deliberately: scaffold builds type-check this file
+ * against the *published* `.d.ts`, whose union may not yet include the new
+ * member.
+ */
+export const KNOWN_DELIVERY_STATUSES: readonly string[] = [
+  ...DELIVERY_STATUSES,
+  "failed_permanent",
+];
 export type {
   DeliveryChannel,
   RunStatus,

@@ -72,7 +72,13 @@ mock.module("@/ui/context", () => ({
   }),
 }));
 
-const mutateMock = mock(async () => undefined);
+// Default resolves like a successful mutation with no preflight warnings —
+// individual tests override via mockResolvedValueOnce.
+type MutateResultLike =
+  | { ok: true; data: unknown }
+  | { ok: false; error: { message: string } }
+  | undefined;
+const mutateMock = mock(async (): Promise<MutateResultLike> => ({ ok: true, data: {} }));
 mock.module("@/ui/hooks/use-admin-mutation", () => ({
   useAdminMutation: () => ({
     mutate: mutateMock,
@@ -87,7 +93,7 @@ mock.module("@/ui/components/admin/mutation-error-surface", () => ({
   MutationErrorSurface: () => null,
 }));
 
-import { render, cleanup, waitFor } from "@testing-library/react";
+import { render, cleanup, waitFor, fireEvent } from "@testing-library/react";
 
 // Imported after mocks register.
 const { TaskFormDialog } = await import("../task-form-dialog");
@@ -365,5 +371,137 @@ describe("TaskFormDialog — zero-environment guard (#2418)", () => {
     );
     expect(retry).not.toBeUndefined();
     expect(getSaveButton(container).disabled).toBe(true);
+  });
+});
+
+// ── #3379: sender preflight warnings ──────────────────────────────────
+
+const ONE_GROUP = [
+  { id: "g_prod", name: "Production", memberCount: 1, resolvedConnectionId: "c1" },
+];
+
+/** Fill the minimum valid create form (email channel) and click Create. */
+async function fillAndSubmit(container: HTMLElement) {
+  await waitFor(() => {
+    expect(getSaveButton(container).disabled).toBe(false);
+  });
+
+  const name = container.querySelector<HTMLInputElement>("#task-name");
+  const question = container.querySelector<HTMLTextAreaElement>("#task-question");
+  const emailInput = Array.from(container.querySelectorAll("input")).find(
+    (i) => i.placeholder === "user@example.com",
+  );
+  if (!name || !question || !emailInput) {
+    throw new Error("form fields not found in rendered tree");
+  }
+  fireEvent.change(name, { target: { value: "Weekly digest" } });
+  fireEvent.change(question, { target: { value: "What changed this week?" } });
+  fireEvent.change(emailInput, { target: { value: "report@example.com" } });
+  fireEvent.keyDown(emailInput, { key: "Enter" });
+  fireEvent.click(getSaveButton(container));
+}
+
+describe("TaskFormDialog — sender preflight warnings (#3379)", () => {
+  test("a successful save WITH warnings keeps the dialog open and shows them", async () => {
+    installFetchMock(ONE_GROUP);
+    mutateMock.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        id: "task-1",
+        warnings: [
+          "This deployment has no email sender configured — email reports will only be written to the server log and every delivery will fail.",
+        ],
+      },
+    });
+    const onOpenChange = mock((_open: boolean) => {});
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    await fillAndSubmit(container);
+
+    await waitFor(() => {
+      expect(container.textContent).toContain("Task saved — delivery needs attention");
+      expect(container.textContent).toContain("no email sender configured");
+    });
+    // The save succeeded but the dialog must NOT auto-close — the warning is
+    // the whole point of surfacing this at save time.
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // Footer collapses to a single acknowledge button.
+    const close = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.trim() === "Close",
+    );
+    if (!close) throw new Error("Close button not found");
+    fireEvent.click(close);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  test("a successful save with warnings: [] closes the dialog as before", async () => {
+    installFetchMock(ONE_GROUP);
+    mutateMock.mockResolvedValueOnce({ ok: true, data: { id: "task-1", warnings: [] } });
+    const onOpenChange = mock((_open: boolean) => {});
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    await fillAndSubmit(container);
+
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(container.textContent).not.toContain("delivery needs attention");
+  });
+
+  test("a response without a warnings field (older API) closes the dialog", async () => {
+    // extractWarnings tolerates any shape — warnings are best-effort UX.
+    installFetchMock(ONE_GROUP);
+    mutateMock.mockResolvedValueOnce({ ok: true, data: { id: "task-1" } });
+    const onOpenChange = mock((_open: boolean) => {});
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    await fillAndSubmit(container);
+
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+  });
+
+  test("a failed save shows no warning banner and keeps the dialog open", async () => {
+    installFetchMock(ONE_GROUP);
+    mutateMock.mockResolvedValueOnce({ ok: false, error: { message: "boom" } });
+    const onOpenChange = mock((_open: boolean) => {});
+
+    const { container } = render(
+      <TaskFormDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        task={null}
+        onSuccess={() => {}}
+      />,
+    );
+    await fillAndSubmit(container);
+
+    await waitFor(() => {
+      expect(mutateMock).toHaveBeenCalled();
+    });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("delivery needs attention");
   });
 });

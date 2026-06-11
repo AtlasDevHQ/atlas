@@ -31,7 +31,14 @@ import {
 } from "@atlas/api/lib/scheduled-tasks";
 import type { TickResult } from "@atlas/api/lib/scheduler/engine";
 import { isBlockedUrl } from "@atlas/api/lib/scheduler/delivery";
-import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
+import { checkDeliverySenders } from "@atlas/api/lib/scheduler/sender-preflight";
+import {
+  DELIVERY_CHANNELS,
+  RUN_STATUSES,
+  type DeliveryChannel,
+  type Recipient,
+  type RunStatus,
+} from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
 import { type AuthEnv } from "./middleware";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
@@ -96,6 +103,22 @@ const UpdateScheduledTaskSchema = z.object({
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+
+/**
+ * Recipients the sender preflight should inspect — only those matching the
+ * task's delivery channel, mirroring the filter `deliverResult` applies at
+ * delivery time so a stale recipient of another channel can't produce a
+ * spurious warning (#3379). Tolerates `undefined` inputs defensively: the
+ * preflight is best-effort and must never turn a successful create/update
+ * into a 500.
+ */
+function recipientsForChannel(
+  recipients: Recipient[] | undefined,
+  channel: DeliveryChannel | undefined,
+): Recipient[] {
+  if (!recipients || !channel) return [];
+  return recipients.filter((r) => r.type === channel);
+}
 
 function crudFailResponse(reason: CrudFailReason, requestId?: string) {
   switch (reason) {
@@ -366,7 +389,17 @@ authed.openapi(
         metadata: { name: parsed.name },
       });
 
-      return c.json(createResult.data, 201);
+      // #3379 — sender preflight: warn (never block) when this deployment has
+      // no working sender for the chosen channel. The task is created either
+      // way; the admin can configure the sender afterwards.
+      const warnings = yield* Effect.promise(() =>
+        checkDeliverySenders(
+          recipientsForChannel(parsed.recipients, parsed.deliveryChannel),
+          orgId,
+        ),
+      );
+
+      return c.json({ ...createResult.data, warnings }, 201);
     }), { label: "create scheduled task" });
   },
   (result, c) => {
@@ -619,9 +652,25 @@ authed.openapi(
       }
 
       if (!updated.ok) {
-        return c.json({ ok: true }, 200);
+        // Update succeeded but the re-fetch failed — keep the legacy shape,
+        // with an empty warnings array for response-shape consistency.
+        return c.json({ ok: true, warnings: [] }, 200);
       }
-      return c.json(updated.data, 200);
+
+      // #3379 — sender preflight on the task's EFFECTIVE post-update state.
+      // The request body may omit recipients/deliveryChannel (partial PUT),
+      // so prefer the parsed values when present and fall back to the stored
+      // task. Warn, never block.
+      const warnings = yield* Effect.promise(() =>
+        checkDeliverySenders(
+          recipientsForChannel(
+            parsed.recipients ?? updated.data.recipients,
+            parsed.deliveryChannel ?? updated.data.deliveryChannel,
+          ),
+          orgId,
+        ),
+      );
+      return c.json({ ...updated.data, warnings }, 200);
     }), { label: "update scheduled task" });
   },
   (result, c) => {

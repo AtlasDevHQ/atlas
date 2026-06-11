@@ -219,7 +219,7 @@ export interface DeliveryResult {
   error?: string;
 }
 
-interface EmailTransport {
+export interface EmailTransport {
   provider: EmailProvider;
   senderAddress: string;
   /**
@@ -347,9 +347,83 @@ function getPlatformEmailConfig(): EmailTransport | null {
 }
 
 /**
+ * Resolution-only view of the provider chain: which backend WOULD
+ * {@link sendEmail} use right now? `"log"` means nothing is configured —
+ * the dev fallback that only writes the message to the server log.
+ */
+export type ResolvedEmailSender =
+  | {
+      kind: "org-transport";
+      transport: EmailTransport;
+      /**
+       * True when the org transport is `smtp`/`ses` but the
+       * `ATLAS_SMTP_URL` HTTP bridge those providers require is unset —
+       * `deliverViaTransport` will refuse the send with a log-provider
+       * failure. The send-path dispatch is unchanged (the failure still
+       * surfaces at delivery, matching pre-#3379 behavior); the sender
+       * preflight reads this to warn at create/update time instead of
+       * reporting the org transport as configured (#3385 review).
+       */
+      bridgeMissing?: boolean;
+    }
+  | { kind: "platform-transport"; transport: EmailTransport }
+  | { kind: "smtp-webhook" }
+  | { kind: "resend-env" }
+  | { kind: "log" };
+
+/**
+ * Walk the provider chain WITHOUT sending anything and report where it lands.
+ *
+ * This is the single statement of the chain — {@link sendEmail} dispatches on
+ * its result, and the scheduler's sender preflight
+ * (`lib/scheduler/sender-preflight.ts`, #3379) calls it to warn at task
+ * create/update time when the chain would land on the `log` fallback. Because
+ * both consume the SAME resolution, the preflight and the actual send can
+ * never disagree about whether a sender exists.
+ *
+ * Priority: DB config (per-org) → platform email settings → ATLAS_SMTP_URL
+ * (webhook) → RESEND_API_KEY → `log` (nothing configured).
+ */
+export async function resolveEmailSender(orgId?: string): Promise<ResolvedEmailSender> {
+  // 1. DB-stored config for the org
+  if (orgId) {
+    const transport = await getEmailTransport(orgId);
+    if (transport) {
+      const bridgeMissing =
+        (transport.config.provider === "smtp" || transport.config.provider === "ses") &&
+        !process.env.ATLAS_SMTP_URL;
+      return bridgeMissing
+        ? { kind: "org-transport", transport, bridgeMissing }
+        : { kind: "org-transport", transport };
+    }
+  }
+
+  // 2. Platform email provider (settings registry)
+  const platformConfig = getPlatformEmailConfig();
+  if (platformConfig) {
+    return { kind: "platform-transport", transport: platformConfig };
+  }
+
+  // 3. Webhook delivery (generic email API)
+  if (process.env.ATLAS_SMTP_URL) {
+    return { kind: "smtp-webhook" };
+  }
+
+  // 4. Resend API delivery (env-var fallback for backward compat)
+  if (process.env.RESEND_API_KEY) {
+    return { kind: "resend-env" };
+  }
+
+  // 5. Nothing configured — sendEmail's dev fallback logs instead of sending.
+  return { kind: "log" };
+}
+
+/**
  * Send an email using the configured delivery backend.
  *
  * Priority: DB config (per-org) → platform email settings → ATLAS_SMTP_URL (webhook) → RESEND_API_KEY → console log (dev fallback).
+ * The chain itself lives in {@link resolveEmailSender}; this function only
+ * dispatches on its result so the scheduler preflight reuses the exact logic.
  *
  * Pass `orgId` to enable DB-backed email config lookup. When omitted, falls back to platform/env settings.
  */
@@ -361,39 +435,34 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
   // a path that kept using the raw `message` would leak.
   const outbound = clampForOutbound(message);
 
-  // 1. Try DB-stored config for the org
-  if (orgId) {
-    const transport = await getEmailTransport(orgId);
-    if (transport) {
-      return deliverViaTransport(outbound, transport);
-    }
-  }
-
-  // 2. Platform email provider (settings registry)
-  const platformConfig = getPlatformEmailConfig();
-  if (platformConfig) {
-    return deliverViaTransport(outbound, platformConfig);
-  }
-
+  const resolved = await resolveEmailSender(orgId);
   const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@ship.useatlas.dev>";
 
-  // 3. Webhook delivery (generic email API)
-  if (process.env.ATLAS_SMTP_URL) {
-    return deliverWebhook(outbound, fromAddress);
-  }
+  switch (resolved.kind) {
+    case "org-transport":
+    case "platform-transport":
+      return deliverViaTransport(outbound, resolved.transport);
 
-  // 4. Resend API delivery (env-var fallback for backward compat)
-  if (process.env.RESEND_API_KEY) {
-    return deliverResend(outbound, fromAddress);
-  }
+    case "smtp-webhook":
+      return deliverWebhook(outbound, fromAddress);
 
-  // 5. Dev fallback — log instead of sending. Returns success: false so the email
-  // is not recorded as sent, allowing retry when a provider is configured.
-  log.warn(
-    { to: outbound.to, subject: outbound.subject },
-    "Email delivery skipped — no email provider configured",
-  );
-  return { success: false, provider: "log", error: "No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)" };
+    case "resend-env":
+      return deliverResend(outbound, fromAddress);
+
+    case "log":
+      // Dev fallback — log instead of sending. Returns success: false so the email
+      // is not recorded as sent, allowing retry when a provider is configured.
+      log.warn(
+        { to: outbound.to, subject: outbound.subject },
+        "Email delivery skipped — no email provider configured",
+      );
+      return { success: false, provider: "log", error: "No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)" };
+
+    default: {
+      const _exhaustive: never = resolved;
+      return { success: false, provider: "log", error: `Unknown email sender resolution: ${JSON.stringify(_exhaustive)}` };
+    }
+  }
 }
 
 /**

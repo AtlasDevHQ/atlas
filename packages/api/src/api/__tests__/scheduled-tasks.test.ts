@@ -83,6 +83,16 @@ mock.module("@atlas/api/lib/scheduled-tasks", () => ({
   validateCronExpression: mockValidateCronExpression,
 }));
 
+// #3379 — sender preflight (warn-don't-block). Mocked so route tests don't
+// walk the real email/Slack resolution chains; the chain itself is covered
+// in lib/scheduler/__tests__/sender-preflight.test.ts.
+const mockCheckDeliverySenders = mock((): Promise<string[]> => Promise.resolve([]));
+mock.module("@atlas/api/lib/scheduler/sender-preflight", () => ({
+  checkDeliverySenders: mockCheckDeliverySenders,
+  EMAIL_NO_SENDER_WARNING: "email-warning-stub",
+  SLACK_NO_SENDER_WARNING: "slack-warning-stub",
+}));
+
 // --- Other mocks (required by Hono app index.ts) ---
 
 mock.module("@atlas/api/lib/agent", () => ({
@@ -218,6 +228,8 @@ describe("scheduled-tasks routes", () => {
     mockListAllRuns.mockResolvedValue({ runs: [], total: 0 });
     mockValidateCronExpression.mockReset();
     mockValidateCronExpression.mockReturnValue({ valid: true });
+    mockCheckDeliverySenders.mockReset();
+    mockCheckDeliverySenders.mockResolvedValue([]);
     mockRunTick.mockReset();
     mockRunTick.mockResolvedValue({ tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 });
     mockGetConfig.mockReset();
@@ -348,6 +360,82 @@ describe("scheduled-tasks routes", () => {
       const opts = mockCreateScheduledTask.mock.calls[0][0] as { connectionGroupId?: string | null; connectionId?: string | null };
       expect("connectionId" in opts).toBe(false);
       expect(opts.connectionGroupId).toBe("g_prod");
+    });
+
+    // #3379 — sender preflight: warn, never block.
+
+    it("includes warnings: [] on create when senders are configured", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What was yesterday's revenue?",
+            cronExpression: "0 9 * * 1",
+            deliveryChannel: "email",
+            recipients: [{ type: "email", address: "test@test.com" }],
+            connectionGroupId: "g_prod",
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.warnings).toEqual([]);
+    });
+
+    it("returns 201 WITH warnings when the deployment has no sender (warn, never block) (#3379)", async () => {
+      mockCheckDeliverySenders.mockResolvedValueOnce(["email-warning-stub"]);
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What was yesterday's revenue?",
+            cronExpression: "0 9 * * 1",
+            deliveryChannel: "email",
+            recipients: [{ type: "email", address: "test@test.com" }],
+            connectionGroupId: "g_prod",
+          }),
+        }),
+      );
+      // Creation still succeeds — the warning rides on the response.
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.warnings).toEqual(["email-warning-stub"]);
+      expect(mockCreateScheduledTask).toHaveBeenCalledTimes(1);
+      // The preflight sees only channel-matching recipients + the caller's org.
+      expect(mockCheckDeliverySenders).toHaveBeenCalledWith(
+        [{ type: "email", address: "test@test.com" }],
+        "org-1",
+      );
+    });
+
+    it("preflights only recipients matching the delivery channel (#3379)", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/scheduled-tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Daily Revenue",
+            question: "What was yesterday's revenue?",
+            cronExpression: "0 9 * * 1",
+            deliveryChannel: "webhook",
+            recipients: [
+              { type: "webhook", url: "https://hook.example.com" },
+              // Stale recipient of another channel — must not trigger a warning.
+              { type: "email", address: "stale@test.com" },
+            ],
+            connectionGroupId: "g_prod",
+          }),
+        }),
+      );
+      expect(response.status).toBe(201);
+      expect(mockCheckDeliverySenders).toHaveBeenCalledWith(
+        [{ type: "webhook", url: "https://hook.example.com" }],
+        "org-1",
+      );
     });
 
     it("returns 422 for missing name", async () => {
@@ -573,6 +661,43 @@ describe("scheduled-tasks routes", () => {
         }),
       );
       expect(response.status).toBe(400);
+    });
+
+    // #3379 — sender preflight on update: warn, never block.
+
+    it("returns 200 WITH warnings when updated recipients have no sender (#3379)", async () => {
+      mockCheckDeliverySenders.mockResolvedValueOnce(["slack-warning-stub"]);
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            deliveryChannel: "slack",
+            recipients: [{ type: "slack", channel: "#reports" }],
+          }),
+        }),
+      );
+      // Update still succeeds — the warning rides on the response.
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.warnings).toEqual(["slack-warning-stub"]);
+      expect(mockCheckDeliverySenders).toHaveBeenCalledWith(
+        [{ type: "slack", channel: "#reports" }],
+        "org-1",
+      );
+    });
+
+    it("includes warnings: [] on update when senders are configured (#3379)", async () => {
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/scheduled-tasks/${VALID_ID}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: "Updated Name" }),
+        }),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.warnings).toEqual([]);
     });
 
     it("returns 400 for invalid JSON", async () => {

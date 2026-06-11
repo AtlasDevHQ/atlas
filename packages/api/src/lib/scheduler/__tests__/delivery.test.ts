@@ -72,7 +72,7 @@ describe("delivery dispatcher", () => {
   it("returns zero summary when no recipients", async () => {
     const task = makeTask({ recipients: [] });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 0, succeeded: 0, failed: 0 });
+    expect(summary).toEqual({ attempted: 0, succeeded: 0, failed: 0, permanentFailures: 0, firstPermanentError: null });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -82,7 +82,7 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(summary).toEqual({ attempted: 1, succeeded: 1, failed: 0, permanentFailures: 0, firstPermanentError: null });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const callArgs = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(callArgs[0]).toBe("https://hook.example.com");
@@ -115,7 +115,15 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "email", address: "test@example.com" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    // #3379 — the log-provider fallback is a PERMANENT failure (no sender
+    // configured); the summary must say so and carry the actionable message.
+    expect(summary).toEqual({
+      attempted: 1,
+      succeeded: 0,
+      failed: 1,
+      permanentFailures: 1,
+      firstPermanentError: expect.stringContaining("No email delivery backend configured") as unknown as string,
+    });
     expect(mockFetch).not.toHaveBeenCalled();
 
     if (origKey) process.env.RESEND_API_KEY = origKey;
@@ -131,7 +139,8 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    // Transient (5xx) — failed, but NOT permanent (#3379).
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1, permanentFailures: 0, firstPermanentError: null });
     // Should have retried (original + up to 3 retries)
     expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
   }, 30_000);
@@ -146,7 +155,7 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1, permanentFailures: 0, firstPermanentError: null });
     expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
   }, 30_000);
 
@@ -179,7 +188,8 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "webhook", url: "http://169.254.169.254/latest/meta-data/" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    // Blocked URL — permanent failure, surfaced as such (#3379).
+    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1, permanentFailures: 1, firstPermanentError: "Blocked URL" });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
@@ -229,7 +239,9 @@ describe("delivery dispatcher", () => {
       recipients: [{ type: "webhook", url: "https://hook.example.com" }],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
+    expect(summary.failed).toBe(1);
+    expect(summary.permanentFailures).toBe(1);
+    expect(summary.firstPermanentError).toContain("Blocked URL (egress guard)");
     // The first request goes out; the redirect target must never be fetched.
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const calledUrls = mockFetch.mock.calls.map((c) => (c as unknown as [string])[0]);
@@ -246,7 +258,7 @@ describe("delivery dispatcher", () => {
       ],
     });
     const summary = await deliverResult(task, makeResult());
-    expect(summary).toEqual({ attempted: 3, succeeded: 3, failed: 0 });
+    expect(summary).toEqual({ attempted: 3, succeeded: 3, failed: 0, permanentFailures: 0, firstPermanentError: null });
     expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 
@@ -264,7 +276,32 @@ describe("delivery dispatcher", () => {
     expect(summary.attempted).toBe(3);
     expect(summary.succeeded).toBe(2);
     expect(summary.failed).toBe(1);
+    // The single failure is the blocked URL — a permanent one (#3379).
+    expect(summary.permanentFailures).toBe(1);
+    expect(summary.firstPermanentError).toBe("Blocked URL");
   });
+
+  it("counts only the permanent failures when failures are mixed (#3379)", async () => {
+    // One blocked URL (permanent, no retry) + one persistent 500 (transient,
+    // retries exhausted). permanentFailures must count ONLY the former, and
+    // firstPermanentError must carry its message — the executor uses
+    // permanentFailures === failed to decide "failed_permanent", so a mixed
+    // run stays plain "failed".
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(new Response("err", { status: 500 }));
+
+    const task = makeTask({
+      deliveryChannel: "webhook",
+      recipients: [
+        { type: "webhook", url: "http://localhost:3001/internal" },
+        { type: "webhook", url: "https://hook.example.com" },
+      ],
+    });
+    const summary = await deliverResult(task, makeResult());
+    expect(summary.failed).toBe(2);
+    expect(summary.permanentFailures).toBe(1);
+    expect(summary.firstPermanentError).toBe("Blocked URL");
+  }, 30_000);
 
   describe("OTel span coverage (#1979)", () => {
     it("emits atlas.scheduler.delivery once per recipient on the success path", async () => {

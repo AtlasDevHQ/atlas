@@ -20,6 +20,7 @@ import {
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
 import type { EmailRecipient, SlackRecipient, WebhookRecipient, Recipient } from "@atlas/api/lib/scheduled-task-types";
+import { resolveSlackBotToken } from "./slack-token";
 import { shapeResult, type FormattedResult } from "./shape-result";
 import { formatEmailReport } from "./format-email";
 import { formatSlackReport } from "./format-slack";
@@ -171,32 +172,18 @@ function deliverToSlack(
   return Effect.gen(function* () {
     const { text, blocks } = formatSlackReport(shaped);
 
-    let token: string | null = null;
-    if (recipient.teamId) {
-      const { getBotToken } = yield* Effect.tryPromise({
-        try: () => import("@atlas/api/lib/slack/store"),
-        catch: (err) =>
-          new DeliveryError({
-            message: `Failed to load Slack store: ${err instanceof Error ? err.message : String(err)}`,
-            channel: "slack",
-            recipient: recipient.channel,
-            permanent: false,
-          }),
-      });
-      token = yield* Effect.tryPromise({
-        try: () => getBotToken(recipient.teamId!),
-        catch: (err) =>
-          new DeliveryError({
-            message: `Failed to get bot token: ${err instanceof Error ? err.message : String(err)}`,
-            channel: "slack",
-            recipient: recipient.channel,
-            permanent: false,
-          }),
-      });
-    }
-    if (!token) {
-      token = process.env.SLACK_BOT_TOKEN ?? null;
-    }
+    // Per-team token, then SLACK_BOT_TOKEN env — via the shared resolver the
+    // sender preflight also uses (#3379), so the two can never disagree.
+    const token = yield* Effect.tryPromise({
+      try: () => resolveSlackBotToken(recipient.teamId),
+      catch: (err) =>
+        new DeliveryError({
+          message: `Failed to resolve Slack bot token: ${err instanceof Error ? err.message : String(err)}`,
+          channel: "slack",
+          recipient: recipient.channel,
+          permanent: false,
+        }),
+    });
     if (!token) {
       log.warn({ taskId: shaped.taskId, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
       return yield* Effect.fail(

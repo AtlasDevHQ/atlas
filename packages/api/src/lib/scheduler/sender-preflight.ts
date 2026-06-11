@@ -19,7 +19,8 @@
  *   never disagree. A `log` resolution (nothing configured) warns.
  * - Slack: warns only when BOTH the per-team token (`chat_cache` via
  *   `getBotToken` for the recipient's teamId) AND `SLACK_BOT_TOKEN` are
- *   absent — mirroring `deliverToSlack`'s token resolution in `delivery.ts`.
+ *   absent — resolved through the SAME `resolveSlackBotToken` helper
+ *   `deliverToSlack` dispatches on (`slack-token.ts`).
  * - Webhook: no preflight (the URL is already SSRF-validated by the route
  *   schema; reachability is only knowable at delivery time).
  *
@@ -32,6 +33,7 @@
 import { createLogger } from "@atlas/api/lib/logger";
 import type { Recipient, SlackRecipient } from "@atlas/api/lib/scheduled-task-types";
 import type { ResolvedEmailSender } from "@atlas/api/lib/email/delivery";
+import { resolveSlackBotToken } from "@atlas/api/lib/scheduler/slack-token";
 
 const log = createLogger("scheduler-sender-preflight");
 
@@ -106,18 +108,15 @@ async function checkSlackSender(
   recipients: SlackRecipient[],
   deps: SenderPreflightDeps,
 ): Promise<string | null> {
-  // Env fallback present → every recipient has a sender, regardless of teamId.
-  const envToken = process.env.SLACK_BOT_TOKEN;
-  if (typeof envToken === "string" && envToken.length > 0) return null;
-
-  // Recipients without a teamId can ONLY use the env fallback — absent, warn.
-  if (recipients.some((r) => !r.teamId)) return SLACK_NO_SENDER_WARNING;
-
   try {
-    const getBotToken =
-      deps.getBotToken ?? (await import("@atlas/api/lib/slack/store")).getBotToken;
-    const teamIds = [...new Set(recipients.map((r) => r.teamId).filter((t): t is string => !!t))];
-    const tokens = await Promise.all(teamIds.map((teamId) => getBotToken(teamId)));
+    // One resolution per distinct teamId through the SAME resolver
+    // `deliverToSlack` uses (a teamId-less recipient collapses to one
+    // `undefined` probe of the env fallback), so the preflight and the
+    // delivery path can never disagree on the rule.
+    const teamIds = [...new Set(recipients.map((r) => (r.teamId ? r.teamId : undefined)))];
+    const tokens = await Promise.all(
+      teamIds.map((teamId) => resolveSlackBotToken(teamId, deps.getBotToken)),
+    );
     return tokens.some((token) => !token) ? SLACK_NO_SENDER_WARNING : null;
   } catch (err) {
     log.warn(

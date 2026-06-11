@@ -28,7 +28,7 @@ import type {
   Recipient,
   RunStatus,
 } from "@atlas/api/lib/scheduled-task-types";
-import { DELIVERY_STATUSES } from "@atlas/api/lib/scheduled-task-types";
+import { KNOWN_DELIVERY_STATUSES } from "@atlas/api/lib/scheduled-task-types";
 import { isRecipient } from "@atlas/api/lib/scheduled-task-types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
 
@@ -88,8 +88,11 @@ function rowToScheduledTask(r: Record<string, unknown>): ScheduledTask {
 
 function rowToScheduledTaskRun(r: Record<string, unknown>): ScheduledTaskRun {
   const rawDeliveryStatus = r.delivery_status as string | null | undefined;
+  // KNOWN_DELIVERY_STATUSES (not the published DELIVERY_STATUSES) so
+  // "failed_permanent" rows survive the boundary instead of mapping to null
+  // and hiding the misconfiguration signal from the run-history UI (#3379).
   const deliveryStatus: DeliveryStatus | null =
-    rawDeliveryStatus && (DELIVERY_STATUSES as readonly string[]).includes(rawDeliveryStatus)
+    rawDeliveryStatus && KNOWN_DELIVERY_STATUSES.includes(rawDeliveryStatus)
       ? (rawDeliveryStatus as DeliveryStatus)
       : null;
 
@@ -432,10 +435,17 @@ export async function createTaskRun(taskId: string): Promise<string | null> {
   }
 }
 
-/** Update delivery status on a run record. Fire-and-forget. */
+/**
+ * Update delivery status on a run record. Fire-and-forget.
+ *
+ * The `| "failed_permanent"` widening is redundant against the workspace
+ * `DeliveryStatus` union but load-bearing against the *published* `.d.ts`
+ * that scaffold builds compile this file with (see
+ * {@link KNOWN_DELIVERY_STATUSES}).
+ */
 export function updateRunDeliveryStatus(
   runId: string,
-  status: DeliveryStatus,
+  status: DeliveryStatus | "failed_permanent",
   error?: string,
 ): void {
   if (!hasInternalDB()) return;

@@ -5,6 +5,8 @@ import { describe, it, expect } from "bun:test";
 import {
   DELIVERY_CHANNELS,
   RUN_STATUSES,
+  DELIVERY_STATUSES,
+  KNOWN_DELIVERY_STATUSES,
   type EmailRecipient,
   type SlackRecipient,
   type WebhookRecipient,
@@ -33,6 +35,19 @@ describe("scheduled-task-types", () => {
 
     it("is a readonly tuple (as const)", () => {
       expect(RUN_STATUSES.length).toBe(4);
+    });
+  });
+
+  describe("KNOWN_DELIVERY_STATUSES (#3379)", () => {
+    it("is the published DELIVERY_STATUSES plus failed_permanent", () => {
+      // The runtime accept-list must be a strict superset of the published
+      // value export — dropping a published status would null out existing
+      // rows at the rowToScheduledTaskRun boundary.
+      for (const status of DELIVERY_STATUSES) {
+        expect(KNOWN_DELIVERY_STATUSES).toContain(status);
+      }
+      expect(KNOWN_DELIVERY_STATUSES).toContain("failed_permanent");
+      expect(KNOWN_DELIVERY_STATUSES.length).toBe(DELIVERY_STATUSES.length + 1);
     });
   });
 

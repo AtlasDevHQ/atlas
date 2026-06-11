@@ -131,6 +131,18 @@ function parseRecipients(task: ScheduledTask) {
   return { emailAddresses, slackChannel, slackTeamId, webhookUrl, webhookHeaders };
 }
 
+/**
+ * Narrow the create/update response's `warnings` field (#3379 sender
+ * preflight). The API returns `warnings: string[]` (empty when no issues);
+ * tolerate any other shape — warnings are best-effort UX, never blocking.
+ */
+function extractWarnings(data: unknown): string[] {
+  if (typeof data !== "object" || data === null) return [];
+  const warnings = (data as { warnings?: unknown }).warnings;
+  if (!Array.isArray(warnings)) return [];
+  return warnings.filter((w): w is string => typeof w === "string");
+}
+
 function formStateFromTask(task: ScheduledTask): FormState {
   const recipients = parseRecipients(task);
   return {
@@ -168,6 +180,10 @@ export function TaskFormDialog({
   const isEdit = task !== null;
   const [form, setForm] = useState<FormState>(defaultFormState);
   const [validationError, setValidationError] = useState<string | null>(null);
+  // #3379 — non-empty after a SUCCESSFUL save whose response carried sender
+  // preflight warnings (e.g. no email provider configured). The save went
+  // through; the dialog stays open to show them instead of auto-closing.
+  const [senderWarnings, setSenderWarnings] = useState<string[]>([]);
   const [groups, setGroups] = useState<ConnectionGroupInfo[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [fetchAttempt, setFetchAttempt] = useState(0);
@@ -181,6 +197,7 @@ export function TaskFormDialog({
     if (open) {
       setForm(task ? formStateFromTask(task) : defaultFormState());
       setValidationError(null);
+      setSenderWarnings([]);
       submitMutation.reset();
     }
   }, [open, task]);
@@ -312,6 +329,7 @@ export function TaskFormDialog({
 
   async function handleSubmit() {
     setValidationError(null);
+    setSenderWarnings([]);
     submitMutation.clearError();
 
     // Validate
@@ -345,12 +363,23 @@ export function TaskFormDialog({
       ? `/api/v1/scheduled-tasks/${encodeURIComponent(task.id)}`
       : `/api/v1/scheduled-tasks`;
 
-    await submitMutation.mutate({
+    const result = await submitMutation.mutate({
       path,
       method: task ? "PUT" : "POST",
       body: body as Record<string, unknown>,
-      onSuccess: () => onOpenChange(false),
     });
+    if (!result || !result.ok) return; // mutation error surfaces via submitMutation.error
+
+    // #3379 — the save SUCCEEDED; if the API's sender preflight returned
+    // warnings (e.g. no email provider configured on this deployment), keep
+    // the dialog open and show them so the admin learns at save time — not
+    // from a string of failed runs. No warnings → close as before.
+    const warnings = extractWarnings(result.data);
+    if (warnings.length > 0) {
+      setSenderWarnings(warnings);
+    } else {
+      onOpenChange(false);
+    }
   }
 
   // ── Cron preview ────────────────────────────────────────────────────
@@ -648,6 +677,23 @@ export function TaskFormDialog({
           )}
         </div>
 
+        {/* #3379 — sender preflight warnings from a SUCCESSFUL save. The
+            task exists/was updated; this is "it saved, but deliveries will
+            fail until you configure a sender" — hence not destructive. */}
+        {senderWarnings.length > 0 && (
+          <Alert>
+            <AlertTriangle />
+            <AlertTitle>Task saved — delivery needs attention</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc space-y-1 pl-4">
+                {senderWarnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Hide the server mutation error while a client-side validation
             error is showing — stacking two destructive banners doubles
             the noise for no new signal. handleSubmit clears both slots
@@ -666,16 +712,24 @@ export function TaskFormDialog({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitMutation.saving}>
-            Cancel
-          </Button>
-          <Button
-            onClick={handleSubmit}
-            disabled={submitMutation.saving || groups.length === 0}
-          >
-            {submitMutation.saving && <Loader2 className="mr-2 size-4 animate-spin" />}
-            {isEdit ? "Save" : "Create"}
-          </Button>
+          {senderWarnings.length > 0 ? (
+            // The save already succeeded — the only remaining action is to
+            // acknowledge the warnings and close.
+            <Button onClick={() => onOpenChange(false)}>Close</Button>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitMutation.saving}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmit}
+                disabled={submitMutation.saving || groups.length === 0}
+              >
+                {submitMutation.saving && <Loader2 className="mr-2 size-4 animate-spin" />}
+                {isEdit ? "Save" : "Create"}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

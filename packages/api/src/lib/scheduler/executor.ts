@@ -232,10 +232,23 @@ export async function executeScheduledTask(
     if (delivery.failed === 0) {
       updateRunDeliveryStatus(runId, "sent");
     } else {
-      const errorMsg = delivery.succeeded > 0
+      const baseMsg = delivery.succeeded > 0
         ? `Partial failure: ${delivery.failed}/${delivery.attempted} deliveries failed`
         : `All ${delivery.failed} deliveries failed`;
-      updateRunDeliveryStatus(runId, "failed", errorMsg);
+      // Surface the first permanent error so the admin sees WHAT to fix
+      // (e.g. "No email delivery backend configured"), not just a count.
+      const errorMsg = delivery.firstPermanentError
+        ? `${baseMsg} — ${delivery.firstPermanentError}`
+        : baseMsg;
+      // #3379 — when every failure is permanent (misconfiguration: no email
+      // sender, no Slack token, blocked webhook URL), record
+      // "failed_permanent" so the run history distinguishes "fix your
+      // config" from a transient outage. The task is deliberately NOT
+      // auto-paused: the admin may configure the sender at any moment and
+      // the next run should then deliver without further intervention.
+      const allPermanent =
+        delivery.permanentFailures === delivery.failed && delivery.permanentFailures > 0;
+      updateRunDeliveryStatus(runId, allPermanent ? "failed_permanent" : "failed", errorMsg);
     }
   }
 

@@ -96,7 +96,7 @@ mock.module("@atlas/api/lib/agent-query", () => ({
 }));
 
 const mockDeliverResult = mock(() =>
-  Promise.resolve({ attempted: 1, succeeded: 1, failed: 0 }),
+  Promise.resolve({ attempted: 1, succeeded: 1, failed: 0, permanentFailures: 0, firstPermanentError: null as string | null }),
 );
 
 mock.module("../delivery", () => ({
@@ -163,7 +163,7 @@ describe("executor", () => {
       return Promise.resolve(result);
     });
     mockDeliverResult.mockReset();
-    mockDeliverResult.mockResolvedValue({ attempted: 1, succeeded: 1, failed: 0 });
+    mockDeliverResult.mockResolvedValue({ attempted: 1, succeeded: 1, failed: 0, permanentFailures: 0, firstPermanentError: null });
     mockUpdateRunDeliveryStatus.mockReset();
     mockResolveScheduledTaskConnection.mockReset();
     mockResolveScheduledTaskConnection.mockResolvedValue("resolved-connection");
@@ -189,20 +189,72 @@ describe("executor", () => {
     expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith("run-1", "sent");
   });
 
-  it("marks delivery as failed on full failure", async () => {
-    mockDeliverResult.mockResolvedValueOnce({ attempted: 2, succeeded: 0, failed: 2 });
+  it("marks delivery as failed on full transient failure", async () => {
+    mockDeliverResult.mockResolvedValueOnce({ attempted: 2, succeeded: 0, failed: 2, permanentFailures: 0, firstPermanentError: null });
     await executeScheduledTask("task-1", "run-1", 30_000);
     expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith("run-1", "failed", "All 2 deliveries failed");
   });
 
   it("marks delivery as failed on partial failure", async () => {
-    mockDeliverResult.mockResolvedValueOnce({ attempted: 3, succeeded: 1, failed: 2 });
+    mockDeliverResult.mockResolvedValueOnce({ attempted: 3, succeeded: 1, failed: 2, permanentFailures: 0, firstPermanentError: null });
     await executeScheduledTask("task-1", "run-1", 30_000);
     expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith("run-1", "failed", "Partial failure: 2/3 deliveries failed");
   });
 
+  // ── #3379: permanent-failure surfacing ─────────────────────────────
+
+  it("marks delivery as failed_permanent when ALL failures are permanent (#3379)", async () => {
+    mockDeliverResult.mockResolvedValueOnce({
+      attempted: 2,
+      succeeded: 0,
+      failed: 2,
+      permanentFailures: 2,
+      firstPermanentError: "No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)",
+    });
+    await executeScheduledTask("task-1", "run-1", 30_000);
+    expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith(
+      "run-1",
+      "failed_permanent",
+      "All 2 deliveries failed — No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)",
+    );
+  });
+
+  it("keeps plain failed when failures are mixed permanent + transient (#3379)", async () => {
+    mockDeliverResult.mockResolvedValueOnce({
+      attempted: 3,
+      succeeded: 0,
+      failed: 3,
+      permanentFailures: 1,
+      firstPermanentError: "Blocked URL",
+    });
+    await executeScheduledTask("task-1", "run-1", 30_000);
+    // Mixed → a retry may still help, so NOT failed_permanent; the first
+    // permanent error is still appended for context.
+    expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith(
+      "run-1",
+      "failed",
+      "All 3 deliveries failed — Blocked URL",
+    );
+  });
+
+  it("marks failed_permanent on partial success when every failure is permanent (#3379)", async () => {
+    mockDeliverResult.mockResolvedValueOnce({
+      attempted: 3,
+      succeeded: 1,
+      failed: 2,
+      permanentFailures: 2,
+      firstPermanentError: "No Slack bot token",
+    });
+    await executeScheduledTask("task-1", "run-1", 30_000);
+    expect(mockUpdateRunDeliveryStatus).toHaveBeenCalledWith(
+      "run-1",
+      "failed_permanent",
+      "Partial failure: 2/3 deliveries failed — No Slack bot token",
+    );
+  });
+
   it("skips delivery status when no recipients attempted", async () => {
-    mockDeliverResult.mockResolvedValueOnce({ attempted: 0, succeeded: 0, failed: 0 });
+    mockDeliverResult.mockResolvedValueOnce({ attempted: 0, succeeded: 0, failed: 0, permanentFailures: 0, firstPermanentError: null });
     await executeScheduledTask("task-1", "run-1", 30_000);
     expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
   });

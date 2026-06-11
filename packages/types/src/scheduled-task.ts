@@ -11,7 +11,21 @@ export const RUN_STATUSES = ["running", "success", "failed", "skipped"] as const
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 export const DELIVERY_STATUSES = ["pending", "sent", "failed"] as const;
-export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
+/**
+ * `"failed_permanent"` (#3379) marks a run whose delivery failures were ALL
+ * permanent (misconfiguration — no email sender, no Slack token, blocked
+ * webhook URL) as opposed to transient (network, 5xx). It is appended to the
+ * union TYPE-ONLY rather than to the `DELIVERY_STATUSES` value above: this
+ * package is consumed from the npm registry by scaffold builds, and a value
+ * change would drift between the workspace and the pinned published version
+ * (publish-before-ref-bump rule — see CLAUDE.md "Publishing @useatlas/*").
+ * The runtime accept-list that includes it lives in
+ * `@atlas/api/lib/scheduled-task-types` (`KNOWN_DELIVERY_STATUSES`), which is
+ * scaffold-bound *source* and therefore always in sync. When this package is
+ * next published and refs bumped, fold `"failed_permanent"` into
+ * `DELIVERY_STATUSES` and collapse this union back to the derived form.
+ */
+export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number] | "failed_permanent";
 
 // ---------------------------------------------------------------------------
 // Recipient discriminated union

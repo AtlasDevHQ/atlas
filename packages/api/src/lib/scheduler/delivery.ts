@@ -31,9 +31,29 @@ export interface DeliverySummary {
   attempted: number;
   succeeded: number;
   failed: number;
+  /**
+   * How many of `failed` were permanent (`DeliveryError.permanent` — missing
+   * credentials, blocked URL, HTTP 4xx) rather than transient. When ALL
+   * failures are permanent the executor records the run's delivery status as
+   * `"failed_permanent"` so misconfiguration is distinguishable from a
+   * transient outage in the run history (#3379).
+   */
+  permanentFailures: number;
+  /**
+   * The first permanent failure's message (e.g. "No email delivery backend
+   * configured…"), surfaced on the run row so the admin sees WHAT to fix —
+   * not just that delivery failed. Null when no permanent failures occurred.
+   */
+  firstPermanentError: string | null;
 }
 
-const EMPTY_SUMMARY: DeliverySummary = { attempted: 0, succeeded: 0, failed: 0 };
+const EMPTY_SUMMARY: DeliverySummary = {
+  attempted: 0,
+  succeeded: 0,
+  failed: 0,
+  permanentFailures: 0,
+  firstPermanentError: null,
+};
 
 const BLOCKED_HEADER_NAMES = new Set([
   "authorization",
@@ -340,6 +360,9 @@ export async function deliverResult(
   // Deliver to all recipients concurrently, with per-recipient retry.
   // Permanent errors (blocked URL, missing credentials, HTTP 4xx) fail immediately.
   // Transient errors (network, HTTP 5xx) get exponential backoff retry.
+  type Outcome =
+    | { kind: "succeeded" }
+    | { kind: "failed"; permanent: boolean; message: string };
   const outcomes = await Effect.runPromise(
     Effect.forEach(
       channelRecipients,
@@ -349,10 +372,10 @@ export async function deliverResult(
             schedule: retryPolicy,
             while: (err) => !err.permanent,
           }),
-          Effect.map(() => "succeeded" as const),
+          Effect.map((): Outcome => ({ kind: "succeeded" })),
           Effect.catchTag("DeliveryError", (err) => {
-            log.warn({ taskId: task.id, channel: err.channel, recipient: err.recipient, message: err.message }, "Delivery failed after retries exhausted");
-            return Effect.succeed("failed" as const);
+            log.warn({ taskId: task.id, channel: err.channel, recipient: err.recipient, message: err.message, permanent: err.permanent }, "Delivery failed after retries exhausted");
+            return Effect.succeed<Outcome>({ kind: "failed", permanent: err.permanent, message: err.message });
           }),
         ),
       { concurrency: 5 },
@@ -361,10 +384,19 @@ export async function deliverResult(
 
   let succeeded = 0;
   let failed = 0;
+  let permanentFailures = 0;
+  let firstPermanentError: string | null = null;
   for (const outcome of outcomes) {
-    if (outcome === "succeeded") succeeded++;
-    else failed++;
+    if (outcome.kind === "succeeded") {
+      succeeded++;
+    } else {
+      failed++;
+      if (outcome.permanent) {
+        permanentFailures++;
+        firstPermanentError ??= outcome.message;
+      }
+    }
   }
 
-  return { attempted: channelRecipients.length, succeeded, failed };
+  return { attempted: channelRecipients.length, succeeded, failed, permanentFailures, firstPermanentError };
 }

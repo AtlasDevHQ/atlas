@@ -25,6 +25,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const {
   sendEmail,
+  resolveEmailSender,
   isAuthEmailDeliveryConfigured,
   sendTransactionalEmail,
   shouldEnqueueFailedSend,
@@ -99,6 +100,65 @@ describe("sendEmail — fallback chain", () => {
     expect(result.success).toBe(false);
     expect(result.provider).toBe("resend");
     expect(result.error).toContain("401");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveEmailSender — resolution-only view of the chain (#3379)
+// ---------------------------------------------------------------------------
+
+describe("resolveEmailSender (#3379)", () => {
+  it("resolves to log when nothing is configured", async () => {
+    const resolved = await resolveEmailSender();
+    expect(resolved).toEqual({ kind: "log" });
+  });
+
+  it("resolves to resend-env when RESEND_API_KEY is set", async () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    const resolved = await resolveEmailSender();
+    expect(resolved.kind).toBe("resend-env");
+  });
+
+  it("resolves to smtp-webhook when ATLAS_SMTP_URL is set (priority over Resend env)", async () => {
+    process.env.ATLAS_SMTP_URL = "http://localhost:2525";
+    process.env.RESEND_API_KEY = "re_test_key";
+    const resolved = await resolveEmailSender();
+    expect(resolved.kind).toBe("smtp-webhook");
+  });
+
+  it("resolves to platform-transport when platform settings configure a provider", async () => {
+    settingsStore["ATLAS_EMAIL_PROVIDER"] = "sendgrid";
+    settingsStore["SENDGRID_API_KEY"] = "SG.platform_key";
+    const resolved = await resolveEmailSender();
+    expect(resolved.kind).toBe("platform-transport");
+    if (resolved.kind === "platform-transport") {
+      expect(resolved.transport.provider).toBe("sendgrid");
+    }
+  });
+
+  it("resolves to log when the platform provider is set but its key is missing", async () => {
+    settingsStore["ATLAS_EMAIL_PROVIDER"] = "resend";
+    const resolved = await resolveEmailSender();
+    expect(resolved.kind).toBe("log");
+  });
+
+  it("falls through an orgId with no DB-stored transport to the env chain", async () => {
+    // No internal DB in the unit-test env — getEmailTransport returns null
+    // (errors are caught + logged) and the chain continues to the env vars.
+    process.env.RESEND_API_KEY = "re_test_key";
+    const resolved = await resolveEmailSender("org-1");
+    expect(resolved.kind).toBe("resend-env");
+  });
+
+  it("agrees with sendEmail about the log fallback — the chain is shared, not duplicated", async () => {
+    // The scheduler sender preflight warns iff resolveEmailSender lands on
+    // "log"; sendEmail must report the same provider for the same env so the
+    // two can never disagree (#3379).
+    const resolved = await resolveEmailSender();
+    const sent = await sendEmail({ to: "t@example.com", subject: "S", html: "<p>x</p>" });
+    expect(resolved.kind).toBe("log");
+    expect(sent.provider).toBe("log");
+    expect(sent.success).toBe(false);
   });
 });
 

@@ -217,9 +217,12 @@ export function AddConnectionPicker({
     });
   }
   function pickCurated(entry: IntegrationsCatalogEntry) {
-    if (entry.installModel === "oauth") {
-      // OAuth candidates (e.g. GitHub) start the dance server-side; the
-      // callback returns the admin to /admin/connections.
+    if (entry.installModel === "oauth" || entry.installModel === "oauth-datasource") {
+      // OAuth candidates start the dance server-side; the callback returns
+      // the admin to /admin/connections. `oauth-datasource` (github-data,
+      // migration 0111) is the GitHub-App flavor of the same redirect flow
+      // — routing it to the form modal would post to /install-form, which
+      // has no handler for it (#3384 review).
       window.location.href = `${getApiUrl()}/api/v1/integrations/${encodeURIComponent(entry.slug)}/install`;
       return;
     }
@@ -324,7 +327,8 @@ export function AddConnectionPicker({
                             ? "Soon"
                             : access.kind === "upgrade" && access.requiredPlan
                               ? `${access.requiredPlan} plan`
-                              : entry.installModel === "oauth"
+                              : entry.installModel === "oauth" ||
+                                  entry.installModel === "oauth-datasource"
                                 ? "OAuth"
                                 : undefined
                       }

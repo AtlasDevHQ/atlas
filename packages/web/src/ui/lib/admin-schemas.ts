@@ -328,7 +328,10 @@ const RawCatalogEntrySchema = z.object({
   // /admin/connections Add picker uses (#3377); the default listing is
   // filtered to chat/integration server-side.
   type: z.enum(["chat", "integration", "datasource"]),
-  installModel: z.enum(["oauth", "form", "static-bot"]),
+  // `oauth-datasource` is the GitHub-Data install model (migration 0111) —
+  // it rides the `?pillar=datasource` listing, so the picker schema must
+  // accept it or one such row fails the whole catalog parse (#3384 review).
+  installModel: z.enum(["oauth", "form", "static-bot", "oauth-datasource"]),
   name: z.string(),
   description: z.string().nullable(),
   iconUrl: z.string().nullable(),

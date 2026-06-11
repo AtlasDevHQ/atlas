@@ -64344,7 +64344,8 @@
                             "enum": [
                               "oauth",
                               "form",
-                              "static-bot"
+                              "static-bot",
+                              "oauth-datasource"
                             ]
                           },
                           "name": {

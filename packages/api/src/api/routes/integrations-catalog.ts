@@ -64,8 +64,9 @@ const CatalogEntryResponseSchema = z.object({
   type: z.enum(["chat", "integration", "datasource"]),
   // `installModel` (camelCase) — wire-side casing match for the rest of
   // the response shape. The DB column is `install_model`; the facade
-  // does the translation.
-  installModel: z.enum(["oauth", "form", "static-bot"]),
+  // does the translation. `oauth-datasource` is GitHub Data's model
+  // (migration 0111) and appears on the `?pillar=datasource` listing.
+  installModel: z.enum(["oauth", "form", "static-bot", "oauth-datasource"]),
   name: z.string(),
   description: z.string().nullable(),
   iconUrl: z.string().nullable(),
@@ -237,7 +238,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
         // facade keeps this safe — any other value would mean a CHECK
         // constraint regression.
         type: row.type as "chat" | "integration" | "datasource",
-        installModel: row.installModel as "oauth" | "form" | "static-bot",
+        installModel: row.installModel as "oauth" | "form" | "static-bot" | "oauth-datasource",
         name: row.name,
         description: row.description,
         iconUrl: row.iconUrl,

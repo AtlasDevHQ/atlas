@@ -98,7 +98,7 @@ import {
 } from "./curated-install-dialog";
 import { FormInstallModal } from "../integrations/form-install-modal";
 import { RestInstallDialog } from "./openapi-block";
-import { iconForDbType, labelForDbType } from "./provider-meta";
+import { DATABASE_PROVIDERS, iconForDbType, labelForDbType } from "./provider-meta";
 import {
   AddDatasourceButton,
   countLine,
@@ -520,11 +520,18 @@ function ConnectionFormDialog({
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {DB_TYPES.filter((t) => t.value !== "salesforce").map((t) => (
-                      <SelectItem key={t.value} value={t.value}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
+                    {/* Add mode offers only the types the URL form can
+                        actually install (pg + mysql — the API rejects every
+                        other scheme, #3377). Edit mode keeps the full list so
+                        a legacy connection of an excluded type still displays
+                        its label in the (disabled) trigger. */}
+                    {(isEdit ? DB_TYPES.filter((t) => t.value !== "salesforce") : DATABASE_PROVIDERS).map(
+                      (t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ),
+                    )}
                     {/*
                       Salesforce intentionally not listed: it's not a URL-form
                       connection — installs happen via the OAuth dance on the

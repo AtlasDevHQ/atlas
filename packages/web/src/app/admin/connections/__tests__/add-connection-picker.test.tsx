@@ -245,4 +245,37 @@ describe("AddConnectionPicker — datasource tile routing (#3377)", () => {
     renderPicker({ demoReadOnly: true });
     expect((screen.getByTestId("add-ds-clickhouse") as HTMLButtonElement).disabled).toBe(true);
   });
+
+  test("oauth-datasource curated tile routes to OAuth, never the form modal (#3384 review)", () => {
+    // github-data (migration 0111) is `installModel: "oauth-datasource"` —
+    // it must take the same server-side redirect as plain `oauth`, not the
+    // API-key form (POST /install-form has no handler for it). It must also
+    // never render as a Databases form tile.
+    fetchState = {
+      data: {
+        catalog: [
+          makeEntry({
+            id: "catalog:github-data",
+            slug: "github-data",
+            name: "GitHub Data",
+            installModel: "oauth-datasource",
+          }),
+        ],
+      },
+      loading: false,
+    };
+    const curatedPicks: unknown[] = [];
+    const formPicks: unknown[] = [];
+    renderPicker({
+      onPickCuratedForm: (c) => curatedPicks.push(c),
+      onPickDatasourceForm: (c) => formPicks.push(c),
+    });
+
+    expect(screen.queryByTestId("add-ds-github-data")).toBeNull();
+    const tile = screen.getByTestId("add-curated-github-data");
+    expect(tile.textContent).toContain("OAuth");
+    fireEvent.click(tile);
+    expect(curatedPicks).toHaveLength(0);
+    expect(formPicks).toHaveLength(0);
+  });
 });

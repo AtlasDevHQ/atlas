@@ -831,6 +831,10 @@ export function CatalogCard({ entry, status, onChange }: CatalogCardProps) {
 function installModelDescription(installModel: IntegrationsCatalogEntry["installModel"]): string {
   switch (installModel) {
     case "oauth":
+    // `oauth-datasource` (github-data) only appears on the
+    // `?pillar=datasource` listing, which this page never requests —
+    // handled for type totality; same copy as the plain OAuth dance.
+    case "oauth-datasource":
       return "One-click OAuth install";
     case "form":
       return "Submit credentials to install";

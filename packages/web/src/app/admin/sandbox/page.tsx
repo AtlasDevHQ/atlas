@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, type ComponentType } from "react";
-import { z } from "zod";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +37,16 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+// Provider-key vocabulary and status wire schemas are shared with the
+// API route layer via `@useatlas/schemas` (#3371).
+import {
+  SANDBOX_PROVIDER_KEYS,
+  SANDBOX_PROVIDER_BACKEND_IDS,
+  SandboxStatusSchema,
+  type SandboxConnectedProvider as ConnectedProvider,
+  type SandboxProviderKey,
+  type SandboxStatus,
+} from "@/ui/lib/admin-schemas";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -55,38 +64,6 @@ import {
   TrainFront,
   Trash2,
 } from "lucide-react";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-const SandboxProviderKeySchema = z.enum(["vercel", "e2b", "daytona", "railway"]);
-type SandboxProviderKey = z.infer<typeof SandboxProviderKeySchema>;
-
-const SandboxBackendSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  type: z.enum(["built-in", "plugin"]),
-  available: z.boolean(),
-  description: z.string().optional(),
-});
-
-const ConnectedProviderSchema = z.object({
-  provider: SandboxProviderKeySchema,
-  displayName: z.string().nullable(),
-  connectedAt: z.string(),
-  validatedAt: z.string().nullable(),
-  isActive: z.boolean(),
-});
-type ConnectedProvider = z.infer<typeof ConnectedProviderSchema>;
-
-const SandboxStatusSchema = z.object({
-  activeBackend: z.string(),
-  platformDefault: z.string(),
-  workspaceOverride: z.string().nullable(),
-  workspaceSidecarUrl: z.string().nullable(),
-  availableBackends: z.array(SandboxBackendSchema),
-  connectedProviders: z.array(ConnectedProviderSchema),
-});
-type SandboxStatus = z.infer<typeof SandboxStatusSchema>;
 
 // ── Provider metadata ─────────────────────────────────────────────
 
@@ -142,7 +119,10 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
   },
 };
 
-const PROVIDER_KEYS = Object.keys(PROVIDERS) as SandboxProviderKey[];
+// Compile-time guard: a provider key added to `SANDBOX_PROVIDER_KEYS`
+// without a `PROVIDERS` entry fails the `Record<SandboxProviderKey, ...>`
+// annotation above; iteration order comes from the shared tuple.
+const PROVIDER_KEYS = SANDBOX_PROVIDER_KEYS;
 
 // ── StatusPill (page-specific labels) ─────────────────────────────
 // Kept inline because this page uses several custom labels ("Available",
@@ -241,8 +221,13 @@ export default function SandboxPage() {
                   onSelectBackend={(backendId) =>
                     saveMutation.mutate({ body: { value: backendId } })
                   }
+                  onSelectManaged={() =>
+                    resetMutation.mutate({
+                      path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
+                    })
+                  }
                   onRefetch={refetch}
-                  saving={saveMutation.saving}
+                  saving={saveMutation.saving || resetMutation.saving}
                 />
               ) : (
                 <SelfHostedSandboxView
@@ -278,33 +263,45 @@ export default function SandboxPage() {
 }
 
 // ── SaaS view ─────────────────────────────────────────────────────
+// Exported for the save-value-mapping regression test (#3375) — the
+// backend-id vocabulary written to ATLAS_SANDBOX_BACKEND is asserted in
+// `__tests__/saas-backend-selection.test.tsx`.
 
-function SaasSandboxView({
+export function SaasSandboxView({
   status,
   onSelectBackend,
+  onSelectManaged,
   onRefetch,
   saving,
 }: {
   status: SandboxStatus;
   onSelectBackend: (backendId: string) => Promise<unknown>;
+  onSelectManaged: () => Promise<unknown>;
   onRefetch: () => void;
   saving: boolean;
 }) {
   const connected = status.connectedProviders;
-  const isManagedActive =
-    !status.workspaceOverride ||
-    !connected.some((p) => p.provider === status.workspaceOverride);
+  // Managed is the active card whenever no BYOC provider row is live —
+  // `isActive` is server-derived in backend-id vocabulary (#3375), so this
+  // can't disagree with the runtime resolution.
+  const isManagedActive = !connected.some((p) => p.isActive);
 
   return (
     <>
       <section>
         <SectionHeading
           title="Managed"
-          description="Atlas-hosted container service. No setup — always available."
+          description="Atlas-hosted sandbox. No setup — always available."
         />
         <ManagedSandboxShell
           isActive={isManagedActive}
-          onSelect={() => onSelectBackend("sidecar")}
+          // "Managed" means *follow the platform default* (the SaaS
+          // `vercel-sandbox` pin in deploy/api/atlas.config.ts), so it
+          // clears the workspace override rather than writing a value —
+          // the previous "sidecar" write never matched a real backend,
+          // and pinning the current default would go stale if the
+          // platform pin ever changes (#3375).
+          onSelect={() => onSelectManaged()}
           saving={saving}
         />
       </section>
@@ -323,7 +320,10 @@ function SaasSandboxView({
                 providerKey={key}
                 connection={provider ?? null}
                 isActive={provider?.isActive ?? false}
-                onSelect={() => onSelectBackend(key)}
+                // ATLAS_SANDBOX_BACKEND stores backend ids, not provider
+                // keys — saving the bare key used to fall through to the
+                // platform default silently (#3375).
+                onSelect={() => onSelectBackend(SANDBOX_PROVIDER_BACKEND_IDS[key])}
                 onRefetch={onRefetch}
                 saving={saving}
               />
@@ -351,7 +351,7 @@ function ManagedSandboxShell({
     <Shell
       icon={Cloud}
       title="Atlas Cloud Sandbox"
-      description="Managed container service with HTTP isolation. Recommended for most workspaces."
+      description="Managed Firecracker microVM with network isolation. Recommended for most workspaces."
       status={status}
       trailing={
         isActive ? (

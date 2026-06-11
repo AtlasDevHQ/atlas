@@ -15,6 +15,13 @@ import type { ExploreBackend, ExecResult } from "../../tools/explore";
 // Mocks — must register before any import of explore.ts
 // ---------------------------------------------------------------------------
 
+// Mutable request context — tests that need the workspace-override branch
+// (it only runs when an orgId is present) set this; default undefined
+// preserves the original self-hosted behavior of the older tests.
+let mockRequestContext:
+  | { user?: { activeOrganizationId?: string }; atlasMode?: string }
+  | undefined;
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -41,8 +48,18 @@ mock.module("@atlas/api/lib/logger", () => ({
     }),
   }),
   withRequestContext: <T>(_ctx: unknown, fn: () => T) => fn(),
-  getRequestContext: () => undefined,
+  getRequestContext: () => mockRequestContext,
   redactPaths: [],
+}));
+
+// When an orgId is present, explore resolves an org-scoped semantic root via
+// `ensureOrgModeSemanticRoot` (filesystem dual-write machinery we don't want
+// in this test). Pass through to the base semantic root; all other exports
+// stay real.
+const realSemanticSync = await import("@atlas/api/lib/semantic/sync");
+mock.module("@atlas/api/lib/semantic/sync", () => ({
+  ...realSemanticSync,
+  ensureOrgModeSemanticRoot: async () => realSemanticSync.getSemanticRoot(),
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({
@@ -151,6 +168,7 @@ describe("workspace sandbox backend override", () => {
   beforeEach(() => {
     mockSettings.clear();
     mockSandboxPlugins = [];
+    mockRequestContext = undefined;
     // Disable all built-in detection
     delete process.env.ATLAS_RUNTIME;
     delete process.env.VERCEL;
@@ -335,5 +353,71 @@ describe("workspace sandbox backend override", () => {
     const mod = await freshExploreModule();
     // getExploreBackendType doesn't take orgId — reports default chain
     expect(mod.getExploreBackendType()).toBe("just-bash");
+  });
+
+  // ── Legacy provider-key normalization (#3375) ─────────────────────
+  //
+  // `ATLAS_SANDBOX_BACKEND` canonically stores backend ids ("e2b-sandbox"),
+  // but workspaces configured before #3375 may hold bare provider keys
+  // ("e2b") written by the SaaS admin page. Those must resolve identically.
+  //
+  // These tests set `ATLAS_SANDBOX=nsjail`, which skips the Priority-0
+  // plugin chain — so the ONLY way the mocked plugin backend can be
+  // selected is through the workspace-override branch. Without the
+  // normalization, "e2b" matches neither the built-in names nor the
+  // plugin id "e2b-sandbox" and the override silently falls through.
+
+  it("normalizes a legacy provider-key override ('e2b') to its plugin backend id", async () => {
+    const pluginBackend = makeMockBackend("e2b-sandbox");
+    mockSandboxPlugins = [
+      {
+        id: "e2b-sandbox",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: { create: async () => pluginBackend, priority: 50 },
+      },
+    ];
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b");
+    mockRequestContext = { user: { activeOrganizationId: "org-1" } };
+    process.env.ATLAS_SANDBOX = "nsjail"; // skip Priority-0 plugin chain
+
+    const mod = await freshExploreModule();
+    const result = await mod.explore.execute(
+      { command: "ls" },
+      {
+        toolCallId: "test",
+        messages: [],
+        abortSignal: new AbortController().signal,
+      },
+    );
+
+    expect(result).toContain("[e2b-sandbox]");
+  });
+
+  it("canonical backend-id override ('e2b-sandbox') resolves identically", async () => {
+    const pluginBackend = makeMockBackend("e2b-sandbox");
+    mockSandboxPlugins = [
+      {
+        id: "e2b-sandbox",
+        types: ["sandbox"],
+        version: "1.0.0",
+        sandbox: { create: async () => pluginBackend, priority: 50 },
+      },
+    ];
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+    mockRequestContext = { user: { activeOrganizationId: "org-1" } };
+    process.env.ATLAS_SANDBOX = "nsjail"; // skip Priority-0 plugin chain
+
+    const mod = await freshExploreModule();
+    const result = await mod.explore.execute(
+      { command: "ls" },
+      {
+        toolCallId: "test",
+        messages: [],
+        abortSignal: new AbortController().signal,
+      },
+    );
+
+    expect(result).toContain("[e2b-sandbox]");
   });
 });

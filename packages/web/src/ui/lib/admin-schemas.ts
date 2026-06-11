@@ -442,6 +442,22 @@ export {
   PlatformSecurityMetricsSchema,
 } from "@useatlas/schemas";
 
+// ── Sandbox (/admin/sandbox) ──────────────────────────────────
+// Provider-key vocabulary + status wire schemas live in
+// `@useatlas/schemas` (single source of truth shared with the API route
+// layer, #3371). `SANDBOX_PROVIDER_BACKEND_IDS` maps provider keys to the
+// backend ids that `ATLAS_SANDBOX_BACKEND` stores (#3375).
+
+export {
+  SANDBOX_PROVIDER_KEYS,
+  SANDBOX_PROVIDER_BACKEND_IDS,
+  SandboxProviderKeySchema,
+  SandboxStatusSchema,
+  type SandboxProviderKey,
+  type SandboxConnectedProvider,
+  type SandboxStatus,
+} from "@useatlas/schemas";
+
 export type {
   SecurityBuckets,
   WorkspaceSecurityMetrics,

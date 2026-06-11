@@ -8,6 +8,11 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import {
+  SANDBOX_PROVIDER_BACKEND_IDS,
+  SandboxStatusSchema,
+  normalizeSandboxBackendValue,
+} from "@useatlas/schemas";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -33,36 +38,9 @@ const log = createLogger("admin-sandbox");
 // Schemas
 // ---------------------------------------------------------------------------
 
-const SandboxBackendSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  type: z.enum(["built-in", "plugin"]),
-  available: z.boolean(),
-  description: z.string().optional(),
-});
-
-const ConnectedProviderSchema = z.object({
-  provider: z.enum(SANDBOX_PROVIDERS),
-  displayName: z.string().nullable(),
-  connectedAt: z.string(),
-  validatedAt: z.string().nullable(),
-  isActive: z.boolean(),
-});
-
-const SandboxStatusSchema = z.object({
-  /** Currently active backend for this workspace (after override resolution) */
-  activeBackend: z.string(),
-  /** Platform default backend (no workspace override) */
-  platformDefault: z.string(),
-  /** Workspace override backend (if set) */
-  workspaceOverride: z.string().nullable(),
-  /** Custom sidecar URL (if set at workspace level) */
-  workspaceSidecarUrl: z.string().nullable(),
-  /** All available backends in this deployment */
-  availableBackends: z.array(SandboxBackendSchema),
-  /** Connected BYOC sandbox providers for this org */
-  connectedProviders: z.array(ConnectedProviderSchema),
-});
+// Status response wire shapes (SandboxStatusSchema and friends) live in
+// `@useatlas/schemas` — single source of truth shared with the web admin
+// page's `useAdminFetch` parse (#3371).
 
 const ConnectRequestSchema = z.object({
   credentials: z.record(z.string(), z.unknown()),
@@ -260,8 +238,13 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         return c.json({ error: "Bad Request", message: "No active organization." }, 400);
       }
 
-      // Workspace override
-      const workspaceOverride = getSetting("ATLAS_SANDBOX_BACKEND", orgId) ?? null;
+      // Workspace override — normalized once to backend-id vocabulary so
+      // legacy stored provider keys ("e2b") resolve like backend ids
+      // ("e2b-sandbox"), matching the explore runtime (#3375).
+      const storedOverride = getSetting("ATLAS_SANDBOX_BACKEND", orgId) ?? null;
+      const workspaceOverride = storedOverride
+        ? normalizeSandboxBackendValue(storedOverride)
+        : null;
       const workspaceSidecarUrl = getSetting("ATLAS_SANDBOX_URL", orgId) ?? null;
 
       // Platform default (the backend that would be used without any workspace override)
@@ -281,14 +264,24 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
         activeBackend = activePluginId ?? platformDefault;
       }
 
-      // Build connected providers list
-      const connectedProviders = credentials.map((cred) => ({
-        provider: cred.provider,
-        displayName: cred.displayName,
-        connectedAt: cred.connectedAt,
-        validatedAt: cred.validatedAt,
-        isActive: workspaceOverride === cred.provider,
-      }));
+      // Build connected providers list. `isActive` requires BOTH the
+      // (normalized) workspace override selecting this provider's backend id
+      // AND the resolved `activeBackend` landing on it, so `isActive` can
+      // never contradict `activeBackend` — previously this compared the
+      // provider key against the stored override, which always mismatched
+      // backend-id values (#3375). The override condition keeps a connected
+      // vercel BYOC row from reading "Live" merely because the SaaS platform
+      // default is `vercel-sandbox`.
+      const connectedProviders = credentials.map((cred) => {
+        const backendId = SANDBOX_PROVIDER_BACKEND_IDS[cred.provider];
+        return {
+          provider: cred.provider,
+          displayName: cred.displayName,
+          connectedAt: cred.connectedAt,
+          validatedAt: cred.validatedAt,
+          isActive: workspaceOverride === backendId && activeBackend === backendId,
+        };
+      });
 
       return c.json(
         {
@@ -399,9 +392,14 @@ adminSandbox.openapi(disconnectRoute, async (c) => {
         deleteSandboxCredential(orgId, provider),
       );
 
-      // If this was the active sandbox, reset to platform default
+      // If this was the active sandbox, reset to platform default. The
+      // setting stores backend ids (legacy rows may hold provider keys),
+      // so normalize before comparing against this provider's backend id.
       const workspaceOverride = getSetting("ATLAS_SANDBOX_BACKEND", orgId);
-      if (workspaceOverride === provider) {
+      const normalizedOverride = workspaceOverride
+        ? normalizeSandboxBackendValue(workspaceOverride)
+        : null;
+      if (normalizedOverride === SANDBOX_PROVIDER_BACKEND_IDS[provider]) {
         yield* Effect.promise(() => deleteSetting("ATLAS_SANDBOX_BACKEND", undefined, orgId));
         log.info({ orgId, provider }, "Active sandbox provider disconnected — reset to platform default");
       }

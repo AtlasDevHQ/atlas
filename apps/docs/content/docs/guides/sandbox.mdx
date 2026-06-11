@@ -31,7 +31,7 @@ In SaaS mode the page is titled **Execution Environment** and presents a card gr
 
 ### Atlas Cloud Sandbox
 
-Managed container service with HTTP isolation. No credentials needed and no setup required. This is the default for all workspaces and is marked **(Recommended)**.
+Managed Firecracker microVM with network isolation (the `vercel-sandbox` backend, pinned by the SaaS platform). No credentials needed and no setup required. This is the default for all workspaces and is marked **(Recommended)**.
 
 - **Active state** — highlighted border with "Active" badge
 - **Inactive state** — click **Select** to make it active
@@ -92,7 +92,7 @@ sandboxes per environment (10 Trial/Free, 50 Hobby, 100 Pro/Enterprise).
 2. Enter credentials in the dialog
 3. Click **Validate & Connect** — credentials are verified against the provider API
 4. On success, the card shows as **Connected** with the account name and connection date
-5. Click **Select** to make a connected provider the active sandbox
+5. Click **Select** to make a connected provider the active sandbox — this stores the provider's backend ID (`vercel-sandbox`, `e2b-sandbox`, `daytona-sandbox`, `railway-sandbox`) in the `ATLAS_SANDBOX_BACKEND` workspace setting
 6. Click **Disconnect** to remove credentials (reverts to Atlas Cloud Sandbox, the platform default, if this was the active provider)
 
 <Callout type="info">
@@ -174,7 +174,7 @@ You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variab
 | Providers | Not applicable | Atlas Cloud, Vercel, E2B, Daytona |
 | Credential storage | Not applicable | Per-workspace in `sandbox_credentials` table |
 | Active selection | Dropdown + Save in admin UI (sets `ATLAS_SANDBOX_BACKEND`) | Click **Select** on a connected provider |
-| Default fallback | Auto-detect priority chain | Atlas Cloud Sandbox (sidecar) |
+| Default fallback | Auto-detect priority chain | Atlas Cloud Sandbox (`vercel-sandbox`) |
 | Sidecar URL | Configurable via admin UI | Managed by platform |
 
 ---

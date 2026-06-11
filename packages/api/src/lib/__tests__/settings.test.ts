@@ -625,6 +625,9 @@ describe("settings module", () => {
       const workspaceKeys = [
         "ATLAS_ROW_LIMIT", "ATLAS_QUERY_TIMEOUT", "ATLAS_RATE_LIMIT_RPM",
         "ATLAS_SESSION_IDLE_TIMEOUT", "ATLAS_SESSION_ABSOLUTE_TIMEOUT", "ATLAS_AGENT_MAX_STEPS",
+        // #3392 — read per proposal via getSetting(key, orgId) in
+        // lib/db/internal.ts, so the workspace override is honored.
+        "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD", "ATLAS_EXPERT_AUTO_APPROVE_TYPES",
       ];
       for (const key of workspaceKeys) {
         const def = getSettingDefinition(key);
@@ -639,6 +642,9 @@ describe("settings module", () => {
         "ATLAS_RLS_ENABLED", "ATLAS_RLS_COLUMN", "ATLAS_RLS_CLAIM",
         "ATLAS_TABLE_WHITELIST", "ATLAS_CORS_ORIGIN", "ATLAS_BRAND_COLOR",
         "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DATABASE_URL", "ATLAS_DATASOURCE_URL",
+        // #3392 — the expert scheduler is one process-global boot-time
+        // fiber; no per-workspace tick exists, so these are platform-scoped.
+        "ATLAS_EXPERT_SCHEDULER_ENABLED", "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
       ];
       for (const key of platformKeys) {
         const def = getSettingDefinition(key);

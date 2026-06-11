@@ -2806,8 +2806,15 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // `AuditRetention` in #2569) so it can start the EE audit purge worker
   // via the Tag — `EnterpriseLayer` provides both the no-op default and
   // the real EE implementation.
+  //
+  // `settingsLayer` is provided as an ordering barrier (#3392): the expert
+  // scheduler reads ATLAS_EXPERT_SCHEDULER_ENABLED / _INTERVAL_HOURS via
+  // getSetting() at layer-construction time, so `loadSettings()` must warm
+  // the cache first or a platform DB override would race boot — same
+  // Settings-edge rationale as ProactiveProviderKeyGuardLive below. Layer
+  // memoization keeps the shared `settingsLayer` reference built once.
   const schedulerLayer = makeSchedulerLive(config).pipe(
-    Layer.provide(EnterpriseLayer),
+    Layer.provide(Layer.merge(EnterpriseLayer, settingsLayer)),
   );
 
   // DpaGuardLive depends on Config + Settings — provide them so the boot

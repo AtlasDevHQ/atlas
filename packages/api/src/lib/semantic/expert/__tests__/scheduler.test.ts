@@ -1,15 +1,27 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import {
   isExpertSchedulerEnabled,
   getExpertSchedulerIntervalMs,
   DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS,
 } from "../scheduler";
+import { loadSettings, _resetSettingsCache } from "@atlas/api/lib/settings";
 
-// Mock internal DB
+// Mock internal DB. `dbAvailable` / `settingsRows` are mutable so the
+// #3392 tests below can seed the settings cache via loadSettings() (the
+// readers now resolve through getSetting's tier chain, not raw env).
+let dbAvailable = false;
+let settingsRows: Array<{
+  key: string;
+  value: string;
+  updated_at: string;
+  updated_by: string | null;
+  org_id: string | null;
+}> = [];
+
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => false,
+  hasInternalDB: () => dbAvailable,
   getInternalDB: () => ({ query: async () => ({ rows: [] }), end: async () => {}, on: () => {} }),
-  internalQuery: async () => [],
+  internalQuery: async () => settingsRows,
   internalExecute: () => {},
   getAutoApproveThreshold: () => 2, // disabled
   getAutoApproveTypes: () => new Set(["update_description", "add_dimension"]),
@@ -84,5 +96,65 @@ describe("getExpertSchedulerIntervalMs", () => {
   it("returns default for negative", () => {
     process.env.ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS = "-5";
     expect(getExpertSchedulerIntervalMs()).toBe(DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS);
+  });
+});
+
+// #3392 — the readers resolve through getSetting's tier chain, so a
+// platform-level DB override (admin settings page) must beat the env var.
+describe("platform DB override via getSetting (#3392)", () => {
+  beforeEach(() => {
+    delete process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
+    delete process.env.ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS;
+    _resetSettingsCache();
+    dbAvailable = false;
+    settingsRows = [];
+  });
+
+  afterEach(() => {
+    delete process.env.ATLAS_EXPERT_SCHEDULER_ENABLED;
+    delete process.env.ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS;
+    _resetSettingsCache();
+    dbAvailable = false;
+    settingsRows = [];
+  });
+
+  it("platform DB override for ATLAS_EXPERT_SCHEDULER_ENABLED beats the env var", async () => {
+    process.env.ATLAS_EXPERT_SCHEDULER_ENABLED = "false";
+    dbAvailable = true;
+    settingsRows = [
+      {
+        key: "ATLAS_EXPERT_SCHEDULER_ENABLED",
+        value: "true",
+        updated_at: "2026-01-01",
+        updated_by: null,
+        org_id: null,
+      },
+    ];
+    await loadSettings();
+    expect(isExpertSchedulerEnabled()).toBe(true);
+  });
+
+  it("platform DB override for ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS beats the env var", async () => {
+    process.env.ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS = "24";
+    dbAvailable = true;
+    settingsRows = [
+      {
+        key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+        value: "6",
+        updated_at: "2026-01-01",
+        updated_by: null,
+        org_id: null,
+      },
+    ];
+    await loadSettings();
+    expect(getExpertSchedulerIntervalMs()).toBe(6 * 60 * 60 * 1000);
+  });
+
+  it("falls back to env when no DB override exists", async () => {
+    process.env.ATLAS_EXPERT_SCHEDULER_ENABLED = "true";
+    dbAvailable = true;
+    settingsRows = [];
+    await loadSettings();
+    expect(isExpertSchedulerEnabled()).toBe(true);
   });
 });

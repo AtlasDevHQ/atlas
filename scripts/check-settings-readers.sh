@@ -68,26 +68,8 @@ GENERIC_SETTINGS_ROUTES_FILE="packages/api/src/api/routes/admin.ts"
 # or remove the setting.
 # ---------------------------------------------------------------------------
 ALLOWLIST=(
-  # The four Semantic Expert keys are WORKSPACE-scoped in the registry but
-  # their only runtime readers are process.env reads, so the per-workspace
-  # DB override the admin settings page writes is runtime-inert above the
-  # env tier (adjacent finding from #3382 — predates this check; do not
-  # fix here). Remove each entry when its reader moves to getSetting(key,
-  # orgId).
-  #
-  # ATLAS_EXPERT_SCHEDULER_ENABLED — read via process.env in
-  #   lib/semantic/expert/scheduler.ts:isExpertSchedulerEnabled() (consumed
-  #   by the scheduler layer in lib/effect/layers.ts).
-  "ATLAS_EXPERT_SCHEDULER_ENABLED"
-  # ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS — read via process.env in
-  #   lib/semantic/expert/scheduler.ts:getExpertSchedulerIntervalMs().
-  "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS"
-  # ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD — read via process.env in
-  #   lib/db/internal.ts:getAutoApproveThreshold().
-  "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD"
-  # ATLAS_EXPERT_AUTO_APPROVE_TYPES — read via process.env in
-  #   lib/db/internal.ts:getAutoApproveTypes().
-  "ATLAS_EXPERT_AUTO_APPROVE_TYPES"
+  # (empty — the four Semantic Expert keys were removed by #3392 when their
+  # readers moved to getSetting; new entries need a justification comment.)
 )
 
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -188,6 +170,8 @@ ALLOWLISTED_COUNT=0
 
 is_allowlisted() {
   local key="$1" entry
+  # Empty-array guard: bash < 4.4 errors on "${ALLOWLIST[@]}" under set -u.
+  [ "${#ALLOWLIST[@]}" -eq 0 ] && return 1
   for entry in "${ALLOWLIST[@]}"; do
     [ "$entry" = "$key" ] && return 0
   done

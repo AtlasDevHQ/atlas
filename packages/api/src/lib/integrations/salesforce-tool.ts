@@ -26,7 +26,8 @@
  *      validator (./salesforce/soql-validation.ts) — core can't import the
  *      `@useatlas/salesforce` plugin package (the create-atlas scaffold excludes
  *      workspace plugins), so the identical semantics are duplicated, not shared.
- *   3. **Auto LIMIT** — `appendSOQLLimit` (`ATLAS_ROW_LIMIT`, default 1000).
+ *   3. **Auto LIMIT** — `appendSOQLLimit` (`ATLAS_ROW_LIMIT` resolved lazily per
+ *      call via `getSetting`, matching the SQL tool; default 1000, #3400).
  *
  * Status discriminants surfaced to the agent (so it can self-correct or stop):
  *   - **`ok`** — happy path; carries columns + rows.
@@ -51,6 +52,7 @@ import { tool } from "ai";
 import { z } from "zod";
 
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { getSetting } from "@atlas/api/lib/settings";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import {
   classifyLazyInstantiateError,
@@ -70,8 +72,30 @@ function parsePositiveIntEnv(raw: string | undefined, fallback: number): number 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-const ROW_LIMIT = parsePositiveIntEnv(process.env.ATLAS_ROW_LIMIT, 1000);
 const QUERY_TIMEOUT = parsePositiveIntEnv(process.env.ATLAS_QUERY_TIMEOUT, 30000);
+
+let lastWarnedRowLimit: string | undefined;
+
+/**
+ * Read row limit from settings cache (DB override > env var > default).
+ * Resolved per call — not frozen at module import — so platform DB overrides
+ * of `ATLAS_ROW_LIMIT` written via the admin UI take effect without a restart.
+ * Copies `getRowLimit()` in `tools/sql.ts` exactly (including the no-orgId
+ * `getSetting` resolution and warn-once invalid-value handling) so SQL and
+ * SOQL auto-LIMIT share one vocabulary of truth (parity Rule 3, #3400).
+ */
+function getRowLimit(): number {
+  const raw = getSetting("ATLAS_ROW_LIMIT") ?? "1000";
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    if (raw !== lastWarnedRowLimit) {
+      log.warn({ value: raw }, "Invalid ATLAS_ROW_LIMIT value; using default 1000");
+      lastWarnedRowLimit = raw;
+    }
+    return 1000;
+  }
+  return n;
+}
 
 /**
  * Semantic-layer connection id the Salesforce object whitelist keys on. Matches
@@ -222,8 +246,9 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
         };
       }
 
-      // ── 3. Auto-append LIMIT ──
-      const querySoql = appendSOQLLimit(soql.trim(), ROW_LIMIT);
+      // ── 3. Auto-append LIMIT (row limit resolved lazily per call, #3400) ──
+      const rowLimit = getRowLimit();
+      const querySoql = appendSOQLLimit(soql.trim(), rowLimit);
 
       // ── 4. Instantiate the per-Workspace OAuth Salesforce instance ──
       let instance: SalesforcePluginInstance;
@@ -300,7 +325,7 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
       try {
         const result = await instance.query(querySoql, QUERY_TIMEOUT);
         const durationMs = Math.round(performance.now() - start);
-        const truncated = result.rows.length >= ROW_LIMIT;
+        const truncated = result.rows.length >= rowLimit;
         log.debug(
           { workspaceId, durationMs, rowCount: result.rows.length },
           "querySalesforce executed",

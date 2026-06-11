@@ -12,12 +12,14 @@
  * throwing resolver → fail-closed (`scan_unavailable`).
  */
 
-import { describe, expect, it, mock, type Mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, type Mock } from "bun:test";
 
 import {
   createQuerySalesforceTool,
   type QuerySalesforceToolDeps,
 } from "../salesforce-tool";
+import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
+import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 import {
   LazyPluginBuilderMissingError,
   LazyPluginInstallNotFoundError,
@@ -345,6 +347,125 @@ describe("querySalesforce — failure surfaces", () => {
     expect(result.message).toMatch(/check server logs/i);
     expect(result.message).not.toMatch(/INVALID_CLIENT_ID/);
     expect(result.message).not.toMatch(/credential/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ATLAS_ROW_LIMIT lazy resolution (#3400)
+//
+// The SOQL auto-LIMIT must resolve ATLAS_ROW_LIMIT per call via getSetting
+// (DB override > env var > default 1000) — matching getRowLimit() in
+// tools/sql.ts — not freeze it from env at module import. Uses the
+// _resetPool(mockPool) injection pattern from settings.test.ts so setSetting
+// writes a real platform DB override into the settings cache.
+// ---------------------------------------------------------------------------
+
+describe("querySalesforce — ATLAS_ROW_LIMIT lazy resolution (#3400)", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+  const origRowLimit = process.env.ATLAS_ROW_LIMIT;
+
+  const mockPool: InternalPool = {
+    query: async () => ({ rows: [] }),
+    async connect() {
+      return { query: async () => ({ rows: [] }), release() {} };
+    },
+    end: async () => {},
+    on: () => {},
+  };
+
+  beforeEach(() => {
+    delete process.env.ATLAS_ROW_LIMIT;
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    if (origRowLimit !== undefined) process.env.ATLAS_ROW_LIMIT = origRowLimit;
+    else delete process.env.ATLAS_ROW_LIMIT;
+    _resetPool(null);
+    _resetSettingsCache();
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  it("honors a platform DB override written AFTER module import", async () => {
+    enableInternalDB();
+    // The tool module was imported long before this write — a frozen
+    // module-level const would still append the env/default limit.
+    await setSetting("ATLAS_ROW_LIMIT", "5", "admin-test");
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "db override honored",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 5$/);
+  });
+
+  it("computes `truncated` against the DB override, not an import-time value", async () => {
+    enableInternalDB();
+    await setSetting("ATLAS_ROW_LIMIT", "1", "admin-test");
+
+    const instance = makeFakeInstance(); // default fake returns exactly 1 row
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string; truncated: boolean }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "truncated vs override",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.truncated).toBe(true); // 1 row >= overridden limit 1
+  });
+
+  it("falls back to the env var when no DB override exists", async () => {
+    process.env.ATLAS_ROW_LIMIT = "7";
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "env fallback",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 7$/);
+  });
+
+  it("defaults to 1000 when neither DB override nor env var is set", async () => {
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "registry default",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 1000$/);
+  });
+
+  it("uses the 1000 default for an invalid (non-numeric) value", async () => {
+    process.env.ATLAS_ROW_LIMIT = "not-a-number";
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "invalid value falls back",
+    });
+
+    expect(result.status).toBe("ok");
+    const calledSoql = instance.query.mock.calls[0]?.[0] as string;
+    expect(calledSoql).toMatch(/LIMIT 1000$/);
   });
 });
 

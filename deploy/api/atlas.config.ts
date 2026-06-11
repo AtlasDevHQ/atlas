@@ -1002,6 +1002,20 @@ export default defineConfig({
   // Railway api service. No fallback: a Vercel outage will hard-fail the
   // explore tool with a clear error rather than degrading to a less-isolated
   // backend that can't enforce multi-tenant boundaries.
+  //
+  // BYOC (#3370) deliberately supersedes this pin: when a workspace admin has
+  // connected provider credentials on /admin/sandbox AND selected that
+  // backend, explore runs on a sandbox built from the org's own stored
+  // credentials, on the org's own account. That doesn't weaken the pin's
+  // rationale — the pin exists because *shared* backends can't enforce
+  // multi-tenant boundaries, while a BYOC backend executes only that org's
+  // workload in that org's account, and fails closed (no silent fallback to
+  // the operator account) if it can't start. Only the vercel BYOC runtime is
+  // installed in this image today; E2B/Daytona/Railway cards report
+  // "Unavailable" until their SDKs are installed here (the plugin workspace
+  // packages already ship in the image; their optional-peer SDKs — e2b,
+  // @daytonaio/sdk, railway — don't). `/api/v1/admin/sandbox/status`'s
+  // providerRuntimeAvailability is the live source of truth.
   sandbox: {
     priority: ["vercel-sandbox"],
   },

@@ -18,7 +18,7 @@ export interface RedactedSecret {
   toString(): string;
 }
 
-function redactedSecret(value: string): RedactedSecret {
+export function redactedSecret(value: string): RedactedSecret {
   return Object.freeze({
     __brand: "RedactedSecret" as const,
     reveal: () => value,

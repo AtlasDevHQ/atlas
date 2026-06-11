@@ -46623,6 +46623,9 @@
                           },
                           "isActive": {
                             "type": "boolean"
+                          },
+                          "needsReconnect": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -46632,6 +46635,12 @@
                           "validatedAt",
                           "isActive"
                         ]
+                      }
+                    },
+                    "providerRuntimeAvailability": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "boolean"
                       }
                     }
                   },

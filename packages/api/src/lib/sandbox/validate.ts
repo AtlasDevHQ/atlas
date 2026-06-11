@@ -156,6 +156,7 @@ export function isSafeExternalUrl(url: string): boolean {
 export async function validateVercelCredentials(
   accessToken: string,
   teamId: string,
+  projectId: string,
 ): Promise<ValidationResult> {
   try {
     const res = await fetch(`https://api.vercel.com/v2/teams/${encodeURIComponent(teamId)}`, {
@@ -173,6 +174,29 @@ export async function validateVercelCredentials(
       return { valid: false, error: `Vercel API returned ${status}` };
     }
     const data = (await res.json().catch(() => ({}))) as { name?: string };
+
+    // The sandbox runtime needs a project to bill against — @vercel/sandbox
+    // requires the full token/teamId/projectId triple for explicit auth.
+    // Verify the token can see the project so the failure surfaces here, not
+    // on the first explore call.
+    const projectRes = await fetch(
+      `https://api.vercel.com/v9/projects/${encodeURIComponent(projectId)}?teamId=${encodeURIComponent(teamId)}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(VALIDATION_TIMEOUT_MS),
+      },
+    );
+    if (!projectRes.ok) {
+      const status = projectRes.status;
+      if (status === 404) {
+        return { valid: false, error: "Project not found — verify your Project ID" };
+      }
+      if (status === 401 || status === 403) {
+        return { valid: false, error: "Access token cannot access this project — check its scope" };
+      }
+      return { valid: false, error: `Vercel API returned ${status} for the project check` };
+    }
+
     return { valid: true, displayName: data.name ?? teamId };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -354,13 +378,18 @@ export async function validateCredentials(
     case "vercel": {
       const accessToken = credentials.accessToken;
       const teamId = credentials.teamId;
+      const projectId = credentials.projectId;
       if (typeof accessToken !== "string" || !accessToken) {
         return { valid: false, error: "Access token is required" };
       }
       if (typeof teamId !== "string" || !teamId) {
         return { valid: false, error: "Team ID is required" };
       }
-      return validateVercelCredentials(accessToken, teamId);
+      // Runtime-required — see REQUIRED_CREDENTIAL_FIELDS in sandbox/runtime.ts (#3370).
+      if (typeof projectId !== "string" || !projectId) {
+        return { valid: false, error: "Project ID is required" };
+      }
+      return validateVercelCredentials(accessToken, teamId, projectId);
     }
     case "e2b": {
       const apiKey = credentials.apiKey;
@@ -382,10 +411,12 @@ export async function validateCredentials(
       if (typeof token !== "string" || !token) {
         return { valid: false, error: "API token is required" };
       }
-      const environmentId =
-        typeof credentials.environmentId === "string" && credentials.environmentId
-          ? credentials.environmentId
-          : undefined;
+      // Runtime-required — the BYOC path never env-falls-back (#2850 seam);
+      // see REQUIRED_CREDENTIAL_FIELDS in sandbox/runtime.ts (#3370).
+      const environmentId = credentials.environmentId;
+      if (typeof environmentId !== "string" || !environmentId) {
+        return { valid: false, error: "Environment ID is required" };
+      }
       return validateRailwayCredentials(token, environmentId);
     }
     default:

@@ -182,6 +182,8 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
+  invalidateExploreBackend: () => {},
+  invalidateOrgExploreBackends: () => {},
 }));
 
 mock.module("@atlas/api/lib/agent", () => ({

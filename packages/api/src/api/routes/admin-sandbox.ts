@@ -20,6 +20,7 @@ import { getSetting, deleteSetting } from "@atlas/api/lib/settings";
 import {
   getExploreBackendType,
   getActiveSandboxPluginId,
+  invalidateOrgExploreBackends,
 } from "@atlas/api/lib/tools/explore";
 import { useVercelSandbox, useSidecar } from "@atlas/api/lib/tools/backends/detect";
 import {
@@ -29,6 +30,10 @@ import {
   SANDBOX_PROVIDERS,
 } from "@atlas/api/lib/sandbox/credentials";
 import { validateCredentials } from "@atlas/api/lib/sandbox/validate";
+import {
+  getProviderRuntimeAvailability,
+  missingCredentialFields,
+} from "@atlas/api/lib/sandbox/runtime";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -250,16 +255,39 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // Platform default (the backend that would be used without any workspace override)
       const platformDefault = getExploreBackendType();
       const activePluginId = getActiveSandboxPluginId();
-      const [allBackends, credentials] = yield* Effect.promise(() =>
-        Promise.all([getAvailableBackends(), getSandboxCredentials(orgId)]),
+      const [allBackends, credentials, runtimeAvailability] = yield* Effect.promise(() =>
+        Promise.all([
+          getAvailableBackends(),
+          getSandboxCredentials(orgId),
+          getProviderRuntimeAvailability(),
+        ]),
+      );
+
+      // A connected BYOC provider is *usable* when its stored credentials
+      // carry every runtime-required field AND this deployment can construct
+      // its backend. Manual mirror of the explore runtime's engagement gates
+      // in `tryCreateByocBackend` (#3370) so `activeBackend`/`isActive`
+      // report what actually runs — a gate added there must be added here.
+      const usableByocBackendIds = new Set(
+        credentials
+          .filter(
+            (cred) =>
+              missingCredentialFields(cred.provider, cred.credentials).length === 0 &&
+              runtimeAvailability[cred.provider],
+          )
+          .map((cred) => SANDBOX_PROVIDER_BACKEND_IDS[cred.provider]),
       );
 
       // Resolve the effective active backend
       let activeBackend: string;
       if (workspaceOverride) {
-        // Verify the override backend is actually available
+        // The override resolves when it's an available registered backend OR
+        // a usable BYOC provider (BYOC backends are built on demand from
+        // stored credentials and never appear in availableBackends).
         const found = allBackends.find((b) => b.id === workspaceOverride && b.available);
-        activeBackend = found ? workspaceOverride : platformDefault;
+        activeBackend = found || usableByocBackendIds.has(workspaceOverride)
+          ? workspaceOverride
+          : platformDefault;
       } else {
         activeBackend = activePluginId ?? platformDefault;
       }
@@ -279,7 +307,18 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           displayName: cred.displayName,
           connectedAt: cred.connectedAt,
           validatedAt: cred.validatedAt,
-          isActive: workspaceOverride === backendId && activeBackend === backendId,
+          // Requires the usable-BYOC gate on top of the override/activeBackend
+          // match: for vercel, `activeBackend` can resolve to "vercel-sandbox"
+          // via the *operator's* built-in backend even when this row's stored
+          // credentials can't run (needsReconnect) — without the gate the row
+          // would read "Live" while explore actually executes on the
+          // operator's account (#3370 review).
+          isActive:
+            workspaceOverride === backendId &&
+            activeBackend === backendId &&
+            usableByocBackendIds.has(backendId),
+          needsReconnect:
+            missingCredentialFields(cred.provider, cred.credentials).length > 0,
         };
       });
 
@@ -291,6 +330,7 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
           workspaceSidecarUrl,
           availableBackends: allBackends,
           connectedProviders,
+          providerRuntimeAvailability: runtimeAvailability,
         },
         200,
       );
@@ -355,6 +395,11 @@ adminSandbox.openapi(connectRoute, async (c) => {
         saveSandboxCredential(orgId, provider, credentials, result.displayName),
       );
 
+      // Tear down this org's cached explore backends so the next explore
+      // call rebuilds with the new credentials (#3370) — mirrors the
+      // ConnectionRegistry's workspace pool drain on credential edits.
+      invalidateOrgExploreBackends(orgId);
+
       log.info({ orgId, provider }, "Sandbox provider connected");
 
       return c.json(
@@ -391,6 +436,10 @@ adminSandbox.openapi(disconnectRoute, async (c) => {
       const deleted = yield* Effect.promise(() =>
         deleteSandboxCredential(orgId, provider),
       );
+
+      // Drop cached backends built from the deleted credentials so explore
+      // can't keep running on them after disconnect (#3370).
+      invalidateOrgExploreBackends(orgId);
 
       // If this was the active sandbox, reset to platform default. The
       // setting stores backend ids (legacy rows may hold provider keys),

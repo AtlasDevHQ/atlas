@@ -11,7 +11,7 @@
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
 import { sandboxErrorDetail, safeError } from "./backends/shared";
-import { vercelSandboxAccess } from "./backends/detect";
+import { vercelSandboxAccess, type RedactedSecret } from "./backends/detect";
 import * as path from "path";
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -82,8 +82,22 @@ const SANDBOX_SEMANTIC_REL = "semantic";
 // Must match the absolute resolution of SANDBOX_SEMANTIC_REL (used as runCommand cwd).
 const SANDBOX_SEMANTIC_CWD = "/vercel/sandbox/semantic";
 
+/**
+ * Explicit Vercel API credentials for sandbox creation. When provided
+ * (the BYOC per-org path, #3370), they replace the operator-level env-var
+ * detection entirely. The token carries the same RedactedSecret brand as
+ * the operator path's VercelSandboxAccess, so an accidental structured log
+ * of this object can't leak it — it's revealed only at Sandbox.create.
+ */
+export interface VercelSandboxAccessOverride {
+  teamId: string;
+  projectId: string;
+  token: RedactedSecret;
+}
+
 export async function createSandboxBackend(
-  semanticRoot: string
+  semanticRoot: string,
+  accessOverride?: VercelSandboxAccessOverride
 ): Promise<ExploreBackend> {
   // 1. Import the optional dependency
   let Sandbox: (typeof import("@vercel/sandbox"))["Sandbox"];
@@ -99,11 +113,12 @@ export async function createSandboxBackend(
     );
   }
 
-  // 2. Create the sandbox. When VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN
-  // are set we're running off-Vercel (e.g. Railway) and need to pass explicit
-  // credentials; on Vercel itself, OIDC handles auth automatically and these
-  // are undefined.
-  const access = vercelSandboxAccess();
+  // 2. Create the sandbox. An accessOverride (per-org BYOC credentials)
+  // takes precedence and is used verbatim. Otherwise, when
+  // VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN are set we're running
+  // off-Vercel (e.g. Railway) and pass explicit operator credentials; on
+  // Vercel itself, OIDC handles auth automatically and these are undefined.
+  const access = accessOverride ?? vercelSandboxAccess();
   const explicitAccess = access
     ? {
         teamId: access.teamId,

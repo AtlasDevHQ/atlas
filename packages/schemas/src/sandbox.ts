@@ -79,6 +79,13 @@ export const SandboxConnectedProviderSchema = z.object({
    * `activeBackend` so the two fields can never contradict (#3375).
    */
   isActive: z.boolean(),
+  /**
+   * True when the stored credentials are missing fields the runtime now
+   * requires (e.g. a Vercel row stored before `projectId` was collected).
+   * The provider must be reconnected before it can run (#3370). Optional:
+   * absent on responses from API versions predating the field.
+   */
+  needsReconnect: z.boolean().optional(),
 });
 
 export type SandboxConnectedProvider = z.infer<typeof SandboxConnectedProviderSchema>;
@@ -100,6 +107,19 @@ export const SandboxStatusSchema = z.object({
   availableBackends: z.array(SandboxBackendSchema),
   /** Connected BYOC sandbox providers for this org */
   connectedProviders: z.array(SandboxConnectedProviderSchema),
+  /**
+   * Whether this deployment can run each BYOC provider at runtime (provider
+   * plugin + SDK resolvable). `false` means the provider cannot execute even
+   * with valid stored credentials (#3370). Consumers treat an absent key —
+   * and the absent field on API versions predating it — as *unknown* and
+   * assume usable: the optimistic default keeps older-API admin pages
+   * functional, and the connect/explore paths enforce the real check
+   * server-side. Keys are deliberately `z.string()` rather than
+   * `SandboxProviderKeySchema`: an enum-keyed record would make a newer API
+   * (with a fifth provider) fail this whole parse on an older web bundle
+   * during the deploy-overlap window.
+   */
+  providerRuntimeAvailability: z.record(z.string(), z.boolean()).optional(),
 });
 
 export type SandboxStatus = z.infer<typeof SandboxStatusSchema>;

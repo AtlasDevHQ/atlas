@@ -28,6 +28,7 @@ export type {
 
 export {
   getInstallHandler,
+  hasFormInstallHandler,
   registerFormHandler,
   registerOAuthDatasourceHandler,
   registerOAuthHandler,

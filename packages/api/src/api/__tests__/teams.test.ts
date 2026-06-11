@@ -34,6 +34,7 @@ const mockConfirmInstall: Mock<
 
 mock.module("@atlas/api/lib/integrations/install/dispatch", () => ({
   getInstallHandler: mock(() => ({ kind: "static-bot" as const, oauthShaped: true as const, confirmInstall: mockConfirmInstall })),
+  hasFormInstallHandler: mock(() => false),
   registerOAuthHandler: mock(() => {}),
   registerFormHandler: mock(() => {}),
   registerStaticBotHandler: mock(() => {}),

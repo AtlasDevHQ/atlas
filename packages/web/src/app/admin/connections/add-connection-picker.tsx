@@ -52,28 +52,23 @@ const CURATED: ReadonlyArray<{ slug: string; icon: LucideIcon }> = [
 ];
 const CURATED_SLUGS = new Set(CURATED.map((c) => c.slug));
 
-/** Datasource-pillar catalog rows that must NOT render as form-install tiles
- *  in the Databases group:
- *  - `postgres` / `mysql` connect through the native URL-form dialog
- *    (`DATABASE_PROVIDERS` tiles) — their catalog rows back `atlas.config.ts`
- *    installs, not this picker.
- *  - `demo-postgres` is the auto-installed Atlas-managed demo dataset.
- *  - `salesforce` installs via OAuth from its own block on the page.
- *  - `openapi-generic` is the "Custom REST API" tile below.
+/** Form-installable rows that render in a DIFFERENT group of this picker, so
+ *  they must not double-render as Databases tiles. Pure presentation grouping
+ *  (allowed to stay client-side per #3387):
+ *  - `openapi-generic` is the static "Custom REST API" tile below.
  *  - Curated REST candidates (Stripe/Notion/GitHub) render in "Popular APIs".
- *  - `duckdb` has NO registered form-install handler (it's a local file —
- *    `atlas.config.ts`-only on self-hosted; on SaaS the server already hides
- *    the row via `saas_eligible = false`, #3301). Rendering its tile would
- *    recreate the exact class-2 dead end #3377 removes: the submit would
- *    throw "No form-based install handler registered" server-side. Drop the
- *    exclusion if/when `register.ts` gains a duckdb DatasourceFormInstallHandler. */
-const FORM_TILE_EXCLUDED: ReadonlySet<string> = new Set([
-  "postgres",
-  "mysql",
-  "demo-postgres",
-  "salesforce",
+ *
+ *  Installability itself is no longer a client-side slug list: the server
+ *  derives `formInstallable` per row from its actual form-install handler
+ *  registry (#3387) — the same registry `POST /:platform/install-form`
+ *  dispatches against. That flag is what keeps native URL-form slugs
+ *  (postgres/mysql), the auto-installed `demo-postgres`, OAuth rows
+ *  (salesforce, github-data), and deliberately handler-less rows (duckdb,
+ *  `atlas.config.ts`-only) out of the tile set — if `register.ts` ever gains
+ *  a handler for one of them, the tile appears with zero web changes, and a
+ *  catalog row without a handler can never render a submittable tile. */
+const RENDERED_IN_OTHER_GROUPS: ReadonlySet<string> = new Set([
   "openapi-generic",
-  "duckdb",
   ...CURATED_SLUGS,
 ]);
 
@@ -192,11 +187,19 @@ export function AddConnectionPicker({
   }).filter((c): c is { entry: IntegrationsCatalogEntry; icon: LucideIcon } => c !== null);
 
   // Plugin datasources installable through the schema-driven form-install
-  // (the path #3300 shipped). `installModel === "form"` only — OAuth
-  // datasources (github-data) ride the curated branch; the slug denylist
-  // keeps native/duplicated surfaces out (see FORM_TILE_EXCLUDED).
+  // (the path #3300 shipped). Tiles render only for rows the server flags
+  // `formInstallable` — derived from the actual handler registry (#3387) —
+  // so a handler-less row can never produce a submittable tile. The strict
+  // `=== true` fails closed when the flag is absent (an older API during a
+  // deploy-overlap window: tiles briefly missing beats a tile that 500s).
+  // `installModel === "form"` is implied by the flag but kept as
+  // defense-in-depth; RENDERED_IN_OTHER_GROUPS is presentation grouping
+  // only (those rows render in Custom / Popular APIs).
   const formDatasources = datasourceEntries.filter(
-    (e) => e.installModel === "form" && !FORM_TILE_EXCLUDED.has(e.slug),
+    (e) =>
+      e.installModel === "form" &&
+      e.formInstallable === true &&
+      !RENDERED_IN_OTHER_GROUPS.has(e.slug),
   );
 
   function pickDatabase(dbType: DBType) {

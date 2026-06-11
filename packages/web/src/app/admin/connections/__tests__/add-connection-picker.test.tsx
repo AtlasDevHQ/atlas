@@ -12,9 +12,14 @@
  *   2. Plugin datasources render as catalog-driven form-install tiles fed by
  *      `GET /api/v1/integrations/catalog?pillar=datasource`, and picking one
  *      routes to the marketplace form-install (`onPickDatasourceForm`).
- *   3. Native / duplicated catalog slugs (postgres, mysql, demo-postgres,
- *      salesforce, openapi-generic, curated REST candidates) never render as
- *      form-install tiles.
+ *   3. Tiles render only for rows the server flags `formInstallable` (#3387 —
+ *      derived from the actual form-handler registry, replacing the deleted
+ *      FORM_TILE_EXCLUDED slug list). Rows without a registered handler
+ *      (postgres, mysql, demo-postgres, duckdb — `formInstallable: false`),
+ *      OAuth rows (salesforce, github-data), and rows grouped elsewhere in
+ *      the picker (openapi-generic → Custom, curated REST candidates →
+ *      Popular APIs) never render as form-install tiles. An absent flag
+ *      (older API) fails closed.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -86,27 +91,51 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
     pillar: "datasource",
     implementationStatus: "available",
     installConfig: null,
+    // Server-derived (#3387): true only for `form` rows whose slug has a
+    // registered form-install handler. Defaults true here; fixtures for
+    // handler-less / OAuth rows override to false, mirroring the API.
+    formInstallable: true,
     access: { kind: "accessible" },
     ...overrides,
   };
 }
 
-/** The full datasource-pillar listing a self-hosted deploy would return. */
+/** The full datasource-pillar listing a self-hosted deploy would return,
+ *  with `formInstallable` exactly as the server derives it from the
+ *  handler registry (register.ts): clickhouse/snowflake/bigquery/
+ *  elasticsearch/openapi-generic/stripe-data have form handlers; postgres/
+ *  mysql/demo-postgres/duckdb don't; salesforce is OAuth. */
 function selfHostedCatalog() {
   return [
-    makeEntry({ id: "catalog:postgres", slug: "postgres", name: "PostgreSQL" }),
-    makeEntry({ id: "catalog:mysql", slug: "mysql", name: "MySQL" }),
+    makeEntry({
+      id: "catalog:postgres",
+      slug: "postgres",
+      name: "PostgreSQL",
+      formInstallable: false,
+    }),
+    makeEntry({ id: "catalog:mysql", slug: "mysql", name: "MySQL", formInstallable: false }),
     makeEntry(),
     makeEntry({ id: "catalog:snowflake", slug: "snowflake", name: "Snowflake" }),
     makeEntry({ id: "catalog:bigquery", slug: "bigquery", name: "BigQuery" }),
-    makeEntry({ id: "catalog:duckdb", slug: "duckdb", name: "DuckDB" }),
+    makeEntry({
+      id: "catalog:duckdb",
+      slug: "duckdb",
+      name: "DuckDB",
+      formInstallable: false,
+    }),
     makeEntry({ id: "catalog:elasticsearch", slug: "elasticsearch", name: "Elasticsearch" }),
-    makeEntry({ id: "catalog:demo-postgres", slug: "demo-postgres", name: "Demo Dataset" }),
+    makeEntry({
+      id: "catalog:demo-postgres",
+      slug: "demo-postgres",
+      name: "Demo Dataset",
+      formInstallable: false,
+    }),
     makeEntry({
       id: "catalog:salesforce",
       slug: "salesforce",
       name: "Salesforce",
       installModel: "oauth",
+      formInstallable: false,
     }),
     makeEntry({ id: "catalog:openapi-generic", slug: "openapi-generic", name: "OpenAPI REST" }),
     makeEntry({ id: "catalog:stripe-data", slug: "stripe-data", name: "Stripe" }),
@@ -164,6 +193,9 @@ describe("AddConnectionPicker — datasource tile routing (#3377)", () => {
   });
 
   test("native / duplicated catalog slugs never render as form-install tiles", () => {
+    // postgres/mysql/demo-postgres report `formInstallable: false` (no
+    // registered handler); salesforce is OAuth; openapi-generic and
+    // stripe-data are form-installable but grouped elsewhere in the picker.
     renderPicker();
     for (const slug of [
       "postgres",
@@ -179,10 +211,53 @@ describe("AddConnectionPicker — datasource tile routing (#3377)", () => {
     expect(screen.getByTestId("add-curated-stripe-data")).toBeTruthy();
   });
 
+  test("a row without a registered handler (formInstallable=false) never renders a submittable tile (#3387)", () => {
+    // The drift scenario #3387 closes: a brand-new catalog row lands with
+    // NO registered form-install handler. Pre-#3387 the hardcoded
+    // FORM_TILE_EXCLUDED list wouldn't know the slug, the tile would
+    // render, and submit would 500 with "No form-based install handler
+    // registered". Now the server-derived flag keeps it out with zero web
+    // changes.
+    fetchState = {
+      data: {
+        catalog: [
+          makeEntry({
+            id: "catalog:newwarehouse",
+            slug: "newwarehouse",
+            name: "New Warehouse",
+            formInstallable: false,
+          }),
+        ],
+      },
+      loading: false,
+    };
+    renderPicker();
+    expect(screen.queryByTestId("add-ds-newwarehouse")).toBeNull();
+  });
+
+  test("an absent formInstallable flag fails closed (older API during deploy overlap)", () => {
+    fetchState = {
+      data: {
+        catalog: [
+          makeEntry({
+            id: "catalog:newwarehouse",
+            slug: "newwarehouse",
+            name: "New Warehouse",
+            formInstallable: undefined,
+          }),
+        ],
+      },
+      loading: false,
+    };
+    renderPicker();
+    expect(screen.queryByTestId("add-ds-newwarehouse")).toBeNull();
+  });
+
   test("DuckDB never renders a tile (no form handler; SaaS additionally server-filters it)", () => {
-    // Self-hosted: the catalog row exists, but there is no registered
-    // form-install handler for duckdb — a tile would dead-end in a 500
-    // (the class-2 path #3377 removes). Neither group offers it.
+    // Self-hosted: the catalog row exists but reports `formInstallable:
+    // false` — register.ts deliberately has no duckdb handler, so a tile
+    // would dead-end in a 500 (the class-2 path #3377 removes). Neither
+    // group offers it.
     renderPicker();
     expect(screen.queryByTestId("add-ds-duckdb")).toBeNull();
     expect(screen.queryByTestId("add-db-duckdb")).toBeNull();
@@ -259,6 +334,7 @@ describe("AddConnectionPicker — datasource tile routing (#3377)", () => {
             slug: "github-data",
             name: "GitHub Data",
             installModel: "oauth-datasource",
+            formInstallable: false,
           }),
         ],
       },

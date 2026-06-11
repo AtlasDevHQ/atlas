@@ -105,6 +105,23 @@ export function registerOAuthDatasourceHandler(
   oauthDatasourceHandlers.set(slug, handler);
 }
 
+/**
+ * Whether a form-based install handler is registered for the given catalog
+ * slug (#3387). This is the SAME registry `getInstallHandler` consults for
+ * `install_model: "form"` rows on the `/install-form` route — so a catalog
+ * listing that derives "form-installable" from this predicate can never
+ * drift from what the install route will actually accept. The
+ * `?pillar=datasource` catalog listing uses it to emit a per-row
+ * `formInstallable` flag, replacing the web picker's hardcoded slug lists.
+ *
+ * Deploy-mode agnostic by construction: form handlers register without
+ * env gates (customer-supplied credentials), and this reads only the
+ * in-process registry — no `deployMode` branch.
+ */
+export function hasFormInstallHandler(slug: string): boolean {
+  return formHandlers.has(slug);
+}
+
 /** @internal Test-only — clears all four registries between tests. */
 export function _resetInstallHandlerRegistries(): void {
   oauthHandlers.clear();

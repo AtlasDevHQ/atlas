@@ -17,7 +17,7 @@
  * circuit, and the wire-shape projection (including the two new fields).
  */
 
-import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { describe, it, expect, afterEach, beforeEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import type { CatalogEntryWithState } from "@atlas/api/lib/effect/pillar-catalog-query";
 
@@ -124,6 +124,12 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 
 const { integrationsCatalog } = await import("../routes/integrations-catalog");
 const { OpenAPIHono } = await import("@hono/zod-openapi");
+// Real (unmocked) form-handler registry — the route derives
+// `formInstallable` from it (#3387), so the tests below register/clear
+// handlers per-test (never at module top-level).
+const { registerFormHandler, _resetInstallHandlerRegistries } = await import(
+  "@atlas/api/lib/integrations/install/dispatch"
+);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -303,6 +309,107 @@ describe("GET /api/v1/integrations/catalog", () => {
         { key: "description", type: "string" },
       ]);
       expect(entry.installed).toBe(false);
+    });
+  });
+
+  describe("formInstallable derivation (#3387)", () => {
+    // Minimal registry entry — the flag derivation only consults
+    // registration, never invokes the handler.
+    const fakeFormHandler = {
+      kind: "form" as const,
+      validateConfig: () =>
+        Promise.reject(new Error("test handler: validateConfig must not be called")),
+    };
+
+    afterEach(() => {
+      _resetInstallHandlerRegistries();
+    });
+
+    it("derives formInstallable from the live form-handler registry on the pillar listing", async () => {
+      registerFormHandler("clickhouse", fakeFormHandler);
+      const rows = [
+        // form model + registered handler → installable
+        makeRichRow({
+          id: "catalog:clickhouse",
+          slug: "clickhouse",
+          name: "ClickHouse",
+          type: "datasource",
+          installModel: "form",
+          pillar: "datasource",
+        }),
+        // form model, NO registered handler (duckdb is deliberately
+        // handler-less — atlas.config.ts-only) → not installable. This is
+        // the drift scenario #3387 closes: the row must self-report false
+        // so the picker can never render a submittable tile that would
+        // 500 with "No form-based install handler registered".
+        makeRichRow({
+          id: "catalog:duckdb",
+          slug: "duckdb",
+          name: "DuckDB",
+          type: "datasource",
+          installModel: "form",
+          pillar: "datasource",
+        }),
+        // non-form model → false regardless of registry state
+        makeRichRow({
+          id: "catalog:salesforce",
+          slug: "salesforce",
+          name: "Salesforce",
+          type: "datasource",
+          installModel: "oauth",
+          pillar: "datasource",
+        }),
+      ];
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed(rows));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog?pillar=datasource");
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const bySlug: Record<string, { formInstallable?: boolean }> = {};
+      for (const e of body.catalog) bySlug[e.slug] = e;
+      expect(bySlug["clickhouse"]?.formInstallable).toBe(true);
+      expect(bySlug["duckdb"]?.formInstallable).toBe(false);
+      expect(bySlug["salesforce"]?.formInstallable).toBe(false);
+    });
+
+    it("gates on installModel: a non-form row stays false even when a form handler shares its slug", async () => {
+      // Defensive: the oauth/form registries are namespaced separately
+      // (dispatch.ts) — a same-slug form handler must not flip an
+      // oauth-datasource row to form-installable.
+      registerFormHandler("github-data", fakeFormHandler);
+      mockWithInstallStatusFor.mockReturnValueOnce(
+        Effect.succeed([
+          makeRichRow({
+            id: "catalog:github-data",
+            slug: "github-data",
+            name: "GitHub Data",
+            type: "datasource",
+            installModel: "oauth-datasource",
+            pillar: "datasource",
+          }),
+        ]),
+      );
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog?pillar=datasource");
+      const body = await json(res);
+      expect(body.catalog[0].formInstallable).toBe(false);
+    });
+
+    it("never emits the key on the default listing, even with handlers registered (byte-stability)", async () => {
+      // The default (no-pillar) branch must omit the key entirely — the
+      // exact-body pin above covers the serialized form; this pins the
+      // key-absence semantics directly even when the registry would say
+      // true.
+      registerFormHandler("slack", fakeFormHandler);
+      const row = makeRichRow({ installModel: "form" });
+      mockWithInstallStatusFor.mockReturnValueOnce(Effect.succeed([row]));
+
+      const app = buildApp();
+      const res = await app.request("/integrations/catalog");
+      const body = await json(res);
+      expect("formInstallable" in body.catalog[0]).toBe(false);
     });
   });
 

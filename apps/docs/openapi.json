@@ -64421,6 +64421,9 @@
                               "null"
                             ],
                             "additionalProperties": {}
+                          },
+                          "formInstallable": {
+                            "type": "boolean"
                           }
                         },
                         "required": [

@@ -370,6 +370,17 @@ const RawCatalogEntrySchema = z.object({
   // the field is absent. `null` is the explicit "row not installed"
   // signal; treat it the same as absent at the render layer.
   installConfig: z.record(z.string(), z.unknown()).nullable().optional(),
+  // ── New in #3387 ─────────────────────────────────────────────────
+  // Server-derived "this row can be installed via the schema-driven
+  // form-install": `installModel === "form"` AND a form-install handler
+  // is actually registered for the slug (the same registry the
+  // /install-form dispatch consults). Emitted ONLY on the
+  // `?pillar=datasource` listing; the default listing omits it (its
+  // wire shape is pinned byte-identical), hence `.optional()`.
+  // Consumers must fail closed: absent ⇒ not form-installable —
+  // rendering a submittable tile for a handler-less row would 500 at
+  // submit.
+  formInstallable: z.boolean().optional(),
 });
 
 /**

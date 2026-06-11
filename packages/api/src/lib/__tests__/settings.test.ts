@@ -423,6 +423,19 @@ describe("settings module", () => {
       );
     });
 
+    // #3389 — mirror of the setSetting self-hosted test above: the delete
+    // guard must stay isSaasModeForGuard()-gated, so clearing an immutable
+    // key's override outside SaaS keeps working. SaaS rejection is covered
+    // in settings-saas.test.ts.
+    it("permits deletes of SAAS_IMMUTABLE_KEYS overrides in self-hosted mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        deleteSetting("ATLAS_EMAIL_PROVIDER", "admin-1"),
+      ).resolves.toBeUndefined();
+    });
+
     it("removes platform override, reverts to env var", async () => {
       process.env.ATLAS_ROW_LIMIT = "500";
       enableInternalDB();

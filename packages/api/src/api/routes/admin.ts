@@ -36,6 +36,7 @@ import {
   getSettingDefinition,
   setSetting,
   deleteSetting,
+  isSaasModeForGuard,
 } from "@atlas/api/lib/settings";
 import { SaasImmutableSettingError } from "@atlas/api/lib/settings-errors";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
@@ -1550,6 +1551,7 @@ const deleteSettingRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Setting is SaaS-immutable — clearing the override is a write too (#3389); change via env var and restart (#1978)", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -3598,10 +3600,17 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
   }
 
-  // Platform-scoped settings require platform_admin (or no org context = self-hosted)
+  // Platform-scoped settings require platform_admin. An org context always
+  // marks a workspace admin; with NO org context, self-hosted admins keep
+  // full access but on SaaS a non-platform-admin session is still a
+  // workspace admin — #3389 aligned this with the GET filter's
+  // `!isPlatformAdmin` classification (a no-org SaaS session must not
+  // escalate to platform scope). Mode probe is isSaasModeForGuard()
+  // (fail-closed: config-resolution failure ⇒ SaaS ⇒ restrictive), the
+  // same probe the SAAS_IMMUTABLE guard in lib/settings.ts uses.
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  if (def.scope === "platform" && orgId && !isPlatformAdmin) {
+  if (def.scope === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
@@ -3610,10 +3619,12 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   // writable. Effective writability is `saasWritable`, defaulting to
   // `saasVisible` (itself defaulting to true). The sandbox keys split the
   // axes (`saasVisible: false, saasWritable: true`) because the dedicated
-  // /admin/sandbox page writes them through this route on SaaS. Mirrors
-  // the GET filter's mode probe (resolved config deployMode + role).
+  // /admin/sandbox page writes them through this route on SaaS. Matches
+  // the GET filter's role classification (`!isPlatformAdmin`); the mode
+  // probe is the shared fail-closed isSaasModeForGuard() (#3389) rather
+  // than GET's display-only `getConfig()?.deployMode` read.
   const saasWritable = def.saasWritable ?? def.saasVisible ?? true;
-  if (!saasWritable && !isPlatformAdmin && (getConfig()?.deployMode ?? "self-hosted") === "saas") {
+  if (!saasWritable && !isPlatformAdmin && isSaasModeForGuard()) {
     return c.json({ error: "forbidden", message: `"${key}" is managed by Atlas in SaaS mode and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
@@ -3706,23 +3717,41 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
     return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
   }
 
-  // Platform-scoped settings require platform_admin (or no org context = self-hosted)
+  // Platform-scoped settings require platform_admin — same classification
+  // as PUT (#3389): an org context always marks a workspace admin, and a
+  // no-org non-platform-admin on SaaS is a workspace admin too (matches
+  // GET's `!isPlatformAdmin`). Fail-closed mode probe, see PUT.
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  if (def.scope === "platform" && orgId && !isPlatformAdmin) {
+  if (def.scope === "platform" && !isPlatformAdmin && (orgId || isSaasModeForGuard())) {
     return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   // #3376 — same write gate as PUT: DELETE clears an override, which is a
   // write. A SaaS workspace admin must not be able to reset a key they
-  // cannot see or set. See the PUT handler for the axis semantics.
+  // cannot see or set. See the PUT handler for the axis semantics and
+  // the shared fail-closed mode probe (#3389).
   const saasWritable = def.saasWritable ?? def.saasVisible ?? true;
-  if (!saasWritable && !isPlatformAdmin && (getConfig()?.deployMode ?? "self-hosted") === "saas") {
+  if (!saasWritable && !isPlatformAdmin && isSaasModeForGuard()) {
     return c.json({ error: "forbidden", message: `"${key}" is managed by Atlas in SaaS mode and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
-  await deleteSetting(key, authResult.user?.id, effectiveOrgId);
+  try {
+    await deleteSetting(key, authResult.user?.id, effectiveOrgId);
+  } catch (err) {
+    // #3389 — deleteSetting enforces SAAS_IMMUTABLE_KEYS like setSetting
+    // (clearing an override is a write). Map to the same 409 envelope the
+    // PUT handler produces so the admin UI handles both verbs uniformly.
+    if (err instanceof SaasImmutableSettingError) {
+      log.warn({ requestId, key, actorId: authResult.user?.id }, "Rejected SaaS-immutable setting delete");
+      return c.json(
+        { error: "saas_immutable", message: err.message, requestId },
+        409,
+      );
+    }
+    throw err;
+  }
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override removed via admin API");
 
   logAdminAction({

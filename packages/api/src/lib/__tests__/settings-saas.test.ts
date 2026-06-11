@@ -45,8 +45,12 @@ function setResults(...results: Array<{ rows: Record<string, unknown>[] }>) {
 // Mock config module to return SaaS mode
 // ---------------------------------------------------------------------------
 
+// Controllable so the #3389 probe tests can simulate self-hosted, unloaded
+// (null) and errored (throwing) config resolution. Defaults to SaaS.
+let mockGetConfigImpl: () => { deployMode?: string } | null = () => ({ deployMode: "saas" });
+
 mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () => ({ deployMode: "saas" }),
+  getConfig: () => mockGetConfigImpl(),
   defineConfig: (c: unknown) => c,
 }));
 
@@ -78,6 +82,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 const {
   getSettingsForAdmin,
   setSetting,
+  deleteSetting,
+  isSaasModeForGuard,
   _resetSettingsCache,
 } = await import("../settings");
 const { SaasImmutableSettingError } = await import("../settings-errors");
@@ -95,6 +101,7 @@ describe("settings (SaaS mode)", () => {
     queryResults = [];
     queryResultIndex = 0;
     logLevelCalls = [];
+    mockGetConfigImpl = () => ({ deployMode: "saas" });
     _resetSettingsCache();
   });
 
@@ -225,6 +232,85 @@ describe("settings (SaaS mode)", () => {
       await expect(
         setSetting("ATLAS_ROW_LIMIT", "500", "admin-1"),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // deleteSetting SAAS_IMMUTABLE_KEYS rejection (#3389)
+  // -------------------------------------------------------------------------
+
+  describe("deleteSetting SAAS_IMMUTABLE_KEYS rejection (#3389)", () => {
+    it("deleteSetting rejects ATLAS_EMAIL_PROVIDER in SaaS mode with SaasImmutableSettingError", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      let captured: unknown;
+      try {
+        await deleteSetting("ATLAS_EMAIL_PROVIDER", "admin-1");
+      } catch (err) {
+        captured = err;
+      }
+
+      // Same error type + shape as the setSetting guard — the route maps
+      // both to the same 409 envelope.
+      expect(captured).toBeInstanceOf(SaasImmutableSettingError);
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>).key).toBe("ATLAS_EMAIL_PROVIDER");
+      expect((captured as InstanceType<typeof SaasImmutableSettingError>)._tag).toBe("SaasImmutableSettingError");
+      // No DB delete — clearing the override would silently reset the key
+      // to env/default behind the boot-time contract guard.
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("deleteSetting rejects ATLAS_DEPLOY_MODE and ATLAS_RATE_LIMIT_RPM in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        deleteSetting("ATLAS_DEPLOY_MODE", "admin-1"),
+      ).rejects.toThrow(SaasImmutableSettingError);
+      await expect(
+        deleteSetting("ATLAS_RATE_LIMIT_RPM", "admin-1"),
+      ).rejects.toThrow(SaasImmutableSettingError);
+      expect(queryCalls).toHaveLength(0);
+    });
+
+    it("deleteSetting allows non-immutable keys in SaaS mode", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      await expect(
+        deleteSetting("ATLAS_ROW_LIMIT", "admin-1"),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // isSaasModeForGuard probe discipline (#3389)
+  // -------------------------------------------------------------------------
+
+  describe("isSaasModeForGuard probe discipline (#3389)", () => {
+    // Exported in #3389 so the route-level write gates on PUT/DELETE
+    // /admin/settings/{key} share the lib guard's fail-closed discipline.
+
+    it("returns true when deployMode is saas", () => {
+      expect(isSaasModeForGuard()).toBe(true);
+    });
+
+    it("returns false when deployMode is self-hosted (resolved config stays permissive)", () => {
+      mockGetConfigImpl = () => ({ deployMode: "self-hosted" });
+      expect(isSaasModeForGuard()).toBe(false);
+    });
+
+    it("returns false when config is unloaded (getConfig() → null — legitimate AGPL/dev state)", () => {
+      mockGetConfigImpl = () => null;
+      expect(isSaasModeForGuard()).toBe(false);
+    });
+
+    it("fails CLOSED (true) when getConfig() throws — config-resolution failure is not self-hosted", () => {
+      mockGetConfigImpl = () => {
+        throw new Error("config resolution exploded");
+      };
+      expect(isSaasModeForGuard()).toBe(true);
     });
   });
 });

@@ -69,15 +69,15 @@ const log = createLogger("integrations.salesforce.tool");
 let lastWarnedRowLimit: string | undefined;
 
 /**
- * Read row limit from settings cache (DB override > env var > default).
- * Resolved per call — not frozen at module import — so platform DB overrides
- * of `ATLAS_ROW_LIMIT` written via the admin UI take effect without a restart.
- * Copies `getRowLimit()` in `tools/sql.ts` exactly (including the no-orgId
- * `getSetting` resolution and warn-once invalid-value handling) so SQL and
- * SOQL auto-LIMIT share one vocabulary of truth (parity Rule 3, #3400).
+ * Read row limit from settings cache (workspace DB override > platform DB
+ * override > env var > default). Resolved per call — not frozen at module
+ * import — so admin overrides take effect without a restart (#3400), and
+ * `orgId` threads the workspace tier (#3406). Copies `getRowLimit()` in
+ * `tools/sql.ts` exactly so SQL and SOQL auto-LIMIT share one vocabulary
+ * of truth (parity Rule 3).
  */
-function getRowLimit(): number {
-  const raw = getSetting("ATLAS_ROW_LIMIT") ?? "1000";
+function getRowLimit(orgId?: string): number {
+  const raw = getSetting("ATLAS_ROW_LIMIT", orgId) ?? "1000";
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
     if (raw !== lastWarnedRowLimit) {
@@ -92,16 +92,15 @@ function getRowLimit(): number {
 let lastWarnedQueryTimeout: string | undefined;
 
 /**
- * Read query timeout from settings cache (DB override > env var > default).
- * Resolved per call — not frozen at module import — so platform DB overrides
- * of `ATLAS_QUERY_TIMEOUT` written via the admin UI take effect without a
- * restart. Copies `getQueryTimeout()` in `tools/sql.ts` exactly (including
- * the no-orgId `getSetting` resolution and warn-once invalid-value handling)
- * so SQL and SOQL query timeouts share one vocabulary of truth (parity
- * Rule 3, #3402 — the `ATLAS_QUERY_TIMEOUT` sibling of #3400).
+ * Read query timeout from settings cache (workspace DB override > platform
+ * DB override > env var > default). Resolved per call — not frozen at
+ * module import — so admin overrides take effect without a restart (#3402),
+ * and `orgId` threads the workspace tier (#3406). Copies `getQueryTimeout()`
+ * in `tools/sql.ts` exactly so SQL and SOQL query timeouts share one
+ * vocabulary of truth (parity Rule 3).
  */
-function getQueryTimeout(): number {
-  const raw = getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000";
+function getQueryTimeout(orgId?: string): number {
+  const raw = getSetting("ATLAS_QUERY_TIMEOUT", orgId) ?? "30000";
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
     if (raw !== lastWarnedQueryTimeout) {
@@ -262,8 +261,9 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
         };
       }
 
-      // ── 3. Auto-append LIMIT (row limit resolved lazily per call, #3400) ──
-      const rowLimit = getRowLimit();
+      // ── 3. Auto-append LIMIT (row limit resolved lazily per call, #3400;
+      // workspace tier via the resolved workspaceId, #3406) ──
+      const rowLimit = getRowLimit(workspaceId);
       const querySoql = appendSOQLLimit(soql.trim(), rowLimit);
 
       // ── 4. Instantiate the per-Workspace OAuth Salesforce instance ──
@@ -339,8 +339,9 @@ export function createQuerySalesforceTool(deps: QuerySalesforceToolDeps = {}) {
       // ── 5. Execute the query ──
       const start = performance.now();
       try {
-        // Query timeout resolved lazily per call (#3402), like the row limit.
-        const result = await instance.query(querySoql, getQueryTimeout());
+        // Query timeout resolved lazily per call (#3402), workspace tier
+        // via the resolved workspaceId (#3406), like the row limit.
+        const result = await instance.query(querySoql, getQueryTimeout(workspaceId));
         const durationMs = Math.round(performance.now() - start);
         const truncated = result.rows.length >= rowLimit;
         log.debug(

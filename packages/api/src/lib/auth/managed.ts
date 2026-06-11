@@ -85,12 +85,19 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
     }
   }
 
-  // Session timeout enforcement (idle + absolute)
   const sessionData = session.session as Record<string, unknown> | undefined;
+
+  // Extract activeOrganizationId from session — set by Better Auth org plugin
+  // via POST /organization/set-active. Resolved BEFORE timeout enforcement so
+  // the workspace tier of the workspace-scoped timeout keys applies (#3406):
+  // the timeouts govern the workspace the session is operating in.
+  const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
+
+  // Session timeout enforcement (idle + absolute)
   if (sessionData) {
     const now = Date.now();
 
-    const idleRaw = parseInt(getSetting("ATLAS_SESSION_IDLE_TIMEOUT") ?? "0", 10);
+    const idleRaw = parseInt(getSetting("ATLAS_SESSION_IDLE_TIMEOUT", activeOrganizationId) ?? "0", 10);
     const idleTimeout = Number.isFinite(idleRaw) && idleRaw > 0 ? idleRaw : 0;
     if (idleTimeout > 0 && sessionData.updatedAt) {
       const updatedAt = new Date(sessionData.updatedAt as string).getTime();
@@ -104,7 +111,7 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
       }
     }
 
-    const absRaw = parseInt(getSetting("ATLAS_SESSION_ABSOLUTE_TIMEOUT") ?? "0", 10);
+    const absRaw = parseInt(getSetting("ATLAS_SESSION_ABSOLUTE_TIMEOUT", activeOrganizationId) ?? "0", 10);
     const absoluteTimeout = Number.isFinite(absRaw) && absRaw > 0 ? absRaw : 0;
     if (absoluteTimeout > 0 && sessionData.createdAt) {
       const createdAt = new Date(sessionData.createdAt as string).getTime();
@@ -118,10 +125,6 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
       }
     }
   }
-
-  // Extract activeOrganizationId from session — set by Better Auth org plugin
-  // via POST /organization/set-active.
-  const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
   const passkeyCount = await resolvePasskeyCount(userId);
 

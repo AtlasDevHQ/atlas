@@ -716,9 +716,15 @@ export async function validateSQL(sql: string, connectionId?: string, workspaceI
 
 let lastWarnedRowLimit: string | undefined;
 
-/** Read row limit from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
-function getRowLimit(): number {
-  const raw = getSetting("ATLAS_ROW_LIMIT") ?? "1000";
+/**
+ * Read row limit from settings cache (workspace DB override > platform DB
+ * override > env var > default). Called per-query so admin changes take
+ * effect without restart; `orgId` threads the workspace tier (#3406) —
+ * without it the org-scoped override row written by a workspace admin is
+ * never consulted.
+ */
+function getRowLimit(orgId?: string): number {
+  const raw = getSetting("ATLAS_ROW_LIMIT", orgId) ?? "1000";
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
     if (raw !== lastWarnedRowLimit) {
@@ -732,9 +738,13 @@ function getRowLimit(): number {
 
 let lastWarnedQueryTimeout: string | undefined;
 
-/** Read query timeout from settings cache (DB override > env var > default). Called per-query so admin changes take effect without restart. */
-function getQueryTimeout(): number {
-  const raw = getSetting("ATLAS_QUERY_TIMEOUT") ?? "30000";
+/**
+ * Read query timeout from settings cache (workspace DB override > platform
+ * DB override > env var > default). Called per-query so admin changes take
+ * effect without restart; `orgId` threads the workspace tier (#3406).
+ */
+function getQueryTimeout(orgId?: string): number {
+  const raw = getSetting("ATLAS_QUERY_TIMEOUT", orgId) ?? "30000";
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
     if (raw !== lastWarnedQueryTimeout) {
@@ -1611,8 +1621,8 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
           normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
         }
 
-        const rowLimit = getRowLimit();
-        const queryTimeout = getQueryTimeout();
+        const rowLimit = getRowLimit(authOrgId);
+        const queryTimeout = getQueryTimeout(authOrgId);
         let querySql = normalizedMutated;
         if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
           querySql = appendRowLimit(querySql, rowLimit);
@@ -1942,7 +1952,7 @@ async function executeSqlForConnection({
                 return {
                   success: true, explanation, row_count: cachedRows.length,
                   columns: cached.columns, rows: cachedRows,
-                  truncated: cachedRows.length >= getRowLimit(), cached: true,
+                  truncated: cachedRows.length >= getRowLimit(authOrgId), cached: true,
                   maskingApplied: cachedMaskingApplied,
                   executionMs: 0,
                 };
@@ -2020,8 +2030,8 @@ async function executeSqlForConnection({
           }
 
           // Auto-append LIMIT if not present
-          const rowLimit = getRowLimit();
-          const queryTimeout = getQueryTimeout();
+          const rowLimit = getRowLimit(authOrgId);
+          const queryTimeout = getQueryTimeout(authOrgId);
           let querySql = normalizedMutated;
           if (!customValidator && !hasLimitClause(querySql, { backslashEscapes: dbType === "mysql" })) {
             querySql = appendRowLimit(querySql, rowLimit);

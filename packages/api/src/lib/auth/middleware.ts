@@ -80,13 +80,15 @@ function getRpmLimit(): number {
  * default bucket); when the global limit is disabled all sub-buckets are
  * also disabled regardless of override.
  */
-function getRpmLimitForBucket(bucket: RateLimitBucket): number {
+function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
   const baseLimit = getRpmLimit();
   if (bucket === "default") return baseLimit;
   if (baseLimit === 0) return 0;
 
   if (bucket === "chat") {
-    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT");
+    // orgId threads the workspace tier of the workspace-scoped sub-bucket
+    // keys (#3406). Pre-auth callers have no org — platform/env resolution.
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_CHAT", orgId);
     if (raw === undefined || raw === "") {
       // Default: cap at 1/4 of the global RPM, with a floor of 5/min so a
       // very low ATLAS_RATE_LIMIT_RPM doesn't push the chat ceiling to 0.
@@ -107,7 +109,7 @@ function getRpmLimitForBucket(bucket: RateLimitBucket): number {
   }
 
   if (bucket === "admin") {
-    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN");
+    const raw = getSetting("ATLAS_RATE_LIMIT_RPM_ADMIN", orgId);
     if (raw === undefined || raw === "") {
       // Default: at least 60/min — one request per second — so interactive
       // admin forms aren't throttled at a base RPM tuned for public traffic.
@@ -196,13 +198,13 @@ export function getClientIP(req: Request): string | null {
  */
 export function checkRateLimit(
   key: string,
-  options?: { bucket?: RateLimitBucket },
+  options?: { bucket?: RateLimitBucket; orgId?: string },
 ): {
   allowed: boolean;
   retryAfterMs?: number;
 } {
   const bucket = options?.bucket ?? "default";
-  const limit = getRpmLimitForBucket(bucket);
+  const limit = getRpmLimitForBucket(bucket, options?.orgId);
   if (limit === 0) return { allowed: true };
 
   const bucketedKey = BUCKET_PREFIX[bucket] + key;

@@ -12,6 +12,8 @@ import {
   _setAuditEnforcementBlockOverride,
 } from "../middleware";
 import type { AdminActionEntry } from "@atlas/api/lib/audit";
+import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
+import { setSetting, _resetSettingsCache } from "@atlas/api/lib/settings";
 
 // Mock validators — injected via _setValidatorOverrides (no mock.module needed)
 const mockValidateManaged = mock((): Promise<AuthResult> =>
@@ -1077,5 +1079,86 @@ describe("getClientIP()", () => {
         req({ "x-forwarded-for": "1.2.3.4", "x-real-ip": "10.0.0.1" }),
       ),
     ).toBe("1.2.3.4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3406 — workspace-tier resolution of the rate-limit sub-bucket keys
+//
+// ATLAS_RATE_LIMIT_RPM_CHAT / _ADMIN are workspace-scoped: an org-scoped
+// override row written by a workspace admin must apply when checkRateLimit
+// is called with that org, and must NOT leak to other orgs or to pre-auth
+// callers (no orgId → platform/env resolution). Uses the _resetPool
+// injection pattern from settings.test.ts so setSetting writes real cache
+// rows.
+// ---------------------------------------------------------------------------
+
+describe("checkRateLimit() — workspace-scoped bucket overrides (#3406)", () => {
+  const origRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+  const origChatRpm = process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+  const origDbUrl = process.env.DATABASE_URL;
+
+  const mockPool: InternalPool = {
+    query: async () => ({ rows: [] }),
+    async connect() {
+      return { query: async () => ({ rows: [] }), release() {} };
+    },
+    end: async () => {},
+    on: () => {},
+  };
+
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.ATLAS_RATE_LIMIT_RPM = "100";
+    delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    delete process.env.ATLAS_DEPLOY_ENV;
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM;
+    if (origChatRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM_CHAT = origChatRpm;
+    else delete process.env.ATLAS_RATE_LIMIT_RPM_CHAT;
+    if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    _resetPool(null);
+    _resetSettingsCache();
+  });
+
+  it("honors a workspace override of ATLAS_RATE_LIMIT_RPM_CHAT for that org", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM_CHAT", "2", "admin-test", "org-a");
+
+    expect(checkRateLimit("u", { bucket: "chat", orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat", orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "chat", orgId: "org-a" }).allowed).toBe(false);
+  });
+
+  it("another org keeps the derived default — the override does not leak", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM_CHAT", "2", "admin-test", "org-a");
+
+    // org-b: derived default max(5, 100/4) = 25 — well above 3 requests.
+    expect(checkRateLimit("v", { bucket: "chat", orgId: "org-b" }).allowed).toBe(true);
+    expect(checkRateLimit("v", { bucket: "chat", orgId: "org-b" }).allowed).toBe(true);
+    expect(checkRateLimit("v", { bucket: "chat", orgId: "org-b" }).allowed).toBe(true);
+  });
+
+  it("no orgId (pre-auth caller) resolves the platform tier, not a workspace row", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM_CHAT", "2", "admin-test", "org-a");
+
+    // No org: derived default applies (no platform override exists).
+    expect(checkRateLimit("w", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("w", { bucket: "chat" }).allowed).toBe(true);
+    expect(checkRateLimit("w", { bucket: "chat" }).allowed).toBe(true);
+  });
+
+  it("workspace override of ATLAS_RATE_LIMIT_RPM_ADMIN applies to the admin bucket", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM_ADMIN", "2", "admin-test", "org-a");
+
+    expect(checkRateLimit("u", { bucket: "admin", orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin", orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { bucket: "admin", orgId: "org-a" }).allowed).toBe(false);
   });
 });

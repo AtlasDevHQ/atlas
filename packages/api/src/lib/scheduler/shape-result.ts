@@ -25,9 +25,11 @@ let lastWarnedMaxRows: string | undefined;
  * Rows-per-dataset cap for delivered reports. Settings/env-overridable via
  * `ATLAS_DELIVERY_MAX_ROWS` (distinct from `ATLAS_ROW_LIMIT`, the SQL
  * result cap — a delivered report is a digest, not the full result set).
+ * `orgId` threads the workspace tier for org-owned tasks (#3406); org-less
+ * tasks keep the platform/env resolution.
  */
-export function getDeliveryMaxRows(): number {
-  const raw = getSetting("ATLAS_DELIVERY_MAX_ROWS") ?? String(DEFAULT_DELIVERY_MAX_ROWS);
+export function getDeliveryMaxRows(orgId?: string): number {
+  const raw = getSetting("ATLAS_DELIVERY_MAX_ROWS", orgId) ?? String(DEFAULT_DELIVERY_MAX_ROWS);
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < MIN_DELIVERY_MAX_ROWS || n > MAX_DELIVERY_MAX_ROWS) {
     if (raw !== lastWarnedMaxRows) {
@@ -77,7 +79,7 @@ export function shapeResult(
   task: ScheduledTask,
   result: AgentQueryResult,
 ): FormattedResult {
-  const maxRows = getDeliveryMaxRows();
+  const maxRows = getDeliveryMaxRows(task.orgId ?? undefined);
   return {
     taskId: task.id,
     taskName: task.name,

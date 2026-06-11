@@ -68,6 +68,8 @@ The same test applies in reverse when *removing* a reader: if runtime code stops
 
 The `requiresRestart` hint follows the same consumption-model discipline (#3399): on SaaS, `getSettingsForAdmin` suppresses the hint **only** for keys `applySettingSideEffect` actually hot-reloads (the `HOT_RELOADED_KEYS` set in `lib/settings.ts`, derived from the side-effect dispatch map — adding a handler updates both automatically). Boot-consumed restart-flagged keys (e.g. the expert scheduler pair, #3392) keep the hint in **both** modes, because no cache refresh can apply a value the process read once at startup — the old blanket SaaS suppression was the same silent-staleness class as a write with no reader. The web settings pages render the flag exactly as the API returns it, with no second client-side mode branch.
 
+A workspace-scoped key has a second reader contract (#3406): **every runtime reader must thread the org context available at its call site into `getSetting(key, orgId)`** — a reader that omits the orgId silently skips the workspace tier, so the override a workspace admin saved (and sees as active in the UI) never applies. `check-settings-readers.sh` cannot catch this (it checks reader *presence*, not org threading), so it's review discipline: a new workspace-scoped key, or a new reader of one, names where its orgId comes from (request context, session, task row, resolved workspace id). If no org context exists at any reader, the key must not be workspace-scoped.
+
 ### Rule 2 — where deploy-mode branches may live
 
 Mode branch points are expensive (each one is half of a potential drift pair), so they're restricted to the blessed sources of truth and their direct consumers:

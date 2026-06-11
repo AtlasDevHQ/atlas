@@ -69,10 +69,11 @@ const DEFAULT_AGENT_MAX_STEPS = 25;
 /**
  * Resolve `ATLAS_CONVERSATION_STEP_CAP` with sensible fallbacks. Returns
  * 0 ("disabled") when the setting is `0`, an empty string, or invalid —
- * any non-positive integer disables the cap. F-77.
+ * any non-positive integer disables the cap. F-77. `orgId` threads the
+ * workspace tier (#3406).
  */
-function getConversationStepCap(): number {
-  const raw = getSetting("ATLAS_CONVERSATION_STEP_CAP");
+function getConversationStepCap(orgId?: string): number {
+  const raw = getSetting("ATLAS_CONVERSATION_STEP_CAP", orgId);
   if (raw === undefined) return DEFAULT_CONVERSATION_STEP_CAP;
   if (raw === "") return 0;
   const n = Number(raw);
@@ -99,9 +100,11 @@ function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
  * Resolve `ATLAS_AGENT_MAX_STEPS` for the F-77 upfront reservation.
  * Mirrors the agent loop's `getAgentMaxSteps()` clamp ([1, 100], default
  * 25) so the upfront charge matches the worst-case spend per request.
+ * `orgId` threads the workspace tier (#3406) — must match the loop's
+ * resolution or the reservation diverges from the actual budget.
  */
-function getReservationStepBudget(): number {
-  const raw = getSetting("ATLAS_AGENT_MAX_STEPS");
+function getReservationStepBudget(orgId?: string): number {
+  const raw = getSetting("ATLAS_AGENT_MAX_STEPS", orgId);
   if (raw === undefined || raw === "") return DEFAULT_AGENT_MAX_STEPS;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1) return DEFAULT_AGENT_MAX_STEPS;
@@ -560,7 +563,10 @@ chat.openapi(chatRoute, async (c) => {
     // not deplete the same allowance that serves cheap admin reads.
     const ip = getClientIP(req);
     const rateLimitKey = authResult.user?.id ?? (ip ? `ip:${ip}` : "anon");
-    const rateCheck = checkRateLimit(rateLimitKey, { bucket: "chat" });
+    const rateCheck = checkRateLimit(rateLimitKey, {
+      bucket: "chat",
+      orgId: authResult.user?.activeOrganizationId,
+    });
     if (!rateCheck.allowed) {
       log.warn(
         { requestId, rateLimitKey, retryAfterMs: rateCheck.retryAfterMs },
@@ -1035,9 +1041,9 @@ chat.openapi(chatRoute, async (c) => {
             // `no_db` / `error` reservation results fail open so a transient
             // internal-DB glitch never 429s the whole chat surface; sustained
             // outages surface via a throttled `log.warn` from the helper.
-            const stepCap = getConversationStepCap();
+            const stepCap = getConversationStepCap(authResult.user?.activeOrganizationId);
             if (stepCap > 0) {
-              const stepBudget = getReservationStepBudget();
+              const stepBudget = getReservationStepBudget(authResult.user?.activeOrganizationId);
               const reservation = await reserveConversationBudget(
                 conversationId,
                 stepBudget,

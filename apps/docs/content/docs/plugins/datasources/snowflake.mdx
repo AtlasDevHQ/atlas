@@ -39,7 +39,7 @@ export default defineConfig({
 
 ### Install from the admin console
 
-You don't have to edit `atlas.config.ts` to add a Snowflake connection. With the catalog row enabled, a workspace admin can install Snowflake from **Admin → Connections**: pick the Snowflake card, paste the connection URL into the form, and submit. The URL is encrypted at rest (it's a `secret: true` field), and the connection becomes queryable via `executeSQL` once the deployment reloads. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
+You don't have to edit `atlas.config.ts` to add a Snowflake connection. A workspace admin can install Snowflake from **Admin → Connections**: click **Add datasource**, pick the Snowflake tile (under *Databases*), and fill in the schema-driven install form — paste the connection URL (plus an optional schema and description) and submit. The URL is encrypted at rest (it's a `secret: true` field in the catalog's config schema), and the connection registers immediately — it's queryable via `executeSQL` as soon as the install succeeds, no reload required. Re-submitting the form edits the existing install in place. This works on SaaS too. See [Admin Console — Connections](/guides/admin-console#connections).
 
 ### Connection string format
 

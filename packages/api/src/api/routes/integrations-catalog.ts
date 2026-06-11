@@ -41,14 +41,32 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 // Schemas
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional pillar narrowing (#3377). Only `datasource` is exposed: the
+ * Connections Add picker needs the datasource-pillar listing (catalog
+ * rows + install status) to drive its form-install tiles. The default
+ * (no param) response stays byte-identical to the legacy
+ * `type IN ('chat','integration')` listing. `chat` / `action` pillar
+ * params are intentionally NOT accepted — the legacy listing already
+ * covers those surfaces and widening would change their wire `type`
+ * guarantees.
+ */
+const CatalogQuerySchema = z.object({
+  pillar: z.enum(["datasource"]).optional(),
+});
+
 const CatalogEntryResponseSchema = z.object({
   id: z.string(),
   slug: z.string(),
-  type: z.enum(["chat", "integration"]),
+  // `datasource` appears only on the `?pillar=datasource` listing
+  // (#3377); the default listing is filtered to chat/integration
+  // server-side and never emits it.
+  type: z.enum(["chat", "integration", "datasource"]),
   // `installModel` (camelCase) — wire-side casing match for the rest of
   // the response shape. The DB column is `install_model`; the facade
-  // does the translation.
-  installModel: z.enum(["oauth", "form", "static-bot"]),
+  // does the translation. `oauth-datasource` is GitHub Data's model
+  // (migration 0111) and appears on the `?pillar=datasource` listing.
+  installModel: z.enum(["oauth", "form", "static-bot", "oauth-datasource"]),
   name: z.string(),
   description: z.string().nullable(),
   iconUrl: z.string().nullable(),
@@ -127,7 +145,10 @@ const listCatalogRoute = createRoute({
     "so the UI can render a read-only upsell card. On SaaS deploys, " +
     "`saas_eligible = false` rows are hidden entirely. The `installed` " +
     "boolean reflects whether the workspace has a row in `workspace_plugins` " +
-    "for the catalog entry.",
+    "for the catalog entry. Pass `?pillar=datasource` to list datasource-" +
+    "pillar catalog rows (with install status) instead of the default " +
+    "chat/integration listing.",
+  request: { query: CatalogQuerySchema },
   responses: {
     200: {
       description: "Catalog entries",
@@ -143,6 +164,10 @@ const listCatalogRoute = createRoute({
     },
     404: {
       description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Invalid query parameters (unknown `pillar` value)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -175,6 +200,10 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
       );
     }
 
+    // `undefined` keeps the default (legacy chat/integration) listing
+    // byte-identical; `datasource` swaps in the pillar-scoped read (#3377).
+    const { pillar } = c.req.valid("query");
+
     // The facade lives behind an Effect Tag — provide its Live Layer
     // with the InternalDB shim so the route can call into it without
     // pulling the AppLayer's ManagedRuntime down here. Same pattern as
@@ -182,7 +211,7 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
     const rows = await Effect.runPromise(
       Effect.gen(function* () {
         const facade = yield* PillarCatalogQuery;
-        return yield* facade.withInstallStatusFor(orgId);
+        return yield* facade.withInstallStatusFor(orgId, pillar);
       }).pipe(
         Effect.provide(
           PillarCatalogQueryLive.pipe(Layer.provide(makeInternalDBShimLayer())),
@@ -204,11 +233,12 @@ integrationsCatalog.openapi(listCatalogRoute, async (c) => {
         id: row.id,
         slug: row.slug,
         // The facade's `type` is the raw DB string; the route narrows
-        // back to the wire union. The legacy-type SQL exclusion in the
+        // back to the wire union. The legacy-type SQL exclusion (default
+        // listing) / pillar predicate (`?pillar=datasource`) in the
         // facade keeps this safe — any other value would mean a CHECK
         // constraint regression.
-        type: row.type as "chat" | "integration",
-        installModel: row.installModel as "oauth" | "form" | "static-bot",
+        type: row.type as "chat" | "integration" | "datasource",
+        installModel: row.installModel as "oauth" | "form" | "static-bot" | "oauth-datasource",
         name: row.name,
         description: row.description,
         iconUrl: row.iconUrl,

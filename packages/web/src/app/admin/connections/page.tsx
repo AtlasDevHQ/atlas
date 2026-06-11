@@ -88,13 +88,17 @@ import {
   type StatusKind,
 } from "@/ui/components/admin/compact";
 import { CollapsibleRow } from "@/ui/components/admin/collapsible-row";
-import { AddConnectionPicker } from "./add-connection-picker";
+import {
+  AddConnectionPicker,
+  type DatasourceFormCandidate,
+} from "./add-connection-picker";
 import {
   CuratedInstallDialog,
   type CuratedCandidate,
 } from "./curated-install-dialog";
+import { FormInstallModal } from "../integrations/form-install-modal";
 import { RestInstallDialog } from "./openapi-block";
-import { iconForDbType, labelForDbType } from "./provider-meta";
+import { DATABASE_PROVIDERS, iconForDbType, labelForDbType } from "./provider-meta";
 import {
   AddDatasourceButton,
   countLine,
@@ -516,11 +520,18 @@ function ConnectionFormDialog({
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    {DB_TYPES.filter((t) => t.value !== "salesforce").map((t) => (
-                      <SelectItem key={t.value} value={t.value}>
-                        {t.label}
-                      </SelectItem>
-                    ))}
+                    {/* Add mode offers only the types the URL form can
+                        actually install (pg + mysql — the API rejects every
+                        other scheme, #3377). Edit mode keeps the full list so
+                        a legacy connection of an excluded type still displays
+                        its label in the (disabled) trigger. */}
+                    {(isEdit ? DB_TYPES.filter((t) => t.value !== "salesforce") : DATABASE_PROVIDERS).map(
+                      (t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ),
+                    )}
                     {/*
                       Salesforce intentionally not listed: it's not a URL-form
                       connection — installs happen via the OAuth dance on the
@@ -1052,6 +1063,11 @@ export default function ConnectionsPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [customRestOpen, setCustomRestOpen] = useState(false);
   const [curatedCandidate, setCuratedCandidate] = useState<CuratedCandidate | null>(null);
+  // Catalog datasource picked from the Add picker's form-install tiles
+  // (ClickHouse, Snowflake, BigQuery, …) — opens the schema-driven
+  // marketplace FormInstallModal (#3377).
+  const [formInstallCandidate, setFormInstallCandidate] =
+    useState<DatasourceFormCandidate | null>(null);
   // Bumped after a REST/curated install so the plugin-owned blocks
   // (OpenAPI, Salesforce) remount and refetch their own lists — their data
   // lives behind separate query keys from the `connections` fetch below.
@@ -1221,6 +1237,15 @@ export default function ConnectionsPage() {
     setCustomRestOpen(false);
     setCuratedCandidate(null);
     refreshDatasources();
+  }
+  // Form-install tiles (ClickHouse / Snowflake / BigQuery / Elasticsearch).
+  // Same refresh as the curated dialog, plus a `connections` refetch: post-
+  // #3295 the install registers into ConnectionRegistry immediately, so the
+  // new connection belongs in the main list without a reload.
+  function handleFormInstallInstalled() {
+    setFormInstallCandidate(null);
+    handleDatasourceInstalled();
+    refetch();
   }
 
   // Derive env-dropdown choices from the connections list — one entry
@@ -1482,6 +1507,7 @@ export default function ConnectionsPage() {
         onPickDatabase={handlePickDatabase}
         onPickCustomRest={() => setCustomRestOpen(true)}
         onPickCuratedForm={setCuratedCandidate}
+        onPickDatasourceForm={setFormInstallCandidate}
       />
 
       <RestInstallDialog
@@ -1498,6 +1524,24 @@ export default function ConnectionsPage() {
         }}
         onInstalled={handleDatasourceInstalled}
       />
+
+      {/* Schema-driven marketplace form-install for plugin datasources
+          (ClickHouse / Snowflake / BigQuery / Elasticsearch, #3377) — the
+          same modal Admin → Integrations uses, so install semantics
+          (validation, secret encryption, edit-in-place) stay identical. */}
+      {formInstallCandidate ? (
+        <FormInstallModal
+          open
+          onOpenChange={(open) => {
+            if (!open) setFormInstallCandidate(null);
+          }}
+          slug={formInstallCandidate.slug}
+          name={formInstallCandidate.name}
+          description={formInstallCandidate.description}
+          configSchema={formInstallCandidate.configSchema}
+          onInstalled={handleFormInstallInstalled}
+        />
+      ) : null}
     </div>
   );
 }

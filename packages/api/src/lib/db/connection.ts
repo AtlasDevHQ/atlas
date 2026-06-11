@@ -181,12 +181,18 @@ export function detectDBType(url?: string): DBType {
   // Both engines are served by the one @useatlas/elasticsearch plugin — there
   // is no @useatlas/opensearch package, so the hint must not derive it (#3309).
   const pluginName = baseScheme === "opensearch" ? "elasticsearch" : baseScheme;
+  // Deploy-agnostic remediation copy (#3377): this is lib code, so it must
+  // not branch on deploy mode. SaaS admins have no atlas.config.ts — their
+  // supported path is the marketplace form-install (Admin → Connections) —
+  // while config-managed self-hosted deploys can also register the plugin
+  // (e.g. @useatlas/clickhouse) in the plugins array.
   throw new Error(
     `Unsupported database URL scheme "${rawScheme}://". ` +
-    `This adapter is now a plugin. Install the appropriate datasource plugin ` +
-    `(e.g. @useatlas/${pluginName}) and add it to the plugins array in atlas.config.ts. ` +
-    `Ensure the plugin is listed before any datasources that use it. ` +
-    `Core adapters support postgresql:// and mysql:// only.`
+    `This adapter is now a plugin (e.g. @useatlas/${pluginName}); ` +
+    `core adapters support postgresql:// and mysql:// only. ` +
+    `Connect this database from the admin console instead (Admin → Connections → Add datasource), ` +
+    `or, on a config-managed deploy, register the plugin in the plugins array in atlas.config.ts ` +
+    `(listed before any datasources that use it).`
   );
 }
 

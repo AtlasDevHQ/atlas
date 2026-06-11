@@ -52,6 +52,40 @@ const CURATED: ReadonlyArray<{ slug: string; icon: LucideIcon }> = [
 ];
 const CURATED_SLUGS = new Set(CURATED.map((c) => c.slug));
 
+/** Datasource-pillar catalog rows that must NOT render as form-install tiles
+ *  in the Databases group:
+ *  - `postgres` / `mysql` connect through the native URL-form dialog
+ *    (`DATABASE_PROVIDERS` tiles) — their catalog rows back `atlas.config.ts`
+ *    installs, not this picker.
+ *  - `demo-postgres` is the auto-installed Atlas-managed demo dataset.
+ *  - `salesforce` installs via OAuth from its own block on the page.
+ *  - `openapi-generic` is the "Custom REST API" tile below.
+ *  - Curated REST candidates (Stripe/Notion/GitHub) render in "Popular APIs".
+ *  - `duckdb` has NO registered form-install handler (it's a local file —
+ *    `atlas.config.ts`-only on self-hosted; on SaaS the server already hides
+ *    the row via `saas_eligible = false`, #3301). Rendering its tile would
+ *    recreate the exact class-2 dead end #3377 removes: the submit would
+ *    throw "No form-based install handler registered" server-side. Drop the
+ *    exclusion if/when `register.ts` gains a duckdb DatasourceFormInstallHandler. */
+const FORM_TILE_EXCLUDED: ReadonlySet<string> = new Set([
+  "postgres",
+  "mysql",
+  "demo-postgres",
+  "salesforce",
+  "openapi-generic",
+  "duckdb",
+  ...CURATED_SLUGS,
+]);
+
+/** Everything the parent needs to open `FormInstallModal` for a catalog
+ *  datasource tile (ClickHouse, Snowflake, BigQuery, Elasticsearch, …). */
+export interface DatasourceFormCandidate {
+  slug: string;
+  name: string;
+  description: string | null;
+  configSchema: unknown;
+}
+
 function Tile({
   icon: Icon,
   title,
@@ -115,6 +149,7 @@ export function AddConnectionPicker({
   onPickDatabase,
   onPickCustomRest,
   onPickCuratedForm,
+  onPickDatasourceForm,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -123,24 +158,29 @@ export function AddConnectionPicker({
   onPickCustomRest: () => void;
   /** Form-based curated candidate (paste a key) → opens the curated dialog. */
   onPickCuratedForm: (candidate: CuratedCandidate) => void;
+  /** Catalog datasource tile (ClickHouse, Snowflake, BigQuery, …) → opens
+   *  the schema-driven `FormInstallModal` (the marketplace form-install). */
+  onPickDatasourceForm: (candidate: DatasourceFormCandidate) => void;
 }) {
-  // Curated candidates come from the integrations catalog. NOTE: the built-in
-  // data candidates (stripe-data / notion-data / github-data) are seeded with
-  // `type: "datasource"`, which `GET /api/v1/integrations/catalog` excludes
-  // server-side (its facade narrows to `type IN ('chat','integration')`). So
-  // this fetch surfaces curated tiles only once a datasource-pillar listing is
-  // exposed (a `?pillar=datasource` mode or a dedicated endpoint) — until then
-  // the "Popular APIs" group hides itself (see `curated` below). Salesforce
-  // (legacy `type: "integration"`) is unaffected; it has its own section.
+  // Datasource-pillar catalog rows (#3377): drives both the "Databases"
+  // form-install tiles (ClickHouse, Snowflake, BigQuery, Elasticsearch, …)
+  // and the curated "Popular APIs" tiles (stripe-data / notion-data /
+  // github-data, also seeded `pillar: "datasource"`). On SaaS the server
+  // hides `saas_eligible = false` rows (DuckDB, #3301). Salesforce (legacy
+  // `type: "integration"`) has its own section on the page.
   // Enabled only while open so the picker doesn't fetch on every page render.
-  const catalogQuery = useAdminFetch("/api/v1/integrations/catalog", {
+  const catalogQuery = useAdminFetch("/api/v1/integrations/catalog?pillar=datasource", {
     schema: IntegrationsCatalogResponseSchema,
     enabled: open,
   });
 
+  const datasourceEntries = (catalogQuery.data?.catalog ?? []).filter(
+    (e) => e.pillar === "datasource",
+  );
+
   const bySlug = new Map<string, IntegrationsCatalogEntry>(
-    (catalogQuery.data?.catalog ?? [])
-      .filter((e) => e.pillar === "datasource" && CURATED_SLUGS.has(e.slug))
+    datasourceEntries
+      .filter((e) => CURATED_SLUGS.has(e.slug))
       .map((e) => [e.slug, e]),
   );
   // Curated candidates the operator has opted into (enabled in the catalog),
@@ -151,6 +191,14 @@ export function AddConnectionPicker({
     return entry ? { entry, icon } : null;
   }).filter((c): c is { entry: IntegrationsCatalogEntry; icon: LucideIcon } => c !== null);
 
+  // Plugin datasources installable through the schema-driven form-install
+  // (the path #3300 shipped). `installModel === "form"` only — OAuth
+  // datasources (github-data) ride the curated branch; the slug denylist
+  // keeps native/duplicated surfaces out (see FORM_TILE_EXCLUDED).
+  const formDatasources = datasourceEntries.filter(
+    (e) => e.installModel === "form" && !FORM_TILE_EXCLUDED.has(e.slug),
+  );
+
   function pickDatabase(dbType: DBType) {
     onOpenChange(false);
     onPickDatabase(dbType);
@@ -159,10 +207,22 @@ export function AddConnectionPicker({
     onOpenChange(false);
     onPickCustomRest();
   }
+  function pickDatasourceForm(entry: IntegrationsCatalogEntry) {
+    onOpenChange(false);
+    onPickDatasourceForm({
+      slug: entry.slug,
+      name: entry.name,
+      description: entry.description,
+      configSchema: entry.configSchema ?? null,
+    });
+  }
   function pickCurated(entry: IntegrationsCatalogEntry) {
-    if (entry.installModel === "oauth") {
-      // OAuth candidates (e.g. GitHub) start the dance server-side; the
-      // callback returns the admin to /admin/connections.
+    if (entry.installModel === "oauth" || entry.installModel === "oauth-datasource") {
+      // OAuth candidates start the dance server-side; the callback returns
+      // the admin to /admin/connections. `oauth-datasource` (github-data,
+      // migration 0111) is the GitHub-App flavor of the same redirect flow
+      // — routing it to the form modal would post to /install-form, which
+      // has no handler for it (#3384 review).
       window.location.href = `${getApiUrl()}/api/v1/integrations/${encodeURIComponent(entry.slug)}/install`;
       return;
     }
@@ -196,7 +256,43 @@ export function AddConnectionPicker({
                   testId={`add-db-${p.value}`}
                 />
               ))}
+              {/* Plugin warehouses/engines (ClickHouse, Snowflake, BigQuery,
+                  Elasticsearch, …) — catalog-driven form-install tiles. The
+                  URL-form backend rejects their schemes (#3377), so these
+                  route to the marketplace form-install instead. */}
+              {formDatasources.map((entry) => {
+                const upgrade = entry.access.kind === "upgrade";
+                const comingSoon = entry.implementationStatus === "coming_soon";
+                return (
+                  <Tile
+                    key={entry.slug}
+                    icon={iconForDbType(entry.slug)}
+                    title={entry.name}
+                    description={
+                      entry.description ?? descriptionForDbType(entry.slug)
+                    }
+                    badge={
+                      entry.installed
+                        ? "Connected"
+                        : comingSoon
+                          ? "Soon"
+                          : entry.access.kind === "upgrade" && entry.access.requiredPlan
+                            ? `${entry.access.requiredPlan} plan`
+                            : undefined
+                    }
+                    onClick={() => pickDatasourceForm(entry)}
+                    disabled={demoReadOnly || upgrade || comingSoon}
+                    testId={`add-ds-${entry.slug}`}
+                  />
+                );
+              })}
             </div>
+            {catalogQuery.loading ? (
+              <div className="flex items-center gap-2 px-1 py-3 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading warehouses…
+              </div>
+            ) : null}
           </section>
 
           {catalogQuery.loading ? (
@@ -231,7 +327,8 @@ export function AddConnectionPicker({
                             ? "Soon"
                             : access.kind === "upgrade" && access.requiredPlan
                               ? `${access.requiredPlan} plan`
-                              : entry.installModel === "oauth"
+                              : entry.installModel === "oauth" ||
+                                  entry.installModel === "oauth-datasource"
                                 ? "OAuth"
                                 : undefined
                       }

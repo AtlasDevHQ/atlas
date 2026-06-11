@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
-import { SANDBOX_PROVIDER_KEYS } from "@useatlas/schemas";
+import { SANDBOX_PROVIDER_KEYS, SANDBOX_PROVIDER_BACKEND_IDS } from "@useatlas/schemas";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
 const mocks = createApiTestMocks({
@@ -150,19 +150,15 @@ async function getStatus(): Promise<StatusResponse> {
   return (await res.json()) as StatusResponse;
 }
 
-const BACKEND_ID_BY_PROVIDER: Record<string, string> = {
-  vercel: "vercel-sandbox",
-  e2b: "e2b-sandbox",
-  daytona: "daytona-sandbox",
-  railway: "railway-sandbox",
-};
-
 /** The #3375 invariant: a "Live" provider row implies the runtime actually
  *  resolves that provider's backend — the two fields can never contradict. */
 function expectNoContradiction(status: StatusResponse) {
   for (const p of status.connectedProviders) {
     if (p.isActive) {
-      expect(status.activeBackend).toBe(BACKEND_ID_BY_PROVIDER[p.provider]!);
+      const backendId =
+        SANDBOX_PROVIDER_BACKEND_IDS[p.provider as keyof typeof SANDBOX_PROVIDER_BACKEND_IDS];
+      expect(backendId).toBeDefined();
+      expect(status.activeBackend).toBe(backendId);
     }
   }
 }

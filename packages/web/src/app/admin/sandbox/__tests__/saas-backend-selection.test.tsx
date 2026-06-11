@@ -79,7 +79,7 @@ function renderView(status: SandboxStatus) {
 
 describe("SaasSandboxView — backend-id save values", () => {
   test("selecting a connected BYOC provider saves its backend id, not the provider key", () => {
-    const { getAllByText, onSelectBackend } = renderView(
+    const { getAllByText, onSelectBackend, onSelectManaged } = renderView(
       makeStatus({
         connectedProviders: [
           {
@@ -101,6 +101,7 @@ describe("SaasSandboxView — backend-id save values", () => {
 
     expect(onSelectBackend).toHaveBeenCalledTimes(1);
     expect(onSelectBackend.mock.calls[0]?.[0]).toBe("e2b-sandbox");
+    expect(onSelectManaged).not.toHaveBeenCalled();
     cleanup();
   });
 
@@ -151,7 +152,7 @@ describe("SaasSandboxView — backend-id save values", () => {
       }),
     );
 
-    expect(getByText("Atlas Cloud Sandbox")).toBeTruthy();
+    getByText("Atlas Cloud Sandbox");
     // Managed active → its "Use this" button is hidden; only e2b's remains.
     expect(queryAllByText("Use this").length).toBe(1);
     cleanup();

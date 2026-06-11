@@ -123,7 +123,7 @@ export default function BillingPage() {
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/billing", {
     schema: BillingStatusSchema,
   });
-  const { deployMode, resolved: modeResolved } = useDeployMode();
+  const { deployMode, error: modeError, resolved: modeResolved } = useDeployMode();
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
   // API-level 404s ("Workspace not found", "no internal database") have descriptive
@@ -139,13 +139,18 @@ export default function BillingPage() {
   // mode (deploy-mode parity contract Rule 2, #3378): while the mode is
   // still a hostname guess (loading / settings-fetch error), fall through to
   // the generic loading/error path instead of the self-hosted empty state.
-  const isSelfHosted =
-    modeResolved &&
-    deployMode === "self-hosted" &&
+  const isFramework404 =
     !loading &&
     !data &&
     error?.status === 404 &&
     (error.message === "Not Found" || error.message === "HTTP 404");
+  const isSelfHosted = modeResolved && deployMode === "self-hosted" && isFramework404;
+  // While the mode is still resolving, a framework 404 is ambiguous — the
+  // self-hosted empty state on a healthy deploy, or a SaaS misconfiguration.
+  // Hold the neutral loading state instead of flashing the 404 error and
+  // then swapping to the card (#3391 review). A settings-fetch error ends
+  // the hold: the ambiguity is then surfaced as the real error below.
+  const holdForMode = isFramework404 && !modeResolved && !modeError;
 
   if (isSelfHosted) {
     return (
@@ -166,8 +171,8 @@ export default function BillingPage() {
         <Hero stat={stat} />
 
         <AdminContentWrapper
-          loading={loading}
-          error={error}
+          loading={loading || holdForMode}
+          error={holdForMode ? null : error}
           feature="Billing"
           onRetry={refetch}
           loadingMessage="Loading billing details..."

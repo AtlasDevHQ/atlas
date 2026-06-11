@@ -124,6 +124,21 @@ describe("SandboxPage deploy-mode gating (#3378)", () => {
     cleanup();
   });
 
+  test("version-skew guess (loading:false, error:null, resolved:false) holds the neutral state", () => {
+    // A settings response missing `deployMode` (frontend/API version skew)
+    // is the third guess path: no loading, no error, but not resolved. The
+    // page must hold the neutral loading state — rendering either view here
+    // would expose a guessed mode's ATLAS_SANDBOX_BACKEND save path (#3391
+    // review).
+    modeReturn = { deployMode: "saas", loading: false, error: null, resolved: false };
+    const { queryByText, getByText } = render(createElement(SandboxPage));
+
+    expect(queryByText(SAAS_MARKER)).toBeNull();
+    expect(queryByText(SELF_HOSTED_MARKER)).toBeNull();
+    getByText("Loading...");
+    cleanup();
+  });
+
   test("resolved saas renders the SaaS view", () => {
     modeReturn = { deployMode: "saas", loading: false, error: null, resolved: true };
     const { getByText, queryByText } = render(createElement(SandboxPage));

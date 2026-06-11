@@ -153,8 +153,17 @@ export default function SandboxPage() {
   // (ATLAS_SANDBOX_BACKEND vocabulary differs per view), so it must never
   // commit to a guessed mode. Mode loading/error are folded into the
   // AdminContentWrapper below — neither view (and neither view's save path)
-  // renders until the mode is authoritative.
-  const { deployMode, loading: modeLoading, error: modeError } = useDeployMode();
+  // renders until the mode is authoritative. `resolved` (not just
+  // loading/error) is the authoritative signal: a settings response missing
+  // `deployMode` (frontend/API version skew) reports loading:false,
+  // error:null, resolved:false, and must hold the neutral state rather than
+  // render a guessed view's save path (#3391 review).
+  const {
+    deployMode,
+    loading: modeLoading,
+    error: modeError,
+    resolved: modeResolved,
+  } = useDeployMode();
   const isSaas = deployMode === "saas";
 
   const { data, loading, error, refetch } = useAdminFetch(
@@ -208,7 +217,7 @@ export default function SandboxPage() {
         </div>
 
         <AdminContentWrapper
-          loading={loading || modeLoading}
+          loading={loading || modeLoading || (!modeResolved && !modeError)}
           error={error ?? modeError}
           isEmpty={!data}
           emptyIcon={Box}

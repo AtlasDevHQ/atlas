@@ -10884,7 +10884,32 @@
             }
           },
           "400": {
-            "description": "Missing userId",
+            "description": "Empty `userId` value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing `userId` query parameter — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -10971,7 +10996,7 @@
             }
           },
           "400": {
-            "description": "Missing userId",
+            "description": "Malformed JSON body",
             "content": {
               "application/json": {
                 "schema": {
@@ -10997,6 +11022,31 @@
           },
           "403": {
             "description": "Missing or invalid token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing `userId` in request body — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -30200,7 +30250,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid domain parameter",
+            "description": "Empty `domain` value",
             "content": {
               "application/json": {
                 "schema": {
@@ -30242,6 +30292,31 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing `domain` query parameter — rejected by request validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
@@ -34280,7 +34355,7 @@
             }
           },
           "400": {
-            "description": "Missing or empty userId, or no active organization",
+            "description": "No active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -34328,6 +34403,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing or empty `userId` query parameter — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -35579,7 +35679,7 @@
             }
           },
           "422": {
-            "description": "Stored BYOT key cannot be decrypted (likely key-rotation drift)",
+            "description": "Invalid query parameters (unknown `provider`/`refresh` value, rejected by request validation), or stored BYOT key cannot be decrypted (likely key-rotation drift)",
             "content": {
               "application/json": {
                 "schema": {
@@ -40834,7 +40934,7 @@
             }
           },
           "400": {
-            "description": "Invalid parameters",
+            "description": "Invalid date values (unparseable `startDate`/`endDate`, or `startDate` after `endDate`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -40882,6 +40982,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters (missing `startDate`/`endDate`, or unknown `format`) — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -41130,7 +41255,7 @@
             }
           },
           "400": {
-            "description": "Invalid parameters",
+            "description": "Invalid date values (unparseable `startDate`/`endDate`, or `startDate` after `endDate`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -41178,6 +41303,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters (missing `startDate`/`endDate`, or unknown `format`) — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -43016,7 +43166,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid domain parameter",
+            "description": "Empty `domain` value, or no active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -43064,6 +43214,31 @@
           },
           "404": {
             "description": "Enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing `domain` query parameter — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -56341,7 +56516,7 @@
             }
           },
           "400": {
-            "description": "Invalid filter parameter",
+            "description": "Invalid `from`/`to` date filter (unparseable date)",
             "content": {
               "application/json": {
                 "schema": {
@@ -56389,6 +56564,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters (e.g. non-numeric `limit`/`offset`) — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -56522,7 +56722,7 @@
             }
           },
           "400": {
-            "description": "Invalid filter parameter",
+            "description": "Invalid `from`/`to` date filter (unparseable date)",
             "content": {
               "application/json": {
                 "schema": {
@@ -56570,6 +56770,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -59517,7 +59742,7 @@
             }
           },
           "400": {
-            "description": "Invalid request",
+            "description": "No active organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -59548,6 +59773,31 @@
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters (non-numeric or out-of-range `limit`/`offset`) — rejected by request validation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
@@ -66452,7 +66702,7 @@
             }
           },
           "400": {
-            "description": "Invalid filter parameter",
+            "description": "Invalid `from`/`to` date filter (unparseable date)",
             "content": {
               "application/json": {
                 "schema": {
@@ -66500,6 +66750,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters (e.g. non-numeric `limit`/`offset`) — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {
@@ -66643,7 +66918,7 @@
             }
           },
           "400": {
-            "description": "Invalid filter parameter",
+            "description": "Invalid `from`/`to` date filter (unparseable date)",
             "content": {
               "application/json": {
                 "schema": {
@@ -66691,6 +66966,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters — rejected by request validation",
             "content": {
               "application/json": {
                 "schema": {

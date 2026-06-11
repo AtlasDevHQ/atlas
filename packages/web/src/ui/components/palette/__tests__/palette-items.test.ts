@@ -53,6 +53,28 @@ describe("buildAdminPaletteGroups", () => {
     expect(selfHasRegistry).toBe(true);
   });
 
+  test("unresolved mode (isSaas: null) hides mode-specific items in both directions", () => {
+    // Deploy-mode parity contract Rule 2 (#3378): while `useDeployMode` is
+    // still on the hostname guess (loading / settings-fetch error / fetch
+    // disabled) the palette must not commit to either mode — neither
+    // self-hosted-only nor SaaS-only items may appear.
+    const groups = buildAdminPaletteGroups({
+      userRole: "platform_admin",
+      isSaas: null,
+    });
+    const hrefs = groups
+      .flatMap((g) => g.items.map((i) => i.action))
+      .filter((a) => a.kind === "navigate")
+      .map((a) => a.href);
+
+    // selfHostedOnly item hidden…
+    expect(hrefs).not.toContain("/platform/plugin-registry");
+    // …and saasOnly item hidden too.
+    expect(hrefs).not.toContain("/platform/crm-outbox");
+    // Mode-agnostic items still present — null is neutral, not empty.
+    expect(hrefs.length).toBeGreaterThan(0);
+  });
+
   test("badges from the caller decorate the matching nav item", () => {
     const groups = buildAdminPaletteGroups({
       userRole: "admin",

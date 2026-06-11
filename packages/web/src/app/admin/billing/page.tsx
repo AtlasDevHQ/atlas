@@ -123,7 +123,7 @@ export default function BillingPage() {
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/billing", {
     schema: BillingStatusSchema,
   });
-  const { deployMode } = useDeployMode();
+  const { deployMode, resolved: modeResolved } = useDeployMode();
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
   // API-level 404s ("Workspace not found", "no internal database") have descriptive
@@ -134,7 +134,13 @@ export default function BillingPage() {
   // unavailable), NOT that the deployment is self-hosted. Showing the
   // "Self-hosted · no billing" card in that case lies to the user — let the
   // generic error path surface the failure so it's visible to operators.
+  //
+  // `modeResolved` makes this view swap commit only to the server-confirmed
+  // mode (deploy-mode parity contract Rule 2, #3378): while the mode is
+  // still a hostname guess (loading / settings-fetch error), fall through to
+  // the generic loading/error path instead of the self-hosted empty state.
   const isSelfHosted =
+    modeResolved &&
     deployMode === "self-hosted" &&
     !loading &&
     !data &&

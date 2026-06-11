@@ -12,7 +12,13 @@ import type { PaletteGroup, PaletteItem } from "./palette-types";
  */
 export function buildAdminPaletteGroups(opts: {
   userRole: "admin" | "member" | "platform_admin" | "viewer" | null;
-  isSaas: boolean;
+  /**
+   * `null` means the deploy mode is unresolved — still a hostname guess
+   * (loading, settings-fetch error, or fetch disabled). Mode-specific items
+   * are then hidden in both directions until the mode is server-confirmed
+   * (deploy-mode parity contract Rule 2, #3378).
+   */
+  isSaas: boolean | null;
   badges?: Record<string, number>;
 }): PaletteGroup[] {
   const { userRole, isSaas, badges = {} } = opts;
@@ -25,8 +31,8 @@ export function buildAdminPaletteGroups(opts: {
     .map((group): PaletteGroup => {
       const items = group.items
         .filter((item) => !item.requiredRole || item.requiredRole === userRole)
-        .filter((item) => !item.selfHostedOnly || !isSaas)
-        .filter((item) => !item.saasOnly || isSaas)
+        .filter((item) => !item.selfHostedOnly || isSaas === false)
+        .filter((item) => !item.saasOnly || isSaas === true)
         .map((item): PaletteItem => navItemToPaletteItem(item, group.title, badges));
       return { heading: group.title, items };
     })

@@ -46,6 +46,7 @@ import {
 } from "@/ui/lib/admin-schemas";
 import { extractFetchError, friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import type { DeployMode } from "@/ui/lib/types";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -615,9 +616,14 @@ function SelfHostedPlugins() {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function PluginsPage() {
-  const { deployMode } = useDeployMode();
+  const { deployMode, loading: modeLoading, resolved: modeResolved } = useDeployMode();
   const router = useRouter();
-  const isSaas = deployMode === "saas";
+  // View-swapping consumer (deploy-mode parity contract Rule 2, #3378):
+  // redirecting away IS the SaaS view here, so it must only fire on the
+  // server-confirmed mode — a hostname guess on a custom-domain self-host
+  // (loading window or settings-fetch failure) must not bounce a platform
+  // admin off this page.
+  const isSaas = modeResolved && deployMode === "saas";
 
   // SaaS mode: plugins are managed via dedicated admin pages (Connections,
   // Integrations, Sandbox, etc.) — redirect to admin overview. Must live in
@@ -627,6 +633,19 @@ export default function PluginsPage() {
   }, [isSaas, router]);
 
   if (isSaas) return null;
+
+  // Neutral state until the mode resolves. On a settings-fetch error
+  // (`!modeLoading && !modeResolved`) we fall through to the self-hosted
+  // view: this page is read-gated to platform admins, its mutations are
+  // API-gated, and the self-hosted view is the safe default for the only
+  // deploys where a platform admin realistically lands here.
+  if (modeLoading) {
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <LoadingState />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">

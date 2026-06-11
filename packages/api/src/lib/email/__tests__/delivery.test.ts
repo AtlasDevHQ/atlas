@@ -14,6 +14,24 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string) => settingsStore[key],
 }));
 
+// Controllable per-org email install (default: none). Mirrors the store's
+// read shape; `provider` is injected from the sibling column at read time in
+// the real store, so the mock includes it directly.
+let mockOrgInstall: {
+  provider: string;
+  sender_address: string;
+  config: Record<string, unknown>;
+} | null = null;
+
+mock.module("@atlas/api/lib/email/store", () => ({
+  EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"],
+  getEmailInstallationByOrg: async () => mockOrgInstall,
+  saveEmailInstallation: async () => {
+    throw new Error("saveEmailInstallation not used in these tests");
+  },
+  deleteEmailInstallationByOrg: async () => false,
+}));
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -57,6 +75,7 @@ beforeEach(() => {
   delete process.env.RESEND_API_KEY;
   delete process.env.ATLAS_EMAIL_FROM;
   settingsStore = {};
+  mockOrgInstall = null;
 });
 
 afterEach(() => {
@@ -148,6 +167,53 @@ describe("resolveEmailSender (#3379)", () => {
     process.env.RESEND_API_KEY = "re_test_key";
     const resolved = await resolveEmailSender("org-1");
     expect(resolved.kind).toBe("resend-env");
+  });
+
+  it("resolves to org-transport with bridgeMissing when the org install is smtp/ses and ATLAS_SMTP_URL is unset (#3385 review)", async () => {
+    mockOrgInstall = {
+      provider: "smtp",
+      sender_address: "reports@acme.test",
+      config: { provider: "smtp", host: "mail.acme.test", port: 587 },
+    };
+    const resolved = await resolveEmailSender("org-1");
+    expect(resolved.kind).toBe("org-transport");
+    if (resolved.kind === "org-transport") {
+      expect(resolved.bridgeMissing).toBe(true);
+    }
+    // Chain agreement: the send for the same env refuses with the
+    // log-provider bridge failure the preflight is warning about.
+    const sent = await sendEmail({ to: "t@example.com", subject: "S", html: "<p>x</p>" }, "org-1");
+    expect(sent.success).toBe(false);
+    expect(sent.provider).toBe("log");
+    expect(sent.error).toContain("ATLAS_SMTP_URL");
+  });
+
+  it("resolves to org-transport WITHOUT bridgeMissing when the bridge is set", async () => {
+    process.env.ATLAS_SMTP_URL = "http://localhost:2525";
+    mockOrgInstall = {
+      provider: "ses",
+      sender_address: "reports@acme.test",
+      config: { provider: "ses", region: "us-east-1" },
+    };
+    const resolved = await resolveEmailSender("org-1");
+    expect(resolved.kind).toBe("org-transport");
+    if (resolved.kind === "org-transport") {
+      expect(resolved.bridgeMissing).toBeUndefined();
+    }
+  });
+
+  it("resolves to org-transport for API-based org providers regardless of the bridge", async () => {
+    mockOrgInstall = {
+      provider: "resend",
+      sender_address: "reports@acme.test",
+      config: { provider: "resend", apiKey: "re_org_key" },
+    };
+    const resolved = await resolveEmailSender("org-1");
+    expect(resolved.kind).toBe("org-transport");
+    if (resolved.kind === "org-transport") {
+      expect(resolved.bridgeMissing).toBeUndefined();
+      expect(resolved.transport.provider).toBe("resend");
+    }
   });
 
   it("agrees with sendEmail about the log fallback — the chain is shared, not duplicated", async () => {

@@ -136,7 +136,11 @@ function deliverToEmail(
     });
 
     const deliveryResult = yield* Effect.tryPromise({
-      try: () => sendEmail({ to: recipient.address, subject, html: body }),
+      // Threading shaped.orgId keeps the send on the SAME chain link the
+      // #3379 preflight resolved (per-org transport first) — without it,
+      // an org-transport-only deployment preflights clean and then falls
+      // through to platform/env/log at delivery time (#3386).
+      try: () => sendEmail({ to: recipient.address, subject, html: body }, shaped.orgId ?? undefined),
       catch: (err) =>
         new DeliveryError({
           message: err instanceof Error ? err.message : String(err),

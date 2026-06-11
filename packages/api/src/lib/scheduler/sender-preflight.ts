@@ -41,6 +41,10 @@ export const EMAIL_NO_SENDER_WARNING =
   "This deployment has no email sender configured — email reports will only be written to the server log and every delivery will fail. " +
   "Configure a platform email provider (Admin → Integrations → Email), or set ATLAS_SMTP_URL or RESEND_API_KEY.";
 
+export const EMAIL_BRIDGE_WARNING =
+  "This workspace's email integration (SMTP/SES) requires the ATLAS_SMTP_URL bridge, which is not set — email deliveries will fail. " +
+  "Set ATLAS_SMTP_URL, or switch the email integration to an API-based provider (Resend, SendGrid, Postmark).";
+
 export const SLACK_NO_SENDER_WARNING =
   "This deployment has no Slack bot token for the configured recipient — Slack deliveries will fail. " +
   "Install the Atlas Slack app for the workspace (so a per-team token exists), or set SLACK_BOT_TOKEN.";
@@ -94,7 +98,12 @@ async function checkEmailSender(
       deps.resolveEmailSender ??
       (await import("@atlas/api/lib/email/delivery")).resolveEmailSender;
     const resolved = await resolveEmailSender(orgId);
-    return resolved.kind === "log" ? EMAIL_NO_SENDER_WARNING : null;
+    if (resolved.kind === "log") return EMAIL_NO_SENDER_WARNING;
+    // An org smtp/ses transport without the ATLAS_SMTP_URL bridge resolves
+    // as org-transport but deliverViaTransport refuses the send (#3385
+    // review) — configured-in-name-only, so it warns too.
+    if (resolved.kind === "org-transport" && resolved.bridgeMissing) return EMAIL_BRIDGE_WARNING;
+    return null;
   } catch (err) {
     log.warn(
       { orgId, err: err instanceof Error ? err.message : String(err) },

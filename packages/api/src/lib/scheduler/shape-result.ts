@@ -65,6 +65,12 @@ export interface FormattedResult {
   totalTokens: number;
   /** ISO timestamp decided once so all channels report the same instant. */
   generatedAt: string;
+  /**
+   * The task's org — threaded so email delivery resolves the SAME
+   * provider-chain link (per-org transport first) the sender preflight
+   * checks at create/update time (#3379/#3386). `null` for org-less tasks.
+   */
+  orgId: string | null;
 }
 
 export function shapeResult(
@@ -75,6 +81,7 @@ export function shapeResult(
   return {
     taskId: task.id,
     taskName: task.name,
+    orgId: task.orgId,
     question: task.question,
     answer: result.answer,
     sql: result.sql,

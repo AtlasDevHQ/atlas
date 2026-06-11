@@ -20,6 +20,7 @@ import type { ResolvedEmailSender } from "@atlas/api/lib/email/delivery";
 import {
   checkDeliverySenders,
   EMAIL_NO_SENDER_WARNING,
+  EMAIL_BRIDGE_WARNING,
   SLACK_NO_SENDER_WARNING,
 } from "../sender-preflight";
 
@@ -70,6 +71,36 @@ describe("checkDeliverySenders — email", () => {
       },
     });
     expect(seen).toEqual(["org-42"]);
+  });
+
+  it("warns when the org transport needs the ATLAS_SMTP_URL bridge and it is unset (#3385 review)", async () => {
+    const warnings = await checkDeliverySenders([EMAIL], "org-1", {
+      resolveEmailSender: async () => ({
+        kind: "org-transport",
+        transport: {
+          provider: "smtp",
+          senderAddress: "reports@acme.test",
+          config: { provider: "smtp", host: "mail.acme.test", port: 587, username: "u", password: "p", tls: true },
+        },
+        bridgeMissing: true,
+      }),
+    });
+    expect(warnings).toEqual([EMAIL_BRIDGE_WARNING]);
+    expect(warnings[0]).toContain("ATLAS_SMTP_URL");
+  });
+
+  it("does NOT warn for an org transport with no bridge problem", async () => {
+    const warnings = await checkDeliverySenders([EMAIL], "org-1", {
+      resolveEmailSender: async () => ({
+        kind: "org-transport",
+        transport: {
+          provider: "resend",
+          senderAddress: "reports@acme.test",
+          config: { provider: "resend", apiKey: "re_org_key" },
+        },
+      }),
+    });
+    expect(warnings).toEqual([]);
   });
 
   it("degrades to no warning (not a throw) when resolution itself fails", async () => {

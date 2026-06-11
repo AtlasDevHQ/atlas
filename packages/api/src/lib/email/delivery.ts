@@ -352,7 +352,20 @@ function getPlatformEmailConfig(): EmailTransport | null {
  * the dev fallback that only writes the message to the server log.
  */
 export type ResolvedEmailSender =
-  | { kind: "org-transport"; transport: EmailTransport }
+  | {
+      kind: "org-transport";
+      transport: EmailTransport;
+      /**
+       * True when the org transport is `smtp`/`ses` but the
+       * `ATLAS_SMTP_URL` HTTP bridge those providers require is unset —
+       * `deliverViaTransport` will refuse the send with a log-provider
+       * failure. The send-path dispatch is unchanged (the failure still
+       * surfaces at delivery, matching pre-#3379 behavior); the sender
+       * preflight reads this to warn at create/update time instead of
+       * reporting the org transport as configured (#3385 review).
+       */
+      bridgeMissing?: boolean;
+    }
   | { kind: "platform-transport"; transport: EmailTransport }
   | { kind: "smtp-webhook" }
   | { kind: "resend-env" }
@@ -376,7 +389,12 @@ export async function resolveEmailSender(orgId?: string): Promise<ResolvedEmailS
   if (orgId) {
     const transport = await getEmailTransport(orgId);
     if (transport) {
-      return { kind: "org-transport", transport };
+      const bridgeMissing =
+        (transport.config.provider === "smtp" || transport.config.provider === "ses") &&
+        !process.env.ATLAS_SMTP_URL;
+      return bridgeMissing
+        ? { kind: "org-transport", transport, bridgeMissing }
+        : { kind: "org-transport", transport };
     }
   }
 

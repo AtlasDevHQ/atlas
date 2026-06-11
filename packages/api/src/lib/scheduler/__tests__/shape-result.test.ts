@@ -14,6 +14,11 @@ describe("shapeResult", () => {
   it("carries task and result metadata", () => {
     const shaped = shapeResult(makeTask(), makeResult());
     expect(shaped.taskId).toBe("task-123");
+    // orgId rides FormattedResult so deliverToEmail resolves the SAME
+    // provider-chain link (per-org transport) the sender preflight checked
+    // at create/update time (#3386).
+    expect(shaped.orgId).toBeNull();
+    expect(shapeResult(makeTask({ orgId: "org-7" }), makeResult()).orgId).toBe("org-7");
     expect(shaped.taskName).toBe("Daily Revenue");
     expect(shaped.question).toBe("What was yesterday's revenue?");
     expect(shaped.answer).toBe("Revenue was $1M");

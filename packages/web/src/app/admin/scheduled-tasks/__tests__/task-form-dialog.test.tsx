@@ -436,8 +436,8 @@ describe("TaskFormDialog — sender preflight warnings (#3379)", () => {
     const close = Array.from(container.querySelectorAll("button")).find(
       (b) => b.textContent?.trim() === "Close",
     );
-    expect(close).not.toBeUndefined();
-    fireEvent.click(close!);
+    if (!close) throw new Error("Close button not found");
+    fireEvent.click(close);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 

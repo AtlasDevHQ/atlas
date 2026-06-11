@@ -505,6 +505,56 @@ describe("admin settings routes", () => {
       // No orgId → !orgId=true → second arg is true
       expect(mockGetSettingsForAdmin).toHaveBeenCalledWith(undefined, true);
     });
+
+    // #3395 — GET's showAll classification matches the write gates: on
+    // SaaS, only platform admins see platform-scoped settings. A no-org
+    // non-platform-admin session is a workspace admin (same as #3389's
+    // write classification), so showAll must be false. The mode probe
+    // stays GET's display-only permissive `getConfig()?.deployMode` read.
+    it("SaaS no-org non-platform-admin GET → showAll is false (#3395)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      mockConfigOverride = { deployMode: "saas" };
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "no-org-admin-1", mode: "better-auth", label: "No-Org Admin", role: "admin" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith(undefined, false);
+    });
+
+    it("self-hosted no-org admin GET keeps showAll (#3395)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      mockConfigOverride = { deployMode: "self-hosted" };
+      // Default mock: no activeOrganizationId, role=admin
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith(undefined, true);
+    });
+
+    it("SaaS no-org platform admin GET keeps showAll (#3395)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      mockConfigOverride = { deployMode: "saas" };
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith(undefined, true);
+    });
   });
 
   // ─── Org-scoped settings ────────────────────────────────────────
@@ -920,6 +970,145 @@ describe("admin settings routes", () => {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── No-org SaaS session × workspace-scoped keys (#3395) ────────
+
+  describe("no-org SaaS session cannot reach the global row of a workspace-scoped key (#3395)", () => {
+    // Workspace-scope sibling of the #3389 platform-scope alignment: with
+    // no org context, a workspace-scoped write lands on the global
+    // (org_id IS NULL) row — the tier-2 default resolution applies to
+    // EVERY workspace. The route must 403 on SaaS; self-hosted no-org
+    // keeps the global-override path (legitimate self-hosted admin write).
+    function asSaasNoOrgAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "no-org-admin-1", mode: "better-auth", label: "No-Org Admin", role: "admin" },
+        }),
+      );
+    }
+
+    function asSaasNoOrgPlatformAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin" },
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      mockConfigOverride = { deployMode: "saas" };
+    });
+
+    it("SaaS no-org admin PUT on a workspace-scoped key → 403 (same envelope as the platform-scope gate)", async () => {
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string; requestId?: string };
+      expect(data.error).toBe("forbidden");
+      expect(data.message).toContain("workspace-scoped");
+      expect(typeof data.requestId === "string" || data.requestId === undefined).toBe(true);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("SaaS no-org admin DELETE on a workspace-scoped key → 403", async () => {
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string };
+      expect(data.error).toBe("forbidden");
+      expect(data.message).toContain("workspace-scoped");
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("self-hosted no-org admin PUT on a workspace-scoped key still succeeds (global override path)", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // No orgId → the write targets the global (org_id IS NULL) row
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "admin-1", undefined);
+    });
+
+    it("self-hosted no-org admin DELETE on a workspace-scoped key still succeeds (global override path)", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "admin-1", undefined);
+    });
+
+    it("SaaS no-org platform admin PUT on a workspace-scoped key succeeds (gate never restricts platform admins)", async () => {
+      asSaasNoOrgPlatformAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "platform-admin-1", undefined);
+    });
+
+    it("SaaS org-scoped workspace admin PUT on a workspace-scoped key is unaffected (org row, not global)", async () => {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "ws-admin-1", "org-1");
+    });
+
+    it("workspace-scope no-org gate is restrictive when the probe fails closed", async () => {
+      // Same fail-closed contract as the #3389 gates: config-resolution
+      // failure at request time ⇒ isSaasModeForGuard() → true ⇒ restrictive.
+      mockConfigOverride = null;
+      mockIsSaasModeForGuard.mockImplementation(() => true);
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("unloaded config (getConfig() → null) is treated as self-hosted — no-org workspace write allowed", async () => {
+      mockConfigOverride = null;
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
       });
       expect(res.status).toBe(200);
       expect(mockSetSetting).toHaveBeenCalledTimes(1);

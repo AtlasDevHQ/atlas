@@ -64,11 +64,29 @@ describe("validateCredentials — railway dispatch", () => {
     expect(body.variables?.id).toBe("env-1");
   });
 
-  it("falls back to the me query without environmentId", async () => {
+  it("rejects a missing environmentId without any network call (#3370)", async () => {
+    // The BYOC runtime never falls back to the operator's
+    // RAILWAY_ENVIRONMENT_ID env var, so a connect without environmentId
+    // would store credentials that can never run.
+    let called = false;
+    globalThis.fetch = mock(async (): Promise<Response> => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as FetchFn;
+
+    const result = await validateCredentials("railway", { token: "rw_tok" });
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.error).toContain("Environment ID is required");
+    expect(called).toBe(false);
+  });
+
+  it("validateRailwayCredentials still supports the me-query fallback directly", async () => {
+    // The function-level optional param remains for callers outside the
+    // connect dispatch (the dispatch itself requires environmentId).
     const fetchMock = mockFetchJson({ data: { me: { name: "Ada" } } });
     globalThis.fetch = fetchMock;
 
-    const result = await validateCredentials("railway", { token: "rw_tok" });
+    const result = await validateRailwayCredentials("rw_tok");
     expect(result.valid).toBe(true);
     if (result.valid) expect(result.displayName).toBe("Railway (Ada)");
 

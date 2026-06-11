@@ -88,6 +88,9 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
     fields: [
       { key: "accessToken", label: "Access Token", type: "password", placeholder: "vercel_...", required: true },
       { key: "teamId", label: "Team ID", type: "text", placeholder: "team_...", required: true },
+      // Required at runtime — @vercel/sandbox needs the full
+      // token/teamId/projectId triple to create sandboxes (#3370).
+      { key: "projectId", label: "Project ID", type: "text", placeholder: "prj_...", required: true },
     ],
   },
   e2b: {
@@ -337,6 +340,11 @@ export function SaasSandboxView({
                 providerKey={key}
                 connection={provider ?? null}
                 isActive={provider?.isActive ?? false}
+                // Absent field (older API) defaults to available so the page
+                // degrades to its pre-#3370 behavior rather than locking
+                // every card.
+                runtimeAvailable={status.providerRuntimeAvailability?.[key] ?? true}
+                needsReconnect={provider?.needsReconnect ?? false}
                 // ATLAS_SANDBOX_BACKEND stores backend ids, not provider
                 // keys — saving the bare key used to fall through to the
                 // platform default silently (#3375).
@@ -401,6 +409,8 @@ function ProviderRow({
   providerKey,
   connection,
   isActive,
+  runtimeAvailable,
+  needsReconnect,
   onSelect,
   onRefetch,
   saving,
@@ -408,13 +418,27 @@ function ProviderRow({
   providerKey: SandboxProviderKey;
   connection: ConnectedProvider | null;
   isActive: boolean;
+  runtimeAvailable: boolean;
+  needsReconnect: boolean;
   onSelect: () => Promise<unknown>;
   onRefetch: () => void;
   saving: boolean;
 }) {
   const info = PROVIDERS[providerKey];
   const isConnected = !!connection;
-  const status: StatusKind = isActive ? "connected" : isConnected ? "ready" : "disconnected";
+  // A provider only runs when this deployment has its runtime AND the stored
+  // credentials are complete — otherwise selecting it silently falls back to
+  // the platform default, so the card must not offer "Use this" (#3370).
+  const isUsable = runtimeAvailable && !needsReconnect;
+  const status: StatusKind = isActive
+    ? "connected"
+    : isConnected
+      ? isUsable
+        ? "ready"
+        : "unavailable"
+      : runtimeAvailable
+        ? "disconnected"
+        : "unavailable";
 
   const disconnectMutation = useAdminMutation({
     path: `/api/v1/admin/sandbox/disconnect/${providerKey}`,
@@ -459,6 +483,21 @@ function ProviderRow({
   }, [isConnected, clearConnectError]);
 
   const showFull = isConnected || expanded;
+
+  // No runtime for this provider in this deployment: connecting credentials
+  // would store secrets that can never run. Say so instead of offering a
+  // connect flow that implies isolation that won't happen (#3370).
+  if (!runtimeAvailable && !isConnected) {
+    return (
+      <CompactRow
+        icon={info.icon}
+        title={info.label}
+        description={`${info.description} Not available on this deployment.`}
+        status={status}
+        action={<StatusPill kind="unavailable" label="Unavailable" />}
+      />
+    );
+  }
 
   if (!showFull) {
     return (
@@ -511,14 +550,20 @@ function ProviderRow({
         isActive ? (
           <StatusPill kind="connected" label="Live" />
         ) : isConnected ? (
-          <StatusPill kind="ready" label="Connected" />
+          needsReconnect ? (
+            <StatusPill kind="unavailable" label="Reconnect required" />
+          ) : runtimeAvailable ? (
+            <StatusPill kind="ready" label="Connected" />
+          ) : (
+            <StatusPill kind="unavailable" label="Unavailable" />
+          )
         ) : undefined
       }
       onCollapse={!isConnected ? collapse : undefined}
       actions={
         isConnected ? (
           <>
-            {!isActive && (
+            {!isActive && isUsable && (
               <Button size="sm" onClick={onSelect} disabled={saving}>
                 {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
                 Use this
@@ -574,15 +619,30 @@ function ProviderRow({
       }
     >
       {isConnected ? (
-        <DetailList>
-          {connection.displayName && (
-            <DetailRow label="Account" value={connection.displayName} />
+        <>
+          <DetailList>
+            {connection.displayName && (
+              <DetailRow label="Account" value={connection.displayName} />
+            )}
+            <DetailRow label="Connected" value={formatDateTime(connection.connectedAt)} />
+            {connection.validatedAt && (
+              <DetailRow label="Validated" value={formatDateTime(connection.validatedAt)} />
+            )}
+          </DetailList>
+          {needsReconnect && (
+            <p className="text-xs text-muted-foreground">
+              These credentials are missing fields now required to run sandboxes
+              (for Vercel, a Project ID). Disconnect and reconnect with the full
+              set to use this provider.
+            </p>
           )}
-          <DetailRow label="Connected" value={formatDateTime(connection.connectedAt)} />
-          {connection.validatedAt && (
-            <DetailRow label="Validated" value={formatDateTime(connection.validatedAt)} />
+          {!runtimeAvailable && (
+            <p className="text-xs text-muted-foreground">
+              This provider isn&apos;t available on this deployment, so the stored
+              credentials can&apos;t be used to run sandboxes yet.
+            </p>
           )}
-        </DetailList>
+        </>
       ) : (
         <div className="space-y-3">
           {info.fields.map((field) => (

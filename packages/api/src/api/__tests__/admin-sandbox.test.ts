@@ -47,14 +47,39 @@ mock.module("@atlas/api/lib/settings", () => ({
 
 // --- Explore mock — platform default is the SaaS pin ---
 
+const mockInvalidateOrgExploreBackends: Mock<(orgId: string) => void> = mock(() => {});
+
 mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "vercel-sandbox",
   getActiveSandboxPluginId: () => null,
   explore: { type: "function" },
   invalidateExploreBackend: mock(() => {}),
+  invalidateOrgExploreBackends: mockInvalidateOrgExploreBackends,
   markNsjailFailed: mock(() => {}),
   markSidecarFailed: mock(() => {}),
   _formatSandboxPriorityFailureForTest: mock(() => ""),
+}));
+
+// --- BYOC runtime — real pure helpers, deterministic availability ---
+// `missingCredentialFields` / `sandboxProviderForBackendId` are pure and used
+// as-is; runtime availability is environment-dependent (module resolution),
+// so tests pin it. Defaults mirror the SaaS image: only vercel installed.
+
+const realSandboxRuntime = await import("@atlas/api/lib/sandbox/runtime");
+
+let mockRuntimeAvailability: Record<string, boolean> = {
+  vercel: true,
+  e2b: false,
+  daytona: false,
+  railway: false,
+};
+
+mock.module("@atlas/api/lib/sandbox/runtime", () => ({
+  ...realSandboxRuntime,
+  isProviderRuntimeAvailable: async (provider: string) =>
+    mockRuntimeAvailability[provider] ?? false,
+  getProviderRuntimeAvailability: async () => ({ ...mockRuntimeAvailability }),
+  tryCreateByocBackend: mock(async () => null),
 }));
 
 // --- Built-in backend detection ---
@@ -141,7 +166,12 @@ interface StatusResponse {
   activeBackend: string;
   platformDefault: string;
   workspaceOverride: string | null;
-  connectedProviders: Array<{ provider: string; isActive: boolean }>;
+  connectedProviders: Array<{
+    provider: string;
+    isActive: boolean;
+    needsReconnect: boolean;
+  }>;
+  providerRuntimeAvailability: Record<string, boolean>;
 }
 
 async function getStatus(): Promise<StatusResponse> {
@@ -171,8 +201,10 @@ beforeEach(() => {
   mockSettings.clear();
   mockSandboxPlugins = [];
   mockCredentials = [];
+  mockRuntimeAvailability = { vercel: true, e2b: false, daytona: false, railway: false };
   mockDeleteSetting.mockClear();
   mockDeleteCredential.mockClear();
+  mockInvalidateOrgExploreBackends.mockClear();
 });
 
 // --- Tests ---
@@ -249,6 +281,92 @@ describe("GET /api/v1/admin/sandbox/status — vocabulary normalization", () => 
     expect(status.connectedProviders).toEqual([
       expect.objectContaining({ provider: "vercel", isActive: false }),
     ]);
+  });
+});
+
+describe("GET /api/v1/admin/sandbox/status — BYOC runtime resolution (#3370)", () => {
+  it("a usable BYOC selection resolves active even without a registered plugin", async () => {
+    // Complete creds + runtime installed, but the operator never registered
+    // an e2b plugin — BYOC backends are built on demand from stored
+    // credentials, so the selection must still resolve.
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+    mockRuntimeAvailability.e2b = true;
+    mockCredentials = [makeCredential("e2b")];
+
+    const status = await getStatus();
+    expect(status.activeBackend).toBe("e2b-sandbox");
+    expect(status.connectedProviders).toEqual([
+      expect.objectContaining({ provider: "e2b", isActive: true, needsReconnect: false }),
+    ]);
+    expectNoContradiction(status);
+  });
+
+  it("a BYOC selection whose runtime is not installed falls back to the platform default", async () => {
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "e2b-sandbox");
+    mockRuntimeAvailability.e2b = false;
+    mockCredentials = [makeCredential("e2b")];
+
+    const status = await getStatus();
+    expect(status.activeBackend).toBe("vercel-sandbox");
+    expect(status.connectedProviders).toEqual([
+      expect.objectContaining({ provider: "e2b", isActive: false }),
+    ]);
+  });
+
+  it("flags a legacy vercel row without projectId as needsReconnect and not active", async () => {
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "vercel-sandbox");
+    const legacy = makeCredential("vercel");
+    legacy.credentials = { accessToken: "tok", teamId: "team_1" }; // pre-projectId row
+    mockCredentials = [legacy];
+    // vercel-sandbox is also a built-in here (useVercelSandbox → true), so
+    // activeBackend stays vercel-sandbox via the operator path — but the
+    // row itself must say the stored credentials can't run.
+    const status = await getStatus();
+    expect(status.connectedProviders).toEqual([
+      expect.objectContaining({ provider: "vercel", needsReconnect: true }),
+    ]);
+  });
+
+  it("a complete vercel triple reports needsReconnect false", async () => {
+    const cred = makeCredential("vercel");
+    cred.credentials = { accessToken: "tok", teamId: "team_1", projectId: "prj_1" };
+    mockCredentials = [cred];
+
+    const status = await getStatus();
+    expect(status.connectedProviders).toEqual([
+      expect.objectContaining({ provider: "vercel", needsReconnect: false }),
+    ]);
+  });
+
+  it("reports per-provider runtime availability", async () => {
+    mockRuntimeAvailability = { vercel: true, e2b: true, daytona: false, railway: false };
+    const status = await getStatus();
+    expect(status.providerRuntimeAvailability).toEqual({
+      vercel: true,
+      e2b: true,
+      daytona: false,
+      railway: false,
+    });
+  });
+});
+
+describe("BYOC credential edits invalidate the org's cached backends (#3370)", () => {
+  it("connect tears down cached backends for the org", async () => {
+    const res = await adminSandbox.request("http://localhost/connect/e2b", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ credentials: { apiKey: "e2b_key" } }),
+    });
+    expect(res.status).toBe(200);
+    expect(mockInvalidateOrgExploreBackends).toHaveBeenCalledWith("org-1");
+  });
+
+  it("disconnect tears down cached backends for the org", async () => {
+    const res = await adminSandbox.request("http://localhost/disconnect/e2b", {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(200);
+    expect(mockInvalidateOrgExploreBackends).toHaveBeenCalledWith("org-1");
   });
 });
 

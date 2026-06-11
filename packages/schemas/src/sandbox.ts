@@ -79,6 +79,13 @@ export const SandboxConnectedProviderSchema = z.object({
    * `activeBackend` so the two fields can never contradict (#3375).
    */
   isActive: z.boolean(),
+  /**
+   * True when the stored credentials are missing fields the runtime now
+   * requires (e.g. a Vercel row stored before `projectId` was collected).
+   * The provider must be reconnected before it can run (#3370). Optional:
+   * absent on responses from API versions predating the field.
+   */
+  needsReconnect: z.boolean().optional(),
 });
 
 export type SandboxConnectedProvider = z.infer<typeof SandboxConnectedProviderSchema>;
@@ -100,6 +107,13 @@ export const SandboxStatusSchema = z.object({
   availableBackends: z.array(SandboxBackendSchema),
   /** Connected BYOC sandbox providers for this org */
   connectedProviders: z.array(SandboxConnectedProviderSchema),
+  /**
+   * Whether this deployment can run each BYOC provider at runtime (provider
+   * plugin + SDK installed; `vercel` is always available). Providers absent
+   * or false cannot execute even with valid stored credentials (#3370).
+   * Optional: absent on responses from API versions predating the field.
+   */
+  providerRuntimeAvailability: z.record(z.string(), z.boolean()).optional(),
 });
 
 export type SandboxStatus = z.infer<typeof SandboxStatusSchema>;

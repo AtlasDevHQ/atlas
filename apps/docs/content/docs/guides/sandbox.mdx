@@ -43,8 +43,16 @@ Firecracker microVM with network isolation. Bring your own Vercel account.
 **Credentials:**
 - **Access Token** — Vercel API access token
 - **Team ID** — Vercel team identifier (e.g. `team_...`)
+- **Project ID** — Vercel project to bill sandbox usage against (e.g. `prj_...`)
 
-Credentials are validated against the Vercel API before saving. The team name is displayed after connection.
+Credentials are validated against the Vercel API before saving (team and
+project access). The team name is displayed after connection.
+
+<Callout type="info">
+Connections made before Project ID was collected show **Reconnect required**
+— the Vercel sandbox SDK needs the full token/team/project triple, so the
+provider can't run until you disconnect and reconnect with all three fields.
+</Callout>
 
 ### E2B
 
@@ -97,6 +105,40 @@ sandboxes per environment (10 Trial/Free, 50 Hobby, 100 Pro/Enterprise).
 
 <Callout type="info">
 Credentials are stored per-workspace in the `sandbox_credentials` table. Each workspace can connect different providers independently.
+</Callout>
+
+### How BYOC Runs at Runtime
+
+A connected provider executes **explore** commands on your own account when
+all of the following hold:
+
+1. The provider is **selected** (its backend ID is the workspace's
+   `ATLAS_SANDBOX_BACKEND` override) — connecting alone does not switch
+   execution.
+2. The stored credentials carry every field the runtime needs (otherwise the
+   card shows **Reconnect required**).
+3. The deployment can run the provider — the provider's plugin package and
+   SDK are installed on the API server (otherwise the card shows
+   **Unavailable**). The managed Vercel runtime is always available; on the
+   Atlas-hosted SaaS, E2B, Daytona, and Railway runtimes are not yet shipped.
+
+When engaged, the sandbox is created with your stored credentials on your
+provider account — never the platform operator's. If your sandbox fails to
+start (revoked token, quota), the explore tool **fails with an error** rather
+than silently falling back to the platform sandbox: you selected isolation on
+your own infrastructure, so Atlas won't quietly run elsewhere. Switch back to
+Atlas Cloud Sandbox or fix the credentials to recover.
+
+When *not* engaged (no selection, incomplete credentials, or missing
+runtime), execution falls back to the platform default and the card reflects
+that instead of showing the provider as live.
+
+Editing or disconnecting credentials tears down any cached sandbox for the
+workspace immediately; the next explore call rebuilds against the new state.
+
+<Callout type="warn">
+The **Python tool** currently always runs on the platform sandbox — BYOC
+selection applies to the explore tool only.
 </Callout>
 
 ---
@@ -171,7 +213,7 @@ You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variab
 |----------|-------------|------|
 | Page title | Sandbox | Execution Environment |
 | UI | Backend dropdown + sidecar URL | Provider card grid with connect/disconnect |
-| Providers | Not applicable | Atlas Cloud, Vercel, E2B, Daytona |
+| Providers | Not applicable | Atlas Cloud, Vercel, E2B, Daytona, Railway |
 | Credential storage | Not applicable | Per-workspace in `sandbox_credentials` table |
 | Active selection | Dropdown + Save in admin UI (sets `ATLAS_SANDBOX_BACKEND`) | Click **Select** on a connected provider |
 | Default fallback | Auto-detect priority chain | Atlas Cloud Sandbox (`vercel-sandbox`) |

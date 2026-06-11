@@ -563,6 +563,7 @@ export function createApiTestMocks(
     getActiveSandboxPluginId: () => null,
     explore: { type: "function" },
     invalidateExploreBackend: mock(() => {}),
+    invalidateOrgExploreBackends: mock(() => {}),
     markNsjailFailed: mock(() => {}),
     markSidecarFailed: mock(() => {}),
   }));

@@ -82,8 +82,20 @@ const SANDBOX_SEMANTIC_REL = "semantic";
 // Must match the absolute resolution of SANDBOX_SEMANTIC_REL (used as runCommand cwd).
 const SANDBOX_SEMANTIC_CWD = "/vercel/sandbox/semantic";
 
+/**
+ * Explicit Vercel API credentials for sandbox creation. When provided
+ * (the BYOC per-org path, #3370), they replace the operator-level env-var
+ * detection entirely — values must never be logged.
+ */
+export interface VercelSandboxAccessOverride {
+  teamId: string;
+  projectId: string;
+  token: string;
+}
+
 export async function createSandboxBackend(
-  semanticRoot: string
+  semanticRoot: string,
+  accessOverride?: VercelSandboxAccessOverride
 ): Promise<ExploreBackend> {
   // 1. Import the optional dependency
   let Sandbox: (typeof import("@vercel/sandbox"))["Sandbox"];
@@ -99,18 +111,21 @@ export async function createSandboxBackend(
     );
   }
 
-  // 2. Create the sandbox. When VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN
-  // are set we're running off-Vercel (e.g. Railway) and need to pass explicit
-  // credentials; on Vercel itself, OIDC handles auth automatically and these
-  // are undefined.
-  const access = vercelSandboxAccess();
-  const explicitAccess = access
-    ? {
-        teamId: access.teamId,
-        projectId: access.projectId,
-        token: access.token.reveal(),
-      }
-    : undefined;
+  // 2. Create the sandbox. An accessOverride (per-org BYOC credentials)
+  // takes precedence and is used verbatim. Otherwise, when
+  // VERCEL_TEAM_ID/VERCEL_PROJECT_ID/VERCEL_TOKEN are set we're running
+  // off-Vercel (e.g. Railway) and pass explicit operator credentials; on
+  // Vercel itself, OIDC handles auth automatically and these are undefined.
+  const access = accessOverride ? undefined : vercelSandboxAccess();
+  const explicitAccess = accessOverride
+    ? { ...accessOverride }
+    : access
+      ? {
+          teamId: access.teamId,
+          projectId: access.projectId,
+          token: access.token.reveal(),
+        }
+      : undefined;
   let sandbox: InstanceType<typeof Sandbox>;
   try {
     sandbox = await Sandbox.create({

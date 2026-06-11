@@ -132,6 +132,44 @@ describe("SaasSandboxView — backend-id save values", () => {
     cleanup();
   });
 
+  test("a connected row needing reconnect offers no 'Use this' and says why (#3370)", () => {
+    const { getByText, queryAllByText } = renderView(
+      makeStatus({
+        connectedProviders: [
+          {
+            provider: "vercel",
+            displayName: "Acme",
+            connectedAt: "2026-06-01T00:00:00.000Z",
+            validatedAt: null,
+            isActive: false,
+            needsReconnect: true, // pre-projectId row
+          },
+        ],
+        providerRuntimeAvailability: { vercel: true, e2b: true, daytona: true, railway: true },
+      }),
+    );
+
+    getByText("Reconnect required");
+    // Selecting it would silently fall back to the platform default, so the
+    // action must not be offered. Managed is the active card here (no row is
+    // live) and hides its own button too — so no "Use this" anywhere.
+    expect(queryAllByText("Use this").length).toBe(0);
+    cleanup();
+  });
+
+  test("a provider without a runtime on this deployment shows Unavailable instead of Connect (#3370)", () => {
+    const { getAllByText, queryAllByText } = renderView(
+      makeStatus({
+        providerRuntimeAvailability: { vercel: true, e2b: false, daytona: true, railway: true },
+      }),
+    );
+
+    // The e2b card offers no connect flow; the other three still do.
+    expect(getAllByText("Unavailable").length).toBe(1);
+    expect(queryAllByText("Connect").length).toBe(3);
+    cleanup();
+  });
+
   test("managed card reads active from server-derived isActive, not the override string", () => {
     // Legacy contradiction scenario: an override is set but no provider row
     // is live (e.g. the selected backend was unavailable and the runtime

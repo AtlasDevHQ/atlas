@@ -1154,6 +1154,27 @@ describe("checkRateLimit() — workspace-scoped bucket overrides (#3406)", () =>
     expect(checkRateLimit("w", { bucket: "chat" }).allowed).toBe(true);
   });
 
+  it("workspace override of the base ATLAS_RATE_LIMIT_RPM applies to the default bucket", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM", "2", "admin-test", "org-a");
+
+    expect(checkRateLimit("u", { orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { orgId: "org-a" }).allowed).toBe(true);
+    expect(checkRateLimit("u", { orgId: "org-a" }).allowed).toBe(false);
+    // Other orgs keep the env base limit (100).
+    expect(checkRateLimit("v", { orgId: "org-b" }).allowed).toBe(true);
+  });
+
+  it("a workspace's ATLAS_RATE_LIMIT_RPM=0 disables its sub-buckets too", async () => {
+    await setSetting("ATLAS_RATE_LIMIT_RPM", "0", "admin-test", "org-a");
+    await setSetting("ATLAS_RATE_LIMIT_RPM_CHAT", "1", "admin-test", "org-a");
+
+    // Base 0 = disabled for this workspace, overriding even an explicit
+    // sub-bucket value (matches the platform-tier semantics).
+    for (let i = 0; i < 5; i++) {
+      expect(checkRateLimit("u", { bucket: "chat", orgId: "org-a" }).allowed).toBe(true);
+    }
+  });
+
   it("workspace override of ATLAS_RATE_LIMIT_RPM_ADMIN applies to the admin bucket", async () => {
     await setSetting("ATLAS_RATE_LIMIT_RPM_ADMIN", "2", "admin-test", "org-a");
 

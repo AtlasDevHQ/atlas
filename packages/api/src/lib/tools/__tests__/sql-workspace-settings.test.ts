@@ -70,10 +70,12 @@ mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
+// Mutable cache mock — the cached-path test flips this to a canned hit.
+let cachedEntry: { columns: string[]; rows: Record<string, unknown>[] } | null = null;
 mock.module("@atlas/api/lib/cache/index", () => ({
-  cacheEnabled: () => false,
-  getCache: () => ({ get: () => null, set: () => {} }),
-  buildCacheKey: () => "",
+  cacheEnabled: () => cachedEntry !== null,
+  getCache: () => ({ get: () => cachedEntry, set: () => {} }),
+  buildCacheKey: () => "k",
   getDefaultTtl: () => 60000,
 }));
 
@@ -156,6 +158,7 @@ describe("executeSQL — workspace-tier settings resolution (#3406)", () => {
   beforeEach(() => {
     settingReads = [];
     mockConfig = {};
+    cachedEntry = null;
     mockDBConnection.query.mockClear();
   });
 
@@ -173,6 +176,27 @@ describe("executeSQL — workspace-tier settings resolution (#3406)", () => {
     for (const read of [...rowLimitReads, ...timeoutReads]) {
       expect(read.orgId).toBe("org-42");
     }
+  });
+
+  it("slices cache hits to the workspace's current row limit (#3406)", async () => {
+    // Entry cached before the workspace lowered its limit to 5: 10 rows.
+    cachedEntry = {
+      columns: ["id"],
+      rows: Array.from({ length: 10 }, (_, i) => ({ id: i })),
+    };
+
+    const result = await executeTool(
+      { sql: "SELECT id FROM companies", explanation: "cached rows bounded" },
+      toolCtx,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.cached).toBe(true);
+    expect((result.rows as unknown[]).length).toBe(5);
+    expect(result.row_count).toBe(5);
+    expect(result.truncated).toBe(true);
+    // Served from cache — no live query.
+    expect(mockDBConnection.query.mock.calls.length).toBe(0);
   });
 
   it("applies the workspace override to the appended LIMIT and the query timeout", async () => {

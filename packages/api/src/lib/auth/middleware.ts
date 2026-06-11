@@ -38,15 +38,19 @@ let lastWarnedRpmValue: string | undefined;
 let lastWarnedChatRpmValue: string | undefined;
 let lastWarnedAdminRpmValue: string | undefined;
 
-function getRpmLimit(): number {
-  // Precedence: platform DB override > env var > deploy-env profile default.
-  // `getSetting` is called WITHOUT an orgId here, so only a platform-level DB
-  // override (Tier 2) is consulted — never a workspace-level one — and it
-  // returns the env var (Tier 3) when no DB override is set. It yields
-  // `undefined` only when neither is set, at which point the env-profile
-  // default fills the gap (`resolveRateLimitRpm` → `undefined` for the
-  // production/development profiles, so self-hosted stays disabled-by-default).
-  const raw = getSetting("ATLAS_RATE_LIMIT_RPM") ?? resolveRateLimitRpm();
+function getRpmLimit(orgId?: string): number {
+  // Precedence: workspace DB override > platform DB override > env var >
+  // deploy-env profile default. The key is workspace-scoped, so authed
+  // callers thread their org (#3406) and a per-workspace override (incl.
+  // `0` = disabled, which also disables that workspace's sub-buckets)
+  // applies; pre-auth callers pass no orgId and resolve the platform tier.
+  // On SaaS the key is SAAS_IMMUTABLE so no DB override of either tier can
+  // exist — the boot guard's raw env read is unaffected. getSetting yields
+  // `undefined` only when no override and no env var are set, at which
+  // point the env-profile default fills the gap (`resolveRateLimitRpm` →
+  // `undefined` for production/development, so self-hosted stays
+  // disabled-by-default).
+  const raw = getSetting("ATLAS_RATE_LIMIT_RPM", orgId) ?? resolveRateLimitRpm();
   if (raw === undefined || raw === "") return 0; // disabled
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) {
@@ -81,7 +85,7 @@ function getRpmLimit(): number {
  * also disabled regardless of override.
  */
 function getRpmLimitForBucket(bucket: RateLimitBucket, orgId?: string): number {
-  const baseLimit = getRpmLimit();
+  const baseLimit = getRpmLimit(orgId);
   if (bucket === "default") return baseLimit;
   if (baseLimit === 0) return 0;
 

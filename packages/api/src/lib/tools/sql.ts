@@ -1929,17 +1929,29 @@ async function executeSqlForConnection({
             // Apply PII masking to cached results (same as live query path)
             const cacheResponse = yield* Effect.tryPromise({
               try: async () => {
-                let cachedRows = cached.rows;
+                // #3406 — enforce the CURRENT row limit (workspace tier
+                // included) on cache hits, not just the limit that applied
+                // when the entry was written: an admin lowering the cap (or
+                // adding a workspace override) must bound cached responses
+                // too, matching the fresh-query path where the limit rides
+                // the SQL itself. Slice before masking so dropped rows are
+                // never masked.
+                const cacheRowLimit = getRowLimit(authOrgId);
+                let cachedRows = cached.rows.length > cacheRowLimit
+                  ? cached.rows.slice(0, cacheRowLimit)
+                  : cached.rows;
+                const cachedTruncated = cached.rows.length >= cacheRowLimit;
                 let cachedMaskingApplied = false;
                 if (classification?.tablesAccessed.length && orgId) {
+                  const preMaskRows = cachedRows;
                   try {
                     cachedRows = await applyMaskingViaTag({
-                      columns: cached.columns, rows: cached.rows,
+                      columns: cached.columns, rows: preMaskRows,
                       tablesAccessed: classification.tablesAccessed,
                       orgId, userRole: ctx?.user?.role,
                       connectionId: connId,
                     });
-                    cachedMaskingApplied = cachedRows !== cached.rows;
+                    cachedMaskingApplied = cachedRows !== preMaskRows;
                   } catch (err) {
                     // #2593 — fail-closed (same rationale as the live path).
                     if (err instanceof EnterpriseUnavailableError) throw err;
@@ -1952,7 +1964,7 @@ async function executeSqlForConnection({
                 return {
                   success: true, explanation, row_count: cachedRows.length,
                   columns: cached.columns, rows: cachedRows,
-                  truncated: cachedRows.length >= getRowLimit(authOrgId), cached: true,
+                  truncated: cachedTruncated, cached: true,
                   maskingApplied: cachedMaskingApplied,
                   executionMs: 0,
                 };

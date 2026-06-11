@@ -221,8 +221,13 @@ export default function SandboxPage() {
                   onSelectBackend={(backendId) =>
                     saveMutation.mutate({ body: { value: backendId } })
                   }
+                  onSelectManaged={() =>
+                    resetMutation.mutate({
+                      path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
+                    })
+                  }
                   onRefetch={refetch}
-                  saving={saveMutation.saving}
+                  saving={saveMutation.saving || resetMutation.saving}
                 />
               ) : (
                 <SelfHostedSandboxView
@@ -265,11 +270,13 @@ export default function SandboxPage() {
 export function SaasSandboxView({
   status,
   onSelectBackend,
+  onSelectManaged,
   onRefetch,
   saving,
 }: {
   status: SandboxStatus;
   onSelectBackend: (backendId: string) => Promise<unknown>;
+  onSelectManaged: () => Promise<unknown>;
   onRefetch: () => void;
   saving: boolean;
 }) {
@@ -288,11 +295,13 @@ export function SaasSandboxView({
         />
         <ManagedSandboxShell
           isActive={isManagedActive}
-          // SaaS pins the managed backend to `vercel-sandbox`
-          // (deploy/api/atlas.config.ts `sandbox.priority`); there is no
-          // sidecar service on SaaS, so the previous "sidecar" value never
-          // matched a real backend.
-          onSelect={() => onSelectBackend("vercel-sandbox")}
+          // "Managed" means *follow the platform default* (the SaaS
+          // `vercel-sandbox` pin in deploy/api/atlas.config.ts), so it
+          // clears the workspace override rather than writing a value —
+          // the previous "sidecar" write never matched a real backend,
+          // and pinning the current default would go stale if the
+          // platform pin ever changes (#3375).
+          onSelect={() => onSelectManaged()}
           saving={saving}
         />
       </section>

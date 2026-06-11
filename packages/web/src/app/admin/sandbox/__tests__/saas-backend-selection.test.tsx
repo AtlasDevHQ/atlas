@@ -5,7 +5,9 @@
  * wrote bare provider keys ("e2b") for BYOC cards and "sidecar" for the
  * managed card — neither matched anything the explore runtime resolves,
  * so every selection silently fell through to the platform default.
- * These tests pin the values each card actually saves.
+ * These tests pin what each card does: BYOC cards save the provider's
+ * backend id; the Managed card clears the override (follow the platform
+ * default) instead of writing a value.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -61,16 +63,18 @@ function makeStatus(overrides: Partial<SandboxStatus>): SandboxStatus {
 
 function renderView(status: SandboxStatus) {
   const onSelectBackend = mock(async (_backendId: string) => undefined);
+  const onSelectManaged = mock(async () => undefined);
   const utils = render(
     createElement(SaasSandboxView, {
       status,
       onSelectBackend,
+      onSelectManaged,
       onRefetch: mock(() => {}),
       saving: false,
     }),
     { wrapper },
   );
-  return { ...utils, onSelectBackend };
+  return { ...utils, onSelectBackend, onSelectManaged };
 }
 
 describe("SaasSandboxView — backend-id save values", () => {
@@ -100,8 +104,8 @@ describe("SaasSandboxView — backend-id save values", () => {
     cleanup();
   });
 
-  test("selecting the managed card saves 'vercel-sandbox' (the SaaS pin), not 'sidecar'", () => {
-    const { getAllByText, onSelectBackend } = renderView(
+  test("selecting the managed card clears the override (follows the platform default), not a 'sidecar' write", () => {
+    const { getAllByText, onSelectBackend, onSelectManaged } = renderView(
       makeStatus({
         activeBackend: "e2b-sandbox",
         workspaceOverride: "e2b-sandbox",
@@ -122,8 +126,8 @@ describe("SaasSandboxView — backend-id save values", () => {
     expect(buttons.length).toBe(1);
     fireEvent.click(buttons[0]!);
 
-    expect(onSelectBackend).toHaveBeenCalledTimes(1);
-    expect(onSelectBackend.mock.calls[0]?.[0]).toBe("vercel-sandbox");
+    expect(onSelectManaged).toHaveBeenCalledTimes(1);
+    expect(onSelectBackend).not.toHaveBeenCalled();
     cleanup();
   });
 

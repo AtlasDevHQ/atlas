@@ -324,7 +324,10 @@ const PLAN_TIERS_LITERAL = [
 const RawCatalogEntrySchema = z.object({
   id: z.string(),
   slug: z.string(),
-  type: z.enum(["chat", "integration"]),
+  // `datasource` appears only on the `?pillar=datasource` listing the
+  // /admin/connections Add picker uses (#3377); the default listing is
+  // filtered to chat/integration server-side.
+  type: z.enum(["chat", "integration", "datasource"]),
   installModel: z.enum(["oauth", "form", "static-bot"]),
   name: z.string(),
   description: z.string().nullable(),

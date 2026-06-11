@@ -590,7 +590,11 @@ const domainCheckRoute = createRoute({
       },
     },
     400: {
-      description: "Missing or invalid domain parameter",
+      description: "Empty `domain` value",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Missing `domain` query parameter — rejected by request validation",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {

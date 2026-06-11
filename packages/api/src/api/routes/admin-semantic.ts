@@ -375,7 +375,11 @@ export const getEntityVersionsRoute = createRoute({
       content: { "application/json": { schema: VersionListResponseSchema } },
     },
     400: {
-      description: "Invalid request",
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Invalid query parameters (non-numeric or out-of-range `limit`/`offset`) — rejected by request validation",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {

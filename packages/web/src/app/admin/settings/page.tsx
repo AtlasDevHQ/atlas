@@ -294,7 +294,11 @@ function SettingRow({
   const Icon = sectionIcon(setting.section);
   const isOverride =
     setting.source === "override" || setting.source === "workspace-override";
-  const showRestart = !isSaas && setting.requiresRestart && isOverride;
+  // #3399 — render whatever the API returns: getSettingsForAdmin already
+  // suppresses requiresRestart on SaaS for hot-reloaded keys and keeps it
+  // for boot-consumed keys that genuinely need a restart in both modes.
+  // A second client-side mode branch here would re-hide the hint.
+  const showRestart = setting.requiresRestart && isOverride;
   // Render "not set" and "" distinctly so an admin clearing an override to the
   // empty string can tell it apart from "never configured."
   const valueDisplay =

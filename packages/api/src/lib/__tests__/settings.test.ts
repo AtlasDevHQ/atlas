@@ -16,6 +16,8 @@ import {
   getSettingsForAdmin,
   getSettingsRegistry,
   getSettingDefinition,
+  HOT_RELOADED_KEYS,
+  isHotReloadedKey,
   _resetSettingsCache,
 } from "../settings";
 
@@ -679,6 +681,10 @@ describe("settings module", () => {
         // RateLimitGuardLive at boot. Hot-reloading would re-open
         // the DDoS hole until next restart.
         "ATLAS_RATE_LIMIT_RPM",
+        // #3392/#3399 — the expert scheduler is a single process-global
+        // fiber forked once at boot; both keys are consumed only there,
+        // so they need a restart in BOTH deploy modes.
+        "ATLAS_EXPERT_SCHEDULER_ENABLED", "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
       ];
       for (const key of restartRequired) {
         const def = registry.find((s) => s.key === key);
@@ -891,6 +897,55 @@ describe("settings module", () => {
       expect(provider).toBeDefined();
       // In self-hosted (default), requiresRestart should be true
       expect(provider!.requiresRestart).toBe(true);
+    });
+
+    // #3399 — self-hosted shows the hint for EVERY flagged key, including
+    // keys that would be hot-reloaded on SaaS (applySettingSideEffect is
+    // SaaS-gated, so ATLAS_LOG_LEVEL still needs a restart here) and the
+    // boot-consumed scheduler pair (#3392).
+    it("self-hosted keeps requiresRestart: true for hot-reloaded and boot-consumed flagged keys alike", () => {
+      const settings = getSettingsForAdmin(undefined, true);
+      for (const key of [
+        "ATLAS_LOG_LEVEL",
+        "ATLAS_EXPERT_SCHEDULER_ENABLED",
+        "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+      ]) {
+        const setting = settings.find((s) => s.key === key);
+        expect(setting).toBeDefined();
+        expect(setting!.requiresRestart).toBe(true);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // HOT_RELOADED_KEYS — single source of truth for the SaaS suppression (#3399)
+  // ---------------------------------------------------------------------------
+
+  describe("HOT_RELOADED_KEYS (#3399)", () => {
+    it("contains exactly the keys applySettingSideEffect dispatches on", () => {
+      // Pin the set's contents: it is derived from SETTING_SIDE_EFFECTS in
+      // settings.ts, so this only changes when a side-effect handler is
+      // added/removed — which is exactly when the SaaS requiresRestart
+      // suppression should widen/narrow with it.
+      expect([...HOT_RELOADED_KEYS].toSorted()).toEqual(["ATLAS_LOG_LEVEL"]);
+    });
+
+    it("isHotReloadedKey matches the set", () => {
+      expect(isHotReloadedKey("ATLAS_LOG_LEVEL")).toBe(true);
+      expect(isHotReloadedKey("ATLAS_EXPERT_SCHEDULER_ENABLED")).toBe(false);
+      expect(isHotReloadedKey("ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS")).toBe(false);
+      expect(isHotReloadedKey("NONEXISTENT_KEY")).toBe(false);
+    });
+
+    it("every hot-reloaded key is restart-flagged in the registry (suppression has a target)", () => {
+      // A side-effect handler on a non-flagged key would be dead suppression
+      // logic — the registry never sets the hint for it in the first place.
+      const registry = getSettingsRegistry();
+      for (const key of HOT_RELOADED_KEYS) {
+        const def = registry.find((s) => s.key === key);
+        expect(def).toBeDefined();
+        expect(def!.requiresRestart).toBe(true);
+      }
     });
   });
 

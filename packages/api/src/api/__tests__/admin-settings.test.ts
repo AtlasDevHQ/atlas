@@ -373,8 +373,12 @@ describe("admin settings routes", () => {
         body: JSON.stringify({ value: "500" }),
       });
       // Generic errors must NOT be silently mapped to 409 — verify the
-      // catch block's `throw err` re-raise path stays intact.
+      // catch block's `throw err` re-raise path stays intact, and that
+      // the 500 envelope carries a requestId for log correlation.
       expect(res.status).toBe(500);
+      const data = (await res.json()) as { requestId?: string };
+      expect(typeof data.requestId).toBe("string");
+      expect(data.requestId).not.toBe("");
     });
   });
 
@@ -445,8 +449,12 @@ describe("admin settings routes", () => {
         method: "DELETE",
       });
       // Generic errors must NOT be silently mapped to 409 — verify the
-      // catch block's `throw err` re-raise path stays intact.
+      // catch block's `throw err` re-raise path stays intact, and that
+      // the 500 envelope carries a requestId for log correlation.
       expect(res.status).toBe(500);
+      const data = (await res.json()) as { requestId?: string };
+      expect(typeof data.requestId).toBe("string");
+      expect(data.requestId).not.toBe("");
     });
   });
 

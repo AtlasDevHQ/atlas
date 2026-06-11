@@ -608,7 +608,7 @@
     },
     "plugins/elasticsearch": {
       "name": "@useatlas/elasticsearch",
-      "version": "0.0.3",
+      "version": "0.0.4",
       "devDependencies": {
         "@useatlas/plugin-sdk": "workspace:*",
         "ai": "^6.0.193",

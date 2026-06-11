@@ -273,6 +273,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSettingLive: mock(async () => undefined),
   getAllSettingOverrides: mock(async () => []),
   _resetSettingsCache: mock(() => {}),
+  isSaasModeForGuard: mock(() => false), // #3389 — admin settings write gates probe via this
 }));
 
 mock.module("@atlas/api/lib/plugins/registry", () => ({

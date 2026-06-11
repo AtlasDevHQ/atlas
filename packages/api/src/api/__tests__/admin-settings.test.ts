@@ -137,6 +137,16 @@ const mockGetSettingsRegistry = mock(() => settingsRegistryData);
 const settingsMap = new Map(settingsRegistryData.map((s) => [s.key, s]));
 const mockGetSettingDefinition = mock((key: string) => settingsMap.get(key));
 
+// #3389 — the route write gates consult the shared fail-closed probe from
+// lib/settings instead of reading getConfig() directly. The default mock
+// mirrors the resolved-config happy path (saas ⇒ true, anything else ⇒
+// false); fail-closed-on-config-resolution-failure semantics of the REAL
+// probe are covered in lib/__tests__/settings-saas.test.ts. Tests that
+// simulate a config-resolution failure override this to return true.
+const saasGuardDefaultImpl = () =>
+  (mockConfigOverride as { deployMode?: string } | null)?.deployMode === "saas";
+const mockIsSaasModeForGuard = mock(saasGuardDefaultImpl);
+
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
   getSettingsRegistry: mockGetSettingsRegistry,
@@ -149,6 +159,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSettingLive: mock(async () => undefined),
   getAllSettingOverrides: mock(async () => []),
   _resetSettingsCache: mock(() => {}),
+  isSaasModeForGuard: mockIsSaasModeForGuard,
 }));
 
 // --- Import the app AFTER mocks ---
@@ -176,6 +187,8 @@ describe("admin settings routes", () => {
     mockConfigOverride = null;
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
+    mockIsSaasModeForGuard.mockClear();
+    mockIsSaasModeForGuard.mockImplementation(saasGuardDefaultImpl);
   });
 
   // ─── GET /settings ──────────────────────────────────────────────
@@ -360,8 +373,12 @@ describe("admin settings routes", () => {
         body: JSON.stringify({ value: "500" }),
       });
       // Generic errors must NOT be silently mapped to 409 — verify the
-      // catch block's `throw err` re-raise path stays intact.
+      // catch block's `throw err` re-raise path stays intact, and that
+      // the 500 envelope carries a requestId for log correlation.
       expect(res.status).toBe(500);
+      const data = (await res.json()) as { requestId?: string };
+      expect(typeof data.requestId).toBe("string");
+      expect(data.requestId).not.toBe("");
     });
   });
 
@@ -399,6 +416,45 @@ describe("admin settings routes", () => {
         method: "DELETE",
       });
       expect(res.status).toBe(404);
+    });
+
+    // #3389 — deleteSetting now enforces SAAS_IMMUTABLE_KEYS like
+    // setSetting (clearing an override is a write). The route must map
+    // the error to the SAME 409 envelope the PUT handler produces, so
+    // the admin UI handles both verbs uniformly.
+    it("maps SaasImmutableSettingError to 409 with saas_immutable error code (#3389)", async () => {
+      const { SaasImmutableSettingError } = await import("@atlas/api/lib/settings-errors");
+      mockDeleteSetting.mockImplementationOnce(() => {
+        return Promise.reject(new SaasImmutableSettingError("ATLAS_EMAIL_PROVIDER"));
+      });
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(409);
+
+      const data = (await res.json()) as { error: string; message: string; requestId?: string };
+      expect(data.error).toBe("saas_immutable");
+      expect(data.message).toContain("cannot be changed at runtime");
+      // Same requestId contract as the PUT 409 path.
+      expect(typeof data.requestId === "string" || data.requestId === undefined).toBe(true);
+    });
+
+    it("propagates non-SaasImmutable deleteSetting errors as 500", async () => {
+      mockDeleteSetting.mockImplementationOnce(() => {
+        return Promise.reject(new Error("unrelated DB connection failure"));
+      });
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      // Generic errors must NOT be silently mapped to 409 — verify the
+      // catch block's `throw err` re-raise path stays intact, and that
+      // the 500 envelope carries a requestId for log correlation.
+      expect(res.status).toBe(500);
+      const data = (await res.json()) as { requestId?: string };
+      expect(typeof data.requestId).toBe("string");
+      expect(data.requestId).not.toBe("");
     });
   });
 
@@ -676,7 +732,10 @@ describe("admin settings routes", () => {
       expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
     });
 
-    it("unresolved config (getConfig() → null) is treated as self-hosted — write allowed", async () => {
+    // #3389 — "unloaded" (getConfig() → null: config legitimately never
+    // loaded, the AGPL/dev case) stays permissive. Only config-resolution
+    // FAILURE fails closed — see the "fail-closed mode probe" block below.
+    it("unloaded config (getConfig() → null) is treated as self-hosted — write allowed", async () => {
       mockConfigOverride = null;
       asSaasWorkspaceAdmin();
       const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
@@ -720,6 +779,150 @@ describe("admin settings routes", () => {
       expect(res.status).toBe(403);
       const data = (await res.json()) as { message: string };
       expect(data.message).toContain("platform-level setting");
+    });
+  });
+
+  // ─── Fail-closed mode probe (#3389) ─────────────────────────────
+
+  describe("fail-closed mode probe on the write path (#3389)", () => {
+    // Simulate config resolution FAILING at request time: the real
+    // isSaasModeForGuard() returns true ("errored" → assume SaaS) — that
+    // behavior is pinned in lib/__tests__/settings-saas.test.ts. Here we
+    // verify the route gates consume the probe's fail-closed verdict
+    // (restrictive) instead of the old permissive getConfig() → null read.
+    function simulateConfigResolutionFailure() {
+      mockConfigOverride = null; // getConfig() would yield nothing useful
+      mockIsSaasModeForGuard.mockImplementation(() => true);
+    }
+
+    function asWorkspaceAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+    }
+
+    it("saasWritable gate is restrictive on PUT when the probe fails closed", async () => {
+      simulateConfigResolutionFailure();
+      asWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "healthcare" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("saasWritable gate is restrictive on DELETE when the probe fails closed", async () => {
+      simulateConfigResolutionFailure();
+      asWorkspaceAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("platform-scope gate (no-org session) is restrictive when the probe fails closed", async () => {
+      simulateConfigResolutionFailure();
+      // Default auth mock: role=admin, NO activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("platform admins are not affected by the fail-closed probe", async () => {
+      simulateConfigResolutionFailure();
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // ─── No-org SaaS session edge (#3389) ───────────────────────────
+
+  describe("no-org SaaS session is classified like GET (#3389)", () => {
+    // GET filters with `!isPlatformAdmin` only — a SaaS session with no
+    // activeOrganizationId is a workspace admin there. The write path
+    // must classify it the same way instead of letting `orgId &&
+    // !isPlatformAdmin` wave the session past the platform-scope gate.
+    function asSaasNoOrgAdmin() {
+      mocks.mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "no-org-admin-1", mode: "better-auth", label: "No-Org Admin", role: "admin" },
+        }),
+      );
+    }
+
+    beforeEach(() => {
+      mockConfigOverride = { deployMode: "saas" };
+    });
+
+    it("no-org SaaS admin PUT on a platform-scoped key → 403", async () => {
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("platform-level setting");
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("no-org SaaS admin DELETE on a platform-scoped key → 403", async () => {
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_RLS_ENABLED", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("platform-level setting");
+      expect(mockDeleteSetting).not.toHaveBeenCalled();
+    });
+
+    it("no-org SaaS admin PUT on a hidden workspace key → 403 (saasWritable gate already org-independent)", async () => {
+      asSaasNoOrgAdmin();
+      const res = await request("/api/v1/admin/settings/ATLAS_DEMO_INDUSTRY", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "healthcare" }),
+      });
+      expect(res.status).toBe(403);
+      expect(mockSetSetting).not.toHaveBeenCalled();
+    });
+
+    it("self-hosted no-org admin keeps platform-scope write access", async () => {
+      mockConfigOverride = { deployMode: "self-hosted" };
+      // Default auth mock: role=admin, no activeOrganizationId
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
     });
   });
 

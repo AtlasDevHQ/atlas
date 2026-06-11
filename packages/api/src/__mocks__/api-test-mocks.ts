@@ -685,6 +685,10 @@ export function createApiTestMocks(
     loadSettings: mock(async () => 0),
     getAllSettingOverrides: mock(async () => []),
     _resetSettingsCache: mock(() => {}),
+    // #3389 — the settings route write gates probe deploy mode via this.
+    // Default false (non-SaaS/permissive) to match the `getConfig: () =>
+    // null` mock below ("unloaded" → self-hosted in the real probe).
+    isSaasModeForGuard: mock(() => false),
   }));
 
   // ── Config ────────────────────────────────────────────────────

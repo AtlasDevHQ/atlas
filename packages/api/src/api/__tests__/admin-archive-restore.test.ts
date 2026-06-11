@@ -105,6 +105,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   loadSettings: async () => 0,
   getAllSettingOverrides: async () => [],
   _resetSettingsCache: () => {},
+  isSaasModeForGuard: () => false, // #3389 — admin settings write gates probe via this
 }));
 
 // Replace the default no-op semantic/entities mock with full-fidelity

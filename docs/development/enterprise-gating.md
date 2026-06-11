@@ -89,6 +89,8 @@ If a setting is hidden from SaaS workspace admins on `GET /admin/settings`, the 
 
 A key managed by a dedicated admin page on SaaS (today: `ATLAS_SANDBOX_BACKEND` via `/admin/sandbox` — its sibling `ATLAS_SANDBOX_URL` is written only by the self-hosted view, so it inherits hidden ⇒ un-writable) uses the split — `saasVisible: false, saasWritable: true` — so it stays off the generic settings page but its own surface keeps saving through the same PUT route. Platform admins and self-hosted deployments are never restricted by either flag, and both flags are registry-internal (stripped from the GET response).
 
+Two probe decisions ride on this rule (#3389). Settings **write-path** mode probes fail closed: the PUT/DELETE gates share `isSaasModeForGuard()` from `lib/settings.ts`, so a config-resolution *failure* at request time is treated as SaaS (restrictive) — only a legitimately-unloaded config (`getConfig()` → `null`) counts as self-hosted, and the GET filter's probe stays display-only and permissive. And the write path classifies a "SaaS workspace admin" exactly as GET does — `!isPlatformAdmin`, with no `orgId` requirement — so a SaaS session with no active workspace gets workspace-admin restrictions on writes, not a platform-scope bypass; because clearing an override is a write, `deleteSetting` also enforces `SAAS_IMMUTABLE_KEYS` like `setSetting` (DELETE returns the same 409 envelope as PUT).
+
 ### Rule 5 — docs state mode scope explicitly
 
 A guide for a surface that behaves differently per mode says so per mode; "works on Atlas" claims that are true in only one mode are class-6 drift. When a parity bug is fixed or scoped (e.g. a feature declared SaaS-only), the docs change rides the same PR — same discipline as the chat-plugin contract table.

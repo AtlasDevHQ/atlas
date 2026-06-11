@@ -696,13 +696,16 @@ function isSaasMode(): boolean {
 }
 
 /**
- * Guard-oriented SaaS check — used by `setSetting` only.
+ * Guard-oriented SaaS check — used by `setSetting`/`deleteSetting` and,
+ * since #3389, by the route-level write gates on PUT/DELETE
+ * `/admin/settings/{key}` so the whole settings write path shares one
+ * probe discipline.
  *
  * Fails CLOSED on `"errored"` (require() or getConfig() threw, which
  * shouldn't happen at request-handling time and is the silent-bypass
  * vector #1978's silent-failure finding flagged). Treats `"unloaded"`
  * as non-SaaS, matching the legitimate AGPL/dev case where config
- * was never loaded.
+ * was never loaded — self-hosted normal operation stays permissive.
  *
  * Asymmetry rationale: the boot guards in `lib/effect/saas-guards.ts`
  * read `config.deployMode` via `yield* Config` (typed, no fallback);
@@ -713,7 +716,7 @@ function isSaasMode(): boolean {
  * "ok", walks away while the contract is silently broken on next
  * restart).
  */
-function isSaasModeForGuard(): boolean {
+export function isSaasModeForGuard(): boolean {
   const snapshot = resolveDeployModeSnapshot();
   if (snapshot === "saas") return true;
   if (snapshot === "errored") {
@@ -927,13 +930,24 @@ export async function setSetting(key: string, value: string, userId?: string, or
  * Throws if no internal DB is available.
  */
 export async function deleteSetting(key: string, userId?: string, orgId?: string): Promise<void> {
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required to manage settings overrides");
-  }
-
   const def = SETTINGS_MAP.get(key);
   if (!def) {
     throw new Error(`Unknown setting key: "${key}"`);
+  }
+
+  // #3389 — clearing an override is a write: deleting a SAAS_IMMUTABLE
+  // key's override on SaaS would reset it to env/default behind the
+  // boot-time contract guards, the same silent-bypass class #1978 closed
+  // for setSetting. Same guard, same error, same ordering rationale:
+  // runs BEFORE the hasInternalDB() check so the more-specific contract
+  // error fires first, and uses isSaasModeForGuard() (fails closed) so a
+  // transient getConfig() failure cannot bypass.
+  if (isSaasImmutableKey(key) && isSaasModeForGuard()) {
+    throw new SaasImmutableSettingError(key);
+  }
+
+  if (!hasInternalDB()) {
+    throw new Error("Internal database required to manage settings overrides");
   }
   const effectiveOrgId = def.scope === "platform" ? undefined : orgId;
 

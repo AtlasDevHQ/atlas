@@ -210,6 +210,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   loadSettings: mock(async () => 0),
   getAllSettingOverrides: mock(async () => []),
   _resetSettingsCache: () => {},
+  isSaasModeForGuard: () => false, // #3389 — admin settings write gates probe via this
   initializeSettings: mock(() => Promise.resolve()),
 }));
 

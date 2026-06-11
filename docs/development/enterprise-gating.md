@@ -66,6 +66,8 @@ Before shipping any admin mutation (settings PUT, connect/install endpoint, conf
 
 The same test applies in reverse when *removing* a reader: if runtime code stops consuming a stored value, the admin surface that writes it must go (or be re-scoped) in the same PR.
 
+The `requiresRestart` hint follows the same consumption-model discipline (#3399): on SaaS, `getSettingsForAdmin` suppresses the hint **only** for keys `applySettingSideEffect` actually hot-reloads (the `HOT_RELOADED_KEYS` set in `lib/settings.ts`, derived from the side-effect dispatch map — adding a handler updates both automatically). Boot-consumed restart-flagged keys (e.g. the expert scheduler pair, #3392) keep the hint in **both** modes, because no cache refresh can apply a value the process read once at startup — the old blanket SaaS suppression was the same silent-staleness class as a write with no reader. The web settings pages render the flag exactly as the API returns it, with no second client-side mode branch.
+
 ### Rule 2 — where deploy-mode branches may live
 
 Mode branch points are expensive (each one is half of a potential drift pair), so they're restricted to the blessed sources of truth and their direct consumers:

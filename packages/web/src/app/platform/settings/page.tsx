@@ -242,7 +242,12 @@ function SettingRow({
           <span className="text-sm font-medium">{setting.label}</span>
           <SourceBadge source={setting.source} />
           {setting.secret && <Lock className="size-3 text-muted-foreground" />}
-          {!isSaas && setting.requiresRestart ? (
+          {/* #3399 — render whatever the API returns: getSettingsForAdmin
+              already suppresses requiresRestart on SaaS for hot-reloaded
+              keys and keeps it for boot-consumed keys that genuinely need
+              a restart in both modes. A client-side !isSaas branch here
+              would re-hide the hint (and falsely mark those keys "Live"). */}
+          {setting.requiresRestart ? (
             <Badge variant="outline" className="gap-1 text-[10px] text-amber-600 border-amber-500/30 dark:text-amber-400">
               <RefreshCw className="size-2.5" />
               Requires restart

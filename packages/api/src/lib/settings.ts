@@ -15,6 +15,10 @@
  * restart are hot-reloadable: a short-TTL live cache re-reads from the DB so
  * changes take effect within seconds without restarting the server.
  * Self-hosted mode preserves the original restart-required behavior.
+ * Boot-consumed keys are the exception (#3399): a value read once at process
+ * start (e.g. the expert scheduler pair) cannot be hot-reloaded by any cache,
+ * so its `requiresRestart` hint is kept in BOTH modes — only keys
+ * `applySettingSideEffect` actually hot-reloads suppress the hint on SaaS.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -501,9 +505,11 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     // a hot-reload of this key via setSetting would silently bypass the
     // guard. Self-hosted admins see the "restart required" banner;
     // SaaS writes are additionally blocked by `SAAS_IMMUTABLE_KEYS`
-    // below because the SaaS-mode requiresRestart suppression at the
-    // metadata layer would otherwise leave SaaS admins thinking the
-    // change took effect.
+    // below — a restart hint alone would still let a SaaS admin persist
+    // a value the boot-time contract guard never re-evaluates. (Since
+    // #3399 the SaaS metadata suppression no longer applies to
+    // boot-consumed keys like this one, but the write block remains the
+    // real guard.)
     requiresRestart: true,
     scope: "platform",
     saasVisible: false,
@@ -700,7 +706,7 @@ function resolveDeployModeSnapshot(): DeployModeSnapshot {
 /**
  * UX-oriented SaaS check — fail open (treat unloaded/errored as
  * non-SaaS) so the `requiresRestart` metadata suppression and
- * `SIDE_EFFECT_KEYS` gating don't render spurious banners during
+ * `SETTING_SIDE_EFFECTS` gating don't render spurious banners during
  * early module init. Used by `getSettingsForAdmin` and
  * `applySettingSideEffect`.
  */
@@ -1068,11 +1074,18 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
         }
       }
 
-      // In SaaS mode, hot-reloadable settings don't require restart
+      // #3399 — the SaaS suppression of the requiresRestart hint is
+      // scoped to the keys `applySettingSideEffect` actually hot-reloads
+      // (derived as HOT_RELOADED_KEYS below). Boot-consumed flagged keys
+      // (e.g. the expert scheduler pair, #3392) genuinely need a restart
+      // on SaaS too — the previous blanket `!inSaas` suppression left a
+      // SaaS platform admin editing them with no staleness hint.
+      // Self-hosted always shows the hint for flagged keys.
       const inSaas = isSaasMode();
-      const requiresRestart = (def.requiresRestart && !inSaas)
-        ? true
-        : undefined;
+      const requiresRestart =
+        def.requiresRestart && !(inSaas && isHotReloadedKey(def.key))
+          ? true
+          : undefined;
 
       // #1978 — surface SaaS immutability so the admin UI can disable
       // the input rather than letting the operator submit and get a 409.
@@ -1114,8 +1127,45 @@ export async function refreshSettingsTick(): Promise<void> {
 // Runtime side effects — applied when hot-reloadable settings change
 // ---------------------------------------------------------------------------
 
-/** Settings that produce immediate runtime side effects when changed. */
-const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
+/**
+ * Settings that produce immediate runtime side effects when changed —
+ * the single source of truth for "hot-reloaded in SaaS mode" (#3399).
+ *
+ * `applySettingSideEffect` dispatches on this map, and `HOT_RELOADED_KEYS`
+ * (which scopes the SaaS `requiresRestart` suppression in
+ * `getSettingsForAdmin`) is derived from the same map's keys. Adding a
+ * side-effect handler therefore automatically suppresses the restart hint
+ * for that key on SaaS — there is no second list to forget.
+ */
+const SETTING_SIDE_EFFECTS: Readonly<Record<string, (value: string) => void>> = {
+  ATLAS_LOG_LEVEL: (value) => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+      const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => boolean };
+      if (setLogLevel(value)) {
+        log.info({ level: value }, "Log level updated via hot-reload");
+      } else {
+        log.warn({ level: value }, "Log level change rejected — invalid level");
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to apply log level change");
+    }
+  },
+};
+
+/**
+ * Keys `applySettingSideEffect` hot-reloads at runtime in SaaS mode —
+ * derived from `SETTING_SIDE_EFFECTS`, never maintained by hand. These
+ * are the ONLY restart-flagged keys whose `requiresRestart` hint is
+ * suppressed on SaaS; every other flagged key keeps the hint in both
+ * deploy modes because its value is consumed at boot (#3399).
+ */
+export const HOT_RELOADED_KEYS: ReadonlySet<string> = new Set(Object.keys(SETTING_SIDE_EFFECTS));
+
+/** True when `applySettingSideEffect` hot-reloads `key` in SaaS mode. */
+export function isHotReloadedKey(key: string): boolean {
+  return HOT_RELOADED_KEYS.has(key);
+}
 
 /**
  * Settings that boot-time guards depend on (`DpaGuardLive`,
@@ -1152,19 +1202,6 @@ function isSaasImmutableKey(key: string): key is SaasImmutableKey {
  * Only runs in SaaS mode for hot-reloadable settings.
  */
 function applySettingSideEffect(key: string, value: string): void {
-  if (!isSaasMode() || !SIDE_EFFECT_KEYS.has(key)) return;
-
-  if (key === "ATLAS_LOG_LEVEL") {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
-      const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => boolean };
-      if (setLogLevel(value)) {
-        log.info({ level: value }, "Log level updated via hot-reload");
-      } else {
-        log.warn({ level: value }, "Log level change rejected — invalid level");
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to apply log level change");
-    }
-  }
+  if (!isSaasMode()) return;
+  SETTING_SIDE_EFFECTS[key]?.(value);
 }

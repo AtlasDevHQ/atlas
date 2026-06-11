@@ -2,7 +2,9 @@
  * Settings tests that require SaaS mode (mock.module for config).
  *
  * Covers:
- * - requiresRestart is suppressed in SaaS mode (#1089)
+ * - requiresRestart suppression in SaaS mode is scoped to keys
+ *   applySettingSideEffect hot-reloads; boot-consumed flagged keys keep
+ *   the hint (#1089, #3399)
  * - applySettingSideEffect calls setLogLevel in SaaS mode (#1089)
  */
 
@@ -119,22 +121,43 @@ describe("settings (SaaS mode)", () => {
   // -------------------------------------------------------------------------
 
   describe("requiresRestart in SaaS mode", () => {
-    it("restart-required settings have requiresRestart suppressed in SaaS mode", () => {
+    // #3399 — the suppression is scoped to keys applySettingSideEffect
+    // actually hot-reloads (today: ATLAS_LOG_LEVEL only). The old blanket
+    // `!inSaas` suppression hid the hint for boot-consumed keys too,
+    // leaving SaaS platform admins with silent staleness.
+    it("hot-reloaded keys have requiresRestart suppressed in SaaS mode", () => {
       const settings = getSettingsForAdmin(undefined, true);
-
-      // In SaaS mode, normally-restart-required settings are hot-reloadable
-      const provider = settings.find((s) => s.key === "ATLAS_PROVIDER");
-      expect(provider).toBeDefined();
-      // requiresRestart should be undefined (suppressed) in SaaS mode
-      expect(provider!.requiresRestart).toBeFalsy();
-
-      const model = settings.find((s) => s.key === "ATLAS_MODEL");
-      expect(model).toBeDefined();
-      expect(model!.requiresRestart).toBeFalsy();
 
       const logLevel = settings.find((s) => s.key === "ATLAS_LOG_LEVEL");
       expect(logLevel).toBeDefined();
-      expect(logLevel!.requiresRestart).toBeFalsy();
+      // ATLAS_LOG_LEVEL is hot-reloaded by applySettingSideEffect, so the
+      // hint stays suppressed (no false restart warning).
+      expect(logLevel!.requiresRestart).toBeUndefined();
+    });
+
+    it("boot-consumed restart-flagged non-immutable keys KEEP requiresRestart: true in SaaS mode (#3399)", () => {
+      const settings = getSettingsForAdmin(undefined, true);
+
+      // #3392 — the expert scheduler pair is consumed once at boot by the
+      // process-global scheduler fiber; no cache refresh can apply a
+      // change, so the SaaS platform admin must see the restart hint.
+      for (const key of [
+        "ATLAS_EXPERT_SCHEDULER_ENABLED",
+        "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+      ]) {
+        const setting = settings.find((s) => s.key === key);
+        expect(setting).toBeDefined();
+        expect(setting!.requiresRestart).toBe(true);
+      }
+
+      // Other flagged keys without a side-effect handler keep the hint too.
+      const provider = settings.find((s) => s.key === "ATLAS_PROVIDER");
+      expect(provider).toBeDefined();
+      expect(provider!.requiresRestart).toBe(true);
+
+      const model = settings.find((s) => s.key === "ATLAS_MODEL");
+      expect(model).toBeDefined();
+      expect(model!.requiresRestart).toBe(true);
     });
 
     it("non-restart settings remain unchanged in SaaS mode", () => {

@@ -470,6 +470,106 @@ describe("querySalesforce — ATLAS_ROW_LIMIT lazy resolution (#3400)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ATLAS_QUERY_TIMEOUT lazy resolution (#3402)
+//
+// The SOQL query timeout must resolve ATLAS_QUERY_TIMEOUT per call via
+// getSetting (DB override > env var > default 30000) — matching
+// getQueryTimeout() in tools/sql.ts — not freeze it from env at module
+// import. Same injection pattern as the #3400 block above; asserts the
+// timeout argument passed to the plugin instance's query().
+// ---------------------------------------------------------------------------
+
+describe("querySalesforce — ATLAS_QUERY_TIMEOUT lazy resolution (#3402)", () => {
+  const origDbUrl = process.env.DATABASE_URL;
+  const origQueryTimeout = process.env.ATLAS_QUERY_TIMEOUT;
+
+  const mockPool: InternalPool = {
+    query: async () => ({ rows: [] }),
+    async connect() {
+      return { query: async () => ({ rows: [] }), release() {} };
+    },
+    end: async () => {},
+    on: () => {},
+  };
+
+  beforeEach(() => {
+    delete process.env.ATLAS_QUERY_TIMEOUT;
+    _resetSettingsCache();
+  });
+
+  afterEach(() => {
+    if (origDbUrl !== undefined) process.env.DATABASE_URL = origDbUrl;
+    else delete process.env.DATABASE_URL;
+    if (origQueryTimeout !== undefined) process.env.ATLAS_QUERY_TIMEOUT = origQueryTimeout;
+    else delete process.env.ATLAS_QUERY_TIMEOUT;
+    _resetPool(null);
+    _resetSettingsCache();
+  });
+
+  function enableInternalDB() {
+    process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
+    _resetPool(mockPool);
+  }
+
+  it("honors a platform DB override written AFTER module import", async () => {
+    enableInternalDB();
+    // The tool module was imported long before this write — a frozen
+    // module-level const would still pass the env/default timeout.
+    await setSetting("ATLAS_QUERY_TIMEOUT", "5000", "admin-test");
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "db override honored",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(instance.query.mock.calls[0]?.[1]).toBe(5000);
+  });
+
+  it("falls back to the env var when no DB override exists", async () => {
+    process.env.ATLAS_QUERY_TIMEOUT = "7000";
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "env fallback",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(instance.query.mock.calls[0]?.[1]).toBe(7000);
+  });
+
+  it("defaults to 30000 when neither DB override nor env var is set", async () => {
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "registry default",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(instance.query.mock.calls[0]?.[1]).toBe(30000);
+  });
+
+  it("uses the 30000 default for an invalid (non-numeric) value", async () => {
+    process.env.ATLAS_QUERY_TIMEOUT = "not-a-number";
+
+    const instance = makeFakeInstance();
+    const tool = createQuerySalesforceTool(makeDeps(instance));
+    const result = await runTool<{ status: string }>(tool, {
+      soql: "SELECT Id FROM Account",
+      explanation: "invalid value falls back",
+    });
+
+    expect(result.status).toBe("ok");
+    expect(instance.query.mock.calls[0]?.[1]).toBe(30000);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Input validation
 // ---------------------------------------------------------------------------
 

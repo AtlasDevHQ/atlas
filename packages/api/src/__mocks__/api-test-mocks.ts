@@ -206,7 +206,6 @@ export function buildInternalDbMockDefaults(deps: {
     getWorkspaceRegion: mock(async () => null),
     setWorkspaceRegion: mock(async () => ({ assigned: true })),
     updateWorkspaceByot: mock(async () => true),
-    setWorkspaceStripeCustomerId: mock(async () => true),
     setWorkspaceTrialEndsAt: mock(async () => true),
     getAutoApproveThreshold: mock(() => 2),
     getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),

@@ -146,16 +146,16 @@ Workspaces with a Stripe subscription can access the Stripe Customer Portal for 
 
 Available features depend on your [Stripe Customer Portal configuration](https://docs.stripe.com/customer-management/activate-no-code-customer-portal).
 
-Access via the **Manage Plan** button on the billing dashboard, or programmatically:
+Access via the **Manage Plan** button on the billing dashboard, or programmatically through the Better Auth Stripe plugin endpoint (subscriptions are organization-scoped, so pass `customerType: "organization"`; the caller must be an admin or owner of the workspace):
 
 ```bash
-curl -X POST https://your-atlas.example.com/api/v1/billing/portal \
+curl -X POST https://your-atlas.example.com/api/auth/subscription/billing-portal \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer <token>" \
-  -d '{ "returnUrl": "https://your-atlas.example.com/admin/billing" }'
+  -H "Cookie: <session cookie>" \
+  -d '{ "customerType": "organization", "returnUrl": "https://your-atlas.example.com/admin/billing", "disableRedirect": true }'
 ```
 
-The response contains a `url` field — redirect the user to this URL to open the portal.
+The response contains a `url` field — redirect the user to this URL to open the portal. A workspace that has never subscribed has no Stripe customer yet (it is created lazily at first checkout), so the portal returns `CUSTOMER_NOT_FOUND` — subscribe to a plan first.
 
 ---
 

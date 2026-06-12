@@ -239,5 +239,23 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
     verifyEmail: (opts: { email: string; otp: string }) => Promise<AuthApiResult<unknown>>;
     sendVerificationOtp: (opts: { email: string; type: "email-verification" }) => Promise<AuthApiResult<unknown>>;
   };
+
+  // stripeClient({ subscription: true }) — org-scoped billing (#3417).
+  // Atlas subscriptions are organization-scoped, so every call passes
+  // `customerType: "organization"`; the server's `authorizeReference`
+  // gates the referenced org (admin/owner for money-moving actions).
+  // `error.code` carries the plugin's structured codes (e.g.
+  // CUSTOMER_NOT_FOUND, UNAUTHORIZED) — branch on those, not on copy.
+  subscription?: {
+    billingPortal?: (opts: {
+      referenceId?: string;
+      customerType?: "user" | "organization";
+      returnUrl?: string;
+      disableRedirect?: boolean;
+    }) => Promise<{
+      data?: { url: string; redirect: boolean } | null;
+      error?: { message?: string; code?: string; status?: number } | null;
+    }>;
+  };
 };
 export const authClient: OrgClient = _authClient as OrgClient;

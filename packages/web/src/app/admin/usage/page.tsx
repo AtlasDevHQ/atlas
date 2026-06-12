@@ -1,10 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useQueryStates } from "nuqs";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useBillingPortal } from "@/ui/hooks/use-billing-portal";
 import { UsageSummarySchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,7 +13,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
@@ -74,12 +72,10 @@ export default function UsageDashboardPage() {
     { schema: UsageSummarySchema },
   );
 
-  const { mutate: portalMutate, saving: portalLoading, error: portalError, clearError: clearPortalError } =
-    useAdminMutation<{ url?: string }>({
-      path: "/api/v1/billing/portal",
-      method: "POST",
-    });
-  const [portalUrlError, setPortalUrlError] = useState<string | null>(null);
+  // #3417 — the portal goes through the Better Auth Stripe plugin
+  // (authClient.subscription.billingPortal), not an Atlas route.
+  const { openPortal, opening: portalLoading, error: portalError, clearError: clearPortalError } =
+    useBillingPortal();
 
   // Data table for user breakdown
   const columns = getUserUsageColumns();
@@ -94,18 +90,6 @@ export default function UsageDashboardPage() {
     },
     getRowId: (row) => row.user_id,
   });
-
-  async function openBillingPortal() {
-    setPortalUrlError(null);
-    const result = await portalMutate({
-      body: { returnUrl: window.location.href },
-    });
-    if (result.ok && result.data?.url) {
-      window.location.href = result.data.url;
-    } else if (result.ok && !result.data?.url) {
-      setPortalUrlError("Billing portal URL was not returned. Please contact support.");
-    }
-  }
 
   return (
     <ErrorBoundary>
@@ -126,7 +110,7 @@ export default function UsageDashboardPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={openBillingPortal}
+              onClick={openPortal}
               disabled={portalLoading}
             >
               <CreditCard className="mr-1.5 size-3.5" />
@@ -148,27 +132,15 @@ export default function UsageDashboardPage() {
       </div>
 
       <TabsContent value="plan" className="space-y-6">
-        {/* Billing portal: FetchError routes through MutationErrorSurface;
-            portalUrlError is the local-fallback string for "200 OK but no URL"
-            edge case (not a FetchError, so kept as a plain ErrorBanner). Each
-            retry clears both slots — a stale banner from the prior attempt
-            mustn't co-render with the one the current attempt raised. */}
-        <MutationErrorSurface
-          error={portalError}
-          feature="Billing Portal"
-          onRetry={() => {
-            clearPortalError();
-            setPortalUrlError(null);
-            openBillingPortal();
-          }}
-        />
-        {portalUrlError && (
+        {/* Billing portal errors arrive as flattened actionable copy from
+            useBillingPortal (the plugin returns structured codes; the hook
+            maps them). Retry re-runs the portal request. */}
+        {portalError && (
           <ErrorBanner
-            message={portalUrlError}
+            message={portalError}
             onRetry={() => {
               clearPortalError();
-              setPortalUrlError(null);
-              openBillingPortal();
+              openPortal();
             }}
           />
         )}

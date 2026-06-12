@@ -435,7 +435,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
     }>(
       `SELECT
          o.id, o.name, o.slug, o.workspace_status, o.plan_tier, o.byot,
-         o.stripe_customer_id, o.trial_ends_at, o.suspended_at, o.deleted_at,
+         o."stripeCustomerId" AS stripe_customer_id, o.trial_ends_at, o.suspended_at, o.deleted_at,
          o.region, o.region_assigned_at, o."createdAt",
          COALESCE(m.cnt, 0)::int AS members,
          COALESCE(cv.cnt, 0)::int AS conversations,

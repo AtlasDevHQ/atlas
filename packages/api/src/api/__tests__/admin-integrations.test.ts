@@ -163,7 +163,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getAutoApproveThreshold: mock(() => 999),
   getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
   updateWorkspaceByot: mock(async () => {}),
-  setWorkspaceStripeCustomerId: mock(async () => {}),
   setWorkspaceTrialEndsAt: mock(async () => {}),
 }));
 

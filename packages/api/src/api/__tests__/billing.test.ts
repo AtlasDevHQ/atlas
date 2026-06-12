@@ -1,7 +1,9 @@
 /**
  * Tests for billing API endpoints.
  *
- * Covers: GET /billing, POST /billing/portal, POST /billing/byot.
+ * Covers: GET /billing, POST /billing/byot. (The portal route was
+ * deleted in #3417 — portal access goes through the Better Auth Stripe
+ * plugin's /subscription/billing-portal; see stripe-billing-portal.test.ts.)
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
@@ -85,7 +87,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mockInternalQuery,
   internalExecute: () => {},
   updateWorkspacePlanTier: mock(() => Promise.resolve(true)),
-  setWorkspaceStripeCustomerId: mock(() => Promise.resolve(true)),
   setWorkspaceTrialEndsAt: mock(() => Promise.resolve(true)),
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
@@ -136,18 +137,6 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: mock(() => {}),
 }));
 
-// --- Stripe mock ---
-
-mock.module("stripe", () => ({
-  default: class StripeMock {
-    billingPortal = {
-      sessions: {
-        create: mock(() => Promise.resolve({ url: "https://billing.stripe.com/session/test_123" })),
-      },
-    };
-  },
-}));
-
 // --- Logger mock ---
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -170,7 +159,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 // --- Import billing routes ---
 
-import { billing, _resetPortalRateLimits } from "../routes/billing";
+import { billing } from "../routes/billing";
 // Real resolver (not mocked) — the SSOT the billing endpoint and the agent
 // loop share. Tests assert the endpoint reports exactly what this resolves so
 // the picker default can't drift from the billed default (#3098).
@@ -190,7 +179,6 @@ describe("billing routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockSettingLiveValue = undefined;
-    _resetPortalRateLimits();
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -361,104 +349,6 @@ describe("billing routes", () => {
       );
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(400);
-    });
-  });
-
-  // ── POST /billing/portal ──────────────────────────────────────────
-
-  describe("POST /api/v1/billing/portal", () => {
-    it("returns portal URL", async () => {
-      // Need STRIPE_SECRET_KEY for the portal route to create a Stripe client
-      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
-      const res = await request("/api/v1/billing/portal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ returnUrl: "http://localhost:3000/settings" }),
-      });
-      expect(res.status).toBe(200);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
-      const body = await res.json() as any;
-      expect(body.url).toContain("stripe.com");
-      delete process.env.STRIPE_SECRET_KEY;
-    });
-
-    it("returns 400 when no stripe customer", async () => {
-      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
-      mockGetWorkspaceDetails.mockImplementation(() =>
-        Promise.resolve({ ...mockWorkspace, stripe_customer_id: null }),
-      );
-      const res = await request("/api/v1/billing/portal", { method: "POST" });
-      expect(res.status).toBe(400);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
-      const body = await res.json() as any;
-      expect(body.error).toBe("no_customer");
-      delete process.env.STRIPE_SECRET_KEY;
-    });
-
-    it("returns 429 after 5 portal requests in the same window", async () => {
-      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
-
-      // First 5 requests should succeed
-      for (let i = 0; i < 5; i++) {
-        const res = await request("/api/v1/billing/portal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        expect(res.status).toBe(200);
-      }
-
-      // 6th request should be rate limited
-      const res = await request("/api/v1/billing/portal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      expect(res.status).toBe(429);
-      expect(res.headers.get("Retry-After")).toBeTruthy();
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
-      const body = await res.json() as any;
-      expect(body.error).toBe("rate_limited");
-      expect(body.retryAfter).toBeGreaterThan(0);
-      expect(body.message).toContain("Too many portal requests");
-
-      delete process.env.STRIPE_SECRET_KEY;
-    });
-
-    it("rate limits are per-workspace", async () => {
-      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
-
-      // Exhaust rate limit for org-1
-      for (let i = 0; i < 5; i++) {
-        const res = await request("/api/v1/billing/portal", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        expect(res.status).toBe(200);
-      }
-
-      // Switch to org-2 — should still be allowed
-      mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: true,
-          mode: "simple-key",
-          user: { id: "user-2", mode: "simple-key", label: "User 2", role: "admin", activeOrganizationId: "org-2" },
-        }),
-      );
-      mockGetWorkspaceDetails.mockImplementation(() =>
-        Promise.resolve({ ...mockWorkspace, id: "org-2", stripe_customer_id: "cus_test_456" }),
-      );
-
-      const res = await request("/api/v1/billing/portal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      expect(res.status).toBe(200);
-
-      delete process.env.STRIPE_SECRET_KEY;
     });
   });
 

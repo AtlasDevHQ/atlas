@@ -145,7 +145,8 @@ describe("runMigrations", () => {
     //   Plus 0123 (elasticsearch built-in datasource catalog row, #3270) = 124.
     //   Plus 0124 (DuckDB saas_eligible = false, #3301) = 125.
     //   Plus 0125 (elasticsearch auth-modes config_schema update, #3263–#3266) = 126.
-    expect(count).toBe(126);
+    //   Plus 0126 (plugin-owned organization."stripeCustomerId", #3417) = 127.
+    expect(count).toBe(127);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -300,6 +301,7 @@ describe("runMigrations", () => {
         "0123_elasticsearch_datasource_catalog.sql",
         "0124_duckdb_not_saas_eligible.sql",
         "0125_elasticsearch_auth_modes_config_schema.sql",
+        "0126_org_stripe_customer_id_plugin_column.sql",
       ],
     });
 
@@ -1167,5 +1169,23 @@ describe("0124_duckdb_not_saas_eligible.sql", () => {
     expect(sql).toMatch(/WHERE\s+slug\s*=\s*'duckdb'/i);
     // Never widens to other rows / a blanket UPDATE.
     expect(sql).not.toMatch(/saas_eligible\s*=\s*true/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0126_org_stripe_customer_id_plugin_column.sql
+// ---------------------------------------------------------------------------
+
+describe("0126_org_stripe_customer_id_plugin_column.sql", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it", () => {
+    // 0126 ALTERs Better Auth's `organization` table. Non-managed-auth
+    // deploys never create it, so applying this migration there fails
+    // boot. The skip wiring lives in `MANAGED_AUTH_MIGRATIONS` — pin the
+    // membership so an `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0126_org_stripe_customer_id_plugin_column\.sql"/,
+    );
   });
 });

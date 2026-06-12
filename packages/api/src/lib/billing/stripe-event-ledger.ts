@@ -34,6 +34,13 @@ const log = createLogger("billing:event-ledger");
 /** Ledger retention — past Stripe's ~3-week retry horizon. */
 export const STRIPE_EVENT_LEDGER_RETENTION_DAYS = 30;
 
+/**
+ * Purge-tombstone retention (#3468) — same horizon rationale as the
+ * ledger: Stripe stops retrying after ~3 weeks, so after 30 days no
+ * delivery for a purged subscription id can still arrive.
+ */
+export const STRIPE_PURGE_TOMBSTONE_RETENTION_DAYS = 30;
+
 export interface StripeLedgerEvent {
   /** Stripe event id (`evt_…`). */
   id: string;
@@ -47,7 +54,7 @@ export interface StripeLedgerEvent {
   stripeSubscriptionId: string | null;
 }
 
-export type StripeEventDisposition = "fresh" | "duplicate" | "stale";
+export type StripeEventDisposition = "fresh" | "duplicate" | "stale" | "purged";
 
 /**
  * The event types whose relative order determines the workspace tier.
@@ -85,6 +92,13 @@ const LIFECYCLE_LIST_SQL = TIER_LIFECYCLE_EVENT_TYPES.map((t) => `'${t}'`).join(
  *    events — deletion is terminal (Stripe never resurrects a
  *    subscription id), so nothing sharing its second may run after it
  *    and write a paid tier back onto a locked workspace.
+ *  - `purged` — the subscription belonged to a GDPR-purged workspace
+ *    (#3468). The purge's own Stripe cancellation generates
+ *    `customer.subscription.deleted` deliveries that arrive AFTER the
+ *    purge transaction; without this branch, recording them would
+ *    regrow `stripe_webhook_events` rows for a purged workspace. A
+ *    purge must be terminal — skip without side effects (and without
+ *    recording, since `onEvent` only records `fresh` events).
  *  - `fresh` — process it.
  */
 export async function classifyStripeEvent(
@@ -97,6 +111,15 @@ export async function classifyStripeEvent(
     [event.id],
   );
   if (dup.length > 0) return "duplicate";
+
+  if (event.stripeSubscriptionId) {
+    const tombstone = await internalQuery<{ stripe_subscription_id: string }>(
+      `SELECT stripe_subscription_id FROM stripe_purged_subscriptions
+        WHERE stripe_subscription_id = $1 LIMIT 1`,
+      [event.stripeSubscriptionId],
+    );
+    if (tombstone.length > 0) return "purged";
+  }
 
   if (event.stripeSubscriptionId && isTierLifecycleEventType(event.type)) {
     const newer = await internalQuery<{ event_id: string }>(
@@ -163,6 +186,32 @@ export async function pruneStripeEventLedger(
   );
   if (rows.length > 0) {
     log.info({ pruned: rows.length, retentionDays }, "Pruned Stripe webhook event ledger");
+  }
+  return rows.length;
+}
+
+/**
+ * Drop purge tombstones past retention (#3468), so the tombstone table
+ * itself stays bounded rather than becoming a new unbounded GDPR
+ * surface. Returns the number pruned. Called by the reconciliation
+ * sweep alongside {@link pruneStripeEventLedger}.
+ */
+export async function pruneStripePurgedSubscriptions(
+  retentionDays: number = STRIPE_PURGE_TOMBSTONE_RETENTION_DAYS,
+): Promise<number> {
+  // Same inverted-cutoff guard as the ledger prune (CodeRabbit on #3444).
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) {
+    throw new Error(`Invalid stripe purge tombstone retentionDays: ${retentionDays}`);
+  }
+  if (!hasInternalDB()) return 0;
+  const rows = await internalQuery<{ stripe_subscription_id: string }>(
+    `DELETE FROM stripe_purged_subscriptions
+      WHERE purged_at < now() - ($1 || ' days')::interval
+      RETURNING stripe_subscription_id`,
+    [String(retentionDays)],
+  );
+  if (rows.length > 0) {
+    log.info({ pruned: rows.length, retentionDays }, "Pruned Stripe purge tombstones");
   }
   return rows.length;
 }

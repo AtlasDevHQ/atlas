@@ -2624,6 +2624,21 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const subscriptionTableExists =
       (subscriptionTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
     if (subscriptionTableExists) {
+      // Tombstone the purged subscription ids FIRST (#3468): the remote
+      // teardown's cancellations generate `customer.subscription.deleted`
+      // webhooks that arrive after this transaction commits, and the
+      // webhook ledger records events keyed on the subscription id even
+      // when no org resolves — without the tombstone, a completed purge
+      // immediately regrows `stripe_webhook_events` rows. Stamped inside
+      // the purge transaction (same atomicity as the deletes below);
+      // consulted by `classifyStripeEvent`; pruned after 30 days.
+      await client.query(
+        `INSERT INTO stripe_purged_subscriptions (stripe_subscription_id)
+         SELECT "stripeSubscriptionId" FROM subscription
+          WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
+         ON CONFLICT (stripe_subscription_id) DO NOTHING`,
+        [orgId],
+      );
       stripeWebhookEvents = await delRaw(
         `DELETE FROM stripe_webhook_events WHERE stripe_subscription_id IN (
            SELECT "stripeSubscriptionId" FROM subscription

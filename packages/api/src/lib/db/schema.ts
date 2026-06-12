@@ -2368,3 +2368,22 @@ export const stripeWebhookEvents = pgTable(
     index("idx_stripe_webhook_events_processed").on(t.processedAt),
   ],
 );
+
+/**
+ * Tombstones for Stripe subscription ids erased by GDPR purge (#3468) —
+ * the purge's own cancellation generates `customer.subscription.deleted`
+ * webhooks that arrive AFTER the purge transaction; without the
+ * tombstone, recording them regrows `stripe_webhook_events` rows for a
+ * purged workspace. Stamped inside the `hardDeleteWorkspace`
+ * transaction; consulted by `classifyStripeEvent`; pruned by the
+ * reconciliation sweep after 30 days (past Stripe's ~3-week retry
+ * horizon). Mirrors `migrations/0129_stripe_purged_subscriptions.sql`.
+ */
+export const stripePurgedSubscriptions = pgTable(
+  "stripe_purged_subscriptions",
+  {
+    stripeSubscriptionId: text("stripe_subscription_id").primaryKey(),
+    purgedAt: timestamp("purged_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("idx_stripe_purged_subscriptions_purged_at").on(t.purgedAt)],
+);

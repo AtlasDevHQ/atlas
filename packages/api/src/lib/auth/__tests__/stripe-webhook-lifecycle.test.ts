@@ -118,6 +118,9 @@ interface LedgerRow {
 
 let ledgerRows: LedgerRow[] = [];
 
+/** GDPR purge tombstones (#3468) — answered for the classify probe. */
+let purgedSubscriptionIds = new Set<string>();
+
 // The production allowlist, so the sim can't drift from the real
 // ordering model if TIER_LIFECYCLE_EVENT_TYPES changes.
 const LIFECYCLE_TYPES: readonly string[] = TIER_LIFECYCLE_EVENT_TYPES;
@@ -128,6 +131,13 @@ function ledgerAwareQuery(
   return (sql: string, params?: unknown[]) => {
     if (sql.includes("FROM stripe_webhook_events WHERE event_id")) {
       return Promise.resolve(ledgerRows.filter((r) => r.event_id === params?.[0]));
+    }
+    if (sql.includes("FROM stripe_purged_subscriptions")) {
+      return Promise.resolve(
+        purgedSubscriptionIds.has(String(params?.[0]))
+          ? [{ stripe_subscription_id: params?.[0] }]
+          : [],
+      );
     }
     if (sql.includes("FROM stripe_webhook_events") && sql.includes("event_created > $2")) {
       // Mirrors the production stale probe: lifecycle rows only; newer
@@ -311,6 +321,7 @@ beforeEach(() => {
   mockGetWorkspaceDetails.mockReset();
   mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve(null));
   ledgerRows = [];
+  purgedSubscriptionIds = new Set();
   mockInternalQuery.mockReset();
   mockInternalQuery.mockImplementation(ledgerAwareQuery());
   subscriptionsRetrieve.mockClear();
@@ -577,6 +588,27 @@ describe("customer.subscription.deleted", () => {
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+  });
+
+  it("skips and does NOT record deliveries for a GDPR-purged subscription (#3468)", async () => {
+    // Purge already ran: hardDeleteWorkspace tombstoned the subscription
+    // id and removed the local subscription + ledger rows. The purge's
+    // own Stripe cancellation now delivers customer.subscription.deleted
+    // — it must neither sync nor regrow stripe_webhook_events.
+    purgedSubscriptionIds = new Set(["sub_stripe_1"]);
+    const auth = makeAuth(emptyDB());
+
+    const res = await postWebhook(auth, {
+      id: "evt_post_purge",
+      type: "customer.subscription.deleted",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+    expect(ledgerRows).toEqual([]);
   });
 });
 

@@ -26,7 +26,9 @@ const {
   classifyStripeEvent,
   recordStripeEvent,
   pruneStripeEventLedger,
+  pruneStripePurgedSubscriptions,
   STRIPE_EVENT_LEDGER_RETENTION_DAYS,
+  STRIPE_PURGE_TOMBSTONE_RETENTION_DAYS,
 } = await import("../stripe-event-ledger");
 
 const EVENT = {
@@ -45,12 +47,16 @@ beforeEach(() => {
 describe("classifyStripeEvent", () => {
   it("returns fresh when neither the id nor a newer same-subscription event is recorded", async () => {
     await expect(classifyStripeEvent(EVENT)).resolves.toBe("fresh");
-    // Two probes: dedup by event id, then ordering by subscription id.
-    expect(mockInternalQuery).toHaveBeenCalledTimes(2);
+    // Three probes: dedup by event id, purge tombstone (#3468), then
+    // ordering by subscription id.
+    expect(mockInternalQuery).toHaveBeenCalledTimes(3);
     const [dupSql, dupParams] = mockInternalQuery.mock.calls[0] as [string, unknown[]];
     expect(dupSql).toContain("WHERE event_id = $1");
     expect(dupParams).toEqual(["evt_1"]);
-    const [staleSql, staleParams] = mockInternalQuery.mock.calls[1] as [string, unknown[]];
+    const [tombstoneSql, tombstoneParams] = mockInternalQuery.mock.calls[1] as [string, unknown[]];
+    expect(tombstoneSql).toContain("FROM stripe_purged_subscriptions");
+    expect(tombstoneParams).toEqual(["sub_1"]);
+    const [staleSql, staleParams] = mockInternalQuery.mock.calls[2] as [string, unknown[]];
     expect(staleSql).toContain("event_created > $2");
     // Only lifecycle events may block (payment failures excluded) …
     expect(staleSql).toContain("event_type IN (");
@@ -67,8 +73,28 @@ describe("classifyStripeEvent", () => {
     ).resolves.toBe("fresh");
     // A payment failure recorded first must never make a delayed
     // lifecycle sync look stale, and vice versa — it skips the
-    // ordering probe entirely.
-    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+    // ordering probe entirely (the dedup + tombstone probes still run).
+    expect(mockInternalQuery).toHaveBeenCalledTimes(2);
+    const sqls = mockInternalQuery.mock.calls.map((c) => c[0] as string);
+    expect(sqls.some((s) => s.includes("event_created > $2"))).toBe(false);
+  });
+
+  it("returns purged when the subscription id is tombstoned by a GDPR purge (#3468)", async () => {
+    mockInternalQuery.mockImplementation((sql) =>
+      Promise.resolve(
+        sql.includes("FROM stripe_purged_subscriptions")
+          ? [{ stripe_subscription_id: "sub_1" }]
+          : [],
+      ),
+    );
+    await expect(
+      classifyStripeEvent({ ...EVENT, type: "customer.subscription.deleted" }),
+    ).resolves.toBe("purged");
+    // Non-lifecycle deliveries for the purged subscription are equally
+    // terminal — they must not regrow the ledger either.
+    await expect(
+      classifyStripeEvent({ ...EVENT, id: "evt_2", type: "invoice.payment_failed" }),
+    ).resolves.toBe("purged");
   });
 
   it("returns duplicate when the event id is already recorded (replay)", async () => {
@@ -159,6 +185,30 @@ describe("pruneStripeEventLedger", () => {
   it("rejects negative/non-finite retention before touching the DB (would invert the cutoff)", async () => {
     await expect(pruneStripeEventLedger(-1)).rejects.toThrow(/Invalid/);
     await expect(pruneStripeEventLedger(Number.NaN)).rejects.toThrow(/Invalid/);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe("pruneStripePurgedSubscriptions (#3468)", () => {
+  it("deletes tombstones past the default retention and returns the count", async () => {
+    mockInternalQuery.mockImplementation(() =>
+      Promise.resolve([{ stripe_subscription_id: "sub_old" }]),
+    );
+    await expect(pruneStripePurgedSubscriptions()).resolves.toBe(1);
+    const [sql, params] = mockInternalQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("DELETE FROM stripe_purged_subscriptions");
+    expect(params).toEqual([String(STRIPE_PURGE_TOMBSTONE_RETENTION_DAYS)]);
+  });
+
+  it("returns 0 without an internal DB", async () => {
+    hasDb = false;
+    await expect(pruneStripePurgedSubscriptions()).resolves.toBe(0);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects negative/non-finite retention before touching the DB (would invert the cutoff)", async () => {
+    await expect(pruneStripePurgedSubscriptions(-1)).rejects.toThrow(/Invalid/);
+    await expect(pruneStripePurgedSubscriptions(Number.NaN)).rejects.toThrow(/Invalid/);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });

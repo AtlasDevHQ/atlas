@@ -37,7 +37,10 @@ import {
   updateWorkspacePlanTier,
 } from "@atlas/api/lib/db/internal";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
-import { pruneStripeEventLedger } from "@atlas/api/lib/billing/stripe-event-ledger";
+import {
+  pruneStripeEventLedger,
+  pruneStripePurgedSubscriptions,
+} from "@atlas/api/lib/billing/stripe-event-ledger";
 import { parsePlanTier } from "@atlas/api/lib/integrations/install/plan-rank";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { PlanTier } from "@useatlas/types";
@@ -54,6 +57,8 @@ export interface PlanTierReconcileResult {
   flagged: number;
   /** Webhook-ledger rows pruned past retention. */
   prunedLedger: number;
+  /** GDPR purge tombstones pruned past retention (#3468). */
+  prunedTombstones: number;
 }
 
 // Type alias, not interface: internalQuery's generic is constrained to
@@ -74,7 +79,7 @@ type ReconcileRow = {
  * interval.
  */
 export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
-  if (!hasInternalDB()) return { healed: 0, flagged: 0, prunedLedger: 0 };
+  if (!hasInternalDB()) return { healed: 0, flagged: 0, prunedLedger: 0, prunedTombstones: 0 };
 
   // Newest live subscription per org, joined against the org's current
   // tier AND the ledger's newest APPLIED tier for that subscription.
@@ -167,9 +172,10 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
   }
 
   const prunedLedger = await pruneStripeEventLedger();
+  const prunedTombstones = await pruneStripePurgedSubscriptions();
 
-  if (healed > 0 || flagged > 0 || prunedLedger > 0) {
-    log.info({ healed, flagged, prunedLedger, orgsScanned: rows.length }, "Plan-tier reconciliation pass complete");
+  if (healed > 0 || flagged > 0 || prunedLedger > 0 || prunedTombstones > 0) {
+    log.info({ healed, flagged, prunedLedger, prunedTombstones, orgsScanned: rows.length }, "Plan-tier reconciliation pass complete");
   }
-  return { healed, flagged, prunedLedger };
+  return { healed, flagged, prunedLedger, prunedTombstones };
 }

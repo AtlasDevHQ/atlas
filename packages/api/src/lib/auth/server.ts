@@ -1603,6 +1603,28 @@ export function buildStripePluginOptions(deps: {
         const orgId = subscription.referenceId;
         if (orgId) {
           try {
+            // Stale-deletion guard (Codex review): webhook delivery is
+            // unordered, so a delayed deleted event for an OLD
+            // subscription can arrive after the org already resubscribed
+            // (a different subscription row, active/trialing). Locking
+            // then would revoke a paying customer's access. The plugin
+            // marked THIS subscription canceled before invoking the hook,
+            // so any remaining active/trialing row is a different,
+            // current subscription — skip the lock.
+            const activeRows = await internalQuery<{ id: string }>(
+              `SELECT id FROM subscription
+                WHERE "referenceId" = $1 AND status IN ('active', 'trialing')
+                  AND "stripeSubscriptionId" IS DISTINCT FROM $2
+                LIMIT 1`,
+              [orgId, subscription.stripeSubscriptionId ?? null],
+            );
+            if (activeRows.length > 0) {
+              log.info(
+                { orgId, deletedSubscriptionId: subscription.stripeSubscriptionId },
+                "Subscription deleted but another active subscription exists — skipping lock",
+              );
+              return;
+            }
             const updated = await updateWorkspacePlanTier(orgId, "locked");
             if (!updated) return; // helper already logged the missing org
             invalidatePlanCache(orgId);

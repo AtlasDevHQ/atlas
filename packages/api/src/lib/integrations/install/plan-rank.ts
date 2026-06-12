@@ -122,6 +122,12 @@ export function isPlanEligible(
   workspacePlan: PlanTier | null | undefined,
   requiredPlan: PlanTier | null | undefined,
 ): boolean {
+  // "locked" is never a valid REQUIREMENT (its rank is -1 = "satisfies no
+  // gate"); a drifted catalog row demanding it would otherwise admit every
+  // workspace, including locked ones. Fail closed like any other invalid
+  // min_plan. The MIN_PLAN_TIERS validator keeps new rows from carrying it,
+  // this guards rows written around the validator.
+  if (requiredPlan === "locked") return false;
   const requiredRank = planRank(requiredPlan ?? null);
   if (requiredRank === null) return false;
   const workspaceRank = planRank(workspacePlan ?? null) ?? 0;

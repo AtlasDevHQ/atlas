@@ -409,6 +409,38 @@ describe("customer.subscription.deleted", () => {
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
     expect(db.subscription[0].status).toBe("canceled");
   });
+
+  it("skips the lock when another active subscription exists (stale deletion guard)", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_old",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+    // The org resubscribed: a DIFFERENT subscription row is active in the
+    // internal DB. A delayed deleted event for the old subscription must
+    // not revoke the paying customer's access.
+    mockInternalQuery.mockImplementation((sql: string) =>
+      Promise.resolve(
+        sql.includes("status IN ('active', 'trialing')") ? [{ id: "subrow_new" }] : [],
+      ),
+    );
+
+    const res = await postWebhook(auth, {
+      id: "evt_deleted_stale",
+      type: "customer.subscription.deleted",
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+  });
 });
 
 // ── invoice.payment_failed → suspension after 3 attempts ────────────

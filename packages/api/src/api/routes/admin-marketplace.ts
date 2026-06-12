@@ -27,7 +27,7 @@ import {
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
 import { getConfig } from "@atlas/api/lib/config";
-import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
+import { MIN_PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   isPlanEligible as planRankEligible,
   parsePlanTier,
@@ -95,7 +95,7 @@ const CreateCatalogBodySchema = z.object({
   npmPackage: z.string().max(200).optional(),
   iconUrl: z.string().url().max(500).optional(),
   configSchema: z.unknown().optional(),
-  minPlan: z.enum(PLAN_TIERS).default("starter"),
+  minPlan: z.enum(MIN_PLAN_TIERS).default("starter"),
   enabled: z.boolean().default(true),
 });
 
@@ -106,7 +106,7 @@ const UpdateCatalogBodySchema = z.object({
   npmPackage: z.string().max(200).optional(),
   iconUrl: z.string().url().max(500).optional(),
   configSchema: z.unknown().optional(),
-  minPlan: z.enum(PLAN_TIERS).optional(),
+  minPlan: z.enum(MIN_PLAN_TIERS).optional(),
   enabled: z.boolean().optional(),
 });
 

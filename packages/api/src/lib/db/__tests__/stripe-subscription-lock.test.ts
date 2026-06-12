@@ -89,7 +89,10 @@ describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
 
   it("brackets the callback with BEGIN → advisory lock keyed on the subscription id → COMMIT", async () => {
     const { pool, queries } = makeRecordingPool();
-    _resetPool(pool as unknown as InternalPool, null);
+    // Lock traffic draws from the dedicated lock pool (#3465) — inject
+    // the fake there; the main-pool slot stays empty (passthrough tests
+    // assert no checkout happens on either).
+    _resetPool(null, null, pool as unknown as InternalPool);
 
     const ran: string[] = [];
     const result = await withStripeSubscriptionLock("sub_stripe_1", async () => {
@@ -110,7 +113,10 @@ describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
 
   it("ROLLBACKs, releases the client, and re-throws when the callback throws (record-last stays live)", async () => {
     const { pool, queries, releases } = makeRecordingPool();
-    _resetPool(pool as unknown as InternalPool, null);
+    // Lock traffic draws from the dedicated lock pool (#3465) — inject
+    // the fake there; the main-pool slot stays empty (passthrough tests
+    // assert no checkout happens on either).
+    _resetPool(null, null, pool as unknown as InternalPool);
 
     const boom = new Error("sync failed — plan tier write rejected");
     await expect(
@@ -128,7 +134,10 @@ describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
 
   it("propagates a lock-acquisition failure — never fails open into an unserialized sync", async () => {
     const { pool, releases } = makeRecordingPool({ failLock: true });
-    _resetPool(pool as unknown as InternalPool, null);
+    // Lock traffic draws from the dedicated lock pool (#3465) — inject
+    // the fake there; the main-pool slot stays empty (passthrough tests
+    // assert no checkout happens on either).
+    _resetPool(null, null, pool as unknown as InternalPool);
 
     let callbackRan = false;
     await expect(
@@ -143,7 +152,10 @@ describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
 
   it("passes through without a pool checkout when the event has no subscription id", async () => {
     const { pool, connects } = makeRecordingPool();
-    _resetPool(pool as unknown as InternalPool, null);
+    // Lock traffic draws from the dedicated lock pool (#3465) — inject
+    // the fake there; the main-pool slot stays empty (passthrough tests
+    // assert no checkout happens on either).
+    _resetPool(null, null, pool as unknown as InternalPool);
 
     const result = await withStripeSubscriptionLock(null, async () => "no-lock");
 
@@ -153,12 +165,39 @@ describe("withStripeSubscriptionLock — lock mechanics (#3445)", () => {
 
   it("passes through without a pool checkout when there is no internal DB", async () => {
     const { pool, connects } = makeRecordingPool();
-    _resetPool(pool as unknown as InternalPool, null);
+    // Lock traffic draws from the dedicated lock pool (#3465) — inject
+    // the fake there; the main-pool slot stays empty (passthrough tests
+    // assert no checkout happens on either).
+    _resetPool(null, null, pool as unknown as InternalPool);
     delete process.env.DATABASE_URL;
 
     const result = await withStripeSubscriptionLock("sub_stripe_1", async () => "no-db");
 
     expect(result).toBe("no-db");
     expect(connects.count).toBe(0);
+  });
+
+  it("checks out the lock client from the dedicated lock pool, never the main pool (#3465 review)", async () => {
+    // The deadlock fix: a lock holder sits idle-in-transaction for the
+    // whole locked section while its inner queries use the pooled
+    // internalQuery — if both drew from the same bounded pool, a burst
+    // of deliveries could pin every client in lock transactions and
+    // starve the holders' own queries. Pin that lock traffic never
+    // touches the main pool.
+    const main = makeRecordingPool();
+    const lock = makeRecordingPool();
+    _resetPool(
+      main.pool as unknown as InternalPool,
+      null,
+      lock.pool as unknown as InternalPool,
+    );
+
+    const result = await withStripeSubscriptionLock("sub_stripe_1", async () => "split");
+
+    expect(result).toBe("split");
+    expect(main.connects.count).toBe(0);
+    expect(lock.connects.count).toBe(1);
+    expect(lockQueries(lock.queries)).toHaveLength(1);
+    expect(lock.queries.at(-1)?.sql).toBe("COMMIT");
   });
 });

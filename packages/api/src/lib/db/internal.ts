@@ -373,7 +373,12 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
     }),
     (pool) =>
       Effect.tryPromise({
-        try: () => pool.end(),
+        try: async () => {
+          // The Stripe lock pool rides the same lifecycle (it is never
+          // Effect-managed itself); endStripeLockPool never throws.
+          await endStripeLockPool();
+          return pool.end();
+        },
         catch: (err) => (err instanceof Error ? err.message : String(err)),
       }).pipe(
         Effect.tap(() => Effect.sync(() => {
@@ -510,6 +515,8 @@ let _pool: InternalPool | null = null;
 let _sqlClient: SqlClient.SqlClient | null = null;
 /** True when the pool was created by the Effect Layer (lifecycle managed by scope). */
 let _poolManagedByEffect = false;
+/** Dedicated pool for the Stripe advisory lock — see {@link getStripeLockPool}. */
+let _lockPool: InternalPool | null = null;
 
 /** Returns true if DATABASE_URL is configured. */
 export function hasInternalDB(): boolean {
@@ -558,6 +565,66 @@ export function getInternalDB(): InternalPool {
 }
 
 /**
+ * Dedicated pool for `withStripeSubscriptionLock` (#3445). A lock holder
+ * keeps its client checked out (idle in transaction) for the whole locked
+ * section, while the section's own queries go through the pooled
+ * `internalQuery` — if both drew from the SAME bounded pool, a burst of
+ * concurrent webhook deliveries could pin every client in lock
+ * transactions and leave none for the inner queries the holders need to
+ * make progress: a circular wait with no timeout that hangs every
+ * internal-DB user (#3465 review). Lock traffic gets its own pool so a
+ * holder's progress depends only on the main pool, which no lock
+ * participant ever occupies; this pool's size merely bounds how many
+ * locked sections run at once.
+ *
+ * Never Effect-managed: created lazily on first use, closed by
+ * `closeInternalDB`, the InternalDB Layer finalizer, and `_resetPool`.
+ */
+function getStripeLockPool(): InternalPool {
+  if (_lockPool) return _lockPool;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Pool } = require("pg");
+  const connString = databaseUrl.replace(
+    /([?&])sslmode=require(?=&|$)/,
+    "$1sslmode=verify-full",
+  );
+  _lockPool = new Pool({
+    connectionString: connString,
+    max: 5,
+    idleTimeoutMillis: 30000,
+  }) as InternalPool;
+  _lockPool.on("error", (err: unknown) => {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Stripe lock pool idle client error",
+    );
+  });
+  return _lockPool;
+}
+
+/** Close the Stripe lock pool if one was created. Never throws. */
+async function endStripeLockPool(): Promise<void> {
+  const lockPool = _lockPool;
+  _lockPool = null;
+  if (!lockPool) return;
+  try {
+    await lockPool.end();
+    log.info("Stripe lock pool closed");
+  } catch (err: unknown) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Error closing Stripe lock pool",
+    );
+  }
+}
+
+/**
  * Close the internal DB pool.
  *
  * When the pool was created by the Effect Layer (server runtime), this is a
@@ -566,6 +633,9 @@ export function getInternalDB(): InternalPool {
  * the pool to prevent connection leaks and process hangs.
  */
 export async function closeInternalDB(): Promise<void> {
+  // The Stripe lock pool is never Effect-managed — close it whenever the
+  // internal DB shuts down, whichever lifecycle owns the main pool.
+  await endStripeLockPool();
   if (!_pool) {
     log.debug("closeInternalDB() called but no pool exists");
     return;
@@ -603,9 +673,18 @@ export async function closeInternalDB(): Promise<void> {
  * tripped. Resetting the pool must reset the full circuit state, fiber
  * included (#3083).
  */
-export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.SqlClient | null): void {
+export function _resetPool(
+  mockPool?: InternalPool | null,
+  mockSql?: SqlClient.SqlClient | null,
+  mockLockPool?: InternalPool | null,
+): void {
   _pool = mockPool ?? null;
   _sqlClient = mockSql ?? null;
+  // The Stripe lock pool is deliberately NOT defaulted to `mockPool` —
+  // lock traffic never shares the main pool in production (#3465), and a
+  // shared mock would double-close in closeInternalDB(). Tests that
+  // exercise the lock path inject it explicitly.
+  _lockPool = mockLockPool ?? null;
   _poolManagedByEffect = false;
   _consecutiveFailures = 0;
   _circuitOpen = false;
@@ -2068,19 +2147,26 @@ const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
  *
  * `fn`'s inner queries deliberately keep using the pooled
  * `internalQuery` — they don't need the lock-holder's transaction, only
- * mutual exclusion. The lock holds ONE dedicated client for the duration
- * (same manual BEGIN/COMMIT + destroy-on-failed-rollback mechanics as
- * {@link withWorkspaceAdminLocks}); webhook concurrency per subscription
- * is Stripe-bounded, so the bounded internal pool is not starved. Never
- * nest another lock-holding pool checkout inside `fn` (the nested-pool
- * deadlock — see {@link withWorkspaceAdminLocks}).
+ * mutual exclusion. The lock client comes from a DEDICATED lock-only
+ * pool ({@link getStripeLockPool}), never the main internal pool: a
+ * holder sits idle-in-transaction for the whole locked section, and if
+ * lock traffic shared the bounded main pool, a burst of concurrent
+ * deliveries could pin all of its clients in lock transactions and
+ * starve the very `internalQuery` calls the holders need to finish — a
+ * circular wait with no timeout (#3465 review). With the split, a
+ * holder's progress depends only on the main pool, which no lock
+ * participant occupies. Same manual BEGIN/COMMIT +
+ * destroy-on-failed-rollback mechanics as
+ * {@link withWorkspaceAdminLocks}; never nest another lock-holding pool
+ * checkout inside `fn` (the nested-pool deadlock — see
+ * {@link withWorkspaceAdminLocks}).
  */
 export async function withStripeSubscriptionLock<T>(
   stripeSubscriptionId: string | null,
   fn: () => Promise<T>,
 ): Promise<T> {
   if (!stripeSubscriptionId || !hasInternalDB()) return fn();
-  const client = await getInternalDB().connect();
+  const client = await getStripeLockPool().connect();
   // Destroy the client on a failed ROLLBACK so a dirty socket doesn't
   // poison the next borrower (matches withWorkspaceAdminLocks).
   let rollbackErr: Error | null = null;

@@ -910,6 +910,11 @@ async function main() {
     const pluginExport = sandboxChoice === "e2b"
       ? "e2bSandboxPlugin"
       : "daytonaSandboxPlugin";
+    // The plugin loads its provider SDK lazily (optional peer dep), so both
+    // must be installed for the backend to engage.
+    const sandboxInstallCmd = sandboxChoice === "e2b"
+      ? "bun add @useatlas/e2b e2b"
+      : "bun add @useatlas/daytona @daytonaio/sdk";
 
     const configContent = `import { defineConfig } from "@atlas/api/lib/config";
 import { ${pluginExport} } from "${pluginPkg}";
@@ -922,7 +927,7 @@ export default defineConfig({
       fs.writeFileSync(path.join(targetDir, "atlas.config.ts"), configContent);
       p.log.warn(
         `Generated atlas.config.ts with ${pc.cyan(pluginPkg)}. ` +
-        `This plugin is not yet published — install it manually when available.`
+        `Install the plugin and its SDK: ${pc.cyan(sandboxInstallCmd)}`
       );
     } catch (err) {
       p.log.error(`Could not write atlas.config.ts: ${err instanceof Error ? err.message : String(err)}`);
@@ -1125,7 +1130,7 @@ export default defineConfig({
       if (sandboxChoice === "sidecar") {
         noteBody += "\n\n" + pc.dim("Deploy sidecar/ as a separate service. Set SIDECAR_AUTH_TOKEN on both.");
       } else if (sandboxChoice === "e2b" || sandboxChoice === "daytona") {
-        noteBody += "\n\n" + pc.dim(`Install ${sandboxChoice === "e2b" ? "@useatlas/e2b" : "@useatlas/daytona"} when available.`);
+        noteBody += "\n\n" + pc.dim(`Install the sandbox plugin + SDK: ${sandboxChoice === "e2b" ? "bun add @useatlas/e2b e2b" : "bun add @useatlas/daytona @daytonaio/sdk"}`);
       }
       break;
   }

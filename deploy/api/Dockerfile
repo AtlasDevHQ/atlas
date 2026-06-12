@@ -185,18 +185,24 @@ RUN for p in chat clickhouse salesforce snowflake bigquery elasticsearch e2b day
 RUN ln -sfn /app/packages/api/node_modules/e2b /app/plugins/e2b/node_modules/e2b && \
     mkdir -p /app/plugins/daytona/node_modules/@daytonaio && \
     ln -sfn /app/packages/api/node_modules/@daytonaio/sdk /app/plugins/daytona/node_modules/@daytonaio/sdk
-# Build-time assertion (#3409): every module the BYOC runtime probe
-# requires (lib/sandbox/runtime.ts PROVIDER_RUNTIMES[*].requiredModules
-# for the shipped providers — vercel, e2b, daytona) must resolve from the
-# packages/api context, and each plugin's lazy SDK require must resolve
-# from the plugin's own directory. A regression here doesn't fail boot —
-# it silently flips the /admin/sandbox cards to "Unavailable" — so fail
-# the build loudly instead. Railway is intentionally absent (deferred:
-# no deny-all egress mode; see #3368/#3409).
-RUN cd /app/packages/api && bun -e "await import('@useatlas/e2b'); await import('e2b'); await import('@useatlas/daytona'); await import('@daytonaio/sdk'); await import('@vercel/sandbox');" \
+# Build-time assertion (#3409): run the real BYOC availability probe
+# (lib/sandbox/runtime.ts getProviderRuntimeAvailability — the same code
+# path /api/v1/admin/sandbox/status serves) and require it to report
+# EXACTLY the shipped provider set. The module list is derived from
+# PROVIDER_RUNTIMES at build time, so there is no hand-copied list to
+# drift; the expected map below is the machine-checked statement of the
+# provider-set decision — railway: false documents the deliberate
+# deferral (no deny-all egress mode; see #3368/#3409), and a future
+# provider added to PROVIDER_RUNTIMES fails this build until the map is
+# consciously updated. A regression here doesn't fail boot — it silently
+# flips the /admin/sandbox cards to "Unavailable" — so fail the build
+# loudly instead. The two plugin-context requires assert the SDK
+# symlinks above: the plugins lazily require their SDK from their own
+# directory, which the api-context probe can't see.
+RUN bun -e "const { getProviderRuntimeAvailability } = await import('/app/packages/api/src/lib/sandbox/runtime.ts'); const got = await getProviderRuntimeAvailability(); const want = { vercel: true, e2b: true, daytona: true, railway: false }; const wantKeys = Object.keys(want).sort().join(','), gotKeys = Object.keys(got).sort().join(','); if (gotKeys !== wantKeys) throw new Error('BYOC provider set changed (' + gotKeys + ' vs expected ' + wantKeys + ') — decide whether the new provider ships in this image, then update the expected map in deploy/api/Dockerfile'); for (const p of Object.keys(want)) if (got[p] !== want[p]) throw new Error('BYOC runtime availability for ' + p + ': got ' + got[p] + ', expected ' + want[p]);" \
     && cd /app/plugins/e2b && bun -e "require('e2b');" \
     && cd /app/plugins/daytona && bun -e "require('@daytonaio/sdk');" \
-    || (echo "ERROR: BYOC sandbox runtime modules failed to resolve — e2b/daytona cards would report Unavailable (#3409)" >&2 && exit 1)
+    || (echo "ERROR: BYOC sandbox runtime assertion failed — the bun error above names the provider/module; shipping anyway would silently flip its /admin/sandbox card to Unavailable (#3409)" >&2 && exit 1)
 # Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts

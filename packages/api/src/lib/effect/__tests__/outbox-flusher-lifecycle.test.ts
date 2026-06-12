@@ -63,9 +63,13 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { makeSchedulerLive } = await import("../layers");
+const { makeSchedulerLive, Migration } = await import("../layers");
 const { SaasCrm, NoopEnterpriseDefaultsLayer } = await import("../services");
 const { setActiveFlusherSignal } = await import("@atlas/api/lib/lead-outbox");
+
+// #3446 — `makeSchedulerLive` requires `Migration` as an ordering barrier
+// for the billing-reconcile boot tick; satisfy it immediately here.
+const testMigrationLayer = Layer.succeed(Migration, { migrated: true });
 
 // ── Test layer: SaasCrm with available=true + stub dispatcher ───────
 
@@ -100,6 +104,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // provided, then override SaasCrm with our test-controlled shape.
     const deps = Layer.mergeAll(
       NoopEnterpriseDefaultsLayer,
+      testMigrationLayer,
       makeAvailableSaasCrmLayer(),
     );
     const layer = baseLayer.pipe(Layer.provide(deps));
@@ -135,6 +140,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // provided, then override SaasCrm with our test-controlled shape.
     const deps = Layer.mergeAll(
       NoopEnterpriseDefaultsLayer,
+      testMigrationLayer,
       makeAvailableSaasCrmLayer(),
     );
     const layer = baseLayer.pipe(Layer.provide(deps));
@@ -171,6 +177,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     const baseLayer = makeSchedulerLive(config);
     const deps = Layer.mergeAll(
       NoopEnterpriseDefaultsLayer,
+      testMigrationLayer,
       makeAvailableSaasCrmLayer(),
     );
     const layer = baseLayer.pipe(Layer.provide(deps));
@@ -203,7 +210,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
 
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
-      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, makeAvailableSaasCrmLayer())),
     );
     const rt = ManagedRuntime.make(layer);
     await Effect.runPromise(rt.runtimeEffect);
@@ -228,6 +235,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
       const baseLayer = makeSchedulerLive(config);
       const deps = Layer.mergeAll(
         NoopEnterpriseDefaultsLayer,
+        testMigrationLayer,
         makeAvailableSaasCrmLayer(),
       );
       const layer = baseLayer.pipe(Layer.provide(deps));
@@ -280,7 +288,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
     // NoopEnterpriseDefaultsLayer already provides a Noop SaasCrm — but
     // `noopSaasCrm` is composed on top to make the test intent explicit
     // (and to guard against a future EE default that flips `available`).
-    const deps = Layer.mergeAll(NoopEnterpriseDefaultsLayer, noopSaasCrm);
+    const deps = Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, noopSaasCrm);
     const layer = baseLayer.pipe(Layer.provide(deps));
 
     const rt = ManagedRuntime.make(layer);
@@ -315,7 +323,7 @@ describe("outbox flusher lifecycle (#2729 AC #7 + #9)", () => {
 
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const baseLayer = makeSchedulerLive(config);
-    const deps = Layer.mergeAll(NoopEnterpriseDefaultsLayer, tenantOnlySaasCrm);
+    const deps = Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, tenantOnlySaasCrm);
     const layer = baseLayer.pipe(Layer.provide(deps));
 
     const rt = ManagedRuntime.make(layer);
@@ -367,7 +375,7 @@ describe("email outbox flusher lifecycle (#2942)", () => {
   test("runs email_outbox recovery sweeps on boot AND shutdown", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
-      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, makeAvailableSaasCrmLayer())),
     );
     const rt = ManagedRuntime.make(layer);
     await Effect.runPromise(rt.runtimeEffect);
@@ -391,7 +399,7 @@ describe("email outbox flusher lifecycle (#2942)", () => {
     } satisfies SaasCrmShape);
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
-      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, noopSaasCrm)),
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, noopSaasCrm)),
     );
     const rt = ManagedRuntime.make(layer);
     await Effect.runPromise(rt.runtimeEffect);
@@ -409,7 +417,7 @@ describe("email outbox flusher lifecycle (#2942)", () => {
     internalDbAvailable = false;
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
     const layer = makeSchedulerLive(config).pipe(
-      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+      Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, makeAvailableSaasCrmLayer())),
     );
     const rt = ManagedRuntime.make(layer);
     await Effect.runPromise(rt.runtimeEffect);
@@ -427,7 +435,7 @@ describe("email outbox flusher lifecycle (#2942)", () => {
     try {
       const config = {} as Parameters<typeof makeSchedulerLive>[0];
       const layer = makeSchedulerLive(config).pipe(
-        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, makeAvailableSaasCrmLayer())),
       );
       const rt = ManagedRuntime.make(layer);
       await Effect.runPromise(rt.runtimeEffect);
@@ -445,7 +453,7 @@ describe("email outbox flusher lifecycle (#2942)", () => {
     try {
       const config = {} as Parameters<typeof makeSchedulerLive>[0];
       const layer = makeSchedulerLive(config).pipe(
-        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, makeAvailableSaasCrmLayer())),
+        Layer.provide(Layer.mergeAll(NoopEnterpriseDefaultsLayer, testMigrationLayer, makeAvailableSaasCrmLayer())),
       );
       const rt = ManagedRuntime.make(layer);
       await Effect.runPromise(rt.runtimeEffect);

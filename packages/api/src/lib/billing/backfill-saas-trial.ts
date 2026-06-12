@@ -1,19 +1,36 @@
 /**
- * One-time idempotent backfill: flip existing SaaS workspaces stuck on
- * `plan_tier='free'` onto `'trial'` with a fresh 14-day window.
+ * Idempotent boot-time backfill: flip SaaS workspaces stuck on
+ * `plan_tier='free'` onto `'trial'` with a fresh 14-day window — or onto
+ * `'locked'` when an owner has already consumed a trial elsewhere
+ * (#3426, one trial per user).
  *
  * Pairs with the signup-time `assignSaasTrial` hook (#2465). New orgs
  * created after the hook lands take the happy path; this module retires
- * the legacy `'free'` rows the hook didn't run for.
+ * the legacy `'free'` rows the hook didn't run for, and heals orgs whose
+ * hook invocation errored. It applies the SAME one-trial-per-user rule
+ * as the hook (`trial-eligibility.ts` holds the recorded policy): if the
+ * heal blindly promoted every free org to trial, a hook failure followed
+ * by a reboot would mint the second trial the hook refused.
  *
  * Guarded on `deployMode === 'saas'` because self-hosted's free tier is
  * the legitimate free product — clobbering it would lock self-hosted
  * users into a trial they never asked for.
  *
  * Idempotent via the `WHERE trial_ends_at IS NULL` clause: subsequent
- * boots find zero candidates. Uses `NOW() + 14d` (not `createdAt + 14d`)
- * so existing 'free' workspaces get a fresh window rather than landing
- * pre-expired the moment this code deploys.
+ * boots find zero candidates (the locked arm stamps `trial_ends_at`
+ * too). Uses `NOW() + 14d` (not `createdAt + 14d`) so existing 'free'
+ * workspaces get a fresh window rather than landing pre-expired the
+ * moment this code deploys.
+ *
+ * Two statements, lock-first: orgs with a trial-consumed owner are
+ * demoted to 'locked' before the promote statement runs, so the promote
+ * (`plan_tier = 'free'` guard) can never see them. The eligibility
+ * predicate mirrors `userHasConsumedTrial` but keys on ANY owner — the
+ * creator isn't recorded, so we fail toward no-second-trial. Two free
+ * orgs sharing a never-trialed owner both promote in the same pass
+ * (neither has `trial_ends_at` when the statement snapshots) — that
+ * matches the pre-#3426 behaviour for legacy rows and is not reachable
+ * by farming (the signup hook serializes new orgs).
  *
  * Wired through `BackfillSaasTrialLive` in
  * `packages/api/src/lib/effect/layers.ts`, which depends on `Migration`
@@ -29,19 +46,21 @@ import { TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 const log = createLogger("billing.backfill-saas-trial");
 
 export interface BackfillResult {
-  /** Number of organization rows updated. Zero when skipped or already migrated. */
+  /** Number of organization rows promoted to 'trial'. Zero when skipped or already migrated. */
   readonly updatedCount: number;
   /** IDs of orgs flipped to trial. Empty when count is 0. */
   readonly orgIds: ReadonlyArray<string>;
+  /** IDs of orgs demoted to 'locked' because an owner already consumed a trial (#3426). */
+  readonly lockedOrgIds: ReadonlyArray<string>;
 }
 
-const SKIPPED: BackfillResult = { updatedCount: 0, orgIds: [] };
+const SKIPPED: BackfillResult = { updatedCount: 0, orgIds: [], lockedOrgIds: [] };
 
 /**
- * Run the backfill UPDATE if conditions allow.
+ * Run the backfill UPDATEs if conditions allow.
  *
  * Returns `SKIPPED` synchronously when deploy mode isn't SaaS or no
- * internal DB is configured. Errors during the UPDATE are logged and
+ * internal DB is configured. Errors during the UPDATEs are logged and
  * swallowed — backfill failure must not block API startup.
  */
 export async function backfillSaasTrial(): Promise<BackfillResult> {
@@ -51,6 +70,31 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
   const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
 
   try {
+    // 1) One-trial-per-user arm (#3426): free orgs with an owner who
+    //    already consumed a trial land on 'locked', trial stamped as
+    //    consumed-now. Must run BEFORE the promote arm.
+    const lockedRows = await internalQuery<{ id: string }>(
+      `UPDATE organization o
+          SET plan_tier = 'locked',
+              trial_ends_at = NOW()
+        WHERE o.plan_tier = 'free'
+          AND o.trial_ends_at IS NULL
+          AND EXISTS (
+            SELECT 1
+              FROM member m_new
+              JOIN member m_prior ON m_prior."userId" = m_new."userId"
+              JOIN organization o_prior ON o_prior.id = m_prior."organizationId"
+             WHERE m_new."organizationId" = o.id
+               AND m_new.role = 'owner'
+               AND m_prior.role = 'owner'
+               AND o_prior.id <> o.id
+               AND o_prior.trial_ends_at IS NOT NULL
+          )
+        RETURNING id`,
+    );
+    const lockedOrgIds = lockedRows.map((r) => r.id);
+
+    // 2) Everyone left on the default tier gets the fresh trial window.
     const rows = await internalQuery<{ id: string }>(
       `UPDATE organization
           SET plan_tier = 'trial',
@@ -62,12 +106,12 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
     );
     const orgIds = rows.map((r) => r.id);
     log.info(
-      { updatedCount: orgIds.length, orgIds, trialEndsAt: trialEndsAt.toISOString() },
-      orgIds.length === 0
+      { updatedCount: orgIds.length, orgIds, lockedOrgIds, trialEndsAt: trialEndsAt.toISOString() },
+      orgIds.length === 0 && lockedOrgIds.length === 0
         ? "SaaS trial backfill: no free workspaces to promote"
-        : "SaaS trial backfill: promoted free workspaces to trial",
+        : "SaaS trial backfill: promoted free workspaces (trial-consumed owners landed on locked)",
     );
-    return { updatedCount: orgIds.length, orgIds };
+    return { updatedCount: orgIds.length, orgIds, lockedOrgIds };
   } catch (err) {
     log.error(
       { err: errorMessage(err) },

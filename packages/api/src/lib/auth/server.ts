@@ -33,7 +33,7 @@ import {
 import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
-import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
@@ -60,6 +60,7 @@ import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/ap
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
+import { userHasConsumedTrial } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
@@ -177,12 +178,14 @@ export async function canGenerateSCIMToken(role: unknown, userId: string | undef
 
 /**
  * Flip a newly-created SaaS workspace from the DB default `plan_tier='free'`
- * onto `'trial'` with `trial_ends_at = NOW() + TRIAL_DAYS`. Self-hosted
- * orgs stay on `'free'` — the deploy-mode guard is the only thing
- * separating "Atlas as the free self-hosted product" from "Atlas as the
- * hosted SaaS trial". Without this hook, every SaaS workspace lands on
- * the free-tier definition and `/admin/model-config` renders the literal
- * `"user-configured"` sentinel from `plans.ts`.
+ * onto `'trial'` with `trial_ends_at = NOW() + TRIAL_DAYS` — or onto
+ * `'locked'` when the creating user has already consumed a trial (#3426,
+ * one trial per user — see {@link userHasConsumedTrial} for the recorded
+ * policy). Self-hosted orgs stay on `'free'` — the deploy-mode guard is
+ * the only thing separating "Atlas as the free self-hosted product" from
+ * "Atlas as the hosted SaaS trial". Without this hook, every SaaS
+ * workspace lands on the free-tier definition and `/admin/model-config`
+ * renders the literal `"user-configured"` sentinel from `plans.ts`.
  *
  * Wired into `organizationHooks.afterCreateOrganization` in
  * {@link buildPlugins}.
@@ -220,6 +223,28 @@ export async function assignSaasTrial(args: {
       [org.id],
     );
     if (existing[0]?.plan_tier !== "free") return;
+
+    // One trial per user (#3426): a creator who already owns a trialed
+    // workspace gets NO fresh trial — the new org lands directly on the
+    // zero-entitlement 'locked' churn tier (#3421), where enforcement
+    // blocks gated actions exactly like an ended subscription and the
+    // billing page offers the upgrade path. The org IS still created (no
+    // hard org cap — that would block legitimate paid multi-org
+    // customers). `trial_ends_at = NOW()` stamps the trial as consumed so
+    // `getCheckoutSessionParams`' double-trial suppression also withholds
+    // the Stripe-side trial at first checkout.
+    if (await userHasConsumedTrial(user.id, org.id)) {
+      await internalQuery(
+        `UPDATE organization SET plan_tier = 'locked', trial_ends_at = $1
+         WHERE id = $2 AND plan_tier = 'free'`,
+        [new Date().toISOString(), org.id],
+      );
+      log.info(
+        { userId: user.id, orgId: org.id },
+        "Workspace creator already consumed a SaaS trial — new workspace starts locked (one trial per user, #3426)",
+      );
+      return;
+    }
 
     const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
     await internalQuery(
@@ -1784,6 +1809,9 @@ export function buildStripePluginOptions(deps: {
     //   4. record the event id LAST — a crash before this point causes
     //      one extra retry that re-runs an idempotent write (the safe
     //      direction; recording first would make failures unrecoverable).
+    // Steps 1–4 run under a per-subscription advisory lock (#3445) so
+    // concurrent deliveries for the same subscription serialize — see
+    // `withStripeSubscriptionLock` for the full rationale.
     async onEvent(event: Stripe.Event) {
       const ledgerEvent: StripeLedgerEvent = {
         id: event.id,
@@ -1791,81 +1819,94 @@ export function buildStripePluginOptions(deps: {
         created: event.created,
         stripeSubscriptionId: stripeEventSubscriptionId(event),
       };
-      const disposition = await classifyStripeEvent(ledgerEvent);
-      if (disposition !== "fresh") {
-        billingLog.info(
-          { eventId: event.id, eventType: event.type, disposition },
-          "Skipping Stripe webhook event (%s)",
-          disposition,
-        );
-        return;
-      }
+      // #3445 — serialize the whole classify→sync→record sequence per
+      // subscription. The classify step is a preflight read, so two
+      // concurrent deliveries for the same subscription could both pass
+      // as `fresh` and the OLDER event's sync could finish last,
+      // overwriting the newer tier/lock state. Under the advisory lock
+      // the second delivery sees the first's recorded row and classifies
+      // `stale`/`duplicate`. The lock serializes — it does NOT claim:
+      // record-last stays intact (a failed sync records nothing, the
+      // re-throw → 400 → Stripe redelivers). Different subscriptions use
+      // different lock keys and stay concurrent; events with no
+      // subscription id skip the lock.
+      await withStripeSubscriptionLock(ledgerEvent.stripeSubscriptionId, async () => {
+        const disposition = await classifyStripeEvent(ledgerEvent);
+        if (disposition !== "fresh") {
+          billingLog.info(
+            { eventId: event.id, eventType: event.type, disposition },
+            "Skipping Stripe webhook event (%s)",
+            disposition,
+          );
+          return;
+        }
 
-      const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
+        const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
 
-      if (event.type === "invoice.payment_failed") {
-        const invoice = event.data.object as Stripe.Invoice;
-        const customerId = typeof invoice.customer === "string"
-          ? invoice.customer
-          : invoice.customer?.id;
-        // In Stripe API 2025+, subscription lives under parent.subscription_details
-        const parentSub = invoice.parent?.subscription_details?.subscription;
-        const subscriptionId = typeof parentSub === "string"
-          ? parentSub
-          : parentSub?.id;
-        const attemptCount = invoice.attempt_count ?? 0;
+        if (event.type === "invoice.payment_failed") {
+          const invoice = event.data.object as Stripe.Invoice;
+          const customerId = typeof invoice.customer === "string"
+            ? invoice.customer
+            : invoice.customer?.id;
+          // In Stripe API 2025+, subscription lives under parent.subscription_details
+          const parentSub = invoice.parent?.subscription_details?.subscription;
+          const subscriptionId = typeof parentSub === "string"
+            ? parentSub
+            : parentSub?.id;
+          const attemptCount = invoice.attempt_count ?? 0;
 
-        billingLog.warn(
-          { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
-          "Invoice payment failed (attempt %d)",
-          attemptCount,
-        );
+          billingLog.warn(
+            { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
+            "Invoice payment failed (attempt %d)",
+            attemptCount,
+          );
 
-        // After 3+ failed attempts, suspend the workspace.
-        // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
-        if (attemptCount >= 3 && subscriptionId) {
-          try {
-            // Look up the org by subscription's referenceId in Better Auth's subscription table
-            const rows = await internalQuery<{ referenceId: string }>(
-              `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
-              [subscriptionId],
-            );
-            const orgId = rows[0]?.referenceId;
-            if (orgId) {
-              const suspended = await updateWorkspaceStatus(orgId, "suspended");
-              if (suspended) {
-                invalidatePlanCache(orgId);
-                billingLog.warn(
-                  { orgId, subscriptionId, attemptCount },
-                  "Workspace suspended after %d failed payment attempts",
-                  attemptCount,
-                );
+          // After 3+ failed attempts, suspend the workspace.
+          // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
+          if (attemptCount >= 3 && subscriptionId) {
+            try {
+              // Look up the org by subscription's referenceId in Better Auth's subscription table
+              const rows = await internalQuery<{ referenceId: string }>(
+                `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
+                [subscriptionId],
+              );
+              const orgId = rows[0]?.referenceId;
+              if (orgId) {
+                const suspended = await updateWorkspaceStatus(orgId, "suspended");
+                if (suspended) {
+                  invalidatePlanCache(orgId);
+                  billingLog.warn(
+                    { orgId, subscriptionId, attemptCount },
+                    "Workspace suspended after %d failed payment attempts",
+                    attemptCount,
+                  );
+                } else {
+                  billingLog.error(
+                    { orgId, subscriptionId },
+                    "Cannot suspend workspace — subscription row references an organization that does not exist",
+                  );
+                }
               } else {
-                billingLog.error(
-                  { orgId, subscriptionId },
-                  "Cannot suspend workspace — subscription row references an organization that does not exist",
+                billingLog.warn(
+                  { subscriptionId },
+                  "Cannot suspend workspace — no subscription found for Stripe subscription ID",
                 );
               }
-            } else {
-              billingLog.warn(
-                { subscriptionId },
-                "Cannot suspend workspace — no subscription found for Stripe subscription ID",
+            } catch (err) {
+              billingLog.error(
+                { err: errorMessage(err), subscriptionId, attemptCount },
+                "Failed to suspend workspace after repeated payment failures",
               );
+              // Do not re-throw — suspension is the best-effort branch
+              // (#3424 owns the ladder); the payment failure is already
+              // recorded by Stripe, and a throw here would force a
+              // redelivery of an already-synced event.
             }
-          } catch (err) {
-            billingLog.error(
-              { err: errorMessage(err), subscriptionId, attemptCount },
-              "Failed to suspend workspace after repeated payment failures",
-            );
-            // Do not re-throw — suspension is the best-effort branch
-            // (#3424 owns the ladder); the payment failure is already
-            // recorded by Stripe, and a throw here would force a
-            // redelivery of an already-synced event.
           }
         }
-      }
 
-      await recordStripeEvent(ledgerEvent, appliedTier);
+        await recordStripeEvent(ledgerEvent, appliedTier);
+      });
     },
   };
 }
@@ -2245,6 +2286,19 @@ export function buildPlugins() {
       log.error(
         "STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is missing — "
         + "Stripe plugin will NOT be enabled. Set STRIPE_WEBHOOK_SECRET to enable billing.",
+      );
+    } else if (!hasInternalDB()) {
+      // #3447 — billing is structurally meaningless without the internal
+      // DB (org-scoped subscriptions live in the `organization` /
+      // `subscription` tables), and every webhook delivery would fail
+      // inside `onEvent` (ledger classify/record and
+      // `syncStripeEventToWorkspace` all require `internalQuery`) — a
+      // 400 loop Stripe retries for ~3 weeks. Refuse to enable instead.
+      // Mirrors the `hasInternalDB()` gate on the reconcile fiber in
+      // `lib/effect/layers.ts`.
+      log.error(
+        "STRIPE_SECRET_KEY is set but no internal database is configured — "
+        + "Stripe plugin will NOT be enabled. Set DATABASE_URL to enable billing.",
       );
     } else {
       try {

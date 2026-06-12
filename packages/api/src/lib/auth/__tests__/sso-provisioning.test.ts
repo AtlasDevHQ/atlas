@@ -79,6 +79,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   createInternalDBTestLayer: () => {},
   updateWorkspaceByot: async () => {},
   setWorkspaceTrialEndsAt: async () => {},
+  // #3445 — imported by lib/auth/server.ts (in this file's mock graph);
+  // passthrough here, serialization is covered in stripe-webhook-lifecycle.
+  withStripeSubscriptionLock: (_id: string | null, fn: () => Promise<unknown>) => fn(),
   InternalDB: {},
 }));
 

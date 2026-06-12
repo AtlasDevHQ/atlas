@@ -9,6 +9,10 @@
  *   - non-member → denied for everything (including list).
  *   - member-table lookup error → denied (fail closed), logged at error.
  *   - no internal DB → denied (org-scoped billing requires managed auth).
+ *   - customerType ≠ "organization" → denied for everyone, including
+ *     platform_admin and org owners (Atlas has no user-scoped
+ *     subscriptions; a user-mode call with an org referenceId would bill
+ *     the user's Stripe customer against an org reference).
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
@@ -76,6 +80,7 @@ describe("authorizeStripeReference — platform_admin", () => {
     for (const action of ALL_ACTIONS) {
       expect(
         await authorizeStripeReference({
+          customerType: "organization",
           user: { id: "user-1", role: "platform_admin" },
           referenceId: "org-1",
           action,
@@ -92,6 +97,7 @@ describe("authorizeStripeReference — org admin/owner", () => {
     for (const action of ALL_ACTIONS) {
       expect(
         await authorizeStripeReference({
+          customerType: "organization",
           user: { id: "user-1", role: "user" },
           referenceId: "org-1",
           action,
@@ -103,6 +109,7 @@ describe("authorizeStripeReference — org admin/owner", () => {
   it("looks up the member row scoped to the referenced org, not the active org", async () => {
     withMemberRole("owner");
     await authorizeStripeReference({
+      customerType: "organization",
       user: { id: "user-7" },
       referenceId: "org-referenced",
       action: "upgrade-subscription",
@@ -118,6 +125,7 @@ describe("authorizeStripeReference — plain member", () => {
     for (const action of MUTATING_ACTIONS) {
       expect(
         await authorizeStripeReference({
+          customerType: "organization",
           user: { id: "user-1", role: "user" },
           referenceId: "org-1",
           action,
@@ -131,6 +139,7 @@ describe("authorizeStripeReference — plain member", () => {
     withMemberRole("member");
     expect(
       await authorizeStripeReference({
+        customerType: "organization",
         user: { id: "user-1", role: "user" },
         referenceId: "org-1",
         action: "list-subscription",
@@ -145,6 +154,7 @@ describe("authorizeStripeReference — non-member", () => {
     for (const action of ALL_ACTIONS) {
       expect(
         await authorizeStripeReference({
+          customerType: "organization",
           user: { id: "intruder", role: "user" },
           referenceId: "org-1",
           action,
@@ -154,11 +164,43 @@ describe("authorizeStripeReference — non-member", () => {
   });
 });
 
+describe("authorizeStripeReference — org-scope requirement", () => {
+  it.each([undefined, "user", "", null])(
+    "denies every action when customerType is %p, even for owners",
+    async (customerType) => {
+      withMemberRole("owner");
+      for (const action of ALL_ACTIONS) {
+        expect(
+          await authorizeStripeReference({
+            customerType,
+            user: { id: "user-1", role: "user" },
+            referenceId: "org-1",
+            action,
+          }),
+        ).toBe(false);
+      }
+      expect(mockInternalQuery).not.toHaveBeenCalled();
+    },
+  );
+
+  it("denies platform_admin too when the call is not org-scoped", async () => {
+    expect(
+      await authorizeStripeReference({
+        customerType: "user",
+        user: { id: "user-1", role: "platform_admin" },
+        referenceId: "org-1",
+        action: "upgrade-subscription",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("authorizeStripeReference — failure modes", () => {
   it("fails closed when the member lookup throws", async () => {
     mockInternalQuery.mockImplementation(() => Promise.reject(new Error("pg blip")));
     expect(
       await authorizeStripeReference({
+        customerType: "organization",
         user: { id: "user-1", role: "user" },
         referenceId: "org-1",
         action: "upgrade-subscription",
@@ -171,6 +213,7 @@ describe("authorizeStripeReference — failure modes", () => {
     mockHasInternalDB = false;
     expect(
       await authorizeStripeReference({
+        customerType: "organization",
         user: { id: "user-1", role: "user" },
         referenceId: "org-1",
         action: "billing-portal",

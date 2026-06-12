@@ -203,6 +203,56 @@ describe("buildStripePluginOptions — org-scoped configuration (#3416)", () => 
   });
 });
 
+// ── getCheckoutSessionParams — user-scoped checkout guard ───────────
+
+describe("getCheckoutSessionParams — org-scope guard", () => {
+  function getCallback() {
+    const options = buildStripePluginOptions({
+      stripeClient: makeStripeClient(),
+      webhookSecret: "whsec_test",
+    });
+    if (!options.subscription?.enabled || !options.subscription.getCheckoutSessionParams) {
+      throw new Error("getCheckoutSessionParams missing from plugin options");
+    }
+    return options.subscription.getCheckoutSessionParams;
+  }
+
+  it("throws for a subscription whose referenceId is the calling user (user-scoped checkout)", () => {
+    const cb = getCallback();
+    expect(() =>
+      cb(
+        {
+          user: { id: "user-1" },
+          session: {},
+          plan: { name: "starter" },
+          subscription: { id: "subrow_1", referenceId: "user-1" },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+        } as any,
+        undefined,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+        {} as any,
+      ),
+    ).toThrow(/organization-scoped/);
+  });
+
+  it("passes org-scoped subscriptions through", () => {
+    const cb = getCallback();
+    const result = cb(
+      {
+        user: { id: "user-1" },
+        session: {},
+        plan: { name: "starter" },
+        subscription: { id: "subrow_1", referenceId: "org-1" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+      } as any,
+      undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      {} as any,
+    );
+    expect(result).toEqual({});
+  });
+});
+
 // ── checkout.session.completed → plan-tier sync ─────────────────────
 
 describe("checkout.session.completed", () => {

@@ -12,6 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
+import { APIError } from "better-auth/api";
 import { bearer, organization, jwt, customSession } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -1373,9 +1374,37 @@ export function buildStripePluginOptions(deps: {
       // Required for org-referenced subscription actions: the plugin 400s
       // org-scoped calls without it (AUTHORIZE_REFERENCE_REQUIRED). Role
       // policy (admin/owner for money-moving actions, member for list)
-      // lives in stripe-authorize-reference.ts.
-      authorizeReference({ user, referenceId, action }) {
-        return authorizeStripeReference({ user, referenceId, action });
+      // lives in stripe-authorize-reference.ts. customerType is threaded
+      // through so user-mode calls carrying a foreign referenceId fail
+      // closed — Atlas has no user-scoped subscriptions.
+      authorizeReference({ user, referenceId, action }, ctx) {
+        const body = ctx?.body as { customerType?: unknown } | undefined;
+        const query = ctx?.query as { customerType?: unknown } | undefined;
+        return authorizeStripeReference({
+          user,
+          referenceId,
+          action,
+          customerType: body?.customerType ?? query?.customerType,
+        });
+      },
+      // Last-gate guard for the one path authorizeReference cannot see: a
+      // user-mode upgrade with NO explicit referenceId skips the reference
+      // middleware entirely (referenceId defaults to user.id) and would
+      // create a Checkout session whose webhook referenceId never matches
+      // an organization — the customer pays, the workspace gets nothing.
+      // #3418 extends this callback with trial suppression.
+      getCheckoutSessionParams({ user, subscription }) {
+        if (subscription.referenceId === user.id) {
+          billingLog.error(
+            { userId: user.id, subscriptionId: subscription.id },
+            "Blocked user-scoped checkout — Atlas subscriptions must be org-scoped (customerType \"organization\")",
+          );
+          throw new APIError("BAD_REQUEST", {
+            message:
+              "Atlas subscriptions are organization-scoped. Retry with customerType \"organization\".",
+          });
+        }
+        return {};
       },
       async onSubscriptionComplete({ subscription, plan }) {
         const orgId = subscription.referenceId;

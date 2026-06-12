@@ -148,7 +148,9 @@ describe("runMigrations", () => {
     //   Plus 0126 (plugin-owned organization."stripeCustomerId", #3417) = 127.
     //   Plus 0127 (chk_plan_tier widened with 'locked', #3421) = 128.
     //   Plus 0128 (stripe_webhook_events ledger, #3423) = 129.
-    expect(count).toBe(129);
+    //   Plus 0129 (stripe_purged_subscriptions tombstones, #3468) = 130.
+    //   Plus 0130 (user_trial_grants one-trial marker, #3469/#3470) = 131.
+    expect(count).toBe(131);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -306,6 +308,8 @@ describe("runMigrations", () => {
         "0126_org_stripe_customer_id_plugin_column.sql",
         "0127_plan_tier_locked.sql",
         "0128_stripe_webhook_event_ledger.sql",
+        "0129_stripe_purged_subscriptions.sql",
+        "0130_user_trial_grants.sql",
       ],
     });
 

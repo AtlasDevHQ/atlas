@@ -35,6 +35,27 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     mockInternalQuery(sql, params),
 }));
 
+// Billing seam for the plan-tier default cap (#3436). Only
+// `getCachedWorkspace` matters here, but ALL value exports must be
+// stubbed — a partial mock.module fails at module load.
+type MockWorkspaceRow = { plan_tier: string; byot: boolean } | null;
+let mockWorkspaceRow: MockWorkspaceRow = null;
+const mockGetCachedWorkspace: Mock<(orgId: string) => Promise<MockWorkspaceRow>> = mock(
+  async () => mockWorkspaceRow,
+);
+
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  getCachedWorkspace: mockGetCachedWorkspace,
+  invalidatePlanCache: () => {},
+  checkPlanLimits: async () => ({ allowed: true }),
+  buildMetricStatus: () => ({}),
+  severityOf: () => 0,
+  checkResourceLimit: async () => ({ allowed: true }),
+  CHAT_INTEGRATION_COUNT_SQL: "SELECT 1",
+  checkChatIntegrationLimit: async () => ({ allowed: true }),
+  checkChatIntegrationLimitAndInstall: async () => ({ installed: true }),
+}));
+
 const quota = await import("../quota");
 
 // ---------------------------------------------------------------------------
@@ -143,6 +164,73 @@ describe("getMonthlyClassifierCap", () => {
   });
 });
 
+describe("getEffectiveMonthlyClassifierCap (#3436)", () => {
+  beforeEach(() => {
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockClear();
+    mockGetCachedWorkspace.mockClear();
+    mockWorkspaceRow = null;
+  });
+
+  it("the override column wins when set — even over a lower tier default", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      { monthly_classifier_cap: 42 },
+    ]);
+    mockWorkspaceRow = { plan_tier: "starter", byot: false };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBe(42);
+    // Plan lookup is skipped entirely when the override resolves.
+    expect(mockGetCachedWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("an override of 0 is respected (stop immediately), not treated as unset", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      { monthly_classifier_cap: 0 },
+    ]);
+    mockWorkspaceRow = { plan_tier: "business", byot: false };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBe(0);
+  });
+
+  it.each([
+    ["trial", 5_000],
+    ["starter", 5_000],
+    ["pro", 20_000],
+    ["business", 100_000],
+    ["locked", 0],
+  ] as const)("NULL column derives the %s tier default (%i)", async (tier, expected) => {
+    mockInternalQuery.mockImplementation(async () => [
+      { monthly_classifier_cap: null },
+    ]);
+    mockWorkspaceRow = { plan_tier: tier, byot: false };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBe(expected);
+  });
+
+  it("free (self-hosted) tier stays unlimited", async () => {
+    mockInternalQuery.mockImplementation(async () => []);
+    mockWorkspaceRow = { plan_tier: "free", byot: false };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBeNull();
+  });
+
+  it("BYOT bypasses the tier default — classifier runs on the customer's key", async () => {
+    mockInternalQuery.mockImplementation(async () => [
+      { monthly_classifier_cap: null },
+    ]);
+    mockWorkspaceRow = { plan_tier: "starter", byot: true };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBeNull();
+  });
+
+  it("no workspace row → null (pre-#3436 behavior preserved)", async () => {
+    mockInternalQuery.mockImplementation(async () => []);
+    mockWorkspaceRow = null;
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBeNull();
+  });
+
+  it("no internal DB → null without touching the plan cache", async () => {
+    mockHasInternalDB.mockImplementation(() => false);
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBeNull();
+    expect(mockGetCachedWorkspace).not.toHaveBeenCalled();
+  });
+});
+
 describe("getClassifyCountThisMonth", () => {
   beforeEach(() => {
     mockHasInternalDB.mockImplementation(() => true);
@@ -184,6 +272,20 @@ describe("getWorkspaceQuotaStatus", () => {
   beforeEach(() => {
     mockHasInternalDB.mockImplementation(() => true);
     mockInternalQuery.mockClear();
+    mockWorkspaceRow = null;
+  });
+
+  it("enforces the plan-tier default when the override column is NULL (#3436)", async () => {
+    mockWorkspaceRow = { plan_tier: "starter", byot: false };
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("monthly_classifier_cap")) {
+        return [{ monthly_classifier_cap: null }];
+      }
+      return [{ count: 5_000 }];
+    });
+    const out = await quota.getWorkspaceQuotaStatus("ws-1");
+    expect(out.monthlyClassifierCap).toBe(5_000);
+    expect(out.capReached).toBe(true);
   });
 
   it("returns capReached=false when cap is null (unlimited)", async () => {

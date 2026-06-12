@@ -542,10 +542,11 @@ function MonthlyCapField({
         Monthly classifier cap
       </Label>
       <p className="text-[12px] text-muted-foreground">
-        Optional. Hard cap on classifier invocations per calendar month. When
-        the cap is reached, proactive chat short-circuits before the
-        classifier runs until the next reset (calendar month, UTC). Leave
-        blank for no cap.
+        Optional override. Hard cap on classifier invocations per calendar
+        month. When the cap is reached, proactive chat short-circuits before
+        the classifier runs until the next reset (calendar month, UTC).
+        Leave blank to use your plan&apos;s included allowance — self-hosted
+        deployments have no cap.
       </p>
       <Input
         id="proactive-monthly-cap"

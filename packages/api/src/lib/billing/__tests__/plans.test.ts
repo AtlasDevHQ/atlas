@@ -31,6 +31,7 @@ describe("billing/plans", () => {
       expect(isUnlimited(limits.maxSeats)).toBe(true);
       expect(isUnlimited(limits.maxConnections)).toBe(true);
       expect(isUnlimited(limits.maxChatIntegrations)).toBe(true);
+      expect(isUnlimited(limits.monthlyProactiveClassifierCap)).toBe(true);
     });
 
     it("business tier has unlimited seats and connections", () => {
@@ -49,6 +50,20 @@ describe("billing/plans", () => {
       expect(trial.maxSeats).toBe(starter.maxSeats);
       expect(trial.maxConnections).toBe(starter.maxConnections);
       expect(trial.maxChatIntegrations).toBe(starter.maxChatIntegrations);
+      expect(trial.monthlyProactiveClassifierCap).toBe(
+        starter.monthlyProactiveClassifierCap,
+      );
+    });
+
+    it("every paid/SaaS tier bounds the proactive classifier cap (#3436)", () => {
+      // NULL workspace column = this tier default; only self-hosted is
+      // unlimited, so a Starter workspace's classifier spend is bounded
+      // out of the box instead of requiring an operator-set column.
+      expect(getPlanLimits("trial").monthlyProactiveClassifierCap).toBe(5_000);
+      expect(getPlanLimits("starter").monthlyProactiveClassifierCap).toBe(5_000);
+      expect(getPlanLimits("pro").monthlyProactiveClassifierCap).toBe(20_000);
+      expect(getPlanLimits("business").monthlyProactiveClassifierCap).toBe(100_000);
+      expect(getPlanLimits("locked").monthlyProactiveClassifierCap).toBe(0);
     });
 
     it("starter tier has finite limits", () => {

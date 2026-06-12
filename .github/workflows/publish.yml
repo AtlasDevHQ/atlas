@@ -39,6 +39,7 @@ on:
       - 'webhook-action-v*'
       # Plugins — context
       - 'yaml-context-v*'
+      - 'obsidian-reader-v*'
       # Community
       - 'obsidian-v*'
 
@@ -198,6 +199,10 @@ jobs:
       - name: Publish @useatlas/yaml-context
         if: startsWith(github.ref, 'refs/tags/yaml-context-v')
         run: cd plugins/yaml-context && npm publish --access public --provenance
+
+      - name: Publish @useatlas/obsidian-reader
+        if: startsWith(github.ref, 'refs/tags/obsidian-reader-v')
+        run: cd plugins/obsidian-reader && npm publish --access public --provenance
 
       # Community
       - name: Publish obsidian-atlas

@@ -17,7 +17,12 @@ export type DeployModeSetting = "saas" | "self-hosted" | "auto";
 export const WORKSPACE_STATUSES = ["active", "suspended", "deleted"] as const;
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number];
 
-export const PLAN_TIERS = ["free", "trial", "starter", "pro", "business"] as const;
+// "locked" is the SaaS churn landing tier (#3421): zero entitlements,
+// resubscribe CTA. It is the landing state for subscription deletion, and
+// (by design, one tier / three consumers) for #3426's second-org-no-trial
+// policy and #3424's `unpaid` delinquency step. Self-hosted deployments
+// never produce it — "free" remains the unlimited self-hosted tier.
+export const PLAN_TIERS = ["free", "trial", "starter", "pro", "business", "locked"] as const;
 export type PlanTier = (typeof PLAN_TIERS)[number];
 
 export const NOISY_NEIGHBOR_METRICS = ["queries", "tokens", "storage"] as const;

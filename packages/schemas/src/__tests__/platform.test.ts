@@ -145,7 +145,7 @@ describe("enum strict rejection", () => {
 
   test("canonical tuples match expected values", () => {
     expect(WORKSPACE_STATUSES).toEqual(["active", "suspended", "deleted"]);
-    expect(PLAN_TIERS).toEqual(["free", "trial", "starter", "pro", "business"]);
+    expect(PLAN_TIERS).toEqual(["free", "trial", "starter", "pro", "business", "locked"]);
     expect(NOISY_NEIGHBOR_METRICS).toEqual(["queries", "tokens", "storage"]);
     expect(ATLAS_ROLES).toEqual(["member", "admin", "owner", "platform_admin"]);
   });

@@ -884,6 +884,8 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // Adds the @better-auth/stripe plugin's "stripeCustomerId" column to
   // Better Auth's "organization" table (#3417).
   "0126_org_stripe_customer_id_plugin_column.sql",
+  // Widens organization.chk_plan_tier with the 'locked' churn tier (#3421).
+  "0127_plan_tier_locked.sql",
 ];
 
 /**
@@ -1745,7 +1747,7 @@ export async function getAuditLogQueries(
 // ── Workspace lifecycle helpers (0.9.0) ─────────────────────────────
 
 export type WorkspaceStatus = "active" | "suspended" | "deleted";
-export type PlanTier = "free" | "trial" | "starter" | "pro" | "business";
+export type PlanTier = "free" | "trial" | "starter" | "pro" | "business" | "locked";
 
 export interface WorkspaceRow {
   id: string;

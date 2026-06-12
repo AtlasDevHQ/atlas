@@ -57,13 +57,16 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-function tierVariant(tier: string): "default" | "secondary" | "outline" {
+function tierVariant(tier: string): "default" | "secondary" | "outline" | "destructive" {
   switch (tier) {
     case "business":
       return "default";
     case "pro":
     case "starter":
       return "secondary";
+    // Churn landing tier (#3421) — zero entitlements until resubscribe.
+    case "locked":
+      return "destructive";
     default:
       return "outline";
   }

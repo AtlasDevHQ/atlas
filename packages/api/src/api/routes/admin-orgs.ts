@@ -760,7 +760,7 @@ adminOrgs.openapi(getOrgStatusRoute, async (c) => {
 });
 
 // PATCH /:id/plan
-const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "starter", "pro", "business"]);
+const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "starter", "pro", "business", "locked"]);
 
 adminOrgs.openapi(updatePlanRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {

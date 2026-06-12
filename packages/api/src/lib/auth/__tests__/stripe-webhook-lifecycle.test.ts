@@ -338,10 +338,53 @@ describe("checkout.session.completed", () => {
   });
 });
 
-// ── customer.subscription.deleted → downgrade ───────────────────────
+// ── churn lifecycle (#3421): cancel keeps tier, delete locks ────────
+
+describe("customer.subscription.updated → pending cancel (#3421)", () => {
+  it("does NOT change the tier when cancellation is merely scheduled", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      cancelAtPeriodEnd: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    // active → pending-cancel transition: the plugin fires
+    // onSubscriptionCancel exactly once here (schedule time, customer
+    // still paid through period end).
+    const res = await postWebhook(auth, {
+      id: "evt_cancel_scheduled_1",
+      type: "customer.subscription.updated",
+      data: {
+        object: stripeSubscription({
+          status: "active",
+          cancel_at_period_end: true,
+        }),
+      },
+    });
+
+    expect(res.status).toBe(200);
+    // The customer is paid up — entitlements retained until period end.
+    // (onSubscriptionUpdate still runs plan sync against the same tier,
+    // so any write must be to "starter", never a downgrade.)
+    for (const call of mockUpdateWorkspacePlanTier.mock.calls) {
+      const [, tier] = call as [string, string];
+      expect(tier).toBe("starter");
+    }
+    // The plugin persisted the pending-cancel flag for UI display.
+    expect(db.subscription[0].cancelAtPeriodEnd).toBe(true);
+  });
+});
 
 describe("customer.subscription.deleted", () => {
-  it("downgrades the org referenced by the deleted subscription", async () => {
+  it("locks the org when the subscription actually ends — never free (#3421)", async () => {
     const db = emptyDB();
     db.subscription.push({
       id: "subrow_1",
@@ -363,9 +406,7 @@ describe("customer.subscription.deleted", () => {
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
-    // Landing tier is "free" today; #3421 moves this to the locked tier.
-    const [orgId] = mockUpdateWorkspacePlanTier.mock.calls[0] as [string, string];
-    expect(orgId).toBe("org-1");
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
     expect(db.subscription[0].status).toBe("canceled");
   });
 });

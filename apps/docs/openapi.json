@@ -64899,7 +64899,8 @@
                               "trial",
                               "starter",
                               "pro",
-                              "business"
+                              "business",
+                              "locked"
                             ]
                           },
                           "byot": {
@@ -65130,7 +65131,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "byot": {
@@ -65912,7 +65914,7 @@
           "Platform Admin"
         ],
         "summary": "Change workspace plan tier",
-        "description": "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business).",
+        "description": "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business, locked).",
         "requestBody": {
           "required": true,
           "content": {
@@ -65927,7 +65929,8 @@
                       "trial",
                       "starter",
                       "pro",
-                      "business"
+                      "business",
+                      "locked"
                     ],
                     "description": "The new plan tier for the workspace.",
                     "example": "starter"
@@ -66350,7 +66353,8 @@
                               "trial",
                               "starter",
                               "pro",
-                              "business"
+                              "business",
+                              "locked"
                             ]
                           },
                           "metric": {
@@ -71918,7 +71922,8 @@
                       "trial",
                       "starter",
                       "pro",
-                      "business"
+                      "business",
+                      "locked"
                     ],
                     "default": "starter"
                   },
@@ -72188,7 +72193,8 @@
                       "trial",
                       "starter",
                       "pro",
-                      "business"
+                      "business",
+                      "locked"
                     ]
                   },
                   "enabled": {
@@ -72848,7 +72854,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "displayName": {
@@ -73031,7 +73038,8 @@
                               "trial",
                               "starter",
                               "pro",
-                              "business"
+                              "business",
+                              "locked"
                             ]
                           },
                           "displayName": {
@@ -73447,7 +73455,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "current_plan": {
@@ -73457,7 +73466,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "requestId": {
@@ -73834,7 +73844,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "current_plan": {
@@ -73844,7 +73855,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "requestId": {
@@ -74120,7 +74132,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "current_plan": {
@@ -74130,7 +74143,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "requestId": {
@@ -74423,7 +74437,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "current_plan": {
@@ -74433,7 +74448,8 @@
                             "trial",
                             "starter",
                             "pro",
-                            "business"
+                            "business",
+                            "locked"
                           ]
                         },
                         "requestId": {

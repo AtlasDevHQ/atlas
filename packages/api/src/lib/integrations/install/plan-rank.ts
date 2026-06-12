@@ -43,6 +43,10 @@ import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
  * because trials grant temporary starter-equivalent access.
  */
 export const PLAN_RANK: Readonly<Record<PlanTier, number>> = {
+  // Churn landing tier (#3421): zero entitlements, so it ranks below
+  // even `free` — a locked workspace satisfies NO min_plan gate, not
+  // even free-min integrations, until it resubscribes.
+  locked: -1,
   free: 0,
   trial: 1,
   starter: 2,

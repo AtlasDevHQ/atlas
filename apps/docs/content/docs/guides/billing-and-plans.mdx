@@ -167,8 +167,8 @@ Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe pl
 |-------|----------|
 | Subscription complete | Activates the subscription and sets the workspace plan tier |
 | Subscription updated | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
-| Subscription canceled | Downgrades the workspace to free tier |
-| Subscription deleted | Downgrades the workspace to free tier |
+| Subscription cancellation scheduled | No tier change — paid entitlements are retained until the end of the billing period (cancel anytime via the Customer Portal, restore before period end to keep the plan) |
+| Subscription deleted (period end) | Locks the workspace — chat and queries are blocked with a resubscribe message until a new plan is purchased |
 | `invoice.payment_failed` | Logs the failure; auto-suspends the workspace after 3+ consecutive failures |
 
 Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.

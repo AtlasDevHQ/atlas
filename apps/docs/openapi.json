@@ -72972,6 +72972,18 @@
                             "string",
                             "null"
                           ]
+                        },
+                        "trialEndsAtEffective": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "trialDays": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
@@ -73478,6 +73490,92 @@
           }
         },
         "operationId": "postBillingByot"
+      }
+    },
+    "/api/v1/trial": {
+      "get": {
+        "tags": [
+          "Billing"
+        ],
+        "summary": "Get trial status",
+        "description": "Returns the active workspace's trial clock (start, effective end, length, expired flag), visible to every member. `trial` is null when the workspace is not on a trial.",
+        "responses": {
+          "200": {
+            "description": "Trial status for the active workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "trial": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "startedAt": {
+                          "type": "string"
+                        },
+                        "endsAt": {
+                          "type": "string"
+                        },
+                        "trialDays": {
+                          "type": "number"
+                        },
+                        "expired": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "startedAt",
+                        "endsAt",
+                        "trialDays",
+                        "expired"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "trial"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getTrial"
       }
     },
     "/api/v1/integrations/discord/install": {

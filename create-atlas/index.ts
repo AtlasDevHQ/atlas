@@ -71,6 +71,14 @@ function extractExecStream(err: unknown, stream: "stdout" | "stderr"): string {
   return "";
 }
 
+// The sandbox plugins load their provider SDK lazily (optional peer dep), so
+// both packages must be installed for the backend to engage.
+function sandboxInstallCommand(sandbox: "e2b" | "daytona"): string {
+  return sandbox === "e2b"
+    ? "bun add @useatlas/e2b e2b"
+    : "bun add @useatlas/daytona @daytonaio/sdk";
+}
+
 // Parse --defaults / -y flag for non-interactive mode
 const args = process.argv.slice(2);
 const useDefaults = args.includes("--defaults") || args.includes("-y");
@@ -910,11 +918,7 @@ async function main() {
     const pluginExport = sandboxChoice === "e2b"
       ? "e2bSandboxPlugin"
       : "daytonaSandboxPlugin";
-    // The plugin loads its provider SDK lazily (optional peer dep), so both
-    // must be installed for the backend to engage.
-    const sandboxInstallCmd = sandboxChoice === "e2b"
-      ? "bun add @useatlas/e2b e2b"
-      : "bun add @useatlas/daytona @daytonaio/sdk";
+    const sandboxInstallCmd = sandboxInstallCommand(sandboxChoice);
 
     const configContent = `import { defineConfig } from "@atlas/api/lib/config";
 import { ${pluginExport} } from "${pluginPkg}";
@@ -1130,7 +1134,7 @@ export default defineConfig({
       if (sandboxChoice === "sidecar") {
         noteBody += "\n\n" + pc.dim("Deploy sidecar/ as a separate service. Set SIDECAR_AUTH_TOKEN on both.");
       } else if (sandboxChoice === "e2b" || sandboxChoice === "daytona") {
-        noteBody += "\n\n" + pc.dim(`Install the sandbox plugin + SDK: ${sandboxChoice === "e2b" ? "bun add @useatlas/e2b e2b" : "bun add @useatlas/daytona @daytonaio/sdk"}`);
+        noteBody += "\n\n" + pc.dim(`Install the sandbox plugin + SDK: ${sandboxInstallCommand(sandboxChoice)}`);
       }
       break;
   }

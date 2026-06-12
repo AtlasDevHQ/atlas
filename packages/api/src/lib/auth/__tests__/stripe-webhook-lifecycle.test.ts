@@ -60,6 +60,7 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
 }));
 
 const { buildStripePluginOptions } = await import("../server");
+const { TIER_LIFECYCLE_EVENT_TYPES } = await import("@atlas/api/lib/billing/stripe-event-ledger");
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
 const { organization } = await import("better-auth/plugins");
@@ -81,12 +82,9 @@ interface LedgerRow {
 
 let ledgerRows: LedgerRow[] = [];
 
-const LIFECYCLE_TYPES = [
-  "checkout.session.completed",
-  "customer.subscription.created",
-  "customer.subscription.updated",
-  "customer.subscription.deleted",
-];
+// The production allowlist, so the sim can't drift from the real
+// ordering model if TIER_LIFECYCLE_EVENT_TYPES changes.
+const LIFECYCLE_TYPES: readonly string[] = TIER_LIFECYCLE_EVENT_TYPES;
 
 function ledgerAwareQuery(
   extra?: (sql: string, params?: unknown[]) => unknown[] | null,
@@ -631,6 +629,9 @@ describe("event ledger (#3423)", () => {
     });
     expect(tied.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    // The stale event must not land in the ledger either — only
+    // processed events are recorded.
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_tie"]);
   });
 
   it("returns 400 and does NOT record the event when the sync fails, so a redelivery re-runs it", async () => {
@@ -657,9 +658,13 @@ describe("event ledger (#3423)", () => {
     // retry below is classified fresh instead of duplicate.
     expect(ledgerRows).toHaveLength(0);
 
+    // Clear so the assertions below prove the REDELIVERY reran the sync,
+    // not just that the failed first attempt reached the write.
+    mockUpdateWorkspacePlanTier.mockClear();
     mockUpdateWorkspacePlanTier.mockImplementation(() => Promise.resolve(true));
     const retry = await postWebhook(auth, checkoutCompletedEvent());
     expect(retry.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
     expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_checkout_1"]);
   });

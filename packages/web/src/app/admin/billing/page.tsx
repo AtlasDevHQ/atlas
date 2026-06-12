@@ -38,7 +38,7 @@ import {
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 import { formatDate, formatNumber } from "@/lib/format";
-import { consumePlanIntent } from "@/lib/billing/plan-intent";
+import { consumePlanIntent, PAID_TIERS } from "@/lib/billing/plan-intent";
 import { cn } from "@/lib/utils";
 import { billingSearchParams } from "./search-params";
 import type { BillingStatus } from "@useatlas/schemas";
@@ -434,13 +434,20 @@ function CheckoutReturnBanner({
   refetch: () => void;
   onDone: () => void;
 }) {
-  const PAID_TIERS = ["starter", "pro", "business"];
   const landed =
-    PAID_TIERS.includes(data.plan.tier) ||
+    (PAID_TIERS as readonly string[]).includes(data.plan.tier) ||
     data.subscription?.status === "active" ||
     data.subscription?.status === "trialing";
   const [slow, setSlow] = useState(false);
   const attempts = useRef(0);
+
+  // refetch's identity changes per render (useAdminFetch recreates it), so
+  // depending on it directly would tear down and restart the interval on
+  // every poll-driven render. Route through a ref kept fresh each render.
+  const refetchRef = useRef(refetch);
+  useEffect(() => {
+    refetchRef.current = refetch;
+  });
 
   useEffect(() => {
     if (state !== "success" || landed) return;
@@ -451,10 +458,10 @@ function CheckoutReturnBanner({
         clearInterval(interval);
         return;
       }
-      refetch();
+      refetchRef.current();
     }, 2500);
     return () => clearInterval(interval);
-  }, [state, landed, refetch]);
+  }, [state, landed]);
 
   if (state === "cancelled") {
     return (

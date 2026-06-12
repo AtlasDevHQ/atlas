@@ -17,7 +17,9 @@
 const STORAGE_KEY = "atlas.plan-intent";
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-const PAID_TIERS = ["starter", "pro", "business"] as const;
+/** The paid tiers, in upgrade order. Shared web-side source of truth
+ * (the web cannot import the API's plans.ts — pure HTTP client rule). */
+export const PAID_TIERS = ["starter", "pro", "business"] as const;
 export type PlanIntent = (typeof PAID_TIERS)[number];
 
 export function isPlanIntent(value: string | null | undefined): value is PlanIntent {

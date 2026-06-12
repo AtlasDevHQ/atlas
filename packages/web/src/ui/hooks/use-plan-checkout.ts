@@ -75,7 +75,11 @@ export function usePlanCheckout(): {
       const url = res?.data?.url;
       if (url) {
         window.location.assign(url);
-        return; // keep pendingPlan set until the browser navigates
+        // Keep pendingPlan set while the browser navigates; if navigation
+        // is blocked (popup blocker, intercepted test env) re-enable the
+        // grid after 10s instead of leaving it disabled forever.
+        setTimeout(() => setPendingPlan(null), 10_000);
+        return;
       }
       console.warn("Plan checkout: no URL returned", res?.error ?? res?.data);
       setError(checkoutErrorMessage(res?.error));

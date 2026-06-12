@@ -1436,6 +1436,10 @@ export function buildStripePluginOptions(deps: {
 
         let trialConsumed = true;
         try {
+          // null workspace (no organization row) → the org never received
+          // an Atlas trial → let the plugin's Stripe trial stand. Distinct
+          // from the catch below: a lookup ERROR is unknown state and
+          // fails toward suppression.
           const workspace = await getWorkspaceDetails(orgId);
           trialConsumed = workspace?.trial_ends_at != null;
         } catch (err) {

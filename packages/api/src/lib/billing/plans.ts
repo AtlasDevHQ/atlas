@@ -198,6 +198,15 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
 /**
  * Returns plan configs in the format expected by @better-auth/stripe's
  * `subscription.plans` option. Only called when STRIPE_SECRET_KEY is set.
+ *
+ * Every plan sets `seatPriceId === priceId` — the plugin's "seat-only
+ * plan" shape (#3418): checkout emits a single line item priced per seat
+ * with quantity = member count, and the plugin's member
+ * add/remove/invite-accept hooks keep the Stripe quantity synced to
+ * membership automatically. This matches Atlas's $/seat pricing and the
+ * member-count basis enforcement uses for token budgets. The pairing is
+ * pinned by plans.test.ts — a drift would re-add a base line item on top
+ * of the seat item (double billing).
  */
 export function getStripePlans(): Array<{
   name: string;
@@ -221,12 +230,6 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "starter",
       priceId: starterPriceId,
-      // Seat-only plan: seatPriceId === priceId makes the plugin emit a
-      // single checkout line item priced per seat with quantity = member
-      // count, and its member add/remove/invite-accept hooks keep the
-      // Stripe quantity synced to membership automatically (#3418). This
-      // matches Atlas's $/seat pricing and the member-count basis
-      // enforcement uses for token budgets.
       seatPriceId: starterPriceId,
       annualDiscountPriceId: process.env.STRIPE_STARTER_ANNUAL_PRICE_ID,
       limits: {
@@ -244,12 +247,6 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "pro",
       priceId: proPriceId,
-      // Seat-only plan: seatPriceId === priceId makes the plugin emit a
-      // single checkout line item priced per seat with quantity = member
-      // count, and its member add/remove/invite-accept hooks keep the
-      // Stripe quantity synced to membership automatically (#3418). This
-      // matches Atlas's $/seat pricing and the member-count basis
-      // enforcement uses for token budgets.
       seatPriceId: proPriceId,
       annualDiscountPriceId: process.env.STRIPE_PRO_ANNUAL_PRICE_ID,
       limits: {
@@ -267,12 +264,6 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "business",
       priceId: businessPriceId,
-      // Seat-only plan: seatPriceId === priceId makes the plugin emit a
-      // single checkout line item priced per seat with quantity = member
-      // count, and its member add/remove/invite-accept hooks keep the
-      // Stripe quantity synced to membership automatically (#3418). This
-      // matches Atlas's $/seat pricing and the member-count basis
-      // enforcement uses for token budgets.
       seatPriceId: businessPriceId,
       annualDiscountPriceId: process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID,
       limits: {

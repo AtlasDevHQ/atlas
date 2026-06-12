@@ -117,12 +117,16 @@ export default function AdminOverview() {
   // surfaces a urgency-tiered banner above the tiles for the days-left
   // case, so the tile itself just labels the tier and a static trial-end
   // date when on trial — no countdown duplication.
-  const planDescription =
-    ws?.trialEndsAt && ws.planTier === "trial"
-      ? `Trial ends ${new Date(ws.trialEndsAt).toLocaleDateString()}`
-      : ws
-        ? "Active plan"
-        : "Self-hosted";
+  // Effective trial end (#3434): trial_ends_at with enforcement's
+  // createdAt + TRIAL_DAYS fallback, so NULL-trial_ends_at workspaces see
+  // their real clock here instead of nothing.
+  const wsTrialEnds =
+    ws?.planTier === "trial" ? ws.trialEndsAtEffective ?? ws.trialEndsAt : null;
+  const planDescription = wsTrialEnds
+    ? `Trial ends ${new Date(wsTrialEnds).toLocaleDateString()}`
+    : ws
+      ? "Active plan"
+      : "Self-hosted";
 
   return (
     <div className="p-6">
@@ -155,10 +159,15 @@ export default function AdminOverview() {
         </div>
       )}
 
-      {ws?.trialEndsAt && ws.planTier === "trial" && (
+      {ws !== null && ws.planTier === "trial" && wsTrialEnds && (
         <div className="mb-4">
           <TrialCountdownBanner
-            plan={{ tier: "trial", trialEndsAt: ws.trialEndsAt }}
+            plan={{
+              tier: "trial",
+              trialEndsAt: ws.trialEndsAt,
+              trialEndsAtEffective: wsTrialEnds,
+              trialDays: ws.trialDays,
+            }}
           />
         </div>
       )}

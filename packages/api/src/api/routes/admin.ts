@@ -30,6 +30,7 @@ import {
   getWorkspaceDetails,
 } from "@atlas/api/lib/db/internal";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { plugins } from "@atlas/api/lib/plugins/registry";
 import {
   getSettingsForAdmin,
@@ -1637,6 +1638,14 @@ admin.openapi(overviewRoute, async (c) => {
         planTier: workspace.plan_tier,
         planDisplayName: getPlanDefinition(workspace.plan_tier).displayName,
         trialEndsAt: workspace.trial_ends_at,
+        // Effective trial end (#3434) — trial_ends_at with enforcement's
+        // createdAt + TRIAL_DAYS fallback, so the overview's trial banner
+        // renders even for NULL-trial_ends_at workspaces.
+        trialEndsAtEffective:
+          workspace.plan_tier === "trial"
+            ? effectiveTrialEndsAt(workspace)?.toISOString() ?? null
+            : null,
+        trialDays: getPlanDefinition(workspace.plan_tier).trialDays ?? null,
         region: workspace.region,
       }
     : null;

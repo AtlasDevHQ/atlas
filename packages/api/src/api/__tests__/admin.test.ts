@@ -846,6 +846,37 @@ describe("GET /api/v1/admin/overview", () => {
     expect(workspace?.name).toBe("Acme Co");
     expect(workspace?.planTier).toBe("trial");
     expect(workspace?.trialEndsAt).toBe("2026-06-01T00:00:00Z");
+    // #3434 — effective end mirrors trial_ends_at when set; trialDays from
+    // the plan definition so UI copy never hardcodes the number.
+    expect(workspace?.trialEndsAtEffective).toBe("2026-06-01T00:00:00.000Z");
+    expect(workspace?.trialDays).toBe(14);
+  });
+
+  it("computes the effective trial end from createdAt when trial_ends_at is NULL (#3434)", async () => {
+    setOrgScopedAdmin("org-test-1");
+    mockGetWorkspaceDetails.mockResolvedValue({
+      id: "org-test-1",
+      name: "Acme Co",
+      slug: "acme",
+      workspace_status: "active",
+      plan_tier: "trial",
+      byot: false,
+      stripe_customer_id: null,
+      trial_ends_at: null,
+      suspended_at: null,
+      deleted_at: null,
+      region: null,
+      region_assigned_at: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/overview"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    const workspace = body.workspace as Record<string, unknown> | null;
+    // createdAt + TRIAL_DAYS (14) — the same fallback enforcement uses.
+    expect(workspace?.trialEndsAt).toBeNull();
+    expect(workspace?.trialEndsAtEffective).toBe("2026-01-15T00:00:00.000Z");
   });
 
   it("does not surface poolWarnings — deployment-wide leak guard (#2489)", async () => {

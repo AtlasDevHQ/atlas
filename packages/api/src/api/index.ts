@@ -529,6 +529,20 @@ if (process.env.STRIPE_SECRET_KEY) {
   log.debug("Billing routes disabled (STRIPE_SECRET_KEY not set)");
 }
 
+// Member-visible trial status (#3434) — standardAuth, mounted unconditionally.
+// On self-hosted (no internal DB) it answers `{ trial: null }`, so the web
+// trial banner / signup notice can fetch it without branching on deploy mode.
+try {
+  const { trial } = await import("./routes/trial");
+  app.route("/api/v1/trial", trial);
+  log.debug("Trial status route enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load trial status route — trial visibility will be unavailable",
+  );
+}
+
 // Generalized Platform install routes — mounted unconditionally.
 // /api/v1/integrations/:platform/{install,callback} dispatches to the
 // per-Platform handler registered via `registerBuiltinInstallHandlers`

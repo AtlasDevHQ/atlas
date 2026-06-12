@@ -58,7 +58,23 @@ export interface BillingPlan {
   pricePerSeat: number;
   defaultModel: string;
   byot: boolean;
+  /** Raw `organization.trial_ends_at` — may be null even on a live trial (pre-backfill workspaces). */
   trialEndsAt: string | null;
+  /**
+   * Server-computed *effective* trial end (#3434): `trial_ends_at`, falling
+   * back to `createdAt + trialDays` — the exact date enforcement cuts the
+   * workspace off at. Non-null whenever `tier === "trial"` (barring
+   * unparseable timestamps). Render trial countdowns from THIS field, not
+   * `trialEndsAt`. Optional so a web bundle pinned to an older published
+   * schema keeps parsing; consumers fall back to `trialEndsAt` when absent.
+   */
+  trialEndsAtEffective?: string | null;
+  /**
+   * Trial length in days (the API's TRIAL_DAYS constant) so UI copy never
+   * hardcodes "14-day". Null for tiers without a trial; optional for
+   * older-bundle tolerance (see trialEndsAtEffective).
+   */
+  trialDays?: number | null;
 }
 
 /** Plan limits (null = unlimited). */
@@ -148,6 +164,8 @@ export const BillingPlanSchema = z.object({
   defaultModel: z.string(),
   byot: z.boolean(),
   trialEndsAt: z.string().nullable(),
+  trialEndsAtEffective: z.string().nullable().optional(),
+  trialDays: z.number().nullable().optional(),
 }) satisfies z.ZodType<BillingPlan>;
 
 export const BillingLimitsSchema = z.object({
@@ -192,6 +210,41 @@ export const BillingAvailablePlanSchema = z.object({
   maxConnections: z.number().nullable(),
   configured: z.boolean(),
 }) satisfies z.ZodType<BillingAvailablePlan>;
+
+// ---------------------------------------------------------------------------
+// Trial status — GET /api/v1/trial (#3434)
+// ---------------------------------------------------------------------------
+
+/**
+ * Member-visible trial state. Served by `GET /api/v1/trial` under standard
+ * (non-admin) auth so every workspace member — not just admins — can see
+ * the trial clock instead of discovering it via a hard 403 at expiry.
+ * `trial` is null off-trial (paid / free / locked tiers, self-hosted, no
+ * active org).
+ */
+export interface TrialStatus {
+  trial: {
+    /** Workspace creation time — when the trial started. */
+    startedAt: string;
+    /** Effective trial end — same fallback semantics as BillingPlan.trialEndsAtEffective. */
+    endsAt: string;
+    /** Trial length in days (the API's TRIAL_DAYS constant). */
+    trialDays: number;
+    /** Whether enforcement already considers the trial expired. */
+    expired: boolean;
+  } | null;
+}
+
+export const TrialStatusSchema = z.object({
+  trial: z
+    .object({
+      startedAt: z.string(),
+      endsAt: z.string(),
+      trialDays: z.number(),
+      expired: z.boolean(),
+    })
+    .nullable(),
+}) satisfies z.ZodType<TrialStatus>;
 
 export const BillingStatusSchema = z.object({
   workspaceId: z.string(),

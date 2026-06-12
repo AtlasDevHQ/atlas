@@ -69,21 +69,35 @@ function goToPlanPicker(push: (href: string) => void) {
 }
 
 export interface TrialCountdownBannerProps {
-  plan: Pick<BillingPlan, "tier" | "trialEndsAt">;
+  plan: Pick<BillingPlan, "tier" | "trialEndsAt" | "trialEndsAtEffective" | "trialDays">;
   /** Injectable clock for tests. Defaults to `Date.now()`. */
   now?: number;
 }
 
+function pluralDays(n: number): string {
+  return n === 1 ? "day" : "days";
+}
+
 export function TrialCountdownBanner({ plan, now }: TrialCountdownBannerProps) {
-  if (plan.tier !== "trial" || !plan.trialEndsAt) return null;
-  const state = resolveState(plan.trialEndsAt, now ?? Date.now());
+  // Prefer the server-computed *effective* end (#3434) — trial_ends_at with
+  // the createdAt + TRIAL_DAYS fallback enforcement uses — so a workspace
+  // with a NULL trial_ends_at still gets a countdown instead of a silent
+  // day-14 cutoff. `trialEndsAt` remains as a fallback for an older API
+  // that doesn't send the effective field yet.
+  const endsAt = plan.trialEndsAtEffective ?? plan.trialEndsAt;
+  if (plan.tier !== "trial" || !endsAt) return null;
+  const state = resolveState(endsAt, now ?? Date.now());
 
   if (state.kind === "early") {
+    // Trial length comes off the wire (plan.trialDays) — never hardcode the
+    // number here, it would silently drift from the API's TRIAL_DAYS.
+    const lengthLabel =
+      plan.trialDays != null ? `a ${plan.trialDays}-day Atlas trial` : "an Atlas trial";
     return (
       <BannerShell
         tone="info"
         icon={<Sparkles className="size-4 shrink-0" aria-hidden />}
-        title={`You're on a 14-day Atlas trial. ${state.daysLeft} days left.`}
+        title={`You're on ${lengthLabel}. ${state.daysLeft} ${pluralDays(state.daysLeft)} left.`}
         buttonVariant="secondary"
       />
     );
@@ -94,7 +108,7 @@ export function TrialCountdownBanner({ plan, now }: TrialCountdownBannerProps) {
       <BannerShell
         tone="warning"
         icon={<Clock className="size-4 shrink-0" aria-hidden />}
-        title={`Trial ending in ${state.daysLeft} days.`}
+        title={`Trial ending in ${state.daysLeft} ${pluralDays(state.daysLeft)}.`}
         buttonVariant="default"
       />
     );

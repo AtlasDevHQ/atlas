@@ -31,13 +31,19 @@ const NOW = Date.parse("2026-05-16T12:00:00Z");
 const DAY = 86_400_000;
 
 function plan(overrides: Partial<BillingPlan>): BillingPlan {
+  const trialEndsAt =
+    "trialEndsAt" in overrides ? overrides.trialEndsAt ?? null : new Date(NOW + 10 * DAY).toISOString();
   return {
     tier: "trial",
     displayName: "Trial",
     pricePerSeat: 0,
     defaultModel: "anthropic/claude-sonnet-4.6",
     byot: false,
-    trialEndsAt: new Date(NOW + 10 * DAY).toISOString(),
+    trialEndsAt,
+    // Mirror the API: trialEndsAtEffective defaults to trialEndsAt unless a
+    // test overrides it (the NULL-trial_ends_at fallback cases).
+    trialEndsAtEffective: trialEndsAt,
+    trialDays: 14,
     ...overrides,
   };
 }
@@ -51,11 +57,91 @@ describe("TrialCountdownBanner", () => {
     expect(container.querySelector('[data-testid="trial-countdown-banner"]')).toBeNull();
   });
 
-  test("hidden when trialEndsAt is null", () => {
+  test("hidden when both trialEndsAt and trialEndsAtEffective are null", () => {
     const { container } = render(
-      <TrialCountdownBanner plan={plan({ trialEndsAt: null })} now={NOW} />,
+      <TrialCountdownBanner
+        plan={plan({ trialEndsAt: null, trialEndsAtEffective: null })}
+        now={NOW}
+      />,
     );
     expect(container.textContent).toBe("");
+  });
+
+  test("renders from trialEndsAtEffective when trialEndsAt is null (#3434 blind spot)", () => {
+    // The NULL-trial_ends_at workspace: enforcement falls back to
+    // createdAt + TRIAL_DAYS, and the API surfaces that as the effective
+    // end. The banner must render the same clock enforcement uses.
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({
+          trialEndsAt: null,
+          trialEndsAtEffective: new Date(NOW + 2 * DAY).toISOString(),
+        })}
+        now={NOW}
+      />,
+    );
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("warning");
+    expect(container.textContent).toContain("Trial ending in 2 days.");
+  });
+
+  test("prefers trialEndsAtEffective over trialEndsAt when both are set", () => {
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({
+          trialEndsAt: new Date(NOW + 10 * DAY).toISOString(),
+          trialEndsAtEffective: new Date(NOW - DAY).toISOString(),
+        })}
+        now={NOW}
+      />,
+    );
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("danger");
+  });
+
+  test("falls back to trialEndsAt when the effective field is absent (older API)", () => {
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({
+          trialEndsAt: new Date(NOW + 10 * DAY).toISOString(),
+          trialEndsAtEffective: undefined,
+        })}
+        now={NOW}
+      />,
+    );
+    const banner = container.querySelector('[data-testid="trial-countdown-banner"]');
+    expect(banner?.getAttribute("data-tone")).toBe("info");
+  });
+
+  test("sources the trial length from the wire payload, not a hardcoded 14", () => {
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({ trialDays: 30, trialEndsAt: new Date(NOW + 10 * DAY).toISOString() })}
+        now={NOW}
+      />,
+    );
+    expect(container.textContent).toContain("You're on a 30-day Atlas trial.");
+  });
+
+  test("omits the day count when trialDays is absent from the payload", () => {
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({ trialDays: null, trialEndsAt: new Date(NOW + 10 * DAY).toISOString() })}
+        now={NOW}
+      />,
+    );
+    expect(container.textContent).toContain("You're on an Atlas trial. 10 days left.");
+  });
+
+  test("pluralizes correctly with 1 day left (copy nit, #3434)", () => {
+    const { container } = render(
+      <TrialCountdownBanner
+        plan={plan({ trialEndsAt: new Date(NOW + 0.5 * DAY).toISOString() })}
+        now={NOW}
+      />,
+    );
+    expect(container.textContent).toContain("Trial ending in 1 day.");
+    expect(container.textContent).not.toContain("1 days");
   });
 
   test("unparseable trialEndsAt fails closed into the expired (danger) state", () => {

@@ -189,6 +189,19 @@ Webhook processing is idempotent and ordered: Atlas keeps a 30-day ledger of pro
 
 As a safety net for events lost beyond that window (for example after a webhook secret rotation), a background sweep runs every 6 hours and heals the workspace tier from the subscription table. Workspaces on a paid tier with no live subscription are logged but never downgraded automatically.
 
+## Workspace Lifecycle and Billing
+
+Platform-admin workspace lifecycle actions keep Stripe in sync automatically:
+
+| Action | Stripe behavior |
+|--------|-----------------|
+| Suspend | Payment collection is **paused** (`pause_collection: void`) — a suspended workspace can't use the product, so it isn't invoiced or dunned while suspended. The subscription stays alive |
+| Unsuspend | Payment collection resumes — normal invoicing restarts on the existing subscription |
+| Delete | The Stripe subscription is **canceled** before the data cascade runs — a deleted workspace never keeps invoicing |
+| Purge (GDPR) | Any remaining subscriptions are canceled and the **Stripe customer is permanently deleted** — no billable Stripe linkage survives a purge |
+
+If a Stripe call fails during one of these actions, the operation still completes; the failure is logged and returned as a `warnings` field on the admin response (and shown in the platform console) so the operator can follow up manually in the Stripe dashboard. Self-hosted deployments without Stripe configured skip these calls entirely.
+
 ---
 
 ## Stripe Setup (Self-Hosted)

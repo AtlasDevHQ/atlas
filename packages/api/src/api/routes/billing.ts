@@ -33,6 +33,7 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { resolveModelId } from "@atlas/api/lib/providers";
 import { BillingStatusSchema } from "@useatlas/schemas";
@@ -325,6 +326,16 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         defaultModel: plan.defaultModel,
         byot: workspace.byot,
         trialEndsAt: workspace.trial_ends_at,
+        // Effective trial end (#3434): trial_ends_at falling back to
+        // createdAt + TRIAL_DAYS — the SAME date enforcement cuts the
+        // workspace off at, so a NULL trial_ends_at workspace still gets a
+        // countdown instead of a silent day-14 cutoff. Server-computed so
+        // the web never re-derives the fallback rule.
+        trialEndsAtEffective:
+          workspace.plan_tier === "trial"
+            ? effectiveTrialEndsAt(workspace)?.toISOString() ?? null
+            : null,
+        trialDays: plan.trialDays ?? null,
       },
       limits: {
         tokenBudgetPerSeat: isUnlimited(limits.tokenBudgetPerSeat) ? null : limits.tokenBudgetPerSeat,

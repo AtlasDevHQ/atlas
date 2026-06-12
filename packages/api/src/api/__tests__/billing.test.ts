@@ -250,6 +250,40 @@ describe("billing routes", () => {
         maxSeats: null,
         maxConnections: null,
       });
+      // #3434 — non-trial tiers carry no effective trial end; trialDays is
+      // null because paid tiers have no trialDays in their plan definition.
+      expect(body.plan.trialEndsAtEffective).toBeNull();
+      expect(body.plan.trialDays).toBeNull();
+    });
+
+    it("computes trialEndsAtEffective from trial_ends_at for trial workspaces (#3434)", async () => {
+      const trialEnds = "2026-06-20T00:00:00.000Z";
+      mockGetWorkspaceDetails.mockImplementation(() =>
+        Promise.resolve({ ...mockWorkspace, plan_tier: "trial", trial_ends_at: trialEnds }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.plan.tier).toBe("trial");
+      expect(body.plan.trialEndsAtEffective).toBe(trialEnds);
+      expect(body.plan.trialDays).toBe(14);
+    });
+
+    it("falls back to createdAt + TRIAL_DAYS when a trial workspace has NULL trial_ends_at (#3434)", async () => {
+      mockGetWorkspaceDetails.mockImplementation(() =>
+        Promise.resolve({ ...mockWorkspace, plan_tier: "trial", trial_ends_at: null }),
+      );
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      // mockWorkspace.createdAt = 2026-01-01 → +14d = 2026-01-15. The exact
+      // date enforcement's isTrialExpired fallback computes.
+      expect(body.plan.trialEndsAt).toBeNull();
+      expect(body.plan.trialEndsAtEffective).toBe("2026-01-15T00:00:00.000Z");
     });
 
     it("defaults seat count to 1 when member query fails", async () => {

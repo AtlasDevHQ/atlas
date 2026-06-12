@@ -159,6 +159,13 @@ describe("resolveAuthRateLimitConfig", () => {
     expect(config.customRules["/reset-password"]).toEqual({ window: 60, max: 5 });
     expect(config.customRules["/send-verification-email"]).toEqual({ window: 60, max: 5 });
     expect(config.customRules["/verify-email"]).toEqual({ window: 60, max: 10 });
+    // Stripe plugin money-moving endpoints (#3417): the deleted hand-rolled
+    // portal route's limiter is replaced by these rules — losing any of
+    // them re-opens checkout/portal session-creation spam against Stripe.
+    expect(config.customRules["/subscription/upgrade"]).toEqual({ window: 3600, max: 10 });
+    expect(config.customRules["/subscription/billing-portal"]).toEqual({ window: 3600, max: 10 });
+    expect(config.customRules["/subscription/cancel"]).toEqual({ window: 3600, max: 10 });
+    expect(config.customRules["/subscription/restore"]).toEqual({ window: 3600, max: 10 });
   });
 
   it("uses the default modelName so Better Auth's auto-migration creates the rateLimit table", () => {

@@ -510,6 +510,13 @@ const AUTH_RATE_LIMIT_DEFAULTS = {
   resetPassword: { window: 60, max: 5 },
   sendVerificationEmail: { window: 60, max: 5 },
   verifyEmail: { window: 60, max: 10 },
+  // Money-moving Stripe plugin endpoints (#3417). The deleted hand-rolled
+  // portal route carried its own 5/hour per-workspace limiter; the plugin
+  // endpoints that replaced it would otherwise fall through to the global
+  // 100/min ceiling — enough to spam Stripe with portal/checkout session
+  // creation. 10/hour per client matches the old budget with headroom for
+  // legitimate retry loops.
+  subscriptionBilling: { window: 3600, max: 10 },
 } as const;
 
 export interface ResolvedAuthRateLimitConfig {
@@ -585,6 +592,12 @@ export function resolveAuthRateLimitConfig(
       "/reset-password": { ...AUTH_RATE_LIMIT_DEFAULTS.resetPassword },
       "/send-verification-email": { ...AUTH_RATE_LIMIT_DEFAULTS.sendVerificationEmail },
       "/verify-email": { ...AUTH_RATE_LIMIT_DEFAULTS.verifyEmail },
+      // @better-auth/stripe money-moving endpoints — each call can create
+      // a Stripe checkout/portal session or mutate the subscription.
+      "/subscription/upgrade": { ...AUTH_RATE_LIMIT_DEFAULTS.subscriptionBilling },
+      "/subscription/billing-portal": { ...AUTH_RATE_LIMIT_DEFAULTS.subscriptionBilling },
+      "/subscription/cancel": { ...AUTH_RATE_LIMIT_DEFAULTS.subscriptionBilling },
+      "/subscription/restore": { ...AUTH_RATE_LIMIT_DEFAULTS.subscriptionBilling },
     },
   };
 }

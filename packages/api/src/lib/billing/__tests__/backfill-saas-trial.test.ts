@@ -1,9 +1,12 @@
 /**
- * Tests for the one-time SaaS trial backfill (`backfillSaasTrial`).
+ * Tests for the boot-time SaaS trial backfill (`backfillSaasTrial`).
  *
  * Pairs with the signup-time `assignSaasTrial` hook (#2465): the hook
  * handles every new org, the backfill retires legacy 'free' rows the
- * hook didn't run for. PRD #2464.
+ * hook didn't run for. PRD #2464. Since #3426 it applies the same
+ * one-trial-per-user rule: free orgs with a trial-consumed owner are
+ * demoted to 'locked' (statement 1) before the promote arm runs
+ * (statement 2), so a hook failure + reboot can't mint a second trial.
  *
  * Mocks `InternalPool` via `_resetPool` and `getConfig()` via
  * `_setConfigForTest`. Same pattern as the slice 1 sibling test for
@@ -26,6 +29,8 @@ interface MockPool {
 
 function makeMockPool(opts: {
   updatedIds?: string[];
+  /** Rows returned by the lock-first #3426 arm (plan_tier = 'locked'). */
+  lockedIds?: string[];
   updateThrows?: boolean;
 }): MockPool {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
@@ -33,7 +38,10 @@ function makeMockPool(opts: {
     query: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
       if (opts.updateThrows) throw new Error("UPDATE failed");
-      const rows = (opts.updatedIds ?? []).map((id) => ({ id }));
+      const ids = /plan_tier = 'locked'/.test(sql)
+        ? opts.lockedIds ?? []
+        : opts.updatedIds ?? [];
+      const rows = ids.map((id) => ({ id }));
       return { rows, rowCount: rows.length };
     },
   } as unknown as InternalPool;
@@ -80,17 +88,44 @@ describe("backfillSaasTrial", () => {
 
     expect(result.updatedCount).toBe(2);
     expect(result.orgIds).toEqual(["org_dogfood", "org_acme"]);
-    expect(queries).toHaveLength(1);
-    expect(queries[0].sql).toMatch(/UPDATE organization/);
-    // The idempotency guards must survive any future rewrite.
-    expect(queries[0].sql).toMatch(/plan_tier = 'free'/);
-    expect(queries[0].sql).toMatch(/trial_ends_at IS NULL/);
+    expect(result.lockedOrgIds).toEqual([]);
+    expect(queries).toHaveLength(2);
 
-    const [trialEndsAtParam] = queries[0].params ?? [];
+    // Statement 1 — the #3426 lock arm runs FIRST so the promote arm can
+    // never see a trial-consumed owner's org.
+    expect(queries[0].sql).toMatch(/plan_tier = 'locked'/);
+    expect(queries[0].sql).toMatch(/trial_ends_at IS NOT NULL/);
+    // Eligibility keys on owner membership, mirroring trial-eligibility.ts.
+    expect(queries[0].sql).toMatch(/role = 'owner'/);
+
+    // Statement 2 — the promote arm.
+    expect(queries[1].sql).toMatch(/UPDATE organization/);
+    // The idempotency guards must survive any future rewrite.
+    expect(queries[1].sql).toMatch(/plan_tier = 'free'/);
+    expect(queries[1].sql).toMatch(/trial_ends_at IS NULL/);
+
+    const [trialEndsAtParam] = queries[1].params ?? [];
     const trialEndsAt = new Date(String(trialEndsAtParam)).getTime();
     const target = before + TRIAL_DAYS * DAY_MS;
     expect(trialEndsAt).toBeGreaterThanOrEqual(target);
     expect(trialEndsAt).toBeLessThanOrEqual(after + TRIAL_DAYS * DAY_MS);
+  });
+
+  it("locks free orgs whose owner already consumed a trial instead of promoting them (#3426)", async () => {
+    const { pool, queries } = makeMockPool({
+      lockedIds: ["org_second"],
+      updatedIds: ["org_first"],
+    });
+    _resetPool(pool);
+
+    const result = await backfillSaasTrial();
+
+    expect(result.lockedOrgIds).toEqual(["org_second"]);
+    expect(result.updatedCount).toBe(1);
+    expect(result.orgIds).toEqual(["org_first"]);
+    // The lock arm stamps the trial as consumed-now so checkout's
+    // double-trial suppression holds for the locked org too.
+    expect(queries[0].sql).toMatch(/trial_ends_at = NOW\(\)/);
   });
 
   it("returns 0 with no error when there's nothing to backfill", async () => {
@@ -101,26 +136,30 @@ describe("backfillSaasTrial", () => {
 
     expect(result.updatedCount).toBe(0);
     expect(result.orgIds).toEqual([]);
-    // The UPDATE still runs — RETURNING is what tells us there were
+    expect(result.lockedOrgIds).toEqual([]);
+    // Both UPDATEs still run — RETURNING is what tells us there were
     // zero candidates. Re-running on the next boot is the same no-op
     // call shape.
-    expect(queries).toHaveLength(1);
+    expect(queries).toHaveLength(2);
   });
 
   it("is idempotent across two boots — second call promotes zero rows", async () => {
     // Simulates the real Postgres behaviour: first boot finds the
-    // legacy 'free' rows and updates them; second boot's UPDATE sees
-    // `trial_ends_at IS NOT NULL` and the WHERE clause matches nothing,
+    // legacy 'free' rows and updates them; second boot's UPDATEs see
+    // `trial_ends_at IS NOT NULL` and the WHERE clauses match nothing,
     // so RETURNING is empty. End-to-end check on the PRD's hard
     // idempotency requirement — the WHERE-clause regex elsewhere only
     // asserts the clause is *present*.
-    let callCount = 0;
+    let promoteCalls = 0;
     const queries: Array<{ sql: string; params?: unknown[] }> = [];
     const pool = {
       query: async (sql: string, params?: unknown[]) => {
         queries.push({ sql, params });
-        callCount += 1;
-        const rows = callCount === 1
+        if (/plan_tier = 'locked'/.test(sql)) {
+          return { rows: [], rowCount: 0 };
+        }
+        promoteCalls += 1;
+        const rows = promoteCalls === 1
           ? [{ id: "org_dogfood" }, { id: "org_acme" }]
           : [];
         return { rows, rowCount: rows.length };
@@ -136,7 +175,7 @@ describe("backfillSaasTrial", () => {
     expect(second.updatedCount).toBe(0);
     expect(second.orgIds).toEqual([]);
 
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(4);
   });
 
   it("skips on self-hosted — no UPDATE", async () => {

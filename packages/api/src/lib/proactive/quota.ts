@@ -122,11 +122,15 @@ export async function getMonthlyClassifierCap(
  *   1. `workspace_proactive_config.monthly_classifier_cap` when set —
  *      the operator/admin override wins in either direction (a Starter
  *      workspace can be granted more, a Business one clamped down).
+ *      Deliberately checked BEFORE the BYOT bypass: the column applied
+ *      to every workspace (BYOT included) before #3436, and an
+ *      explicitly-set cap is a deliberate admin decision — BYOT only
+ *      changes what an *unset* column defaults to.
  *   2. Otherwise the workspace's plan-tier default
  *      (`plans.ts:monthlyProactiveClassifierCap`); `-1` → `null`
  *      (unlimited — the `free`/self-hosted tier).
- *   3. BYOT workspaces are unlimited regardless of tier — classifier
- *      calls run on their own key, mirroring the token-budget bypass.
+ *   3. BYOT workspaces default to unlimited — classifier calls run on
+ *      their own key, mirroring the token-budget bypass.
  *   4. No workspace row (org id unknown to billing — e.g. managed-auth
  *      table not present) → `null`, preserving the pre-#3436 behavior
  *      for deployments without the billing surface.

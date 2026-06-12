@@ -218,6 +218,16 @@ describe("getEffectiveMonthlyClassifierCap (#3436)", () => {
     expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBeNull();
   });
 
+  it("an explicit override still caps a BYOT workspace — BYOT only changes the unset default", async () => {
+    // Pre-#3436 the column applied to every workspace, BYOT included; an
+    // admin deliberately setting a cap must keep winning over the bypass.
+    mockInternalQuery.mockImplementation(async () => [
+      { monthly_classifier_cap: 100 },
+    ]);
+    mockWorkspaceRow = { plan_tier: "starter", byot: true };
+    expect(await quota.getEffectiveMonthlyClassifierCap("ws-1")).toBe(100);
+  });
+
   it("no workspace row → null (pre-#3436 behavior preserved)", async () => {
     mockInternalQuery.mockImplementation(async () => []);
     mockWorkspaceRow = null;

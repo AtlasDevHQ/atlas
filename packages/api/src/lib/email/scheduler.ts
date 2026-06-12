@@ -10,6 +10,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkFallbackEmails, isOnboardingEmailEnabled } from "./engine";
+import { checkTrialExpiryEmails } from "./trial-expiry-engine";
 
 const log = createLogger("onboarding-email-scheduler");
 
@@ -35,6 +36,21 @@ export async function runTick(): Promise<void> {
     log.error(
       { err: err instanceof Error ? err.message : String(err) },
       "Onboarding email fallback tick failed",
+    );
+  }
+
+  // Trial-expiry notices (#3434) ride the same tick — independently
+  // try/caught so an onboarding failure can't starve trial warnings and
+  // vice versa.
+  try {
+    const result = await checkTrialExpiryEmails();
+    if (result.sent > 0) {
+      log.info({ checked: result.checked, sent: result.sent }, "Trial-expiry email tick complete");
+    }
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Trial-expiry email tick failed",
     );
   }
 }

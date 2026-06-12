@@ -8,6 +8,7 @@
 import type { OnboardingEmailStep } from "@useatlas/types";
 import type { WorkspaceBrandingPublic } from "@useatlas/types";
 import { ONBOARDING_SEQUENCE } from "./sequence";
+import { getTrialStepDef, type TrialEmailStep } from "./trial-sequence";
 
 // ── Branding defaults ───────────────────────────────────────────────
 
@@ -279,4 +280,118 @@ export function renderInvitationEmail(args: {
   const html = wrapInvitation(ctx, content);
   const subject = `You've been invited to ${args.orgName} on ${ctx.appName}`;
   return { subject, html };
+}
+
+// ── Trial-expiry emails (#3434) ─────────────────────────────────────
+
+/**
+ * Billing-notice footer — trial-expiry emails are transactional account
+ * communications (like invitations), NOT marketing drip, so they carry no
+ * onboarding-unsubscribe link.
+ */
+function trialFooter(ctx: BrandingContext): string {
+  return `
+    <div style="padding:20px 32px;border-top:1px solid #e5e5e5;color:#737373;font-size:12px;line-height:1.5;">
+      <p style="margin:0;">You're receiving this billing notice because you're an admin of a ${escapeHtml(ctx.appName)} workspace on a free trial.</p>
+    </div>`;
+}
+
+function wrapTrial(ctx: BrandingContext, content: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;">
+  <div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e5e5;">
+    ${header(ctx)}
+    <div style="padding:32px;">
+      ${content}
+    </div>
+    ${trialFooter(ctx)}
+  </div>
+</body>
+</html>`;
+}
+
+function trialEndingContent(
+  ctx: BrandingContext,
+  args: { daysLeft: number; endsAtLabel: string; upgradeUrl: string },
+): string {
+  const dayWord = args.daysLeft === 1 ? "day" : "days";
+  const headline =
+    args.daysLeft === 1
+      ? "Your trial ends tomorrow"
+      : `Your trial ends in ${args.daysLeft} ${dayWord}`;
+  return `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">${headline}</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      Your ${escapeHtml(ctx.appName)} free trial ends on <strong>${escapeHtml(args.endsAtLabel)}</strong>.
+      After that, chat and queries are paused for everyone in your workspace until a plan is chosen.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;color:#404040;line-height:1.6;">
+      Pick a plan now and your team won't notice a thing — your connections, semantic layer, and conversation history all carry over.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Choose a plan", args.upgradeUrl, ctx.accentColor)}
+    </div>`;
+}
+
+function trialExpiredContent(
+  ctx: BrandingContext,
+  args: { endsAtLabel: string; upgradeUrl: string },
+): string {
+  return `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Your trial has expired</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      Your ${escapeHtml(ctx.appName)} free trial ended on <strong>${escapeHtml(args.endsAtLabel)}</strong>.
+      Chat and queries are paused for your workspace — nothing has been deleted.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;color:#404040;line-height:1.6;">
+      Subscribe to a plan to pick up exactly where your team left off.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Choose a plan", args.upgradeUrl, ctx.accentColor)}
+    </div>`;
+}
+
+/**
+ * Render a trial-expiry notice (T-3d / T-1d / expiry). The upgrade CTA
+ * points at the self-serve plan picker on /admin/billing (#3418).
+ *
+ * @param step - Which trial notice to render.
+ * @param args.trialEndsAt - The *effective* trial end (see
+ *   `lib/billing/trial-expiry.ts`) — the same date enforcement uses.
+ */
+export function renderTrialExpiryEmail(
+  step: TrialEmailStep,
+  args: {
+    baseUrl: string;
+    trialEndsAt: Date;
+    branding?: WorkspaceBrandingPublic | null;
+  },
+): RenderedEmail {
+  const ctx = buildBrandingContext(args.branding);
+  const upgradeUrl = `${args.baseUrl}/admin/billing`;
+  const endsAtLabel = args.trialEndsAt.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+
+  const content =
+    step === "trial_expired"
+      ? trialExpiredContent(ctx, { endsAtLabel, upgradeUrl })
+      : trialEndingContent(ctx, {
+          daysLeft: step === "trial_ending_1d" ? 1 : 3,
+          endsAtLabel,
+          upgradeUrl,
+        });
+
+  const stepDef = getTrialStepDef(step);
+  const subject = (stepDef?.subject ?? `${ctx.appName} trial update`).replace(
+    /\{\{appName\}\}/g,
+    ctx.appName,
+  );
+
+  return { subject, html: wrapTrial(ctx, content) };
 }

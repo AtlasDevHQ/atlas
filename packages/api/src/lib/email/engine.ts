@@ -37,7 +37,8 @@ export function isOnboardingEmailEnabled(): boolean {
 
 // ── Branding resolution ─────────────────────────────────────────────
 
-async function getBrandingForOrg(orgId: string) {
+/** Exported for the trial-expiry engine, which renders branded notices too. */
+export async function getBrandingForOrg(orgId: string) {
   try {
     const rows = await internalQuery<{
       logo_url: string | null;
@@ -68,11 +69,15 @@ async function getBrandingForOrg(orgId: string) {
 // ── Sent tracking ───────────────────────────────────────────────────
 
 async function getSentSteps(userId: string): Promise<OnboardingEmailStep[]> {
-  const rows = await internalQuery<{ step: OnboardingEmailStep }>(
+  const rows = await internalQuery<{ step: string }>(
     `SELECT step FROM onboarding_emails WHERE user_id = $1`,
     [userId],
   );
-  return rows.map((r) => r.step);
+  // The table is shared with trial-expiry notices (#3434, `trial_*` steps);
+  // filter to the onboarding union so trial rows never leak into the
+  // OnboardingEmailStep-typed drip/admin views.
+  const onboardingSteps = new Set<string>(ONBOARDING_SEQUENCE.map((s) => s.step));
+  return rows.map((r) => r.step).filter((s): s is OnboardingEmailStep => onboardingSteps.has(s));
 }
 
 async function isUnsubscribed(userId: string): Promise<boolean> {
@@ -100,7 +105,8 @@ async function recordSentEmail(
 
 // ── Core send logic ─────────────────────────────────────────────────
 
-function getBaseUrl(): string {
+/** Exported for the trial-expiry engine. */
+export function getBaseUrl(): string {
   return process.env.BETTER_AUTH_URL
     ?? process.env.NEXT_PUBLIC_ATLAS_API_URL
     ?? "http://localhost:3000";

@@ -18,6 +18,14 @@ mock.module("../engine", () => ({
   checkFallbackEmails: mockCheckFallbackEmails,
 }));
 
+// --- Mock trial-expiry engine (#3434) ---
+
+const mockCheckTrialExpiryEmails = mock(() => Promise.resolve({ checked: 0, sent: 0 }));
+
+mock.module("../trial-expiry-engine", () => ({
+  checkTrialExpiryEmails: mockCheckTrialExpiryEmails,
+}));
+
 // --- Mock logger ---
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -47,6 +55,8 @@ describe("_runTick", () => {
   beforeEach(() => {
     mockCheckFallbackEmails.mockClear();
     mockCheckFallbackEmails.mockImplementation(() => Promise.resolve({ checked: 5, sent: 2 }));
+    mockCheckTrialExpiryEmails.mockClear();
+    mockCheckTrialExpiryEmails.mockImplementation(() => Promise.resolve({ checked: 3, sent: 1 }));
   });
 
   it("calls checkFallbackEmails", async () => {
@@ -54,9 +64,25 @@ describe("_runTick", () => {
     expect(mockCheckFallbackEmails).toHaveBeenCalledTimes(1);
   });
 
+  it("calls checkTrialExpiryEmails (#3434)", async () => {
+    await _runTick();
+    expect(mockCheckTrialExpiryEmails).toHaveBeenCalledTimes(1);
+  });
+
   it("catches errors from checkFallbackEmails without throwing", async () => {
     mockCheckFallbackEmails.mockImplementation(() => Promise.reject(new Error("db down")));
     // Should not throw
+    await _runTick();
+  });
+
+  it("still runs the trial-expiry check when the onboarding check fails", async () => {
+    mockCheckFallbackEmails.mockImplementation(() => Promise.reject(new Error("db down")));
+    await _runTick();
+    expect(mockCheckTrialExpiryEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("catches errors from checkTrialExpiryEmails without throwing", async () => {
+    mockCheckTrialExpiryEmails.mockImplementation(() => Promise.reject(new Error("db down")));
     await _runTick();
   });
 });

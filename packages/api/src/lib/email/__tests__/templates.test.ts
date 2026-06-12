@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { renderOnboardingEmail, renderInvitationEmail } from "../templates";
+import { renderOnboardingEmail, renderInvitationEmail, renderTrialExpiryEmail } from "../templates";
 import type { OnboardingEmailStep } from "@useatlas/types";
 
 const BASE_URL = "https://app.useatlas.dev";
@@ -143,5 +143,57 @@ describe("renderInvitationEmail", () => {
     const result = renderInvitationEmail(baseArgs);
     expect(result.html).not.toContain("Unsubscribe");
     expect(result.html).not.toContain("/api/v1/onboarding-emails/unsubscribe");
+  });
+});
+
+describe("renderTrialExpiryEmail", () => {
+  const endsAt = new Date("2026-06-20T00:00:00.000Z");
+
+  it("renders the T-3d warning with the effective end date and upgrade CTA", () => {
+    const result = renderTrialExpiryEmail("trial_ending_3d", {
+      baseUrl: BASE_URL,
+      trialEndsAt: endsAt,
+    });
+    expect(result.subject).toBe("Your Atlas trial ends in 3 days");
+    expect(result.html).toContain("June 20, 2026");
+    expect(result.html).toContain(`${BASE_URL}/admin/billing`);
+    expect(result.html).toContain("Choose a plan");
+  });
+
+  it("renders the T-1d warning with singular copy", () => {
+    const result = renderTrialExpiryEmail("trial_ending_1d", {
+      baseUrl: BASE_URL,
+      trialEndsAt: endsAt,
+    });
+    expect(result.subject).toBe("Your Atlas trial ends tomorrow");
+    expect(result.html).toContain("Your trial ends tomorrow");
+    expect(result.html).not.toContain("1 days");
+  });
+
+  it("renders the expiry notice without an unsubscribe link (transactional)", () => {
+    const result = renderTrialExpiryEmail("trial_expired", {
+      baseUrl: BASE_URL,
+      trialEndsAt: endsAt,
+    });
+    expect(result.subject).toBe("Your Atlas trial has expired");
+    expect(result.html).toContain("Your trial has expired");
+    expect(result.html).toContain("billing notice");
+    expect(result.html).not.toContain("Unsubscribe");
+  });
+
+  it("applies workspace branding to subject and body", () => {
+    const result = renderTrialExpiryEmail("trial_expired", {
+      baseUrl: BASE_URL,
+      trialEndsAt: endsAt,
+      branding: {
+        logoUrl: null,
+        logoText: "Acme Corp",
+        primaryColor: "#FF5500",
+        faviconUrl: null,
+        hideAtlasBranding: true,
+      },
+    });
+    expect(result.subject).toBe("Your Acme Corp trial has expired");
+    expect(result.html).toContain("Acme Corp");
   });
 });

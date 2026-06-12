@@ -206,6 +206,8 @@ describe("POST /api/auth/subscription/billing-portal (org-scoped)", () => {
     });
 
     expect(res.status).toBe(401);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe("UNAUTHORIZED");
     expect(portalSessionsCreate).not.toHaveBeenCalled();
   });
 
@@ -225,8 +227,8 @@ describe("POST /api/auth/subscription/billing-portal (org-scoped)", () => {
 
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(res.status).toBeLessThan(500);
-    const body = (await res.json()) as { code?: string; message?: string };
-    expect(body.code ?? body.message ?? "").toContain("CUSTOMER");
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe("CUSTOMER_NOT_FOUND");
     expect(portalSessionsCreate).not.toHaveBeenCalled();
   });
 });

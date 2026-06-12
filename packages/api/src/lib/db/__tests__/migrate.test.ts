@@ -1171,3 +1171,21 @@ describe("0124_duckdb_not_saas_eligible.sql", () => {
     expect(sql).not.toMatch(/saas_eligible\s*=\s*true/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: 0126_org_stripe_customer_id_plugin_column.sql
+// ---------------------------------------------------------------------------
+
+describe("0126_org_stripe_customer_id_plugin_column.sql", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it", () => {
+    // 0126 ALTERs Better Auth's `organization` table. Non-managed-auth
+    // deploys never create it, so applying this migration there fails
+    // boot. The skip wiring lives in `MANAGED_AUTH_MIGRATIONS` — pin the
+    // membership so an `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0126_org_stripe_customer_id_plugin_column\.sql"/,
+    );
+  });
+});

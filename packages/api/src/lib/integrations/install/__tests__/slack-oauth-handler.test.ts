@@ -52,6 +52,7 @@ mock.module("@atlas/api/lib/slack/api", () => ({
   postMessage: mock(() => Promise.resolve({ ok: true })),
   updateMessage: mock(() => Promise.resolve({ ok: true })),
   postEphemeral: mock(() => Promise.resolve({ ok: true })),
+  listChannels: mock(() => Promise.resolve({ ok: true as const, channels: [] })),
 }));
 
 const mockSaveInstallation: Mock<

@@ -69,9 +69,25 @@ const mockGetEmailInstallationByOrg: Mock<() => Promise<EmailInstallShape>> = mo
 }));
 
 mock.module("@atlas/api/lib/slack/store", () => ({
+  // ALL named exports stubbed — this file loads the full app, so a
+  // missing binding (e.g. admin-proactive.ts's `getBotToken` import)
+  // ESM-link-fails the admin router and 404s every admin route.
+  ENV_TEAM_ID: "env",
+  KEY_PREFIX: "slack:installation:",
+  FIELD: {
+    botToken: "botToken",
+    botUserId: "botUserId",
+    teamName: "teamName",
+    orgId: "orgId",
+    workspaceName: "workspaceName",
+    installedAt: "installedAt",
+  },
   saveInstallation: mockSaveSlackInstallation,
+  deleteInstallation: mock(async () => {}),
   deleteInstallationByOrg: mock(async () => true),
+  getInstallation: mock(async () => null),
   getInstallationByOrg: mock(async () => null),
+  getBotToken: mock(async () => null),
 }));
 mock.module("@atlas/api/lib/discord/store", () => ({
   saveDiscordInstallation: mockSaveDiscordInstallation,

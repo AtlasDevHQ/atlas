@@ -1330,7 +1330,7 @@ export class Scheduler extends Context.Tag("Scheduler")<
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm> {
+): Layer.Layer<Scheduler, never, AuditPurgeScheduler | SaasCrm | Migration> {
   return Layer.scoped(
     Scheduler,
     Effect.gen(function* () {
@@ -1467,6 +1467,21 @@ export function makeSchedulerLive(
       // from the plugin's subscription table and prunes the webhook
       // event ledger. Only meaningful when Stripe billing is wired AND
       // an internal DB holds the org/subscription tables.
+      //
+      // #3446 — migration barrier: `Effect.repeat` runs the reconcile
+      // tick eagerly on boot, and on a fresh deploy that first tick can
+      // otherwise race migration 0128 (`stripe_webhook_events` not yet
+      // created), fail one warn, and back off 6 hours instead of healing
+      // on boot. The `Migration` dependency edge sequences Scheduler
+      // construction after `MigrationLive` completes (same
+      // ordering-barrier shape as `connectionsHydrateLayer` /
+      // `stagingSeedLayer`); this yield pins the requirement in the
+      // Layer's R so `buildAppLayer` can't drop the `migrationLayer`
+      // provide without a compile error. The value is deliberately
+      // unused — `migrated: false` (no DATABASE_URL, self-hosted) still
+      // proceeds to the `hasInternalDB()` gate, which short-circuits
+      // exactly as before.
+      yield* Migration;
       const billingReconcileEnabled = yield* Effect.try({
         try: () => {
           if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
@@ -2886,8 +2901,14 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // the cache first or a platform DB override would race boot — same
   // Settings-edge rationale as ProactiveProviderKeyGuardLive below. Layer
   // memoization keeps the shared `settingsLayer` reference built once.
+  //
+  // `migrationLayer` is a second ordering barrier (#3446): the billing
+  // reconcile fiber's eager boot tick must not run before migration 0128
+  // creates `stripe_webhook_events`. Same shared reference as everywhere
+  // else, so Effect memoization makes the edge free (Migration ←
+  // InternalDB only — no cycle back into Scheduler).
   const schedulerLayer = makeSchedulerLive(config).pipe(
-    Layer.provide(Layer.merge(EnterpriseLayer, settingsLayer)),
+    Layer.provide(Layer.mergeAll(EnterpriseLayer, settingsLayer, migrationLayer)),
   );
 
   // DpaGuardLive depends on Config + Settings — provide them so the boot

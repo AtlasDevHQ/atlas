@@ -1915,9 +1915,9 @@ export async function setWorkspaceRegion(
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Postgres
  * keeps the single-arg `pg_advisory_lock(bigint)` and two-arg `(int4, int4)`
  * lock spaces fully disjoint, so this can never collide with any single-arg
- * user. The only two-arg peers are the chat-install gate (`3001`) and
- * `lead-outbox` (`2870`); `3158 ≠ 3001 ≠ 2870` keeps all three disjoint. Value
- * is this guard's issue number (#3158).
+ * user. The two-arg peers are the chat-install gate (`3001`), `lead-outbox`
+ * (`2870`), and the Stripe webhook lock (`3445`); all four namespaces are
+ * pairwise distinct. Value is this guard's issue number (#3158).
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 
@@ -2033,6 +2033,88 @@ export async function withWorkspaceAdminLock<T>(
   fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
 ): Promise<T> {
   return withWorkspaceAdminLocks([orgId], fn);
+}
+
+/**
+ * Numeric namespace for the per-subscription Stripe webhook lock — the
+ * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
+ * Distinct from the last-admin (`3158`), chat-install (`3001`) and
+ * lead-outbox (`2870`) two-arg namespaces. Value is this guard's issue
+ * number (#3445).
+ */
+const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
+
+/**
+ * Run `fn` while holding a per-subscription advisory lock, so the Stripe
+ * webhook classify→sync→record sequence in `onEvent` serializes across
+ * concurrent deliveries for the SAME `stripe_subscription_id` (#3445).
+ * Without it, two parallel deliveries both pass the `classifyStripeEvent`
+ * preflight read as `fresh`, and the OLDER event's sync can finish last,
+ * overwriting the newer tier/lock state before recording successfully.
+ * Under the lock, the second delivery sees the first's recorded ledger
+ * row and classifies `stale`/`duplicate`.
+ *
+ * The lock SERIALIZES — it does not claim. Record-last semantics are the
+ * caller's contract (a failed sync records nothing so the `onEvent`
+ * throw → 400 → Stripe redelivery path stays live), and a thrown error
+ * anywhere inside `fn` rolls back (releasing the transaction-scoped
+ * lock) and re-throws. DB errors in the wrapper itself equally propagate
+ * — never fail open into an unserialized sync.
+ *
+ * Deliveries for DIFFERENT subscriptions hash to different lock keys and
+ * stay concurrent; events with no subscription id (and no-internal-DB
+ * deployments, where there is no ledger to race on) skip the lock
+ * entirely and just run `fn`.
+ *
+ * `fn`'s inner queries deliberately keep using the pooled
+ * `internalQuery` — they don't need the lock-holder's transaction, only
+ * mutual exclusion. The lock holds ONE dedicated client for the duration
+ * (same manual BEGIN/COMMIT + destroy-on-failed-rollback mechanics as
+ * {@link withWorkspaceAdminLocks}); webhook concurrency per subscription
+ * is Stripe-bounded, so the bounded internal pool is not starved. Never
+ * nest another lock-holding pool checkout inside `fn` (the nested-pool
+ * deadlock — see {@link withWorkspaceAdminLocks}).
+ */
+export async function withStripeSubscriptionLock<T>(
+  stripeSubscriptionId: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!stripeSubscriptionId || !hasInternalDB()) return fn();
+  const client = await getInternalDB().connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't
+  // poison the next borrower (matches withWorkspaceAdminLocks).
+  let rollbackErr: Error | null = null;
+  try {
+    await client.query("BEGIN");
+    // Transaction-scoped advisory lock keyed on the subscription id;
+    // released automatically on COMMIT/ROLLBACK. hashtext maps the text
+    // id to the int4 the lock takes — a cross-subscription hash
+    // collision only costs extra serialization, never correctness.
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      STRIPE_SUBSCRIPTION_LOCK_NAMESPACE,
+      stripeSubscriptionId,
+    ]);
+    const result = await fn();
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    // Log + re-throw: the caller (`onEvent`) propagates so Stripe
+    // redelivers — a swallowed error here would silently drop the sync.
+    log.warn(
+      { stripeSubscriptionId, err: err instanceof Error ? err.message : String(err) },
+      "Stripe webhook locked section failed — propagating so Stripe redelivers",
+    );
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { stripeSubscriptionId, err: rollbackErr.message },
+        "ROLLBACK failed during withStripeSubscriptionLock — client will be destroyed",
+      );
+    });
+    throw err;
+  } finally {
+    client.release(rollbackErr ?? undefined);
+  }
 }
 
 /**

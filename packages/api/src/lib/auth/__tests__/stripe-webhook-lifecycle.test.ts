@@ -21,6 +21,10 @@
  *   - event ledger (#3423): replays skipped, out-of-order deliveries for
  *     the same subscription skipped, failed sync → 400 + NOT recorded so
  *     Stripe's redelivery re-runs the sync (record-last protocol)
+ *   - per-subscription serialization (#3445): concurrent same-subscription
+ *     deliveries serialize around classify→sync→record (newer state wins
+ *     under out-of-order completion), different subscriptions stay
+ *     concurrent, and a failed sync under the lock still records nothing
  *
  * The internalQuery mock embeds a stateful in-memory `stripe_webhook_events`
  * sim (SQL-discriminated) so ledger semantics are tested for real instead
@@ -46,11 +50,41 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 const mockGetWorkspaceDetails: Mock<(orgId: string) => Promise<unknown>> =
   mock(() => Promise.resolve(null));
 
+// #3445 — in-process per-key mutex standing in for the production pg
+// advisory lock (`withStripeSubscriptionLock`). Faithful to its contract:
+// same-key callers serialize in arrival order, different keys (and null)
+// run concurrently, and a throwing callback releases the lock and
+// re-throws. Backed by a promise chain per subscription id; `lockCalls`
+// records the key of every invocation so tests can assert `onEvent`
+// passes the per-event subscription id (not a global constant).
+const lockTails = new Map<string, Promise<void>>();
+const lockCalls: Array<string | null> = [];
+async function mutexStripeSubscriptionLock<T>(
+  stripeSubscriptionId: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  lockCalls.push(stripeSubscriptionId);
+  if (!stripeSubscriptionId) return fn();
+  const tail = lockTails.get(stripeSubscriptionId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  lockTails.set(stripeSubscriptionId, tail.then(() => gate));
+  await tail;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   updateWorkspaceStatus: mockUpdateWorkspaceStatus,
   getWorkspaceDetails: mockGetWorkspaceDetails,
+  withStripeSubscriptionLock: mutexStripeSubscriptionLock,
 }));
 
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
@@ -281,6 +315,8 @@ beforeEach(() => {
   mockInternalQuery.mockImplementation(ledgerAwareQuery());
   subscriptionsRetrieve.mockClear();
   subscriptionsRetrieve.mockImplementation(() => Promise.resolve(stripeSubscription()));
+  lockTails.clear();
+  lockCalls.length = 0;
 });
 
 // ── Config-shape regression guard ───────────────────────────────────
@@ -720,6 +756,180 @@ describe("event ledger (#3423)", () => {
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
     expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_checkout_1"]);
+  });
+});
+
+// ── concurrent deliveries (#3445): per-subscription serialization ───
+
+describe("concurrent deliveries (#3445)", () => {
+  function activeSubRow(suffix: "1" | "2") {
+    return {
+      id: `subrow_${suffix}`,
+      plan: "starter",
+      referenceId: `org-${suffix}`,
+      stripeCustomerId: `cus_${suffix}`,
+      stripeSubscriptionId: `sub_stripe_${suffix}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  }
+
+  it("serializes out-of-order concurrent deliveries for the same subscription — the newer state wins", async () => {
+    const db = emptyDB();
+    db.subscription.push(activeSubRow("1"));
+    const auth = makeAuth(db);
+
+    // OLDER `updated` event (created = EPOCH, writes "starter") whose
+    // sync is gated mid-flight; NEWER `deleted` event (created =
+    // EPOCH + 100, writes "locked") delivered while the older sync is
+    // still running. Without the per-subscription lock, both classify
+    // `fresh` concurrently and the OLDER sync finishes LAST, regressing
+    // the locked workspace back to a paid tier. Under the lock the newer
+    // delivery waits its turn, sees the world the older one left behind,
+    // and its "locked" write lands last.
+    let oldSyncStarted!: () => void;
+    const oldSyncStartedP = new Promise<void>((resolve) => {
+      oldSyncStarted = resolve;
+    });
+    let releaseOldSync!: () => void;
+    const oldSyncGate = new Promise<void>((resolve) => {
+      releaseOldSync = resolve;
+    });
+    mockUpdateWorkspacePlanTier.mockImplementation(async (_orgId: string, tier: string) => {
+      if (tier === "starter") {
+        oldSyncStarted();
+        await oldSyncGate;
+      }
+      return true;
+    });
+
+    const oldP = postWebhook(auth, {
+      id: "evt_updated_old",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    // The older delivery now holds the lock, mid-sync.
+    await oldSyncStartedP;
+    const newP = postWebhook(auth, {
+      id: "evt_deleted_new",
+      type: "customer.subscription.deleted",
+      created: EPOCH + 100,
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+    // Give the newer delivery time to reach (and block on) the lock,
+    // then complete the OLDER sync LAST — the out-of-order completion.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseOldSync();
+    const [oldRes, newRes] = await Promise.all([oldP, newP]);
+
+    expect(oldRes.status).toBe(200);
+    expect(newRes.status).toBe(200);
+    // The FINAL tier write is the newer lifecycle state — without the
+    // lock this is ["org-1", "starter"] (the older slow sync lands last).
+    expect(mockUpdateWorkspacePlanTier.mock.calls.at(-1)).toEqual(["org-1", "locked"]);
+    // Serialized order: the older event recorded first, then the newer
+    // one classified fresh (it IS newer) and recorded after it.
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_updated_old", "evt_deleted_new"]);
+  });
+
+  it("does not serialize deliveries for different subscriptions (no global lock)", async () => {
+    const db = emptyDB();
+    db.subscription.push(activeSubRow("1"), activeSubRow("2"));
+    const auth = makeAuth(db);
+
+    // Gate org-1's tier write to keep subscription 1's lock held, then
+    // deliver an event for subscription 2 — it must complete while the
+    // first is still mid-sync. A global lock key would chain the second
+    // delivery behind the gate and hang this test.
+    let firstSyncStarted!: () => void;
+    const firstSyncStartedP = new Promise<void>((resolve) => {
+      firstSyncStarted = resolve;
+    });
+    let releaseFirstSync!: () => void;
+    const firstSyncGate = new Promise<void>((resolve) => {
+      releaseFirstSync = resolve;
+    });
+    mockUpdateWorkspacePlanTier.mockImplementation(async (orgId: string) => {
+      if (orgId === "org-1") {
+        firstSyncStarted();
+        await firstSyncGate;
+      }
+      return true;
+    });
+
+    const firstP = postWebhook(auth, {
+      id: "evt_updated_sub1",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    await firstSyncStartedP;
+
+    const secondRes = await postWebhook(auth, {
+      id: "evt_updated_sub2",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: {
+        object: stripeSubscription({
+          id: "sub_stripe_2",
+          customer: "cus_2",
+          status: "active",
+          metadata: { referenceId: "org-2", subscriptionId: "subrow_2" },
+        }),
+      },
+    });
+
+    // Subscription 2 completed end-to-end while subscription 1's lock
+    // was still held.
+    expect(secondRes.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-2", "starter");
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_updated_sub2"]);
+
+    releaseFirstSync();
+    const firstRes = await firstP;
+    expect(firstRes.status).toBe(200);
+
+    // The lock was keyed on each event's OWN subscription id — a
+    // constant key would have produced two identical entries.
+    expect(lockCalls).toEqual(["sub_stripe_1", "sub_stripe_2"]);
+  });
+
+  it("a failed sync under the lock still records nothing — the lock serializes, it does not claim", async () => {
+    const db = emptyDB();
+    db.subscription.push(activeSubRow("1"));
+    const auth = makeAuth(db);
+    mockUpdateWorkspacePlanTier.mockImplementation(() =>
+      Promise.reject(new Error("internal db down")),
+    );
+
+    const failed = await postWebhook(auth, {
+      id: "evt_updated_fail",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+
+    // The throw propagated THROUGH the lock wrapper → 400 → Stripe
+    // redelivers; nothing recorded (record-last preserved, #3444
+    // accepted rebuttal), and the lock was taken for the attempt.
+    expect(failed.status).toBe(400);
+    expect(ledgerRows).toHaveLength(0);
+    expect(lockCalls).toEqual(["sub_stripe_1"]);
+
+    // The redelivery is classified fresh and re-runs the sync.
+    mockUpdateWorkspacePlanTier.mockClear();
+    mockUpdateWorkspacePlanTier.mockImplementation(() => Promise.resolve(true));
+    const retry = await postWebhook(auth, {
+      id: "evt_updated_fail",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    expect(retry.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_updated_fail"]);
   });
 });
 

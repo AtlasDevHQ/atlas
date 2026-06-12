@@ -240,9 +240,9 @@ describe("api", () => {
       }
     });
 
-    it("returns the Slack error on ok: false", async () => {
+    it("returns the Slack error on ok: false without retrying non-scope errors", async () => {
       mockFetch.mockResolvedValue(
-        new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
+        new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }),
@@ -251,8 +251,54 @@ describe("api", () => {
       const result = await listChannels("xoxb-token");
       expect(result.ok).toBe(false);
       if (!result.ok) {
+        expect(result.error).toBe("ratelimited");
+      }
+      // Only missing_scope triggers the public-only retry (#3462).
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("retries public-only when the combined listing fails missing_scope (#3462)", async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        )
+        .mockResolvedValueOnce(
+          channelPage([{ id: "C1", name: "general", is_private: false, is_member: true }]),
+        );
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.channels).toEqual([
+          { id: "C1", name: "general", isPrivate: false, isMember: true },
+        ]);
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const firstParams = new URL(String(mockFetch.mock.calls[0][0])).searchParams;
+      expect(firstParams.get("types")).toBe("public_channel,private_channel");
+      const retryParams = new URL(String(mockFetch.mock.calls[1][0])).searchParams;
+      expect(retryParams.get("types")).toBe("public_channel");
+    });
+
+    it("retries at most once — persistent missing_scope surfaces as the error", async () => {
+      // Fresh Response per call — a body can only be consumed once.
+      const scopeError = () =>
+        new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      mockFetch.mockResolvedValueOnce(scopeError()).mockResolvedValueOnce(scopeError());
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
         expect(result.error).toBe("missing_scope");
       }
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 
     it("returns request_failed when fetch throws", async () => {

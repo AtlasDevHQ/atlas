@@ -40,8 +40,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
 import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
-import { getInstallationByOrg, getBotToken } from "@atlas/api/lib/slack/store";
-import { listChannels } from "@atlas/api/lib/slack/api";
+import { listWorkspaceChannels } from "@atlas/api/lib/proactive/channel-directory";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -139,12 +138,18 @@ const AvailableChannelSchema = z.object({
 const AvailableChannelsResponseSchema = z.object({
   /**
    * `false` when channel listing isn't possible for this workspace —
-   * no Slack installation, or the Slack API call failed. The admin UI
-   * degrades to manual channel-id entry; this is a soft state, not an
-   * error (hence 200, not 4xx/5xx).
+   * no chat-platform installation, or the platform call failed. The
+   * admin UI degrades to manual channel-id entry; this is a soft state,
+   * not an error (hence 200, not 4xx/5xx).
+   *
+   * Reasons are platform-neutral (#3463) and mirror
+   * `ChannelDirectoryFailureReason` 1:1. `missing_scope` is the one
+   * actionable value (#3466): the installed credential lacks the read
+   * scope the listing needs, and only re-running the platform's OAuth
+   * consent flow can widen it — UIs surface a reconnect CTA for it.
    */
   available: z.boolean(),
-  reason: z.enum(["no_slack_installation", "slack_error"]).nullable(),
+  reason: z.enum(["no_chat_installation", "missing_scope", "platform_error"]).nullable(),
   channels: z.array(AvailableChannelSchema),
 });
 
@@ -295,7 +300,7 @@ const listAvailableChannelsRoute = createRoute({
   tags: ["Admin — Proactive Chat"],
   summary: "List channels available on the chat platform",
   description:
-    "Lists the workspace's Slack channels (id + name + membership) via conversations.list so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no Slack installation or the platform call fails — never a hard error.",
+    "Lists the workspace's chat-platform channels (id + name + membership) so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no chat-platform installation or the platform call fails — never a hard error. A `missing_scope` reason means the installed credential can't list channels and reconnecting the platform integration is required.",
   responses: {
     200: {
       description: "Channel listing (or a soft `available: false` envelope)",
@@ -604,38 +609,26 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
 
 // GET /channels/available — list the platform's channels for the picker
 adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
-  runHandler(c, "list available slack channels", async () => {
+  runHandler(c, "list available chat channels", async () => {
     const { orgId, requestId } = c.get("orgContext");
     gateEnterprise();
 
     try {
       // Read-only platform lookup; no audit row (matches the other GETs).
-      // Token resolution is DB-only per the workspace-credential rule —
-      // requireOrgContext already guarantees an internal DB exists here.
-      const installation = await getInstallationByOrg(orgId);
-      const token = installation ? await getBotToken(installation.team_id) : null;
-      if (!token) {
-        return c.json(
-          {
-            available: false,
-            reason: "no_slack_installation" as const,
-            channels: [],
-          },
-          200,
-        );
-      }
-
-      const result = await listChannels(token);
+      // The channel-directory port (#3463) resolves the workspace's chat
+      // platform and short-TTL-caches successful listings (#3461), so
+      // concurrent admin page loads cost one platform call per TTL.
+      const result = await listWorkspaceChannels(orgId);
       if (!result.ok) {
-        // Slack-side failure (rate limit, missing scope, revoked token).
-        // Soft-degrade — the picker falls back to manual entry. The raw
-        // Slack error stays in the log, never on the wire.
+        // Platform-side failure or no installation. Soft-degrade — the
+        // picker falls back to manual entry. The raw platform error
+        // stays in the log, never on the wire.
         log.warn(
-          { requestId, orgId, slackError: result.error },
-          "conversations.list failed — channel picker degraded to manual entry",
+          { requestId, orgId, reason: result.reason, detail: result.detail },
+          "Channel listing unavailable — picker degraded to manual entry",
         );
         return c.json(
-          { available: false, reason: "slack_error" as const, channels: [] },
+          { available: false, reason: result.reason, channels: [] },
           200,
         );
       }

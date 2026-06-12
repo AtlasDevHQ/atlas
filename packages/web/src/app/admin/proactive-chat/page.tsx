@@ -31,6 +31,7 @@
  */
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   Bot,
   Hash,
@@ -126,9 +127,12 @@ const AvailableChannelSchema = z.object({
   isMember: z.boolean(),
 });
 
-const AvailableChannelsSchema = z.object({
+// Reason values are platform-neutral (#3463) and mirror the API's
+// `ChannelDirectoryFailureReason`. Exported for the wire-schema
+// regression test.
+export const AvailableChannelsSchema = z.object({
   available: z.boolean(),
-  reason: z.enum(["no_slack_installation", "slack_error"]).nullable(),
+  reason: z.enum(["no_chat_installation", "missing_scope", "platform_error"]).nullable(),
   channels: z.array(AvailableChannelSchema),
 });
 
@@ -136,13 +140,18 @@ type AvailableChannels = z.infer<typeof AvailableChannelsSchema>;
 
 /**
  * Workspace channel directory shared by the announcement-channel picker
- * and the overrides table. `available: false` (no Slack install, Slack
- * API failure, or fetch error) degrades every consumer to raw-id entry —
- * the pre-picker behavior — instead of blocking the page.
+ * and the overrides table. `available: false` (no chat install, platform
+ * failure, or fetch error) degrades every consumer to raw-id entry —
+ * the pre-picker behavior — instead of blocking the page. `reason`
+ * carries the degraded-state class so the page can self-diagnose the
+ * one actionable case: `missing_scope` means the installed bot token
+ * can't list channels and only re-running the OAuth consent flow fixes
+ * it (#3466).
  */
 interface ChannelDirectory {
   available: boolean;
   loading: boolean;
+  reason: AvailableChannels["reason"];
   channels: ChannelOption[];
   byId: Map<string, ChannelOption>;
 }
@@ -162,6 +171,7 @@ function useChannelDirectory(): ChannelDirectory {
   return {
     available: data?.available === true,
     loading,
+    reason: data?.reason ?? null,
     channels,
     byId: new Map(channels.map((ch) => [ch.id, ch])),
   };
@@ -293,6 +303,7 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
           title="Behavior"
           description="Workspace defaults applied unless a channel override says otherwise."
         />
+        <ReconnectSlackCallout reason={directory.reason} />
         <div className="space-y-6">
           <SensitivityRadio
             value={fields.sensitivity.value}
@@ -370,6 +381,44 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
         />
         <DecisionDrillDownPanel />
       </section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reconnect callout (#3466)
+//
+// Shown only for the `missing_scope` degraded state: the workspace's bot
+// token predates the channel-listing read scopes, and no deploy can widen
+// an already-issued token — the admin must re-run the OAuth consent flow
+// (one click on Admin → Integrations; the install upserts the token in
+// place, no config is lost). Every other degraded state keeps the silent
+// manual-id fallback: there's nothing actionable to tell the admin.
+// ---------------------------------------------------------------------------
+
+function ReconnectSlackCallout({
+  reason,
+}: {
+  reason: AvailableChannels["reason"];
+}) {
+  if (reason !== "missing_scope") return null;
+  return (
+    <div className="mb-6 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-[12px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-400">
+      <p className="font-medium">
+        Reconnect Slack to enable the channel picker.
+      </p>
+      <p className="mt-1">
+        Your workspace&apos;s bot token predates the permissions needed to
+        list channels. Re-run the connect flow on{" "}
+        <Link
+          href="/admin/integrations"
+          className="font-medium underline underline-offset-2"
+        >
+          Admin → Integrations
+        </Link>{" "}
+        — existing settings are kept. Manual channel-ID entry keeps working
+        in the meantime.
+      </p>
     </div>
   );
 }

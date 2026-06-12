@@ -647,7 +647,7 @@ describeIfPg("migrate-pg (real Postgres)", () => {
     expect(err?.message).toMatch(/chk_workspace_proactive_monthly_cap_nonneg|23514|check constraint/i);
   }, PG_TEST_TIMEOUT_MS);
 
-  it("workspace_proactive_config: CHECK accepts NULL monthly_classifier_cap (unlimited) (#2294)", async () => {
+  it("workspace_proactive_config: CHECK accepts NULL monthly_classifier_cap (no override — plan-tier default since #3436) (#2294)", async () => {
     const stamp = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const ws = `ws-wpc-cap-null-${stamp}`;
     await pool.query(

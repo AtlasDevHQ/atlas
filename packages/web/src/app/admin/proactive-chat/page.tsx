@@ -574,9 +574,10 @@ function MonthlyCapField({
 //   - 100%  red    (exhausted — proactive is silently short-circuiting)
 //
 // Rendered inline under the cap input so the admin can see the impact of
-// the value they just typed. Hides itself when the workspace has never
-// set a cap (`monthlyClassifierCap === null`) — there's nothing to
-// usage-bar against.
+// the value they just typed. Hides itself when the effective cap is
+// unlimited (`monthlyClassifierCap === null` — self-hosted/BYOT, since
+// #3436 a NULL column otherwise resolves to the plan-tier default) —
+// there's nothing to usage-bar against.
 // ---------------------------------------------------------------------------
 
 // Both `QuotaUsageIndicator` and `DecisionDrillDownPanel` read this same

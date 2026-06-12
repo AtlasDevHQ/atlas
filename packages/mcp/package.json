@@ -28,13 +28,13 @@
     "@useatlas/mcp": "workspace:*",
     "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
-    "better-auth": "^1.6.13",
+    "better-auth": "^1.6.16",
     "effect": "^3.21.2",
     "hono": "^4.12.23",
     "js-yaml": "^4.2.0"
   },
   "devDependencies": {
-    "@better-auth/oauth-provider": "^1.6.13",
+    "@better-auth/oauth-provider": "^1.6.16",
     "@types/js-yaml": "^4.0.9",
     "zod": "^4.4.3"
   }

@@ -1835,6 +1835,11 @@ export async function updateWorkspaceStatus(
 /**
  * Update workspace plan tier. Returns true if the org was found and updated,
  * false if no row matched the given orgId.
+ *
+ * The 0-row arm logs at error level: every caller passes an orgId that is
+ * supposed to exist (Stripe webhook `referenceId`, platform-admin override),
+ * so a miss is a contract violation — most likely a user-scoped referenceId
+ * leaking into an org-scoped path (#3416) — not a benign not-found.
  */
 export async function updateWorkspacePlanTier(
   orgId: string,
@@ -1844,7 +1849,14 @@ export async function updateWorkspacePlanTier(
     `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
     [planTier, orgId],
   );
-  return rows.length > 0;
+  if (rows.length === 0) {
+    log.error(
+      { orgId, planTier },
+      "updateWorkspacePlanTier matched 0 rows — orgId does not exist in organization table (referenceId contract violation?)",
+    );
+    return false;
+  }
+  return true;
 }
 
 /**

@@ -12,6 +12,7 @@
  */
 
 import { betterAuth, type Session, type User } from "better-auth";
+import { APIError } from "better-auth/api";
 import { bearer, organization, jwt, customSession } from "better-auth/plugins";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -21,7 +22,8 @@ import { emailOTP } from "better-auth/plugins/email-otp";
 import { apiKey } from "@better-auth/api-key";
 import { passkey } from "@better-auth/passkey";
 import { scim } from "@better-auth/scim";
-import { stripe as stripePlugin } from "@better-auth/stripe";
+import { stripe as stripePlugin, type StripeOptions } from "@better-auth/stripe";
+import { authorizeStripeReference } from "@atlas/api/lib/auth/stripe-authorize-reference";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import {
   ATLAS_OAUTH_WORKSPACE_CLAIM,
@@ -331,8 +333,11 @@ export async function dispatchSignupCrmLead(args: {
  *    (e.g. a `crm_outbox` Postgres blip).
  *  - outer `try/catch` absorbs runtime defects.
  *
- * **Email source:** `subscription.referenceId` is the orgId in Atlas's
- * Better Auth wiring, not the user's email. We retrieve the Stripe
+ * **Email source:** `subscription.referenceId` is the orgId — enforced
+ * since #3416 by the plugin's org mode (`organization.enabled` in
+ * {@link buildStripePluginOptions}) with every client call passing
+ * `customerType: "organization"`, gated by `authorizeReference`. It is
+ * not the user's email. We retrieve the Stripe
  * customer (whose `email` is the address used at checkout) to attribute
  * the stamp back to the same Person record demoed/signed up under that
  * email. A Stripe customer with no email logs and skips — the row would
@@ -1334,6 +1339,293 @@ export function resolveRefreshTokenTtlSeconds(env: NodeJS.ProcessEnv): number {
 export { assertInvitationRoleAllowed, isTransportError } from "@atlas/api/lib/auth/invitations";
 
 /** @internal — exported for wiring assertions in tests. */
+/**
+ * @better-auth/stripe plugin options — extracted from {@link buildPlugins}
+ * so the exact production configuration (org scoping, authorizeReference,
+ * webhook hooks) is constructible in tests against a mock Stripe client
+ * and an in-memory Better Auth instance. Better Auth closes over its
+ * plugin options, so without this seam the webhook hooks were untestable
+ * (see the caveat note in dispatch-conversion-crm-stamp.test.ts).
+ *
+ * @internal — exported for testing and for buildPlugins only.
+ */
+export function buildStripePluginOptions(deps: {
+  stripeClient: Stripe;
+  webhookSecret: string;
+}): StripeOptions {
+  const { stripeClient, webhookSecret } = deps;
+  return {
+    stripeClient,
+    stripeWebhookSecret: webhookSecret,
+    createCustomerOnSignUp: true,
+    // #3416 — Atlas subscriptions are ORG-scoped, not user-scoped. With
+    // org mode on, the plugin maintains `organization.stripeCustomerId`
+    // (created lazily at first /subscription/upgrade), blocks org deletion
+    // while a subscription exists, and syncs member count → seat quantity.
+    // Every client call must pass `customerType: "organization"` so
+    // `subscription.referenceId` is the orgId — the contract every webhook
+    // hook below (`updateWorkspacePlanTier(orgId, …)`) is written against.
+    organization: {
+      enabled: true,
+    },
+    subscription: {
+      enabled: true,
+      plans: getStripePlans(),
+      // Required for org-referenced subscription actions: the plugin 400s
+      // org-scoped calls without it (AUTHORIZE_REFERENCE_REQUIRED). Role
+      // policy (admin/owner for money-moving actions, member for list)
+      // lives in stripe-authorize-reference.ts. customerType is threaded
+      // through so user-mode calls carrying a foreign referenceId fail
+      // closed — Atlas has no user-scoped subscriptions.
+      authorizeReference({ user, referenceId, action }, ctx) {
+        const body = ctx?.body as { customerType?: unknown } | undefined;
+        const query = ctx?.query as { customerType?: unknown } | undefined;
+        return authorizeStripeReference({
+          user,
+          referenceId,
+          action,
+          customerType: body?.customerType ?? query?.customerType,
+        });
+      },
+      // Last-gate guard for the one path authorizeReference cannot see: a
+      // user-mode upgrade with NO explicit referenceId skips the reference
+      // middleware entirely (referenceId defaults to user.id) and would
+      // create a Checkout session whose webhook referenceId never matches
+      // an organization — the customer pays, the workspace gets nothing.
+      // #3418 extends this callback with trial suppression.
+      getCheckoutSessionParams({ user, subscription }) {
+        if (subscription.referenceId === user.id) {
+          billingLog.error(
+            { userId: user.id, subscriptionId: subscription.id },
+            "Blocked user-scoped checkout — Atlas subscriptions must be org-scoped (customerType \"organization\")",
+          );
+          throw new APIError("BAD_REQUEST", {
+            message:
+              "Atlas subscriptions are organization-scoped. Retry with customerType \"organization\".",
+          });
+        }
+        return {};
+      },
+      async onSubscriptionComplete({ subscription, plan }) {
+        const orgId = subscription.referenceId;
+        if (orgId && (plan.name === "starter" || plan.name === "pro" || plan.name === "business")) {
+          try {
+            // false = no organization row matched the referenceId (the
+            // helper logs the contract violation). Skip the success path
+            // AND the CRM stamp below — stamping a conversion for a
+            // workspace that doesn't exist would pollute Twenty. ACK
+            // semantics are unchanged either way: the plugin swallows
+            // hook throws (#3423 owns durable retry).
+            const updated = await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+            if (!updated) return;
+            invalidatePlanCache(orgId);
+            log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
+          } catch (err) {
+            log.error(
+              { err: errorMessage(err), orgId, plan: plan.name },
+              "Failed to sync plan tier on subscription activation — Stripe will retry webhook",
+            );
+            throw err;
+          }
+        }
+
+        // #2737 — fire-and-forget Twenty CRM conversion stamp.
+        // Awaited deliberately: the helper swallows every
+        // failure internally, so the await only blocks on the
+        // outbox INSERT (a few ms). Not awaiting risks an
+        // unhandled rejection if a future change widens the
+        // error channel.
+        //
+        // All paid plans ship with `freeTrial: { days: TRIAL_DAYS }`
+        // (see `lib/billing/plans.ts`), so this hook fires with
+        // status `"trialing"` on every checkout completion that
+        // entered a trial — stamping then would overcount unpaid
+        // trials as paid conversions in the #2728 read path. The
+        // trial → active transition is picked up by
+        // `onSubscriptionUpdate` below. Gating is centralised in
+        // `planConversionStamp` so the trial / no-customer-id /
+        // active permutations are unit-testable.
+        const directive = planConversionStamp({ trigger: "complete", subscription });
+        if (directive.kind === "log-and-skip") {
+          log.warn(
+            {
+              orgId,
+              plan: plan.name,
+              subscriptionId: subscription.id,
+              event: "conversion_crm.no_stripe_customer_id",
+            },
+            "Subscription completed without stripeCustomerId — skipping Twenty conversion stamp",
+          );
+        } else if (directive.kind === "dispatch") {
+          await dispatchConversionCrmStamp({
+            stripeClient,
+            stripeCustomerId: directive.stripeCustomerId,
+            orgId,
+          });
+        }
+      },
+      async onSubscriptionCancel({ subscription }) {
+        const orgId = subscription.referenceId;
+        if (orgId) {
+          try {
+            const updated = await updateWorkspacePlanTier(orgId, "free");
+            if (!updated) return; // helper already logged the missing org
+            invalidatePlanCache(orgId);
+            log.info({ orgId }, "Subscription canceled — downgraded to free tier");
+          } catch (err) {
+            log.error(
+              { err: errorMessage(err), orgId },
+              "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
+            );
+            throw err;
+          }
+        }
+      },
+      async onSubscriptionUpdate({ event, subscription }) {
+        const orgId = subscription.referenceId;
+        if (!orgId) return;
+
+        // Resolve the new plan tier from the Stripe subscription's price ID
+        const stripeSubscription = event.data.object as Stripe.Subscription;
+
+        // #2737 — Twenty CRM conversion stamp on trial → active.
+        // `onSubscriptionComplete` skips trialing subscriptions to
+        // avoid overcounting unpaid trials as paid conversions.
+        // The real "paid" signal is `customer.subscription.updated`
+        // with status transitioning from "trialing" to "active"
+        // (Stripe fires this when the first trial-end invoice is
+        // paid). Awaited for the same reason as the create-side
+        // dispatch (helper swallows internally; the await only
+        // blocks on the outbox INSERT).
+        const updateDirective = planConversionStamp({
+          trigger: "update",
+          subscription,
+          event: event as { type: string; data: { previous_attributes?: { status?: string | null } | null; object: { status?: string | null } } },
+        });
+        if (updateDirective.kind === "dispatch") {
+          await dispatchConversionCrmStamp({
+            stripeClient,
+            stripeCustomerId: updateDirective.stripeCustomerId,
+            orgId,
+          });
+        }
+
+        const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
+        if (!priceId) {
+          billingLog.warn(
+            { orgId, subscriptionId: subscription.id },
+            "Subscription updated but no price ID found on Stripe subscription items — skipping plan sync",
+          );
+          return;
+        }
+
+        const newTier = resolvePlanTierFromPriceId(priceId);
+        if (!newTier) {
+          billingLog.warn(
+            { orgId, priceId },
+            "Subscription updated with unrecognized price ID — cannot map to Atlas plan tier",
+          );
+          return;
+        }
+
+        try {
+          const updated = await updateWorkspacePlanTier(orgId, newTier);
+          if (!updated) return; // helper already logged the missing org
+          invalidatePlanCache(orgId);
+          billingLog.info(
+            { orgId, newTier, priceId },
+            "Subscription updated — plan tier synced",
+          );
+        } catch (err) {
+          billingLog.error(
+            { err: errorMessage(err), orgId, newTier, priceId },
+            "Failed to sync plan tier on subscription update — Stripe will retry webhook",
+          );
+          throw err;
+        }
+      },
+      async onSubscriptionDeleted({ subscription }) {
+        const orgId = subscription.referenceId;
+        if (orgId) {
+          try {
+            const updated = await updateWorkspacePlanTier(orgId, "free");
+            if (!updated) return; // helper already logged the missing org
+            invalidatePlanCache(orgId);
+            log.info({ orgId }, "Subscription deleted — downgraded to free tier");
+          } catch (err) {
+            log.error(
+              { err: errorMessage(err), orgId },
+              "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
+            );
+            throw err;
+          }
+        }
+      },
+    },
+    async onEvent(event: Stripe.Event) {
+      if (event.type === "invoice.payment_failed") {
+        const invoice = event.data.object as Stripe.Invoice;
+        const customerId = typeof invoice.customer === "string"
+          ? invoice.customer
+          : invoice.customer?.id;
+        // In Stripe API 2025+, subscription lives under parent.subscription_details
+        const parentSub = invoice.parent?.subscription_details?.subscription;
+        const subscriptionId = typeof parentSub === "string"
+          ? parentSub
+          : parentSub?.id;
+        const attemptCount = invoice.attempt_count ?? 0;
+
+        billingLog.warn(
+          { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
+          "Invoice payment failed (attempt %d)",
+          attemptCount,
+        );
+
+        // After 3+ failed attempts, suspend the workspace.
+        // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
+        if (attemptCount >= 3 && subscriptionId) {
+          try {
+            // Look up the org by subscription's referenceId in Better Auth's subscription table
+            const rows = await internalQuery<{ referenceId: string }>(
+              `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
+              [subscriptionId],
+            );
+            const orgId = rows[0]?.referenceId;
+            if (orgId) {
+              const suspended = await updateWorkspaceStatus(orgId, "suspended");
+              if (suspended) {
+                invalidatePlanCache(orgId);
+                billingLog.warn(
+                  { orgId, subscriptionId, attemptCount },
+                  "Workspace suspended after %d failed payment attempts",
+                  attemptCount,
+                );
+              } else {
+                billingLog.error(
+                  { orgId, subscriptionId },
+                  "Cannot suspend workspace — subscription row references an organization that does not exist",
+                );
+              }
+            } else {
+              billingLog.warn(
+                { subscriptionId },
+                "Cannot suspend workspace — no subscription found for Stripe subscription ID",
+              );
+            }
+          } catch (err) {
+            billingLog.error(
+              { err: errorMessage(err), subscriptionId, attemptCount },
+              "Failed to suspend workspace after repeated payment failures",
+            );
+            // Do not re-throw — the onEvent handler should not cause Stripe to retry
+            // the entire webhook. The payment failure is already recorded by Stripe.
+          }
+        }
+      }
+    },
+  };
+}
+
 export function buildPlugins() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
   const plugins: any[] = [
@@ -1715,214 +2007,7 @@ export function buildPlugins() {
         const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
 
         plugins.push(
-          stripePlugin({
-            stripeClient,
-            stripeWebhookSecret: webhookSecret,
-            createCustomerOnSignUp: true,
-            subscription: {
-              enabled: true,
-              plans: getStripePlans(),
-              async onSubscriptionComplete({ subscription, plan }) {
-                const orgId = subscription.referenceId;
-                if (orgId && (plan.name === "starter" || plan.name === "pro" || plan.name === "business")) {
-                  try {
-                    await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
-                    invalidatePlanCache(orgId);
-                    log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
-                  } catch (err) {
-                    log.error(
-                      { err: errorMessage(err), orgId, plan: plan.name },
-                      "Failed to sync plan tier on subscription activation — Stripe will retry webhook",
-                    );
-                    throw err;
-                  }
-                }
-
-                // #2737 — fire-and-forget Twenty CRM conversion stamp.
-                // Awaited deliberately: the helper swallows every
-                // failure internally, so the await only blocks on the
-                // outbox INSERT (a few ms). Not awaiting risks an
-                // unhandled rejection if a future change widens the
-                // error channel.
-                //
-                // All paid plans ship with `freeTrial: { days: TRIAL_DAYS }`
-                // (see `lib/billing/plans.ts`), so this hook fires with
-                // status `"trialing"` on every checkout completion that
-                // entered a trial — stamping then would overcount unpaid
-                // trials as paid conversions in the #2728 read path. The
-                // trial → active transition is picked up by
-                // `onSubscriptionUpdate` below. Gating is centralised in
-                // `planConversionStamp` so the trial / no-customer-id /
-                // active permutations are unit-testable.
-                const directive = planConversionStamp({ trigger: "complete", subscription });
-                if (directive.kind === "log-and-skip") {
-                  log.warn(
-                    {
-                      orgId,
-                      plan: plan.name,
-                      subscriptionId: subscription.id,
-                      event: "conversion_crm.no_stripe_customer_id",
-                    },
-                    "Subscription completed without stripeCustomerId — skipping Twenty conversion stamp",
-                  );
-                } else if (directive.kind === "dispatch") {
-                  await dispatchConversionCrmStamp({
-                    stripeClient,
-                    stripeCustomerId: directive.stripeCustomerId,
-                    orgId,
-                  });
-                }
-              },
-              async onSubscriptionCancel({ subscription }) {
-                const orgId = subscription.referenceId;
-                if (orgId) {
-                  try {
-                    await updateWorkspacePlanTier(orgId, "free");
-                    invalidatePlanCache(orgId);
-                    log.info({ orgId }, "Subscription canceled — downgraded to free tier");
-                  } catch (err) {
-                    log.error(
-                      { err: errorMessage(err), orgId },
-                      "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
-                    );
-                    throw err;
-                  }
-                }
-              },
-              async onSubscriptionUpdate({ event, subscription }) {
-                const orgId = subscription.referenceId;
-                if (!orgId) return;
-
-                // Resolve the new plan tier from the Stripe subscription's price ID
-                const stripeSubscription = event.data.object as Stripe.Subscription;
-
-                // #2737 — Twenty CRM conversion stamp on trial → active.
-                // `onSubscriptionComplete` skips trialing subscriptions to
-                // avoid overcounting unpaid trials as paid conversions.
-                // The real "paid" signal is `customer.subscription.updated`
-                // with status transitioning from "trialing" to "active"
-                // (Stripe fires this when the first trial-end invoice is
-                // paid). Awaited for the same reason as the create-side
-                // dispatch (helper swallows internally; the await only
-                // blocks on the outbox INSERT).
-                const updateDirective = planConversionStamp({
-                  trigger: "update",
-                  subscription,
-                  event: event as { type: string; data: { previous_attributes?: { status?: string | null } | null; object: { status?: string | null } } },
-                });
-                if (updateDirective.kind === "dispatch") {
-                  await dispatchConversionCrmStamp({
-                    stripeClient,
-                    stripeCustomerId: updateDirective.stripeCustomerId,
-                    orgId,
-                  });
-                }
-
-                const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
-                if (!priceId) {
-                  billingLog.warn(
-                    { orgId, subscriptionId: subscription.id },
-                    "Subscription updated but no price ID found on Stripe subscription items — skipping plan sync",
-                  );
-                  return;
-                }
-
-                const newTier = resolvePlanTierFromPriceId(priceId);
-                if (!newTier) {
-                  billingLog.warn(
-                    { orgId, priceId },
-                    "Subscription updated with unrecognized price ID — cannot map to Atlas plan tier",
-                  );
-                  return;
-                }
-
-                try {
-                  await updateWorkspacePlanTier(orgId, newTier);
-                  invalidatePlanCache(orgId);
-                  billingLog.info(
-                    { orgId, newTier, priceId },
-                    "Subscription updated — plan tier synced",
-                  );
-                } catch (err) {
-                  billingLog.error(
-                    { err: errorMessage(err), orgId, newTier, priceId },
-                    "Failed to sync plan tier on subscription update — Stripe will retry webhook",
-                  );
-                  throw err;
-                }
-              },
-              async onSubscriptionDeleted({ subscription }) {
-                const orgId = subscription.referenceId;
-                if (orgId) {
-                  try {
-                    await updateWorkspacePlanTier(orgId, "free");
-                    invalidatePlanCache(orgId);
-                    log.info({ orgId }, "Subscription deleted — downgraded to free tier");
-                  } catch (err) {
-                    log.error(
-                      { err: errorMessage(err), orgId },
-                      "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
-                    );
-                    throw err;
-                  }
-                }
-              },
-            },
-            async onEvent(event: Stripe.Event) {
-              if (event.type === "invoice.payment_failed") {
-                const invoice = event.data.object as Stripe.Invoice;
-                const customerId = typeof invoice.customer === "string"
-                  ? invoice.customer
-                  : invoice.customer?.id;
-                // In Stripe API 2025+, subscription lives under parent.subscription_details
-                const parentSub = invoice.parent?.subscription_details?.subscription;
-                const subscriptionId = typeof parentSub === "string"
-                  ? parentSub
-                  : parentSub?.id;
-                const attemptCount = invoice.attempt_count ?? 0;
-
-                billingLog.warn(
-                  { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
-                  "Invoice payment failed (attempt %d)",
-                  attemptCount,
-                );
-
-                // After 3+ failed attempts, suspend the workspace.
-                // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
-                if (attemptCount >= 3 && subscriptionId) {
-                  try {
-                    // Look up the org by subscription's referenceId in Better Auth's subscription table
-                    const rows = await internalQuery<{ referenceId: string }>(
-                      `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
-                      [subscriptionId],
-                    );
-                    const orgId = rows[0]?.referenceId;
-                    if (orgId) {
-                      await updateWorkspaceStatus(orgId, "suspended");
-                      invalidatePlanCache(orgId);
-                      billingLog.warn(
-                        { orgId, subscriptionId, attemptCount },
-                        "Workspace suspended after %d failed payment attempts",
-                        attemptCount,
-                      );
-                    } else {
-                      billingLog.warn(
-                        { subscriptionId },
-                        "Cannot suspend workspace — no subscription found for Stripe subscription ID",
-                      );
-                    }
-                  } catch (err) {
-                    billingLog.error(
-                      { err: errorMessage(err), subscriptionId, attemptCount },
-                      "Failed to suspend workspace after repeated payment failures",
-                    );
-                    // Do not re-throw — the onEvent handler should not cause Stripe to retry
-                    // the entire webhook. The payment failure is already recorded by Stripe.
-                  }
-                }
-              }
-            },
-          }),
+          stripePlugin(buildStripePluginOptions({ stripeClient, webhookSecret })),
         );
 
         log.info("Stripe billing plugin enabled");

@@ -53447,7 +53447,7 @@
           "Admin — Proactive Chat"
         ],
         "summary": "Upsert a channel override",
-        "description": "Creates or replaces the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates.",
+        "description": "Creates or updates the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates. Fields are independently optional: omit `allow` or `sensitivity` to leave the persisted value alone (new rows default to `allow: true`); pass `null` for `sensitivity` to explicitly clear the override.",
         "requestBody": {
           "required": true,
           "content": {
@@ -53477,8 +53477,7 @@
                   }
                 },
                 "required": [
-                  "channelId",
-                  "allow"
+                  "channelId"
                 ]
               }
             }
@@ -53610,6 +53609,122 @@
           }
         },
         "operationId": "postAdminProactiveChannels"
+      }
+    },
+    "/api/v1/admin/proactive/channels/available": {
+      "get": {
+        "tags": [
+          "Admin — Proactive Chat"
+        ],
+        "summary": "List channels available on the chat platform",
+        "description": "Lists the workspace's Slack channels (id + name + membership) via conversations.list so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no Slack installation or the platform call fails — never a hard error.",
+        "responses": {
+          "200": {
+            "description": "Channel listing (or a soft `available: false` envelope)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "no_slack_installation",
+                        "slack_error",
+                        null
+                      ]
+                    },
+                    "channels": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "isPrivate": {
+                            "type": "boolean"
+                          },
+                          "isMember": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "isPrivate",
+                          "isMember"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "available",
+                    "reason",
+                    "channels"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminProactiveChannelsAvailable"
       }
     },
     "/api/v1/admin/proactive/channels/{channelId}": {

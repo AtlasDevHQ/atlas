@@ -15,7 +15,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { slackAPI, postMessage, updateMessage } = await import("../api");
+const { slackAPI, postMessage, updateMessage, listChannels } = await import("../api");
 
 describe("api", () => {
   const originalFetch = globalThis.fetch;
@@ -160,6 +160,109 @@ describe("api", () => {
       expect(body.channel).toBe("C123");
       expect(body.text).toBe("hello");
       expect(body.thread_ts).toBe("1000.0001");
+    });
+  });
+
+  describe("listChannels", () => {
+    function channelPage(channels: unknown[], nextCursor?: string): Response {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          channels,
+          response_metadata: { next_cursor: nextCursor ?? "" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    it("GETs conversations.list with Bearer auth and projects channel fields", async () => {
+      mockFetch.mockResolvedValue(
+        channelPage([
+          { id: "C1", name: "general", is_private: false, is_member: true },
+          { id: "C2", name: "secrets", is_private: true, is_member: false },
+        ]),
+      );
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.channels).toEqual([
+          { id: "C1", name: "general", isPrivate: false, isMember: true },
+          { id: "C2", name: "secrets", isPrivate: true, isMember: false },
+        ]);
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(String(url)).toStartWith("https://slack.com/api/conversations.list?");
+      const params = new URL(String(url)).searchParams;
+      expect(params.get("types")).toBe("public_channel,private_channel");
+      expect(params.get("exclude_archived")).toBe("true");
+      expect((init as RequestInit).method).toBe("GET");
+      expect((init as RequestInit).headers).toEqual(
+        expect.objectContaining({ Authorization: "Bearer xoxb-token" }),
+      );
+    });
+
+    it("follows the pagination cursor across pages", async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          channelPage([{ id: "C1", name: "a", is_private: false, is_member: true }], "cur-2"),
+        )
+        .mockResolvedValueOnce(
+          channelPage([{ id: "C2", name: "b", is_private: false, is_member: true }]),
+        );
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.channels.map((ch) => ch.id)).toEqual(["C1", "C2"]);
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const secondUrl = String(mockFetch.mock.calls[1][0]);
+      expect(new URL(secondUrl).searchParams.get("cursor")).toBe("cur-2");
+    });
+
+    it("skips structurally invalid channel entries", async () => {
+      mockFetch.mockResolvedValue(
+        channelPage([
+          { id: "C1", name: "ok", is_private: false, is_member: true },
+          { id: 42, name: "bad-id" },
+          "not-an-object",
+          null,
+        ]),
+      );
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.channels.map((ch) => ch.id)).toEqual(["C1"]);
+      }
+    });
+
+    it("returns the Slack error on ok: false", async () => {
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe("missing_scope");
+      }
+    });
+
+    it("returns request_failed when fetch throws", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNRESET"));
+
+      const result = await listChannels("xoxb-token");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("request_failed");
+      }
     });
   });
 

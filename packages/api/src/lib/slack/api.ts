@@ -71,6 +71,109 @@ export async function slackAPI(
 }
 
 /**
+ * One channel row from `conversations.list`, projected down to the
+ * fields the admin channel-picker needs. `isMember` matters because a
+ * proactive override on a channel the bot isn't in can never fire —
+ * the UI surfaces that as a warning instead of letting the admin
+ * configure a dead row.
+ */
+export interface SlackChannelSummary {
+  id: string;
+  name: string;
+  isPrivate: boolean;
+  isMember: boolean;
+}
+
+/**
+ * Bounded pagination for {@link listChannels}. 5 pages × 200 channels
+ * keeps the admin endpoint's worst-case latency at ~5 sequential Slack
+ * round-trips while covering workspaces up to 1000 channels; beyond
+ * that the picker still works — the admin can type the ID manually for
+ * channels past the cap.
+ */
+const LIST_CHANNELS_MAX_PAGES = 5;
+
+/**
+ * Per-page fetch timeout. The listing backs an interactive admin
+ * endpoint — a stalled Slack connection should fail the request (the
+ * UI soft-degrades to manual entry) rather than pin the handler.
+ */
+const LIST_CHANNELS_TIMEOUT_MS = 10_000;
+
+/**
+ * List the workspace's channels via `conversations.list`.
+ *
+ * Uses GET with query-string args — unlike `chat.*`, the read methods
+ * don't accept JSON bodies, and GET avoids the form-encoding split in
+ * {@link slackAPI}. Private channels only appear when the bot has been
+ * invited to them (Slack scopes the listing to the token's visibility),
+ * so no extra filtering is needed.
+ */
+export async function listChannels(
+  token: string,
+): Promise<{ ok: true; channels: SlackChannelSummary[] } | { ok: false; error: string }> {
+  const channels: SlackChannelSummary[] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < LIST_CHANNELS_MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      types: "public_channel,private_channel",
+      exclude_archived: "true",
+      limit: "200",
+    });
+    if (cursor) params.set("cursor", cursor);
+
+    try {
+      const resp = await fetch(`${SLACK_API_BASE}/conversations.list?${params.toString()}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(LIST_CHANNELS_TIMEOUT_MS),
+      });
+      if (!resp.ok) {
+        log.error({ method: "conversations.list", status: resp.status }, "Slack API HTTP error");
+        return { ok: false, error: `HTTP ${resp.status}` };
+      }
+      const data = (await resp.json()) as Record<string, unknown>;
+      if (!data.ok) {
+        log.warn(
+          { method: "conversations.list", error: data.error },
+          "Slack API returned error",
+        );
+        return { ok: false, error: String(data.error ?? "unknown_error") };
+      }
+      const rawChannels = Array.isArray(data.channels) ? data.channels : [];
+      for (const raw of rawChannels) {
+        if (!raw || typeof raw !== "object") continue;
+        const ch = raw as Record<string, unknown>;
+        if (typeof ch.id !== "string" || typeof ch.name !== "string") continue;
+        channels.push({
+          id: ch.id,
+          name: ch.name,
+          isPrivate: ch.is_private === true,
+          isMember: ch.is_member === true,
+        });
+      }
+      const meta = data.response_metadata as { next_cursor?: unknown } | undefined;
+      cursor = typeof meta?.next_cursor === "string" && meta.next_cursor.length > 0
+        ? meta.next_cursor
+        : undefined;
+      if (!cursor) break;
+    } catch (err) {
+      log.error(
+        { method: "conversations.list", err: err instanceof Error ? err.message : String(err) },
+        "Slack API request failed",
+      );
+      return {
+        ok: false,
+        error: `request_failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+
+  return { ok: true, channels };
+}
+
+/**
  * Post a message to a Slack channel.
  */
 export async function postMessage(

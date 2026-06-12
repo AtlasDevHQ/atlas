@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { savePlanIntent } from "@/lib/billing/plan-intent";
 import { navigatePostAuth } from "@/lib/auth/post-auth-nav";
 import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,15 @@ export default function SignupPage() {
   // rather than creating their own).
   const searchParams = useSearchParams();
   const invitationId = searchParams.get("invitationId");
+  // `?plan=…` is the pricing-page CTA intent (#3418). The signup flow
+  // spans five hard-navigated steps plus optional OAuth redirects, so the
+  // param can't survive as URL state — stash it; the billing plan picker
+  // consumes it for preselection. Saved in an effect (not render) so
+  // React strict-mode double-render doesn't double-write.
+  const planParam = searchParams.get("plan");
+  useEffect(() => {
+    savePlanIntent(planParam);
+  }, [planParam]);
   const postSignupPath = invitationId
     ? `/accept-invitation/${encodeURIComponent(invitationId)}`
     : "/signup/workspace";

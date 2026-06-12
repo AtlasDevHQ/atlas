@@ -256,6 +256,26 @@ type OrgClient = Omit<typeof _authClient, "useSession"> & {
       data?: { url: string; redirect: boolean } | null;
       error?: { message?: string; code?: string; status?: number } | null;
     }>;
+    // First subscription → Stripe Checkout redirect URL; plan change on an
+    // existing subscription → Billing Portal subscription_update_confirm
+    // URL (or the returnUrl when the plugin applied the change directly).
+    // Pass scheduleAtPeriodEnd for downgrades so the switch lands at the
+    // period boundary via a Subscription Schedule (#3418).
+    upgrade?: (opts: {
+      plan: string;
+      referenceId?: string;
+      customerType?: "user" | "organization";
+      annual?: boolean;
+      seats?: number;
+      successUrl?: string;
+      cancelUrl?: string;
+      returnUrl?: string;
+      scheduleAtPeriodEnd?: boolean;
+      disableRedirect?: boolean;
+    }) => Promise<{
+      data?: { url?: string | null; redirect: boolean } | null;
+      error?: { message?: string; code?: string; status?: number } | null;
+    }>;
   };
 };
 export const authClient: OrgClient = _authClient as OrgClient;

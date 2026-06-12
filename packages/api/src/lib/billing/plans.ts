@@ -71,6 +71,9 @@ const UNLIMITED = -1;
 /** Trial duration in days. Single source of truth — used in plan definitions, Stripe config, and enforcement. */
 export const TRIAL_DAYS = 14;
 
+/** The tiers self-serve checkout can move a workspace to (#3418). */
+export type PaidPlanTier = "starter" | "pro" | "business";
+
 const NO_FEATURES: PlanFeatures = {
   customDomain: false,
   sso: false,
@@ -195,11 +198,21 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
 /**
  * Returns plan configs in the format expected by @better-auth/stripe's
  * `subscription.plans` option. Only called when STRIPE_SECRET_KEY is set.
+ *
+ * Every plan sets `seatPriceId === priceId` — the plugin's "seat-only
+ * plan" shape (#3418): checkout emits a single line item priced per seat
+ * with quantity = member count, and the plugin's member
+ * add/remove/invite-accept hooks keep the Stripe quantity synced to
+ * membership automatically. This matches Atlas's $/seat pricing and the
+ * member-count basis enforcement uses for token budgets. The pairing is
+ * pinned by plans.test.ts — a drift would re-add a base line item on top
+ * of the seat item (double billing).
  */
 export function getStripePlans(): Array<{
   name: string;
   priceId: string;
   annualDiscountPriceId?: string;
+  seatPriceId?: string;
   limits: Record<string, number>;
   freeTrial?: { days: number };
 }> {
@@ -207,6 +220,7 @@ export function getStripePlans(): Array<{
     name: string;
     priceId: string;
     annualDiscountPriceId?: string;
+    seatPriceId?: string;
     limits: Record<string, number>;
     freeTrial?: { days: number };
   }> = [];
@@ -216,6 +230,7 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "starter",
       priceId: starterPriceId,
+      seatPriceId: starterPriceId,
       annualDiscountPriceId: process.env.STRIPE_STARTER_ANNUAL_PRICE_ID,
       limits: {
         tokenBudgetPerSeat: PLANS.starter.limits.tokenBudgetPerSeat,
@@ -232,6 +247,7 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "pro",
       priceId: proPriceId,
+      seatPriceId: proPriceId,
       annualDiscountPriceId: process.env.STRIPE_PRO_ANNUAL_PRICE_ID,
       limits: {
         tokenBudgetPerSeat: PLANS.pro.limits.tokenBudgetPerSeat,
@@ -248,6 +264,7 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "business",
       priceId: businessPriceId,
+      seatPriceId: businessPriceId,
       annualDiscountPriceId: process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID,
       limits: {
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,

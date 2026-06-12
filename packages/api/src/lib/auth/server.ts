@@ -33,7 +33,7 @@ import {
 import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
-import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
@@ -1400,14 +1400,30 @@ export function buildStripePluginOptions(deps: {
           customerType: body?.customerType ?? query?.customerType,
         });
       },
-      // Last-gate guard for the one path authorizeReference cannot see: a
-      // user-mode upgrade with NO explicit referenceId skips the reference
-      // middleware entirely (referenceId defaults to user.id) and would
-      // create a Checkout session whose webhook referenceId never matches
-      // an organization — the customer pays, the workspace gets nothing.
-      // #3418 extends this callback with trial suppression.
-      getCheckoutSessionParams({ user, subscription }) {
-        if (subscription.referenceId === user.id) {
+      // Two jobs at the last gate before Stripe Checkout (#3418):
+      //
+      // 1. Org-scope guard — the one path authorizeReference cannot see: a
+      //    user-mode upgrade with NO explicit referenceId skips the
+      //    reference middleware entirely (referenceId defaults to user.id)
+      //    and would create a Checkout session whose webhook referenceId
+      //    never matches an organization — the customer pays, the
+      //    workspace gets nothing.
+      //
+      // 2. Double-trial suppression (#3426 one-trial decision) — every
+      //    paid plan carries `freeTrial`, and the plugin's own one-trial
+      //    guard only consults its own subscription table. An org that
+      //    consumed Atlas's PRE-checkout trial (assignSaasTrial stamps
+      //    `trial_ends_at` at workspace creation) has no subscription row,
+      //    so the plugin would grant a SECOND 14-day Stripe trial at first
+      //    checkout. The plugin spreads our `subscription_data` AFTER its
+      //    `freeTrial` computation, so `trial_period_days: undefined`
+      //    overrides it and the Stripe SDK drops the undefined key.
+      //    Fails toward suppression: if the workspace lookup errors, the
+      //    customer starts billing immediately rather than risking a
+      //    double trial grant.
+      async getCheckoutSessionParams({ user, subscription }) {
+        const orgId = subscription.referenceId;
+        if (orgId === user.id) {
           billingLog.error(
             { userId: user.id, subscriptionId: subscription.id },
             "Blocked user-scoped checkout — Atlas subscriptions must be org-scoped (customerType \"organization\")",
@@ -1416,6 +1432,31 @@ export function buildStripePluginOptions(deps: {
             message:
               "Atlas subscriptions are organization-scoped. Retry with customerType \"organization\".",
           });
+        }
+
+        let trialConsumed = true;
+        try {
+          // null workspace (no organization row) → the org never received
+          // an Atlas trial → let the plugin's Stripe trial stand. Distinct
+          // from the catch below: a lookup ERROR is unknown state and
+          // fails toward suppression.
+          const workspace = await getWorkspaceDetails(orgId);
+          trialConsumed = workspace?.trial_ends_at != null;
+        } catch (err) {
+          billingLog.error(
+            { err: errorMessage(err), orgId },
+            "Workspace lookup failed during checkout trial check — suppressing Stripe trial (fail toward no double trial)",
+          );
+        }
+
+        if (trialConsumed) {
+          billingLog.info(
+            { orgId, subscriptionId: subscription.id },
+            "Suppressing Stripe checkout trial — org already consumed the Atlas pre-checkout trial",
+          );
+          return {
+            params: { subscription_data: { trial_period_days: undefined } },
+          };
         }
         return {};
       },

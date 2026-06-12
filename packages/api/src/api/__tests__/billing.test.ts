@@ -229,6 +229,27 @@ describe("billing routes", () => {
       expect(body.overagePerMillionTokens).toBe(1.0);
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
+      // #3418 — the plan picker's source of truth. All three paid tiers are
+      // always listed; `configured` reflects whether the deployment has the
+      // tier's Stripe Price ID env var (none set in this test env).
+      expect(body.availablePlans.map((p: { tier: string }) => p.tier)).toEqual([
+        "starter",
+        "pro",
+        "business",
+      ]);
+      expect(body.availablePlans[0]).toMatchObject({
+        tier: "starter",
+        displayName: "Starter",
+        pricePerSeat: 29,
+        tokenBudgetPerSeat: 2_000_000,
+        maxSeats: 10,
+        maxConnections: 1,
+      });
+      expect(body.availablePlans[2]).toMatchObject({
+        tier: "business",
+        maxSeats: null,
+        maxConnections: null,
+      });
     });
 
     it("defaults seat count to 1 when member query fails", async () => {

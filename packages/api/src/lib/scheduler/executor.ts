@@ -21,6 +21,7 @@ import { Effect, Duration, Exit, Cause } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery, type AgentQueryResult } from "@atlas/api/lib/agent-query";
+import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import { loadActorUser } from "@atlas/api/lib/auth/actor";
 import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { causeToError } from "@atlas/api/lib/audit/error-scrub";
@@ -50,9 +51,20 @@ function agentQueryEffect(
 ) {
   return Effect.tryPromise({
     try: () => executeAgentQuery(question, requestId, options),
+    // #3420 — a billing-enforcement block from the seam in
+    // `executeAgentQuery` is recorded on the run row verbatim (engine.ts
+    // calls `completeTaskRun(runId, "failed", { error: message })`), so
+    // the message must name billing enforcement AND carry the user-safe
+    // reason for the task owner's run history. Never a silent skip: the
+    // seam already logged the block with org context.
     catch: (err) =>
       new SchedulerExecutionError({
-        message: err instanceof Error ? err.message : String(err),
+        message:
+          err instanceof BillingBlockedError
+            ? `Blocked by billing enforcement [${err.errorCode}]: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : String(err),
         taskId,
       }),
   }).pipe(

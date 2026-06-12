@@ -8,6 +8,8 @@
 
 import { runAgent } from "@atlas/api/lib/agent";
 import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/lib/logger";
+import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
+import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import type { ApprovalRequestSurface } from "@useatlas/types";
 
@@ -50,6 +52,15 @@ export interface AgentQueryResult {
    * F-54 / F-55 closed the regression where this was silently bypassed.
    */
   pendingApproval?: PendingApproval;
+  /**
+   * #3419/#3420 — the 80–109% plan-usage warning band from the billing
+   * gate. Never blocks the run. Surfaces that render usage warnings
+   * (the `/api/v1/query` JSON envelope) attach it to their response;
+   * machine-initiated surfaces (chat platforms, scheduler) deliberately
+   * leave it unrendered — the band is logged by `billing/enforcement.ts`
+   * and visible in the admin billing page.
+   */
+  planWarning?: PlanLimitWarning;
 }
 
 export interface ExecuteAgentQueryOptions {
@@ -99,6 +110,15 @@ export interface ExecuteAgentQueryOptions {
  *
  * Creates a UIMessage from the question, invokes the agent loop, and
  * extracts SQL queries, data, and the final answer from tool results.
+ *
+ * **Billing enforcement seam (#3419/#3420):** before the agent runs,
+ * the bound actor's workspace is checked against
+ * {@link checkAgentBillingGate} (workspace status → abuse status →
+ * plan limits). A blocked workspace throws {@link BillingBlockedError}
+ * — whose `message` is user-safe — with ZERO LLM spend. Putting the
+ * gate here (rather than per-callsite) means every current and future
+ * caller is covered by construction. Self-hosted deployments and runs
+ * without an org pass through untouched.
  */
 export async function executeAgentQuery(
   question: string,
@@ -135,6 +155,26 @@ export async function executeAgentQuery(
       ...(connectionGroupId ? { connectionGroupId } : {}),
     },
     async () => {
+    // #3419/#3420 — the single billing-enforcement seam for agent runs.
+    // Blocks before any tool registry / LLM work so a suspended,
+    // trial-expired, hard-capped, or abuse-flagged workspace consumes
+    // zero platform-paid tokens regardless of which surface called.
+    const gateOrgId = boundUser?.activeOrganizationId;
+    const gate = await checkAgentBillingGate(gateOrgId);
+    if (!gate.allowed) {
+      log.warn(
+        {
+          requestId: id,
+          orgId: gateOrgId,
+          errorCode: gate.errorCode,
+          httpStatus: gate.httpStatus,
+          ...(surface ? { surface } : {}),
+        },
+        "Agent run blocked by billing enforcement",
+      );
+      throw new BillingBlockedError(gate);
+    }
+
     const priorUIMessages = (options?.priorMessages ?? []).map((m, i) => ({
       id: `${id}-prior-${i}`,
       role: m.role as "user" | "assistant",
@@ -284,6 +324,7 @@ export async function executeAgentQuery(
       },
       ...(pendingActions.length > 0 && { pendingActions }),
       ...(pendingApproval ? { pendingApproval } : {}),
+      ...(gate.warning ? { planWarning: gate.warning } : {}),
     };
   });
 }

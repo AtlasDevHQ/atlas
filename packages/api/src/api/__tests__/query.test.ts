@@ -164,6 +164,53 @@ mock.module("@atlas/api/lib/conversations", () => ({
   resolveRoutingMode: mock((m: "auto" | "pin" | "all" | null | undefined = null) => m ?? "pin"),
 }));
 
+// #3419/#3420 — the billing seam lives inside `executeAgentQuery`; the
+// route's job is mapping `BillingBlockedError` to the HTTP envelope.
+// Mock the gate module so tests control the verdict; the stub error
+// class mirrors the real one (the route narrows via `instanceof`).
+class BillingBlockedErrorStub extends Error {
+  override readonly name = "BillingBlockedError";
+  readonly errorCode: string;
+  readonly httpStatus: number;
+  readonly retryable: boolean;
+  readonly retryAfterSeconds: number | undefined;
+  readonly usage: { currentUsage: number; limit: number; metric: string } | undefined;
+  constructor(block: {
+    errorCode: string;
+    errorMessage: string;
+    httpStatus: number;
+    retryable: boolean;
+    retryAfterSeconds?: number;
+    usage?: { currentUsage: number; limit: number; metric: string };
+  }) {
+    super(block.errorMessage);
+    this.errorCode = block.errorCode;
+    this.httpStatus = block.httpStatus;
+    this.retryable = block.retryable;
+    this.retryAfterSeconds = block.retryAfterSeconds;
+    this.usage = block.usage;
+  }
+}
+
+type BillingGateVerdict =
+  | { allowed: true; warning?: { code: "plan_limit_warning"; message: string; metrics: unknown[] } }
+  | {
+      allowed: false;
+      errorCode: string;
+      errorMessage: string;
+      httpStatus: number;
+      retryable: boolean;
+      retryAfterSeconds?: number;
+      usage?: { currentUsage: number; limit: number; metric: string };
+    };
+let billingGateVerdict: BillingGateVerdict = { allowed: true };
+const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
+
+mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: BillingBlockedErrorStub,
+}));
+
 // Import after mocks are registered
 const { app } = await import("../index");
 
@@ -206,6 +253,8 @@ describe("POST /api/v1/query", () => {
     mockAddMessageQuery.mockReset();
     mockGetConversationQuery.mockReset();
     mockGetConversationQuery.mockResolvedValue({ ok: false, reason: "not_found" });
+    billingGateVerdict = { allowed: true };
+    mockCheckAgentBillingGate.mockClear();
   });
 
   afterEach(() => {
@@ -227,6 +276,75 @@ describe("POST /api/v1/query", () => {
     expect(body.data).toEqual([{ columns: ["count"], rows: [{ count: 42 }] }]);
     expect(body.steps).toBe(1);
     expect(body.usage).toEqual({ totalTokens: 150 });
+  });
+
+  // ── #3419/#3420: billing blocks from the seam map to the HTTP envelope ──
+
+  it("maps a trial_expired billing block to a 403 envelope with requestId", async () => {
+    billingGateVerdict = {
+      allowed: false,
+      errorCode: "trial_expired",
+      errorMessage: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+      httpStatus: 403,
+      retryable: false,
+    };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("trial_expired");
+    expect(body.message).toContain("trial has expired");
+    expect(body.retryable).toBe(false);
+    expect(typeof body.requestId).toBe("string");
+    expect(mockRunAgent).not.toHaveBeenCalled();
+  });
+
+  it("maps an abuse-throttle billing block to 429 with a Retry-After header", async () => {
+    billingGateVerdict = {
+      allowed: false,
+      errorCode: "workspace_throttled",
+      errorMessage: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
+      httpStatus: 429,
+      retryable: true,
+      retryAfterSeconds: 5,
+    };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("5");
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("workspace_throttled");
+    expect(body.retryable).toBe(true);
+    expect(body.retryAfterSeconds).toBe(5);
+  });
+
+  it("maps a hard-cap billing block to 429 with usage details", async () => {
+    billingGateVerdict = {
+      allowed: false,
+      errorCode: "plan_limit_exceeded",
+      errorMessage: "You have exceeded your plan's token budget.",
+      httpStatus: 429,
+      retryable: false,
+      usage: { currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" },
+    };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(429);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body.error).toBe("plan_limit_exceeded");
+    expect(body.usage).toEqual({ currentUsage: 2_300_000, limit: 2_000_000, metric: "tokens" });
+  });
+
+  it("attaches the 80–109% planWarning to a successful response without blocking", async () => {
+    billingGateVerdict = {
+      allowed: true,
+      warning: {
+        code: "plan_limit_warning",
+        message: "You are approaching your plan's token budget",
+        metrics: [],
+      },
+    };
+    const response = await app.fetch(makeQueryRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect((body.planWarning as Record<string, unknown>).code).toBe("plan_limit_warning");
   });
 
   it("returns 401 when unauthenticated", async () => {

@@ -1298,4 +1298,129 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(capturedAgentCalls).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------
+  // #3419 — billing enforcement blocks surface as user-visible platform
+  // replies on every chat-platform path.
+  //
+  // The seam lives inside `executeAgentQuery` (mocked here, covered by
+  // `lib/__tests__/agent-query-billing.test.ts`); what THIS file pins is
+  // the delivery contract: when the seam throws `BillingBlockedError`,
+  // every platform branch rethrows it unchanged — same user-safe message,
+  // same type — so the chat bridge renders it as an in-thread error card
+  // exactly like the rate-limit reply (never a silent drop, never a
+  // scrubbed-away "agent run failed").
+  // -------------------------------------------------------------------------
+
+  describe("billing enforcement blocks (#3419)", () => {
+    const TRIAL_EXPIRED_MSG =
+      "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.";
+
+    const platformContexts: Array<{
+      platform: string;
+      ctx: Parameters<typeof import("../executeQuery").runExecuteQuery>[1];
+    }> = [
+      {
+        platform: "slack",
+        ctx: {
+          threadId: "slack:C1-1.2",
+          adapter: { name: "slack" },
+          rawMessage: { team_id: "T0ABC", user: "U", channel: "C1", ts: "1.2" },
+        },
+      },
+      {
+        platform: "telegram",
+        ctx: {
+          threadId: "telegram:12345-7",
+          adapter: { name: "telegram" },
+          rawMessage: { message_id: 7, chat: { id: 12345 }, from: { id: 99 } },
+        },
+      },
+      {
+        platform: "discord",
+        ctx: {
+          threadId: "discord:g123-c456",
+          adapter: { name: "discord" },
+          rawMessage: {
+            id: "111111111111111111",
+            type: 2,
+            guild_id: "123456789012345678",
+            channel_id: "456",
+            member: { user: { id: "U_DC" } },
+          },
+        },
+      },
+      {
+        platform: "whatsapp",
+        ctx: {
+          threadId: "whatsapp:1098765432109876:16315551234",
+          adapter: { name: "whatsapp" },
+          rawMessage: {
+            phoneNumberId: "1098765432109876",
+            contact: { wa_id: "16315551234" },
+            message: { id: "m1", from: "16315551234", type: "text", text: { body: "q" } },
+          },
+        },
+      },
+      {
+        platform: "gchat",
+        ctx: {
+          threadId: "gchat:spaces/AAA-AAA",
+          adapter: { name: "gchat" },
+          rawMessage: {
+            eventType: "MESSAGE",
+            space: { name: "spaces/AAA-AAA", customer: "C01abc234" },
+            message: {
+              name: "spaces/AAA-AAA/messages/M1",
+              thread: { name: "spaces/AAA-AAA/threads/T1" },
+            },
+            user: { name: "users/12345" },
+          },
+        },
+      },
+      {
+        platform: "teams",
+        ctx: {
+          threadId: "teams:19:meeting_abc",
+          adapter: { name: "teams" },
+          rawMessage: {
+            channelData: { tenant: { id: "72f988bf-86f1-41af-91ab-2d7cd011db47" } },
+            conversation: { id: "19:meeting_abc@thread.v2" },
+            from: { id: "29:1abc", aadObjectId: "aad-obj-1" },
+          },
+        },
+      },
+    ];
+
+    for (const { platform, ctx } of platformContexts) {
+      it(`${platform}: a billing block from the seam propagates typed with its user-safe message`, async () => {
+        // Non-Slack branches resolve their tenant via workspace_plugins.
+        mockInternalQuery.mockImplementation((sql: string) => {
+          if (sql.includes("workspace_plugins")) {
+            return Promise.resolve([{ workspace_id: `org-${platform}-tenant` }]);
+          }
+          return Promise.resolve([]);
+        });
+        const { BillingBlockedError } = await import("@atlas/api/lib/billing/agent-gate");
+        mockExecuteAgentQuery.mockImplementationOnce(() =>
+          Promise.reject(
+            new BillingBlockedError({
+              allowed: false,
+              errorCode: "trial_expired",
+              errorMessage: TRIAL_EXPIRED_MSG,
+              httpStatus: 403,
+              retryable: false,
+            }),
+          ),
+        );
+        const { runExecuteQuery } = await import("../executeQuery");
+
+        const promise = runExecuteQuery("q", ctx);
+        await expect(promise).rejects.toThrow(TRIAL_EXPIRED_MSG);
+        await promise.catch((err: unknown) => {
+          expect(err).toBeInstanceOf(BillingBlockedError);
+        });
+      });
+    }
+  });
 });

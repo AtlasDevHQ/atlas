@@ -24,7 +24,12 @@ const log = createLogger("workspace");
 export interface WorkspaceCheckResult {
   allowed: boolean;
   status?: WorkspaceStatus;
-  errorCode?: string;
+  /**
+   * Literal union (not `string`) so downstream envelopes — notably the
+   * billing gate's `ChatErrorCode`-typed block (#3451 review) — stay
+   * exhaustively typed without casts.
+   */
+  errorCode?: "workspace_suspended" | "workspace_deleted" | "workspace_check_failed";
   errorMessage?: string;
   httpStatus?: 403 | 404 | 503;
 }

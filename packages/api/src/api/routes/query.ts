@@ -19,14 +19,11 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
 import { GatewayModelNotFoundError } from "@ai-sdk/gateway";
-import { isRetryableError, isChatErrorCode } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import { validateEnvironment } from "@atlas/api/lib/startup";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
-import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
-import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import {
   createConversation,
   addMessage,
@@ -69,6 +66,24 @@ export const QueryResponseSchema = z.object({
         denyUrl: z.string(),
       }),
     )
+    .optional(),
+  // #3452 — the 80–109% plan-usage warning band attached by the billing
+  // gate (see lib/billing/agent-gate.ts). Mirrors PlanLimitWarning /
+  // PlanLimitStatus from @useatlas/types.
+  planWarning: z
+    .object({
+      code: z.literal("plan_limit_warning"),
+      message: z.string(),
+      metrics: z.array(
+        z.object({
+          metric: z.string(),
+          currentUsage: z.number(),
+          limit: z.number(),
+          usagePercent: z.number(),
+          status: z.string(),
+        }),
+      ),
+    })
     .optional(),
 });
 
@@ -203,70 +218,14 @@ query.openapi(
         { requestId, user: authResult.user, approvalSurface: "chat" },
         async () => {
 
-        // Workspace status check — block suspended/deleted workspaces
-        const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
-        if (!wsCheck.allowed) {
-          const wsError = wsCheck.errorCode ?? "workspace_error";
-          const wsMessage = wsCheck.errorMessage ?? "Workspace access denied.";
-          const wsStatus = wsCheck.httpStatus ?? 403;
-          throw new HTTPException(wsStatus as 403, {
-            res: Response.json(
-              { error: wsError, message: wsMessage, retryable: isChatErrorCode(wsError) ? isRetryableError(wsError) : false, requestId },
-              { status: wsStatus },
-            ),
-          });
-        }
-    
-        // Abuse check — block suspended workspaces, reject throttled ones with 429
-        const abuseOrgId = authResult.user?.activeOrganizationId;
-        if (abuseOrgId) {
-          const abuse = checkAbuseStatus(abuseOrgId);
-          if (abuse.level === "suspended") {
-            log.warn({ requestId, orgId: abuseOrgId }, "Workspace suspended due to abuse");
-            throw new HTTPException(403, {
-              res: Response.json(
-                { error: "workspace_suspended", message: "Workspace suspended due to unusual activity. Contact your administrator.", retryable: false, requestId },
-                { status: 403 },
-              ),
-            });
-          }
-          if (abuse.level === "throttled" && abuse.throttleDelayMs) {
-            const retryAfterSeconds = Math.ceil(abuse.throttleDelayMs / 1000);
-            log.warn({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Workspace throttled due to abuse");
-            throw new HTTPException(429, {
-              // Use raw Response (not Response.json) to include Retry-After header
-              res: new Response(
-                JSON.stringify({
-                  error: "workspace_throttled",
-                  message: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
-                  retryable: true,
-                  retryAfterSeconds,
-                  requestId,
-                }),
-                { status: 429, headers: { "Content-Type": "application/json", "Retry-After": String(retryAfterSeconds) } },
-              ),
-            });
-          }
-        }
-    
-        // Plan limit check — block or warn when usage approaches/exceeds plan limits
-        const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
-        if (!planCheck.allowed) {
-          return c.json(
-            {
-              error: planCheck.errorCode,
-              message: planCheck.errorMessage,
-              retryable: isChatErrorCode(planCheck.errorCode) ? isRetryableError(planCheck.errorCode) : false,
-              requestId,
-              ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
-            },
-            planCheck.httpStatus,
-          );
-        }
-    
-        // Capture plan warning for JSON response
-        const planWarning = planCheck.allowed ? planCheck.warning : undefined;
-    
+        // #3419/#3420 — workspace status, abuse, and plan-limit
+        // enforcement converged onto the shared seam inside
+        // `executeAgentQuery` (lib/billing/agent-gate.ts), so this route
+        // can't drift from the chat-platform and scheduler surfaces. A
+        // block surfaces as `BillingBlockedError` and is mapped to the
+        // HTTP envelope in the catch below; the 80–109% warning band
+        // arrives on `queryResult.planWarning`.
+
         // --- Startup diagnostics ---
         const diagnostics = await validateEnvironment();
         if (diagnostics.length > 0) {
@@ -347,15 +306,50 @@ query.openapi(
             }));
           }
     
+          // `restResult` carries `planWarning` (the 80–109% band) when
+          // the billing gate attached one — no separate plumbing needed.
           return c.json({
             ...restResult,
             ...(conversationId && { conversationId }),
             ...(enrichedPendingActions && { pendingActions: enrichedPendingActions }),
-            ...(planWarning && { planWarning }),
           }, 200);
         } catch (err) {
           if (err instanceof HTTPException) throw err;
-    
+
+          // #3419/#3420 — billing-enforcement block from the seam in
+          // `executeAgentQuery`. Map to the same envelope the inline
+          // checks used to produce, including Retry-After on throttles.
+          if (err instanceof BillingBlockedError) {
+            log.warn(
+              { requestId, errorCode: err.errorCode, category: "billing_blocked" },
+              "Query blocked by billing enforcement",
+            );
+            const body = {
+              error: err.errorCode,
+              message: err.message,
+              retryable: err.retryable,
+              requestId,
+              ...(err.retryAfterSeconds !== undefined && { retryAfterSeconds: err.retryAfterSeconds }),
+              ...(err.usage && { usage: err.usage }),
+            };
+            // HTTPException with an embedded Response (rather than
+            // c.json) because the block statuses aren't part of the
+            // OpenAPI route's typed responses — same pattern the
+            // pre-seam inline checks used, and the only way to attach
+            // a Retry-After header on the throttle arm.
+            throw new HTTPException(err.httpStatus as 403, {
+              res: new Response(JSON.stringify(body), {
+                status: err.httpStatus,
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(err.retryAfterSeconds !== undefined
+                    ? { "Retry-After": String(err.retryAfterSeconds) }
+                    : {}),
+                },
+              }),
+            });
+          }
+
           const message = err instanceof Error ? err.message : "";
     
           // --- Structured AI SDK error types ---

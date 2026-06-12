@@ -1557,6 +1557,55 @@
                           "denyUrl"
                         ]
                       }
+                    },
+                    "planWarning": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "plan_limit_warning"
+                          ]
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "metrics": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "metric": {
+                                "type": "string"
+                              },
+                              "currentUsage": {
+                                "type": "number"
+                              },
+                              "limit": {
+                                "type": "number"
+                              },
+                              "usagePercent": {
+                                "type": "number"
+                              },
+                              "status": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "metric",
+                              "currentUsage",
+                              "limit",
+                              "usagePercent",
+                              "status"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "metrics"
+                      ]
                     }
                   },
                   "required": [

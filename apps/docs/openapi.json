@@ -71922,8 +71922,7 @@
                       "trial",
                       "starter",
                       "pro",
-                      "business",
-                      "locked"
+                      "business"
                     ],
                     "default": "starter"
                   },
@@ -72193,8 +72192,7 @@
                       "trial",
                       "starter",
                       "pro",
-                      "business",
-                      "locked"
+                      "business"
                     ]
                   },
                   "enabled": {

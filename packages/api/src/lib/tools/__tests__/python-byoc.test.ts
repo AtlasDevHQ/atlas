@@ -122,15 +122,20 @@ mock.module("@atlas/api/lib/sandbox/runtime", () => ({
   tryCreateByocPythonBackend: async (
     orgId: string,
     backendId: string,
-    options: { networkPolicy?: unknown } = {},
+    getOptions: () => Promise<{ networkPolicy?: unknown }> = async () => ({}),
   ) => {
-    byocCalls.push({ orgId, backendId, options });
     switch (mockByocResult.kind) {
-      case "backend":
+      case "backend": {
+        // Mirror the real contract: the options thunk runs only once engaged.
+        const options = await getOptions();
+        byocCalls.push({ orgId, backendId, options });
         return mockByocResult.create();
+      }
       case "null":
+        byocCalls.push({ orgId, backendId, options: {} });
         return null;
       case "throw":
+        byocCalls.push({ orgId, backendId, options: {} });
         throw new Error(mockByocResult.message);
     }
   },
@@ -306,6 +311,24 @@ describe("executePython BYOC backend selection (#3410)", () => {
     // Resolve failure narrows egress (deny-all), never breaks the call
     expect(result.output).toBe("[byoc-vercel]");
     expect(byocCalls[0].options.networkPolicy).toBeUndefined();
+  });
+
+  it("does not resolve the REST datasource when BYOC is not engaged and the operator chain is not Vercel", async () => {
+    // The egress derivation rides behind the options thunk, which the BYOC
+    // runtime only invokes once engaged — a selected-but-unusable override
+    // must not pay the datasource resolve when the sidecar serves the call.
+    mockSettings.set("ATLAS_SANDBOX_BACKEND", "vercel-sandbox");
+    mockRequestContext = { user: { activeOrganizationId: "org-1" } };
+    mockByocResult = { kind: "null" };
+    let resolves = 0;
+
+    const result = await runPython(async () => {
+      resolves++;
+      return null;
+    });
+
+    expect(result.output).toBe("[sidecar]");
+    expect(resolves).toBe(0);
   });
 
   it("re-consults the BYOC runtime on every call — credential edits need no drain", async () => {

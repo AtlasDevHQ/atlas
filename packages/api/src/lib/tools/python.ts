@@ -14,11 +14,10 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { normalizeSandboxBackendValue } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
-import { getSetting } from "@atlas/api/lib/settings";
+import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { getStreamWriter } from "./python-stream";
 import type { PythonSandboxOptions } from "./python-sandbox";
@@ -566,22 +565,22 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
       };
 
       const orgId = getRequestContext()?.user?.activeOrganizationId;
-      const rawOverride = orgId ? getSetting("ATLAS_SANDBOX_BACKEND", orgId) : undefined;
-      const wsOverride = rawOverride ? normalizeSandboxBackendValue(rawOverride) : undefined;
+      const wsOverride = getWorkspaceSandboxOverride(orgId);
       if (orgId && wsOverride) {
         const { sandboxProviderForBackendId, providerSupportsPython, tryCreateByocPythonBackend } =
           await import("@atlas/api/lib/sandbox/runtime");
         const provider = sandboxProviderForBackendId(wsOverride);
         if (provider && providerSupportsPython(provider)) {
-          // The org's sandbox gets the same per-request egress bound as the
-          // platform one (#2927 layer 0) — resolve before construction.
-          await resolveRestDatasourceFailSoft();
           try {
-            resolvedBackend = await tryCreateByocPythonBackend(
-              orgId,
-              wsOverride,
-              await vercelSandboxOptionsFor(restDatasource),
-            );
+            // The options thunk runs only once BYOC is engaged, so a
+            // selected-but-unusable override (e.g. incomplete credentials)
+            // costs no datasource resolve. When it runs, the org's sandbox
+            // gets the same per-request egress bound as the platform one
+            // (#2927 layer 0).
+            resolvedBackend = await tryCreateByocPythonBackend(orgId, wsOverride, async () => {
+              await resolveRestDatasourceFailSoft();
+              return vercelSandboxOptionsFor(restDatasource);
+            });
           } catch (err) {
             // Engaged but unusable (runtime load failure / construction
             // error): fail closed — surface the error, never run the org's

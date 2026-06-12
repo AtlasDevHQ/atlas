@@ -443,10 +443,13 @@ const VERCEL_TRIPLE = {
   projectId: "prj_1",
 };
 
+/** Default options thunk for calls that don't exercise the egress policy. */
+const NO_OPTIONS = async () => ({});
+
 describe("tryCreateByocPythonBackend — not engaged (falls through to operator chain)", () => {
   it("returns null for non-BYOC backend ids without touching credentials", async () => {
     let credentialReads = 0;
-    const backend = await tryCreateByocPythonBackend("org-1", "sidecar", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "sidecar", NO_OPTIONS, {
       getCredential: async () => {
         credentialReads++;
         return null;
@@ -462,7 +465,7 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
     // the operator chain, and the capability gate short-circuits before any
     // credential read.
     let credentialReads = 0;
-    const backend = await tryCreateByocPythonBackend("org-1", "e2b-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "e2b-sandbox", NO_OPTIONS, {
       getCredential: async () => {
         credentialReads++;
         return makeCredential("e2b", { apiKey: "e2b_key" });
@@ -474,7 +477,7 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
   });
 
   it("returns null when the org has no stored vercel credentials", async () => {
-    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
       getCredential: async () => null,
       load: fakeLoader({ "@vercel/sandbox": {} }),
     });
@@ -482,7 +485,7 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
   });
 
   it("returns null when stored credentials miss runtime-required fields", async () => {
-    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
       getCredential: async () =>
         makeCredential("vercel", { accessToken: "tok", teamId: "team_1" }),
       load: fakeLoader({ "@vercel/sandbox": {} }),
@@ -491,7 +494,7 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
   });
 
   it("returns null when @vercel/sandbox is not installed", async () => {
-    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
       getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
       load: fakeLoader({}),
     });
@@ -504,7 +507,7 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
     };
     let thrown: unknown;
     try {
-      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
         getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
         load: brokenLoader,
       });
@@ -514,12 +517,45 @@ describe("tryCreateByocPythonBackend — not engaged (falls through to operator 
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toContain("runtime failed to load");
   });
+
+  it("does not invoke the options thunk unless engaged", async () => {
+    // The thunk fronts a per-request datasource resolve (#2927) — a
+    // selected-but-unusable override must not pay that I/O.
+    let optionReads = 0;
+    const countingOptions = async () => {
+      optionReads++;
+      return {};
+    };
+    // Not engaged: incomplete credentials
+    await tryCreateByocPythonBackend("org-1", "vercel-sandbox", countingOptions, {
+      getCredential: async () =>
+        makeCredential("vercel", { accessToken: "tok", teamId: "team_1" }),
+      load: fakeLoader({ "@vercel/sandbox": {} }),
+    });
+    // Not engaged: python-incapable provider
+    await tryCreateByocPythonBackend("org-1", "e2b-sandbox", countingOptions, {
+      getCredential: async () => makeCredential("e2b", { apiKey: "k" }),
+      load: fakeLoader({ "@useatlas/e2b": {}, e2b: {} }),
+    });
+    expect(optionReads).toBe(0);
+
+    // Engaged: thunk runs exactly once
+    const { mod } = fakePythonSandboxModule();
+    await tryCreateByocPythonBackend("org-1", "vercel-sandbox", countingOptions, {
+      getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+      load: fakeLoader({
+        "@vercel/sandbox": {},
+        "@atlas/api/lib/tools/python-sandbox": mod,
+      }),
+    });
+    expect(optionReads).toBe(1);
+  });
 });
 
 describe("tryCreateByocPythonBackend — engaged", () => {
   it("constructs the python sandbox with the stored triple as an access override", async () => {
     const { mod, factoryCalls } = fakePythonSandboxModule();
-    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
       getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
       load: fakeLoader({
         "@vercel/sandbox": {},
@@ -545,7 +581,7 @@ describe("tryCreateByocPythonBackend — engaged", () => {
     await tryCreateByocPythonBackend(
       "org-1",
       "vercel-sandbox",
-      { networkPolicy },
+      async () => ({ networkPolicy }),
       {
         getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
         load: fakeLoader({
@@ -565,7 +601,7 @@ describe("tryCreateByocPythonBackend — engaged", () => {
       success: false,
       error: "Failed to create Python Vercel Sandbox: token vc_org_token rejected.",
     });
-    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
       getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
       load: fakeLoader({
         "@vercel/sandbox": {},
@@ -588,7 +624,7 @@ describe("tryCreateByocPythonBackend — engaged", () => {
     };
     let thrown: unknown;
     try {
-      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", {}, {
+      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
         getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
         load: fakeLoader({
           "@vercel/sandbox": {},

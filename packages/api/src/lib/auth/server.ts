@@ -61,7 +61,7 @@ import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
 import { userHasConsumedTrial } from "@atlas/api/lib/billing/trial-eligibility";
-import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
+import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
   classifyStripeEvent,
@@ -2273,7 +2273,13 @@ export function buildPlugins() {
       );
     } else {
       try {
-        const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
+        // Shared accessor (#3425) — same client instance + pinned apiVersion
+        // as the workspace billing teardown in lib/billing/workspace-teardown.ts.
+        const stripeClient = getStripeClient();
+        if (!stripeClient) {
+          // Unreachable: the STRIPE_SECRET_KEY check above guarantees a client.
+          throw new Error("getStripeClient() returned null despite STRIPE_SECRET_KEY being set");
+        }
 
         plugins.push(
           stripePlugin(buildStripePluginOptions({ stripeClient, webhookSecret })),

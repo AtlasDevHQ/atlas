@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
+import { toast } from "sonner";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -261,6 +262,13 @@ function PlatformPageContent() {
     if (result.ok) {
       setConfirmAction(null);
       setPurgeConfirmName("");
+      // Stripe teardown failures (#3425): the operation succeeded but a
+      // billing call needs manual follow-up — surface each warning so the
+      // operator doesn't discover a still-live subscription at invoice time.
+      const warnings = (result.data as { warnings?: string[] } | undefined)?.warnings;
+      for (const warning of warnings ?? []) {
+        toast.warning("Billing follow-up needed", { description: warning, duration: 12000 });
+      }
     }
     inProgress.stop(workspaceId);
   }

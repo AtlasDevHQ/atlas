@@ -40,6 +40,8 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
 import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
+import { getInstallationByOrg, getBotToken } from "@atlas/api/lib/slack/store";
+import { listChannels } from "@atlas/api/lib/slack/api";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -100,11 +102,50 @@ const ChannelOverrideSchema = z.object({
   updatedAt: z.string(),
 });
 
+/**
+ * Partial-update semantics mirror the workspace PUT: omit a field to
+ * leave the persisted value alone, pass `null` (sensitivity only) to
+ * explicitly clear. This is what lets the admin table's inline editors
+ * POST only the field the user touched — composing the companion field
+ * from client-side row props raced concurrent edits (the refetch after
+ * a save is fire-and-forget, so a quick second edit would resend the
+ * first field's pre-save value and silently undo it).
+ */
 const UpsertChannelBodySchema = z.object({
   channelId: z.string().min(1).max(256),
-  allow: z.boolean(),
-  /** Optional per-channel override on the workspace default sensitivity. */
+  /** Omit to leave unchanged (defaults to `true` when the row is new). */
+  allow: z.boolean().optional(),
+  /**
+   * Per-channel override on the workspace default sensitivity. Omit to
+   * leave unchanged; `null` clears the override.
+   */
   sensitivity: SensitivitySchema.nullable().optional(),
+});
+
+const AvailableChannelSchema = z.object({
+  /** Bare platform channel id — the exact value the override row stores. */
+  id: z.string(),
+  /** Channel name without the leading `#`. */
+  name: z.string(),
+  isPrivate: z.boolean(),
+  /**
+   * Whether the bot is a member. An override on a non-member channel
+   * can never fire (the listener only sees messages in channels the
+   * bot has joined), so the picker warns on these.
+   */
+  isMember: z.boolean(),
+});
+
+const AvailableChannelsResponseSchema = z.object({
+  /**
+   * `false` when channel listing isn't possible for this workspace —
+   * no Slack installation, or the Slack API call failed. The admin UI
+   * degrades to manual channel-id entry; this is a soft state, not an
+   * error (hence 200, not 4xx/5xx).
+   */
+  available: z.boolean(),
+  reason: z.enum(["no_slack_installation", "slack_error"]).nullable(),
+  channels: z.array(AvailableChannelSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -248,13 +289,31 @@ const listChannelsRoute = createRoute({
   },
 });
 
+const listAvailableChannelsRoute = createRoute({
+  method: "get",
+  path: "/channels/available",
+  tags: ["Admin — Proactive Chat"],
+  summary: "List channels available on the chat platform",
+  description:
+    "Lists the workspace's Slack channels (id + name + membership) via conversations.list so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no Slack installation or the platform call fails — never a hard error.",
+  responses: {
+    200: {
+      description: "Channel listing (or a soft `available: false` envelope)",
+      content: { "application/json": { schema: AvailableChannelsResponseSchema } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required or enterprise not enabled", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const upsertChannelRoute = createRoute({
   method: "post",
   path: "/channels",
   tags: ["Admin — Proactive Chat"],
   summary: "Upsert a channel override",
   description:
-    "Creates or replaces the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates.",
+    "Creates or updates the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates. Fields are independently optional: omit `allow` or `sensitivity` to leave the persisted value alone (new rows default to `allow: true`); pass `null` for `sensitivity` to explicitly clear the override.",
   request: {
     body: {
       required: true,
@@ -543,6 +602,63 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
   }),
 );
 
+// GET /channels/available — list the platform's channels for the picker
+adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
+  runHandler(c, "list available slack channels", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    gateEnterprise();
+
+    try {
+      // Read-only platform lookup; no audit row (matches the other GETs).
+      // Token resolution is DB-only per the workspace-credential rule —
+      // requireOrgContext already guarantees an internal DB exists here.
+      const installation = await getInstallationByOrg(orgId);
+      const token = installation ? await getBotToken(installation.team_id) : null;
+      if (!token) {
+        return c.json(
+          {
+            available: false,
+            reason: "no_slack_installation" as const,
+            channels: [],
+          },
+          200,
+        );
+      }
+
+      const result = await listChannels(token);
+      if (!result.ok) {
+        // Slack-side failure (rate limit, missing scope, revoked token).
+        // Soft-degrade — the picker falls back to manual entry. The raw
+        // Slack error stays in the log, never on the wire.
+        log.warn(
+          { requestId, orgId, slackError: result.error },
+          "conversations.list failed — channel picker degraded to manual entry",
+        );
+        return c.json(
+          { available: false, reason: "slack_error" as const, channels: [] },
+          200,
+        );
+      }
+
+      // Member channels first (those are the ones proactive can act in),
+      // then alphabetical within each group.
+      const channels = result.channels.toSorted(
+        (a, b) => Number(b.isMember) - Number(a.isMember) || a.name.localeCompare(b.name),
+      );
+      return c.json({ available: true, reason: null, channels }, 200);
+    } catch (err) {
+      log.error(
+        { err: errorMessage(err), requestId, orgId },
+        "Failed to list available channels",
+      );
+      return c.json(
+        { error: "internal_error", message: "Failed to list available channels.", requestId },
+        500,
+      );
+    }
+  }),
+);
+
 // POST /channels — upsert a channel override
 adminProactive.openapi(upsertChannelRoute, async (c) =>
   runHandler(c, "upsert proactive channel override", async () => {
@@ -553,15 +669,32 @@ adminProactive.openapi(upsertChannelRoute, async (c) =>
     const body = c.req.valid("json");
 
     try {
+      // Partial upsert: `$5` / `$6` carry "was the field present in the
+      // body" so an omitted field keeps the existing row's value on the
+      // conflict path (and falls back to the column default semantics on
+      // insert). `undefined` vs `null` matters for sensitivity — null is
+      // an explicit clear, absence is leave-alone — so the flags can't be
+      // derived from the value params.
+      const allowProvided = body.allow !== undefined;
+      const sensitivityProvided = body.sensitivity !== undefined;
       const rows = await internalQuery<ChannelConfigRow>(
         `INSERT INTO channel_proactive_config (workspace_id, channel_id, allow, sensitivity)
-         VALUES ($1, $2, $3, $4)
+         VALUES ($1, $2, COALESCE($3, TRUE), $4)
          ON CONFLICT (workspace_id, channel_id) DO UPDATE
-           SET allow = EXCLUDED.allow,
-               sensitivity = EXCLUDED.sensitivity,
+           SET allow = CASE WHEN $5 THEN COALESCE($3, TRUE)
+                            ELSE channel_proactive_config.allow END,
+               sensitivity = CASE WHEN $6 THEN $4
+                                  ELSE channel_proactive_config.sensitivity END,
                updated_at = NOW()
          RETURNING id, workspace_id, channel_id, allow, sensitivity, created_at, updated_at`,
-        [orgId, body.channelId, body.allow, body.sensitivity ?? null],
+        [
+          orgId,
+          body.channelId,
+          body.allow ?? null,
+          body.sensitivity ?? null,
+          allowProvided,
+          sensitivityProvided,
+        ],
       );
 
       log.info(
@@ -575,8 +708,13 @@ adminProactive.openapi(upsertChannelRoute, async (c) =>
         ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
         metadata: {
           channelId: body.channelId,
-          allow: body.allow,
-          sensitivity: body.sensitivity ?? null,
+          // Mirror the workspace-update audit shape: only fields the
+          // caller actually touched land in metadata, so a partial
+          // sensitivity-only edit doesn't log a phantom `allow` change.
+          ...(body.allow !== undefined && { allow: body.allow }),
+          ...(body.sensitivity !== undefined && {
+            sensitivity: body.sensitivity ?? null,
+          }),
         },
       });
       return c.json(channelRowToWire(rows[0]), 200);

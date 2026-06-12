@@ -952,6 +952,90 @@ describe("hardDeleteWorkspace()", () => {
     expect(result.integrationCredentials).toBe(2);
     expect(result.twentyIntegrations).toBe(3);
   });
+
+  it("purges Stripe billing linkage rows when the plugin's subscription table exists (#3425)", async () => {
+    // GDPR completeness: a purged workspace must retain no billable Stripe
+    // linkage — local `subscription` rows and the org's
+    // stripe_webhook_events ledger rows are deleted inside the cascade.
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        if (sql.includes("to_regclass")) {
+          return { rows: [{ table_exists: true }] };
+        }
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (sql.includes("DELETE FROM stripe_webhook_events")) {
+          return { rows: [{ ok: 1 }, { ok: 1 }] }; // 2 ledger rows
+        }
+        if (sql.includes("DELETE FROM subscription")) {
+          return { rows: [{ ok: 1 }] }; // 1 subscription row
+        }
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const pool = {
+      ...basePool,
+      async connect() {
+        return client;
+      },
+    };
+    _resetPool(pool);
+
+    const result = await hardDeleteWorkspace("org-1");
+
+    expect(
+      queries.some((q) => /DELETE FROM subscription WHERE "referenceId" = \$1/.test(q)),
+    ).toBe(true);
+    expect(queries.some((q) => q.includes("DELETE FROM stripe_webhook_events"))).toBe(true);
+    expect(result.subscriptions).toBe(1);
+    expect(result.stripeWebhookEvents).toBe(2);
+  });
+
+  it("skips Stripe linkage deletes when the plugin's subscription table is absent (self-hosted)", async () => {
+    // The @better-auth/stripe plugin's table only exists on Stripe-enabled
+    // deployments — the to_regclass probe must keep non-Stripe purges from
+    // aborting the transaction with `relation "subscription" does not exist`.
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        if (sql.includes("to_regclass")) {
+          return { rows: [{ table_exists: false }] };
+        }
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const pool = {
+      ...basePool,
+      async connect() {
+        return client;
+      },
+    };
+    _resetPool(pool);
+
+    const result = await hardDeleteWorkspace("org-1");
+
+    expect(queries.some((q) => q.includes("DELETE FROM subscription"))).toBe(false);
+    expect(queries.some((q) => q.includes("DELETE FROM stripe_webhook_events"))).toBe(false);
+    expect(result.subscriptions).toBe(0);
+    expect(result.stripeWebhookEvents).toBe(0);
+  });
 });
 
 describe("connection URL encryption", () => {

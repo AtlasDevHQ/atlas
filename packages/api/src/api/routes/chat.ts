@@ -15,7 +15,7 @@ import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
-import { matchError, isRetryableError, isChatErrorCode, type ChatContextWarning } from "@useatlas/types";
+import { matchError, isRetryableError, type ChatContextWarning } from "@useatlas/types";
 import { runAgent } from "@atlas/api/lib/agent";
 import { corsResponseHeaders } from "@atlas/api/lib/cors";
 import { validateEnvironment } from "@atlas/api/lib/startup";
@@ -29,9 +29,7 @@ import {
 } from "@atlas/api/lib/auth/middleware";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { markOrgActive } from "@atlas/api/lib/db/org-activity";
-import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
-import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
-import { checkPlanLimits } from "@atlas/api/lib/billing/enforcement";
+import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import {
   createConversation,
   verifyGroupBelongsToOrg,
@@ -605,13 +603,35 @@ chat.openapi(chatRoute, async (c) => {
       }
     }
   
-    // Workspace status check — block suspended/deleted workspaces
-    const wsCheck = yield* Effect.promise(() => checkWorkspaceStatus(authResult.user?.activeOrganizationId));
-    if (!wsCheck.allowed) {
-      return c.json(
-        { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: wsCheck.errorCode && isChatErrorCode(wsCheck.errorCode) ? isRetryableError(wsCheck.errorCode) : false, requestId },
-        wsCheck.httpStatus ?? 403,
+    // #3451 — workspace status, abuse, and plan-limit enforcement via the
+    // shared billing gate (lib/billing/agent-gate.ts): the same composition
+    // the `executeAgentQuery` seam runs for /query, chat platforms, and the
+    // scheduler, so web chat can never drift from those surfaces. This
+    // route streams via `runAgent` directly and never reaches the seam, so
+    // it calls the gate here and maps the block to the chat error envelope.
+    // The 80–109% warning arrives on the allowed arm and is folded into the
+    // `data-context-warning` stream at the writer below.
+    const gateCheck = yield* Effect.promise(() => checkAgentBillingGate(authResult.user?.activeOrganizationId));
+    if (!gateCheck.allowed) {
+      log.warn(
+        { requestId, orgId: authResult.user?.activeOrganizationId, errorCode: gateCheck.errorCode },
+        "Chat blocked by billing enforcement",
       );
+      const blockBody = {
+        error: gateCheck.errorCode,
+        message: gateCheck.errorMessage,
+        retryable: gateCheck.retryable,
+        requestId,
+        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
+        ...(gateCheck.usage && { usage: gateCheck.usage }),
+      };
+      if (gateCheck.retryAfterSeconds !== undefined) {
+        return c.json(blockBody, {
+          status: gateCheck.httpStatus,
+          headers: { "Retry-After": String(gateCheck.retryAfterSeconds) },
+        });
+      }
+      return c.json(blockBody, gateCheck.httpStatus);
     }
 
     // #2377 — stamp workspace activity now that the org is authenticated and
@@ -651,51 +671,9 @@ chat.openapi(chatRoute, async (c) => {
       }
     }
 
-    // Abuse check — block suspended workspaces, reject throttled ones with 429
-    const abuseOrgId = authResult.user?.activeOrganizationId;
-    if (abuseOrgId) {
-      const abuse = checkAbuseStatus(abuseOrgId);
-      if (abuse.level === "suspended") {
-        log.warn({ requestId, orgId: abuseOrgId }, "Workspace suspended due to abuse");
-        return c.json(
-          { error: "workspace_suspended", message: "Workspace suspended due to unusual activity. Contact your administrator.", retryable: false, requestId },
-          403,
-        );
-      }
-      if (abuse.level === "throttled" && abuse.throttleDelayMs) {
-        const retryAfterSeconds = Math.ceil(abuse.throttleDelayMs / 1000);
-        log.warn({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Workspace throttled due to abuse");
-        return c.json(
-          {
-            error: "workspace_throttled",
-            message: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
-            retryable: true,
-            retryAfterSeconds,
-            requestId,
-          },
-          { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
-        );
-      }
-    }
-  
-    // Plan limit check — block or warn when usage approaches/exceeds plan limits
-    const planCheck = yield* Effect.promise(() => checkPlanLimits(authResult.user?.activeOrganizationId));
-    if (!planCheck.allowed) {
-      return c.json(
-        {
-          error: planCheck.errorCode,
-          message: planCheck.errorMessage,
-          retryable: isChatErrorCode(planCheck.errorCode) ? isRetryableError(planCheck.errorCode) : false,
-          requestId,
-          ...(planCheck.errorCode === "plan_limit_exceeded" && { usage: planCheck.usage }),
-        },
-        planCheck.httpStatus,
-      );
-    }
-  
-    // Captured here; folded into the unified `data-context-warning`
-    // stream at the writer below.
-    const planWarning = planCheck.allowed ? planCheck.warning : undefined;
+    // Captured from the billing gate above; folded into the unified
+    // `data-context-warning` stream at the writer below.
+    const planWarning = gateCheck.warning;
   
     // Resolve atlas mode for this request (published vs developer)
     const atlasMode = resolveMode(

@@ -1636,7 +1636,28 @@ describe("POST /api/v1/chat", () => {
       return frames;
     }
 
+    // #3451 — the warning now arrives via the shared billing gate
+    // (checkAgentBillingGate), which only consults checkPlanLimits when
+    // the request carries an org. Bind one so the warning path is
+    // reachable (the pre-gate route called the mocked checkPlanLimits
+    // unconditionally, which masked the no-org short-circuit).
+    function bindPlanWarningOrg(): void {
+      mockAuthenticateRequest.mockResolvedValue({
+        authenticated: true as const,
+        mode: "managed" as const,
+        user: {
+          id: "user-plan-warning",
+          mode: "managed" as const,
+          label: "plan-warning@useatlas.dev",
+          role: "admin",
+          activeOrganizationId: "org-plan-warning",
+          claims: { twoFactorEnabled: true },
+        },
+      });
+    }
+
     it("folds checkPlanLimits warning into the data-context-warning channel", async () => {
+      bindPlanWarningOrg();
       mockCheckPlanLimits.mockResolvedValueOnce({
         allowed: true,
         warning: {
@@ -1659,6 +1680,7 @@ describe("POST /api/v1/chat", () => {
     });
 
     it("plan_limit_warning frame is unshifted ahead of preflight degradations", async () => {
+      bindPlanWarningOrg();
       mockCheckPlanLimits.mockResolvedValueOnce({
         allowed: true,
         warning: {
@@ -1687,6 +1709,7 @@ describe("POST /api/v1/chat", () => {
     });
 
     it("never emits a legacy data-plan-warning frame even when a plan warning is present", async () => {
+      bindPlanWarningOrg();
       mockCheckPlanLimits.mockResolvedValueOnce({
         allowed: true,
         warning: {
@@ -1704,6 +1727,7 @@ describe("POST /api/v1/chat", () => {
     });
 
     it("never sets the legacy x-plan-limit-warning response header", async () => {
+      bindPlanWarningOrg();
       mockCheckPlanLimits.mockResolvedValueOnce({
         allowed: true,
         warning: {
@@ -1714,6 +1738,24 @@ describe("POST /api/v1/chat", () => {
       });
       const response = await app.fetch(makeRequest());
       expect(response.headers.get("x-plan-limit-warning")).toBeNull();
+    });
+
+    it("#3451 — a plan-limit block from the billing gate returns the chat error envelope (no stream)", async () => {
+      bindPlanWarningOrg();
+      mockCheckPlanLimits.mockResolvedValueOnce({
+        allowed: false,
+        errorCode: "trial_expired",
+        errorMessage: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+        httpStatus: 403,
+      });
+      const response = await app.fetch(makeRequest());
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.error).toBe("trial_expired");
+      expect(body.message).toContain("trial has expired");
+      expect(body.retryable).toBe(false);
+      expect(typeof body.requestId).toBe("string");
+      expect(mockRunAgent).not.toHaveBeenCalled();
     });
 
     it("emits no plan_limit_warning frame when checkPlanLimits returns no warning", async () => {

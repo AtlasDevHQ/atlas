@@ -67,6 +67,24 @@ export const QueryResponseSchema = z.object({
       }),
     )
     .optional(),
+  // #3452 — the 80–109% plan-usage warning band attached by the billing
+  // gate (see lib/billing/agent-gate.ts). Mirrors PlanLimitWarning /
+  // PlanLimitStatus from @useatlas/types.
+  planWarning: z
+    .object({
+      code: z.literal("plan_limit_warning"),
+      message: z.string(),
+      metrics: z.array(
+        z.object({
+          metric: z.string(),
+          currentUsage: z.number(),
+          limit: z.number(),
+          usagePercent: z.number(),
+          status: z.string(),
+        }),
+      ),
+    })
+    .optional(),
 });
 
 

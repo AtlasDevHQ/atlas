@@ -38,7 +38,7 @@
  * a non-SaaS deploy mode — the gate is a no-op passthrough.
  */
 
-import { isChatErrorCode, isRetryableError } from "@useatlas/types";
+import { isRetryableError, type ChatErrorCode } from "@useatlas/types";
 import { checkWorkspaceStatus } from "@atlas/api/lib/workspace";
 import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
 import { checkPlanLimits, type PlanLimitWarning } from "./enforcement";
@@ -48,8 +48,8 @@ const log = createLogger("billing:agent-gate");
 
 export interface AgentBillingBlock {
   allowed: false;
-  /** Machine-readable code (a `ChatErrorCode` — e.g. `trial_expired`). */
-  errorCode: string;
+  /** Machine-readable code — e.g. `trial_expired`, `workspace_suspended`. */
+  errorCode: ChatErrorCode;
   /** User-safe message — surfaced verbatim on chat platforms and run rows. */
   errorMessage: string;
   httpStatus: 403 | 404 | 429 | 503;
@@ -79,7 +79,7 @@ export type AgentBillingGateResult =
  */
 export class BillingBlockedError extends Error {
   override readonly name = "BillingBlockedError";
-  readonly errorCode: string;
+  readonly errorCode: ChatErrorCode;
   readonly httpStatus: 403 | 404 | 429 | 503;
   readonly retryable: boolean;
   readonly retryAfterSeconds: number | undefined;
@@ -95,10 +95,6 @@ export class BillingBlockedError extends Error {
   }
 }
 
-/** Retryable classification, mirroring the web routes' envelope logic. */
-function retryableFor(errorCode: string): boolean {
-  return isChatErrorCode(errorCode) ? isRetryableError(errorCode) : false;
-}
 
 /**
  * Run the full billing gate for an agent invocation.
@@ -120,7 +116,7 @@ export async function checkAgentBillingGate(
       errorCode,
       errorMessage: wsCheck.errorMessage ?? "Workspace access denied.",
       httpStatus: wsCheck.httpStatus ?? 403,
-      retryable: retryableFor(errorCode),
+      retryable: isRetryableError(errorCode),
     };
   }
 
@@ -166,7 +162,7 @@ export async function checkAgentBillingGate(
       errorCode: planCheck.errorCode,
       errorMessage: planCheck.errorMessage,
       httpStatus: planCheck.httpStatus,
-      retryable: retryableFor(planCheck.errorCode),
+      retryable: isRetryableError(planCheck.errorCode),
       ...(planCheck.errorCode === "plan_limit_exceeded" ? { usage: planCheck.usage } : {}),
     };
   }

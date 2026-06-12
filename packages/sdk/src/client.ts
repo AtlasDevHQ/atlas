@@ -46,6 +46,7 @@ import type {
   DeliveryChannel,
   ActionApprovalMode,
   ActionStatus,
+  PlanLimitStatus,
   RollbackInfo,
   Recipient,
   ScheduledTask,
@@ -162,6 +163,16 @@ export interface QueryResponse {
     approveUrl: string;
     denyUrl: string;
   }>;
+  /**
+   * 80–109% plan-usage warning band (#3452). Present when the workspace
+   * is approaching or in grace against its token budget; omitted below
+   * 80% and on self-hosted deployments.
+   */
+  planWarning?: {
+    code: "plan_limit_warning";
+    message: string;
+    metrics: PlanLimitStatus[];
+  };
 }
 
 export interface ListConversationsResponse {

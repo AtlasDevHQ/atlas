@@ -63,7 +63,7 @@ BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provid
 
 - Query limits are **not enforced** — usage is unlimited when using your own keys
 - Query usage is still metered for analytics
-- Available on all paid plans (Starter, Pro, Business)
+- Available on all paid plans (Starter, Pro, Business) — BYOT does **not** bypass a locked workspace (subscription ended): chat and queries stay blocked until a new plan is purchased
 - Admin or owner role is required to toggle BYOT
 - Self-hosted deployments use BYOT by default
 
@@ -122,7 +122,7 @@ Billing enforcement is skipped entirely when:
 
 - No internal database is configured (self-hosted without managed auth)
 - The user is not in an organization
-- The workspace has BYOT enabled
+- The workspace has BYOT enabled (exception: a **locked** workspace — one whose subscription ended — is blocked even with BYOT keys configured; resubscribing is the only way back in)
 - The workspace is on the **free** (self-hosted) tier
 
 ### Trial Expiry

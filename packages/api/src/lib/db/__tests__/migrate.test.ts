@@ -1191,3 +1191,21 @@ describe("0126_org_stripe_customer_id_plugin_column.sql", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: 0127_plan_tier_locked.sql
+// ---------------------------------------------------------------------------
+
+describe("0127_plan_tier_locked.sql", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it", () => {
+    // 0127 ALTERs Better Auth's `organization` table (drops + re-adds
+    // chk_plan_tier). Non-managed-auth deploys never create that table,
+    // so applying this migration there fails boot. Pin the membership
+    // like 0126 so an `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0127_plan_tier_locked\.sql"/,
+    );
+  });
+});

@@ -112,8 +112,8 @@ export function planRank(name: PlanTier | null | undefined): number | null {
  *
  *   - Missing `requiredPlan` → `false` (fail closed; catalog drift
  *     shouldn't admit anything).
- *   - Missing `workspacePlan` → rank 0 (most restrictive); admits
- *     only rows whose `requiredPlan` is also rank 0 (`free`).
+ *   - Missing `workspacePlan` → the minimum rank (locked, -1): most
+ *     restrictive — admits nothing, matching the churned tier.
  *
  * Accepts `PlanTier | null` — the trust-boundary narrowing happens
  * upstream via {@link parsePlanTier}.
@@ -130,6 +130,10 @@ export function isPlanEligible(
   if (requiredPlan === "locked") return false;
   const requiredRank = planRank(requiredPlan ?? null);
   if (requiredRank === null) return false;
-  const workspaceRank = planRank(workspacePlan ?? null) ?? 0;
+  // Missing/unknown workspace plan → the MINIMUM rank (locked, -1), not 0:
+  // with "locked" below "free", a 0 fallback would make a malformed org row
+  // MORE privileged than a churned one and admit it through free-min gates.
+  // "Most restrictive" must track the floor of the rank table.
+  const workspaceRank = planRank(workspacePlan ?? null) ?? PLAN_RANK.locked;
   return workspaceRank >= requiredRank;
 }

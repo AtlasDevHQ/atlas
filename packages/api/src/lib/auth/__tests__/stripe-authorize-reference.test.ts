@@ -18,6 +18,9 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import type { AuthorizeReferenceAction } from "@better-auth/stripe";
+// "Mock all exports" rule: the factory supplies the complete db/internal
+// export surface; this file only steers internalQuery/hasInternalDB.
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 let mockHasInternalDB = true;
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
@@ -25,29 +28,35 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  internalQuery: mockInternalQuery,
+  ...buildInternalDbMockDefaults({
+    internalQuery: mockInternalQuery,
+    hasInternalDB: () => mockHasInternalDB,
+  }),
 }));
 
 const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
 const mockLogError: Mock<(...args: unknown[]) => void> = mock(() => {});
 
+const mockLoggerInstance = () => ({
+  info: mock(() => {}),
+  warn: mockLogWarn,
+  error: mockLogError,
+  debug: mock(() => {}),
+});
+
+// Full export surface of lib/logger (mock-all-exports rule) — only
+// createLogger matters to the unit under test; the rest are inert
+// pass-throughs so unrelated importers can't hit a missing named export.
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: mock(() => {}),
-    warn: mockLogWarn,
-    error: mockLogError,
-    debug: mock(() => {}),
-  }),
-  getLogger: () => ({
-    info: mock(() => {}),
-    warn: mockLogWarn,
-    error: mockLogError,
-    debug: mock(() => {}),
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"],
+  createLogger: mockLoggerInstance,
+  getLogger: mockLoggerInstance,
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => undefined,
   redactPaths: [],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  hashShareToken: (token: string) => token,
   setLogLevel: () => false,
 }));
 

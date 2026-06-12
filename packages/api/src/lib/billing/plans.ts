@@ -46,6 +46,18 @@ export interface PlanLimits {
    * `checkChatIntegrationLimitAndInstall` (#2953, #3001).
    */
   maxChatIntegrations: number;
+  /**
+   * Included proactive-chat classifier invocations per workspace per
+   * month (#3436). -1 = unlimited. This is the tier-derived default for
+   * `workspace_proactive_config.monthly_classifier_cap` — when that
+   * column is NULL the quota gate falls back to this value (the column
+   * is an operator/admin override, not the only cap). Sizing: a
+   * classify is one small haiku-class call (~$0.0005), so even the
+   * Business cap bounds worst-case spend at low tens of dollars while
+   * staying invisible to legitimate usage. Enforced in
+   * `lib/proactive/quota.ts:getEffectiveMonthlyClassifierCap`.
+   */
+  monthlyProactiveClassifierCap: number;
 }
 
 export interface PlanDefinition {
@@ -93,6 +105,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: UNLIMITED,
       maxConnections: UNLIMITED,
       maxChatIntegrations: UNLIMITED,
+      monthlyProactiveClassifierCap: UNLIMITED,
     },
     features: { ...NO_FEATURES },
   },
@@ -112,6 +125,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: 10,
       maxConnections: 1,
       maxChatIntegrations: 1,
+      monthlyProactiveClassifierCap: 5_000,
     },
     features: { ...NO_FEATURES },
   },
@@ -126,6 +140,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: 10,
       maxConnections: 1,
       maxChatIntegrations: 1,
+      monthlyProactiveClassifierCap: 5_000,
     },
     features: { ...NO_FEATURES },
   },
@@ -140,6 +155,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: 25,
       maxConnections: 3,
       maxChatIntegrations: 3,
+      monthlyProactiveClassifierCap: 20_000,
     },
     features: {
       customDomain: true,
@@ -164,6 +180,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: 0,
       maxConnections: 0,
       maxChatIntegrations: 0,
+      monthlyProactiveClassifierCap: 0,
     },
     features: { ...NO_FEATURES },
   },
@@ -178,6 +195,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       maxSeats: UNLIMITED,
       maxConnections: UNLIMITED,
       maxChatIntegrations: UNLIMITED,
+      monthlyProactiveClassifierCap: 100_000,
     },
     features: {
       customDomain: true,

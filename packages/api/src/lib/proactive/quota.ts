@@ -8,7 +8,14 @@
  *
  * Source of truth:
  *   - cap value     →  `workspace_proactive_config.monthly_classifier_cap`
- *                      (added by #2294, null = unlimited).
+ *                      (added by #2294) when set — an operator/admin
+ *                      **override**. When NULL, the cap derives from the
+ *                      workspace's plan tier
+ *                      (`plans.ts:monthlyProactiveClassifierCap`, #3436) —
+ *                      previously NULL meant unlimited, which left a
+ *                      Starter workspace's classifier spend unbounded
+ *                      unless an operator hand-set the column. Self-hosted
+ *                      (`free` tier) and BYOT workspaces stay unlimited.
  *   - usage count   →  `proactive_meter_events` rows with
  *                      `event_type = 'classify'` and
  *                      `created_at >= start_of_current_month_utc`.
@@ -29,6 +36,8 @@
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { getCachedWorkspace } from "@atlas/api/lib/billing/enforcement";
+import { getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { ProactiveQuotaStatus } from "@useatlas/types";
 
@@ -88,9 +97,10 @@ export function isOverQuota(count: number, cap: number | null | undefined): bool
 // was removed in the post-1.5.0 polish so plugin + API can't drift.
 
 /**
- * Read the workspace's cap value. Returns `null` when the workspace
- * has never had its proactive config materialised — matches the
- * "no cap" semantic for `monthly_classifier_cap = NULL`.
+ * Read the workspace's raw **override** cap column. Returns `null` when
+ * the workspace has never had its proactive config materialised or the
+ * column is NULL — meaning "no override; the plan-tier default applies"
+ * (see {@link getEffectiveMonthlyClassifierCap}).
  */
 export async function getMonthlyClassifierCap(
   workspaceId: string,
@@ -104,6 +114,43 @@ export async function getMonthlyClassifierCap(
   );
   if (rows.length === 0) return null;
   return rows[0]!.monthly_classifier_cap;
+}
+
+/**
+ * Resolve the cap the quota gate actually enforces (#3436):
+ *
+ *   1. `workspace_proactive_config.monthly_classifier_cap` when set —
+ *      the operator/admin override wins in either direction (a Starter
+ *      workspace can be granted more, a Business one clamped down).
+ *      Deliberately checked BEFORE the BYOT bypass: the column applied
+ *      to every workspace (BYOT included) before #3436, and an
+ *      explicitly-set cap is a deliberate admin decision — BYOT only
+ *      changes what an *unset* column defaults to.
+ *   2. Otherwise the workspace's plan-tier default
+ *      (`plans.ts:monthlyProactiveClassifierCap`); `-1` → `null`
+ *      (unlimited — the `free`/self-hosted tier).
+ *   3. BYOT workspaces default to unlimited — classifier calls run on
+ *      their own key, mirroring the token-budget bypass.
+ *   4. No workspace row (org id unknown to billing — e.g. managed-auth
+ *      table not present) → `null`, preserving the pre-#3436 behavior
+ *      for deployments without the billing surface.
+ *
+ * The plan read goes through `getCachedWorkspace` (60s TTL), so the
+ * per-message listener path costs at most one extra cached lookup.
+ */
+export async function getEffectiveMonthlyClassifierCap(
+  workspaceId: string,
+): Promise<number | null> {
+  const override = await getMonthlyClassifierCap(workspaceId);
+  if (override !== null) return override;
+  if (!hasInternalDB()) return null;
+
+  const workspace = await getCachedWorkspace(workspaceId);
+  if (!workspace) return null;
+  if (workspace.byot) return null;
+
+  const tierCap = getPlanLimits(workspace.plan_tier).monthlyProactiveClassifierCap;
+  return isUnlimited(tierCap) ? null : tierCap;
 }
 
 /**
@@ -142,15 +189,15 @@ export async function getClassifyCountThisMonth(
  * every render. Both are cheap thanks to the 0078 index.
  *
  * Fails open on read errors — `capReached: false` keeps Atlas
- * answering when the meter table hiccups. Logs at `error` for
- * log-scrape dashboards (the workspace's monthly cap is silently
- * bypassed during the outage window, so the billing tail is
- * exposed — operators need to see it). Note: the API logger is
- * plain pino; there's no Sentry/PagerDuty wired on the catch path,
- * so "alerting" is operator-initiated via log streams. The listener
- * stamps `metadata.quotaReadFailed: true` on the post-classification
- * meter row so the per-workspace analytics rollup shows the per-
- * message bypass count too.
+ * answering when the meter table hiccups. Reviewed and kept in #3436:
+ * the failure window is one request, the `error`-level log is the
+ * operator alert (plain pino — log-scrape dashboards, no
+ * Sentry/PagerDuty on this path), and the listener stamps
+ * `metadata.quotaReadFailed: true` on the post-classification meter
+ * row so the per-workspace analytics rollup shows the per-message
+ * bypass count too. A fail-closed alternative would turn an internal
+ * DB blip into a silent product outage for every proactive workspace,
+ * which is the worse trade for a quota-not-billing gate.
  */
 export async function getWorkspaceQuotaStatus(
   workspaceId: string,
@@ -161,8 +208,11 @@ export async function getWorkspaceQuotaStatus(
     // the count is index-scanned. Splitting keeps the SQL readable +
     // lets `getMonthlyClassifierCap` be reused for the workspace-config
     // view in `admin-proactive.ts` later without re-deriving the cap.
+    // The cap is the *effective* one (override-or-plan-tier, #3436), so
+    // `monthlyClassifierCap` on the wire now reflects what the gate
+    // enforces — admin usage bars show the plan default, not blank.
     const [cap, count] = await Promise.all([
-      getMonthlyClassifierCap(workspaceId),
+      getEffectiveMonthlyClassifierCap(workspaceId),
       getClassifyCountThisMonth(workspaceId, now),
     ]);
     return {

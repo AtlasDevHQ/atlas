@@ -381,8 +381,11 @@ const createConnectionRoute = createRoute({
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Connection already exists", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded, or plan connection limit reached: `plan_limit_exceeded`", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    // The plan-limit count couldn't be verified (infra fault) — fail-closed
+    // with a transient "try again", not an upgrade prompt (#3433).
+    503: { description: "Billing/plan-limit check unavailable: `billing_check_failed`", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -786,6 +789,12 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   const connCount = connCountRows[0]?.count ?? 0;
   const resourceCheck = await checkResourceLimit(orgId, "connections", connCount);
   if (!resourceCheck.allowed) {
+    // ResourceLimitResult error-arm contract (#3433): `check_failed` means
+    // the count couldn't be verified (infra fault) — still fail-closed, but
+    // surface 503 "try again", never a misleading 429 "upgrade your plan".
+    if (resourceCheck.reason === "check_failed") {
+      return c.json({ error: "billing_check_failed", message: resourceCheck.errorMessage, requestId }, 503);
+    }
     return c.json({ error: "plan_limit_exceeded", message: resourceCheck.errorMessage, requestId }, 429);
   }
 

@@ -211,7 +211,7 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
          workspace_status text NOT NULL DEFAULT 'active',
          plan_tier text NOT NULL DEFAULT 'free',
          byot boolean NOT NULL DEFAULT false,
-         stripe_customer_id text,
+         "stripeCustomerId" text,
          trial_ends_at timestamptz,
          suspended_at timestamptz,
          deleted_at timestamptz,

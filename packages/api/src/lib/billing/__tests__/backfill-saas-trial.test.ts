@@ -89,13 +89,15 @@ describe("backfillSaasTrial", () => {
     expect(result.updatedCount).toBe(2);
     expect(result.orgIds).toEqual(["org_dogfood", "org_acme"]);
     expect(result.lockedOrgIds).toEqual([]);
-    expect(queries).toHaveLength(2);
+    expect(queries).toHaveLength(3);
 
     // Statement 1 — the #3426 lock arm runs FIRST so the promote arm can
     // never see a trial-consumed owner's org.
     expect(queries[0].sql).toMatch(/plan_tier = 'locked'/);
     expect(queries[0].sql).toMatch(/trial_ends_at IS NOT NULL/);
-    // Eligibility keys on owner membership, mirroring trial-eligibility.ts.
+    // Eligibility keys on the durable grant marker (#3470) OR the legacy
+    // owner-membership proxy, mirroring trial-eligibility.ts.
+    expect(queries[0].sql).toMatch(/user_trial_grants/);
     expect(queries[0].sql).toMatch(/role = 'owner'/);
 
     // Statement 2 — the promote arm.
@@ -103,6 +105,12 @@ describe("backfillSaasTrial", () => {
     // The idempotency guards must survive any future rewrite.
     expect(queries[1].sql).toMatch(/plan_tier = 'free'/);
     expect(queries[1].sql).toMatch(/trial_ends_at IS NULL/);
+
+    // Statement 3 — healed grants are recorded through the same durable
+    // marker the signup hook claims (#3469/#3470).
+    expect(queries[2].sql).toMatch(/INSERT INTO user_trial_grants/);
+    expect(queries[2].sql).toMatch(/ON CONFLICT \(user_id\) DO NOTHING/);
+    expect(queries[2].params).toEqual([["org_dogfood", "org_acme"]]);
 
     const [trialEndsAtParam] = queries[1].params ?? [];
     const trialEndsAt = new Date(String(trialEndsAtParam)).getTime();
@@ -155,7 +163,7 @@ describe("backfillSaasTrial", () => {
     const pool = {
       query: async (sql: string, params?: unknown[]) => {
         queries.push({ sql, params });
-        if (/plan_tier = 'locked'/.test(sql)) {
+        if (/plan_tier = 'locked'/.test(sql) || /INSERT INTO user_trial_grants/.test(sql)) {
           return { rows: [], rowCount: 0 };
         }
         promoteCalls += 1;
@@ -175,7 +183,9 @@ describe("backfillSaasTrial", () => {
     expect(second.updatedCount).toBe(0);
     expect(second.orgIds).toEqual([]);
 
-    expect(queries).toHaveLength(4);
+    // Boot 1: lock + promote + grant stamp; boot 2: lock + promote only
+    // (zero promoted rows → no grant insert).
+    expect(queries).toHaveLength(5);
   });
 
   it("skips on self-hosted — no UPDATE", async () => {

@@ -965,6 +965,9 @@ export const MANAGED_AUTH_MIGRATIONS = [
   "0126_org_stripe_customer_id_plugin_column.sql",
   // Widens organization.chk_plan_tier with the 'locked' churn tier (#3421).
   "0127_plan_tier_locked.sql",
+  // FK to Better Auth's "user" + backfill against "member"/"organization"
+  // (#3469/#3470 one-trial-per-user durable marker).
+  "0130_user_trial_grants.sql",
 ];
 
 /**

@@ -2387,3 +2387,21 @@ export const stripePurgedSubscriptions = pgTable(
   },
   (t) => [index("idx_stripe_purged_subscriptions_purged_at").on(t.purgedAt)],
 );
+
+/**
+ * Durable + atomic one-trial-per-user marker (#3469/#3470) — one row per
+ * user, stamped at grant time. The PRIMARY KEY makes
+ * `INSERT ... ON CONFLICT (user_id) DO NOTHING` an atomic claim under
+ * concurrent workspace creation; the row survives owner demotion and org
+ * deletion (org_id is deliberately NOT an FK). Mirrors
+ * `migrations/0130_user_trial_grants.sql`.
+ */
+export const userTrialGrants = pgTable("user_trial_grants", {
+  // FK to Better Auth's "user"(id) ON DELETE CASCADE is enforced in the
+  // migration — Drizzle's `references()` would require the Better Auth
+  // `user` table in this schema, which it isn't. Plain text() matches
+  // (same pattern as trusted_device above).
+  userId: text("user_id").primaryKey(),
+  orgId: text("org_id").notNull(),
+  grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+});

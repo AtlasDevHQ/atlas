@@ -141,6 +141,11 @@ function makeRecordingPool(): InternalPool {
       // "no trial consumed" so assignSaasTrial takes the trial branch the
       // wiring assertion pins.
       if (/trial_ends_at\s+IS\s+NOT\s+NULL/i.test(sql)) return rows([]);
+      // #3469 atomic trial claim: return the inserted row (claim won) so
+      // the hook proceeds to the trial UPDATE the wiring assertion pins.
+      if (/INSERT\s+INTO\s+user_trial_grants/i.test(sql)) {
+        return rows([{ user_id: params?.[0] }]);
+      }
       if (/FROM\s+member/i.test(sql)) return rows([{ organizationId: "org_welcome" }]);
       return rows([]);
     },

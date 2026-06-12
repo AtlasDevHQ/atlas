@@ -79,6 +79,15 @@ export interface ChannelDirectoryProvider {
   listWorkspaceChannels(workspaceId: string): Promise<ChannelDirectoryResult>;
 }
 
+/**
+ * Single provider slot for now: Slack is the only platform with a
+ * proactive admin surface, so "the workspace's chat platform" and "the
+ * registered provider" coincide. When a second platform's proactive
+ * support lands, this becomes a per-platform map keyed off the
+ * workspace's installed chat plugin (`workspace_plugins`, pillar
+ * `chat`) — the route stays unchanged either way because it only calls
+ * {@link listWorkspaceChannels}.
+ */
 let registered: ChannelDirectoryProvider | null = null;
 
 export function registerChannelDirectoryProvider(provider: ChannelDirectoryProvider): void {
@@ -89,19 +98,23 @@ export function clearChannelDirectoryProvider(): void {
   registered = null;
 }
 
+let slackProviderImport: Promise<ChannelDirectoryProvider> | null = null;
+
 /**
  * Returns the registered provider, falling back to the built-in Slack
  * implementation. The import is lazy (inside the function) so loading
  * this module never drags `lib/slack` in for consumers that register
  * their own provider — and so the module pair (`channel-directory` ↔
- * `slack/channel-directory-provider`) avoids a value-level import cycle.
+ * `slack/channel-directory-provider`) avoids a value-level import
+ * cycle. The import promise is memoized; the runtime caches the module
+ * anyway, but this skips re-walking the import machinery per request.
  */
 async function resolveProvider(): Promise<ChannelDirectoryProvider> {
   if (registered) return registered;
-  const { slackChannelDirectoryProvider } = await import(
+  slackProviderImport ??= import(
     "@atlas/api/lib/slack/channel-directory-provider"
-  );
-  return slackChannelDirectoryProvider;
+  ).then((m) => m.slackChannelDirectoryProvider);
+  return slackProviderImport;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,9 +143,18 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * In-flight dedup: N concurrent cold-cache requests for one workspace
+ * (several admins opening the page at once — the motivating scenario
+ * for the cache) share one provider call instead of fanning out N
+ * platform listings before any of them populates the cache.
+ */
+const inFlight = new Map<string, Promise<ChannelDirectoryResult>>();
+
 /** Test hook — route/unit tests reset between cases. */
 export function clearChannelDirectoryCache(): void {
   cache.clear();
+  inFlight.clear();
 }
 
 /**
@@ -150,33 +172,50 @@ export async function listWorkspaceChannels(
   const hit = cache.get(workspaceId);
   if (hit) {
     if (hit.expiresAt > now()) {
-      return { ok: true, channels: hit.channels };
+      // Fresh copy per caller — a returned array that aliased the cache
+      // entry would let one consumer's in-place mutation corrupt every
+      // later hit (channel objects stay shared; they're plain data).
+      return { ok: true, channels: [...hit.channels] };
     }
     cache.delete(workspaceId);
   }
 
-  const provider = await resolveProvider();
-  const result = await provider.listWorkspaceChannels(workspaceId);
+  const pending = inFlight.get(workspaceId);
+  if (pending) return pending;
 
-  if (result.ok) {
-    if (cache.size >= CACHE_MAX_ENTRIES) {
-      // Map iterates in insertion order — drop the oldest entry.
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
+  const fetchPromise = (async (): Promise<ChannelDirectoryResult> => {
+    const provider = await resolveProvider();
+    const result = await provider.listWorkspaceChannels(workspaceId);
+
+    if (result.ok) {
+      if (cache.size >= CACHE_MAX_ENTRIES) {
+        // Map iterates in insertion order — drop the oldest entry.
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
+      cache.set(workspaceId, {
+        expiresAt: now() + CHANNEL_DIRECTORY_CACHE_TTL_MS,
+        // Copy on store too, so the cache owns its array even if a
+        // provider hands back a reused buffer.
+        channels: [...result.channels],
+      });
+    } else {
+      // Failures are intentionally not cached — see module doc. Log here
+      // (not just at the route) so scheduler/CLI consumers added later
+      // don't silently lose the platform detail.
+      log.warn(
+        { workspaceId, reason: result.reason, detail: result.detail },
+        "Channel-directory listing failed",
+      );
     }
-    cache.set(workspaceId, {
-      expiresAt: now() + CHANNEL_DIRECTORY_CACHE_TTL_MS,
-      channels: result.channels,
-    });
-  } else {
-    // Failures are intentionally not cached — see module doc. Log here
-    // (not just at the route) so scheduler/CLI consumers added later
-    // don't silently lose the platform detail.
-    log.warn(
-      { workspaceId, reason: result.reason, detail: result.detail },
-      "Channel-directory listing failed",
-    );
-  }
 
-  return result;
+    return result;
+  })();
+
+  inFlight.set(workspaceId, fetchPromise);
+  try {
+    return await fetchPromise;
+  } finally {
+    inFlight.delete(workspaceId);
+  }
 }

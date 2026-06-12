@@ -139,16 +139,53 @@ describe("channel-directory", () => {
       expect(providerList).toHaveBeenCalledTimes(2);
     });
 
-    it("a failure does not poison the cache with an empty success", async () => {
+    it("concurrent cold-cache requests share one in-flight provider call", async () => {
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const providerList: Mock<(workspaceId: string) => Promise<DirectoryResult>> = mock(
+        async () => {
+          await gate;
+          return { ok: true, channels: okChannels };
+        },
+      );
+      registerChannelDirectoryProvider({ listWorkspaceChannels: providerList });
+
+      const [first, second, third] = await Promise.all([
+        listWorkspaceChannels("org-1"),
+        listWorkspaceChannels("org-1"),
+        (async () => {
+          release?.();
+          return listWorkspaceChannels("org-1");
+        })(),
+      ]);
+
+      expect(providerList).toHaveBeenCalledTimes(1);
+      expect(first).toEqual({ ok: true, channels: okChannels });
+      expect(second).toEqual(first);
+      expect(third).toEqual(first);
+    });
+
+    it("a caller mutating the returned array cannot corrupt the cache", async () => {
       registerChannelDirectoryProvider({
-        listWorkspaceChannels: async () => ({ ok: false, reason: "platform_error" }),
+        listWorkspaceChannels: async () => ({
+          ok: true,
+          channels: [
+            { id: "C1", name: "alpha", isPrivate: false, isMember: true },
+            { id: "C2", name: "beta", isPrivate: false, isMember: true },
+          ],
+        }),
       });
 
-      const result = await listWorkspaceChannels("org-1");
-      expect(result).toEqual({ ok: false, reason: "platform_error" });
-      if (!result.ok) return;
-      // Type-level guard above; runtime assertion that no channels leaked.
-      throw new Error("expected a failure result");
+      const first = await listWorkspaceChannels("org-1");
+      if (!first.ok) throw new Error("expected ok result");
+      first.channels.reverse();
+      first.channels.pop();
+
+      const second = await listWorkspaceChannels("org-1");
+      if (!second.ok) throw new Error("expected ok result");
+      expect(second.channels.map((ch) => ch.id)).toEqual(["C1", "C2"]);
     });
 
     it("cache is keyed per workspace — no cross-tenant reuse", async () => {

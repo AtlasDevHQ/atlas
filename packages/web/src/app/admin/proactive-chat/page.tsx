@@ -33,6 +33,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import {
+  AlertTriangle,
   Bot,
   Hash,
   Loader2,
@@ -56,6 +57,7 @@ import {
   SectionHeading,
   type StatusKind,
 } from "@/ui/components/admin/compact";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -303,7 +305,7 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
           title="Behavior"
           description="Workspace defaults applied unless a channel override says otherwise."
         />
-        <ReconnectSlackCallout reason={directory.reason} />
+        <ReconnectIntegrationCallout reason={directory.reason} />
         <div className="space-y-6">
           <SensitivityRadio
             value={fields.sensitivity.value}
@@ -396,20 +398,21 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
 // manual-id fallback: there's nothing actionable to tell the admin.
 // ---------------------------------------------------------------------------
 
-function ReconnectSlackCallout({
+function ReconnectIntegrationCallout({
   reason,
 }: {
   reason: AvailableChannels["reason"];
 }) {
   if (reason !== "missing_scope") return null;
   return (
-    <div className="mb-6 rounded-md border border-amber-300/60 bg-amber-50 px-4 py-3 text-[12px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-400">
-      <p className="font-medium">
-        Reconnect Slack to enable the channel picker.
-      </p>
-      <p className="mt-1">
-        Your workspace&apos;s bot token predates the permissions needed to
-        list channels. Re-run the connect flow on{" "}
+    <Alert className="mb-6 border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-200">
+      <AlertTriangle className="text-amber-600 dark:text-amber-400" />
+      <AlertTitle>
+        Reconnect your chat integration to enable the channel picker
+      </AlertTitle>
+      <AlertDescription className="text-amber-800/90 dark:text-amber-200/80">
+        Your workspace&apos;s bot credential predates the permissions needed
+        to list channels. Re-run the connect flow on{" "}
         <Link
           href="/admin/integrations"
           className="font-medium underline underline-offset-2"
@@ -418,8 +421,8 @@ function ReconnectSlackCallout({
         </Link>{" "}
         — existing settings are kept. Manual channel-ID entry keeps working
         in the meantime.
-      </p>
-    </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 

@@ -18,6 +18,14 @@ CREATE TABLE IF NOT EXISTS stripe_webhook_events (
   event_type TEXT NOT NULL,
   event_created TIMESTAMPTZ NOT NULL,
   stripe_subscription_id TEXT,
+  -- Plan tier this event's sync actually WROTE to the org (NULL when the
+  -- event applied no tier). The reconciliation sweep prefers the newest
+  -- non-null value here over the plugin's `subscription.plan` column:
+  -- the plugin writes its row last-DELIVERED-wins, so a stale older
+  -- delivery can regress the row even though the ledger correctly
+  -- skipped the Atlas-side sync — healing from the row would undo the
+  -- ordering protection this ledger exists for.
+  applied_plan_tier TEXT,
   processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

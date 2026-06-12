@@ -78,6 +78,8 @@ interface LedgerRow {
   event_type: string;
   event_created: string;
   stripe_subscription_id: string | null;
+  /** Tier the sync actually wrote for this event (null when none). */
+  applied_plan_tier: string | null;
 }
 
 let ledgerRows: LedgerRow[] = [];
@@ -108,13 +110,20 @@ function ledgerAwareQuery(
       );
     }
     if (sql.includes("INSERT INTO stripe_webhook_events")) {
-      const [id, type, created, subId] = params as [string, string, string, string | null];
+      const [id, type, created, subId, appliedTier] = params as [
+        string,
+        string,
+        string,
+        string | null,
+        string | null,
+      ];
       if (!ledgerRows.some((r) => r.event_id === id)) {
         ledgerRows.push({
           event_id: id,
           event_type: type,
           event_created: created,
           stripe_subscription_id: subId,
+          applied_plan_tier: appliedTier,
         });
       }
       return Promise.resolve([]);
@@ -413,8 +422,12 @@ describe("checkout.session.completed", () => {
     // The plugin's own row sync ran too: status + stripeSubscriptionId persisted.
     expect(db.subscription[0].status).toBe("active");
     expect(db.subscription[0].stripeSubscriptionId).toBe("sub_stripe_1");
-    // #3423 — the sync succeeded, so the event id landed in the ledger.
-    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_checkout_1"]);
+    // #3423 — the sync succeeded, so the event id landed in the ledger
+    // together with the tier it applied (the sweep's ordering-correct
+    // source of truth).
+    expect(ledgerRows.map((r) => [r.event_id, r.applied_plan_tier])).toEqual([
+      ["evt_checkout_1", "starter"],
+    ]);
   });
 });
 
@@ -490,7 +503,9 @@ describe("customer.subscription.deleted", () => {
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
     expect(db.subscription[0].status).toBe("canceled");
-    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_1"]);
+    expect(ledgerRows.map((r) => [r.event_id, r.applied_plan_tier])).toEqual([
+      ["evt_deleted_1", "locked"],
+    ]);
   });
 
   it("skips the lock when another active subscription exists (stale deletion guard)", async () => {
@@ -632,6 +647,44 @@ describe("event ledger (#3423)", () => {
     // The stale event must not land in the ledger either — only
     // processed events are recorded.
     expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_tie"]);
+  });
+
+  it("treats an unrecognized price as retryable — 400 and NOT recorded (env misconfig)", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      status: "incomplete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+    // STRIPE_*_PRICE_ID misconfig: the subscription's price maps to no
+    // Atlas tier. Recording the event would permanently no-op Stripe's
+    // replays; throwing keeps the ~3-week retry window open for the
+    // operator to fix the env.
+    subscriptionsRetrieve.mockImplementation(() =>
+      Promise.resolve(stripeSubscription({
+        items: {
+          data: [
+            {
+              id: "si_1",
+              quantity: 1,
+              current_period_start: EPOCH,
+              current_period_end: EPOCH + 30 * 86_400,
+              price: { id: "price_not_configured", recurring: { interval: "month" } },
+            },
+          ],
+        },
+      })),
+    );
+
+    const res = await postWebhook(auth, checkoutCompletedEvent());
+    expect(res.status).toBe(400);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    expect(ledgerRows).toHaveLength(0);
   });
 
   it("returns 400 and does NOT record the event when the sync fails, so a redelivery re-runs it", async () => {

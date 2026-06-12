@@ -29,12 +29,15 @@ interface OrgRow {
   org_id: string;
   plan_tier: string | null;
   subscription_plan: string | null;
+  /** Newest applied tier from the webhook ledger (defaulted to null). */
+  ledger_tier?: string | null;
 }
 
 /** Route the org scan and the ledger prune through one mock. */
 function installQueryFixture(orgs: OrgRow[], pruned: { event_id: string }[] = []) {
   mockInternalQuery.mockImplementation((sql: string) => {
-    if (sql.includes("FROM organization o")) return Promise.resolve(orgs);
+    if (sql.includes("FROM organization o"))
+      return Promise.resolve(orgs.map((o) => ({ ledger_tier: null, ...o })));
     if (sql.includes("DELETE FROM stripe_webhook_events")) return Promise.resolve(pruned);
     return Promise.resolve([]);
   });
@@ -127,6 +130,31 @@ describe("reconcilePlanTiers", () => {
     expect(result.healed).toBe(0);
   });
 
+  it("prefers the ledger's newest APPLIED tier over the plugin's last-delivered row plan", async () => {
+    // Stale older `updated` (plan=starter) delivered after a newer one
+    // (plan=pro): the ledger skipped the Atlas sync, but the plugin's
+    // row regressed to starter. Healing from the row would write
+    // pro→starter — exactly the regression the ledger rejected. The
+    // sweep must trust applied_plan_tier when present.
+    installQueryFixture([
+      { org_id: "org-1", plan_tier: "pro", subscription_plan: "starter", ledger_tier: "pro" },
+    ]);
+
+    const result = await reconcilePlanTiers();
+
+    expect(result.healed).toBe(0);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+
+    // And when the org ACTUALLY drifted from the ledger-applied tier
+    // (lost webhook), the heal targets the ledger tier, not the row.
+    installQueryFixture([
+      { org_id: "org-2", plan_tier: "starter", subscription_plan: "starter", ledger_tier: "pro" },
+    ]);
+    const second = await reconcilePlanTiers();
+    expect(second.healed).toBe(1);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-2", "pro");
+  });
+
   it("ignores subscription rows whose stripe sub has a recorded deletion event (stale last-delivered rows)", async () => {
     // The plugin writes its subscription table last-DELIVERED-wins, so a
     // stale older `updated` after a processed `deleted` can leave the row
@@ -140,6 +168,9 @@ describe("reconcilePlanTiers", () => {
     expect(scanSql).toContain("NOT EXISTS");
     expect(scanSql).toContain("'customer.subscription.deleted'");
     expect(scanSql).toContain("stripe_webhook_events");
+    // The ledger-applied-tier lateral must survive too — dropping it
+    // silently reverts the sweep to last-delivered-wins healing.
+    expect(scanSql).toContain("applied_plan_tier");
   });
 
   it("prunes the webhook event ledger and reports the count", async () => {

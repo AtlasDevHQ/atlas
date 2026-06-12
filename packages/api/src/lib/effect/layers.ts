@@ -1472,17 +1472,23 @@ export function makeSchedulerLive(
           if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
             return false;
           }
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
           const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
             hasInternalDB: () => boolean;
           };
           return hasInternalDB();
         },
-        catch: (err) => {
-          log.debug({ err: errorMessage(err) }, "Billing reconcile gate check failed — skipping");
-          return false;
-        },
-      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
+        // Normalize to Error per the Effect.try/tryPromise rule; the
+        // catchAll below logs it and degrades to "fiber not started".
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug({ err: errorMessage(err) }, "Billing reconcile gate check failed — skipping");
+            return false;
+          }),
+        ),
+      );
 
       if (billingReconcileEnabled) {
         // 6h: drift heals well inside Stripe's ~3-week retry horizon

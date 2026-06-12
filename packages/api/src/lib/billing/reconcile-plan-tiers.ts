@@ -63,6 +63,8 @@ type ReconcileRow = {
   org_id: string;
   plan_tier: string | null;
   subscription_plan: string | null;
+  /** Newest non-null `applied_plan_tier` from the webhook ledger. */
+  ledger_tier: string | null;
 };
 
 /**
@@ -75,26 +77,34 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
   if (!hasInternalDB()) return { healed: 0, flagged: 0, prunedLedger: 0 };
 
   // Newest live subscription per org, joined against the org's current
-  // tier. `subscription.plan` stores the plan NAME, which is the tier
+  // tier AND the ledger's newest APPLIED tier for that subscription.
+  // `subscription.plan` stores the plan NAME, which is the tier
   // vocabulary (plans.ts names plans after tiers); parsePlanTier guards
   // the trust boundary anyway.
   //
-  // The NOT EXISTS guard (Codex review on #3444): the plugin's own
-  // handlers write the subscription row last-DELIVERED-wins, so a stale
-  // older `updated` delivered after a processed `deleted` can flip the
-  // row back to "active" even though the ledger correctly skipped the
-  // Atlas side effects. Stripe never resurrects a subscription id, so
-  // any sub with a recorded deletion event is ended regardless of what
-  // the row claims — without this, the sweep would heal a locked
-  // workspace back to paid six hours after the stale delivery. (Ledger
-  // retention is 30 days; a row still stale-active after that has no
-  // ledger witness left, which is the residual risk we accept — the
-  // deleted event itself can no longer be replayed by then either.)
+  // The plugin writes its subscription row last-DELIVERED-wins, so a
+  // stale older delivery can regress the row even though the webhook
+  // ledger correctly skipped the Atlas-side sync (Codex review on
+  // #3444). Two defenses, one per failure shape:
+  //  - The NOT EXISTS guard: any sub with a recorded deletion event is
+  //    ended regardless of what the row claims (Stripe never resurrects
+  //    a subscription id) — without it, a stale `updated` flipping the
+  //    row back to "active" would heal a locked workspace back to paid.
+  //  - `led.applied_plan_tier` (preferred over `sub.plan` when present):
+  //    the tier the ORDERING-CORRECT sync last wrote. A stale older
+  //    `updated` (plan=starter) delivered after a newer one (plan=pro)
+  //    regresses the row to starter, but the ledger-latest applied tier
+  //    stays pro — healing from the row would undo the ledger's
+  //    protection. The row remains the fallback for rows that predate
+  //    the ledger or whose entries aged past the 30-day retention (by
+  //    then Stripe's own ~3-week retry/redelivery window has closed, so
+  //    a stale delivery storm can no longer be in flight).
   const rows = await internalQuery<ReconcileRow>(
-    `SELECT o.id AS org_id, o.plan_tier, sub.plan AS subscription_plan
+    `SELECT o.id AS org_id, o.plan_tier, sub.plan AS subscription_plan,
+            led.applied_plan_tier AS ledger_tier
        FROM organization o
        LEFT JOIN LATERAL (
-         SELECT s.plan FROM subscription s
+         SELECT s.plan, s."stripeSubscriptionId" FROM subscription s
           WHERE s."referenceId" = o.id AND s.status IN ('active', 'trialing')
             AND NOT EXISTS (
               SELECT 1 FROM stripe_webhook_events w
@@ -102,20 +112,31 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
                  AND w.event_type = 'customer.subscription.deleted')
           ORDER BY s."createdAt" DESC
           LIMIT 1
-       ) sub ON true`,
+       ) sub ON true
+       LEFT JOIN LATERAL (
+         SELECT w.applied_plan_tier FROM stripe_webhook_events w
+          WHERE w.stripe_subscription_id = sub."stripeSubscriptionId"
+            AND w.applied_plan_tier IS NOT NULL
+          ORDER BY w.event_created DESC
+          LIMIT 1
+       ) led ON true`,
   );
 
   let healed = 0;
   let flagged = 0;
 
+  // Sequential on purpose, not Promise.all: this is a 6-hour background
+  // sweep and heals are expected to be rare — serializing the writes
+  // keeps the sweep from bursting the internal pool alongside live
+  // request traffic for no latency benefit anyone observes.
   for (const row of rows) {
     const currentTier = parsePlanTier(row.plan_tier);
 
     if (row.subscription_plan != null) {
-      const expectedTier = parsePlanTier(row.subscription_plan);
+      const expectedTier = parsePlanTier(row.ledger_tier ?? row.subscription_plan);
       if (expectedTier === null) {
         log.warn(
-          { orgId: row.org_id, subscriptionPlan: row.subscription_plan },
+          { orgId: row.org_id, subscriptionPlan: row.subscription_plan, ledgerTier: row.ledger_tier },
           "Subscription row carries a plan name outside the tier vocabulary — cannot reconcile",
         );
         continue;

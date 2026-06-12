@@ -22,6 +22,7 @@
  * swallowing would re-create the exact silent-loss bug this fixes.
  */
 
+import type { PlanTier } from "@useatlas/types";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -110,14 +111,31 @@ export async function classifyStripeEvent(
   return "fresh";
 }
 
-/** Record a processed event. Idempotent (`ON CONFLICT DO NOTHING`). */
-export async function recordStripeEvent(event: StripeLedgerEvent): Promise<void> {
+/**
+ * Record a processed event. Idempotent (`ON CONFLICT DO NOTHING`).
+ *
+ * `appliedPlanTier` is the tier the sync actually WROTE for this event
+ * (null when it applied none). The reconciliation sweep prefers the
+ * newest non-null value per subscription over the plugin's
+ * last-delivered-wins `subscription.plan` column — see the sweep's
+ * module doc for the stale-row scenario this guards.
+ */
+export async function recordStripeEvent(
+  event: StripeLedgerEvent,
+  appliedPlanTier: PlanTier | null,
+): Promise<void> {
   if (!hasInternalDB()) return;
   await internalQuery(
-    `INSERT INTO stripe_webhook_events (event_id, event_type, event_created, stripe_subscription_id)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO stripe_webhook_events (event_id, event_type, event_created, stripe_subscription_id, applied_plan_tier)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (event_id) DO NOTHING`,
-    [event.id, event.type, new Date(event.created * 1000).toISOString(), event.stripeSubscriptionId],
+    [
+      event.id,
+      event.type,
+      new Date(event.created * 1000).toISOString(),
+      event.stripeSubscriptionId,
+      appliedPlanTier,
+    ],
   );
 }
 

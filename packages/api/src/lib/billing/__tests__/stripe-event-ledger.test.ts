@@ -105,29 +105,37 @@ describe("classifyStripeEvent", () => {
 });
 
 describe("recordStripeEvent", () => {
-  it("inserts the event with ON CONFLICT DO NOTHING (idempotent)", async () => {
-    await recordStripeEvent(EVENT);
+  it("inserts the event + applied tier with ON CONFLICT DO NOTHING (idempotent)", async () => {
+    await recordStripeEvent(EVENT, "pro");
     expect(mockInternalQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockInternalQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain("INSERT INTO stripe_webhook_events");
+    expect(sql).toContain("applied_plan_tier");
     expect(sql).toContain("ON CONFLICT (event_id) DO NOTHING");
     expect(params).toEqual([
       "evt_1",
       "customer.subscription.updated",
       new Date(EVENT.created * 1000).toISOString(),
       "sub_1",
+      "pro",
     ]);
+  });
+
+  it("records null when the sync applied no tier", async () => {
+    await recordStripeEvent(EVENT, null);
+    const [, params] = mockInternalQuery.mock.calls[0] as [string, unknown[]];
+    expect(params[4]).toBeNull();
   });
 
   it("is a no-op without an internal DB", async () => {
     hasDb = false;
-    await recordStripeEvent(EVENT);
+    await recordStripeEvent(EVENT, "pro");
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
   it("propagates insert failures", async () => {
     mockInternalQuery.mockImplementation(() => Promise.reject(new Error("pg down")));
-    await expect(recordStripeEvent(EVENT)).rejects.toThrow("pg down");
+    await expect(recordStripeEvent(EVENT, null)).rejects.toThrow("pg down");
   });
 });
 

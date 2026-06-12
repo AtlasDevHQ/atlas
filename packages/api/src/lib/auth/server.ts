@@ -1432,6 +1432,21 @@ async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string
  * failures THROW and surface as webhook 400s — Stripe redelivers instead
  * of the failure being swallowed like in the onSubscription* hooks.
  *
+ * Returns the plan tier this event actually WROTE (null when none) —
+ * recorded into the ledger's `applied_plan_tier` so the reconciliation
+ * sweep can heal from ordering-correct data instead of the plugin's
+ * last-delivered-wins subscription row.
+ *
+ * Skip vs throw discipline:
+ *  - PERMANENT conditions return null and get recorded (replaying the
+ *    identical event could never succeed): non-Atlas checkouts/
+ *    subscriptions (no referenceId), deleted orgs, setup-mode sessions.
+ *  - RETRYABLE conditions THROW (→ 400 → Stripe retries for ~3 weeks):
+ *    an unrecognized price id is an env misconfiguration — once the
+ *    operator fixes STRIPE_*_PRICE_ID, the redelivery applies the tier
+ *    (and stamps the conversion) instead of the event being permanently
+ *    no-op'd by the dedup guard.
+ *
  * The CRM stamp itself stays best-effort at the dispatch boundary
  * (`dispatchConversionCrmStamp` swallows internally): once enqueued the
  * `crm_outbox` provides its durability, and a Twenty outage must not
@@ -1442,11 +1457,11 @@ async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string
 export async function syncStripeEventToWorkspace(
   event: Stripe.Event,
   stripeClient: Stripe,
-): Promise<void> {
+): Promise<PlanTier | null> {
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object as Stripe.Checkout.Session;
-      if (session.mode === "setup") return;
+      if (session.mode === "setup") return null;
       const orgId = session.client_reference_id ?? session.metadata?.referenceId ?? null;
       const subId = typeof session.subscription === "string"
         ? session.subscription
@@ -1456,7 +1471,7 @@ export async function syncStripeEventToWorkspace(
           { eventId: event.id, orgId, subId },
           "checkout.session.completed without referenceId/subscription — skipping sync",
         );
-        return;
+        return null;
       }
       // The plugin's own handler retrieved the subscription too, but its
       // copy is closed over — one extra retrieve per checkout is the
@@ -1464,21 +1479,20 @@ export async function syncStripeEventToWorkspace(
       const stripeSubscription = await stripeClient.subscriptions.retrieve(subId);
       const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
       const tier = priceId ? resolvePlanTierFromPriceId(priceId) : null;
-      if (tier) {
-        const applied = await applyWorkspaceTier(orgId, tier, "Checkout completed");
-        // Org row gone (stale checkout for a deleted workspace): the
-        // tier write missed, so don't record a paid conversion for a
-        // nonexistent workspace either (Codex review on #3444).
-        if (!applied) return;
-      } else {
-        // Unrecognized price (env misconfig) still stamps below: the
-        // checkout DID complete and money moved — dropping the
-        // conversion record would understate real revenue.
-        billingLog.warn(
-          { orgId, priceId, eventId: event.id },
-          "Checkout completed with unrecognized price ID — cannot map to Atlas plan tier",
+      if (!tier) {
+        // Retryable: money moved but the price env mapping is broken.
+        // Throwing keeps Stripe redelivering until the operator fixes
+        // STRIPE_*_PRICE_ID — the redelivery then applies the tier AND
+        // enqueues the conversion stamp below.
+        throw new Error(
+          `checkout.session.completed for org ${orgId} carries unrecognized price "${priceId ?? "<none>"}" — fix STRIPE_*_PRICE_ID; Stripe will retry`,
         );
       }
+      const applied = await applyWorkspaceTier(orgId, tier, "Checkout completed");
+      // Org row gone (stale checkout for a deleted workspace): the
+      // tier write missed, so don't record a paid conversion for a
+      // nonexistent workspace either (Codex review on #3444).
+      if (!applied) return null;
 
       // #2737 — Twenty CRM conversion stamp. Trialing checkouts are
       // skipped (would overcount unpaid trials); the trial → active
@@ -1503,7 +1517,7 @@ export async function syncStripeEventToWorkspace(
           orgId,
         });
       }
-      return;
+      return tier;
     }
 
     case "customer.subscription.created":
@@ -1511,11 +1525,13 @@ export async function syncStripeEventToWorkspace(
       const stripeSubscription = event.data.object as Stripe.Subscription;
       const orgId = await resolveOrgIdForStripeSubscription(stripeSubscription);
       if (!orgId) {
+        // Permanent: no referenceId metadata and no subscription row —
+        // a non-Atlas subscription in a shared Stripe account.
         billingLog.warn(
           { eventId: event.id, stripeSubscriptionId: stripeSubscription.id },
           "Subscription event has no resolvable org referenceId — skipping sync",
         );
-        return;
+        return null;
       }
 
       const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
@@ -1524,15 +1540,14 @@ export async function syncStripeEventToWorkspace(
           { orgId, stripeSubscriptionId: stripeSubscription.id },
           "Subscription event has no price ID on items — skipping plan sync",
         );
-        return;
+        return null;
       }
       const tier = resolvePlanTierFromPriceId(priceId);
       if (!tier) {
-        billingLog.warn(
-          { orgId, priceId },
-          "Subscription event with unrecognized price ID — cannot map to Atlas plan tier",
+        // Retryable env misconfig — see the checkout arm.
+        throw new Error(
+          `Subscription event for org ${orgId} carries unrecognized price "${priceId}" — fix STRIPE_*_PRICE_ID; Stripe will retry`,
         );
-        return;
       }
       const applied = await applyWorkspaceTier(orgId, tier, "Subscription updated");
 
@@ -1560,7 +1575,7 @@ export async function syncStripeEventToWorkspace(
           });
         }
       }
-      return;
+      return applied ? tier : null;
     }
 
     case "customer.subscription.deleted": {
@@ -1573,7 +1588,7 @@ export async function syncStripeEventToWorkspace(
           { eventId: event.id, stripeSubscriptionId: stripeSubscription.id },
           "Subscription deleted with no resolvable org referenceId — skipping lock",
         );
-        return;
+        return null;
       }
       // Stale-deletion guard (Codex review on #3443): webhook delivery is
       // unordered, so a delayed deleted event for an OLD subscription can
@@ -1596,14 +1611,14 @@ export async function syncStripeEventToWorkspace(
           { orgId, deletedSubscriptionId: stripeSubscription.id },
           "Subscription deleted but another active subscription exists — skipping lock",
         );
-        return;
+        return null;
       }
-      await applyWorkspaceTier(orgId, "locked", "Subscription deleted — workspace locked");
-      return;
+      const applied = await applyWorkspaceTier(orgId, "locked", "Subscription deleted — workspace locked");
+      return applied ? "locked" : null;
     }
 
     default:
-      return;
+      return null;
   }
 }
 
@@ -1786,7 +1801,7 @@ export function buildStripePluginOptions(deps: {
         return;
       }
 
-      await syncStripeEventToWorkspace(event, stripeClient);
+      const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
 
       if (event.type === "invoice.payment_failed") {
         const invoice = event.data.object as Stripe.Invoice;
@@ -1850,7 +1865,7 @@ export function buildStripePluginOptions(deps: {
         }
       }
 
-      await recordStripeEvent(ledgerEvent);
+      await recordStripeEvent(ledgerEvent, appliedTier);
     },
   };
 }

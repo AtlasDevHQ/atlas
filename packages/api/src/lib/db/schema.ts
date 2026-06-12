@@ -2360,6 +2360,7 @@ export const stripeWebhookEvents = pgTable(
     eventType: text("event_type").notNull(),
     eventCreated: timestamp("event_created", { withTimezone: true }).notNull(),
     stripeSubscriptionId: text("stripe_subscription_id"),
+    appliedPlanTier: text("applied_plan_tier"),
     processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

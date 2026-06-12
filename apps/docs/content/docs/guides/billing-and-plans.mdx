@@ -6,7 +6,7 @@ icon: CreditCard
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses per-seat billing. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat query budgets, and graceful overage handling.
+Atlas uses per-seat billing. On [app.useatlas.dev](https://app.useatlas.dev), the first workspace you create starts with a 14-day trial (one trial per user), then requires a paid plan; additional workspaces you create start locked until they're subscribed. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat query budgets, and graceful overage handling.
 
 <Callout type="info" title="SaaS">
 On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
@@ -37,7 +37,7 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 
 Annual billing is available for Starter and Pro (pay for 10 months, get 12).
 
-- **Trial** — Auto-assigned on SaaS signup. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
+- **Trial** — Auto-assigned to the first workspace a user creates on SaaS. One trial per user: further workspaces you create start **locked** (blocked until subscribed) rather than receiving a fresh trial. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
 - **Starter** — Entry paid tier. Per-seat billing via Stripe.
 - **Pro** — Higher query budgets, more connections, custom domain support.
 - **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.

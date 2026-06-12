@@ -173,6 +173,12 @@ Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe pl
 
 Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
 
+### Delivery reliability
+
+Webhook processing is idempotent and ordered: Atlas keeps a 30-day ledger of processed Stripe event IDs, so replayed deliveries are acknowledged without re-running side effects, and an out-of-order older event for a subscription is skipped instead of regressing the plan. If the internal database is unavailable when an event arrives, Atlas returns an error so Stripe retries the delivery (Stripe retries for roughly three weeks).
+
+As a safety net for events lost beyond that window (for example after a webhook secret rotation), a background sweep runs every 6 hours and heals the workspace tier from the subscription table. Workspaces on a paid tier with no live subscription are logged but never downgraded automatically.
+
 ---
 
 ## Stripe Setup (Self-Hosted)

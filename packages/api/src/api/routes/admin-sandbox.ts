@@ -398,6 +398,9 @@ adminSandbox.openapi(connectRoute, async (c) => {
       // Tear down this org's cached explore backends so the next explore
       // call rebuilds with the new credentials (#3370) — mirrors the
       // ConnectionRegistry's workspace pool drain on credential edits.
+      // The Python tool needs no counterpart: its backends are per-request
+      // (python.ts builds a fresh one each call, re-reading stored
+      // credentials), so there is nothing cached to drain (#3410).
       invalidateOrgExploreBackends(orgId);
 
       log.info({ orgId, provider }, "Sandbox provider connected");

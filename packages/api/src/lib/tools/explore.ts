@@ -22,13 +22,13 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { normalizeSandboxBackendValue } from "@useatlas/schemas";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 import { getSemanticRoot, ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import { getSetting } from "@atlas/api/lib/settings";
+import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { EXPLORE_TOOL_DESCRIPTION } from "./descriptions";
 
@@ -392,10 +392,10 @@ export function markSidecarFailed(): void {
 
 function getExploreBackend(semanticRoot: string, orgId?: string): Promise<ExploreBackend> {
   // Workspace override changes the effective backend, so include it in the cache key.
-  // Normalize legacy stored provider keys ("e2b") to backend ids ("e2b-sandbox")
-  // BEFORE building the cache key, so both spellings share one entry (#3375).
-  const rawOverride = orgId ? getSetting("ATLAS_SANDBOX_BACKEND", orgId) : undefined;
-  const wsOverride = rawOverride ? normalizeSandboxBackendValue(rawOverride) : undefined;
+  // Normalized to backend-id vocabulary BEFORE building the cache key, so legacy
+  // provider-key spellings share one entry (#3375); the read+normalize pair is
+  // shared with the Python tool via getWorkspaceSandboxOverride.
+  const wsOverride = getWorkspaceSandboxOverride(orgId);
   const cacheKeyVal = wsOverride ? `${semanticRoot}\0${wsOverride}` : semanticRoot;
 
   let promise = backendCache.get(cacheKeyVal);

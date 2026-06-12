@@ -17,8 +17,10 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig } from "@atlas/api/lib/config";
+import { getWorkspaceSandboxOverride } from "@atlas/api/lib/sandbox/workspace-override";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 import { getStreamWriter } from "./python-stream";
+import type { PythonSandboxOptions } from "./python-sandbox";
 import type { RestDatasource } from "@atlas/api/lib/openapi/datasource";
 
 const log = createLogger("python");
@@ -286,6 +288,47 @@ export interface PythonBackend {
 // --- Backend selection ---
 
 /**
+ * Derive the Vercel Python sandbox options for a resolved REST datasource:
+ * the per-tenant egress allowlist (#2927 layer 0), or `{}` (deny-all) when no
+ * datasource is active. Computed server-side from the resolved datasource's
+ * base URL — never from the agent's `code`. Shared by the operator Vercel
+ * branch in {@link getPythonBackend} and the BYOC Vercel path (#3410) so the
+ * org's own sandbox gets the same egress bound as the platform one.
+ */
+async function vercelSandboxOptionsFor(
+  restDatasource: RestDatasource | null,
+): Promise<PythonSandboxOptions> {
+  if (!restDatasource) return {};
+  const { computeNetworkAllowlist, networkPolicyFromAllowlist } = await import(
+    "./backends/network-allowlist"
+  );
+  const allowlist = computeNetworkAllowlist([restDatasource.baseUrl]);
+  if (allowlist.length === 0) {
+    // Honor network-allowlist.ts's "caller logs the drop" contract: a
+    // configured datasource whose base URL doesn't parse to a host
+    // collapses to deny-all (fail-closed) — surface why so the operator
+    // isn't left guessing. Log the datasource id, not the URL (a base URL
+    // could carry a token in a query param).
+    log.warn(
+      { datasource: restDatasource.id },
+      "REST datasource base URL did not yield a reachable host — Python sandbox egress stays deny-all",
+    );
+  } else if (restDatasource.baseUrl.toLowerCase().startsWith("http://")) {
+    // Vercel's sandbox domain allowlist matches hosts by SNI (TLS), so a
+    // plain-http:// datasource host may not be reachable from the sandbox
+    // even though it is listed. The policy is still applied (the boundary is
+    // fail-closed either way — an unmatched host stays denied, not opened);
+    // we warn so an operator on a non-TLS datasource isn't left wondering why
+    // egress is blocked. Prefer https:// for REST datasources on SaaS. (#2975)
+    log.warn(
+      { datasource: restDatasource.id },
+      "REST datasource base URL is plain http:// — the Vercel sandbox domain allowlist matches HTTPS hosts (by SNI), so sandbox egress to this host may stay blocked even though it is listed; prefer https://",
+    );
+  }
+  return { networkPolicy: networkPolicyFromAllowlist(allowlist) };
+}
+
+/**
  * Resolve the Python execution backend.
  *
  * Priority:
@@ -328,41 +371,9 @@ async function getPythonBackend(
       log.error({ err: detail }, "Vercel Python sandbox module not available");
       return { error: `Vercel Python sandbox unavailable: ${detail}` };
     }
-    // Bound egress to the datasource host, computed server-side from the
-    // resolved datasource's base URL — never from the agent's `code`. Absent
+    // Bound egress to the datasource host (#2927 layer 0). Absent
     // datasource → default options (deny-all network).
-    if (restDatasource) {
-      const { computeNetworkAllowlist, networkPolicyFromAllowlist } = await import(
-        "./backends/network-allowlist"
-      );
-      const allowlist = computeNetworkAllowlist([restDatasource.baseUrl]);
-      if (allowlist.length === 0) {
-        // Honor network-allowlist.ts's "caller logs the drop" contract: a
-        // configured datasource whose base URL doesn't parse to a host
-        // collapses to deny-all (fail-closed) — surface why so the operator
-        // isn't left guessing. Log the datasource id, not the URL (a base URL
-        // could carry a token in a query param).
-        log.warn(
-          { datasource: restDatasource.id },
-          "REST datasource base URL did not yield a reachable host — Python sandbox egress stays deny-all",
-        );
-      } else if (restDatasource.baseUrl.toLowerCase().startsWith("http://")) {
-        // Vercel's sandbox domain allowlist matches hosts by SNI (TLS), so a
-        // plain-http:// datasource host may not be reachable from the sandbox
-        // even though it is listed. The policy is still applied (the boundary is
-        // fail-closed either way — an unmatched host stays denied, not opened);
-        // we warn so an operator on a non-TLS datasource isn't left wondering why
-        // egress is blocked. Prefer https:// for REST datasources on SaaS. (#2975)
-        log.warn(
-          { datasource: restDatasource.id },
-          "REST datasource base URL is plain http:// — the Vercel sandbox domain allowlist matches HTTPS hosts (by SNI), so sandbox egress to this host may stay blocked even though it is listed; prefer https://",
-        );
-      }
-      return createPythonSandboxBackend({
-        networkPolicy: networkPolicyFromAllowlist(allowlist),
-      });
-    }
-    return createPythonSandboxBackend();
+    return createPythonSandboxBackend(await vercelSandboxOptionsFor(restDatasource ?? null));
   }
 
   // 3. nsjail explicit (ATLAS_SANDBOX=nsjail) — hard-fail
@@ -525,15 +536,23 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
     }),
 
     execute: async ({ code, explanation, data }, options) => {
-      // 0a. Resolve the active REST datasource (server-side) so the Vercel
-      // sandbox's egress can be bounded to its host (#2927 layer 0). Only when
-      // the Vercel backend will actually be selected — the sidecar / nsjail
-      // backends have no network policy to narrow (see getPythonBackend).
-      // Fail-soft: a resolve error leaves the sandbox at deny-all, never breaks
-      // the tool call. NB: the allowlist derives from this resolved datasource,
-      // NOT from `code` — the agent cannot widen it.
+      // 0a. BYOC workspace override (#3410): when the request's org selected
+      // a BYOC provider that can run Python (currently vercel only — see
+      // PYTHON_CAPABLE_PROVIDERS in sandbox/runtime.ts), build the backend
+      // from the org's stored credentials, with the same engagement and
+      // fail-closed semantics as the explore tool (#3370). Not engaged
+      // (no/incomplete credentials, runtime not installed, provider without
+      // Python support) falls through to the operator chain in 0b; engaged
+      // failures surface as tool errors and never silently run the org's
+      // workload on the operator's account.
+      let resolvedBackend: PythonBackend | { error: string } | null = null;
       let restDatasource: RestDatasource | null = null;
-      if (useVercelSandbox() && !useSidecar()) {
+      let restDatasourceResolved = false;
+
+      const resolveRestDatasourceFailSoft = async () => {
+        // Fail-soft: a resolve error leaves the sandbox at deny-all, never
+        // breaks the tool call. NB: the allowlist derives from this resolved
+        // datasource, NOT from `code` — the agent cannot widen it.
         try {
           restDatasource = await resolveRestDatasource();
         } catch (err) {
@@ -542,14 +561,57 @@ Blocked: subprocess, os, socket, shutil, sys, ctypes, importlib, exec(), eval(),
             "REST datasource resolve failed for Python sandbox — egress stays deny-all this turn",
           );
         }
+        restDatasourceResolved = true;
+      };
+
+      const orgId = getRequestContext()?.user?.activeOrganizationId;
+      const wsOverride = getWorkspaceSandboxOverride(orgId);
+      if (orgId && wsOverride) {
+        const { sandboxProviderForBackendId, providerSupportsPython, tryCreateByocPythonBackend } =
+          await import("@atlas/api/lib/sandbox/runtime");
+        const provider = sandboxProviderForBackendId(wsOverride);
+        if (provider && providerSupportsPython(provider)) {
+          try {
+            // The options thunk runs only once BYOC is engaged, so a
+            // selected-but-unusable override (e.g. incomplete credentials)
+            // costs no datasource resolve. When it runs, the org's sandbox
+            // gets the same per-request egress bound as the platform one
+            // (#2927 layer 0).
+            resolvedBackend = await tryCreateByocPythonBackend(orgId, wsOverride, async () => {
+              await resolveRestDatasourceFailSoft();
+              return vercelSandboxOptionsFor(restDatasource);
+            });
+          } catch (err) {
+            // Engaged but unusable (runtime load failure / construction
+            // error): fail closed — surface the error, never run the org's
+            // Python on the operator chain. The message from the BYOC
+            // runtime is already credential-scrubbed and generic.
+            const detail = err instanceof Error ? err.message : String(err);
+            log.error(
+              { err: detail, orgId, backend: wsOverride },
+              "BYOC Python backend failed — failing closed",
+            );
+            return { success: false, error: detail };
+          }
+        }
       }
 
-      // 0b. Resolve backend
-      const backend = await getPythonBackend(restDatasource);
-      if ("error" in backend) {
-        log.error(backend.error);
-        return { success: false, error: backend.error };
+      // 0b. Operator chain (BYOC not engaged). Resolve the REST datasource
+      // only when the Vercel backend will actually be selected — the
+      // sidecar / nsjail backends have no network policy to narrow (see
+      // getPythonBackend).
+      if (!resolvedBackend) {
+        const operatorVercel = useVercelSandbox() && !useSidecar();
+        if (operatorVercel && !restDatasourceResolved) {
+          await resolveRestDatasourceFailSoft();
+        }
+        resolvedBackend = await getPythonBackend(operatorVercel ? restDatasource : null);
       }
+      if ("error" in resolvedBackend) {
+        log.error(resolvedBackend.error);
+        return { success: false, error: resolvedBackend.error };
+      }
+      const backend: PythonBackend = resolvedBackend;
 
       // 1. Validate imports (defense-in-depth — sandbox is the real boundary)
       const validation = await validatePythonCode(code);

@@ -4,13 +4,25 @@ import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 // Mocks
 // ---------------------------------------------------------------------------
 
+const silentLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  child: () => silentLogger,
+};
+
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    debug: () => {},
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"] as const,
+  createLogger: () => silentLogger,
+  getLogger: () => silentLogger,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({
@@ -20,6 +32,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 
 mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /postgresql:\/\/|mysql:\/\/|sk-ant-/,
+  maskConnectionUrl: (url: string) => url,
 }));
 
 // --- @vercel/sandbox mock infrastructure ---
@@ -229,6 +242,60 @@ describe("createPythonSandboxBackend", () => {
     expect(createOpts.teamId).toBe("team_123");
     expect(createOpts.projectId).toBe("prj_123");
     expect(createOpts.token).toBe("vercel-token");
+  });
+
+  it("a BYOC access override replaces operator env credentials entirely (#3410)", async () => {
+    // Operator env creds set — the override must win, never merge (#2850 seam).
+    process.env.VERCEL_TEAM_ID = "operator_team";
+    process.env.VERCEL_PROJECT_ID = "operator_prj";
+    process.env.VERCEL_TOKEN = "operator-token";
+
+    setupSandboxMock();
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+    const { redactedSecret } = await import("@atlas/api/lib/tools/backends/detect");
+    const backend = mod.createPythonSandboxBackend({
+      access: {
+        teamId: "org_team",
+        projectId: "org_prj",
+        token: redactedSecret("org-token"),
+      },
+    });
+    await backend.exec("print(1)");
+
+    expect(mockCreateCalls.length).toBe(1);
+    const createOpts = mockCreateCalls[0] as {
+      teamId?: string;
+      projectId?: string;
+      token?: string;
+    };
+    expect(createOpts.teamId).toBe("org_team");
+    expect(createOpts.projectId).toBe("org_prj");
+    expect(createOpts.token).toBe("org-token");
+  });
+
+  it("scrubErrorDetail redacts provider error text in creation-failure results (#3413)", async () => {
+    // A Sandbox.create failure can echo the submitted credential; this module
+    // logs and embeds the detail before the BYOC wrapper sees the result, so
+    // the scrub must apply at the source.
+    setupSandboxMock({ createError: "401 Unauthorized: token org-secret-token rejected" });
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+    const { redactedSecret } = await import("@atlas/api/lib/tools/backends/detect");
+    const backend = mod.createPythonSandboxBackend({
+      access: {
+        teamId: "org_team",
+        projectId: "org_prj",
+        token: redactedSecret("org-secret-token"),
+      },
+      scrubErrorDetail: (detail) => detail.split("org-secret-token").join("[REDACTED]"),
+    });
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).not.toContain("org-secret-token");
+      expect(result.error).toContain("[REDACTED]");
+    }
   });
 
   it("writes wrapper, user code, and data files to sandbox", async () => {

@@ -105,7 +105,7 @@ const SECTION_DESCRIPTIONS: Record<KnownSection, string> = {
   "Query Limits": "Row caps and execution timeouts for user queries",
   "Rate Limiting": "Request throttles per user and per workspace",
   Sessions: "Auth session lifetimes and refresh behavior",
-  Sandbox: "Where explore and Python tools run",
+  Sandbox: "Where the explore tool runs; Python follows the platform sandbox unless a BYOC provider that supports Python is selected",
   Agent: "LLM behavior, model selection, and step caps",
   Intelligence: "Learning and memory features",
   MCP: "What MCP-connected agents can see and do",

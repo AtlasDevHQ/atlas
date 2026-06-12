@@ -7,12 +7,15 @@
 
 import { describe, it, expect, beforeEach } from "bun:test";
 import type { SandboxCredential } from "../credentials";
+import type { PythonSandboxOptions } from "@atlas/api/lib/tools/python-sandbox";
 import {
   sandboxProviderForBackendId,
   missingCredentialFields,
   isProviderRuntimeAvailable,
   getProviderRuntimeAvailability,
+  providerSupportsPython,
   tryCreateByocBackend,
+  tryCreateByocPythonBackend,
   _resetRuntimeAvailabilityCacheForTest,
   type ModuleLoader,
 } from "../runtime";
@@ -334,6 +337,12 @@ describe("tryCreateByocBackend — engaged", () => {
     // but serializing it (e.g. an accidental structured log) leaks nothing.
     expect(createCalls[0].access.token.reveal()).toBe("vc_tok");
     expect(JSON.stringify(createCalls[0].access)).not.toContain("vc_tok");
+    // The backend logs Sandbox.create failures itself — the threaded
+    // scrubErrorDetail must redact stored values at the source (#3413 P1).
+    const scrub = (createCalls[0].access as { scrubErrorDetail?: (d: string) => string })
+      .scrubErrorDetail;
+    expect(scrub).toBeDefined();
+    expect(scrub!("401: token vc_tok rejected")).not.toContain("vc_tok");
   });
 
   it("throws an incompatible-version error when the factory returns a shapeless plugin", async () => {
@@ -402,5 +411,247 @@ describe("tryCreateByocBackend — engaged", () => {
     expect(((thrown as Error).cause as Error).message).toMatch(
       /does not export e2bSandboxPlugin/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Python (#3410)
+// ---------------------------------------------------------------------------
+
+describe("providerSupportsPython", () => {
+  it("vercel is the only python-capable provider (plugin SDK has no python surface)", () => {
+    expect(providerSupportsPython("vercel")).toBe(true);
+    expect(providerSupportsPython("e2b")).toBe(false);
+    expect(providerSupportsPython("daytona")).toBe(false);
+    expect(providerSupportsPython("railway")).toBe(false);
+  });
+});
+
+/** Fake in-tree python-sandbox module whose factory records its options. */
+function fakePythonSandboxModule(
+  execResult: { success: boolean; error?: string } = { success: true },
+) {
+  const factoryCalls: PythonSandboxOptions[] = [];
+  const mod = {
+    createPythonSandboxBackend: (options: PythonSandboxOptions = {}) => {
+      factoryCalls.push(options);
+      return {
+        exec: async () => execResult,
+      };
+    },
+  };
+  return { mod, factoryCalls };
+}
+
+const VERCEL_TRIPLE = {
+  accessToken: "vc_org_token",
+  teamId: "team_1",
+  projectId: "prj_1",
+};
+
+/** Default options thunk for calls that don't exercise the egress policy. */
+const NO_OPTIONS = async () => ({});
+
+describe("tryCreateByocPythonBackend — not engaged (falls through to operator chain)", () => {
+  it("returns null for non-BYOC backend ids without touching credentials", async () => {
+    let credentialReads = 0;
+    const backend = await tryCreateByocPythonBackend("org-1", "sidecar", NO_OPTIONS, {
+      getCredential: async () => {
+        credentialReads++;
+        return null;
+      },
+      load: fakeLoader({}),
+    });
+    expect(backend).toBeNull();
+    expect(credentialReads).toBe(0);
+  });
+
+  it("returns null for python-incapable providers without touching credentials", async () => {
+    // The org's e2b selection covers explore only — python falls through to
+    // the operator chain, and the capability gate short-circuits before any
+    // credential read.
+    let credentialReads = 0;
+    const backend = await tryCreateByocPythonBackend("org-1", "e2b-sandbox", NO_OPTIONS, {
+      getCredential: async () => {
+        credentialReads++;
+        return makeCredential("e2b", { apiKey: "e2b_key" });
+      },
+      load: fakeLoader({ "@useatlas/e2b": {}, e2b: {} }),
+    });
+    expect(backend).toBeNull();
+    expect(credentialReads).toBe(0);
+  });
+
+  it("returns null when the org has no stored vercel credentials", async () => {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+      getCredential: async () => null,
+      load: fakeLoader({ "@vercel/sandbox": {} }),
+    });
+    expect(backend).toBeNull();
+  });
+
+  it("returns null when stored credentials miss runtime-required fields", async () => {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+      getCredential: async () =>
+        makeCredential("vercel", { accessToken: "tok", teamId: "team_1" }),
+      load: fakeLoader({ "@vercel/sandbox": {} }),
+    });
+    expect(backend).toBeNull();
+  });
+
+  it("returns null when @vercel/sandbox is not installed", async () => {
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+      getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+      load: fakeLoader({}),
+    });
+    expect(backend).toBeNull();
+  });
+
+  it("fails closed (throws) when the runtime is installed but fails to load", async () => {
+    const brokenLoader: ModuleLoader = async () => {
+      throw new Error("init failed under resource pressure"); // no not-found code
+    };
+    let thrown: unknown;
+    try {
+      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+        getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+        load: brokenLoader,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain("runtime failed to load");
+  });
+
+  it("does not invoke the options thunk unless engaged", async () => {
+    // The thunk fronts a per-request datasource resolve (#2927) — a
+    // selected-but-unusable override must not pay that I/O.
+    let optionReads = 0;
+    const countingOptions = async () => {
+      optionReads++;
+      return {};
+    };
+    // Not engaged: incomplete credentials
+    await tryCreateByocPythonBackend("org-1", "vercel-sandbox", countingOptions, {
+      getCredential: async () =>
+        makeCredential("vercel", { accessToken: "tok", teamId: "team_1" }),
+      load: fakeLoader({ "@vercel/sandbox": {} }),
+    });
+    // Not engaged: python-incapable provider
+    await tryCreateByocPythonBackend("org-1", "e2b-sandbox", countingOptions, {
+      getCredential: async () => makeCredential("e2b", { apiKey: "k" }),
+      load: fakeLoader({ "@useatlas/e2b": {}, e2b: {} }),
+    });
+    expect(optionReads).toBe(0);
+
+    // Engaged: thunk runs exactly once
+    const { mod } = fakePythonSandboxModule();
+    await tryCreateByocPythonBackend("org-1", "vercel-sandbox", countingOptions, {
+      getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+      load: fakeLoader({
+        "@vercel/sandbox": {},
+        "@atlas/api/lib/tools/python-sandbox": mod,
+      }),
+    });
+    expect(optionReads).toBe(1);
+  });
+});
+
+describe("tryCreateByocPythonBackend — engaged", () => {
+  it("constructs the python sandbox with the stored triple as an access override", async () => {
+    const { mod, factoryCalls } = fakePythonSandboxModule();
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+      getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+      load: fakeLoader({
+        "@vercel/sandbox": {},
+        "@atlas/api/lib/tools/python-sandbox": mod,
+      }),
+    });
+    expect(backend).not.toBeNull();
+    expect(factoryCalls.length).toBe(1);
+    const access = factoryCalls[0].access!;
+    expect(access.teamId).toBe("team_1");
+    expect(access.projectId).toBe("prj_1");
+    // RedactedSecret-branded: revealable at the create site, but an
+    // accidental structured log of the options leaks nothing.
+    expect(access.token.reveal()).toBe("vc_org_token");
+    expect(JSON.stringify(factoryCalls[0])).not.toContain("vc_org_token");
+    // The backend logs provider errors before the wrapper's result scrub —
+    // the threaded scrubErrorDetail must redact stored values at the source
+    // (#3413 P1).
+    expect(factoryCalls[0].scrubErrorDetail).toBeDefined();
+    expect(
+      factoryCalls[0].scrubErrorDetail!("401: token vc_org_token rejected"),
+    ).not.toContain("vc_org_token");
+    const result = await backend!.exec("print(1)");
+    expect(result.success).toBe(true);
+  });
+
+  it("threads the caller's per-request network policy through to the sandbox options", async () => {
+    const { mod, factoryCalls } = fakePythonSandboxModule();
+    const networkPolicy = { allow: { "api.example.com": {} } } as never;
+    await tryCreateByocPythonBackend(
+      "org-1",
+      "vercel-sandbox",
+      async () => ({ networkPolicy }),
+      {
+        getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+        load: fakeLoader({
+          "@vercel/sandbox": {},
+          "@atlas/api/lib/tools/python-sandbox": mod,
+        }),
+      },
+    );
+    expect(factoryCalls[0].networkPolicy).toBe(networkPolicy);
+  });
+
+  it("scrubs stored credential values from failed exec results", async () => {
+    // The lazy backend maps provider failures to result objects (not throws),
+    // so the error text the agent sees must be scrubbed against the org's
+    // stored values — a Sandbox.create failure can echo the rejected token.
+    const { mod } = fakePythonSandboxModule({
+      success: false,
+      error: "Failed to create Python Vercel Sandbox: token vc_org_token rejected.",
+    });
+    const backend = await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+      getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+      load: fakeLoader({
+        "@vercel/sandbox": {},
+        "@atlas/api/lib/tools/python-sandbox": mod,
+      }),
+    });
+    const result = await backend!.exec("print(1)");
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).not.toContain("vc_org_token");
+      expect(result.error).toContain("[REDACTED]");
+    }
+  });
+
+  it("throws a generic credential-scrubbed error when construction itself fails", async () => {
+    const brokenModule = {
+      createPythonSandboxBackend: () => {
+        throw new Error("factory exploded with token vc_org_token");
+      },
+    };
+    let thrown: unknown;
+    try {
+      await tryCreateByocPythonBackend("org-1", "vercel-sandbox", NO_OPTIONS, {
+        getCredential: async () => makeCredential("vercel", VERCEL_TRIPLE),
+        load: fakeLoader({
+          "@vercel/sandbox": {},
+          "@atlas/api/lib/tools/python-sandbox": brokenModule,
+        }),
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = (thrown as Error).message;
+    expect(message).toContain("connected vercel sandbox failed to start");
+    expect(message).not.toContain("vc_org_token");
+    // The detail stays on `cause` for operator-side diagnosis
+    expect(((thrown as Error).cause as Error).message).toContain("factory exploded");
   });
 });

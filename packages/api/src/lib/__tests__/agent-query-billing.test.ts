@@ -98,12 +98,16 @@ describe("executeAgentQuery billing seam", () => {
     const actor = createAtlasUser("user-1", "managed", "user-1@example.com", {
       activeOrganizationId: "org-expired",
     });
-    const promise = executeAgentQuery("question", "req-2", { actor });
-    await expect(promise).rejects.toBeInstanceOf(BillingBlockedErrorStub);
-    await promise.catch((err: unknown) => {
-      expect((err as Error).message).toContain("trial has expired");
-      expect((err as BillingBlockedErrorStub).errorCode).toBe("trial_expired");
-    });
+    const err: unknown = await executeAgentQuery("question", "req-2", { actor }).then(
+      () => {
+        throw new Error("expected executeAgentQuery to reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(BillingBlockedErrorStub);
+    if (!(err instanceof BillingBlockedErrorStub)) throw new Error("unreachable");
+    expect(err.message).toContain("trial has expired");
+    expect(err.errorCode).toBe("trial_expired");
     expect(mockRunAgent).not.toHaveBeenCalled();
   });
 

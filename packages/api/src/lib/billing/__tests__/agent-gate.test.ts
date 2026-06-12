@@ -168,6 +168,15 @@ describe("checkAgentBillingGate", () => {
     expect(result.retryAfterSeconds).toBe(5);
   });
 
+  it("blocks a throttled workspace even when throttleDelayMs is missing (fail-closed, 1s floor)", async () => {
+    abuseVerdict = { level: "throttled" };
+    const result = await checkAgentBillingGate("org-1");
+    expect(result.allowed).toBe(false);
+    if (result.allowed) throw new Error("expected block");
+    expect(result.errorCode).toBe("workspace_throttled");
+    expect(result.retryAfterSeconds).toBe(1);
+  });
+
   it("blocks a trial-expired workspace with 403 trial_expired", async () => {
     planVerdict = {
       allowed: false,

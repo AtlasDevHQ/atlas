@@ -15,6 +15,11 @@
 
 import { describe, it, expect, mock } from "bun:test";
 
+// Pin a non-SaaS deploy mode BEFORE the gate module graph loads, so the
+// abuse check's isSaasDeployment() read can't be flipped by external CI
+// env state. `??=` hoist per docs/development/testing.md (never `=`).
+process.env.ATLAS_DEPLOY_MODE ??= "self-hosted";
+
 // Self-hosted: no internal DB. Stub list mirrors `lib/__tests__/workspace.test.ts`.
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,

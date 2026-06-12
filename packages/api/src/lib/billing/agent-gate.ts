@@ -137,8 +137,12 @@ export async function checkAgentBillingGate(
       retryable: false,
     };
   }
-  if (abuse.level === "throttled" && abuse.throttleDelayMs) {
-    const retryAfterSeconds = Math.ceil(abuse.throttleDelayMs / 1000);
+  if (abuse.level === "throttled") {
+    // Defensive: checkAbuseStatus always supplies throttleDelayMs on the
+    // throttled arm (its config floor is > 0), but if a future variant
+    // omitted it, still BLOCK with a 1s floor — falling open on an abuse
+    // verdict would be a silent fallback on a security check (CLAUDE.md).
+    const retryAfterSeconds = Math.max(1, Math.ceil((abuse.throttleDelayMs ?? 1000) / 1000));
     log.warn(
       { orgId, delayMs: abuse.throttleDelayMs },
       "Agent run blocked: workspace throttled due to abuse",

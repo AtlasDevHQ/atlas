@@ -337,6 +337,12 @@ describe("tryCreateByocBackend — engaged", () => {
     // but serializing it (e.g. an accidental structured log) leaks nothing.
     expect(createCalls[0].access.token.reveal()).toBe("vc_tok");
     expect(JSON.stringify(createCalls[0].access)).not.toContain("vc_tok");
+    // The backend logs Sandbox.create failures itself — the threaded
+    // scrubErrorDetail must redact stored values at the source (#3413 P1).
+    const scrub = (createCalls[0].access as { scrubErrorDetail?: (d: string) => string })
+      .scrubErrorDetail;
+    expect(scrub).toBeDefined();
+    expect(scrub!("401: token vc_tok rejected")).not.toContain("vc_tok");
   });
 
   it("throws an incompatible-version error when the factory returns a shapeless plugin", async () => {
@@ -571,6 +577,13 @@ describe("tryCreateByocPythonBackend — engaged", () => {
     // accidental structured log of the options leaks nothing.
     expect(access.token.reveal()).toBe("vc_org_token");
     expect(JSON.stringify(factoryCalls[0])).not.toContain("vc_org_token");
+    // The backend logs provider errors before the wrapper's result scrub —
+    // the threaded scrubErrorDetail must redact stored values at the source
+    // (#3413 P1).
+    expect(factoryCalls[0].scrubErrorDetail).toBeDefined();
+    expect(
+      factoryCalls[0].scrubErrorDetail!("401: token vc_org_token rejected"),
+    ).not.toContain("vc_org_token");
     const result = await backend!.exec("print(1)");
     expect(result.success).toBe(true);
   });

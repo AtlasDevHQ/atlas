@@ -260,6 +260,31 @@ describe("createPythonSandboxBackend", () => {
     expect(createOpts.token).toBe("org-token");
   });
 
+  it("scrubErrorDetail redacts provider error text in creation-failure results (#3413)", async () => {
+    // A Sandbox.create failure can echo the submitted credential; this module
+    // logs and embeds the detail before the BYOC wrapper sees the result, so
+    // the scrub must apply at the source.
+    setupSandboxMock({ createError: "401 Unauthorized: token org-secret-token rejected" });
+    const mod = await import("@atlas/api/lib/tools/python-sandbox");
+    const { redactedSecret } = await import("@atlas/api/lib/tools/backends/detect");
+    const backend = mod.createPythonSandboxBackend({
+      access: {
+        teamId: "org_team",
+        projectId: "org_prj",
+        token: redactedSecret("org-secret-token"),
+      },
+      scrubErrorDetail: (detail) => detail.split("org-secret-token").join("[REDACTED]"),
+    });
+
+    const result = await backend.exec("print(1)");
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).not.toContain("org-secret-token");
+      expect(result.error).toContain("[REDACTED]");
+    }
+  });
+
   it("writes wrapper, user code, and data files to sandbox", async () => {
     setupSandboxMock();
     const backend = await freshBackend();

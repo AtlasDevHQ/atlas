@@ -93,12 +93,25 @@ export interface VercelSandboxAccessOverride {
   teamId: string;
   projectId: string;
   token: RedactedSecret;
+  /**
+   * Applied to provider error text before it is logged or embedded in error
+   * messages. The BYOC path supplies an exact-match scrub of the org's
+   * stored credential values: a provider error that echoes the rejected key
+   * (e.g. a 401 on `Sandbox.create`) must not land in operator logs — this
+   * module logs before the BYOC runtime's catch-site scrub ever sees the
+   * error (#3413). Defaults to identity (the operator path logs its own
+   * provider's errors).
+   */
+  scrubErrorDetail?: (detail: string) => string;
 }
 
 export async function createSandboxBackend(
   semanticRoot: string,
   accessOverride?: VercelSandboxAccessOverride
 ): Promise<ExploreBackend> {
+  // Provider error text passes through this before any log or message —
+  // see VercelSandboxAccessOverride.scrubErrorDetail (#3413).
+  const scrubDetail = accessOverride?.scrubErrorDetail ?? ((detail: string) => detail);
   // 1. Import the optional dependency
   let Sandbox: (typeof import("@vercel/sandbox"))["Sandbox"];
   try {
@@ -137,7 +150,7 @@ export async function createSandboxBackend(
       ...(explicitAccess ?? {}),
     });
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = scrubDetail(err instanceof Error ? err.message : String(err));
     log.error({ err: detail }, "Sandbox.create() failed");
     throw new Error(
       `Failed to create Vercel Sandbox: ${detail}. ` +
@@ -156,7 +169,7 @@ export async function createSandboxBackend(
       await s.stop();
     } catch (stopErr) {
       log.warn(
-        { err: stopErr instanceof Error ? stopErr.message : String(stopErr) },
+        { err: scrubDetail(stopErr instanceof Error ? stopErr.message : String(stopErr)) },
         "Failed to stop sandbox during error cleanup",
       );
     }
@@ -205,7 +218,7 @@ export async function createSandboxBackend(
     try {
       await sandbox.mkDir(dir);
     } catch (err) {
-      const detail = sandboxErrorDetail(err);
+      const detail = scrubDetail(sandboxErrorDetail(err));
       log.error({ err: detail, dir }, "Failed to create directory in sandbox");
       throw new Error(
         `Failed to create directory "${dir}" in sandbox: ${safeError(detail)}.`,
@@ -217,7 +230,7 @@ export async function createSandboxBackend(
   try {
     await sandbox.writeFiles(files);
   } catch (err) {
-    const detail = sandboxErrorDetail(err);
+    const detail = scrubDetail(sandboxErrorDetail(err));
     log.error({ err: detail, fileCount: files.length }, "Failed to write files into sandbox");
     throw new Error(
       `Failed to upload ${files.length} semantic files to sandbox: ${safeError(detail)}.`,
@@ -243,14 +256,14 @@ export async function createSandboxBackend(
           exitCode: result.exitCode,
         };
       } catch (err) {
-        const detail = sandboxErrorDetail(err);
+        const detail = scrubDetail(sandboxErrorDetail(err));
         log.error({ err: detail }, "Sandbox command failed");
         // Stop the broken sandbox before invalidating the cache
         try {
           await sandbox.stop();
         } catch (stopErr) {
           log.warn(
-            { err: stopErr instanceof Error ? stopErr.message : String(stopErr) },
+            { err: scrubDetail(stopErr instanceof Error ? stopErr.message : String(stopErr)) },
             "Failed to stop sandbox during error cleanup",
           );
         }
@@ -268,7 +281,7 @@ export async function createSandboxBackend(
         await sandbox.stop();
       } catch (err) {
         log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
+          { err: scrubDetail(err instanceof Error ? err.message : String(err)) },
           "Failed to stop sandbox during close",
         );
       }

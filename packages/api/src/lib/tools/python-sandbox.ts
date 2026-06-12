@@ -59,6 +59,15 @@ export interface PythonSandboxOptions {
    * branded: revealed only at `Sandbox.create`, serializes to "[REDACTED]".
    */
   readonly access?: VercelSandboxAccessOverride;
+  /**
+   * Applied to provider error text before it is logged or embedded in error
+   * messages. The BYOC path supplies an exact-match scrub of the org's
+   * stored credential values: a provider error that echoes the rejected key
+   * (e.g. a 401 on `Sandbox.create`) must not land in operator logs — this
+   * module logs before the BYOC result wrapper ever sees the error (#3413).
+   * Defaults to identity (the operator path logs its own provider's errors).
+   */
+  readonly scrubErrorDetail?: (detail: string) => string;
 }
 
 /** Default Python execution timeout in ms. */
@@ -210,6 +219,10 @@ export function createPythonSandboxBackend(
   // account whose credentials it was constructed with.
   const accessOverride = options.access;
 
+  // Provider error text passes through this before any log or message —
+  // see PythonSandboxOptions.scrubErrorDetail (#3413).
+  const scrubDetail = options.scrubErrorDetail ?? ((detail: string) => detail);
+
   interface SandboxInstance {
     sandbox: InstanceType<(typeof import("@vercel/sandbox"))["Sandbox"]>;
     packagesInstalled: boolean;
@@ -255,7 +268,7 @@ export function createPythonSandboxBackend(
             ...(explicitAccess ?? {}),
           }),
         catch: (err) => {
-          const detail = sandboxErrorDetail(err);
+          const detail = scrubDetail(sandboxErrorDetail(err));
           log.warn({ err: detail }, "Python Sandbox.create() attempt failed");
           return new SandboxInfraError({
             message: `Failed to create Python Vercel Sandbox: ${safeError(detail)}.`,
@@ -291,7 +304,7 @@ export function createPythonSandboxBackend(
           }
         },
         catch: (err) => {
-          const detail = sandboxErrorDetail(err);
+          const detail = scrubDetail(sandboxErrorDetail(err));
           log.warn({ err: detail }, "pip install failed — continuing without data science packages");
           return err instanceof Error ? err : new Error(String(err));
         },
@@ -309,7 +322,7 @@ export function createPythonSandboxBackend(
       yield* Effect.tryPromise({
         try: () => sandbox.updateNetworkPolicy(lockdownPolicy),
         catch: (err) => {
-          const detail = sandboxErrorDetail(err);
+          const detail = scrubDetail(sandboxErrorDetail(err));
           log.error({ err: detail }, "Failed to set sandbox network policy");
           return new SandboxInfraError({
             message: `Failed to lock down sandbox network: ${safeError(detail)}.`,
@@ -421,7 +434,7 @@ export function createPythonSandboxBackend(
             await sandbox.mkDir(chartDir);
           },
           catch: (err) => {
-            const detail = sandboxErrorDetail(err);
+            const detail = scrubDetail(sandboxErrorDetail(err));
             log.error({ err: detail, execId }, "Failed to create exec dirs in sandbox");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}`,
@@ -441,7 +454,7 @@ export function createPythonSandboxBackend(
         yield* Effect.tryPromise({
           try: () => sandbox.writeFiles(files),
           catch: (err) => {
-            const detail = sandboxErrorDetail(err);
+            const detail = scrubDetail(sandboxErrorDetail(err));
             log.error({ err: detail, execId }, "Failed to write Python files to sandbox");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}`,
@@ -473,7 +486,7 @@ export function createPythonSandboxBackend(
               },
             }),
           catch: (err) => {
-            const detail = sandboxErrorDetail(err);
+            const detail = scrubDetail(sandboxErrorDetail(err));
             log.error({ err: detail, execId }, "Sandbox runCommand failed for Python");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}. Will retry with a fresh sandbox.`,
@@ -497,7 +510,7 @@ export function createPythonSandboxBackend(
         const stderr = yield* Effect.tryPromise({
           try: () => cmdResult.stderr(),
           catch: (err) => {
-            const detail = sandboxErrorDetail(err);
+            const detail = scrubDetail(sandboxErrorDetail(err));
             log.error({ err: detail, execId }, "Failed to read stderr from sandbox");
             return new SandboxInfraError({
               message: `Failed to read execution output: ${safeError(detail)}`,
@@ -510,7 +523,7 @@ export function createPythonSandboxBackend(
         const resultBuffer = yield* Effect.tryPromise({
           try: () => sandbox.readFileToBuffer({ path: resultPathAbs }),
           catch: (err) => {
-            const detail = sandboxErrorDetail(err);
+            const detail = scrubDetail(sandboxErrorDetail(err));
             log.error({ err: detail, execId }, "Failed to read result file from sandbox");
             return new SandboxInfraError({
               message: `Failed to read execution output: ${safeError(detail)}`,
@@ -557,7 +570,7 @@ export function createPythonSandboxBackend(
               return bufs.filter((buf): buf is Buffer => buf !== null);
             },
             catch: (err) => {
-              const detail = sandboxErrorDetail(err);
+              const detail = scrubDetail(sandboxErrorDetail(err));
               log.error({ err: detail, execId }, "Failed to read chart artifacts from sandbox");
               return new SandboxInfraError({
                 message: `Failed to read chart artifacts: ${safeError(detail)}`,
@@ -635,7 +648,7 @@ export function createPythonSandboxBackend(
           ),
           // Unexpected defects: invalidate and return sanitized error
           Effect.catchAllDefect((defect) => {
-            const detail = defect instanceof Error ? defect.message : String(defect);
+            const detail = scrubDetail(defect instanceof Error ? defect.message : String(defect));
             log.error({ err: detail, execId }, "Unexpected error in Python sandbox execution");
             invalidate();
             return Effect.succeed({

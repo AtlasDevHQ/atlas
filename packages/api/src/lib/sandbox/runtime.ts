@@ -238,7 +238,13 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
           access?: VercelSandboxAccessOverride,
         ): Promise<ExploreBackend>;
       };
-      return await mod.createSandboxBackend(semanticRoot, vercelAccessOverride(credentials));
+      // scrubErrorDetail: the backend logs provider errors itself, before
+      // this module's catch-site scrub can intervene — a 401 echoing the
+      // rejected token must be redacted at the source (#3413).
+      return await mod.createSandboxBackend(semanticRoot, {
+        ...vercelAccessOverride(credentials),
+        scrubErrorDetail: (detail) => scrubCredentialValues(detail, credentials),
+      });
     },
     // Python runs on the same in-tree @vercel/sandbox path as explore — see
     // the interface doc for why only vercel carries this method today.
@@ -249,6 +255,7 @@ const PROVIDER_RUNTIMES: Record<SandboxProviderKey, ProviderRuntime> = {
       return mod.createPythonSandboxBackend({
         ...(options.networkPolicy ? { networkPolicy: options.networkPolicy } : {}),
         access: vercelAccessOverride(credentials),
+        scrubErrorDetail: (detail) => scrubCredentialValues(detail, credentials),
       });
     },
   },

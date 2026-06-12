@@ -205,6 +205,20 @@ describe("billing/plans", () => {
       expect(plans.length).toBe(3);
       expect(plans.map((p) => p.name)).toEqual(["starter", "pro", "business"]);
     });
+
+    it("sets seatPriceId === priceId on every plan (seat-only auto-managed seats, #3418)", () => {
+      // seatPriceId === priceId is the plugin's "seat-only plan" shape:
+      // checkout emits a single per-seat line item with quantity = member
+      // count, and the plugin's member add/remove hooks keep the Stripe
+      // quantity synced. A drift between the two would silently re-add a
+      // base line item on top of the seat item — double billing.
+      process.env.STRIPE_STARTER_PRICE_ID = "price_starter_123";
+      process.env.STRIPE_PRO_PRICE_ID = "price_pro_456";
+      process.env.STRIPE_BUSINESS_PRICE_ID = "price_biz_789";
+      for (const plan of getStripePlans()) {
+        expect(plan.seatPriceId).toBe(plan.priceId);
+      }
+    });
   });
 
   describe("resolvePlanTierFromPriceId", () => {

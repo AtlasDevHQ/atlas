@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
+import { useQueryStates } from "nuqs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -26,6 +28,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useBillingPortal } from "@/ui/hooks/use-billing-portal";
+import { usePlanCheckout } from "@/ui/hooks/use-plan-checkout";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
@@ -35,10 +38,13 @@ import {
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 import { formatDate, formatNumber } from "@/lib/format";
+import { consumePlanIntent } from "@/lib/billing/plan-intent";
 import { cn } from "@/lib/utils";
+import { billingSearchParams } from "./search-params";
 import type { BillingStatus } from "@useatlas/schemas";
 import {
   Bot,
+  CheckCircle2,
   Coins,
   CreditCard,
   DollarSign,
@@ -124,6 +130,18 @@ export default function BillingPage() {
     schema: BillingStatusSchema,
   });
   const { deployMode, error: modeError, resolved: modeResolved } = useDeployMode();
+  const [{ checkout, plan: planParam }, setParams] = useQueryStates(billingSearchParams);
+
+  // Pricing-page plan intent (#3418): /signup?plan=… stashes the choice in
+  // localStorage (the signup flow spans five hard navs); surface it here as
+  // the ?plan= URL param so the picker preselects and the URL is shareable.
+  useEffect(() => {
+    if (planParam) return;
+    const intent = consumePlanIntent();
+    if (intent) void setParams({ plan: intent });
+    // Mount-only: consumePlanIntent is one-shot (read-and-clear), so the
+    // effect must not re-run when planParam/setParams identities change.
+  }, []);
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
   // API-level 404s ("Workspace not found", "no internal database") have descriptive
@@ -180,12 +198,32 @@ export default function BillingPage() {
           {data && (
             <div className="space-y-10">
               <TrialCountdownBanner plan={data.plan} />
+              {checkout && (
+                <CheckoutReturnBanner
+                  state={checkout}
+                  data={data}
+                  refetch={refetch}
+                  onDone={() => void setParams({ checkout: null })}
+                />
+              )}
               <section id={TRIAL_BANNER_PLAN_ANCHOR_ID} className="scroll-mt-6">
                 <SectionHeading
                   title="Plan"
                   description="Your current subscription and limits"
                 />
                 <PlanShell data={data} />
+              </section>
+
+              <section>
+                <SectionHeading
+                  title={data.subscription ? "Change plan" : "Choose a plan"}
+                  description={
+                    data.subscription
+                      ? "Upgrades apply immediately (prorated); downgrades take effect at the end of the billing period"
+                      : "Subscribe to keep using Atlas after your trial"
+                  }
+                />
+                <PlanPicker data={data} highlight={planParam} />
               </section>
 
               <section>
@@ -372,6 +410,215 @@ function PlanShell({ data }: { data: BillingStatus }) {
         </p>
       )}
     </Shell>
+  );
+}
+
+// ── Checkout return banner (#3418) ────────────────────────────────
+
+/**
+ * Shown after the user returns from Stripe Checkout. The plan tier is
+ * written by the checkout.session.completed webhook, which races the
+ * redirect — so on `success` this polls the billing endpoint until the
+ * paid tier (or an active/trialing subscription) appears, then clears
+ * the URL param. If the webhook is slow (~30s of polling), the copy
+ * degrades to "refresh in a minute" instead of spinning forever.
+ */
+function CheckoutReturnBanner({
+  state,
+  data,
+  refetch,
+  onDone,
+}: {
+  state: "success" | "cancelled";
+  data: BillingStatus;
+  refetch: () => void;
+  onDone: () => void;
+}) {
+  const PAID_TIERS = ["starter", "pro", "business"];
+  const landed =
+    PAID_TIERS.includes(data.plan.tier) ||
+    data.subscription?.status === "active" ||
+    data.subscription?.status === "trialing";
+  const [slow, setSlow] = useState(false);
+  const attempts = useRef(0);
+
+  useEffect(() => {
+    if (state !== "success" || landed) return;
+    const interval = setInterval(() => {
+      attempts.current += 1;
+      if (attempts.current > 12) {
+        setSlow(true);
+        clearInterval(interval);
+        return;
+      }
+      refetch();
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [state, landed, refetch]);
+
+  if (state === "cancelled") {
+    return (
+      <div
+        role="status"
+        className="flex items-center justify-between gap-4 rounded-lg border bg-muted/30 px-4 py-3 text-sm"
+      >
+        <p className="text-muted-foreground">
+          Checkout cancelled — no charges were made. Pick a plan below whenever
+          you&apos;re ready.
+        </p>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Dismiss
+        </Button>
+      </div>
+    );
+  }
+
+  if (landed) {
+    return (
+      <div
+        role="status"
+        className="flex items-center justify-between gap-4 rounded-lg border border-emerald-500/40 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-200"
+      >
+        <p className="flex items-center gap-2 font-medium">
+          <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+          Subscription active — welcome to {data.plan.displayName}.
+        </p>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Dismiss
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="status"
+      className="flex items-center justify-between gap-4 rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 text-sm text-blue-900 dark:text-blue-200"
+    >
+      <p className="flex items-center gap-2 font-medium">
+        {slow ? (
+          <>Payment received — your plan will update shortly. Refresh in a minute.</>
+        ) : (
+          <>
+            <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+            Finalizing your subscription…
+          </>
+        )}
+      </p>
+      <Button size="sm" variant="ghost" onClick={onDone}>
+        Dismiss
+      </Button>
+    </div>
+  );
+}
+
+// ── Plan picker (#3418) ───────────────────────────────────────────
+
+/** Order used to classify a plan change as upgrade vs downgrade. */
+const TIER_RANK: Record<string, number> = { starter: 1, pro: 2, business: 3 };
+
+function PlanPicker({
+  data,
+  highlight,
+}: {
+  data: BillingStatus;
+  highlight: string | null;
+}) {
+  const { startCheckout, pendingPlan, error, clearError } = usePlanCheckout();
+  const plans = data.availablePlans ?? [];
+  // An older published schema (scaffolds pinned to a pre-#3418
+  // @useatlas/schemas) strips availablePlans at parse time — hide the
+  // picker rather than render an empty grid.
+  if (plans.length === 0) return null;
+
+  const currentTier = data.plan.tier;
+  const hasSubscription = data.subscription != null;
+  const currentRank = TIER_RANK[currentTier] ?? 0;
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-3">
+        {plans.map((plan) => {
+          const isCurrent = hasSubscription && plan.tier === currentTier;
+          const isDowngrade = hasSubscription && TIER_RANK[plan.tier] < currentRank;
+          const busy = pendingPlan === plan.tier;
+          const label = isCurrent
+            ? "Current plan"
+            : !hasSubscription
+              ? "Subscribe"
+              : isDowngrade
+                ? "Downgrade"
+                : "Upgrade";
+          return (
+            <div
+              key={plan.tier}
+              data-testid={`plan-card-${plan.tier}`}
+              className={cn(
+                "flex flex-col gap-3 rounded-xl border bg-card/40 p-4",
+                highlight === plan.tier && "border-primary ring-1 ring-primary",
+                isCurrent && "border-primary/40",
+              )}
+            >
+              <div className="flex items-baseline justify-between">
+                <h3 className="text-sm font-semibold tracking-tight">{plan.displayName}</h3>
+                {isCurrent && (
+                  <Badge variant="secondary" className="text-[10px]">
+                    Current
+                  </Badge>
+                )}
+              </div>
+              <p>
+                <span className="text-2xl font-semibold tabular-nums">${plan.pricePerSeat}</span>
+                <span className="text-xs text-muted-foreground"> /seat/mo</span>
+              </p>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                <li>
+                  {plan.tokenBudgetPerSeat === null
+                    ? "Unlimited tokens"
+                    : `${formatNumber(plan.tokenBudgetPerSeat)} tokens/seat/mo`}
+                </li>
+                <li>{plan.maxSeats === null ? "Unlimited seats" : `Up to ${plan.maxSeats} seats`}</li>
+                <li>
+                  {plan.maxConnections === null
+                    ? "Unlimited connections"
+                    : `${plan.maxConnections} ${plan.maxConnections === 1 ? "connection" : "connections"}`}
+                </li>
+              </ul>
+              <Button
+                size="sm"
+                variant={isCurrent ? "outline" : isDowngrade ? "outline" : "default"}
+                disabled={isCurrent || !plan.configured || pendingPlan !== null}
+                onClick={() =>
+                  startCheckout({ plan: plan.tier, scheduleAtPeriodEnd: isDowngrade })
+                }
+                className="mt-auto"
+              >
+                {busy ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    Redirecting…
+                  </>
+                ) : (
+                  label
+                )}
+              </Button>
+              {!plan.configured && (
+                <p className="text-[11px] text-muted-foreground">
+                  Not available on this deployment.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {error && <ErrorBanner message={error} onRetry={clearError} />}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        Billing is per seat ({data.seats?.count ?? data.usage.seatCount}{" "}
+        {(data.seats?.count ?? data.usage.seatCount) === 1 ? "member" : "members"} today) and the
+        seat count stays in sync as members join or leave. Upgrades are prorated immediately;
+        downgrades take effect at the end of the current billing period.
+      </p>
+    </div>
   );
 }
 

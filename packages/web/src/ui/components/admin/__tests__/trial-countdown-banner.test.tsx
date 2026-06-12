@@ -1,6 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import { render } from "@testing-library/react";
-import { TrialCountdownBanner } from "../trial-countdown-banner";
+import { describe, expect, test, beforeEach, mock, type Mock } from "bun:test";
+import { render, fireEvent } from "@testing-library/react";
+
+// The Upgrade CTA navigates via next's router when the plan-picker anchor
+// isn't on the current page (#3418).
+const mockPush: Mock<(href: string) => void> = mock(() => {});
+mock.module("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
+import { TrialCountdownBanner, TRIAL_BANNER_PLAN_ANCHOR_ID } from "../trial-countdown-banner";
 import type { BillingPlan } from "@useatlas/schemas";
 
 /**
@@ -151,5 +159,37 @@ describe("TrialCountdownBanner", () => {
     expect(container.textContent).toContain("Your trial has expired. Upgrade to keep using Atlas.");
     const button = container.querySelector("button");
     expect(button?.className).toContain("bg-primary");
+  });
+});
+
+describe("TrialCountdownBanner — Upgrade CTA navigation (#3418)", () => {
+  beforeEach(() => {
+    mockPush.mockClear();
+  });
+
+  test("navigates to /admin/billing#anchor when the plan-picker anchor is absent (e.g. /admin)", () => {
+    const { getByRole } = render(
+      <TrialCountdownBanner plan={plan({})} now={NOW} />,
+    );
+    fireEvent.click(getByRole("button", { name: "Upgrade" }));
+    expect(mockPush).toHaveBeenCalledWith(`/admin/billing#${TRIAL_BANNER_PLAN_ANCHOR_ID}`);
+  });
+
+  test("scrolls in place when the anchor exists on the page (/admin/billing)", () => {
+    const anchor = document.createElement("section");
+    anchor.id = TRIAL_BANNER_PLAN_ANCHOR_ID;
+    const scrollSpy = mock(() => {});
+    anchor.scrollIntoView = scrollSpy as unknown as typeof anchor.scrollIntoView;
+    document.body.appendChild(anchor);
+    try {
+      const { getByRole } = render(
+        <TrialCountdownBanner plan={plan({})} now={NOW} />,
+      );
+      fireEvent.click(getByRole("button", { name: "Upgrade" }));
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      expect(mockPush).not.toHaveBeenCalled();
+    } finally {
+      anchor.remove();
+    }
   });
 });

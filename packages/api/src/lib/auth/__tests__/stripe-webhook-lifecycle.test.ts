@@ -34,10 +34,14 @@ const mockUpdateWorkspaceStatus: Mock<(orgId: string, status: string) => Promise
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> =
   mock(() => Promise.resolve([]));
 
+const mockGetWorkspaceDetails: Mock<(orgId: string) => Promise<unknown>> =
+  mock(() => Promise.resolve(null));
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   updateWorkspaceStatus: mockUpdateWorkspaceStatus,
+  getWorkspaceDetails: mockGetWorkspaceDetails,
 }));
 
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
@@ -173,6 +177,8 @@ afterAll(() => {
 beforeEach(() => {
   mockUpdateWorkspacePlanTier.mockClear();
   mockUpdateWorkspaceStatus.mockClear();
+  mockGetWorkspaceDetails.mockReset();
+  mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve(null));
   mockInternalQuery.mockReset();
   mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   subscriptionsRetrieve.mockClear();
@@ -209,27 +215,56 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
     return options.subscription.getCheckoutSessionParams;
   }
 
-  it("throws for a subscription whose referenceId is the calling user (user-scoped checkout)", () => {
+  it("rejects a subscription whose referenceId is the calling user (user-scoped checkout)", async () => {
     const cb = getCallback();
-    expect(() =>
-      cb(
-        {
-          user: { id: "user-1" },
-          session: {},
-          plan: { name: "starter" },
-          subscription: { id: "subrow_1", referenceId: "user-1" },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
-        } as any,
-        undefined,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
-        {} as any,
+    await expect(
+      Promise.resolve(
+        cb(
+          {
+            user: { id: "user-1" },
+            session: {},
+            plan: { name: "starter" },
+            subscription: { id: "subrow_1", referenceId: "user-1" },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+          } as any,
+          undefined,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+          {} as any,
+        ),
       ),
-    ).toThrow(/organization-scoped/);
+    ).rejects.toThrow(/organization-scoped/);
   });
 
-  it("passes org-scoped subscriptions through", () => {
+  it("suppresses the Stripe trial for an org that consumed the Atlas pre-checkout trial (#3418)", async () => {
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", trial_ends_at: "2026-06-01T00:00:00.000Z" }),
+    );
     const cb = getCallback();
-    const result = cb(
+    const result = await cb(
+      {
+        user: { id: "user-1" },
+        session: {},
+        plan: { name: "starter" },
+        subscription: { id: "subrow_1", referenceId: "org-1" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+      } as any,
+      undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      {} as any,
+    );
+    // trial_period_days: undefined overrides the plugin's freeTrial spread;
+    // the Stripe SDK drops undefined keys from the request.
+    expect(result).toEqual({
+      params: { subscription_data: { trial_period_days: undefined } },
+    });
+  });
+
+  it("leaves the plugin trial in place for an org that never consumed the Atlas trial", async () => {
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", trial_ends_at: null }),
+    );
+    const cb = getCallback();
+    const result = await cb(
       {
         user: { id: "user-1" },
         session: {},
@@ -242,6 +277,26 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
       {} as any,
     );
     expect(result).toEqual({});
+  });
+
+  it("suppresses the trial when the workspace lookup fails (fail toward no double trial)", async () => {
+    mockGetWorkspaceDetails.mockImplementation(() => Promise.reject(new Error("pg blip")));
+    const cb = getCallback();
+    const result = await cb(
+      {
+        user: { id: "user-1" },
+        session: {},
+        plan: { name: "starter" },
+        subscription: { id: "subrow_1", referenceId: "org-1" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixtures for the plugin callback
+      } as any,
+      undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ctx unused by the guard
+      {} as any,
+    );
+    expect(result).toEqual({
+      params: { subscription_data: { trial_period_days: undefined } },
+    });
   });
 });
 

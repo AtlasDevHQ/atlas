@@ -31,7 +31,7 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
-import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { resolveModelId } from "@atlas/api/lib/providers";
@@ -152,6 +152,40 @@ const toggleByotRoute = createRoute({
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// Available plans (#3418)
+// ---------------------------------------------------------------------------
+
+/**
+ * Paid tiers the plan picker can move a workspace to. `configured` is
+ * derived from {@link getStripePlans} — a tier without its Stripe Price ID
+ * env var renders as a disabled card rather than disappearing, so a
+ * misconfigured deployment is visible instead of silently smaller.
+ */
+function buildAvailablePlans(): Array<{
+  tier: PaidPlanTier;
+  displayName: string;
+  pricePerSeat: number;
+  tokenBudgetPerSeat: number | null;
+  maxSeats: number | null;
+  maxConnections: number | null;
+  configured: boolean;
+}> {
+  const configured = new Set(getStripePlans().map((p) => p.name));
+  return (["starter", "pro", "business"] as const).map((tier) => {
+    const def = getPlanDefinition(tier);
+    return {
+      tier,
+      displayName: def.displayName,
+      pricePerSeat: def.pricePerSeat,
+      tokenBudgetPerSeat: isUnlimited(def.limits.tokenBudgetPerSeat) ? null : def.limits.tokenBudgetPerSeat,
+      maxSeats: isUnlimited(def.limits.maxSeats) ? null : def.limits.maxSeats,
+      maxConnections: isUnlimited(def.limits.maxConnections) ? null : def.limits.maxConnections,
+      configured: configured.has(tier),
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Router
@@ -322,6 +356,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         plan: subscription.plan,
         status: subscription.status,
       } : null,
+      availablePlans: buildAvailablePlans(),
     }, 200);
   }), { label: "fetch billing status" });
 });

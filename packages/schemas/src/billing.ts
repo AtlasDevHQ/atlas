@@ -103,6 +103,22 @@ export interface BillingSubscription {
   status: string;
 }
 
+/**
+ * A plan tier the workspace can move to via self-serve checkout (#3418).
+ * `configured` is false when the deployment has no Stripe Price ID for the
+ * tier — the picker renders the card but disables its CTA. Limits are
+ * nullable with null = unlimited, mirroring {@link BillingLimits}.
+ */
+export interface BillingAvailablePlan {
+  tier: PlanTier;
+  displayName: string;
+  pricePerSeat: number;
+  tokenBudgetPerSeat: number | null;
+  maxSeats: number | null;
+  maxConnections: number | null;
+  configured: boolean;
+}
+
 export interface BillingStatus {
   workspaceId: string;
   plan: BillingPlan;
@@ -113,6 +129,12 @@ export interface BillingStatus {
   currentModel: string;
   overagePerMillionTokens: number;
   subscription: BillingSubscription | null;
+  /**
+   * Optional so a web bundle pinned to an older published schema keeps
+   * parsing (z.object strips unknown keys; the picker hides itself when
+   * the field is absent). The API always sends it.
+   */
+  availablePlans?: BillingAvailablePlan[];
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +183,16 @@ export const BillingSubscriptionSchema = z.object({
   status: z.string(),
 }) satisfies z.ZodType<BillingSubscription>;
 
+export const BillingAvailablePlanSchema = z.object({
+  tier: PlanTierEnum,
+  displayName: z.string(),
+  pricePerSeat: z.number(),
+  tokenBudgetPerSeat: z.number().nullable(),
+  maxSeats: z.number().nullable(),
+  maxConnections: z.number().nullable(),
+  configured: z.boolean(),
+}) satisfies z.ZodType<BillingAvailablePlan>;
+
 export const BillingStatusSchema = z.object({
   workspaceId: z.string(),
   plan: BillingPlanSchema,
@@ -171,4 +203,5 @@ export const BillingStatusSchema = z.object({
   currentModel: z.string(),
   overagePerMillionTokens: z.number(),
   subscription: BillingSubscriptionSchema.nullable(),
+  availablePlans: z.array(BillingAvailablePlanSchema).optional(),
 }) satisfies z.ZodType<BillingStatus>;

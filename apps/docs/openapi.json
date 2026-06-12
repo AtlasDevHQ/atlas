@@ -73018,6 +73018,60 @@
                         "plan",
                         "status"
                       ]
+                    },
+                    "availablePlans": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tier": {
+                            "type": "string",
+                            "enum": [
+                              "free",
+                              "trial",
+                              "starter",
+                              "pro",
+                              "business"
+                            ]
+                          },
+                          "displayName": {
+                            "type": "string"
+                          },
+                          "pricePerSeat": {
+                            "type": "number"
+                          },
+                          "tokenBudgetPerSeat": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "maxSeats": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "maxConnections": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "configured": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "tier",
+                          "displayName",
+                          "pricePerSeat",
+                          "tokenBudgetPerSeat",
+                          "maxSeats",
+                          "maxConnections",
+                          "configured"
+                        ]
+                      }
                     }
                   },
                   "required": [

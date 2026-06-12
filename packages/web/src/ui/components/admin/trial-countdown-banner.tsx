@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { AlertTriangle, Clock, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,8 +19,11 @@ import type { BillingPlan } from "@useatlas/schemas";
  *
  * Hidden for any non-trial tier so paid workspaces don't see trial copy.
  *
- * The Upgrade CTA is intentionally a v1 placeholder — it scrolls to the
- * plan card already on the page. Stripe Checkout wiring is v2.
+ * The Upgrade CTA scrolls to the plan picker when its anchor is on the
+ * current page (/admin/billing), and otherwise navigates to
+ * /admin/billing with the anchor hash — the banner is also mounted on
+ * /admin, where the anchor doesn't exist and the old scroll-only CTA was
+ * a literal no-op click (#3418).
  *
  * Visual chrome matches the raw-div + tone-classed pattern used by
  * IncidentBanner and BackupMethodBanner; the shadcn Alert primitive pins
@@ -50,10 +54,18 @@ function resolveState(trialEndsAt: string, now: number): BannerState {
   return { kind: "early", daysLeft };
 }
 
-function scrollToPlanCard() {
+/**
+ * Scroll to the plan picker if it's on this page; otherwise route to the
+ * billing page with the anchor hash (Next scrolls to it after nav).
+ */
+function goToPlanPicker(push: (href: string) => void) {
   if (typeof document === "undefined") return;
   const el = document.getElementById(TRIAL_BANNER_PLAN_ANCHOR_ID);
-  el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else {
+    push(`/admin/billing#${TRIAL_BANNER_PLAN_ANCHOR_ID}`);
+  }
 }
 
 export interface TrialCountdownBannerProps {
@@ -119,6 +131,7 @@ function BannerShell({
   title: string;
   buttonVariant: "default" | "secondary";
 }) {
+  const router = useRouter();
   return (
     <div
       role="alert"
@@ -136,7 +149,7 @@ function BannerShell({
       <Button
         size="sm"
         variant={buttonVariant}
-        onClick={scrollToPlanCard}
+        onClick={() => goToPlanPicker(router.push)}
         className="shrink-0"
       >
         Upgrade

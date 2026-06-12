@@ -53447,7 +53447,7 @@
           "Admin — Proactive Chat"
         ],
         "summary": "Upsert a channel override",
-        "description": "Creates or replaces the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates.",
+        "description": "Creates or updates the override row for (workspaceId, channelId). Idempotent — POSTing twice with the same channelId updates the existing row rather than creating duplicates. Fields are independently optional: omit `allow` or `sensitivity` to leave the persisted value alone (new rows default to `allow: true`); pass `null` for `sensitivity` to explicitly clear the override.",
         "requestBody": {
           "required": true,
           "content": {
@@ -53477,8 +53477,7 @@
                   }
                 },
                 "required": [
-                  "channelId",
-                  "allow"
+                  "channelId"
                 ]
               }
             }

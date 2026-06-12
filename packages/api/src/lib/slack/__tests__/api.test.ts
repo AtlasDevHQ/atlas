@@ -164,10 +164,7 @@ describe("api", () => {
   });
 
   describe("listChannels", () => {
-    function channelPage(
-      channels: Array<Record<string, unknown>>,
-      nextCursor?: string,
-    ): Response {
+    function channelPage(channels: unknown[], nextCursor?: string): Response {
       return new Response(
         JSON.stringify({
           ok: true,

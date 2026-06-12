@@ -851,9 +851,14 @@ function ChannelOverrideRow({
   const saving = upsert.saving || remove.saving;
   const mutationError = upsert.error ?? remove.error;
 
+  // Each inline edit POSTs ONLY its own field — the upsert is partial
+  // (omit = leave alone). Composing the companion field from `row` props
+  // would race: the post-save refetch is fire-and-forget, so a quick
+  // second edit could resend the first field's pre-save value and
+  // silently undo it.
   async function setAllow(allow: boolean) {
     await upsert.mutate({
-      body: { channelId: row.channelId, allow, sensitivity: row.sensitivity },
+      body: { channelId: row.channelId, allow },
     });
   }
 
@@ -861,7 +866,6 @@ function ChannelOverrideRow({
     await upsert.mutate({
       body: {
         channelId: row.channelId,
-        allow: row.allow,
         sensitivity: v === "default" ? null : (v as Sensitivity),
       },
     });

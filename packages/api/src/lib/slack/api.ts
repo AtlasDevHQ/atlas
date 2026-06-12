@@ -94,6 +94,13 @@ export interface SlackChannelSummary {
 const LIST_CHANNELS_MAX_PAGES = 5;
 
 /**
+ * Per-page fetch timeout. The listing backs an interactive admin
+ * endpoint — a stalled Slack connection should fail the request (the
+ * UI soft-degrades to manual entry) rather than pin the handler.
+ */
+const LIST_CHANNELS_TIMEOUT_MS = 10_000;
+
+/**
  * List the workspace's channels via `conversations.list`.
  *
  * Uses GET with query-string args — unlike `chat.*`, the read methods
@@ -120,6 +127,7 @@ export async function listChannels(
       const resp = await fetch(`${SLACK_API_BASE}/conversations.list?${params.toString()}`, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(LIST_CHANNELS_TIMEOUT_MS),
       });
       if (!resp.ok) {
         log.error({ method: "conversations.list", status: resp.status }, "Slack API HTTP error");

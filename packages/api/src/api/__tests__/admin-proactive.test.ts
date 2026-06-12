@@ -639,6 +639,40 @@ describe("POST /api/v1/admin/proactive/channels", () => {
     });
     expect(res.status).toBe(200);
     expect(lastQueries[0]?.params[3]).toBeNull();
+    // Provided-flags: allow touched, sensitivity left alone.
+    expect(lastQueries[0]?.params[4]).toBe(true);
+    expect(lastQueries[0]?.params[5]).toBe(false);
+  });
+
+  it("partial sensitivity-only upsert leaves allow untouched", async () => {
+    mockInternalRows = [[nowChannelRow({ channel_id: "C-test", sensitivity: "cautious" })]];
+    const res = await request("POST", "/channels", {
+      channelId: "C-test",
+      sensitivity: "cautious",
+    });
+    expect(res.status).toBe(200);
+    // allow omitted → value param null, provided flag false; the SQL CASE
+    // keeps channel_proactive_config.allow on the conflict path.
+    expect(lastQueries[0]?.params[2]).toBeNull();
+    expect(lastQueries[0]?.params[4]).toBe(false);
+    expect(lastQueries[0]?.params[5]).toBe(true);
+    // Audit metadata records only the touched field — no phantom allow.
+    expect(mockLogAdminAction).toHaveBeenCalledTimes(1);
+    const meta = mockLogAdminAction.mock.calls[0][0].metadata ?? {};
+    expect("allow" in meta).toBe(false);
+    expect(meta.sensitivity).toBe("cautious");
+  });
+
+  it("explicit sensitivity: null clears the override (distinct from omit)", async () => {
+    mockInternalRows = [[nowChannelRow({ channel_id: "C-test", sensitivity: null })]];
+    const res = await request("POST", "/channels", {
+      channelId: "C-test",
+      sensitivity: null,
+    });
+    expect(res.status).toBe(200);
+    expect(lastQueries[0]?.params[3]).toBeNull();
+    // null is an explicit clear → provided flag true.
+    expect(lastQueries[0]?.params[5]).toBe(true);
   });
 
   it("rejects an empty channelId with 422", async () => {

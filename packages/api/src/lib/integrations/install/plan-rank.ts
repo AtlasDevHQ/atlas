@@ -112,8 +112,10 @@ export function planRank(name: PlanTier | null | undefined): number | null {
  *
  *   - Missing `requiredPlan` → `false` (fail closed; catalog drift
  *     shouldn't admit anything).
- *   - Missing `workspacePlan` → the minimum rank (locked, -1): most
- *     restrictive — admits nothing, matching the churned tier.
+ *   - Missing `workspacePlan` → rank of `free` (0): "no billing
+ *     context" (self-hosted sentinel / pre-migration row) admits only
+ *     free-min rows. Distinct from `locked` (-1), which is an explicit
+ *     churn state and admits nothing.
  *
  * Accepts `PlanTier | null` — the trust-boundary narrowing happens
  * upstream via {@link parsePlanTier}.
@@ -130,10 +132,12 @@ export function isPlanEligible(
   if (requiredPlan === "locked") return false;
   const requiredRank = planRank(requiredPlan ?? null);
   if (requiredRank === null) return false;
-  // Missing/unknown workspace plan → the MINIMUM rank (locked, -1), not 0:
-  // with "locked" below "free", a 0 fallback would make a malformed org row
-  // MORE privileged than a churned one and admit it through free-min gates.
-  // "Most restrictive" must track the floor of the rank table.
-  const workspaceRank = planRank(workspacePlan ?? null) ?? PLAN_RANK.locked;
+  // Missing/unknown workspace plan → rank of "free", NOT "locked": null
+  // means "no billing context" — the self-hosted/no-auth sentinel and
+  // pre-migration rows resolve here (see getWorkspaceEntitlement in
+  // routes/integrations.ts) and must keep installing free-min rows.
+  // "locked" is reserved for an EXPLICIT churn write; only that value
+  // carries the satisfies-no-gate -1 rank.
+  const workspaceRank = planRank(workspacePlan ?? null) ?? PLAN_RANK.free;
   return workspaceRank >= requiredRank;
 }

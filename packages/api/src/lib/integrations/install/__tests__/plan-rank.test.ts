@@ -107,13 +107,23 @@ describe("isPlanEligible", () => {
     expect(isPlanEligible("starter", "pro")).toBe(false);
   });
 
-  it("treats null / undefined workspace plan as rank 0 (most restrictive)", () => {
-    // Free catalog row: rank 0 — admits even a rank-0 workspace.
+  it("treats null / undefined workspace plan as rank-of-free (no billing context)", () => {
+    // null = self-hosted sentinel / pre-migration row, NOT a churned org:
+    // free-min rows stay installable (routes/integrations.ts depends on
+    // this for self-hosted no-auth deploys); anything stricter denies.
     expect(isPlanEligible(null, "free")).toBe(true);
     expect(isPlanEligible(undefined, "free")).toBe(true);
-    // Anything stricter denies.
     expect(isPlanEligible(null, "starter")).toBe(false);
     expect(isPlanEligible(undefined, "starter")).toBe(false);
+  });
+
+  it("locked workspaces satisfy no min_plan gate, and locked is never a valid requirement", () => {
+    expect(isPlanEligible("locked", "free")).toBe(false);
+    expect(isPlanEligible("locked", "starter")).toBe(false);
+    // A drifted catalog row demanding "locked" fails closed instead of
+    // admitting every workspace via the -1 rank.
+    expect(isPlanEligible("business", "locked")).toBe(false);
+    expect(isPlanEligible("locked", "locked")).toBe(false);
   });
 
   it("fails closed on missing requiredPlan (catalog drift must not widen access)", () => {

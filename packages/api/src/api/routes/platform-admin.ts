@@ -45,6 +45,13 @@ import {
 } from "@useatlas/types";
 import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import {
+  cancelStripeSubscriptionsForWorkspace,
+  purgeStripeBillingForWorkspace,
+  pauseStripeCollectionForWorkspace,
+  resumeStripeCollectionForWorkspace,
+  type StripeTeardownOutcome,
+} from "@atlas/api/lib/billing/workspace-teardown";
 import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
   ABUSE_RESTORE_STATUSES,
@@ -70,6 +77,25 @@ import {
 const log = createLogger("platform-admin");
 
 const VALID_PLAN_TIERS = new Set<string>(PLAN_TIERS);
+
+/**
+ * Audit metadata for a Stripe teardown outcome (#3425) — empty when the
+ * teardown was a no-op (Stripe not configured), so self-hosted audit rows
+ * don't grow a misleading `stripe` key.
+ */
+function stripeAuditMetadata(billing: StripeTeardownOutcome): Record<string, unknown> {
+  return billing.attempted
+    ? { stripe: { actions: billing.actions, warnings: billing.warnings } }
+    : {};
+}
+
+/**
+ * Response fragment surfacing Stripe teardown failures to the operator —
+ * a Stripe API failure must never strand the operation silently (#3425).
+ */
+function withWarnings(billing: StripeTeardownOutcome): { warnings?: string[] } {
+  return billing.warnings.length > 0 ? { warnings: billing.warnings } : {};
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -154,7 +180,7 @@ const suspendWorkspaceRoute = createRoute({
   responses: {
     200: {
       description: "Workspace suspended",
-      content: { "application/json": { schema: z.object({ message: z.string(), workspaceId: z.string() }) } },
+      content: { "application/json": { schema: z.object({ message: z.string(), workspaceId: z.string(), warnings: z.array(z.string()).optional() }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -173,7 +199,7 @@ const unsuspendWorkspaceRoute = createRoute({
   responses: {
     200: {
       description: "Workspace reactivated",
-      content: { "application/json": { schema: z.object({ message: z.string(), workspaceId: z.string() }) } },
+      content: { "application/json": { schema: z.object({ message: z.string(), workspaceId: z.string(), warnings: z.array(z.string()).optional() }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -204,6 +230,7 @@ const deleteWorkspaceRoute = createRoute({
               suggestions: z.number(),
               scheduledTasks: z.number(),
             }),
+            warnings: z.array(z.string()).optional(),
           }),
         },
       },
@@ -232,6 +259,7 @@ const purgeWorkspaceRoute = createRoute({
             workspaceId: z.string(),
             purged: z.record(z.string(), z.number()),
             totalRows: z.number(),
+            warnings: z.array(z.string()).optional(),
           }),
         },
       },
@@ -590,17 +618,26 @@ platformAdmin.openapi(suspendWorkspaceRoute, async (c) => {
     // Drop the cached `getCachedWorkspace` entry so the next user-side
     // request sees the new status within its TTL window (#2165).
     invalidatePlanCache(workspaceId);
-    log.info({ workspaceId, requestId }, "Workspace suspended by platform admin");
+
+    // Suspension billing policy (#3425): pause Stripe payment collection
+    // (`pause_collection: { behavior: "void" }`) — a suspended workspace
+    // can't use the product, so it must not keep being invoiced/dunned.
+    // The subscription stays alive so unsuspending restores billing.
+    // Stripe failures surface as operator warnings; the suspend stands.
+    const billing = yield* Effect.promise(() => pauseStripeCollectionForWorkspace(workspaceId));
+
+    log.info({ workspaceId, requestId, stripe: billing }, "Workspace suspended by platform admin");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.suspend,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
+      metadata: stripeAuditMetadata(billing),
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
-    return c.json({ message: "Workspace suspended.", workspaceId }, 200);
+    return c.json({ message: "Workspace suspended.", workspaceId, ...withWarnings(billing) }, 200);
   }), { label: "suspend workspace" });
 });
 
@@ -627,17 +664,23 @@ platformAdmin.openapi(unsuspendWorkspaceRoute, async (c) => {
 
     yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "active"));
     invalidatePlanCache(workspaceId); // #2165 — see suspend handler above
-    log.info({ workspaceId, requestId }, "Workspace unsuspended by platform admin");
+
+    // Resume Stripe payment collection paused at suspension time (#3425) —
+    // see the suspend handler above for the pause-collection policy.
+    const billing = yield* Effect.promise(() => resumeStripeCollectionForWorkspace(workspaceId));
+
+    log.info({ workspaceId, requestId, stripe: billing }, "Workspace unsuspended by platform admin");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.unsuspend,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
+      metadata: stripeAuditMetadata(billing),
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
-    return c.json({ message: "Workspace reactivated.", workspaceId }, 200);
+    return c.json({ message: "Workspace reactivated.", workspaceId, ...withWarnings(billing) }, 200);
   }), { label: "unsuspend workspace" });
 });
 
@@ -662,6 +705,14 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
       return c.json({ error: "conflict", message: "Workspace is already deleted.", requestId }, 409);
     }
 
+    // Cancel Stripe billing FIRST, then cascade (#3425): a deleted org
+    // must stop invoicing even if the cascade below fails, and the
+    // @better-auth/stripe plugin's own guard blocks user-initiated org
+    // deletion while subscriptions exist — this direct-DB path honors the
+    // same ordering rather than bypassing it. Stripe failures surface as
+    // operator warnings on the response; the delete proceeds.
+    const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(workspaceId));
+
     // Cascade cleanup first, then mark as deleted — if cleanup fails,
     // the workspace remains in its current state and can be retried.
     const cleanup = yield* Effect.tryPromise({
@@ -674,14 +725,14 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
     });
     invalidatePlanCache(workspaceId); // #2165 — see suspend handler above
 
-    log.info({ workspaceId, cleanup, requestId }, "Workspace deleted by platform admin");
+    log.info({ workspaceId, cleanup, stripe: billing, requestId }, "Workspace deleted by platform admin");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.delete,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
-      metadata: { cleanup },
+      metadata: { cleanup, ...stripeAuditMetadata(billing) },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
@@ -689,6 +740,7 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
       message: "Workspace deleted.",
       workspaceId,
       cleanup,
+      ...withWarnings(billing),
     }, 200);
   }), { label: "delete workspace" });
 });
@@ -718,6 +770,16 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       }, 409);
     }
 
+    // Stripe teardown BEFORE the purge cascade (#3425): the cascade
+    // destroys the organization row carrying the plugin-owned
+    // stripeCustomerId (#3417), so the customer must be deleted while the
+    // linkage still exists — a GDPR purge must leave no billable Stripe
+    // linkage behind. Stripe failures surface as operator warnings (with
+    // the raw Stripe ids for manual follow-up); the purge proceeds.
+    const billing = yield* Effect.promise(() =>
+      purgeStripeBillingForWorkspace(workspaceId, workspace.stripe_customer_id),
+    );
+
     const purged = yield* Effect.tryPromise({
       try: () => hardDeleteWorkspace(workspaceId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -725,14 +787,14 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
 
     const totalRows = Object.values(purged).reduce((sum, n) => sum + n, 0);
 
-    log.info({ workspaceId, totalRows, requestId }, "Workspace purged (GDPR hard delete)");
+    log.info({ workspaceId, totalRows, stripe: billing, requestId }, "Workspace purged (GDPR hard delete)");
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.purge,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
-      metadata: { purged, totalRows },
+      metadata: { purged, totalRows, ...stripeAuditMetadata(billing) },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
@@ -741,6 +803,7 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
       workspaceId,
       purged: purged as unknown as Record<string, number>,
       totalRows,
+      ...withWarnings(billing),
     }, 200);
   }), { label: "purge workspace (GDPR)" });
 });

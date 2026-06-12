@@ -2270,6 +2270,11 @@ export interface HardDeleteResult {
   // twenty_integrations: Twenty CRM API key.
   integrationCredentials: number;
   twentyIntegrations: number;
+  // Stripe billing linkage (#3425): @better-auth/stripe `subscription` rows
+  // (0 when the plugin's table doesn't exist) + Atlas's stripe_webhook_events
+  // dedupe-ledger rows for the org's subscription ids.
+  subscriptions: number;
+  stripeWebhookEvents: number;
   // Better Auth tables
   members: number;
   betterAuthInvitations: number;
@@ -2433,6 +2438,33 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const integrationCredentials = await del(`DELETE FROM integration_credentials WHERE workspace_id = $1`);
     const twentyIntegrations = await del(`DELETE FROM twenty_integrations WHERE workspace_id = $1`);
 
+    // ── Phase 3b: Stripe billing linkage rows (#3425) ──
+    // The @better-auth/stripe plugin's `subscription` table only exists when
+    // the plugin has run its migrations (STRIPE_SECRET_KEY deployments) —
+    // probe with to_regclass so non-Stripe deployments don't abort the purge
+    // transaction. The REMOTE teardown (cancel subscription, delete the
+    // Stripe customer) runs in lib/billing/workspace-teardown.ts BEFORE this
+    // cascade; these deletes remove the local billable linkage for GDPR
+    // completeness. The stripe_webhook_events dedupe ledger rows are matched
+    // via the org's subscription ids, so they must go before the
+    // subscription rows.
+    let subscriptions = 0;
+    let stripeWebhookEvents = 0;
+    const subscriptionTableProbe = await client.query(
+      `SELECT to_regclass('public.subscription') IS NOT NULL AS table_exists`,
+    );
+    const subscriptionTableExists =
+      (subscriptionTableProbe.rows[0] as { table_exists?: boolean } | undefined)?.table_exists === true;
+    if (subscriptionTableExists) {
+      stripeWebhookEvents = await delRaw(
+        `DELETE FROM stripe_webhook_events WHERE stripe_subscription_id IN (
+           SELECT "stripeSubscriptionId" FROM subscription
+            WHERE "referenceId" = $1 AND "stripeSubscriptionId" IS NOT NULL
+         ) RETURNING 1`,
+      );
+      subscriptions = await del(`DELETE FROM subscription WHERE "referenceId" = $1`);
+    }
+
     // ── Phase 4: Better Auth — members + orphaned users ──
 
     // Find users who are ONLY in this org (no other memberships)
@@ -2535,6 +2567,8 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       workspacePlugins,
       integrationCredentials,
       twentyIntegrations,
+      subscriptions,
+      stripeWebhookEvents,
       members,
       betterAuthInvitations,
       orphanedUsers,

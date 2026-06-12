@@ -214,8 +214,11 @@ describe("SlackOAuthInstallHandler.startInstall", () => {
     expect(parsed.origin + parsed.pathname).toBe("https://slack.com/oauth/v2/authorize");
     expect(parsed.searchParams.get("client_id")).toBe(SLACK_CONFIG.clientId);
     expect(parsed.searchParams.get("state")).toBe(stateToken);
-    // Scopes match the legacy slack.ts install route (preserved by lift).
-    expect(parsed.searchParams.get("scope")).toBe("commands,chat:write,app_mentions:read");
+    // Legacy slack.ts scopes (preserved by lift) + the conversation-read
+    // pair powering the admin channel picker.
+    expect(parsed.searchParams.get("scope")).toBe(
+      "commands,chat:write,app_mentions:read,channels:read,groups:read",
+    );
     expect(parsed.searchParams.get("redirect_uri")).toBe(SLACK_CONFIG.redirectUri);
   });
 

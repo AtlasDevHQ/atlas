@@ -69,12 +69,15 @@ const SLACK_CATALOG_ID = "catalog:slack";
 const SLACK_SLUG: CatalogId = "slack";
 
 /**
- * OAuth scopes requested at install time. Preserved verbatim from the
- * legacy slack.ts install route so the upgrade is invisible to existing
- * dogfood installs (the scopes determine the bot token's capabilities
- * — a subset of these would silently break `/atlas` slash commands).
+ * OAuth scopes requested at install time. The first three are preserved
+ * verbatim from the legacy slack.ts install route (the scopes determine
+ * the bot token's capabilities — a subset of these would silently break
+ * `/atlas` slash commands). `channels:read` + `groups:read` power the
+ * admin channel picker (`GET /admin/proactive/channels/available` →
+ * `conversations.list`); installs predating them soft-degrade to manual
+ * channel-id entry until the workspace re-installs.
  */
-const SLACK_SCOPES = "commands,chat:write,app_mentions:read";
+const SLACK_SCOPES = "commands,chat:write,app_mentions:read,channels:read,groups:read";
 
 /**
  * Per-deploy operator config — Slack app client credentials registered

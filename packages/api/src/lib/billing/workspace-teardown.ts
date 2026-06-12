@@ -278,6 +278,83 @@ export async function purgeStripeBillingForWorkspace(
 }
 
 /**
+ * Void the invoices already open (incl. past-due) on a subscription at
+ * pause time (#3467). `pause_collection: { behavior: "void" }` only
+ * affects invoices generated AFTER the pause — Stripe keeps retrying
+ * invoices that were open before it, so a workspace suspended mid-dunning
+ * would still get charged. Policy decision (recorded on #3467): VOID them
+ * — suspension means "stop invoicing/dunning for the suspension window",
+ * and we don't intend to retroactively collect (same rationale as
+ * `behavior: "void"` itself). Voiding is terminal in Stripe, so resume
+ * never resurrects these; the next cycle bills normally.
+ *
+ * Total — failures (list or per-invoice void) land in `warnings`.
+ */
+async function voidOpenInvoicesForSubscription(
+  orgId: string,
+  stripeSubscriptionId: string,
+  actions: string[],
+  warnings: string[],
+): Promise<void> {
+  const stripe = getStripeClient();
+  if (!stripe) return; // callers gate before reaching here
+
+  let openInvoiceIds: string[] = [];
+  try {
+    // One page of 100 — a single subscription cannot accumulate more
+    // open invoices than that within Stripe's ~3-week dunning horizon.
+    const invoices = await stripe.invoices.list({
+      subscription: stripeSubscriptionId,
+      status: "open",
+      limit: 100,
+    });
+    openInvoiceIds = invoices.data
+      .map((inv) => inv.id)
+      .filter((id): id is string => typeof id === "string");
+  } catch (err) {
+    const msg = errMessage(err);
+    log.error(
+      { orgId, stripeSubscriptionId, err: msg },
+      "Failed to list open invoices during workspace suspend",
+    );
+    warnings.push(
+      `Failed to list open invoices on Stripe subscription ${stripeSubscriptionId}: ${msg}. `
+      + "Check the Stripe dashboard and void any open invoices manually so the suspended workspace isn't charged.",
+    );
+    return;
+  }
+
+  for (const invoiceId of openInvoiceIds) {
+    try {
+      await stripe.invoices.voidInvoice(invoiceId);
+      actions.push(`voided open invoice ${invoiceId} on Stripe subscription ${stripeSubscriptionId}`);
+      log.info(
+        { orgId, stripeSubscriptionId, invoiceId },
+        "Voided open invoice during workspace suspend",
+      );
+    } catch (err) {
+      if (isResourceMissing(err)) {
+        actions.push(`invoice ${invoiceId} already absent in Stripe`);
+        log.info(
+          { orgId, stripeSubscriptionId, invoiceId },
+          "Invoice already absent during workspace suspend",
+        );
+        continue;
+      }
+      const msg = errMessage(err);
+      log.error(
+        { orgId, stripeSubscriptionId, invoiceId, err: msg },
+        "Failed to void open invoice during workspace suspend",
+      );
+      warnings.push(
+        `Failed to void open invoice ${invoiceId} on Stripe subscription ${stripeSubscriptionId}: ${msg}. `
+        + "Void it manually in the Stripe dashboard so the suspended workspace isn't charged.",
+      );
+    }
+  }
+}
+
+/**
  * Shared pause/resume implementation — both flip `pause_collection` on the
  * org's non-terminal subscriptions.
  */
@@ -314,6 +391,12 @@ async function updateCollectionForWorkspace(
         { orgId, stripeSubscriptionId: id, mode },
         "Updated Stripe pause_collection during workspace suspend/unsuspend",
       );
+      // Pause only stops FUTURE invoices — invoices already open keep
+      // dunning, so void them too (#3467). Resume deliberately does not
+      // touch invoices: voiding is terminal, the next cycle bills fresh.
+      if (mode === "pause") {
+        await voidOpenInvoicesForSubscription(orgId, id, actions, warnings);
+      }
     } catch (err) {
       if (isResourceMissing(err)) {
         actions.push(`Stripe subscription ${id} already absent in Stripe`);
@@ -350,6 +433,13 @@ async function updateCollectionForWorkspace(
  * billing without a new checkout. `behavior: "void"` (not `"keep_as_draft"`)
  * because we don't intend to retroactively collect for the suspension
  * window.
+ *
+ * Invoices already open at pause time keep dunning despite the pause
+ * (Stripe pauses future invoice GENERATION only), so they are voided as
+ * part of the same operation — see
+ * {@link voidOpenInvoicesForSubscription} (#3467). The
+ * `invoice.payment_failed` auto-suspension ladder does NOT go through
+ * this helper — it intentionally keeps dunning so payment can recover.
  */
 export async function pauseStripeCollectionForWorkspace(
   orgId: string,

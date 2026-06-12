@@ -158,16 +158,51 @@ COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
 # of upstream COPY-symlink behavior. The `-f` flag overwrites any
 # pre-existing (possibly dangling) symlink that survived the COPY.
 #
-# `chat` is the interaction plugin (#2608); the rest are the datasource
-# ADAPTER plugins atlas.config.ts now loads at boot (#3253 / ADR-0013).
-# Keep this list in lockstep with the plugins[] array in atlas.config.ts —
-# a boot-loaded plugin missing here ENOENTs its plugin-sdk import and
-# hard-fails the API boot.
-RUN for p in chat clickhouse salesforce snowflake bigquery elasticsearch; do \
+# `chat` is the interaction plugin (#2608); clickhouse/salesforce/snowflake/
+# bigquery/elasticsearch are the datasource ADAPTER plugins atlas.config.ts
+# loads at boot (#3253 / ADR-0013). Keep that subset in lockstep with the
+# plugins[] array in atlas.config.ts — a boot-loaded plugin missing here
+# ENOENTs its plugin-sdk import and hard-fails the API boot.
+#
+# `e2b` + `daytona` are the BYOC sandbox runtimes (#3409): not boot-loaded,
+# but lazily imported by lib/sandbox/runtime.ts when probed / engaged. A
+# dangling plugin-sdk symlink there doesn't fail boot — it makes the probe
+# misreport the provider as "not installed", silently turning the card
+# Unavailable. Keep this pair in lockstep with @atlas/api's
+# @useatlas/{e2b,daytona} workspace deps.
+RUN for p in chat clickhouse salesforce snowflake bigquery elasticsearch e2b daytona; do \
       mkdir -p /app/plugins/$p/node_modules/@useatlas && \
       ln -sfn /app/packages/plugin-sdk /app/plugins/$p/node_modules/@useatlas/plugin-sdk && \
       ln -sfn /app/packages/types /app/plugins/$p/node_modules/@useatlas/types; \
     done
+# BYOC sandbox SDK symlinks (#3409). The e2b/daytona plugins lazily
+# require their provider SDK from their own directory; bun's isolated
+# installer satisfies that with a plugins/<p>/node_modules/<sdk> symlink
+# into the central store, but (same caveat as above) the COPY chain isn't
+# guaranteed to preserve it. Recreate against the stable
+# packages/api/node_modules paths (the SDKs are optionalDependencies of
+# @atlas/api — the @vercel/sandbox pattern).
+RUN ln -sfn /app/packages/api/node_modules/e2b /app/plugins/e2b/node_modules/e2b && \
+    mkdir -p /app/plugins/daytona/node_modules/@daytonaio && \
+    ln -sfn /app/packages/api/node_modules/@daytonaio/sdk /app/plugins/daytona/node_modules/@daytonaio/sdk
+# Build-time assertion (#3409): run the real BYOC availability probe
+# (lib/sandbox/runtime.ts getProviderRuntimeAvailability — the same code
+# path /api/v1/admin/sandbox/status serves) and require it to report
+# EXACTLY the shipped provider set. The module list is derived from
+# PROVIDER_RUNTIMES at build time, so there is no hand-copied list to
+# drift; the expected map below is the machine-checked statement of the
+# provider-set decision — railway: false documents the deliberate
+# deferral (no deny-all egress mode; see #3368/#3409), and a future
+# provider added to PROVIDER_RUNTIMES fails this build until the map is
+# consciously updated. A regression here doesn't fail boot — it silently
+# flips the /admin/sandbox cards to "Unavailable" — so fail the build
+# loudly instead. The two plugin-context requires assert the SDK
+# symlinks above: the plugins lazily require their SDK from their own
+# directory, which the api-context probe can't see.
+RUN bun -e "const { getProviderRuntimeAvailability } = await import('/app/packages/api/src/lib/sandbox/runtime.ts'); const got = await getProviderRuntimeAvailability(); const want = { vercel: true, e2b: true, daytona: true, railway: false }; const wantKeys = Object.keys(want).sort().join(','), gotKeys = Object.keys(got).sort().join(','); if (gotKeys !== wantKeys) throw new Error('BYOC provider set changed (' + gotKeys + ' vs expected ' + wantKeys + ') — decide whether the new provider ships in this image, then update the expected map in deploy/api/Dockerfile'); for (const p of Object.keys(want)) if (got[p] !== want[p]) throw new Error('BYOC runtime availability for ' + p + ': got ' + got[p] + ', expected ' + want[p]);" \
+    && cd /app/plugins/e2b && bun -e "require('e2b');" \
+    && cd /app/plugins/daytona && bun -e "require('@daytonaio/sdk');" \
+    || (echo "ERROR: BYOC sandbox runtime assertion failed — the bun error above names the provider/module; shipping anyway would silently flip its /admin/sandbox card to Unavailable (#3409)" >&2 && exit 1)
 # Demo seeding (ATLAS_SEED_DEMO=true) — single canonical seed since 1.4.0 (#2021)
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/demo.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts

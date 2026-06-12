@@ -1010,11 +1010,17 @@ export default defineConfig({
   // rationale — the pin exists because *shared* backends can't enforce
   // multi-tenant boundaries, while a BYOC backend executes only that org's
   // workload in that org's account, and fails closed (no silent fallback to
-  // the operator account) if it can't start. Only the vercel BYOC runtime is
-  // installed in this image today; E2B/Daytona/Railway cards report
-  // "Unavailable" until their SDKs are installed here (the plugin workspace
-  // packages already ship in the image; their optional-peer SDKs — e2b,
-  // @daytonaio/sdk, railway — don't). `/api/v1/admin/sandbox/status`'s
+  // the operator account) if it can't start. The vercel, e2b, and daytona
+  // BYOC runtimes ship in this image (#3409): the plugin workspace packages
+  // plus their SDKs (e2b, @daytonaio/sdk) install via @atlas/api's
+  // dependency edges, and a Dockerfile build assertion runs the real
+  // availability probe and fails the image unless it reports exactly
+  // {vercel, e2b, daytona} available and railway unavailable — the
+  // provider-set decision is machine-checked there, not just prose here.
+  // Railway is deliberately NOT shipped:
+  // Railway has no deny-all egress mode (the card copy carries the warning)
+  // and its SDK is beta — the SaaS switch is tracked in #3368. Its card
+  // honestly reports "Unavailable". `/api/v1/admin/sandbox/status`'s
   // providerRuntimeAvailability is the live source of truth.
   sandbox: {
     priority: ["vercel-sandbox"],

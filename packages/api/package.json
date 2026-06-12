@@ -63,6 +63,8 @@
     "@opentelemetry/sdk-node": "^0.218.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "@useatlas/chat": "workspace:*",
+    "@useatlas/daytona": "workspace:*",
+    "@useatlas/e2b": "workspace:*",
     "@useatlas/schemas": "workspace:*",
     "@useatlas/twenty": "workspace:*",
     "@useatlas/types": "workspace:*",
@@ -88,7 +90,9 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "@vercel/sandbox": "^2.0.2"
+    "@daytonaio/sdk": "^0.185.0",
+    "@vercel/sandbox": "^2.0.2",
+    "e2b": "^2.28.2"
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.10",

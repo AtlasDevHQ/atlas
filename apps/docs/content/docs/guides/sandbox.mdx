@@ -119,8 +119,11 @@ all of the following hold:
    card shows **Reconnect required**).
 3. The deployment can run the provider — the provider's plugin package and
    SDK are installed on the API server (otherwise the card shows
-   **Unavailable**). The managed Vercel runtime is always available; on the
-   Atlas-hosted SaaS, E2B, Daytona, and Railway runtimes are not yet shipped.
+   **Unavailable**). The Atlas-hosted SaaS ships the Vercel, E2B, and
+   Daytona runtimes. The Railway runtime is deliberately not shipped on
+   SaaS — Railway has no deny-all egress mode (see the warning above) — so
+   its card reports **Unavailable** there; self-hosted deployments can
+   install it themselves.
 
 When engaged, the sandbox is created with your stored credentials on your
 provider account — never the platform operator's. If your sandbox fails to

@@ -43,6 +43,23 @@ const MockDaytona = mock(function () {
 mock.module("@daytonaio/sdk", () => ({
   Daytona: MockDaytona,
 }));
+// Dual-package hazard (#3409): @daytonaio/sdk's exports map sends `import`
+// to esm/index.js and `require` to cjs/index.js. The bare-specifier mock
+// above registers against the import resolution, but the plugin loads the
+// SDK with require() — when the real package is installed (it ships in the
+// monorepo since #3409), that resolves the cjs file and BYPASSES the mock,
+// silently turning these tests into live Daytona API calls. Mock the
+// require resolution too. When the SDK isn't installed (standalone plugin
+// checkout), the bare mock is a virtual module both loaders hit, and this
+// second registration is unnecessary — hence the try/catch.
+try {
+  mock.module(require.resolve("@daytonaio/sdk"), () => ({
+    Daytona: MockDaytona,
+  }));
+} catch {
+  // intentionally ignored: SDK not installed — the bare-specifier mock
+  // above covers both import and require as a virtual module.
+}
 
 // Import AFTER mock is in place
 const { daytonaSandboxPlugin, buildDaytonaSandboxPlugin } = await import(

@@ -373,7 +373,12 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
     }),
     (pool) =>
       Effect.tryPromise({
-        try: () => pool.end(),
+        try: async () => {
+          // The Stripe lock pool rides the same lifecycle (it is never
+          // Effect-managed itself); endStripeLockPool never throws.
+          await endStripeLockPool();
+          return pool.end();
+        },
         catch: (err) => (err instanceof Error ? err.message : String(err)),
       }).pipe(
         Effect.tap(() => Effect.sync(() => {
@@ -510,6 +515,8 @@ let _pool: InternalPool | null = null;
 let _sqlClient: SqlClient.SqlClient | null = null;
 /** True when the pool was created by the Effect Layer (lifecycle managed by scope). */
 let _poolManagedByEffect = false;
+/** Dedicated pool for the Stripe advisory lock — see {@link getStripeLockPool}. */
+let _lockPool: InternalPool | null = null;
 
 /** Returns true if DATABASE_URL is configured. */
 export function hasInternalDB(): boolean {
@@ -558,6 +565,66 @@ export function getInternalDB(): InternalPool {
 }
 
 /**
+ * Dedicated pool for `withStripeSubscriptionLock` (#3445). A lock holder
+ * keeps its client checked out (idle in transaction) for the whole locked
+ * section, while the section's own queries go through the pooled
+ * `internalQuery` — if both drew from the SAME bounded pool, a burst of
+ * concurrent webhook deliveries could pin every client in lock
+ * transactions and leave none for the inner queries the holders need to
+ * make progress: a circular wait with no timeout that hangs every
+ * internal-DB user (#3465 review). Lock traffic gets its own pool so a
+ * holder's progress depends only on the main pool, which no lock
+ * participant ever occupies; this pool's size merely bounds how many
+ * locked sections run at once.
+ *
+ * Never Effect-managed: created lazily on first use, closed by
+ * `closeInternalDB`, the InternalDB Layer finalizer, and `_resetPool`.
+ */
+function getStripeLockPool(): InternalPool {
+  if (_lockPool) return _lockPool;
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Pool } = require("pg");
+  const connString = databaseUrl.replace(
+    /([?&])sslmode=require(?=&|$)/,
+    "$1sslmode=verify-full",
+  );
+  _lockPool = new Pool({
+    connectionString: connString,
+    max: 5,
+    idleTimeoutMillis: 30000,
+  }) as InternalPool;
+  _lockPool.on("error", (err: unknown) => {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Stripe lock pool idle client error",
+    );
+  });
+  return _lockPool;
+}
+
+/** Close the Stripe lock pool if one was created. Never throws. */
+async function endStripeLockPool(): Promise<void> {
+  const lockPool = _lockPool;
+  _lockPool = null;
+  if (!lockPool) return;
+  try {
+    await lockPool.end();
+    log.info("Stripe lock pool closed");
+  } catch (err: unknown) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Error closing Stripe lock pool",
+    );
+  }
+}
+
+/**
  * Close the internal DB pool.
  *
  * When the pool was created by the Effect Layer (server runtime), this is a
@@ -566,6 +633,9 @@ export function getInternalDB(): InternalPool {
  * the pool to prevent connection leaks and process hangs.
  */
 export async function closeInternalDB(): Promise<void> {
+  // The Stripe lock pool is never Effect-managed — close it whenever the
+  // internal DB shuts down, whichever lifecycle owns the main pool.
+  await endStripeLockPool();
   if (!_pool) {
     log.debug("closeInternalDB() called but no pool exists");
     return;
@@ -603,9 +673,18 @@ export async function closeInternalDB(): Promise<void> {
  * tripped. Resetting the pool must reset the full circuit state, fiber
  * included (#3083).
  */
-export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.SqlClient | null): void {
+export function _resetPool(
+  mockPool?: InternalPool | null,
+  mockSql?: SqlClient.SqlClient | null,
+  mockLockPool?: InternalPool | null,
+): void {
   _pool = mockPool ?? null;
   _sqlClient = mockSql ?? null;
+  // The Stripe lock pool is deliberately NOT defaulted to `mockPool` —
+  // lock traffic never shares the main pool in production (#3465), and a
+  // shared mock would double-close in closeInternalDB(). Tests that
+  // exercise the lock path inject it explicitly.
+  _lockPool = mockLockPool ?? null;
   _poolManagedByEffect = false;
   _consecutiveFailures = 0;
   _circuitOpen = false;
@@ -1915,9 +1994,9 @@ export async function setWorkspaceRegion(
  * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`. Postgres
  * keeps the single-arg `pg_advisory_lock(bigint)` and two-arg `(int4, int4)`
  * lock spaces fully disjoint, so this can never collide with any single-arg
- * user. The only two-arg peers are the chat-install gate (`3001`) and
- * `lead-outbox` (`2870`); `3158 ≠ 3001 ≠ 2870` keeps all three disjoint. Value
- * is this guard's issue number (#3158).
+ * user. The two-arg peers are the chat-install gate (`3001`), `lead-outbox`
+ * (`2870`), and the Stripe webhook lock (`3445`); all four namespaces are
+ * pairwise distinct. Value is this guard's issue number (#3158).
  */
 const LAST_ADMIN_LOCK_NAMESPACE = 3158;
 
@@ -2033,6 +2112,95 @@ export async function withWorkspaceAdminLock<T>(
   fn: (tx: WorkspaceAdminLockTx) => Promise<T>,
 ): Promise<T> {
   return withWorkspaceAdminLocks([orgId], fn);
+}
+
+/**
+ * Numeric namespace for the per-subscription Stripe webhook lock — the
+ * `classkey` arg of the two-arg `pg_advisory_xact_lock(int4, int4)`.
+ * Distinct from the last-admin (`3158`), chat-install (`3001`) and
+ * lead-outbox (`2870`) two-arg namespaces. Value is this guard's issue
+ * number (#3445).
+ */
+const STRIPE_SUBSCRIPTION_LOCK_NAMESPACE = 3445;
+
+/**
+ * Run `fn` while holding a per-subscription advisory lock, so the Stripe
+ * webhook classify→sync→record sequence in `onEvent` serializes across
+ * concurrent deliveries for the SAME `stripe_subscription_id` (#3445).
+ * Without it, two parallel deliveries both pass the `classifyStripeEvent`
+ * preflight read as `fresh`, and the OLDER event's sync can finish last,
+ * overwriting the newer tier/lock state before recording successfully.
+ * Under the lock, the second delivery sees the first's recorded ledger
+ * row and classifies `stale`/`duplicate`.
+ *
+ * The lock SERIALIZES — it does not claim. Record-last semantics are the
+ * caller's contract (a failed sync records nothing so the `onEvent`
+ * throw → 400 → Stripe redelivery path stays live), and a thrown error
+ * anywhere inside `fn` rolls back (releasing the transaction-scoped
+ * lock) and re-throws. DB errors in the wrapper itself equally propagate
+ * — never fail open into an unserialized sync.
+ *
+ * Deliveries for DIFFERENT subscriptions hash to different lock keys and
+ * stay concurrent; events with no subscription id (and no-internal-DB
+ * deployments, where there is no ledger to race on) skip the lock
+ * entirely and just run `fn`.
+ *
+ * `fn`'s inner queries deliberately keep using the pooled
+ * `internalQuery` — they don't need the lock-holder's transaction, only
+ * mutual exclusion. The lock client comes from a DEDICATED lock-only
+ * pool ({@link getStripeLockPool}), never the main internal pool: a
+ * holder sits idle-in-transaction for the whole locked section, and if
+ * lock traffic shared the bounded main pool, a burst of concurrent
+ * deliveries could pin all of its clients in lock transactions and
+ * starve the very `internalQuery` calls the holders need to finish — a
+ * circular wait with no timeout (#3465 review). With the split, a
+ * holder's progress depends only on the main pool, which no lock
+ * participant occupies. Same manual BEGIN/COMMIT +
+ * destroy-on-failed-rollback mechanics as
+ * {@link withWorkspaceAdminLocks}; never nest another lock-holding pool
+ * checkout inside `fn` (the nested-pool deadlock — see
+ * {@link withWorkspaceAdminLocks}).
+ */
+export async function withStripeSubscriptionLock<T>(
+  stripeSubscriptionId: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
+  if (!stripeSubscriptionId || !hasInternalDB()) return fn();
+  const client = await getStripeLockPool().connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't
+  // poison the next borrower (matches withWorkspaceAdminLocks).
+  let rollbackErr: Error | null = null;
+  try {
+    await client.query("BEGIN");
+    // Transaction-scoped advisory lock keyed on the subscription id;
+    // released automatically on COMMIT/ROLLBACK. hashtext maps the text
+    // id to the int4 the lock takes — a cross-subscription hash
+    // collision only costs extra serialization, never correctness.
+    await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [
+      STRIPE_SUBSCRIPTION_LOCK_NAMESPACE,
+      stripeSubscriptionId,
+    ]);
+    const result = await fn();
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    // Log + re-throw: the caller (`onEvent`) propagates so Stripe
+    // redelivers — a swallowed error here would silently drop the sync.
+    log.warn(
+      { stripeSubscriptionId, err: err instanceof Error ? err.message : String(err) },
+      "Stripe webhook locked section failed — propagating so Stripe redelivers",
+    );
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { stripeSubscriptionId, err: rollbackErr.message },
+        "ROLLBACK failed during withStripeSubscriptionLock — client will be destroyed",
+      );
+    });
+    throw err;
+  } finally {
+    client.release(rollbackErr ?? undefined);
+  }
 }
 
 /**

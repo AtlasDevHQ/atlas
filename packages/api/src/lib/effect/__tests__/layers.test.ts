@@ -275,9 +275,14 @@ describe("makeSchedulerLive", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { NoopEnterpriseDefaultsLayer } = require("@atlas/api/lib/effect/services") as typeof import("@atlas/api/lib/effect/services");
 
+  // #3446 — `makeSchedulerLive` requires `Migration` as an ordering
+  // barrier for the billing-reconcile boot tick; tests satisfy it with
+  // the immediate test layer.
+  const schedulerDeps = Layer.merge(NoopEnterpriseDefaultsLayer, makeTestMigrationLayer());
+
   test("returns 'none' backend when no scheduler configured", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(schedulerDeps));
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -293,7 +298,7 @@ describe("makeSchedulerLive", () => {
     const config = {
       scheduler: { backend: "vercel" },
     } as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(schedulerDeps));
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -307,7 +312,7 @@ describe("makeSchedulerLive", () => {
 
   test("finalizer runs on disposal", async () => {
     const config = {} as Parameters<typeof makeSchedulerLive>[0];
-    const layer = makeSchedulerLive(config).pipe(Layer.provide(NoopEnterpriseDefaultsLayer));
+    const layer = makeSchedulerLive(config).pipe(Layer.provide(schedulerDeps));
 
     // Use ManagedRuntime to verify disposal works
     const rt = ManagedRuntime.make(layer);
@@ -315,6 +320,50 @@ describe("makeSchedulerLive", () => {
 
     // Disposing should not throw
     await rt.dispose();
+  });
+
+  // #3446 — the eager billing-reconcile boot tick must not run before
+  // MigrationLive completes. The barrier is the `yield* Migration` in
+  // `makeSchedulerLive`'s gen: the Scheduler service cannot finish
+  // building until the Migration layer's effect resolves. Pin that with
+  // a gated Migration layer — Scheduler construction stays pending while
+  // the gate is closed and completes only after it opens.
+  test("Scheduler construction waits for the Migration barrier (#3446)", async () => {
+    let releaseMigration!: () => void;
+    const migrationGate = new Promise<void>((resolve) => {
+      releaseMigration = resolve;
+    });
+    const gatedMigrationLayer = Layer.effect(
+      Migration,
+      Effect.promise(async () => {
+        await migrationGate;
+        return { migrated: true } satisfies MigrationShape;
+      }),
+    );
+
+    const config = {} as Parameters<typeof makeSchedulerLive>[0];
+    const layer = makeSchedulerLive(config).pipe(
+      Layer.provide(Layer.merge(NoopEnterpriseDefaultsLayer, gatedMigrationLayer)),
+    );
+
+    let schedulerBuilt = false;
+    const pending = Effect.runPromise(
+      Effect.gen(function* () {
+        const scheduler = yield* Scheduler;
+        schedulerBuilt = true;
+        return scheduler.backend;
+      }).pipe(Effect.provide(layer)),
+    );
+
+    // Give the runtime ample turns — without the Migration edge the
+    // scheduler builds immediately and this trips.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(schedulerBuilt).toBe(false);
+
+    releaseMigration();
+    const backend = await pending;
+    expect(schedulerBuilt).toBe(true);
+    expect(backend).toBe("none");
   });
 
   // ── Per-tick observability spans on the periodic fibers (#2945, #2944, #2987) ──

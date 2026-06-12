@@ -155,6 +155,15 @@ export function buildInternalDbMockDefaults(deps: {
         query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
       }) => Promise<unknown>,
     ) => fn({ query: (sql: string, params?: unknown[]) => internalQuery(sql, params) }),
+    // Per-subscription Stripe webhook lock (#3445) — passthrough: the real
+    // helper holds a pg advisory lock on a dedicated pool connection
+    // (untestable with a mock pool); here the callback just runs. Tests
+    // that assert serialization (stripe-webhook-lifecycle) override this
+    // with an in-process keyed mutex.
+    withStripeSubscriptionLock: (
+      _stripeSubscriptionId: string | null,
+      fn: () => Promise<unknown>,
+    ) => fn(),
     internalExecute: internalExecute,
     getInternalDB: mock(() => ({})),
     closeInternalDB: mock(async () => {}),

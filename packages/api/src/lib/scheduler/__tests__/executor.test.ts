@@ -253,6 +253,33 @@ describe("executor", () => {
     );
   });
 
+  // ── #3420: billing enforcement blocks ──────────────────────────────
+
+  it("records a billing block on the run with the user-safe reason and never delivers (#3420)", async () => {
+    const { BillingBlockedError } = await import("@atlas/api/lib/billing/agent-gate");
+    mockExecuteAgentQuery.mockImplementationOnce(() =>
+      Promise.reject(
+        new BillingBlockedError({
+          allowed: false,
+          errorCode: "trial_expired",
+          errorMessage:
+            "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+          httpStatus: 403,
+          retryable: false,
+        }),
+      ),
+    );
+    // The thrown message is what engine.ts records on the run row via
+    // completeTaskRun(runId, "failed", { error }) — it must name billing
+    // enforcement AND carry the user-safe reason so the task owner sees
+    // exactly why the run was blocked in run history.
+    const promise = executeScheduledTask("task-1", "run-1", 30_000);
+    await expect(promise).rejects.toThrow(/Blocked by billing enforcement/);
+    await expect(promise).rejects.toThrow(/trial has expired/);
+    expect(mockDeliverResult).not.toHaveBeenCalled();
+    expect(mockUpdateRunDeliveryStatus).not.toHaveBeenCalled();
+  });
+
   it("skips delivery status when no recipients attempted", async () => {
     mockDeliverResult.mockResolvedValueOnce({ attempted: 0, succeeded: 0, failed: 0, permanentFailures: 0, firstPermanentError: null });
     await executeScheduledTask("task-1", "run-1", 30_000);

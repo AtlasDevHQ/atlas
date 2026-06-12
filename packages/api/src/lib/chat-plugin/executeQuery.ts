@@ -62,6 +62,7 @@ import type {
 } from "@useatlas/chat";
 import type { ApprovalRequestSurface } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import { createLogger } from "@atlas/api/lib/logger";
 import { checkRateLimit } from "@atlas/api/lib/auth/middleware";
 import { botActorUser, type ChatBotPlatform } from "@atlas/api/lib/auth/actor";
@@ -1403,6 +1404,19 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
       presentationMode: presentationMode ?? "conversational",
     });
   } catch (err) {
+    // #3419 — a billing-enforcement block from the seam in
+    // `executeAgentQuery` is an expected policy outcome, not an agent
+    // failure: log at warn (the seam already warned with org context)
+    // and rethrow UNCHANGED. Its `message` is user-safe by construction,
+    // so the bridge delivers it as the in-thread platform reply — the
+    // same path the rate-limit refusal takes, never a silent drop.
+    if (err instanceof BillingBlockedError) {
+      log.warn(
+        { errorCode: err.errorCode, requestId, ...tenantLabel },
+        "Chat plugin executeQuery blocked by billing enforcement",
+      );
+      throw err;
+    }
     // Log the original `err` (with stack trace) so Sentry sees the
     // unscrubbed version. The re-thrown message stays unscrubbed too —
     // the bridge's `scrubErrorMessage` is the single source of truth

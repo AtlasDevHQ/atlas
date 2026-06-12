@@ -133,6 +133,14 @@ Trial workspaces have a separate check: if the trial has expired (14 days from c
 
 If workspace or plan data cannot be fetched, the request is **blocked** with HTTP 503 as a security precaution. If usage metering data specifically cannot be read (e.g., metering database is temporarily unavailable), the request is **allowed** with a warning that usage tracking may be inaccurate. Enforcement is best-effort for metering — Atlas prefers availability over strict enforcement.
 
+### Enforcement Surfaces
+
+Enforcement applies on **every** path that runs the Atlas agent — not just web chat and the API:
+
+- **Web chat and `POST /api/v1/query`** — blocked requests return the HTTP error envelope above (403/429/503 with an upgrade or retry CTA). The 80–109% warning band is attached to successful responses as `planWarning`.
+- **Chat platforms** (Slack, Discord, Telegram, Teams, Google Chat, WhatsApp) — a blocked workspace receives an **in-thread reply** explaining why the request was refused (e.g. "Your free trial has expired. Upgrade to a paid plan to continue using Atlas."), the same way rate-limit refusals are delivered. Requests are never silently dropped. The 80–109% warning band does **not** post warnings into chat threads — it's visible on the billing dashboard and in successful web/API responses instead.
+- **Scheduled tasks** — a blocked run is recorded as **failed in the task's run history** with the billing reason (e.g. `Blocked by billing enforcement [trial_expired]: …`), visible to the task owner. Runs resume automatically on the next schedule once the workspace is back in good standing — tasks are not auto-paused.
+
 ---
 
 ## Customer Portal

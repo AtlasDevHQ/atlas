@@ -371,6 +371,7 @@ describe("makeSchedulerLive", () => {
         "settings_refresh",
         "onboarding_email",
         "expert_scheduler",
+        "billing_reconcile",
       ],
     },
   ] as const;

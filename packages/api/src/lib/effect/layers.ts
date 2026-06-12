@@ -157,11 +157,12 @@ function withFiberDeathLog<A, E, R>(
 //     catalog-refresh fiber and the scheduler engine use that 4th arg
 //     elsewhere, inside their own modules).
 //
-//   • SCHEDULER_WORK_SPAN_NAMES — 4 background-work fibers (they perform
+//   • SCHEDULER_WORK_SPAN_NAMES — 5 background-work fibers (they perform
 //     recurring side-effecting work rather than evicting state):
 //     `sub_processor_publisher`, `settings_refresh`, `onboarding_email`,
-//     `expert_scheduler`. Spanned by #2987 — identical rationale and wrap
-//     shape, no result attributes (each tick returns void, matching the 8
+//     `expert_scheduler`, `billing_reconcile`. Spanned by #2987 (+#3423
+//     for billing_reconcile) — identical rationale and wrap shape, no
+//     result attributes (each tick returns void, matching the 8
 //     attribute-less cleanup fibers).
 //
 // Two records, not one: "cleanup sweep" vs "background work" is a real
@@ -213,6 +214,7 @@ export const SCHEDULER_WORK_SPAN_NAMES = {
   settings_refresh: "atlas.scheduler.settings_refresh",
   onboarding_email: "atlas.scheduler.onboarding_email",
   expert_scheduler: "atlas.scheduler.expert_scheduler",
+  billing_reconcile: "atlas.scheduler.billing_reconcile",
 } as const satisfies Record<string, `atlas.scheduler.${string}`>;
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1458,6 +1460,77 @@ export function makeSchedulerLive(
         log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
       } else {
         log.debug("Semantic expert scheduler not started — feature disabled");
+      }
+
+      // ── Periodic fiber: plan-tier reconciliation sweep (#3423) ──────
+      // Safety net under the Stripe webhook path: heals plan_tier drift
+      // from the plugin's subscription table and prunes the webhook
+      // event ledger. Only meaningful when Stripe billing is wired AND
+      // an internal DB holds the org/subscription tables.
+      const billingReconcileEnabled = yield* Effect.try({
+        try: () => {
+          if (!process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET) {
+            return false;
+          }
+          // eslint-disable-next-line @typescript-eslint/no-require-imports -- sync gate check at layer build time; dynamic import would force the whole gen async for a boolean
+          const { hasInternalDB } = require("@atlas/api/lib/db/internal") as {
+            hasInternalDB: () => boolean;
+          };
+          return hasInternalDB();
+        },
+        // Normalize to Error per the Effect.try/tryPromise rule; the
+        // catchAll below logs it and degrades to "fiber not started".
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.debug({ err: errorMessage(err) }, "Billing reconcile gate check failed — skipping");
+            return false;
+          }),
+        ),
+      );
+
+      if (billingReconcileEnabled) {
+        // 6h: drift heals well inside Stripe's ~3-week retry horizon
+        // without adding meaningful load (one org-table scan per pass).
+        // `Effect.repeat` runs the tick once at boot, then on the spacing
+        // — so a deploy also doubles as an immediate reconcile.
+        const BILLING_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+        const reconcileTick = Effect.tryPromise({
+          try: async () => {
+            const { reconcilePlanTiers } = await import(
+              "@atlas/api/lib/billing/reconcile-plan-tiers"
+            );
+            await reconcilePlanTiers();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn(
+                { err: errorMessage(err) },
+                "Plan-tier reconciliation tick failed — will retry next interval",
+              );
+            }),
+          ),
+        );
+        // forkScoped, not fork — see SettingsLive for rationale.
+        yield* Effect.forkScoped(
+          withFiberDeathLog(
+            "billing_reconcile",
+            withEffectSpan(SCHEDULER_WORK_SPAN_NAMES.billing_reconcile, {}, reconcileTick).pipe(
+              Effect.repeat(Schedule.spaced(Duration.millis(BILLING_RECONCILE_INTERVAL_MS))),
+            ),
+          ),
+        );
+        log.info(
+          { intervalMs: BILLING_RECONCILE_INTERVAL_MS },
+          "Plan-tier reconciliation sweep started",
+        );
+      } else {
+        log.debug(
+          "Plan-tier reconciliation sweep not started — Stripe billing or internal DB not configured",
+        );
       }
 
       // Start audit purge scheduler via the `AuditPurgeScheduler` Tag

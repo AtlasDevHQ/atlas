@@ -2344,3 +2344,27 @@ export const emailOutbox = pgTable(
       .where(sql`status IN ('pending', 'in_flight')`),
   ],
 );
+
+/**
+ * Stripe webhook event ledger (#3423) — idempotency + ordering for the
+ * must-not-be-lost sync in the Stripe plugin's `onEvent`. `event_id` is
+ * the Stripe event id (replays no-op); `event_created` per
+ * `stripe_subscription_id` lets a delayed older event be ignored instead
+ * of regressing status/plan. Pruned by the reconciliation sweep after
+ * 30 days. Mirrors `migrations/0128_stripe_webhook_event_ledger.sql`.
+ */
+export const stripeWebhookEvents = pgTable(
+  "stripe_webhook_events",
+  {
+    eventId: text("event_id").primaryKey(),
+    eventType: text("event_type").notNull(),
+    eventCreated: timestamp("event_created", { withTimezone: true }).notNull(),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    appliedPlanTier: text("applied_plan_tier"),
+    processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_stripe_webhook_events_sub").on(t.stripeSubscriptionId, t.eventCreated.desc()),
+    index("idx_stripe_webhook_events_processed").on(t.processedAt),
+  ],
+);

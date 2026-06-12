@@ -1,5 +1,6 @@
 /**
- * Webhook-lifecycle tests for the Stripe billing plugin wiring (#3416).
+ * Webhook-lifecycle tests for the Stripe billing plugin wiring
+ * (#3416/#3421/#3423).
  *
  * These drive a REAL Better Auth instance (memory adapter) configured with
  * the REAL production plugin options ({@link buildStripePluginOptions})
@@ -7,15 +8,23 @@
  * `/api/auth/stripe/webhook`. This closes the gap noted in
  * dispatch-conversion-crm-stamp.test.ts: the hooks are no longer
  * untestable closures — the referenceId→orgId contract is exercised
- * end-to-end (event → plugin handler → Atlas hook → plan-tier write).
+ * end-to-end (event → plugin handler → `onEvent` sync → plan-tier write).
  *
  * Covered:
  *   - config shape: org mode on, authorizeReference defined (regression
  *     guard — removing either silently reverts to user-scoped subs)
  *   - checkout.session.completed → `updateWorkspacePlanTier(orgId, plan)`
- *   - customer.subscription.deleted → downgrade write for the same orgId
+ *   - customer.subscription.deleted → locked write for the same orgId,
+ *     plus the stale-deletion guard (another active sub → skip)
  *   - invoice.payment_failed (attempt 3) → workspace suspended via the
  *     subscription-table referenceId lookup
+ *   - event ledger (#3423): replays skipped, out-of-order deliveries for
+ *     the same subscription skipped, failed sync → 400 + NOT recorded so
+ *     Stripe's redelivery re-runs the sync (record-last protocol)
+ *
+ * The internalQuery mock embeds a stateful in-memory `stripe_webhook_events`
+ * sim (SQL-discriminated) so ledger semantics are tested for real instead
+ * of being stubbed to "fresh".
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock, type Mock } from "bun:test";
@@ -51,10 +60,77 @@ mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({
 }));
 
 const { buildStripePluginOptions } = await import("../server");
+const { TIER_LIFECYCLE_EVENT_TYPES } = await import("@atlas/api/lib/billing/stripe-event-ledger");
 const { betterAuth } = await import("better-auth");
 const { memoryAdapter } = await import("better-auth/adapters/memory");
 const { organization } = await import("better-auth/plugins");
 const { stripe: stripePlugin } = await import("@better-auth/stripe");
+
+// ── Event-ledger sim (#3423) ────────────────────────────────────────
+//
+// The ledger module issues three SQL shapes against the internal DB;
+// this in-memory table answers them so the dedup/stale/record protocol
+// runs for real. Subscription-table queries fall through to the
+// per-test `extra` handler.
+
+interface LedgerRow {
+  event_id: string;
+  event_type: string;
+  event_created: string;
+  stripe_subscription_id: string | null;
+  /** Tier the sync actually wrote for this event (null when none). */
+  applied_plan_tier: string | null;
+}
+
+let ledgerRows: LedgerRow[] = [];
+
+// The production allowlist, so the sim can't drift from the real
+// ordering model if TIER_LIFECYCLE_EVENT_TYPES changes.
+const LIFECYCLE_TYPES: readonly string[] = TIER_LIFECYCLE_EVENT_TYPES;
+
+function ledgerAwareQuery(
+  extra?: (sql: string, params?: unknown[]) => unknown[] | null,
+): (sql: string, params?: unknown[]) => Promise<unknown[]> {
+  return (sql: string, params?: unknown[]) => {
+    if (sql.includes("FROM stripe_webhook_events WHERE event_id")) {
+      return Promise.resolve(ledgerRows.filter((r) => r.event_id === params?.[0]));
+    }
+    if (sql.includes("FROM stripe_webhook_events") && sql.includes("event_created > $2")) {
+      // Mirrors the production stale probe: lifecycle rows only; newer
+      // wins, and a same-second recorded deletion also blocks (tie-break).
+      return Promise.resolve(
+        ledgerRows.filter(
+          (r) =>
+            r.stripe_subscription_id === params?.[0] &&
+            LIFECYCLE_TYPES.includes(r.event_type) &&
+            (r.event_created > String(params?.[1]) ||
+              (r.event_created === String(params?.[1]) &&
+                r.event_type === "customer.subscription.deleted")),
+        ),
+      );
+    }
+    if (sql.includes("INSERT INTO stripe_webhook_events")) {
+      const [id, type, created, subId, appliedTier] = params as [
+        string,
+        string,
+        string,
+        string | null,
+        string | null,
+      ];
+      if (!ledgerRows.some((r) => r.event_id === id)) {
+        ledgerRows.push({
+          event_id: id,
+          event_type: type,
+          event_created: created,
+          stripe_subscription_id: subId,
+          applied_plan_tier: appliedTier,
+        });
+      }
+      return Promise.resolve([]);
+    }
+    return Promise.resolve(extra?.(sql, params) ?? []);
+  };
+}
 
 // ── Stripe client double ────────────────────────────────────────────
 //
@@ -63,6 +139,7 @@ const { stripe: stripePlugin } = await import("@better-auth/stripe");
 
 const STARTER_PRICE = "price_starter_test";
 const PRO_PRICE = "price_pro_test";
+const EPOCH = Math.floor(Date.now() / 1000);
 
 const subscriptionsRetrieve: Mock<(id: string) => Promise<unknown>> = mock(() =>
   Promise.resolve(stripeSubscription()),
@@ -87,7 +164,6 @@ function makeStripeClient() {
 }
 
 function stripeSubscription(overrides: Record<string, unknown> = {}) {
-  const epoch = Math.floor(Date.now() / 1000);
   return {
     id: "sub_stripe_1",
     customer: "cus_1",
@@ -99,13 +175,17 @@ function stripeSubscription(overrides: Record<string, unknown> = {}) {
     trial_start: null,
     trial_end: null,
     schedule: null,
+    // Checkout-created subscriptions carry the plugin's referenceId stamp;
+    // resolveOrgIdForStripeSubscription reads it before falling back to
+    // the subscription-table lookup.
+    metadata: { referenceId: "org-1", subscriptionId: "subrow_1" },
     items: {
       data: [
         {
           id: "si_1",
           quantity: 1,
-          current_period_start: epoch,
-          current_period_end: epoch + 30 * 86_400,
+          current_period_start: EPOCH,
+          current_period_end: EPOCH + 30 * 86_400,
           price: { id: STARTER_PRICE, recurring: { interval: "month" } },
         },
       ],
@@ -158,6 +238,22 @@ async function postWebhook(
   );
 }
 
+function checkoutCompletedEvent(id = "evt_checkout_1", created = EPOCH) {
+  return {
+    id,
+    type: "checkout.session.completed",
+    created,
+    data: {
+      object: {
+        mode: "subscription",
+        subscription: "sub_stripe_1",
+        client_reference_id: "org-1",
+        metadata: { referenceId: "org-1", subscriptionId: "subrow_1", userId: "user-1" },
+      },
+    },
+  };
+}
+
 const ENV_KEYS = ["STRIPE_STARTER_PRICE_ID", "STRIPE_PRO_PRICE_ID"] as const;
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -175,12 +271,14 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-  mockUpdateWorkspacePlanTier.mockClear();
+  mockUpdateWorkspacePlanTier.mockReset();
+  mockUpdateWorkspacePlanTier.mockImplementation(() => Promise.resolve(true));
   mockUpdateWorkspaceStatus.mockClear();
   mockGetWorkspaceDetails.mockReset();
   mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve(null));
+  ledgerRows = [];
   mockInternalQuery.mockReset();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  mockInternalQuery.mockImplementation(ledgerAwareQuery());
   subscriptionsRetrieve.mockClear();
   subscriptionsRetrieve.mockImplementation(() => Promise.resolve(stripeSubscription()));
 });
@@ -303,7 +401,7 @@ describe("getCheckoutSessionParams — org-scope guard", () => {
 // ── checkout.session.completed → plan-tier sync ─────────────────────
 
 describe("checkout.session.completed", () => {
-  it("updates organization.plan_tier for the org referenceId", async () => {
+  it("updates organization.plan_tier for the org referenceId and records the event", async () => {
     const db = emptyDB();
     db.subscription.push({
       id: "subrow_1",
@@ -316,18 +414,7 @@ describe("checkout.session.completed", () => {
     });
     const auth = makeAuth(db);
 
-    const res = await postWebhook(auth, {
-      id: "evt_checkout_1",
-      type: "checkout.session.completed",
-      data: {
-        object: {
-          mode: "subscription",
-          subscription: "sub_stripe_1",
-          client_reference_id: "org-1",
-          metadata: { referenceId: "org-1", subscriptionId: "subrow_1", userId: "user-1" },
-        },
-      },
-    });
+    const res = await postWebhook(auth, checkoutCompletedEvent());
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
@@ -335,6 +422,12 @@ describe("checkout.session.completed", () => {
     // The plugin's own row sync ran too: status + stripeSubscriptionId persisted.
     expect(db.subscription[0].status).toBe("active");
     expect(db.subscription[0].stripeSubscriptionId).toBe("sub_stripe_1");
+    // #3423 — the sync succeeded, so the event id landed in the ledger
+    // together with the tier it applied (the sweep's ordering-correct
+    // source of truth).
+    expect(ledgerRows.map((r) => [r.event_id, r.applied_plan_tier])).toEqual([
+      ["evt_checkout_1", "starter"],
+    ]);
   });
 });
 
@@ -362,6 +455,7 @@ describe("customer.subscription.updated → pending cancel (#3421)", () => {
     const res = await postWebhook(auth, {
       id: "evt_cancel_scheduled_1",
       type: "customer.subscription.updated",
+      created: EPOCH,
       data: {
         object: stripeSubscription({
           status: "active",
@@ -372,8 +466,8 @@ describe("customer.subscription.updated → pending cancel (#3421)", () => {
 
     expect(res.status).toBe(200);
     // The customer is paid up — entitlements retained until period end.
-    // (onSubscriptionUpdate still runs plan sync against the same tier,
-    // so any write must be to "starter", never a downgrade.)
+    // (The onEvent sync still writes the same tier, so any write must be
+    // to "starter", never a downgrade.)
     for (const call of mockUpdateWorkspacePlanTier.mock.calls) {
       const [, tier] = call as [string, string];
       expect(tier).toBe("starter");
@@ -401,6 +495,7 @@ describe("customer.subscription.deleted", () => {
     const res = await postWebhook(auth, {
       id: "evt_deleted_1",
       type: "customer.subscription.deleted",
+      created: EPOCH,
       data: { object: stripeSubscription({ status: "canceled" }) },
     });
 
@@ -408,6 +503,9 @@ describe("customer.subscription.deleted", () => {
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
     expect(db.subscription[0].status).toBe("canceled");
+    expect(ledgerRows.map((r) => [r.event_id, r.applied_plan_tier])).toEqual([
+      ["evt_deleted_1", "locked"],
+    ]);
   });
 
   it("skips the lock when another active subscription exists (stale deletion guard)", async () => {
@@ -425,21 +523,203 @@ describe("customer.subscription.deleted", () => {
     const auth = makeAuth(db);
     // The org resubscribed: a DIFFERENT subscription row is active in the
     // internal DB. A delayed deleted event for the old subscription must
-    // not revoke the paying customer's access.
-    mockInternalQuery.mockImplementation((sql: string) =>
-      Promise.resolve(
-        sql.includes("status IN ('active', 'trialing')") ? [{ id: "subrow_new" }] : [],
+    // not revoke the paying customer's access. (The ledger's stale check
+    // can't catch this case — the two events concern different
+    // subscription ids — hence the explicit guard.)
+    mockInternalQuery.mockImplementation(
+      ledgerAwareQuery((sql) =>
+        sql.includes("status IN ('active', 'trialing')") ? [{ id: "subrow_new" }] : null,
       ),
     );
 
     const res = await postWebhook(auth, {
       id: "evt_deleted_stale",
       type: "customer.subscription.deleted",
+      created: EPOCH,
       data: { object: stripeSubscription({ status: "canceled" }) },
     });
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+  });
+});
+
+// ── event ledger (#3423): replay, ordering, record-last ─────────────
+
+describe("event ledger (#3423)", () => {
+  it("skips a replayed delivery of an already-processed event id", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      status: "incomplete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    const first = await postWebhook(auth, checkoutCompletedEvent());
+    expect(first.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
+
+    const replay = await postWebhook(auth, checkoutCompletedEvent());
+    expect(replay.status).toBe(200);
+    // The duplicate was ACKed without re-running the sync.
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
+    expect(ledgerRows).toHaveLength(1);
+  });
+
+  it("skips an out-of-order older event for a subscription that already has a newer one applied", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    // The subscription ended (event_created = EPOCH + 100) → locked.
+    const deleted = await postWebhook(auth, {
+      id: "evt_deleted_new",
+      type: "customer.subscription.deleted",
+      created: EPOCH + 100,
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+    expect(deleted.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
+    mockUpdateWorkspacePlanTier.mockClear();
+
+    // A delayed OLDER updated event (still "active") arrives afterwards.
+    // Applying it would resurrect the tier on a locked workspace.
+    const stale = await postWebhook(auth, {
+      id: "evt_updated_old",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    expect(stale.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_new"]);
+  });
+
+  it("skips a SAME-second older event after a deletion (1s-granularity tie-break)", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    // Deleted and updated share the same Stripe `created` second —
+    // strictly-greater ordering alone would let the late updated event
+    // resurrect the paid tier on the locked workspace (Codex on #3444).
+    const deleted = await postWebhook(auth, {
+      id: "evt_deleted_tie",
+      type: "customer.subscription.deleted",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+    expect(deleted.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
+    mockUpdateWorkspacePlanTier.mockClear();
+
+    const tied = await postWebhook(auth, {
+      id: "evt_updated_tie",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    expect(tied.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    // The stale event must not land in the ledger either — only
+    // processed events are recorded.
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_tie"]);
+  });
+
+  it("treats an unrecognized price as retryable — 400 and NOT recorded (env misconfig)", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      status: "incomplete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+    // STRIPE_*_PRICE_ID misconfig: the subscription's price maps to no
+    // Atlas tier. Recording the event would permanently no-op Stripe's
+    // replays; throwing keeps the ~3-week retry window open for the
+    // operator to fix the env.
+    subscriptionsRetrieve.mockImplementation(() =>
+      Promise.resolve(stripeSubscription({
+        items: {
+          data: [
+            {
+              id: "si_1",
+              quantity: 1,
+              current_period_start: EPOCH,
+              current_period_end: EPOCH + 30 * 86_400,
+              price: { id: "price_not_configured", recurring: { interval: "month" } },
+            },
+          ],
+        },
+      })),
+    );
+
+    const res = await postWebhook(auth, checkoutCompletedEvent());
+    expect(res.status).toBe(400);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    expect(ledgerRows).toHaveLength(0);
+  });
+
+  it("returns 400 and does NOT record the event when the sync fails, so a redelivery re-runs it", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      status: "incomplete",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+    mockUpdateWorkspacePlanTier.mockImplementation(() =>
+      Promise.reject(new Error("internal db down")),
+    );
+
+    const failed = await postWebhook(auth, checkoutCompletedEvent());
+    // onEvent throws propagate (the plugin's named hooks swallow; onEvent
+    // does not) → 400 → Stripe retries.
+    expect(failed.status).toBe(400);
+    // Record-last protocol: the failed event is NOT in the ledger, so the
+    // retry below is classified fresh instead of duplicate.
+    expect(ledgerRows).toHaveLength(0);
+
+    // Clear so the assertions below prove the REDELIVERY reran the sync,
+    // not just that the failed first attempt reached the write.
+    mockUpdateWorkspacePlanTier.mockClear();
+    mockUpdateWorkspacePlanTier.mockImplementation(() => Promise.resolve(true));
+    const retry = await postWebhook(auth, checkoutCompletedEvent());
+    expect(retry.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
+    expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_checkout_1"]);
   });
 });
 
@@ -450,6 +730,7 @@ describe("invoice.payment_failed", () => {
     return {
       id: `evt_pf_${attemptCount}`,
       type: "invoice.payment_failed",
+      created: EPOCH,
       data: {
         object: {
           id: "in_1",
@@ -462,8 +743,10 @@ describe("invoice.payment_failed", () => {
   }
 
   it("suspends the workspace resolved via the subscription table on attempt 3", async () => {
-    mockInternalQuery.mockImplementation(() =>
-      Promise.resolve([{ referenceId: "org-1" }]),
+    mockInternalQuery.mockImplementation(
+      ledgerAwareQuery((sql) =>
+        sql.includes(`"stripeSubscriptionId" = $1`) ? [{ referenceId: "org-1" }] : null,
+      ),
     );
     const auth = makeAuth(emptyDB());
 

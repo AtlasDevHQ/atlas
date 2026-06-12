@@ -147,7 +147,8 @@ describe("runMigrations", () => {
     //   Plus 0125 (elasticsearch auth-modes config_schema update, #3263–#3266) = 126.
     //   Plus 0126 (plugin-owned organization."stripeCustomerId", #3417) = 127.
     //   Plus 0127 (chk_plan_tier widened with 'locked', #3421) = 128.
-    expect(count).toBe(128);
+    //   Plus 0128 (stripe_webhook_events ledger, #3423) = 129.
+    expect(count).toBe(129);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -304,6 +305,7 @@ describe("runMigrations", () => {
         "0125_elasticsearch_auth_modes_config_schema.sql",
         "0126_org_stripe_customer_id_plugin_column.sql",
         "0127_plan_tier_locked.sql",
+        "0128_stripe_webhook_event_ledger.sql",
       ],
     });
 

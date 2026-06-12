@@ -60,6 +60,7 @@ import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/ap
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
+import { userHasConsumedTrial } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
@@ -177,12 +178,14 @@ export async function canGenerateSCIMToken(role: unknown, userId: string | undef
 
 /**
  * Flip a newly-created SaaS workspace from the DB default `plan_tier='free'`
- * onto `'trial'` with `trial_ends_at = NOW() + TRIAL_DAYS`. Self-hosted
- * orgs stay on `'free'` — the deploy-mode guard is the only thing
- * separating "Atlas as the free self-hosted product" from "Atlas as the
- * hosted SaaS trial". Without this hook, every SaaS workspace lands on
- * the free-tier definition and `/admin/model-config` renders the literal
- * `"user-configured"` sentinel from `plans.ts`.
+ * onto `'trial'` with `trial_ends_at = NOW() + TRIAL_DAYS` — or onto
+ * `'locked'` when the creating user has already consumed a trial (#3426,
+ * one trial per user — see {@link userHasConsumedTrial} for the recorded
+ * policy). Self-hosted orgs stay on `'free'` — the deploy-mode guard is
+ * the only thing separating "Atlas as the free self-hosted product" from
+ * "Atlas as the hosted SaaS trial". Without this hook, every SaaS
+ * workspace lands on the free-tier definition and `/admin/model-config`
+ * renders the literal `"user-configured"` sentinel from `plans.ts`.
  *
  * Wired into `organizationHooks.afterCreateOrganization` in
  * {@link buildPlugins}.
@@ -220,6 +223,28 @@ export async function assignSaasTrial(args: {
       [org.id],
     );
     if (existing[0]?.plan_tier !== "free") return;
+
+    // One trial per user (#3426): a creator who already owns a trialed
+    // workspace gets NO fresh trial — the new org lands directly on the
+    // zero-entitlement 'locked' churn tier (#3421), where enforcement
+    // blocks gated actions exactly like an ended subscription and the
+    // billing page offers the upgrade path. The org IS still created (no
+    // hard org cap — that would block legitimate paid multi-org
+    // customers). `trial_ends_at = NOW()` stamps the trial as consumed so
+    // `getCheckoutSessionParams`' double-trial suppression also withholds
+    // the Stripe-side trial at first checkout.
+    if (await userHasConsumedTrial(user.id, org.id)) {
+      await internalQuery(
+        `UPDATE organization SET plan_tier = 'locked', trial_ends_at = $1
+         WHERE id = $2 AND plan_tier = 'free'`,
+        [new Date().toISOString(), org.id],
+      );
+      log.info(
+        { userId: user.id, orgId: org.id },
+        "Workspace creator already consumed a SaaS trial — new workspace starts locked (one trial per user, #3426)",
+      );
+      return;
+    }
 
     const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
     await internalQuery(

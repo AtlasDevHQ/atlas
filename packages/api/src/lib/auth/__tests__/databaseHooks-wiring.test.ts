@@ -136,6 +136,11 @@ function makeRecordingPool(): InternalPool {
       if (/SELECT\s+role\s+FROM\s+"user"/i.test(sql)) return rows([{ role: "member" }]);
       if (/SELECT\s+plan_tier\s+FROM\s+organization/i.test(sql)) return rows([{ plan_tier: "free" }]);
       if (/FROM\s+sso_providers/i.test(sql)) return rows([]);
+      // #3426 one-trial-per-user eligibility lookup (also matches the
+      // generic /FROM member/ arm below, so dispatch it first): empty =
+      // "no trial consumed" so assignSaasTrial takes the trial branch the
+      // wiring assertion pins.
+      if (/trial_ends_at\s+IS\s+NOT\s+NULL/i.test(sql)) return rows([]);
       if (/FROM\s+member/i.test(sql)) return rows([{ organizationId: "org_welcome" }]);
       return rows([]);
     },

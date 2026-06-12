@@ -30,6 +30,8 @@ describe("parseOverview", () => {
         planTier: "trial",
         planDisplayName: "Starter Trial",
         trialEndsAt: "2026-06-01T00:00:00Z",
+        trialEndsAtEffective: "2026-06-01T00:00:00Z",
+        trialDays: 14,
         region: "us-east",
       },
     };
@@ -40,7 +42,50 @@ describe("parseOverview", () => {
     expect(parsed.workspace?.name).toBe("Acme Co");
     expect(parsed.workspace?.planTier).toBe("trial");
     expect(parsed.workspace?.trialEndsAt).toBe("2026-06-01T00:00:00Z");
+    expect(parsed.workspace?.trialEndsAtEffective).toBe("2026-06-01T00:00:00Z");
+    expect(parsed.workspace?.trialDays).toBe(14);
     expect(parsed.workspace?.region).toBe("us-east");
+  });
+
+  test("effective trial end survives a NULL trialEndsAt (#3434 blind spot)", () => {
+    // A pre-backfill workspace: raw trial_ends_at is null but the API
+    // computed the createdAt + TRIAL_DAYS fallback. Both must round-trip so
+    // the overview banner can render the same clock enforcement uses.
+    const parsed = parseOverview({
+      connections: 0,
+      entities: 0,
+      plugins: 0,
+      queriesLast24h: 0,
+      workspace: {
+        id: "org-1",
+        name: "Acme",
+        slug: "acme",
+        planTier: "trial",
+        planDisplayName: "Starter Trial",
+        trialEndsAt: null,
+        trialEndsAtEffective: "2026-06-15T00:00:00Z",
+        trialDays: 14,
+        region: null,
+      },
+    });
+    expect(parsed.workspace?.trialEndsAt).toBeNull();
+    expect(parsed.workspace?.trialEndsAtEffective).toBe("2026-06-15T00:00:00Z");
+  });
+
+  test("older API without the effective fields parses to nulls", () => {
+    const parsed = parseOverview({
+      workspace: {
+        id: "org-1",
+        name: "Acme",
+        slug: "acme",
+        planTier: "trial",
+        planDisplayName: "Starter Trial",
+        trialEndsAt: "2026-06-01T00:00:00Z",
+        region: null,
+      },
+    });
+    expect(parsed.workspace?.trialEndsAtEffective).toBeNull();
+    expect(parsed.workspace?.trialDays).toBeNull();
   });
 
   test("falls back gracefully when workspace and queriesLast24h are absent (self-hosted / no DB)", () => {

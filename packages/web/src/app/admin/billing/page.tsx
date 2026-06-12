@@ -39,6 +39,7 @@ import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ModelProviderSection } from "@/ui/components/admin/model-provider-section";
 import { formatDate, formatNumber } from "@/lib/format";
 import { consumePlanIntent, PAID_TIERS } from "@/lib/billing/plan-intent";
+import { effectiveTrialEnd, isTrialEndPast } from "@/lib/billing/trial-copy";
 import { cn } from "@/lib/utils";
 import { billingSearchParams } from "./search-params";
 import type { BillingStatus } from "@useatlas/schemas";
@@ -262,8 +263,14 @@ function heroStat(data: BillingStatus): string {
   const { plan, usage } = data;
   const seatCount = data.seats?.count ?? usage.seatCount;
 
-  if (plan.tier === "trial" && plan.trialEndsAt) {
-    return `Trial · ends ${formatDate(plan.trialEndsAt)}`;
+  // Effective end (#3434): trial_ends_at with enforcement's createdAt +
+  // TRIAL_DAYS fallback — so a NULL-trial_ends_at workspace still sees its
+  // real clock here.
+  const trialEnds = effectiveTrialEnd(plan);
+  if (plan.tier === "trial" && trialEnds) {
+    return isTrialEndPast(trialEnds)
+      ? `Trial · expired ${formatDate(trialEnds)}`
+      : `Trial · ends ${formatDate(trialEnds)}`;
   }
   if (plan.pricePerSeat > 0) {
     return `$${plan.pricePerSeat * seatCount}/mo`;
@@ -328,15 +335,28 @@ function PlanShell({ data }: { data: BillingStatus }) {
 
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
+  // Trial gets its own description (#3434) — the pricePerSeat === 0 copy
+  // ("No charges — all features included") is true for the self-hosted free
+  // tier but a lie for an expired trial, whose chat is 403-blocked. Dates
+  // use the server-computed effective end (trial_ends_at with enforcement's
+  // createdAt + TRIAL_DAYS fallback), so a NULL-trial_ends_at workspace
+  // still sees its real clock.
+  const trialEnds = effectiveTrialEnd(plan);
+  const trialExpired = plan.tier === "trial" && isTrialEndPast(trialEnds);
+  const planDescription =
+    plan.tier === "trial"
+      ? trialExpired
+        ? `Trial ended${trialEnds ? ` ${formatDate(trialEnds)}` : ""} — chat and queries are paused. Choose a plan below to restore access.`
+        : `Free trial${trialEnds ? ` \u00B7 ends ${formatDate(trialEnds)}` : ""} \u00B7 no charges until you pick a plan`
+      : plan.pricePerSeat > 0
+        ? `$${plan.pricePerSeat}/seat/mo \u00B7 ${seatCount} ${seatCount === 1 ? "seat" : "seats"}`
+        : "No charges — all features included";
+
   return (
     <Shell
       icon={CreditCard}
       title={plan.displayName}
-      description={
-        plan.pricePerSeat > 0
-          ? `$${plan.pricePerSeat}/seat/mo \u00B7 ${seatCount} ${seatCount === 1 ? "seat" : "seats"}`
-          : "No charges — all features included"
-      }
+      description={planDescription}
       status={status}
       actions={
         subscription ? (
@@ -378,8 +398,11 @@ function PlanShell({ data }: { data: BillingStatus }) {
             }
           />
         )}
-        {plan.tier === "trial" && plan.trialEndsAt && (
-          <DetailRow label="Trial ends" value={formatDate(plan.trialEndsAt)} />
+        {plan.tier === "trial" && trialEnds && (
+          <DetailRow
+            label={trialExpired ? "Trial ended" : "Trial ends"}
+            value={formatDate(trialEnds)}
+          />
         )}
         {subscription && (
           <DetailRow

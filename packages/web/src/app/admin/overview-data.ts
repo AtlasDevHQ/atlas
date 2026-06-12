@@ -15,6 +15,14 @@ export interface WorkspaceBlock {
   planTier: string;
   planDisplayName: string;
   trialEndsAt: string | null;
+  /**
+   * Server-computed effective trial end (#3434) — trial_ends_at with
+   * enforcement's createdAt + TRIAL_DAYS fallback. Render trial banners
+   * from this, falling back to trialEndsAt for an older API.
+   */
+  trialEndsAtEffective: string | null;
+  /** Trial length in days, for copy ("{n}-day trial"). */
+  trialDays: number | null;
   region: string | null;
 }
 
@@ -55,6 +63,11 @@ export function parseOverview(json: Record<string, unknown>): OverviewData {
           planDisplayName: String(ws.planDisplayName ?? ws.planTier ?? ""),
           trialEndsAt:
             typeof ws.trialEndsAt === "string" ? ws.trialEndsAt : null,
+          trialEndsAtEffective:
+            typeof ws.trialEndsAtEffective === "string"
+              ? ws.trialEndsAtEffective
+              : null,
+          trialDays: typeof ws.trialDays === "number" ? ws.trialDays : null,
           region: typeof ws.region === "string" ? ws.region : null,
         }
       : null,

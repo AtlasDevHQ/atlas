@@ -40,6 +40,8 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/api/lib/effect/errors";
 import { announceActivation } from "@atlas/api/lib/proactive/announcement-coordinator";
 import { getChatAnnouncer } from "@atlas/api/lib/proactive/announcer-registry";
+import { getInstallationByOrg, getBotToken } from "@atlas/api/lib/slack/store";
+import { listChannels } from "@atlas/api/lib/slack/api";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext, requirePermission } from "./admin-router";
 
@@ -105,6 +107,32 @@ const UpsertChannelBodySchema = z.object({
   allow: z.boolean(),
   /** Optional per-channel override on the workspace default sensitivity. */
   sensitivity: SensitivitySchema.nullable().optional(),
+});
+
+const AvailableChannelSchema = z.object({
+  /** Bare platform channel id — the exact value the override row stores. */
+  id: z.string(),
+  /** Channel name without the leading `#`. */
+  name: z.string(),
+  isPrivate: z.boolean(),
+  /**
+   * Whether the bot is a member. An override on a non-member channel
+   * can never fire (the listener only sees messages in channels the
+   * bot has joined), so the picker warns on these.
+   */
+  isMember: z.boolean(),
+});
+
+const AvailableChannelsResponseSchema = z.object({
+  /**
+   * `false` when channel listing isn't possible for this workspace —
+   * no Slack installation, or the Slack API call failed. The admin UI
+   * degrades to manual channel-id entry; this is a soft state, not an
+   * error (hence 200, not 4xx/5xx).
+   */
+  available: z.boolean(),
+  reason: z.enum(["no_slack_installation", "slack_error"]).nullable(),
+  channels: z.array(AvailableChannelSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -241,6 +269,24 @@ const listChannelsRoute = createRoute({
           schema: z.object({ channels: z.array(ChannelOverrideSchema) }),
         },
       },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required or enterprise not enabled", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const listAvailableChannelsRoute = createRoute({
+  method: "get",
+  path: "/channels/available",
+  tags: ["Admin — Proactive Chat"],
+  summary: "List channels available on the chat platform",
+  description:
+    "Lists the workspace's Slack channels (id + name + membership) via conversations.list so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no Slack installation or the platform call fails — never a hard error.",
+  responses: {
+    200: {
+      description: "Channel listing (or a soft `available: false` envelope)",
+      content: { "application/json": { schema: AvailableChannelsResponseSchema } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required or enterprise not enabled", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -537,6 +583,63 @@ adminProactive.openapi(listChannelsRoute, async (c) =>
       );
       return c.json(
         { error: "internal_error", message: "Failed to list channel overrides.", requestId },
+        500,
+      );
+    }
+  }),
+);
+
+// GET /channels/available — list the platform's channels for the picker
+adminProactive.openapi(listAvailableChannelsRoute, async (c) =>
+  runHandler(c, "list available slack channels", async () => {
+    const { orgId, requestId } = c.get("orgContext");
+    gateEnterprise();
+
+    try {
+      // Read-only platform lookup; no audit row (matches the other GETs).
+      // Token resolution is DB-only per the workspace-credential rule —
+      // requireOrgContext already guarantees an internal DB exists here.
+      const installation = await getInstallationByOrg(orgId);
+      const token = installation ? await getBotToken(installation.team_id) : null;
+      if (!token) {
+        return c.json(
+          {
+            available: false,
+            reason: "no_slack_installation" as const,
+            channels: [],
+          },
+          200,
+        );
+      }
+
+      const result = await listChannels(token);
+      if (!result.ok) {
+        // Slack-side failure (rate limit, missing scope, revoked token).
+        // Soft-degrade — the picker falls back to manual entry. The raw
+        // Slack error stays in the log, never on the wire.
+        log.warn(
+          { requestId, orgId, slackError: result.error },
+          "conversations.list failed — channel picker degraded to manual entry",
+        );
+        return c.json(
+          { available: false, reason: "slack_error" as const, channels: [] },
+          200,
+        );
+      }
+
+      // Member channels first (those are the ones proactive can act in),
+      // then alphabetical within each group.
+      const channels = result.channels.toSorted(
+        (a, b) => Number(b.isMember) - Number(a.isMember) || a.name.localeCompare(b.name),
+      );
+      return c.json({ available: true, reason: null, channels }, 200);
+    } catch (err) {
+      log.error(
+        { err: errorMessage(err), requestId, orgId },
+        "Failed to list available channels",
+      );
+      return c.json(
+        { error: "internal_error", message: "Failed to list available channels.", requestId },
         500,
       );
     }

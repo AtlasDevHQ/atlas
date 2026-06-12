@@ -15,11 +15,14 @@
  *      is uncertain (cheap); `classify-all` always runs the LLM
  *      (expensive — only sensible with the announcement-channel scope
  *      or a small workspace).
- *   4. Announcement channel — optional. Future: a channel picker
- *      sourced from the chat-platform API. Free-form for this slice.
+ *   4. Announcement channel — optional. Picked from the workspace's
+ *      Slack channel list (`GET /channels/available`) when a Slack
+ *      install exists; degrades to free-form id entry otherwise.
  *   5. Monthly classifier cap — optional spend safety net.
  *   6. Channel overrides — per-channel allow/deny, with optional
- *      per-channel sensitivity override.
+ *      per-channel sensitivity override. Channel picker + inline
+ *      editing; rows warn when Atlas isn't a member of the channel
+ *      (an override there can never fire).
  *
  * The whole page is enterprise-gated. Self-hosted free users see
  * `<EnterpriseUpsell feature="Proactive Chat" />` instead of the form;
@@ -64,6 +67,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  ChannelPicker,
+  type ChannelOption,
+} from "@/ui/components/admin/channel-picker";
 
 // ---------------------------------------------------------------------------
 // Wire schemas (must agree with packages/api/src/api/routes/admin-proactive.ts)
@@ -103,6 +118,54 @@ type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
 const ChannelsResponseSchema = z
   .object({ channels: z.array(ChannelOverrideSchema) })
   .transform((r) => r.channels);
+
+const AvailableChannelSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  isPrivate: z.boolean(),
+  isMember: z.boolean(),
+});
+
+const AvailableChannelsSchema = z.object({
+  available: z.boolean(),
+  reason: z.enum(["no_slack_installation", "slack_error"]).nullable(),
+  channels: z.array(AvailableChannelSchema),
+});
+
+type AvailableChannels = z.infer<typeof AvailableChannelsSchema>;
+
+/**
+ * Workspace channel directory shared by the announcement-channel picker
+ * and the overrides table. `available: false` (no Slack install, Slack
+ * API failure, or fetch error) degrades every consumer to raw-id entry —
+ * the pre-picker behavior — instead of blocking the page.
+ */
+interface ChannelDirectory {
+  available: boolean;
+  loading: boolean;
+  channels: ChannelOption[];
+  byId: Map<string, ChannelOption>;
+}
+
+function useChannelDirectory(): ChannelDirectory {
+  const { data, loading, error } = useAdminFetch<AvailableChannels>(
+    "/api/v1/admin/proactive/channels/available",
+    { schema: AvailableChannelsSchema },
+  );
+  if (error) {
+    // Soft enhancement — a directory outage must not block override
+    // management. Log so a 403 / 500 / schema_mismatch shows up in
+    // admin debug breadcrumbs instead of vanishing as a missing picker.
+    console.warn("useChannelDirectory: available-channels fetch failed", error);
+  }
+  const channels = data?.available === true ? data.channels : [];
+  return {
+    available: data?.available === true,
+    loading,
+    channels,
+    byId: new Map(channels.map((ch) => [ch.id, ch])),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -197,6 +260,7 @@ function PageBody() {
 // ---------------------------------------------------------------------------
 
 function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
+  const directory = useChannelDirectory();
   const { fields, values } = form;
   if (!fields || !values) return null;
 
@@ -241,6 +305,7 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
           <AnnouncementChannelField
             value={fields.announcementChannelId.value}
             onChange={fields.announcementChannelId.set}
+            directory={directory}
           />
           <MonthlyCapField
             value={fields.monthlyCap.value}
@@ -279,7 +344,7 @@ function ConfigForm({ form }: { form: WorkspaceConfigForm }) {
           title="Channel overrides"
           description="Per-channel allow / deny and optional sensitivity override."
         />
-        <ChannelOverridesTable />
+        <ChannelOverridesTable directory={directory} />
       </section>
 
       <section>
@@ -429,9 +494,11 @@ function ClassifierModeRadio({
 function AnnouncementChannelField({
   value,
   onChange,
+  directory,
 }: {
   value: string;
   onChange: (value: string) => void;
+  directory: ChannelDirectory;
 }) {
   return (
     <div className="space-y-2">
@@ -445,12 +512,15 @@ function AnnouncementChannelField({
       </p>
       <div className="flex items-center gap-2">
         <Megaphone className="size-4 shrink-0 text-muted-foreground" />
-        <Input
-          id="proactive-announcement-channel"
-          placeholder="C0123456789"
+        <ChannelPicker
+          inputId="proactive-announcement-channel"
+          channels={directory.channels}
+          available={directory.available}
+          loading={directory.loading}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="font-mono text-sm"
+          onChange={onChange}
+          allowClear
+          clearLabel="No announcement channel"
         />
       </div>
     </div>
@@ -599,7 +669,7 @@ function QuotaUsageIndicator() {
 // Channel overrides table
 // ---------------------------------------------------------------------------
 
-function ChannelOverridesTable() {
+function ChannelOverridesTable({ directory }: { directory: ChannelDirectory }) {
   const { data, loading, error, refetch } = useAdminFetch<ChannelOverride[]>(
     "/api/v1/admin/proactive/channels",
     { schema: ChannelsResponseSchema },
@@ -649,18 +719,17 @@ function ChannelOverridesTable() {
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex flex-col gap-1">
               <Label htmlFor="proactive-add-channel" className="text-[11px]">
-                Channel ID
+                Channel
               </Label>
-              <div className="flex items-center gap-2">
-                <Hash className="size-4 shrink-0 text-muted-foreground" />
-                <Input
-                  id="proactive-add-channel"
-                  placeholder="C0123456789"
-                  value={draftChannelId}
-                  onChange={(e) => setDraftChannelId(e.target.value)}
-                  className="w-[180px] font-mono text-xs"
-                />
-              </div>
+              <ChannelPicker
+                inputId="proactive-add-channel"
+                channels={directory.channels}
+                available={directory.available}
+                loading={directory.loading}
+                value={draftChannelId}
+                onChange={setDraftChannelId}
+                className="w-[260px]"
+              />
             </div>
             <div className="flex flex-col gap-1">
               <Label className="text-[11px]">Allow proactive</Label>
@@ -719,11 +788,28 @@ function ChannelOverridesTable() {
         </div>
 
         {data && data.length > 0 ? (
-          <ul className="space-y-1.5">
-            {data.map((row) => (
-              <ChannelRow key={row.id} row={row} refetch={refetch} />
-            ))}
-          </ul>
+          <div className="overflow-hidden rounded-lg border">
+            <Table className="text-[12px]">
+              <TableHeader>
+                <TableRow className="bg-muted/40 text-[11px] uppercase tracking-wide">
+                  <TableHead className="text-muted-foreground">Channel</TableHead>
+                  <TableHead className="text-muted-foreground">Proactive</TableHead>
+                  <TableHead className="text-muted-foreground">Sensitivity</TableHead>
+                  <TableHead className="w-12" aria-label="Actions" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {data.map((row) => (
+                  <ChannelOverrideRow
+                    key={row.id}
+                    row={row}
+                    directory={directory}
+                    refetch={refetch}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         ) : (
           <p className="rounded-md border border-dashed bg-muted/20 p-6 text-center text-[12px] text-muted-foreground">
             No channel overrides yet. Workspace defaults apply everywhere.
@@ -734,58 +820,144 @@ function ChannelOverridesTable() {
   );
 }
 
-function ChannelRow({
+/**
+ * One override row with inline editing. Allow / sensitivity changes
+ * POST the upsert directly — no delete-and-re-add dance. The channel
+ * cell resolves the id against the workspace directory and warns when
+ * Atlas isn't a member (the override can never fire) or the id isn't
+ * in the listing at all (archived / deleted / typo).
+ */
+function ChannelOverrideRow({
   row,
+  directory,
   refetch,
 }: {
   row: ChannelOverride;
+  directory: ChannelDirectory;
   refetch: () => void;
 }) {
+  const upsert = useAdminMutation({
+    path: "/api/v1/admin/proactive/channels",
+    method: "POST",
+    invalidates: refetch,
+  });
   const remove = useAdminMutation({
     path: `/api/v1/admin/proactive/channels/${encodeURIComponent(row.channelId)}`,
     method: "DELETE",
     invalidates: refetch,
   });
 
-  const status: StatusKind = row.allow ? "connected" : "disconnected";
-  const description = row.sensitivity
-    ? `${row.allow ? "Allow" : "Deny"} · sensitivity: ${row.sensitivity}`
-    : row.allow
-      ? "Allow · workspace default sensitivity"
-      : "Deny";
+  const known = directory.byId.get(row.channelId);
+  const saving = upsert.saving || remove.saving;
+  const mutationError = upsert.error ?? remove.error;
+
+  async function setAllow(allow: boolean) {
+    await upsert.mutate({
+      body: { channelId: row.channelId, allow, sensitivity: row.sensitivity },
+    });
+  }
+
+  async function setSensitivity(v: string) {
+    await upsert.mutate({
+      body: {
+        channelId: row.channelId,
+        allow: row.allow,
+        sensitivity: v === "default" ? null : (v as Sensitivity),
+      },
+    });
+  }
 
   return (
-    <li>
-      <CompactRow
-        icon={Hash}
-        title={row.channelId}
-        description={description}
-        status={status}
-        statusLabel={row.allow ? "Allow" : "Deny"}
-        action={
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => remove.mutate({})}
-            disabled={remove.saving}
-            aria-label={`Remove override for ${row.channelId}`}
+    <TableRow className="bg-background">
+      <TableCell className="align-top">
+        <div className="flex items-center gap-1.5">
+          <Hash className="size-3.5 shrink-0 text-muted-foreground" />
+          {known ? (
+            <span className="text-sm font-medium">{known.name}</span>
+          ) : (
+            <span className="font-mono text-[12px]">{row.channelId}</span>
+          )}
+        </div>
+        {known && (
+          <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+            {row.channelId}
+          </p>
+        )}
+        {directory.available && known && !known.isMember && (
+          <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-500">
+            Atlas isn't in this channel — invite it or this override never fires.
+          </p>
+        )}
+        {directory.available && !known && (
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Not in the workspace channel list — archived, deleted, or a typo?
+          </p>
+        )}
+        <MutationErrorSurface
+          error={mutationError}
+          feature="Proactive Chat"
+          variant="inline"
+          inlinePrefix="Save failed."
+        />
+      </TableCell>
+      <TableCell className="align-top">
+        <div className="flex items-center gap-2 pt-0.5">
+          <Switch
+            checked={row.allow}
+            onCheckedChange={setAllow}
+            disabled={saving}
+            aria-label={`Allow proactive in ${known?.name ?? row.channelId}`}
+          />
+          <span
+            className={
+              row.allow
+                ? "text-[12px] text-emerald-700 dark:text-emerald-500"
+                : "text-[12px] text-muted-foreground"
+            }
           >
-            {remove.saving ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Trash2 className="size-3.5" />
-            )}
-          </Button>
-        }
-      />
-      <MutationErrorSurface
-        error={remove.error}
-        feature="Proactive Chat"
-        variant="inline"
-        inlinePrefix="Remove failed."
-      />
-    </li>
+            {row.allow ? "Allow" : "Deny"}
+          </span>
+        </div>
+      </TableCell>
+      <TableCell className="align-top">
+        <Select
+          value={row.sensitivity ?? "default"}
+          onValueChange={setSensitivity}
+          disabled={saving}
+        >
+          <SelectTrigger
+            className="h-8 w-[170px] text-xs"
+            aria-label={`Sensitivity for ${known?.name ?? row.channelId}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="default">Workspace default</SelectItem>
+            {SENSITIVITIES.map((s) => (
+              <SelectItem key={s} value={s} className="capitalize">
+                {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </TableCell>
+      <TableCell className="align-top text-right">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={() => remove.mutate({})}
+          disabled={saving}
+          aria-label={`Remove override for ${known?.name ?? row.channelId}`}
+        >
+          {remove.saving ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <Trash2 className="size-3.5" />
+          )}
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }
 

@@ -28,7 +28,8 @@ interface ChannelPickerProps {
   /**
    * Whether the platform listing succeeded. When false the picker
    * degrades to the raw channel-id input (the pre-picker behavior) so
-   * a workspace without a Slack install can still configure overrides.
+   * a workspace without a chat-platform install can still configure
+   * overrides.
    */
   available: boolean;
   loading?: boolean;
@@ -43,7 +44,9 @@ interface ChannelPickerProps {
 }
 
 /**
- * Searchable Slack channel picker for proactive-chat admin surfaces.
+ * Searchable chat-channel picker for proactive-chat admin surfaces.
+ * Platform-agnostic — channel ids are opaque strings (Slack `C…`,
+ * Teams `19:…`, etc); the directory endpoint decides what's listed.
  *
  * - Channels Atlas has joined surface first; the rest are grouped under
  *   a "Not in channel" heading (an override there can never fire until
@@ -60,7 +63,7 @@ export function ChannelPicker({
   value,
   onChange,
   inputId,
-  placeholder = "C0123456789",
+  placeholder = "Channel ID",
   allowClear,
   clearLabel = "No channel",
   className,

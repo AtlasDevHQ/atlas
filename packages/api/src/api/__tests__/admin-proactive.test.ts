@@ -215,43 +215,29 @@ mock.module("@atlas/api/lib/audit", () => ({
   causeToError: () => undefined,
 }));
 
-// --- Slack store + API mocks (GET /channels/available). The route
-//     resolves the org's installation, then the bot token, then calls
-//     conversations.list. Script the three seams per-test. All named
-//     exports stubbed (partial mock.module = module-load failure). ---
+// --- Channel-directory mock (GET /channels/available). The route reads
+//     the platform-neutral channel-directory port (#3463) — provider
+//     resolution, Slack mapping, and the TTL cache (#3461) have their
+//     own unit tests, so the route test scripts the port's result. All
+//     named exports stubbed (partial mock.module = module-load failure). ---
 
-let mockInstallationByOrg: { team_id: string; org_id: string | null; workspace_name: string | null; installed_at: string } | null = null;
-let mockBotToken: string | null = null;
-type SlackChannelSummary = { id: string; name: string; isPrivate: boolean; isMember: boolean };
-let mockListChannelsResult:
-  | { ok: true; channels: SlackChannelSummary[] }
-  | { ok: false; error: string } = { ok: true, channels: [] };
+type DirectoryChannel = { id: string; name: string; isPrivate: boolean; isMember: boolean };
+let mockDirectoryResult:
+  | { ok: true; channels: DirectoryChannel[] }
+  | { ok: false; reason: "no_chat_installation" | "missing_scope" | "platform_error"; detail?: string } = {
+  ok: true,
+  channels: [],
+};
+const mockListWorkspaceChannels: Mock<(workspaceId: string) => Promise<unknown>> = mock(
+  async () => mockDirectoryResult,
+);
 
-mock.module("@atlas/api/lib/slack/store", () => ({
-  ENV_TEAM_ID: "env",
-  KEY_PREFIX: "slack:installation:",
-  FIELD: {
-    botToken: "botToken",
-    botUserId: "botUserId",
-    teamName: "teamName",
-    orgId: "orgId",
-    workspaceName: "workspaceName",
-    installedAt: "installedAt",
-  },
-  getInstallation: mock(async () => null),
-  getInstallationByOrg: mock(async () => mockInstallationByOrg),
-  saveInstallation: mock(async () => {}),
-  deleteInstallation: mock(async () => {}),
-  deleteInstallationByOrg: mock(async () => false),
-  getBotToken: mock(async () => mockBotToken),
-}));
-
-mock.module("@atlas/api/lib/slack/api", () => ({
-  slackAPI: mock(async () => ({ ok: false, error: "not_mocked" })),
-  postMessage: mock(async () => ({ ok: false, error: "not_mocked" })),
-  updateMessage: mock(async () => ({ ok: false, error: "not_mocked" })),
-  postEphemeral: mock(async () => ({ ok: false, error: "not_mocked" })),
-  listChannels: mock(async () => mockListChannelsResult),
+mock.module("@atlas/api/lib/proactive/channel-directory", () => ({
+  CHANNEL_DIRECTORY_CACHE_TTL_MS: 45_000,
+  registerChannelDirectoryProvider: mock(() => {}),
+  clearChannelDirectoryProvider: mock(() => {}),
+  clearChannelDirectoryCache: mock(() => {}),
+  listWorkspaceChannels: mockListWorkspaceChannels,
 }));
 
 // --- Import sub-router directly ---
@@ -293,9 +279,8 @@ function nowChannelRow(overrides: Partial<Record<string, unknown>>) {
 function resetMocks() {
   process.env.ATLAS_ENTERPRISE_ENABLED = "true";
   mockHasInternalDB = true;
-  mockInstallationByOrg = null;
-  mockBotToken = null;
-  mockListChannelsResult = { ok: true, channels: [] };
+  mockDirectoryResult = { ok: false, reason: "no_chat_installation" };
+  mockListWorkspaceChannels.mockClear();
   lastQueries = [];
   mockInternalRows = [];
   mockInternalQuery.mockClear();
@@ -723,39 +708,20 @@ describe("DELETE /api/v1/admin/proactive/channels/:channelId", () => {
 describe("GET /api/v1/admin/proactive/channels/available", () => {
   beforeEach(resetMocks);
 
-  it("soft-degrades with no_slack_installation when the org has no install", async () => {
+  it("soft-degrades with no_chat_installation when the workspace has no install", async () => {
+    mockDirectoryResult = { ok: false, reason: "no_chat_installation" };
     const res = await request("GET", "/channels/available");
     expect(res.status).toBe(200);
     const json = (await res.json()) as Record<string, unknown>;
     expect(json.available).toBe(false);
-    expect(json.reason).toBe("no_slack_installation");
+    expect(json.reason).toBe("no_chat_installation");
     expect(json.channels).toEqual([]);
-  });
-
-  it("soft-degrades when the install exists but the token is unreadable", async () => {
-    mockInstallationByOrg = {
-      team_id: "T-1",
-      org_id: "org-1",
-      workspace_name: "Acme",
-      installed_at: "2026-05-17T12:00:00Z",
-    };
-    mockBotToken = null;
-    const res = await request("GET", "/channels/available");
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as Record<string, unknown>;
-    expect(json.available).toBe(false);
-    expect(json.reason).toBe("no_slack_installation");
+    // Per-workspace lookup — the active org id is the cache/tenant key.
+    expect(mockListWorkspaceChannels).toHaveBeenCalledWith("org-1");
   });
 
   it("returns channels sorted member-first then by name", async () => {
-    mockInstallationByOrg = {
-      team_id: "T-1",
-      org_id: "org-1",
-      workspace_name: "Acme",
-      installed_at: "2026-05-17T12:00:00Z",
-    };
-    mockBotToken = "xoxb-test";
-    mockListChannelsResult = {
+    mockDirectoryResult = {
       ok: true,
       channels: [
         { id: "C3", name: "zebra", isPrivate: false, isMember: false },
@@ -775,26 +741,29 @@ describe("GET /api/v1/admin/proactive/channels/available", () => {
     expect(json.channels.map((ch) => ch.id)).toEqual(["C1", "C2", "C3"]);
   });
 
-  it("soft-degrades with slack_error when conversations.list fails", async () => {
-    mockInstallationByOrg = {
-      team_id: "T-1",
-      org_id: "org-1",
-      workspace_name: "Acme",
-      installed_at: "2026-05-17T12:00:00Z",
-    };
-    mockBotToken = "xoxb-test";
-    mockListChannelsResult = { ok: false, error: "ratelimited" };
+  it("soft-degrades with platform_error when the platform listing fails", async () => {
+    mockDirectoryResult = { ok: false, reason: "platform_error", detail: "ratelimited" };
     const res = await request("GET", "/channels/available");
     expect(res.status).toBe(200);
     const json = (await res.json()) as { available: boolean; reason: string | null };
     expect(json.available).toBe(false);
-    expect(json.reason).toBe("slack_error");
+    expect(json.reason).toBe("platform_error");
+  });
+
+  it("surfaces missing_scope distinctly so the UI can offer the reconnect CTA (#3466)", async () => {
+    mockDirectoryResult = { ok: false, reason: "missing_scope", detail: "missing_scope" };
+    const res = await request("GET", "/channels/available");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { available: boolean; reason: string | null };
+    expect(json.available).toBe(false);
+    expect(json.reason).toBe("missing_scope");
   });
 
   it("returns 403 enterprise_required when EE is off", async () => {
     process.env.ATLAS_ENTERPRISE_ENABLED = "false";
     const res = await request("GET", "/channels/available");
     expect(res.status).toBe(403);
+    expect(mockListWorkspaceChannels).not.toHaveBeenCalled();
   });
 });
 

@@ -53617,7 +53617,7 @@
           "Admin — Proactive Chat"
         ],
         "summary": "List channels available on the chat platform",
-        "description": "Lists the workspace's Slack channels (id + name + membership) via conversations.list so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no Slack installation or the platform call fails — never a hard error.",
+        "description": "Lists the workspace's chat-platform channels (id + name + membership) so admin UIs can offer a picker instead of raw channel-id entry. Soft-degrades to `available: false` when the workspace has no chat-platform installation or the platform call fails — never a hard error. A `missing_scope` reason means the installed credential can't list channels and reconnecting the platform integration is required.",
         "responses": {
           "200": {
             "description": "Channel listing (or a soft `available: false` envelope)",
@@ -53635,8 +53635,9 @@
                         "null"
                       ],
                       "enum": [
-                        "no_slack_installation",
-                        "slack_error",
+                        "no_chat_installation",
+                        "missing_scope",
+                        "platform_error",
                         null
                       ]
                     },

@@ -108,16 +108,42 @@ const LIST_CHANNELS_TIMEOUT_MS = 10_000;
  * {@link slackAPI}. Private channels only appear when the bot has been
  * invited to them (Slack scopes the listing to the token's visibility),
  * so no extra filtering is needed.
+ *
+ * Scope degradation (#3462): the combined
+ * `types=public_channel,private_channel` request fails wholesale with
+ * `missing_scope` when the token has `channels:read` but not
+ * `groups:read` (e.g. a workspace installed against an older app
+ * manifest — new OAuth installs request both). Rather than returning
+ * nothing, retry once with `types=public_channel` only and return that
+ * listing (private channels simply absent). If even the public-only
+ * retry fails, the error propagates — a `missing_scope` there means the
+ * token lacks `channels:read` entirely and the caller should surface
+ * the reconnect path (#3466).
  */
 export async function listChannels(
   token: string,
+): Promise<{ ok: true; channels: SlackChannelSummary[] } | { ok: false; error: string }> {
+  const combined = await fetchChannelPages(token, "public_channel,private_channel");
+  if (!combined.ok && combined.error === "missing_scope") {
+    log.warn(
+      { method: "conversations.list" },
+      "missing_scope on combined channel listing — retrying public-only",
+    );
+    return fetchChannelPages(token, "public_channel");
+  }
+  return combined;
+}
+
+async function fetchChannelPages(
+  token: string,
+  types: string,
 ): Promise<{ ok: true; channels: SlackChannelSummary[] } | { ok: false; error: string }> {
   const channels: SlackChannelSummary[] = [];
   let cursor: string | undefined;
 
   for (let page = 0; page < LIST_CHANNELS_MAX_PAGES; page++) {
     const params = new URLSearchParams({
-      types: "public_channel,private_channel",
+      types,
       exclude_archived: "true",
       limit: "200",
     });

@@ -63,7 +63,7 @@ BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provid
 
 - Query limits are **not enforced** — usage is unlimited when using your own keys
 - Query usage is still metered for analytics
-- Available on all paid plans (Starter, Pro, Business)
+- Available on all paid plans (Starter, Pro, Business) — BYOT does **not** bypass a locked workspace (subscription ended): chat and queries stay blocked until a new plan is purchased
 - Admin or owner role is required to toggle BYOT
 - Self-hosted deployments use BYOT by default
 
@@ -122,7 +122,7 @@ Billing enforcement is skipped entirely when:
 
 - No internal database is configured (self-hosted without managed auth)
 - The user is not in an organization
-- The workspace has BYOT enabled
+- The workspace has BYOT enabled (exception: a **locked** workspace — one whose subscription ended — is blocked even with BYOT keys configured; resubscribing is the only way back in)
 - The workspace is on the **free** (self-hosted) tier
 
 ### Trial Expiry
@@ -167,8 +167,8 @@ Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe pl
 |-------|----------|
 | Subscription complete | Activates the subscription and sets the workspace plan tier |
 | Subscription updated | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
-| Subscription canceled | Downgrades the workspace to free tier |
-| Subscription deleted | Downgrades the workspace to free tier |
+| Subscription cancellation scheduled | No tier change — paid entitlements are retained until the end of the billing period (cancel anytime via the Customer Portal, restore before period end to keep the plan) |
+| Subscription deleted (period end) | Locks the workspace — chat and queries are blocked with a resubscribe message until a new plan is purchased |
 | `invoice.payment_failed` | Logs the failure; auto-suspends the workspace after 3+ consecutive failures |
 
 Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.

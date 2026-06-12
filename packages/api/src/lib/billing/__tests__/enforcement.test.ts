@@ -250,6 +250,28 @@ describe("billing/enforcement", () => {
     expect(result.allowed).toBe(true);
   });
 
+  // ── Locked tier (#3421) ───────────────────────────────────────────
+
+  it("blocks locked workspaces with 403 subscription_required", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "locked" });
+    const result = await checkPlanLimits("org-1", SEATS);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.errorCode).toBe("subscription_required");
+      expect(result.httpStatus).toBe(403);
+      expect(result.errorMessage).toContain("Resubscribe");
+    }
+  });
+
+  it("blocks locked workspaces even with BYOT enabled (no key-based escape hatch)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "locked", byot: true });
+    const result = await checkPlanLimits("org-1", SEATS);
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.errorCode).toBe("subscription_required");
+    }
+  });
+
   // ── BYOT ──────────────────────────────────────────────────────────
 
   it("allows BYOT workspaces unconditionally", async () => {
@@ -534,6 +556,24 @@ function expectCheckFailed(
   if (!result.allowed) expect(result.reason).toBe("check_failed");
   return result as Extract<ResourceLimitResult, { allowed: false; reason: "check_failed" }>;
 }
+
+describe("checkResourceLimit — locked tier (#3421)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockWorkspace = makeWorkspace({ plan_tier: "locked" });
+    invalidatePlanCache();
+  });
+
+  it("blocks adding any seat/connection/chat integration (caps are 0)", async () => {
+    for (const resource of ["seats", "connections", "chat_integrations"] as const) {
+      const result = await checkResourceLimit("org-1", resource, 0);
+      expect(result.allowed).toBe(false);
+      if (!result.allowed) {
+        expect(result.reason).toBe("cap_reached");
+      }
+    }
+  });
+});
 
 describe("checkResourceLimit", () => {
   beforeEach(() => {

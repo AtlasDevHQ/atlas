@@ -28,7 +28,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { checkAbuseStatus } from "@atlas/api/lib/security/abuse";
-import { ABUSE_LEVELS } from "@useatlas/types";
+import { ABUSE_LEVELS, PLAN_TIERS } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -760,7 +760,11 @@ adminOrgs.openapi(getOrgStatusRoute, async (c) => {
 });
 
 // PATCH /:id/plan
-const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "starter", "pro", "business"]);
+// Derived from the shared tuple so a new tier in @useatlas/types is
+// accepted here without another hand-copied list to drift. The platform
+// override deliberately accepts EVERY tier including "locked" — operators
+// use it to manually lock/unlock workspaces.
+const VALID_PLAN_TIERS = new Set<PlanTier>(PLAN_TIERS);
 
 adminOrgs.openapi(updatePlanRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {

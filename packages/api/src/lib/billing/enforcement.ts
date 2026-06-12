@@ -59,6 +59,7 @@ export interface PlanLimitWarning {
 export type PlanCheckResult =
   | { allowed: true; warning?: PlanLimitWarning }
   | { allowed: false; errorCode: "trial_expired"; errorMessage: string; httpStatus: 403 }
+  | { allowed: false; errorCode: "subscription_required"; errorMessage: string; httpStatus: 403 }
   | { allowed: false; errorCode: "plan_limit_exceeded"; errorMessage: string; httpStatus: 429; usage: { currentUsage: number; limit: number; metric: string } }
   | { allowed: false; errorCode: "billing_check_failed"; errorMessage: string; httpStatus: 503 };
 
@@ -175,6 +176,20 @@ export async function checkPlanLimits(
   // Free (self-hosted) — no limits enforced
   if (tier === "free") {
     return { allowed: true };
+  }
+
+  // Locked (#3421) — SaaS churn landing tier: the subscription has ended.
+  // Blocked BEFORE the BYOT bypass: a churned workspace keeps zero
+  // entitlements even with its own keys configured — resubscribing is the
+  // only way back in.
+  if (tier === "locked") {
+    return {
+      allowed: false,
+      errorCode: "subscription_required",
+      errorMessage:
+        "Your subscription has ended. Resubscribe from the billing page to continue using Atlas.",
+      httpStatus: 403,
+    };
   }
 
   // BYOT workspaces skip token enforcement (unlimited when bringing own keys)

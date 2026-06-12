@@ -17,8 +17,22 @@ export type DeployModeSetting = "saas" | "self-hosted" | "auto";
 export const WORKSPACE_STATUSES = ["active", "suspended", "deleted"] as const;
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number];
 
-export const PLAN_TIERS = ["free", "trial", "starter", "pro", "business"] as const;
+// "locked" is the SaaS churn landing tier (#3421): zero entitlements,
+// resubscribe CTA. It is the landing state for subscription deletion, and
+// (by design, one tier / three consumers) for #3426's second-org-no-trial
+// policy and #3424's `unpaid` delinquency step. Self-hosted deployments
+// never produce it — "free" remains the unlimited self-hosted tier.
+export const PLAN_TIERS = ["free", "trial", "starter", "pro", "business", "locked"] as const;
 export type PlanTier = (typeof PLAN_TIERS)[number];
+
+// The catalog `min_plan` vocabulary — tiers an operator may REQUIRE for a
+// plugin. Deliberately excludes "locked": its PLAN_RANK is -1 ("satisfies
+// no gate"), so admitting it as a requirement would invert the intent —
+// every workspace, including locked ones, ranks >= -1. Validators and
+// pickers for min_plan use this tuple; workspace plan_tier reads keep
+// using PLAN_TIERS.
+export const MIN_PLAN_TIERS = ["free", "trial", "starter", "pro", "business"] as const;
+export type MinPlanTier = (typeof MIN_PLAN_TIERS)[number];
 
 export const NOISY_NEIGHBOR_METRICS = ["queries", "tokens", "storage"] as const;
 export type NoisyNeighborMetric = (typeof NOISY_NEIGHBOR_METRICS)[number];

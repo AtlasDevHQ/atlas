@@ -148,6 +148,25 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
       sla: null,
     },
   },
+  // SaaS churn landing tier (#3421): a workspace whose subscription has
+  // actually ended (customer.subscription.deleted). Zero entitlements —
+  // enforcement blocks chat/query with a resubscribe message before any
+  // budget math, and every resource cap is 0 so nothing new can be added.
+  // Never produced on self-hosted ("free" stays the unlimited tier there).
+  locked: {
+    name: "locked",
+    displayName: "Locked",
+    pricePerSeat: 0,
+    defaultModel: "anthropic/claude-haiku-4.5",
+    overagePerMillionTokens: 0,
+    limits: {
+      tokenBudgetPerSeat: 0,
+      maxSeats: 0,
+      maxConnections: 0,
+      maxChatIntegrations: 0,
+    },
+    features: { ...NO_FEATURES },
+  },
   business: {
     name: "business",
     displayName: "Business",

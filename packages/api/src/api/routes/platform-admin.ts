@@ -249,7 +249,7 @@ const changePlanRoute = createRoute({
   path: "/workspaces/{id}/plan",
   tags: ["Platform Admin"],
   summary: "Change workspace plan tier",
-  description: "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business).",
+  description: "SaaS only. Updates the plan tier for a workspace (free, trial, starter, pro, business, locked).",
   request: { body: { required: true, content: { "application/json": { schema: ChangePlanBodySchema } } } },
   responses: {
     200: {

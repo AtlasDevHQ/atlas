@@ -43,6 +43,7 @@ export const CHAT_ERROR_CODES = [
   "org_not_found",
   "plan_limit_exceeded",
   "trial_expired",
+  "subscription_required",
   "billing_check_failed",
   "workspace_check_failed",
   "workspace_suspended",
@@ -91,6 +92,7 @@ const RETRYABLE_MAP: Record<ChatErrorCode, boolean> = {
   org_not_found: false,
   plan_limit_exceeded: false,
   trial_expired: false,
+  subscription_required: false,
   billing_check_failed: true,
   workspace_check_failed: true,
   workspace_suspended: false,
@@ -678,6 +680,9 @@ export function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo 
 
     case "trial_expired":
       return { title: "Trial expired.", detail: serverMessage ?? "Upgrade to a paid plan to continue using Atlas.", code: rawCode, retryable, requestId };
+
+    case "subscription_required":
+      return { title: "Subscription required.", detail: serverMessage ?? "Your subscription has ended. Resubscribe from the billing page to continue using Atlas.", code: rawCode, retryable, requestId };
 
     case "billing_check_failed":
       return { title: "Billing check failed.", detail: serverMessage ?? "Unable to verify billing status. Please try again.", code: rawCode, retryable, requestId };

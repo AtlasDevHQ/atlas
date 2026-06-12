@@ -1518,22 +1518,18 @@ export function buildStripePluginOptions(deps: {
           });
         }
       },
+      // #3421 — fires ONCE at the active→pending-cancel transition
+      // (schedule-time, verified in plugin source): the customer is paid
+      // through period end, so NO tier change happens here. The plugin
+      // already persists cancelAtPeriodEnd/cancelAt on the subscription
+      // row for UI display (#3429), and restore needs no special handling
+      // because nothing was changed. The actual downgrade happens in
+      // onSubscriptionDeleted when Stripe ends the subscription.
       async onSubscriptionCancel({ subscription }) {
-        const orgId = subscription.referenceId;
-        if (orgId) {
-          try {
-            const updated = await updateWorkspacePlanTier(orgId, "free");
-            if (!updated) return; // helper already logged the missing org
-            invalidatePlanCache(orgId);
-            log.info({ orgId }, "Subscription canceled — downgraded to free tier");
-          } catch (err) {
-            log.error(
-              { err: errorMessage(err), orgId },
-              "Failed to downgrade plan on subscription cancel — Stripe will retry webhook",
-            );
-            throw err;
-          }
-        }
+        log.info(
+          { orgId: subscription.referenceId, subscriptionId: subscription.id },
+          "Subscription cancellation scheduled — entitlements retained until period end",
+        );
       },
       async onSubscriptionUpdate({ event, subscription }) {
         const orgId = subscription.referenceId;
@@ -1598,18 +1594,45 @@ export function buildStripePluginOptions(deps: {
           throw err;
         }
       },
+      // #3421 — the single churn landing point: Stripe emits
+      // customer.subscription.deleted when the subscription actually ends
+      // (period end after a scheduled cancel, or immediate cancellation).
+      // Lands on "locked" (zero entitlements, resubscribe CTA) — NEVER
+      // "free", which on SaaS bypasses all enforcement.
       async onSubscriptionDeleted({ subscription }) {
         const orgId = subscription.referenceId;
         if (orgId) {
           try {
-            const updated = await updateWorkspacePlanTier(orgId, "free");
+            // Stale-deletion guard (Codex review): webhook delivery is
+            // unordered, so a delayed deleted event for an OLD
+            // subscription can arrive after the org already resubscribed
+            // (a different subscription row, active/trialing). Locking
+            // then would revoke a paying customer's access. The plugin
+            // marked THIS subscription canceled before invoking the hook,
+            // so any remaining active/trialing row is a different,
+            // current subscription — skip the lock.
+            const activeRows = await internalQuery<{ id: string }>(
+              `SELECT id FROM subscription
+                WHERE "referenceId" = $1 AND status IN ('active', 'trialing')
+                  AND "stripeSubscriptionId" IS DISTINCT FROM $2
+                LIMIT 1`,
+              [orgId, subscription.stripeSubscriptionId ?? null],
+            );
+            if (activeRows.length > 0) {
+              log.info(
+                { orgId, deletedSubscriptionId: subscription.stripeSubscriptionId },
+                "Subscription deleted but another active subscription exists — skipping lock",
+              );
+              return;
+            }
+            const updated = await updateWorkspacePlanTier(orgId, "locked");
             if (!updated) return; // helper already logged the missing org
             invalidatePlanCache(orgId);
-            log.info({ orgId }, "Subscription deleted — downgraded to free tier");
+            log.info({ orgId }, "Subscription deleted — workspace locked (resubscribe to restore access)");
           } catch (err) {
             log.error(
               { err: errorMessage(err), orgId },
-              "Failed to downgrade plan on subscription delete — Stripe will retry webhook",
+              "Failed to lock workspace on subscription delete — Stripe will retry webhook",
             );
             throw err;
           }

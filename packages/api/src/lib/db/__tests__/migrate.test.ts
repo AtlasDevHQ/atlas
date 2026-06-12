@@ -146,7 +146,8 @@ describe("runMigrations", () => {
     //   Plus 0124 (DuckDB saas_eligible = false, #3301) = 125.
     //   Plus 0125 (elasticsearch auth-modes config_schema update, #3263–#3266) = 126.
     //   Plus 0126 (plugin-owned organization."stripeCustomerId", #3417) = 127.
-    expect(count).toBe(127);
+    //   Plus 0127 (chk_plan_tier widened with 'locked', #3421) = 128.
+    expect(count).toBe(128);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -302,6 +303,7 @@ describe("runMigrations", () => {
         "0124_duckdb_not_saas_eligible.sql",
         "0125_elasticsearch_auth_modes_config_schema.sql",
         "0126_org_stripe_customer_id_plugin_column.sql",
+        "0127_plan_tier_locked.sql",
       ],
     });
 
@@ -1186,6 +1188,24 @@ describe("0126_org_stripe_customer_id_plugin_column.sql", () => {
     const internalSrc = fs.readFileSync(internalPath, "utf-8");
     expect(internalSrc).toMatch(
       /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0126_org_stripe_customer_id_plugin_column\.sql"/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0127_plan_tier_locked.sql
+// ---------------------------------------------------------------------------
+
+describe("0127_plan_tier_locked.sql", () => {
+  it("is registered in MANAGED_AUTH_MIGRATIONS so non-managed deploys skip it", () => {
+    // 0127 ALTERs Better Auth's `organization` table (drops + re-adds
+    // chk_plan_tier). Non-managed-auth deploys never create that table,
+    // so applying this migration there fails boot. Pin the membership
+    // like 0126 so an `internal.ts` cleanup can't silently drop it.
+    const internalPath = path.join(import.meta.dir, "..", "internal.ts");
+    const internalSrc = fs.readFileSync(internalPath, "utf-8");
+    expect(internalSrc).toMatch(
+      /MANAGED_AUTH_MIGRATIONS\s*=\s*\[[^\]]*"0127_plan_tier_locked\.sql"/,
     );
   });
 });

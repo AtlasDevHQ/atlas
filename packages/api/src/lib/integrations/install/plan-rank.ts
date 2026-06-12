@@ -43,6 +43,10 @@ import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
  * because trials grant temporary starter-equivalent access.
  */
 export const PLAN_RANK: Readonly<Record<PlanTier, number>> = {
+  // Churn landing tier (#3421): zero entitlements, so it ranks below
+  // even `free` — a locked workspace satisfies NO min_plan gate, not
+  // even free-min integrations, until it resubscribes.
+  locked: -1,
   free: 0,
   trial: 1,
   starter: 2,
@@ -108,8 +112,10 @@ export function planRank(name: PlanTier | null | undefined): number | null {
  *
  *   - Missing `requiredPlan` → `false` (fail closed; catalog drift
  *     shouldn't admit anything).
- *   - Missing `workspacePlan` → rank 0 (most restrictive); admits
- *     only rows whose `requiredPlan` is also rank 0 (`free`).
+ *   - Missing `workspacePlan` → rank of `free` (0): "no billing
+ *     context" (self-hosted sentinel / pre-migration row) admits only
+ *     free-min rows. Distinct from `locked` (-1), which is an explicit
+ *     churn state and admits nothing.
  *
  * Accepts `PlanTier | null` — the trust-boundary narrowing happens
  * upstream via {@link parsePlanTier}.
@@ -118,8 +124,20 @@ export function isPlanEligible(
   workspacePlan: PlanTier | null | undefined,
   requiredPlan: PlanTier | null | undefined,
 ): boolean {
+  // "locked" is never a valid REQUIREMENT (its rank is -1 = "satisfies no
+  // gate"); a drifted catalog row demanding it would otherwise admit every
+  // workspace, including locked ones. Fail closed like any other invalid
+  // min_plan. The MIN_PLAN_TIERS validator keeps new rows from carrying it,
+  // this guards rows written around the validator.
+  if (requiredPlan === "locked") return false;
   const requiredRank = planRank(requiredPlan ?? null);
   if (requiredRank === null) return false;
-  const workspaceRank = planRank(workspacePlan ?? null) ?? 0;
+  // Missing/unknown workspace plan → rank of "free", NOT "locked": null
+  // means "no billing context" — the self-hosted/no-auth sentinel and
+  // pre-migration rows resolve here (see getWorkspaceEntitlement in
+  // routes/integrations.ts) and must keep installing free-min rows.
+  // "locked" is reserved for an EXPLICIT churn write; only that value
+  // carries the satisfies-no-gate -1 rank.
+  const workspaceRank = planRank(workspacePlan ?? null) ?? PLAN_RANK.free;
   return workspaceRank >= requiredRank;
 }

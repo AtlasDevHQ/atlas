@@ -72,6 +72,14 @@ const PLAN_BADGES: Record<PlanTier, BadgeDescriptor> = {
       "border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-400",
     label: "Business",
   },
+  // Churn landing tier (#3421): subscription ended, zero entitlements
+  // until resubscribe.
+  locked: {
+    Icon: CreditCard,
+    className:
+      "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400",
+    label: "Locked",
+  },
 };
 
 const NEUTRAL_BADGE: BadgeDescriptor = {

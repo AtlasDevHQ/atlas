@@ -27,7 +27,7 @@ import {
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
 import { invokeOnUninstallHookForInstallRow } from "@atlas/api/lib/plugins/uninstall-hook";
 import { getConfig } from "@atlas/api/lib/config";
-import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
+import type { MinPlanTier, PlanTier } from "@useatlas/types";
 import {
   isPlanEligible as planRankEligible,
   parsePlanTier,
@@ -48,6 +48,20 @@ const log = createLogger("admin-marketplace");
 
 const PLUGIN_TYPES = ["datasource", "context", "interaction", "action", "sandbox"] as const;
 type PluginType = (typeof PLUGIN_TYPES)[number];
+
+/**
+ * Valid `min_plan` requirement values — every plan tier EXCEPT `locked`
+ * (a churn state can never be a requirement; see plan-rank.ts).
+ *
+ * Local tuple rather than the `MIN_PLAN_TIERS` value export in
+ * `@useatlas/types`: a braced VALUE import of a symbol that the pinned
+ * published types version doesn't ship yet fails
+ * `check-published-symbols` (publish-then-bump rule). The `satisfies`
+ * ties it to the canonical `MinPlanTier` union (type-only imports are
+ * exempt — they erase), so the two can't drift; swap to the value
+ * import once types ≥0.1.18 is published and the refs are bumped.
+ */
+const MIN_PLAN_TIERS = ["free", "trial", "starter", "pro", "business"] as const satisfies readonly MinPlanTier[];
 
 /**
  * Whether the workspace's tier admits installing a plugin requiring
@@ -95,7 +109,7 @@ const CreateCatalogBodySchema = z.object({
   npmPackage: z.string().max(200).optional(),
   iconUrl: z.string().url().max(500).optional(),
   configSchema: z.unknown().optional(),
-  minPlan: z.enum(PLAN_TIERS).default("starter"),
+  minPlan: z.enum(MIN_PLAN_TIERS).default("starter"),
   enabled: z.boolean().default(true),
 });
 
@@ -106,7 +120,7 @@ const UpdateCatalogBodySchema = z.object({
   npmPackage: z.string().max(200).optional(),
   iconUrl: z.string().url().max(500).optional(),
   configSchema: z.unknown().optional(),
-  minPlan: z.enum(PLAN_TIERS).optional(),
+  minPlan: z.enum(MIN_PLAN_TIERS).optional(),
   enabled: z.boolean().optional(),
 });
 

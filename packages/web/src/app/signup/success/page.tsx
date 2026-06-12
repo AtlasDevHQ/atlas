@@ -10,8 +10,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ArrowRight, BookOpen, MessageSquare, Settings, Users } from "lucide-react";
+import { ArrowRight, BookOpen, Clock, MessageSquare, Settings, Users } from "lucide-react";
 import { SignupShell } from "@/ui/components/signup/signup-shell";
+import { useTrialStatus } from "@/ui/hooks/use-trial-status";
+import { formatDate } from "@/lib/format";
 
 interface NextStepDef {
   href: string;
@@ -78,6 +80,8 @@ export default function SuccessPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          <TrialNotice />
+
           <section aria-labelledby="prompts-heading" className="space-y-3">
             <div className="flex items-center gap-2">
               <MessageSquare className="size-4 text-primary" aria-hidden="true" />
@@ -120,6 +124,39 @@ export default function SuccessPage() {
         </CardContent>
       </Card>
     </SignupShell>
+  );
+}
+
+/**
+ * Trial honesty at signup completion (#3434): the pricing page promised a
+ * "14-day free trial", so the moment the workspace exists we say when it
+ * started and when it ends — instead of the clock first surfacing as an
+ * admin-only banner (or, for members, a hard 403 at expiry).
+ *
+ * Renders nothing while loading, off-trial, and on self-hosted deploys
+ * (where /api/v1/trial answers `trial: null`).
+ */
+function TrialNotice() {
+  const { trial, loading } = useTrialStatus();
+  if (loading || !trial) return null;
+
+  return (
+    <div
+      role="status"
+      data-testid="signup-trial-notice"
+      className="flex items-start gap-3 rounded-md border border-blue-500/30 bg-blue-500/5 px-3 py-2.5 text-left"
+    >
+      <Clock className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+      <div className="space-y-0.5 text-sm">
+        <p className="font-medium">
+          Your {trial.trialDays}-day free trial started {formatDate(trial.startedAt)}.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Full access until {formatDate(trial.endsAt)} — no charges until you pick a plan.
+          Workspace admins can upgrade anytime in Admin → Billing.
+        </p>
+      </div>
+    </div>
   );
 }
 

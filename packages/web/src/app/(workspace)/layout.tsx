@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { cookies } from "next/headers";
 import { WorkspaceShell } from "@/ui/components/workspace-shell";
+import { TrialStatusBanner } from "@/ui/components/trial-status-banner";
 
 // Server layout. Reads the persisted `sidebar_state` cookie once when entering
 // the workspace route group so the rail's collapsed/expanded state survives
@@ -18,6 +19,9 @@ export default async function WorkspaceLayout({
 
   return (
     <Suspense>
+      {/* Trial clock visible to EVERY member (#3434) — the admin pages have
+          their own TrialCountdownBanner; this is the non-admin surface. */}
+      <TrialStatusBanner />
       <WorkspaceShell sidebarDefaultOpen={sidebarDefaultOpen}>
         {children}
       </WorkspaceShell>

@@ -130,9 +130,18 @@ export function assertPlatformInvitationRole(role: unknown): void {
 
 /**
  * Seat-limit gate. Counts current members + pending invitations against
- * the target org's plan cap and throws `APIError("TOO_MANY_REQUESTS")` on
- * over-limit. TOCTOU is acceptable here — invitation creation is
- * low-frequency and the next call catches any overshoot.
+ * the target org's plan cap. Throws per the `ResourceLimitResult` error-arm
+ * contract (`lib/billing/enforcement.ts`), keeping the two `allowed: false`
+ * arms distinct (#3433):
+ *
+ *   - `cap_reached`  → `APIError("TOO_MANY_REQUESTS")` (429) — genuine plan
+ *     cap; the actionable response is "upgrade your plan".
+ *   - `check_failed` → `APIError("SERVICE_UNAVAILABLE")` (503) — the count
+ *     couldn't be verified (infra fault). Still fail-closed, but the
+ *     actionable response is "try again", never an upgrade prompt.
+ *
+ * TOCTOU is acceptable here — invitation creation is low-frequency and the
+ * next call catches any overshoot.
  *
  * Fails open on Postgres transport errors so a pool restart doesn't block
  * legitimate invites; escalates on programmer/SQL errors so they surface
@@ -150,6 +159,14 @@ export async function enforceInvitationSeatLimit(orgId: string): Promise<void> {
     const seatCount = rows[0]?.count ?? 0;
     const resourceCheck = await checkResourceLimit(orgId, "seats", seatCount);
     if (!resourceCheck.allowed) {
+      if (resourceCheck.reason === "check_failed") {
+        // Infra fault, not a plan cap — Better Auth surfaces the APIError's
+        // status directly, so the caller sees a 503 "try again" instead of
+        // a misleading 429 "upgrade your plan".
+        throw new APIError("SERVICE_UNAVAILABLE", {
+          message: resourceCheck.errorMessage ?? "Unable to verify plan limits. Please try again.",
+        });
+      }
       throw new APIError("TOO_MANY_REQUESTS", {
         message: resourceCheck.errorMessage ?? "Workspace seat limit reached.",
       });

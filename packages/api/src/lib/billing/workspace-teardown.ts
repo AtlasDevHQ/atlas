@@ -60,6 +60,27 @@ function noopOutcome(): StripeTeardownOutcome {
 }
 
 /**
+ * Audit-metadata fragment recording the Stripe teardown outcome on the
+ * admin action row — empty when nothing was attempted (self-hosted /
+ * no-Stripe), so no-op deployments don't grow a misleading `stripe` key.
+ * Shared by the platform-admin and admin-orgs lifecycle routes (#3459).
+ */
+export function stripeAuditMetadata(billing: StripeTeardownOutcome): Record<string, unknown> {
+  return billing.attempted
+    ? { stripe: { actions: billing.actions, warnings: billing.warnings } }
+    : {};
+}
+
+/**
+ * Response fragment surfacing Stripe teardown failures to the operator —
+ * a Stripe API failure must never strand the operation silently (#3425).
+ * Shared by the platform-admin and admin-orgs lifecycle routes (#3459).
+ */
+export function withWarnings(billing: StripeTeardownOutcome): { warnings?: string[] } {
+  return billing.warnings.length > 0 ? { warnings: billing.warnings } : {};
+}
+
+/**
  * Subscription statuses that need no remote action — Stripe already
  * considers them terminated.
  */

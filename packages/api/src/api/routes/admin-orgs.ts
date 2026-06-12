@@ -24,6 +24,13 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import {
+  cancelStripeSubscriptionsForWorkspace,
+  pauseStripeCollectionForWorkspace,
+  resumeStripeCollectionForWorkspace,
+  stripeAuditMetadata,
+  withWarnings,
+} from "@atlas/api/lib/billing/workspace-teardown";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -111,6 +118,9 @@ const OrgStatsSchema = z.object({
 const WorkspaceActionResponseSchema = z.object({
   message: z.string(),
   organization: z.unknown(),
+  // Stripe teardown failures surface to the operator for manual follow-up
+  // in the Stripe dashboard (#3459) — never stranded silently.
+  warnings: z.array(z.string()).optional(),
 });
 
 const DeleteCascadeSchema = z.object({
@@ -623,6 +633,12 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     // Drop the cached `getCachedWorkspace` entry so the next user-side
     // request sees the new status within its TTL window (#2165).
     invalidatePlanCache(orgId);
+    // Suspension billing policy (#3425, wired here by #3459): pause Stripe
+    // payment collection — a suspended workspace can't use the product, so
+    // it must not keep being invoiced/dunned. The subscription stays alive
+    // so activating restores billing. Stripe failures surface as operator
+    // warnings; the suspend stands.
+    const billing = yield* Effect.promise(() => pauseStripeCollectionForWorkspace(orgId));
     // Audit the mutation commit BEFORE the pool drain — a transient
     // `drainOrg` rejection must not silently drop the audit row after
     // the DB already flipped to suspended. Drain failure still fails
@@ -632,13 +648,14 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
       targetType: "workspace",
       targetId: orgId,
       scope: "platform",
+      metadata: stripeAuditMetadata(billing),
       ipAddress: clientIpFor(c),
     });
     if (connections.isOrgPoolingEnabled()) yield* Effect.promise(() => connections.drainOrg(orgId));
 
-    log.info({ orgId, requestId, admin: user?.id }, "Workspace suspended");
+    log.info({ orgId, requestId, admin: user?.id, stripe: billing }, "Workspace suspended");
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
-    return c.json({ message: "Workspace suspended. All queries are blocked until reactivation.", organization: updated }, 200);
+    return c.json({ message: "Workspace suspended. All queries are blocked until reactivation.", organization: updated, ...withWarnings(billing) }, 200);
   }), { label: "suspend workspace" });
 });
 
@@ -657,7 +674,10 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
 
     yield* Effect.promise(() => updateWorkspaceStatus(orgId, "active"));
     invalidatePlanCache(orgId); // #2165 — see suspend handler above
-    log.info({ orgId, requestId, admin: user?.id }, "Workspace activated");
+    // Resume Stripe payment collection paused at suspension time (#3459) —
+    // see the suspend handler above for the pause-collection policy.
+    const billing = yield* Effect.promise(() => resumeStripeCollectionForWorkspace(orgId));
+    log.info({ orgId, requestId, admin: user?.id, stripe: billing }, "Workspace activated");
     // Canonical action_type is `workspace.unsuspend` (not
     // `workspace.activate`) — the endpoint path deliberately differs
     // from the audit event so compliance queries filtering on a single
@@ -667,10 +687,11 @@ adminOrgs.openapi(activateOrgRoute, async (c) => {
       targetType: "workspace",
       targetId: orgId,
       scope: "platform",
+      metadata: stripeAuditMetadata(billing),
       ipAddress: clientIpFor(c),
     });
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
-    return c.json({ message: "Workspace activated. Normal operations resumed.", organization: updated }, 200);
+    return c.json({ message: "Workspace activated. Normal operations resumed.", organization: updated, ...withWarnings(billing) }, 200);
   }), { label: "activate workspace" });
 });
 
@@ -707,6 +728,15 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     }
     flushCache();
 
+    // Cancel Stripe billing BEFORE the cascade (#3425, wired here by
+    // #3459): a deleted org must stop invoicing even if the cascade below
+    // fails, and the @better-auth/stripe plugin's own guard blocks
+    // user-initiated org deletion while subscriptions exist — this
+    // direct-DB path honors the same ordering rather than bypassing it.
+    // Stripe failures join the existing `warnings` array; delete proceeds.
+    const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(orgId));
+    warnings.push(...billing.warnings);
+
     const cascade = yield* Effect.tryPromise({
       try: () => cascadeWorkspaceDelete(orgId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -717,7 +747,7 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     });
     invalidatePlanCache(orgId); // #2165 — see suspend handler above
 
-    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings }, "Workspace soft-deleted with cascading cleanup");
+    log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained, warnings, stripe: billing }, "Workspace soft-deleted with cascading cleanup");
     // `cleanup` mirrors platform-admin.ts. `poolsDrained`/`warnings`
     // are additive — admin-orgs drains pools, platform-admin doesn't.
     logAdminAction({
@@ -728,6 +758,7 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
       metadata: {
         cleanup: cascade,
         poolsDrained,
+        ...stripeAuditMetadata(billing),
         ...(warnings.length > 0 ? { warnings } : {}),
       },
       ipAddress: clientIpFor(c),

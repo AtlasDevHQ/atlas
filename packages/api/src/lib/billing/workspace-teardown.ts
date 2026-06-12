@@ -299,7 +299,7 @@ async function voidOpenInvoicesForSubscription(
   const stripe = getStripeClient();
   if (!stripe) return; // callers gate before reaching here
 
-  let openInvoiceIds: string[] = [];
+  let openInvoiceIds: string[];
   try {
     // One page of 100 — a single subscription cannot accumulate more
     // open invoices than that within Stripe's ~3-week dunning horizon.

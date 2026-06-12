@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -26,6 +25,7 @@ import {
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useBillingPortal } from "@/ui/hooks/use-billing-portal";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
@@ -272,46 +272,18 @@ function SelfHostedEmptyState() {
 // ── Plan shell ────────────────────────────────────────────────────
 
 function PlanShell({ data }: { data: BillingStatus }) {
-  const [portalError, setPortalError] = useState<string | null>(null);
   const { plan, usage, subscription } = data;
   const seatCount = data.seats?.count ?? usage.seatCount;
   const totalMonthly = plan.pricePerSeat * seatCount;
   const overage = data.overagePerMillionTokens ?? 0;
 
-  const {
-    mutate,
-    saving,
-    error: portalMutationError,
-    clearError: clearPortalMutation,
-  } = useAdminMutation<{
-    url?: string;
-  }>({
-    path: "/api/v1/billing/portal",
-    method: "POST",
-  });
+  // #3417 — the portal goes through the Better Auth Stripe plugin
+  // (authClient.subscription.billingPortal), not an Atlas route. The
+  // plugin returns structured error codes that the hook flattens to
+  // actionable copy; there is no enterprise_required arm on this
+  // endpoint, so a plain ErrorBanner suffices.
+  const { openPortal, opening, error: portalError } = useBillingPortal();
 
-  async function openBillingPortal() {
-    setPortalError(null);
-    const result = await mutate({ body: { returnUrl: window.location.href } });
-    if (!result.ok) return;
-    if (result.data?.url) {
-      window.location.href = result.data.url;
-    } else {
-      console.warn("Billing portal: 200 response but no URL returned", result.data);
-      setPortalError("Billing portal URL was not returned. Please contact support.");
-    }
-  }
-
-  // Structured mutation error wins over the local string: a 403
-  // `enterprise_required` on a plan that doesn't expose a Stripe portal
-  // must route into <EnterpriseUpsell>, which means we can't flatten the
-  // FetchError into portalError's string slot. portalError (the
-  // 200-but-missing-URL degraded-success copy) only surfaces when no
-  // structured error is pinned. The two are mutually exclusive by
-  // construction — openBillingPortal() clears portalError at call start
-  // and useAdminMutation clears portalMutationError at call start — so
-  // the retry handler below clears both defensively, keeping them
-  // exclusive on a user-driven dismiss too.
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
@@ -326,9 +298,9 @@ function PlanShell({ data }: { data: BillingStatus }) {
       status={status}
       actions={
         subscription ? (
-          <Button onClick={openBillingPortal} disabled={saving} size="sm">
+          <Button onClick={openPortal} disabled={opening} size="sm">
             <CreditCard className="mr-1.5 size-3.5" />
-            {saving ? "Opening…" : "Open billing portal"}
+            {opening ? "Opening…" : "Open billing portal"}
             <ExternalLink className="ml-1.5 size-3" />
           </Button>
         ) : undefined
@@ -393,17 +365,7 @@ function PlanShell({ data }: { data: BillingStatus }) {
         )}
       </DetailList>
 
-      <MutationErrorSurface
-        error={portalMutationError}
-        feature="Billing"
-        onRetry={() => {
-          clearPortalMutation();
-          setPortalError(null);
-        }}
-      />
-      {!portalMutationError && portalError && (
-        <ErrorBanner message={portalError} />
-      )}
+      {portalError && <ErrorBanner message={portalError} />}
       {!subscription && plan.pricePerSeat > 0 && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           No active subscription — portal access opens after you subscribe.

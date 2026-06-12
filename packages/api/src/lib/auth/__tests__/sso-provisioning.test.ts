@@ -78,7 +78,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   makeInternalDBLive: () => {},
   createInternalDBTestLayer: () => {},
   updateWorkspaceByot: async () => {},
-  setWorkspaceStripeCustomerId: async () => {},
   setWorkspaceTrialEndsAt: async () => {},
   InternalDB: {},
 }));

@@ -1,0 +1,19 @@
+-- 0126: ensure the @better-auth/stripe plugin's organization customer
+-- column exists regardless of Stripe configuration (#3417).
+--
+-- With org mode enabled (#3416), the plugin owns the camelCase
+-- "stripeCustomerId" column on Better Auth's organization table: it is
+-- created by Better Auth's own runMigrations() at boot — but ONLY when the
+-- Stripe plugin is loaded (STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET set).
+-- Atlas readers (getWorkspaceDetails, the platform-admin workspace list)
+-- now SELECT this column unconditionally in managed mode, so it must exist
+-- even on deployments that never configure Stripe. ADD COLUMN IF NOT EXISTS
+-- makes the two writers (this migration, Better Auth's) order-independent
+-- and idempotent.
+--
+-- The legacy snake_case `stripe_customer_id` column (0027) is dead: its
+-- only writer, setWorkspaceStripeCustomerId, never had a production call
+-- site and is deleted in the same PR as this migration. Per the two-phase
+-- drop discipline the column itself is dropped in a later release, after
+-- this release has stopped reading it.
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS "stripeCustomerId" TEXT;

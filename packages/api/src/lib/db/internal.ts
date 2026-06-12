@@ -881,6 +881,9 @@ export const MANAGED_AUTH_MIGRATIONS = [
   "0115_org_last_active_at.sql",
   // Backfills "member" + clears Better Auth's "user".role = 'admin' (#2890).
   "0118_drop_user_admin_role.sql",
+  // Adds the @better-auth/stripe plugin's "stripeCustomerId" column to
+  // Better Auth's "organization" table (#3417).
+  "0126_org_stripe_customer_id_plugin_column.sql",
 ];
 
 /**
@@ -1751,6 +1754,14 @@ export interface WorkspaceRow {
   workspace_status: WorkspaceStatus;
   plan_tier: PlanTier;
   byot: boolean;
+  /**
+   * Sourced from the @better-auth/stripe plugin's camelCase
+   * `"stripeCustomerId"` column (aliased in the SELECT) — the plugin owns
+   * the value and writes it lazily at the org's first
+   * `/subscription/upgrade` (#3417). The legacy snake_case
+   * `stripe_customer_id` column (0027) is unread and unwritten, pending
+   * a phase-2 drop.
+   */
   stripe_customer_id: string | null;
   trial_ends_at: string | null;
   suspended_at: string | null;
@@ -1803,7 +1814,7 @@ export async function getWorkspaceNamesByIds(
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<WorkspaceRow>(
-    `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
+    `SELECT id, name, slug, workspace_status, plan_tier, byot, "stripeCustomerId" AS stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
     [orgId],
   );
@@ -2177,19 +2188,9 @@ export async function updateWorkspaceByot(
   return rows.length > 0;
 }
 
-/**
- * Set the Stripe customer ID for a workspace.
- */
-export async function setWorkspaceStripeCustomerId(
-  orgId: string,
-  stripeCustomerId: string,
-): Promise<boolean> {
-  const rows = await internalQuery<{ id: string }>(
-    `UPDATE organization SET stripe_customer_id = $1 WHERE id = $2 RETURNING id`,
-    [stripeCustomerId, orgId],
-  );
-  return rows.length > 0;
-}
+// setWorkspaceStripeCustomerId was deleted in #3417: the @better-auth/stripe
+// plugin owns organization."stripeCustomerId" (written lazily at first
+// /subscription/upgrade) — Atlas never writes the customer id itself.
 
 /**
  * Set the trial end date for a workspace.

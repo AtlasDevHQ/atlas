@@ -2,17 +2,20 @@
  * Billing API routes.
  *
  * Mounted at /api/v1/billing (conditionally, when STRIPE_SECRET_KEY is set).
- * Provides subscription status, Stripe Customer Portal access, and BYOT toggle.
+ * Provides subscription status and the BYOT toggle.
  *
- * Checkout and webhook routes are handled by the Better Auth Stripe plugin
- * at /api/auth/stripe/* — this file only adds Atlas-specific billing endpoints.
+ * Checkout, webhook, AND Customer Portal routes are handled by the Better
+ * Auth Stripe plugin at /api/auth/* — this file only adds Atlas-specific
+ * billing endpoints. The hand-rolled POST /portal route was deleted in
+ * #3417: the plugin's org-aware `/api/auth/subscription/billing-portal`
+ * (driven from the web client via `authClient.subscription.billingPortal`)
+ * replaced it, reading the plugin-owned organization."stripeCustomerId"
+ * and enforcing `authorizeReference`.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
-import Stripe from "stripe";
-import { STRIPE_API_VERSION } from "@atlas/api/lib/billing/stripe-api-version";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -40,54 +43,8 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("billing");
 
 // ---------------------------------------------------------------------------
-// Portal rate limiter — 5 requests per workspace per hour (in-memory)
-// ---------------------------------------------------------------------------
-
-const PORTAL_RATE_LIMIT = 5;
-const PORTAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-
-interface PortalRateEntry {
-  count: number;
-  resetAt: number;
-}
-
-const portalRateMap = new Map<string, PortalRateEntry>();
-
-/**
- * Check whether a workspace has exceeded the portal session rate limit.
- * Returns `{ allowed: true }` or `{ allowed: false, retryAfterSec }`.
- */
-function checkPortalRateLimit(orgId: string): { allowed: true } | { allowed: false; retryAfterSec: number } {
-  const now = Date.now();
-  const entry = portalRateMap.get(orgId);
-
-  if (!entry || now >= entry.resetAt) {
-    // Window expired or first request — start fresh
-    portalRateMap.set(orgId, { count: 1, resetAt: now + PORTAL_WINDOW_MS });
-    return { allowed: true };
-  }
-
-  if (entry.count < PORTAL_RATE_LIMIT) {
-    entry.count++;
-    return { allowed: true };
-  }
-
-  const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
-  return { allowed: false, retryAfterSec };
-}
-
-/** Reset portal rate limit state. For tests. */
-export function _resetPortalRateLimits(): void {
-  portalRateMap.clear();
-}
-
-// ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const PortalRequestSchema = z.object({
-  returnUrl: z.string().optional(),
-});
 
 const ByotRequestSchema = z.object({
   enabled: z.boolean(),
@@ -127,59 +84,6 @@ const getBillingStatusRoute = createRoute({
     },
     404: {
       description: "Billing not available or workspace not found",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-  },
-});
-
-const createPortalSessionRoute = createRoute({
-  method: "post",
-  path: "/portal",
-  tags: ["Billing"],
-  summary: "Create Stripe portal session",
-  description:
-    "Creates a Stripe Customer Portal session for the active workspace. Returns a URL to redirect the user to.",
-  request: {
-    body: {
-      required: false,
-      content: {
-        "application/json": {
-          schema: PortalRequestSchema,
-        },
-      },
-    },
-  },
-  responses: {
-    200: {
-      description: "Portal session URL",
-      content: {
-        "application/json": {
-          schema: z.object({ url: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "No active organization or no Stripe customer",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
-    },
-    403: {
-      description: "Forbidden — insufficient permissions",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
-    },
-    404: {
-      description: "Billing not available",
       content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
@@ -424,60 +328,6 @@ billing.openapi(getBillingStatusRoute, async (c) => {
 
 // GET /status is accessible via the root handler since billing is mounted
 // at /api/v1/billing — both /api/v1/billing and /api/v1/billing/status work.
-
-// POST /portal — create Stripe Customer Portal session
-billing.openapi(createPortalSessionRoute, async (c) => {
-  return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Billing is not available." }, 404);
-    }
-
-    if (!orgId) {
-      return c.json({ error: "org_required", message: "No active organization." }, 400);
-    }
-
-    // Rate limit: max 5 portal sessions per workspace per hour
-    const rl = checkPortalRateLimit(orgId);
-    if (!rl.allowed) {
-      const minutes = Math.ceil(rl.retryAfterSec / 60);
-      return c.json(
-        {
-          error: "rate_limited",
-          message: `Too many portal requests. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-          retryAfter: rl.retryAfterSec,
-        },
-        { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
-      );
-    }
-
-    const workspace = yield* Effect.promise(() => getWorkspaceDetails(orgId));
-    if (!workspace?.stripe_customer_id) {
-      return c.json({ error: "no_customer", message: "No Stripe customer associated with this workspace. Subscribe to a plan first." }, 400);
-    }
-
-    let returnUrl: string | undefined;
-    try {
-      const body = c.req.valid("json");
-      returnUrl = body.returnUrl;
-    } catch (err) {
-      // No body is fine — returnUrl is optional. Log if validation failed on a present body.
-      log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
-    }
-
-    // Non-null: guarded by the !workspace?.stripe_customer_id check above
-    const customerId = workspace.stripe_customer_id!;
-    const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: STRIPE_API_VERSION });
-    const session = yield* Effect.promise(() => stripeClient.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",
-    }));
-
-    return c.json({ url: session.url }, 200);
-  }), { label: "create portal session" });
-});
 
 // POST /byot — toggle BYOT (Bring Your Own Token) mode
 billing.openapi(toggleByotRoute, async (c) => {

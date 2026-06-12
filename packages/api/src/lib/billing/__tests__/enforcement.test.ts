@@ -62,7 +62,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   _resetCircuitBreaker: () => {},
   updateWorkspacePlanTier: async () => true,
   updateWorkspaceByot: async () => true,
-  setWorkspaceStripeCustomerId: async () => true,
   setWorkspaceTrialEndsAt: async () => true,
   setWorkspaceRegion: async () => {},
   insertSemanticAmendment: async () => "mock-amendment-id",

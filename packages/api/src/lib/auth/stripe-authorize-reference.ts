@@ -27,13 +27,20 @@
  * post-#2890) short-circuits to allow before the member lookup, mirroring
  * `resolveEffectiveRole`.
  *
- * Fails CLOSED: a member-table lookup error denies (billing actions are
- * high-privilege; a transient DB blip must never authorize a checkout or
- * portal session against someone else's org). Both the no-membership and
- * the error paths log — a denial here is either an authz probe or a
+ * Fails CLOSED, in two distinct ways:
+ *   - Authz-shaped denials (wrong customerType, no membership, role too
+ *     low, no internal DB) return `false` → the plugin's 401.
+ *   - A member-table lookup ERROR throws 503 instead: per the
+ *     error-handling rule ("`catch { return false }` on a security check
+ *     is a bug — return 500, not a false negative"), a transient DB blip
+ *     must surface as a retryable server error, not masquerade as "not
+ *     authorized" to a legitimate billing admin. It still never
+ *     authorizes anything.
+ * Both denial paths log — a denial here is either an authz probe or a
  * client-side wiring bug, and both should be visible.
  */
 
+import { APIError } from "better-auth/api";
 import type { AuthorizeReferenceAction } from "@better-auth/stripe";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -88,9 +95,14 @@ export async function authorizeStripeReference(data: {
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), userId: user.id, referenceId, action },
-      "Member lookup failed during subscription authorizeReference — denying (fail closed)",
+      "Member lookup failed during subscription authorizeReference — failing the request (503), not the authz check",
     );
-    return false;
+    // NOT `return false`: that would convert a transient DB error into a
+    // 401 for a legitimate billing admin. 503 is retryable and still
+    // authorizes nothing.
+    throw new APIError("SERVICE_UNAVAILABLE", {
+      message: "Billing authorization is temporarily unavailable. Please retry.",
+    });
   }
 
   if (!role) {

@@ -7,7 +7,8 @@
  *   - plain member → allowed ONLY for list-subscription; denied for the
  *     four money-moving actions (upgrade / cancel / restore / billing-portal).
  *   - non-member → denied for everything (including list).
- *   - member-table lookup error → denied (fail closed), logged at error.
+ *   - member-table lookup error → throws 503 (retryable server error, not
+ *     a 401 false-negative), logged at error. Still authorizes nothing.
  *   - no internal DB → denied (org-scoped billing requires managed auth).
  *   - customerType ≠ "organization" → denied for everyone, including
  *     platform_admin and org owners (Atlas has no user-scoped
@@ -196,16 +197,16 @@ describe("authorizeStripeReference — org-scope requirement", () => {
 });
 
 describe("authorizeStripeReference — failure modes", () => {
-  it("fails closed when the member lookup throws", async () => {
+  it("throws 503 when the member lookup errors — a DB blip must not become a 401 false-negative", async () => {
     mockInternalQuery.mockImplementation(() => Promise.reject(new Error("pg blip")));
-    expect(
-      await authorizeStripeReference({
+    await expect(
+      authorizeStripeReference({
         customerType: "organization",
         user: { id: "user-1", role: "user" },
         referenceId: "org-1",
         action: "upgrade-subscription",
       }),
-    ).toBe(false);
+    ).rejects.toMatchObject({ status: "SERVICE_UNAVAILABLE" });
     expect(mockLogError).toHaveBeenCalledTimes(1);
   });
 

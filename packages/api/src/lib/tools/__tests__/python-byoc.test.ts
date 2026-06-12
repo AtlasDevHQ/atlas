@@ -132,11 +132,16 @@ mock.module("@atlas/api/lib/sandbox/runtime", () => ({
         return mockByocResult.create();
       }
       case "null":
+        // Not engaged — the real contract never invokes the thunk here.
         byocCalls.push({ orgId, backendId, options: {} });
         return null;
-      case "throw":
-        byocCalls.push({ orgId, backendId, options: {} });
+      case "throw": {
+        // Engaged-but-failed — the real contract invokes the thunk before
+        // construction throws, so the mock mirrors that ordering.
+        const options = await getOptions();
+        byocCalls.push({ orgId, backendId, options });
         throw new Error(mockByocResult.message);
+      }
     }
   },
 }));

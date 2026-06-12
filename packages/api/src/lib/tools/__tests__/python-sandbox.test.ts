@@ -4,13 +4,25 @@ import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 // Mocks
 // ---------------------------------------------------------------------------
 
+const silentLogger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  child: () => silentLogger,
+};
+
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    debug: () => {},
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-  }),
+  ACTOR_KINDS: ["human", "agent", "mcp", "scheduler"] as const,
+  createLogger: () => silentLogger,
+  getLogger: () => silentLogger,
+  withRequestContext: <T,>(_ctx: unknown, fn: () => T) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+  scrubErrSerializer: (value: unknown) => value,
+  scrubLogFormatter: (value: unknown) => value,
+  hashShareToken: (token: string) => token,
+  setLogLevel: () => true,
 }));
 
 mock.module("@atlas/api/lib/tracing", () => ({
@@ -20,6 +32,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 
 mock.module("@atlas/api/lib/security", () => ({
   SENSITIVE_PATTERNS: /postgresql:\/\/|mysql:\/\/|sk-ant-/,
+  maskConnectionUrl: (url: string) => url,
 }));
 
 // --- @vercel/sandbox mock infrastructure ---

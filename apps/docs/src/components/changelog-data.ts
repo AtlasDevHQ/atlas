@@ -20,6 +20,23 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.13",
+    title: "Billing Checkout & Elasticsearch Datasource",
+    date: "2026-06-12",
+    summary:
+      "Trials can now become paid plans without leaving the product. The admin billing page gained a self-serve plan picker and Stripe checkout, subscriptions are correctly scoped to your organization, and the billing portal works for managing payment methods and invoices. Behind the scenes, Stripe webhook processing is now durable — every event lands in an idempotency ledger with out-of-order protection, and a periodic reconciliation sweep heals any drift between Stripe and your workspace's plan. Elasticsearch and OpenSearch also arrive as first-class datasources, installable from the marketplace with four auth modes and both SQL and Query DSL surfaces.",
+    highlights: [
+      "Self-serve checkout — pick a plan and pay from Admin → Billing; the trial-to-paid dead end is closed (#3418)",
+      "Org-scoped subscriptions — billing attaches to your organization, not the individual admin who clicked, so teams aren't stranded when an admin leaves (#3416)",
+      "Billing portal fixed — manage payment methods, invoices, and cancellation via Stripe's portal (#3417)",
+      "Churned organizations land on a locked tier instead of silently reverting to unlimited free usage (#3421)",
+      "Durable webhook sync — Stripe events are recorded in an idempotency ledger with out-of-order protection, and a reconciliation sweep self-heals plan drift (#3423)",
+      "Elasticsearch/OpenSearch datasource — marketplace-installable, API key / Basic / Cloud ID / AWS SigV4 auth, SQL + Query DSL query surfaces, semantic-layer whitelist enforcement (#3259)",
+      "Uniform plugin-datasource onboarding — ClickHouse, Snowflake, and BigQuery are now form-installable on SaaS via one repeatable install pipeline (#3295, #3300)",
+      "Bring-your-own-compute sandboxes — E2B and Daytona runtimes ship in the SaaS image and cover both the explore and Python tools (#3409, #3413)",
+    ],
+  },
+  {
     version: "v0.0.12",
     title: "Semantic Layer Onboarding",
     date: "2026-06-06",

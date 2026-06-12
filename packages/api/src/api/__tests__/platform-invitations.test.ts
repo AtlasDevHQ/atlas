@@ -63,7 +63,7 @@ mock.module("@atlas/api/lib/email/hooks", () => ({
 
 // Billing enforcement — by default allow every seat check.
 const mockCheckResourceLimit = mock<
-  (orgId: string, resource: string, count: number) => Promise<{ allowed: boolean; errorMessage?: string }>
+  (orgId: string, resource: string, count: number) => Promise<{ allowed: boolean; reason?: "cap_reached" | "check_failed"; errorMessage?: string; limit?: number }>
 >(async () => ({ allowed: true }));
 
 mock.module("@atlas/api/lib/billing/enforcement", () => ({
@@ -374,7 +374,9 @@ describe("POST /api/v1/platform/invitations", () => {
     mocks.mockInternalQuery.mockImplementation(defaultQueryHandler({ seatCount: 5 }));
     mockCheckResourceLimit.mockImplementation(async () => ({
       allowed: false,
+      reason: "cap_reached",
       errorMessage: "Workspace seat limit reached.",
+      limit: 5,
     }));
 
     const res = await app.request(
@@ -387,6 +389,38 @@ describe("POST /api/v1/platform/invitations", () => {
     expect(res.status).toBe(429);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("seat_limit");
+  });
+
+  it("returns 503 billing_check_failed when the seat count can't be verified (#3433)", async () => {
+    // `checkResourceLimit` failed closed with `check_failed` — an infra
+    // fault, not a plan cap. The invite is still blocked, but the caller
+    // must see a transient "try again", never "seat limit — upgrade".
+    // Clear accumulated calls from earlier tests so the INSERT assertion
+    // below only sees this request's queries.
+    mocks.mockInternalQuery.mockClear();
+    mocks.mockInternalQuery.mockImplementation(defaultQueryHandler());
+    mockCheckResourceLimit.mockImplementation(async () => ({
+      allowed: false,
+      reason: "check_failed",
+      errorMessage: "Unable to verify plan limits. Please try again.",
+    }));
+
+    const res = await app.request(
+      platformRequest("POST", "/api/v1/platform/invitations", {
+        organizationId: "target-org",
+        email: "newuser@example.com",
+        role: "member",
+      }),
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("billing_check_failed");
+    expect(body.message).toMatch(/try again/i);
+    // Fail-closed: the invitation row was never inserted.
+    const insertCalls = mocks.mockInternalQuery.mock.calls.filter(
+      ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO invitation"),
+    );
+    expect(insertCalls.length).toBe(0);
   });
 
   it("normalizes email to lowercase before dedup + insert", async () => {

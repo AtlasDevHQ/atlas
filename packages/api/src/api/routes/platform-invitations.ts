@@ -96,8 +96,11 @@ const createInvitationRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "User already a member or already invited", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Seat limit reached", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Seat limit reached: `seat_limit`", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    // The seat count couldn't be verified (infra fault) — fail-closed with
+    // a transient "try again", not an upgrade prompt (#3433).
+    503: { description: "Billing/plan-limit check unavailable: `billing_check_failed`", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -344,14 +347,25 @@ platformInvitations.openapi(createInvitationRoute, async (c) => {
     if (seatLimit._tag === "Left") {
       const err = seatLimit.left;
       if (err instanceof APIError) {
-        const status = err.status === "TOO_MANY_REQUESTS" ? 429 : 500;
+        // Mirror the helper's error-arm contract (#3433): TOO_MANY_REQUESTS
+        // is a genuine seat cap (429 "upgrade"); SERVICE_UNAVAILABLE means
+        // the count couldn't be verified (503 "try again"). Anything else
+        // is a programmer error → 500.
+        if (err.status === "TOO_MANY_REQUESTS") {
+          return c.json(
+            { error: "seat_limit", message: err.body?.message ?? "Workspace seat limit reached.", requestId },
+            429,
+          );
+        }
+        if (err.status === "SERVICE_UNAVAILABLE") {
+          return c.json(
+            { error: "billing_check_failed", message: err.body?.message ?? "Unable to verify plan limits. Please try again.", requestId },
+            503,
+          );
+        }
         return c.json(
-          {
-            error: status === 429 ? "seat_limit" : "internal_error",
-            message: err.body?.message ?? "Seat-limit check failed.",
-            requestId,
-          },
-          status,
+          { error: "internal_error", message: err.body?.message ?? "Seat-limit check failed.", requestId },
+          500,
         );
       }
       log.error({ err: errorMessage(err), organizationId, requestId }, "Seat-limit check threw unexpectedly");

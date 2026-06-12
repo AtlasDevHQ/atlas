@@ -51087,7 +51087,7 @@
             }
           },
           "429": {
-            "description": "Rate limit exceeded",
+            "description": "Rate limit exceeded, or plan connection limit reached: `plan_limit_exceeded`",
             "content": {
               "application/json": {
                 "schema": {
@@ -51099,6 +51099,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable: `billing_check_failed`",
             "content": {
               "application/json": {
                 "schema": {
@@ -72704,7 +72729,7 @@
             }
           },
           "429": {
-            "description": "Seat limit reached",
+            "description": "Seat limit reached: `seat_limit`",
             "content": {
               "application/json": {
                 "schema": {
@@ -72730,6 +72755,31 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Billing/plan-limit check unavailable: `billing_check_failed`",
             "content": {
               "application/json": {
                 "schema": {

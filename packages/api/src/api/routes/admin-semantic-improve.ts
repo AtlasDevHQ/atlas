@@ -17,6 +17,7 @@ import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import type { Context as HonoContext } from "hono";
 import { runAgent } from "@atlas/api/lib/agent";
+import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import {
   createSession,
@@ -136,8 +137,23 @@ const chatStreamRoute = createRoute({
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
+    403: {
+      description:
+        "Blocked by billing enforcement (#3437) — workspace suspended/deleted, trial expired, or subscription ended",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description:
+        "Blocked by billing enforcement (#3437) — plan token budget exceeded, or abuse throttle (carries Retry-After)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    503: {
+      description:
+        "Billing enforcement could not verify workspace status (fail-closed, retryable)",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
@@ -373,6 +389,36 @@ adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
 
     if (stored && stored.orgId !== orgId) {
       return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
+    }
+
+    // #3437 — billing enforcement before any LLM spend. The expert agent
+    // runs on platform tokens and its usage IS metered against the
+    // workspace budget (`runAgent` → `recordUsage`), so the run must
+    // pass the same shared billing gate (workspace status → abuse →
+    // checkPlanLimits, #3419/#3420) as every other agent surface. Admin
+    // maintenance is intentionally NOT exempt: an admin of a suspended /
+    // trial-expired / over-budget workspace resolves billing first.
+    const gateCheck = await checkAgentBillingGate(orgId);
+    if (!gateCheck.allowed) {
+      log.warn(
+        { requestId, orgId, errorCode: gateCheck.errorCode },
+        "Semantic-improve chat blocked by billing enforcement",
+      );
+      const blockBody = {
+        error: gateCheck.errorCode,
+        message: gateCheck.errorMessage,
+        retryable: gateCheck.retryable,
+        requestId,
+        ...(gateCheck.retryAfterSeconds !== undefined && { retryAfterSeconds: gateCheck.retryAfterSeconds }),
+        ...(gateCheck.usage && { usage: gateCheck.usage }),
+      };
+      if (gateCheck.retryAfterSeconds !== undefined) {
+        return c.json(blockBody, {
+          status: gateCheck.httpStatus,
+          headers: { "Retry-After": String(gateCheck.retryAfterSeconds) },
+        });
+      }
+      return c.json(blockBody, gateCheck.httpStatus);
     }
 
     // Build the expert tool registry

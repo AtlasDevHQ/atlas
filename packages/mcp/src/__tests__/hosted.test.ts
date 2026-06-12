@@ -274,6 +274,19 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// #3437 — the MCP datasource-query tools consult the billing gate before
+// executing. The real module imports `lib/billing/enforcement`, whose
+// named imports from `db/internal` aren't defined by the throw-on-call
+// partial mock above. Hosted-session tests don't exercise billing —
+// allow everything (the blocked arms are pinned in tools.test.ts /
+// semantic-tools.test.ts).
+mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mock(async () => ({ allowed: true })),
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
 const { Hono } = await import("hono");
 const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount, _sweepIdleSessionsForTests, _setIdleTimeoutForTests } =
   await import("../hosted.js");

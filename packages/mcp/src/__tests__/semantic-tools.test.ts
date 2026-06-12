@@ -170,6 +170,31 @@ mock.module("@atlas/api/lib/env-routing/lookup", () => ({
   }),
 }));
 
+// --- Billing gate mock (#3437) ---
+// runMetric queries the datasource through executeSQL.execute, so it sits
+// behind the same billing gate as the executeSQL MCP tool. Default allows
+// so the rest of the suite is unaffected.
+
+type GateVerdict =
+  | { allowed: true }
+  | {
+      allowed: false;
+      errorCode: string;
+      errorMessage: string;
+      httpStatus: 403 | 404 | 429 | 503;
+      retryable: boolean;
+      retryAfterSeconds?: number;
+    };
+let billingGateVerdict: GateVerdict = { allowed: true };
+const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
+
+mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
 // Imports must come AFTER mock.module() registrations.
 const { registerSemanticTools } = await import("../semantic-tools.js");
 
@@ -220,6 +245,8 @@ describe("MCP semantic tools", () => {
     // order-independent. Without this, a `mockImplementationOnce` left
     // over from a previous run could shape the next test's response.
     mockExecuteSQLExecute.mockImplementation(async () => defaultExecuteSqlResult);
+    billingGateVerdict = { allowed: true };
+    mockCheckAgentBillingGate.mockClear();
   });
 
   it("registers four typed tools", async () => {
@@ -959,6 +986,79 @@ describe("MCP semantic tools", () => {
       kind: "mcp",
       clientId: "claude-desktop",
       toolName: "runMetric",
+    });
+  });
+
+  // #3437 — runMetric queries the datasource through executeSQL.execute,
+  // so it sits behind the same billing gate as the executeSQL MCP tool.
+
+  describe("billing gate (#3437)", () => {
+    it("runMetric returns billing_blocked when the trial has expired — metric SQL never runs", async () => {
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "trial_expired",
+        errorMessage: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+        httpStatus: 403,
+        retryable: false,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "runMetric",
+        arguments: { id: "orders_count" },
+      });
+
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope).not.toBeNull();
+      expect(envelope!.code).toBe("billing_blocked");
+      expect(envelope!.message).toContain("trial has expired");
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+      // The gate keys on the actor's workspace.
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledWith("org_sem");
+    });
+
+    it("runMetric maps an abuse-throttle block to rate_limited with retry_after", async () => {
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "workspace_throttled",
+        errorMessage: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
+        httpStatus: 429,
+        retryable: true,
+        retryAfterSeconds: 7,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "runMetric",
+        arguments: { id: "orders_count" },
+      });
+
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope!.code).toBe("rate_limited");
+      expect(envelope!.retry_after).toBe(7);
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+    });
+
+    it("runMetric proceeds when the gate allows (allowed arm)", async () => {
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "runMetric",
+        arguments: { id: "orders_count" },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledTimes(1);
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledWith("org_sem");
+      expect(mockExecuteSQLExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it("listEntities is not billing-gated — semantic-metadata reads stay available", async () => {
+      // Decision pinned: the gate guards the datasource-query perimeter
+      // (executeSQL / runMetric); catalog/metadata reads are not blocked.
+      const { client } = await createTestClient();
+      await client.callTool({ name: "listEntities", arguments: {} });
+      expect(mockCheckAgentBillingGate).not.toHaveBeenCalled();
     });
   });
 });

@@ -19,6 +19,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock, type Mock } from "bun:test";
+// NOT createApiTestMocks: the factory also mocks @atlas/api/lib/auth/server,
+// which is the unit under test here. buildInternalDbMockDefaults gives the
+// same complete db/internal surface (the "Mock all exports" rule) without
+// touching the server module.
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 // ── Mocks (must precede the server import) ──────────────────────────
 
@@ -30,22 +35,9 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
   mock(() => Promise.resolve([]));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
-  getInternalDB: () => ({ query: mock(() => Promise.resolve({ rows: [] })), connect: mock(() => {}), end: mock(() => {}), on: mock(() => {}) }),
-  internalQuery: mockInternalQuery,
+  ...buildInternalDbMockDefaults({ internalQuery: mockInternalQuery }),
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   updateWorkspaceStatus: mockUpdateWorkspaceStatus,
-  getWorkspaceDetails: mock(() => Promise.resolve(null)),
-  getWorkspaceStatus: mock(() => Promise.resolve("active")),
-  updateWorkspaceByot: mock(() => Promise.resolve(true)),
-  setWorkspaceStripeCustomerId: mock(() => Promise.resolve(true)),
-  setWorkspaceTrialEndsAt: mock(() => Promise.resolve(true)),
-  setWorkspaceRegion: mock(async () => {}),
-  internalExecute: () => {},
-  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
-  getPendingAmendmentCount: mock(async () => 0),
-  _resetPool: () => {},
-  _resetCircuitBreaker: () => {},
 }));
 
 mock.module("@atlas/api/lib/effect/enterprise-layer", () => ({

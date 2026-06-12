@@ -1410,7 +1410,14 @@ export function buildStripePluginOptions(deps: {
         const orgId = subscription.referenceId;
         if (orgId && (plan.name === "starter" || plan.name === "pro" || plan.name === "business")) {
           try {
-            await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+            // false = no organization row matched the referenceId (the
+            // helper logs the contract violation). Skip the success path
+            // AND the CRM stamp below — stamping a conversion for a
+            // workspace that doesn't exist would pollute Twenty. ACK
+            // semantics are unchanged either way: the plugin swallows
+            // hook throws (#3423 owns durable retry).
+            const updated = await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
+            if (!updated) return;
             invalidatePlanCache(orgId);
             log.info({ orgId, plan: plan.name }, "Subscription activated — plan tier synced");
           } catch (err) {
@@ -1461,7 +1468,8 @@ export function buildStripePluginOptions(deps: {
         const orgId = subscription.referenceId;
         if (orgId) {
           try {
-            await updateWorkspacePlanTier(orgId, "free");
+            const updated = await updateWorkspacePlanTier(orgId, "free");
+            if (!updated) return; // helper already logged the missing org
             invalidatePlanCache(orgId);
             log.info({ orgId }, "Subscription canceled — downgraded to free tier");
           } catch (err) {
@@ -1521,7 +1529,8 @@ export function buildStripePluginOptions(deps: {
         }
 
         try {
-          await updateWorkspacePlanTier(orgId, newTier);
+          const updated = await updateWorkspacePlanTier(orgId, newTier);
+          if (!updated) return; // helper already logged the missing org
           invalidatePlanCache(orgId);
           billingLog.info(
             { orgId, newTier, priceId },
@@ -1539,7 +1548,8 @@ export function buildStripePluginOptions(deps: {
         const orgId = subscription.referenceId;
         if (orgId) {
           try {
-            await updateWorkspacePlanTier(orgId, "free");
+            const updated = await updateWorkspacePlanTier(orgId, "free");
+            if (!updated) return; // helper already logged the missing org
             invalidatePlanCache(orgId);
             log.info({ orgId }, "Subscription deleted — downgraded to free tier");
           } catch (err) {
@@ -1582,13 +1592,20 @@ export function buildStripePluginOptions(deps: {
             );
             const orgId = rows[0]?.referenceId;
             if (orgId) {
-              await updateWorkspaceStatus(orgId, "suspended");
-              invalidatePlanCache(orgId);
-              billingLog.warn(
-                { orgId, subscriptionId, attemptCount },
-                "Workspace suspended after %d failed payment attempts",
-                attemptCount,
-              );
+              const suspended = await updateWorkspaceStatus(orgId, "suspended");
+              if (suspended) {
+                invalidatePlanCache(orgId);
+                billingLog.warn(
+                  { orgId, subscriptionId, attemptCount },
+                  "Workspace suspended after %d failed payment attempts",
+                  attemptCount,
+                );
+              } else {
+                billingLog.error(
+                  { orgId, subscriptionId },
+                  "Cannot suspend workspace — subscription row references an organization that does not exist",
+                );
+              }
             } else {
               billingLog.warn(
                 { subscriptionId },

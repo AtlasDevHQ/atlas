@@ -90,6 +90,159 @@ export function makeQueryEffectMock(
     });
 }
 
+/**
+ * Complete mock surface for `@atlas/api/lib/db/internal` — every named
+ * value export the module graph can import, satisfying the "Mock all
+ * exports" rule (docs/development/testing.md): a transitive `import
+ * { x }` of an unmocked name is a load-time SyntaxError under bun.
+ *
+ * `createApiTestMocks` spreads this into its own `mock.module`. Tests
+ * that CANNOT use the factory — because it also mocks
+ * `@atlas/api/lib/auth/server`, e.g. the Stripe webhook-lifecycle suite
+ * whose unit under test IS server.ts — spread it directly and override
+ * only the functions they assert on.
+ */
+export function buildInternalDbMockDefaults(deps: {
+  internalQuery: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+  internalExecute?: AnyFn;
+  hasInternalDB?: () => boolean;
+}): Record<string, unknown> {
+  const { internalQuery } = deps;
+  const internalExecute = deps.internalExecute ?? mock(() => {});
+  const hasInternalDB = deps.hasInternalDB ?? (() => true);
+  return {
+    // Context.Tag and shim-layer factory — see MockInternalDB above.
+    // Tests that exercise routes using `ContentModeRegistry` (e.g.
+    // `GET /api/v1/mode`) need both so `yield* InternalDB` inside
+    // `countAllDrafts` resolves against the mocked module.
+    InternalDB: MockInternalDB,
+    makeInternalDBShimLayer: () =>
+      Layer.succeed(MockInternalDB, {
+        sql: null,
+        query: internalQuery as <T extends Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+        ) => Promise<T[]>,
+        execute: internalExecute,
+        available: hasInternalDB(),
+        pool: null,
+      }),
+    hasInternalDB,
+    internalQuery: internalQuery,
+    queryEffect: (sql: string, params?: unknown[]) =>
+      Effect.tryPromise({
+        try: () => internalQuery(sql, params),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }),
+    // The real helper opens a transaction + advisory lock on a dedicated pool
+    // connection (untestable with a mock pool). Here it just runs the callback
+    // with a `tx.query` that delegates to `internalQuery`, so the SAME
+    // SQL-string-matching mocks drive the guard's count/role-read/mutation
+    // queries. Real serialization is covered by the real-Postgres test.
+    withWorkspaceAdminLock: (
+      _orgId: string,
+      fn: (tx: {
+        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+      }) => Promise<unknown>,
+    ) => fn({ query: (sql: string, params?: unknown[]) => internalQuery(sql, params) }),
+    // Multi-workspace variant (#3166) — same passthrough: the callback runs with
+    // a `tx.query` delegating to `internalQuery`, so SQL-string-matching
+    // mocks drive the per-workspace count/role-read/delete queries. Real
+    // multi-lock serialization is covered by the real-Postgres test.
+    withWorkspaceAdminLocks: (
+      _orgIds: readonly string[],
+      fn: (tx: {
+        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
+      }) => Promise<unknown>,
+    ) => fn({ query: (sql: string, params?: unknown[]) => internalQuery(sql, params) }),
+    internalExecute: internalExecute,
+    getInternalDB: mock(() => ({})),
+    closeInternalDB: mock(async () => {}),
+    migrateInternalDB: mock(async () => {}),
+    loadSavedConnections: mock(async () => 0),
+    _resetPool: mock(() => {}),
+    _resetCircuitBreaker: mock(() => {}),
+    isInternalCircuitOpen: () => false,
+    _setInternalCircuitOpenForTests: mock(() => {}),
+    encryptSecret: (url: string) => url,
+    decryptSecret: (url: string) => url,
+    getEncryptionKey: () => null,
+    // F-47 keyset resolver — mocked as `null` so the passthrough contract
+    // in both `encryptSecret` helpers (the URL-aware one in `db/internal.ts`
+    // and the prefix-only one in `db/secret-encryption.ts`) still holds
+    // under `mock.module("@atlas/api/lib/db/internal", ...)` partial mocks.
+    getEncryptionKeyset: () => null,
+    isPlaintextUrl: (value: string) =>
+      /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
+    _resetEncryptionKeyCache: mock(() => {}),
+    findPatternBySQL: async () => null,
+    insertLearnedPattern: () => {},
+    incrementPatternCount: () => {},
+    getApprovedPatterns: mock(async () => []),
+    upsertSuggestion: mock(() => Promise.resolve("created")),
+    getSuggestionsByTables: mock(() => Promise.resolve([])),
+    getPopularSuggestions: mock(() => Promise.resolve([])),
+    incrementSuggestionClick: mock(),
+    deleteSuggestion: mock(() => Promise.resolve(false)),
+    getAuditLogQueries: mock(() => Promise.resolve([])),
+    getWorkspaceStatus: mock(async () => "active"),
+    getWorkspaceDetails: mock(async () => null),
+    getWorkspaceNamesByIds: mock(async (ids: string[]) => {
+      const map = new Map<string, string | null>();
+      for (const id of ids) map.set(id, null);
+      return map;
+    }),
+    updateWorkspaceStatus: mock(async () => true),
+    updateWorkspacePlanTier: mock(async () => true),
+    cascadeWorkspaceDelete: mock(async () => ({
+      conversations: 0,
+      semanticEntities: 0,
+      learnedPatterns: 0,
+      suggestions: 0,
+      scheduledTasks: 0,
+      settings: 0,
+    })),
+    getWorkspaceHealthSummary: mock(async () => null),
+    getWorkspaceRegion: mock(async () => null),
+    setWorkspaceRegion: mock(async () => ({ assigned: true })),
+    updateWorkspaceByot: mock(async () => true),
+    setWorkspaceStripeCustomerId: mock(async () => true),
+    setWorkspaceTrialEndsAt: mock(async () => true),
+    getAutoApproveThreshold: mock(() => 2),
+    getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
+    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
+    getPendingAmendmentCount: mock(async () => 0),
+    getPendingAmendments: mock(async () => []),
+    reviewSemanticAmendment: mock(async () => null),
+    hardDeleteWorkspace: mock(async () => ({})),
+  
+    // Remaining named exports with no behavior worth faking — present so
+    // a transitive `import { x }` never SyntaxErrors at load time.
+    MANAGED_AUTH_MIGRATIONS: [],
+    _hasRecoveryFiber: () => false,
+    makeInternalDBLive: () => Layer.succeed(MockInternalDB, {
+      sql: null,
+      query: internalQuery as <T extends Record<string, unknown>>(
+        sql: string,
+        params?: unknown[],
+      ) => Promise<T[]>,
+      execute: internalExecute,
+      available: hasInternalDB(),
+      pool: null,
+    }),
+    createInternalDBTestLayer: () => Layer.succeed(MockInternalDB, {
+      sql: null,
+      query: internalQuery as <T extends Record<string, unknown>>(
+        sql: string,
+        params?: unknown[],
+      ) => Promise<T[]>,
+      execute: internalExecute,
+      available: hasInternalDB(),
+      pool: null,
+    }),
+  };
+}
+
 // ── Types ───────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
@@ -307,112 +460,11 @@ export function createApiTestMocks(
 
   const mockInternalExecute: Mock<AnyFn> = mock(() => {});
 
-  const internalDefaults: Record<string, unknown> = {
-    // Context.Tag and shim-layer factory — see MockInternalDB above.
-    // Tests that exercise routes using `ContentModeRegistry` (e.g.
-    // `GET /api/v1/mode`) need both so `yield* InternalDB` inside
-    // `countAllDrafts` resolves against the mocked module.
-    InternalDB: MockInternalDB,
-    makeInternalDBShimLayer: () =>
-      Layer.succeed(MockInternalDB, {
-        sql: null,
-        query: mockInternalQuery as <T extends Record<string, unknown>>(
-          sql: string,
-          params?: unknown[],
-        ) => Promise<T[]>,
-        execute: mockInternalExecute,
-        available: _hasInternalDB,
-        pool: null,
-      }),
-    hasInternalDB: () => _hasInternalDB,
+  const internalDefaults: Record<string, unknown> = buildInternalDbMockDefaults({
     internalQuery: mockInternalQuery,
-    queryEffect: (sql: string, params?: unknown[]) =>
-      Effect.tryPromise({
-        try: () => mockInternalQuery(sql, params),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }),
-    // The real helper opens a transaction + advisory lock on a dedicated pool
-    // connection (untestable with a mock pool). Here it just runs the callback
-    // with a `tx.query` that delegates to `mockInternalQuery`, so the SAME
-    // SQL-string-matching mocks drive the guard's count/role-read/mutation
-    // queries. Real serialization is covered by the real-Postgres test.
-    withWorkspaceAdminLock: (
-      _orgId: string,
-      fn: (tx: {
-        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
-      }) => Promise<unknown>,
-    ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
-    // Multi-workspace variant (#3166) — same passthrough: the callback runs with
-    // a `tx.query` delegating to `mockInternalQuery`, so SQL-string-matching
-    // mocks drive the per-workspace count/role-read/delete queries. Real
-    // multi-lock serialization is covered by the real-Postgres test.
-    withWorkspaceAdminLocks: (
-      _orgIds: readonly string[],
-      fn: (tx: {
-        query: (sql: string, params?: unknown[]) => Promise<unknown[]>;
-      }) => Promise<unknown>,
-    ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
     internalExecute: mockInternalExecute,
-    getInternalDB: mock(() => ({})),
-    closeInternalDB: mock(async () => {}),
-    migrateInternalDB: mock(async () => {}),
-    loadSavedConnections: mock(async () => 0),
-    _resetPool: mock(() => {}),
-    _resetCircuitBreaker: mock(() => {}),
-    isInternalCircuitOpen: () => false,
-    _setInternalCircuitOpenForTests: mock(() => {}),
-    encryptSecret: (url: string) => url,
-    decryptSecret: (url: string) => url,
-    getEncryptionKey: () => null,
-    // F-47 keyset resolver — mocked as `null` so the passthrough contract
-    // in both `encryptSecret` helpers (the URL-aware one in `db/internal.ts`
-    // and the prefix-only one in `db/secret-encryption.ts`) still holds
-    // under `mock.module("@atlas/api/lib/db/internal", ...)` partial mocks.
-    getEncryptionKeyset: () => null,
-    isPlaintextUrl: (value: string) =>
-      /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-    _resetEncryptionKeyCache: mock(() => {}),
-    findPatternBySQL: async () => null,
-    insertLearnedPattern: () => {},
-    incrementPatternCount: () => {},
-    getApprovedPatterns: mock(async () => []),
-    upsertSuggestion: mock(() => Promise.resolve("created")),
-    getSuggestionsByTables: mock(() => Promise.resolve([])),
-    getPopularSuggestions: mock(() => Promise.resolve([])),
-    incrementSuggestionClick: mock(),
-    deleteSuggestion: mock(() => Promise.resolve(false)),
-    getAuditLogQueries: mock(() => Promise.resolve([])),
-    getWorkspaceStatus: mock(async () => "active"),
-    getWorkspaceDetails: mock(async () => null),
-    getWorkspaceNamesByIds: mock(async (ids: string[]) => {
-      const map = new Map<string, string | null>();
-      for (const id of ids) map.set(id, null);
-      return map;
-    }),
-    updateWorkspaceStatus: mock(async () => true),
-    updateWorkspacePlanTier: mock(async () => true),
-    cascadeWorkspaceDelete: mock(async () => ({
-      conversations: 0,
-      semanticEntities: 0,
-      learnedPatterns: 0,
-      suggestions: 0,
-      scheduledTasks: 0,
-      settings: 0,
-    })),
-    getWorkspaceHealthSummary: mock(async () => null),
-    getWorkspaceRegion: mock(async () => null),
-    setWorkspaceRegion: mock(async () => ({ assigned: true })),
-    updateWorkspaceByot: mock(async () => true),
-    setWorkspaceStripeCustomerId: mock(async () => true),
-    setWorkspaceTrialEndsAt: mock(async () => true),
-    getAutoApproveThreshold: mock(() => 2),
-    getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
-    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
-    getPendingAmendmentCount: mock(async () => 0),
-    getPendingAmendments: mock(async () => []),
-    reviewSemanticAmendment: mock(async () => null),
-    hardDeleteWorkspace: mock(async () => ({})),
-  };
+    hasInternalDB: () => _hasInternalDB,
+  });
 
   mock.module("@atlas/api/lib/db/internal", () => ({
     ...internalDefaults,

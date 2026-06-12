@@ -2363,7 +2363,7 @@ export const stripeWebhookEvents = pgTable(
     processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("idx_stripe_webhook_events_sub").on(t.stripeSubscriptionId, t.eventCreated),
+    index("idx_stripe_webhook_events_sub").on(t.stripeSubscriptionId, t.eventCreated.desc()),
     index("idx_stripe_webhook_events_processed").on(t.processedAt),
   ],
 );

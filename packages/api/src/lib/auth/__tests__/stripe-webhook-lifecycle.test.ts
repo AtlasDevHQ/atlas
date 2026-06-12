@@ -81,6 +81,13 @@ interface LedgerRow {
 
 let ledgerRows: LedgerRow[] = [];
 
+const LIFECYCLE_TYPES = [
+  "checkout.session.completed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+];
+
 function ledgerAwareQuery(
   extra?: (sql: string, params?: unknown[]) => unknown[] | null,
 ): (sql: string, params?: unknown[]) => Promise<unknown[]> {
@@ -89,11 +96,16 @@ function ledgerAwareQuery(
       return Promise.resolve(ledgerRows.filter((r) => r.event_id === params?.[0]));
     }
     if (sql.includes("FROM stripe_webhook_events") && sql.includes("event_created > $2")) {
+      // Mirrors the production stale probe: lifecycle rows only; newer
+      // wins, and a same-second recorded deletion also blocks (tie-break).
       return Promise.resolve(
         ledgerRows.filter(
           (r) =>
             r.stripe_subscription_id === params?.[0] &&
-            r.event_created > String(params?.[1]),
+            LIFECYCLE_TYPES.includes(r.event_type) &&
+            (r.event_created > String(params?.[1]) ||
+              (r.event_created === String(params?.[1]) &&
+                r.event_type === "customer.subscription.deleted")),
         ),
       );
     }
@@ -582,6 +594,43 @@ describe("event ledger (#3423)", () => {
     expect(stale.status).toBe(200);
     expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
     expect(ledgerRows.map((r) => r.event_id)).toEqual(["evt_deleted_new"]);
+  });
+
+  it("skips a SAME-second older event after a deletion (1s-granularity tie-break)", async () => {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    // Deleted and updated share the same Stripe `created` second —
+    // strictly-greater ordering alone would let the late updated event
+    // resurrect the paid tier on the locked workspace (Codex on #3444).
+    const deleted = await postWebhook(auth, {
+      id: "evt_deleted_tie",
+      type: "customer.subscription.deleted",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "canceled" }) },
+    });
+    expect(deleted.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "locked");
+    mockUpdateWorkspacePlanTier.mockClear();
+
+    const tied = await postWebhook(auth, {
+      id: "evt_updated_tie",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+    expect(tied.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
   });
 
   it("returns 400 and does NOT record the event when the sync fails, so a redelivery re-runs it", async () => {

@@ -127,6 +127,21 @@ describe("reconcilePlanTiers", () => {
     expect(result.healed).toBe(0);
   });
 
+  it("ignores subscription rows whose stripe sub has a recorded deletion event (stale last-delivered rows)", async () => {
+    // The plugin writes its subscription table last-DELIVERED-wins, so a
+    // stale older `updated` after a processed `deleted` can leave the row
+    // "active". The scan must not treat such rows as live — otherwise the
+    // sweep would heal a locked org back to paid. Semantics live in SQL
+    // (NOT EXISTS against the ledger), so pin the query shape here; the
+    // behavior itself is covered by the ledger tie-break tests.
+    installQueryFixture([]);
+    await reconcilePlanTiers();
+    const [scanSql] = mockInternalQuery.mock.calls[0] as [string];
+    expect(scanSql).toContain("NOT EXISTS");
+    expect(scanSql).toContain("'customer.subscription.deleted'");
+    expect(scanSql).toContain("stripe_webhook_events");
+  });
+
   it("prunes the webhook event ledger and reports the count", async () => {
     installQueryFixture([], [{ event_id: "evt_old_1" }, { event_id: "evt_old_2" }]);
 

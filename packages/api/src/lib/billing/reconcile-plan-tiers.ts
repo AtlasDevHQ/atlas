@@ -78,12 +78,28 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
   // tier. `subscription.plan` stores the plan NAME, which is the tier
   // vocabulary (plans.ts names plans after tiers); parsePlanTier guards
   // the trust boundary anyway.
+  //
+  // The NOT EXISTS guard (Codex review on #3444): the plugin's own
+  // handlers write the subscription row last-DELIVERED-wins, so a stale
+  // older `updated` delivered after a processed `deleted` can flip the
+  // row back to "active" even though the ledger correctly skipped the
+  // Atlas side effects. Stripe never resurrects a subscription id, so
+  // any sub with a recorded deletion event is ended regardless of what
+  // the row claims — without this, the sweep would heal a locked
+  // workspace back to paid six hours after the stale delivery. (Ledger
+  // retention is 30 days; a row still stale-active after that has no
+  // ledger witness left, which is the residual risk we accept — the
+  // deleted event itself can no longer be replayed by then either.)
   const rows = await internalQuery<ReconcileRow>(
     `SELECT o.id AS org_id, o.plan_tier, sub.plan AS subscription_plan
        FROM organization o
        LEFT JOIN LATERAL (
          SELECT s.plan FROM subscription s
           WHERE s."referenceId" = o.id AND s.status IN ('active', 'trialing')
+            AND NOT EXISTS (
+              SELECT 1 FROM stripe_webhook_events w
+               WHERE w.stripe_subscription_id = s."stripeSubscriptionId"
+                 AND w.event_type = 'customer.subscription.deleted')
           ORDER BY s."createdAt" DESC
           LIMIT 1
        ) sub ON true`,

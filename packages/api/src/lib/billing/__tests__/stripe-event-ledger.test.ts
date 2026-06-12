@@ -52,7 +52,23 @@ describe("classifyStripeEvent", () => {
     expect(dupParams).toEqual(["evt_1"]);
     const [staleSql, staleParams] = mockInternalQuery.mock.calls[1] as [string, unknown[]];
     expect(staleSql).toContain("event_created > $2");
+    // Only lifecycle events may block (payment failures excluded) …
+    expect(staleSql).toContain("event_type IN (");
+    expect(staleSql).not.toContain("'invoice.payment_failed'");
+    // … and a recorded deletion also blocks SAME-second events (Stripe
+    // `created` is 1s-granular; deletion is terminal).
+    expect(staleSql).toContain("event_created = $2 AND event_type = 'customer.subscription.deleted'");
     expect(staleParams).toEqual(["sub_1", new Date(EVENT.created * 1000).toISOString()]);
+  });
+
+  it("dedupes non-lifecycle events by id only — no ordering probe for invoice.payment_failed", async () => {
+    await expect(
+      classifyStripeEvent({ ...EVENT, type: "invoice.payment_failed" }),
+    ).resolves.toBe("fresh");
+    // A payment failure recorded first must never make a delayed
+    // lifecycle sync look stale, and vice versa — it skips the
+    // ordering probe entirely.
+    expect(mockInternalQuery).toHaveBeenCalledTimes(1);
   });
 
   it("returns duplicate when the event id is already recorded (replay)", async () => {
@@ -129,6 +145,12 @@ describe("pruneStripeEventLedger", () => {
   it("returns 0 without an internal DB", async () => {
     hasDb = false;
     await expect(pruneStripeEventLedger()).resolves.toBe(0);
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects negative/non-finite retention before touching the DB (would invert the cutoff)", async () => {
+    await expect(pruneStripeEventLedger(-1)).rejects.toThrow(/Invalid/);
+    await expect(pruneStripeEventLedger(Number.NaN)).rejects.toThrow(/Invalid/);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 });

@@ -1362,6 +1362,11 @@ export { assertInvitationRoleAllowed, isTransportError } from "@atlas/api/lib/au
  * per-subscription ordering guard (#3423). Returns null for events with
  * no subscription scope (ledger still dedupes them by event id).
  *
+ * `invoice.payment_failed` reports its subscription id too, but only
+ * TIER_LIFECYCLE_EVENT_TYPES participate in the ordering guard (see
+ * classifyStripeEvent) — a payment failure recorded first must never
+ * make a delayed `updated`/`deleted` lifecycle sync look stale.
+ *
  * @internal — exported for testing.
  */
 export function stripeEventSubscriptionId(event: Stripe.Event): string | null {
@@ -1404,14 +1409,20 @@ async function resolveOrgIdForStripeSubscription(
   return rows[0]?.referenceId ?? null;
 }
 
-/** Tier write + cache invalidation shared by the sync arms below. */
-async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string): Promise<void> {
+/**
+ * Tier write + cache invalidation shared by the sync arms below.
+ * Returns whether the write matched an organization row — callers use
+ * it to skip follow-on side effects (e.g. the CRM conversion stamp)
+ * for orgs that no longer exist.
+ */
+async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string): Promise<boolean> {
   // false = no organization row matched (helper logs the contract
   // violation). Do NOT throw — Stripe redelivering won't create the org.
   const updated = await updateWorkspacePlanTier(orgId, tier);
-  if (!updated) return;
+  if (!updated) return false;
   invalidatePlanCache(orgId);
   billingLog.info({ orgId, tier }, "%s — plan tier synced", context);
+  return true;
 }
 
 /**
@@ -1454,8 +1465,15 @@ export async function syncStripeEventToWorkspace(
       const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
       const tier = priceId ? resolvePlanTierFromPriceId(priceId) : null;
       if (tier) {
-        await applyWorkspaceTier(orgId, tier, "Checkout completed");
+        const applied = await applyWorkspaceTier(orgId, tier, "Checkout completed");
+        // Org row gone (stale checkout for a deleted workspace): the
+        // tier write missed, so don't record a paid conversion for a
+        // nonexistent workspace either (Codex review on #3444).
+        if (!applied) return;
       } else {
+        // Unrecognized price (env misconfig) still stamps below: the
+        // checkout DID complete and money moved — dropping the
+        // conversion record would understate real revenue.
         billingLog.warn(
           { orgId, priceId, eventId: event.id },
           "Checkout completed with unrecognized price ID — cannot map to Atlas plan tier",
@@ -1500,27 +1518,6 @@ export async function syncStripeEventToWorkspace(
         return;
       }
 
-      // #2737 — trial → active is the real "paid" signal (first
-      // post-trial invoice paid). Only fires for `updated` events with
-      // the right previous_attributes transition.
-      if (event.type === "customer.subscription.updated") {
-        const customerId = typeof stripeSubscription.customer === "string"
-          ? stripeSubscription.customer
-          : stripeSubscription.customer?.id;
-        const updateDirective = planConversionStamp({
-          trigger: "update",
-          subscription: { stripeCustomerId: customerId },
-          event: event as unknown as { type: string; data: { previous_attributes?: { status?: string | null } | null; object: { status?: string | null } } },
-        });
-        if (updateDirective.kind === "dispatch") {
-          await dispatchConversionCrmStamp({
-            stripeClient,
-            stripeCustomerId: updateDirective.stripeCustomerId,
-            orgId,
-          });
-        }
-      }
-
       const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
       if (!priceId) {
         billingLog.warn(
@@ -1537,7 +1534,32 @@ export async function syncStripeEventToWorkspace(
         );
         return;
       }
-      await applyWorkspaceTier(orgId, tier, "Subscription updated");
+      const applied = await applyWorkspaceTier(orgId, tier, "Subscription updated");
+
+      // #2737 — trial → active is the real "paid" signal (first
+      // post-trial invoice paid). Only fires for `updated` events with
+      // the right previous_attributes transition. Stamped AFTER the
+      // tier write succeeds (CodeRabbit on #3444): if the write throws,
+      // onEvent 400s and Stripe redelivers — stamping first would
+      // enqueue a duplicate conversion on every failed attempt. Skipped
+      // when the org row is gone, matching the checkout arm.
+      if (applied && event.type === "customer.subscription.updated") {
+        const customerId = typeof stripeSubscription.customer === "string"
+          ? stripeSubscription.customer
+          : stripeSubscription.customer?.id;
+        const updateDirective = planConversionStamp({
+          trigger: "update",
+          subscription: { stripeCustomerId: customerId },
+          event: event as unknown as { type: string; data: { previous_attributes?: { status?: string | null } | null; object: { status?: string | null } } },
+        });
+        if (updateDirective.kind === "dispatch") {
+          await dispatchConversionCrmStamp({
+            stripeClient,
+            stripeCustomerId: updateDirective.stripeCustomerId,
+            orgId,
+          });
+        }
+      }
       return;
     }
 

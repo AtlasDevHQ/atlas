@@ -46,13 +46,41 @@ export interface StripeLedgerEvent {
 export type StripeEventDisposition = "fresh" | "duplicate" | "stale";
 
 /**
+ * The event types whose relative order determines the workspace tier.
+ * ONLY these participate in the per-subscription ordering guard — both
+ * as the incoming side and as recorded blockers. Non-lifecycle events
+ * that still carry a subscription id (e.g. `invoice.payment_failed`)
+ * are deduped by event id but must never make a lifecycle event look
+ * stale: a payment failure recorded first would otherwise suppress a
+ * delayed `updated`/`deleted` sync entirely (Codex review on #3444).
+ */
+export const TIER_LIFECYCLE_EVENT_TYPES = [
+  "checkout.session.completed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+] as const;
+
+export function isTierLifecycleEventType(type: string): boolean {
+  return (TIER_LIFECYCLE_EVENT_TYPES as readonly string[]).includes(type);
+}
+
+// Static, compile-time list — safe to inline into SQL.
+const LIFECYCLE_LIST_SQL = TIER_LIFECYCLE_EVENT_TYPES.map((t) => `'${t}'`).join(", ");
+
+/**
  * Classify a delivery before processing it.
  *
  *  - `duplicate` — this exact event id was already processed (replay).
- *  - `stale` — a strictly NEWER event for the same subscription was
- *    already applied; applying this one would regress status/plan
- *    (the plugin itself writes last-DELIVERED-wins, so the guard is the
- *    only out-of-order protection).
+ *  - `stale` — a strictly NEWER lifecycle event for the same
+ *    subscription was already applied; applying this one would regress
+ *    status/plan (the plugin itself writes last-DELIVERED-wins, so the
+ *    guard is the only out-of-order protection). Stripe `created` has
+ *    1-second granularity, so ties are broken conservatively: a
+ *    recorded `customer.subscription.deleted` also blocks SAME-second
+ *    events — deletion is terminal (Stripe never resurrects a
+ *    subscription id), so nothing sharing its second may run after it
+ *    and write a paid tier back onto a locked workspace.
  *  - `fresh` — process it.
  */
 export async function classifyStripeEvent(
@@ -66,10 +94,13 @@ export async function classifyStripeEvent(
   );
   if (dup.length > 0) return "duplicate";
 
-  if (event.stripeSubscriptionId) {
+  if (event.stripeSubscriptionId && isTierLifecycleEventType(event.type)) {
     const newer = await internalQuery<{ event_id: string }>(
       `SELECT event_id FROM stripe_webhook_events
-        WHERE stripe_subscription_id = $1 AND event_created > $2
+        WHERE stripe_subscription_id = $1
+          AND event_type IN (${LIFECYCLE_LIST_SQL})
+          AND (event_created > $2
+               OR (event_created = $2 AND event_type = 'customer.subscription.deleted'))
         LIMIT 1`,
       [event.stripeSubscriptionId, new Date(event.created * 1000).toISOString()],
     );
@@ -97,6 +128,11 @@ export async function recordStripeEvent(event: StripeLedgerEvent): Promise<void>
 export async function pruneStripeEventLedger(
   retentionDays: number = STRIPE_EVENT_LEDGER_RETENTION_DAYS,
 ): Promise<number> {
+  // A negative value would invert the cutoff into `< now() + interval`
+  // and wipe the live ledger (CodeRabbit on #3444).
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) {
+    throw new Error(`Invalid stripe event ledger retentionDays: ${retentionDays}`);
+  }
   if (!hasInternalDB()) return 0;
   const rows = await internalQuery<{ event_id: string }>(
     `DELETE FROM stripe_webhook_events

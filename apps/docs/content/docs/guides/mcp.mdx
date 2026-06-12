@@ -377,6 +377,8 @@ connectionId: "warehouse"  (optional)
 
 All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement timeout, and audit logging. See [SQL Validation Pipeline](/security/sql-validation).
 
+On hosted (SaaS) deployments, `executeSQL` is also behind the workspace [billing-enforcement gate](/guides/billing-and-plans#enforcement-surfaces): a suspended, trial-expired, or subscription-ended workspace receives a `billing_blocked` [error envelope](#error-contract) instead of query results. Self-hosted deployments (no internal DB / no workspace) are unaffected.
+
 ### listEntities
 
 Discover what entities (tables/views) the semantic layer declares. Each result is `{ name, table, description, source }`.
@@ -460,7 +462,7 @@ connectionId: "warehouse"   // optional — overrides the default connection
 
 When the result has multiple columns or multiple rows, `value` falls back to the row array — useful for breakdown metrics.
 
-`runMetric` returns an `isError: true` envelope when the metric id is unknown (`unknown_metric`), when the underlying SQL fails validation (`validation_failed`), when an RLS rule rejects the query (`rls_denied`), when the statement timeout fires (`query_timeout`), when the request is rate-limited (`rate_limited`), or on any other failure (`internal_error`). See [Error contract](#error-contract) for the exact envelope shape.
+`runMetric` returns an `isError: true` envelope when the metric id is unknown (`unknown_metric`), when the underlying SQL fails validation (`validation_failed`), when an RLS rule rejects the query (`rls_denied`), when the statement timeout fires (`query_timeout`), when the request is rate-limited (`rate_limited`), when the workspace is blocked by billing enforcement (`billing_blocked` — runMetric queries the datasource through the same pipeline as `executeSQL`, so it sits behind the same gate), or on any other failure (`internal_error`). See [Error contract](#error-contract) for the exact envelope shape.
 
 The `filters` parameter is reserved for future pre-aggregation filter pass-through. Passing a non-empty `filters` object is rejected today; use `executeSQL` with the metric's raw SQL if you need to filter results before aggregation.
 
@@ -492,8 +494,9 @@ The envelope is serialized as the `text` of the first content block. Use `parseA
 | `unknown_entity` | `describeEntity` was called with an entity that doesn't exist, `executeSQL` referenced a table missing from the semantic whitelist, or a `connectionId` was specified that isn't registered. | Call `listEntities` to discover what exists, then retry with a real name (or check the connection id). |
 | `unknown_metric` | `runMetric` was called with an id missing from `metrics/*.yml`. | Fall back to `executeSQL`, or pick a different metric id. |
 | `ambiguous_term` | `searchGlossary` matched a glossary entry with `status: ambiguous`. | **Do not silently pick a mapping.** Surface `possible_mappings` to the user and ask which they meant. |
-| `rate_limited` | The per-source QPM limit, concurrency cap, or pool capacity was hit. `retry_after` (seconds) is set when the upstream knows it. | Back off for `retry_after` seconds; surface to user only after sustained failure. |
-| `internal_error` | Anything else — sandbox crash, lookup failure, opaque pipeline error. `request_id` is always set. | Quote the `request_id` to the user; do not silently retry — there is likely an operator-side problem. |
+| `rate_limited` | The per-source QPM limit, concurrency cap, or pool capacity was hit — or the workspace is abuse-throttled by billing enforcement. `retry_after` (seconds) is set when the upstream knows it. | Back off for `retry_after` seconds; surface to user only after sustained failure. |
+| `billing_blocked` | The workspace is not in good billing standing — suspended, deleted, trial expired, subscription ended, or plan token budget exhausted ([#3437](https://github.com/AtlasDevHQ/atlas/issues/3437)). Returned by the datasource-query tools (`executeSQL`, `runMetric`) on hosted deployments. | **Do not retry.** Surface the `message` to the user — the workspace owner must resolve billing/suspension in Atlas before queries can run. |
+| `internal_error` | Anything else — sandbox crash, lookup failure, opaque pipeline error, or a billing-enforcement check that could not complete (fail-closed, retryable). `request_id` is always set. | Quote the `request_id` to the user; do not silently retry — there is likely an operator-side problem. |
 
 ### Tool description carries the contract
 

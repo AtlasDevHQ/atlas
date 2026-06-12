@@ -10,10 +10,10 @@ import {
 describe("AtlasMcpToolErrorCode catalog", () => {
   test("union and runtime list stay in lockstep", () => {
     // satisfies + readonly array force the union to match the literal at
-    // compile time; the test pins the size at 8 so accidentally widening
+    // compile time; the test pins the size at 9 so accidentally widening
     // the union (e.g. adding "auth_failed" without updating consumers) is
     // caught here too.
-    expect(ATLAS_MCP_TOOL_ERROR_CODES).toHaveLength(8);
+    expect(ATLAS_MCP_TOOL_ERROR_CODES).toHaveLength(9);
     const set = new Set<AtlasMcpToolErrorCode>(ATLAS_MCP_TOOL_ERROR_CODES);
     expect(set.size).toBe(ATLAS_MCP_TOOL_ERROR_CODES.length);
   });
@@ -42,6 +42,17 @@ describe("parseAtlasMcpToolError", () => {
     const wire = JSON.stringify({ code: "rate_limited", message: "slow down", retry_after: 30 });
     const parsed = parseAtlasMcpToolError(wire);
     expect(parsed).toEqual({ code: "rate_limited", message: "slow down", retry_after: 30 });
+  });
+
+  test("parses a billing_blocked envelope (#3437 — billing-gate blocks on MCP tools)", () => {
+    const wire = JSON.stringify({
+      code: "billing_blocked",
+      message: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+      hint: "Resolve the workspace's billing status in Atlas, then retry.",
+    });
+    const parsed = parseAtlasMcpToolError(wire);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.code).toBe("billing_blocked");
   });
 
   test("preserves hint, request_id, retry_after when present", () => {

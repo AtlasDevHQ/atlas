@@ -47,6 +47,7 @@ import {
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
+import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 
 export interface RegisterToolsOptions {
@@ -241,6 +242,18 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 toolName: "executeSQL",
               });
               if (limited) return limited;
+              // #3437 — billing enforcement on the datasource-query
+              // perimeter: a suspended / trial-expired workspace must not
+              // query connected datasources through MCP. Lives inside the
+              // try so a gate throw fails closed as `internal_error`.
+              // Keys on the actor's workspace, NOT the OTel `workspaceId`
+              // fallback (which substitutes the actor id when no org is
+              // bound and would defeat the gate's no-org short-circuit).
+              const blocked = await billingGateOrNull({
+                orgId: actor.activeOrganizationId,
+                requestId,
+              });
+              if (blocked) return blocked;
               const result = await executeSQL.execute!(
                 { sql, explanation, connectionId },
                 { toolCallId: "mcp-executeSQL", messages: [] },

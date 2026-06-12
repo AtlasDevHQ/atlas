@@ -201,6 +201,7 @@ export default function BillingPage() {
               {checkout && (
                 <CheckoutReturnBanner
                   state={checkout}
+                  targetPlan={planParam}
                   data={data}
                   refetch={refetch}
                   onDone={() => void setParams({ checkout: null })}
@@ -415,29 +416,45 @@ function PlanShell({ data }: { data: BillingStatus }) {
 
 // ── Checkout return banner (#3418) ────────────────────────────────
 
+// The plan tier is written by Stripe webhooks, which race the redirect.
+// The server caches plan reads for 60s, so the poll must outlive that
+// TTL or a webhook landing at t=45s against a warm cache strands the
+// user on "refresh in a minute" (#3418 triage: "a refetch poll past the
+// 60s plan-cache TTL"). 25 × 3s = 75s.
+const POLL_INTERVAL_MS = 3000;
+const POLL_MAX_ATTEMPTS = 25;
+
 /**
- * Shown after the user returns from Stripe Checkout. The plan tier is
- * written by the checkout.session.completed webhook, which races the
- * redirect — so on `success` this polls the billing endpoint until the
- * paid tier (or an active/trialing subscription) appears, then clears
- * the URL param. If the webhook is slow (~30s of polling), the copy
- * degrades to "refresh in a minute" instead of spinning forever.
+ * Shown after the user returns from Stripe — covering all three
+ * journeys:
+ *   - `success` — first-subscription Checkout; polls until a paid tier
+ *     (or active/trialing subscription) appears.
+ *   - `changed` — immediate plan change on an existing subscription;
+ *     polls until the target tier (from `?plan=`) appears.
+ *   - `scheduled` — period-end downgrade; static notice, nothing to poll.
+ *   - `cancelled` — dismissable no-charge notice.
+ * If the webhook outlives the poll window, the copy degrades to
+ * "refresh in a minute" instead of spinning forever.
  */
 function CheckoutReturnBanner({
   state,
+  targetPlan,
   data,
   refetch,
   onDone,
 }: {
-  state: "success" | "cancelled";
+  state: "success" | "cancelled" | "changed" | "scheduled";
+  targetPlan: string | null;
   data: BillingStatus;
   refetch: () => void;
   onDone: () => void;
 }) {
   const landed =
-    (PAID_TIERS as readonly string[]).includes(data.plan.tier) ||
-    data.subscription?.status === "active" ||
-    data.subscription?.status === "trialing";
+    state === "changed" && targetPlan
+      ? data.plan.tier === targetPlan
+      : (PAID_TIERS as readonly string[]).includes(data.plan.tier) ||
+        data.subscription?.status === "active" ||
+        data.subscription?.status === "trialing";
   const [slow, setSlow] = useState(false);
   const attempts = useRef(0);
 
@@ -449,19 +466,37 @@ function CheckoutReturnBanner({
     refetchRef.current = refetch;
   });
 
+  const polling = state === "success" || state === "changed";
   useEffect(() => {
-    if (state !== "success" || landed) return;
+    if (!polling || landed) return;
     const interval = setInterval(() => {
       attempts.current += 1;
-      if (attempts.current > 12) {
+      if (attempts.current > POLL_MAX_ATTEMPTS) {
         setSlow(true);
         clearInterval(interval);
         return;
       }
       refetchRef.current();
-    }, 2500);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [state, landed]);
+  }, [polling, landed]);
+
+  if (state === "scheduled") {
+    return (
+      <div
+        role="status"
+        className="flex items-center justify-between gap-4 rounded-lg border bg-muted/30 px-4 py-3 text-sm"
+      >
+        <p className="text-muted-foreground">
+          Plan change scheduled — {data.plan.displayName} stays active until the
+          end of the current billing period.
+        </p>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Dismiss
+        </Button>
+      </div>
+    );
+  }
 
   if (state === "cancelled") {
     return (
@@ -488,7 +523,9 @@ function CheckoutReturnBanner({
       >
         <p className="flex items-center gap-2 font-medium">
           <CheckCircle2 className="size-4 shrink-0" aria-hidden />
-          Subscription active — welcome to {data.plan.displayName}.
+          {state === "changed"
+            ? `Plan updated — you're now on ${data.plan.displayName}.`
+            : `Subscription active — welcome to ${data.plan.displayName}.`}
         </p>
         <Button size="sm" variant="ghost" onClick={onDone}>
           Dismiss
@@ -521,8 +558,14 @@ function CheckoutReturnBanner({
 
 // ── Plan picker (#3418) ───────────────────────────────────────────
 
-/** Order used to classify a plan change as upgrade vs downgrade. */
-const TIER_RANK: Record<string, number> = { starter: 1, pro: 2, business: 3 };
+/**
+ * Order used to classify a plan change as upgrade vs downgrade. Derived
+ * from PAID_TIERS (the web-side tier source of truth in plan-intent.ts)
+ * so a new tier can't silently rank as 0 here while the picker shows it.
+ */
+const TIER_RANK: Record<string, number> = Object.fromEntries(
+  PAID_TIERS.map((tier, i) => [tier, i + 1]),
+);
 
 function PlanPicker({
   data,

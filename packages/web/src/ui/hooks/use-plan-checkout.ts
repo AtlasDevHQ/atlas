@@ -63,12 +63,19 @@ export function usePlanCheckout(): {
         return;
       }
       const origin = window.location.origin;
+      // successUrl/cancelUrl serve the FIRST-subscription Checkout journey;
+      // returnUrl serves the change-plan journey (portal confirm / direct
+      // update). The latter previously returned bare — no ?checkout param —
+      // so the page rendered the stale tier with no lag handling at all
+      // (internal review on #3442). `changed` polls for the target tier
+      // (carried in ?plan=); `scheduled` is a static period-end notice.
+      const changedState = opts.scheduleAtPeriodEnd ? "scheduled" : "changed";
       const res = await upgrade({
         plan: opts.plan,
         customerType: "organization",
         successUrl: `${origin}/admin/billing?checkout=success`,
         cancelUrl: `${origin}/admin/billing?checkout=cancelled`,
-        returnUrl: `${origin}/admin/billing`,
+        returnUrl: `${origin}/admin/billing?checkout=${changedState}&plan=${opts.plan}`,
         scheduleAtPeriodEnd: opts.scheduleAtPeriodEnd ?? false,
         disableRedirect: true,
       });

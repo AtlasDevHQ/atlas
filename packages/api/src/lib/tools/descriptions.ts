@@ -70,12 +70,18 @@ export const EXPLORE_ERROR_CODES = [
   "rate_limited",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
+// `billing_blocked` (#3437) joins the two datasource-query catalogs
+// (executeSQL + runMetric): the MCP edge consults the billing gate
+// before any datasource query, and a suspended / trial-expired
+// workspace gets this code — the LLM-facing description must advertise
+// it so agents surface the block instead of blind-retrying.
 export const EXECUTE_SQL_ERROR_CODES = [
   "validation_failed",
   "rls_denied",
   "query_timeout",
   "unknown_entity",
   "rate_limited",
+  "billing_blocked",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 // Per-OAuth-client rate limiting (#2071) gates every hosted-MCP tool,
@@ -102,6 +108,7 @@ export const RUN_METRIC_ERROR_CODES = [
   "rls_denied",
   "query_timeout",
   "rate_limited",
+  "billing_blocked",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 

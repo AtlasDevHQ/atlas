@@ -43,6 +43,33 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// --- Billing gate mock (#3437) ---
+// The MCP layer consults `checkAgentBillingGate` before any datasource
+// query (executeSQL / runMetric). Tests flip `billingGateVerdict` to
+// exercise the blocked arm; the default allows so the rest of the suite
+// is unaffected.
+
+type GateVerdict =
+  | { allowed: true }
+  | {
+      allowed: false;
+      errorCode: string;
+      errorMessage: string;
+      httpStatus: 403 | 404 | 429 | 503;
+      retryable: boolean;
+      retryAfterSeconds?: number;
+      usage?: { currentUsage: number; limit: number; metric: string };
+    };
+let billingGateVerdict: GateVerdict = { allowed: true };
+const mockCheckAgentBillingGate = mock(async (_orgId: string | undefined) => billingGateVerdict);
+
+mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mockCheckAgentBillingGate,
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
 /** Extract text from MCP tool call result content. */
 function getContentText(content: unknown): string {
   const arr = content as Array<{ type: string; text: string }>;
@@ -66,6 +93,8 @@ describe("MCP tools", () => {
   beforeEach(() => {
     mockExploreExecute.mockClear();
     mockExecuteSQLExecute.mockClear();
+    billingGateVerdict = { allowed: true };
+    mockCheckAgentBillingGate.mockClear();
   });
 
   it("lists explore + executeSQL + the four typed semantic tools (#2020)", async () => {
@@ -97,6 +126,9 @@ describe("MCP tools", () => {
     expect(sql?.description).toContain("`rls_denied`");
     expect(sql?.description).toContain("`query_timeout`");
     expect(sql?.description).toContain("`rate_limited`");
+    // #3437 — the billing gate can block executeSQL; the LLM-facing
+    // contract must advertise the code so the agent doesn't blind-retry.
+    expect(sql?.description).toContain("`billing_blocked`");
   });
 
   it("explore returns text content", async () => {
@@ -567,6 +599,145 @@ describe("MCP tools", () => {
       kind: "mcp",
       clientId: "claude-desktop",
       toolName: "executeSQL",
+    });
+  });
+
+  // #3437 — billing enforcement on the MCP datasource-query perimeter.
+  // A suspended / trial-expired workspace must not be able to query
+  // connected datasources through MCP. Blocks surface as the shaped
+  // AtlasMcpToolError envelope, never a silent empty result.
+
+  describe("billing gate (#3437)", () => {
+    it("executeSQL returns billing_blocked when the workspace is suspended — query never runs", async () => {
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "workspace_suspended",
+        errorMessage: "Workspace suspended due to unusual activity. Contact your administrator.",
+        httpStatus: 403,
+        retryable: false,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT 1", explanation: "ping" },
+      });
+
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope).not.toBeNull();
+      expect(envelope!.code).toBe("billing_blocked");
+      expect(envelope!.message).toContain("suspended");
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+      // The gate keys on the actor's workspace, not the OTel fallback id.
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledWith("org_test");
+    });
+
+    it("executeSQL returns billing_blocked with a hint when the trial has expired", async () => {
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "trial_expired",
+        errorMessage: "Your free trial has expired. Upgrade to a paid plan to continue using Atlas.",
+        httpStatus: 403,
+        retryable: false,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT 1", explanation: "ping" },
+      });
+
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope!.code).toBe("billing_blocked");
+      expect(envelope!.message).toContain("trial has expired");
+      // Retrying cannot help — the hint must steer the agent to the
+      // workspace owner instead of a retry loop.
+      expect(envelope!.hint).toBeDefined();
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+    });
+
+    it("executeSQL maps an abuse-throttle block to rate_limited with retry_after", async () => {
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "workspace_throttled",
+        errorMessage: "Workspace is temporarily throttled due to high usage. Please retry shortly.",
+        httpStatus: 429,
+        retryable: true,
+        retryAfterSeconds: 5,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT 1", explanation: "ping" },
+      });
+
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope!.code).toBe("rate_limited");
+      expect(envelope!.retry_after).toBe(5);
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+    });
+
+    it("executeSQL fails closed as internal_error with request_id when the billing check itself fails (503)", async () => {
+      // check_failed is "try again" (infra fault), NOT "upgrade your plan" —
+      // it must not surface as billing_blocked.
+      billingGateVerdict = {
+        allowed: false,
+        errorCode: "workspace_check_failed",
+        errorMessage: "Unable to verify workspace status. Please try again.",
+        httpStatus: 503,
+        retryable: true,
+      };
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT 1", explanation: "ping" },
+      });
+
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope!.code).toBe("internal_error");
+      expect(envelope!.request_id).toMatch(/^mcp-executeSQL-/);
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+    });
+
+    it("executeSQL fails closed as internal_error when the gate itself throws", async () => {
+      mockCheckAgentBillingGate.mockRejectedValueOnce(new Error("gate exploded"));
+
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT 1", explanation: "ping" },
+      });
+
+      expect(result.isError).toBe(true);
+      const envelope = parseAtlasMcpToolError(getContentText(result.content));
+      expect(envelope!.code).toBe("internal_error");
+      expect(mockExecuteSQLExecute).not.toHaveBeenCalled();
+    });
+
+    it("executeSQL proceeds when the gate allows (allowed arm)", async () => {
+      const { client } = await createTestClient();
+      const result = await client.callTool({
+        name: "executeSQL",
+        arguments: { sql: "SELECT count(*) FROM users", explanation: "Count users" },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledTimes(1);
+      expect(mockCheckAgentBillingGate).toHaveBeenCalledWith("org_test");
+      expect(mockExecuteSQLExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it("explore is not billing-gated — semantic-metadata reads stay available", async () => {
+      // Decision pinned: the gate guards the datasource-query perimeter
+      // (executeSQL / runMetric). Metadata reads (explore, listEntities,
+      // describeEntity, searchGlossary) are not blocked. See #3437.
+      const { client } = await createTestClient();
+      await client.callTool({ name: "explore", arguments: { command: "ls" } });
+      expect(mockCheckAgentBillingGate).not.toHaveBeenCalled();
     });
   });
 

@@ -38,7 +38,17 @@
  *   ask which they meant — never silently pick. The forthcoming
  *   disambiguation eval (#2025) is expected to assert on this exact code.
  * - `rate_limited` — request rate, concurrency cap, or pool capacity hit.
- *   Includes `retry_after` (seconds) when the upstream knows it.
+ *   Includes `retry_after` (seconds) when the upstream knows it. Also used
+ *   for workspace abuse-throttle blocks from the billing gate (#3437) —
+ *   the recovery (back off `retry_after` seconds) is identical.
+ * - `billing_blocked` — the workspace is not in good billing standing
+ *   (suspended, deleted, trial expired, subscription ended, or plan token
+ *   budget exhausted) and datasource-querying tools are blocked (#3437).
+ *   Retrying will not help; the workspace owner must resolve billing /
+ *   suspension in Atlas. Unlike the other codes this one is constructed
+ *   directly from the typed billing-gate verdict in
+ *   `packages/mcp/src/billing-gate.ts` — it never flows through the
+ *   string classifiers in `error-envelope.ts`, so no regex branch exists.
  * - `internal_error` — unexpected failure. Includes `request_id` so the
  *   user can quote it when filing a support ticket.
  *
@@ -64,6 +74,7 @@ export type AtlasMcpToolErrorCode =
   | "unknown_metric"
   | "ambiguous_term"
   | "rate_limited"
+  | "billing_blocked"
   | "internal_error";
 
 /**
@@ -93,6 +104,7 @@ export const ATLAS_MCP_TOOL_ERROR_CODES = [
   "unknown_metric",
   "ambiguous_term",
   "rate_limited",
+  "billing_blocked",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 

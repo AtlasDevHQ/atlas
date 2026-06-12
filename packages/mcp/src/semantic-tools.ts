@@ -58,6 +58,7 @@ import {
   envelope,
   toEnvelopeResult,
 } from "./error-envelope.js";
+import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
@@ -410,6 +411,16 @@ export function registerSemanticTools(
                 toolName: "runMetric",
               });
               if (limited) return limited;
+              // #3437 — runMetric executes datasource SQL through
+              // executeSQL.execute, so it sits behind the same billing
+              // gate as the executeSQL MCP tool. Metadata-only tools
+              // (listEntities / describeEntity / searchGlossary) are
+              // deliberately not gated — see billing-gate.ts.
+              const blocked = await billingGateOrNull({
+                orgId: actor.activeOrganizationId,
+                requestId,
+              });
+              if (blocked) return blocked;
               if (filters && Object.keys(filters).length > 0) {
                 return toEnvelopeResult(
                   envelope(

@@ -230,6 +230,20 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
   },
 }));
 
+// #3437 — the MCP datasource-query tools consult the billing gate before
+// executing. The real module imports `lib/billing/enforcement`, whose
+// named imports from `db/internal` (e.g. `getWorkspaceDetails`) aren't
+// defined by the throw-on-call partial mock above. This suite is scoped
+// to frame routing across replicas, not billing — allow everything (the
+// blocked arms are pinned in packages/mcp tools.test.ts /
+// semantic-tools.test.ts).
+mock.module("@atlas/api/lib/billing/agent-gate", () => ({
+  checkAgentBillingGate: mock(async () => ({ allowed: true })),
+  BillingBlockedError: class BillingBlockedError extends Error {
+    override readonly name = "BillingBlockedError";
+  },
+}));
+
 const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount } =
   await import("../../packages/mcp/src/hosted.js");
 

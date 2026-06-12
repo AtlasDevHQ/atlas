@@ -12,9 +12,12 @@
  * make a failed sync unrecoverable (Stripe's retry of the same event id
  * would hit the duplicate guard and be skipped). Recording last means a
  * crash between steps 2 and 3 causes one extra retry that re-runs an
- * idempotent tier write — the safe direction. The residual race (two
- * concurrent deliveries of the same event both passing step 1) has the
- * same idempotent-rewrite outcome.
+ * idempotent tier write — the safe direction. Concurrent deliveries for
+ * the same subscription are serialized around the whole sequence by
+ * `withStripeSubscriptionLock` (`db/internal.ts`, #3445) — without it,
+ * two parallel deliveries could both classify `fresh` and the older
+ * event's sync could finish last, regressing tier/lock state. The lock
+ * serializes; it does not claim — record-last stays the contract.
  *
  * Every function THROWS on ledger/DB failure. `onEvent` throws are the
  * only ones the plugin propagates (→ 400 `STRIPE_WEBHOOK_ERROR` → Stripe

@@ -12,6 +12,16 @@ PLATFORM="${1:-docker}"
 PROJECT_NAME="smoke-test-app"
 TARGET_DIR="$TMP_DIR/$PROJECT_NAME"
 
+# The scaffolded app resolves UNPINNED semver ranges (it ships no lockfile),
+# so a stale registry manifest in a restored CI cache can pin a dependency to
+# a since-unpublished version and fail the install on its missing tarball
+# (#3472: every Deploy Validation run resolved the phantom ai@6.0.204 because
+# actions/cache restored the same poisoned ~/.bun/install/cache — an existing
+# cache key is never refreshed). Resolve against a private, cold cache so a
+# poisoned shared cache can't break the smoke test; the monorepo's own
+# --frozen-lockfile installs still get the shared cache's speedup.
+export BUN_INSTALL_CACHE_DIR="$TMP_DIR/bun-install-cache"
+
 cleanup() {
   echo "Cleaning up $TMP_DIR..."
   rm -rf "$TMP_DIR"

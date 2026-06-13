@@ -23,6 +23,7 @@ import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
 import { createMcpLogger } from "./logger.js";
+import { installListPagination } from "./pagination.js";
 
 // Boot diagnostics go to stderr (JSON), not the api logger's stdout — stdout
 // carries the JSON-RPC stream on the stdio transport (#3494).
@@ -191,6 +192,11 @@ export async function createAtlasMcpServer(
     deployMode: getConfig()?.deployMode ?? "self-hosted",
     authMode: actor.mode,
   });
+
+  // #3501 — wrap every list handler (tools/resources/templates/prompts) with
+  // cursor pagination. Must run AFTER all registration so the handlers it
+  // wraps exist (including the custom prompts/list handler).
+  installListPagination(server);
 
   return server;
 }

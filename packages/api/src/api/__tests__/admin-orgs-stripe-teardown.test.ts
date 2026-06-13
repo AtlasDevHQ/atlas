@@ -338,7 +338,12 @@ describe("PATCH /api/v1/admin/organizations/:id/plan — operator override prece
     );
 
     expect(res.status).toBe(200);
-    expect(mockUpdatePlanTier).toHaveBeenCalledWith("org-1", "trial", expect.anything());
+    // #3427 review: a trial grant must CLEAR the override (a trialing org has no
+    // competing subscription; an override would only block the customer's own
+    // paid conversion), not stamp a comp window.
+    const [, tier, override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(tier).toBe("trial");
+    expect(override).toBe("clear");
     expect(mockSetTrialEndsAt).toHaveBeenCalledTimes(1);
     const [orgId, date] = mockSetTrialEndsAt.mock.calls[0] as [string, Date];
     expect(orgId).toBe("org-1");

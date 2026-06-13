@@ -881,7 +881,14 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
     // override (release control back to Stripe immediately); omit it for the
     // PLAN_OVERRIDE_DAYS default. The directive is passed atomically with the
     // tier write so the row never sits at "new tier, no override".
-    const days = overrideDays ?? PLAN_OVERRIDE_DAYS;
+    //
+    // EXCEPTION (#3427 review) — a `trial` grant must NOT stamp an override. A
+    // trialing org has no competing active subscription, so the override would
+    // only block the customer's OWN paid conversion (checkout →
+    // applyWorkspaceTier) for the window's length — Stripe charges them while
+    // they stay stranded on the trial tier. Trial protection is the
+    // trial_ends_at window, not the override, so we clear it for trial.
+    const days = planTier === "trial" ? 0 : (overrideDays ?? PLAN_OVERRIDE_DAYS);
     const overrideUntil: Date | null = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     const override = days === 0 ? ("clear" as const) : { until: overrideUntil as Date };
 

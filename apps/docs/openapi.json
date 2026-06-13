@@ -21381,6 +21381,19 @@
                   "planTier": {
                     "type": "string",
                     "example": "starter"
+                  },
+                  "overrideDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 365,
+                    "description": "Days the operator grant takes precedence over Stripe before auto-healing. Defaults to 90. Pass 0 to clear the override.",
+                    "example": 90
+                  },
+                  "trialEndsAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Required when planTier is 'trial' — new trial end date (ISO 8601). Ignored otherwise.",
+                    "example": "2026-08-01T00:00:00.000Z"
                   }
                 },
                 "required": [
@@ -66241,6 +66254,19 @@
                     ],
                     "description": "The new plan tier for the workspace.",
                     "example": "starter"
+                  },
+                  "overrideDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 365,
+                    "description": "Days the operator grant takes precedence over Stripe before auto-healing. Defaults to 90. Pass 0 to clear the override and let Stripe reassert control immediately.",
+                    "example": 90
+                  },
+                  "trialEndsAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Required when planTier is 'trial' — the new trial end date (ISO 8601). Ignored for other tiers.",
+                    "example": "2026-08-01T00:00:00.000Z"
                   }
                 },
                 "required": [
@@ -66266,19 +66292,38 @@
                     },
                     "planTier": {
                       "type": "string"
+                    },
+                    "planOverrideUntil": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "trialEndsAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
                     "message",
                     "workspaceId",
-                    "planTier"
+                    "planTier",
+                    "planOverrideUntil"
                   ]
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid plan tier",
+            "description": "Invalid plan tier or missing trialEndsAt",
             "content": {
               "application/json": {
                 "schema": {

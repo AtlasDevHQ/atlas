@@ -852,7 +852,11 @@ adminOrgs.openapi(updatePlanRoute, async (c) => {
 
     // #3427 — operator plan change OVERRIDES Stripe for a bounded window so the
     // next webhook can't clobber the grant. `overrideDays === 0` clears it.
-    const days = body.overrideDays ?? PLAN_OVERRIDE_DAYS;
+    // EXCEPTION (#3427 review): a `trial` grant must NOT stamp an override — a
+    // trialing org has no competing subscription, so an override would only
+    // block the customer's own paid conversion (charged by Stripe, stranded on
+    // trial). Trial protection is the trial_ends_at window; clear it for trial.
+    const days = planTier === "trial" ? 0 : (body.overrideDays ?? PLAN_OVERRIDE_DAYS);
     const overrideUntil: Date | null = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     const override = days === 0 ? ("clear" as const) : { until: overrideUntil as Date };
 

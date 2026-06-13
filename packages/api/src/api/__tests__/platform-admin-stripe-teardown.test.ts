@@ -351,11 +351,32 @@ describe("PATCH /api/v1/platform/workspaces/:id/plan — operator override prece
     );
 
     expect(res.status).toBe(200);
-    expect(mockUpdatePlanTier).toHaveBeenCalledWith("org-1", "trial", expect.anything());
+    // #3427 review: a trial grant must CLEAR the override, never stamp a comp
+    // window. A trialing org has no competing subscription, so an override would
+    // only block the customer's own paid conversion (charged by Stripe, stranded
+    // on trial). Pin that the directive is "clear", not a future `until`.
+    const [, tier, override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(tier).toBe("trial");
+    expect(override).toBe("clear");
     expect(mockSetTrialEndsAt).toHaveBeenCalledTimes(1);
     const [orgId, date] = mockSetTrialEndsAt.mock.calls[0] as [string, Date];
     expect(orgId).toBe("org-1");
     expect(date.toISOString()).toBe(future);
+  });
+
+  it("clears the override even when overrideDays is explicitly passed for a trial", async () => {
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", {
+        planTier: "trial",
+        trialEndsAt: future,
+        overrideDays: 90,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const [, , override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(override).toBe("clear");
   });
 
   it("cancels Stripe subscriptions when downgrading a paying org to free", async () => {

@@ -247,3 +247,19 @@ describe("meetsRoleRequirement()", () => {
     expect(meetsRoleRequirement(makeUser("managed"), "member")).toBe(true);
   });
 });
+
+describe("meetsRoleRequirement() — simple-key default-role documentation (#3508)", () => {
+  it("a ROLELESS simple-key user defaults to admin — so MCP safety MUST live in the actor model", () => {
+    // getUserRole defaults simple-key → admin. meetsRoleRequirement honors
+    // that, so a roleless simple-key actor would clear an admin gate. This is
+    // intentional for first-party API keys, but it means the MCP dispatch
+    // RBAC gate's safety relies on MCP actors NEVER being a roleless
+    // simple-key: hosted/stdio bound actors are `mode: "managed"`, and the
+    // only simple-key MCP actor (system:mcp) is explicitly pinned to
+    // `role: "member"`. If this assertion ever needs changing, re-audit MCP
+    // actor construction (packages/mcp/src/actor.ts, hosted.ts) first.
+    expect(meetsRoleRequirement(makeUser("simple-key"), "admin")).toBe(true);
+    // An explicit member role on a simple-key user is honored (not defaulted).
+    expect(meetsRoleRequirement(makeUser("simple-key", "member"), "admin")).toBe(false);
+  });
+});

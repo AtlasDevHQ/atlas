@@ -80,7 +80,7 @@ export interface McpDispatchGateContext {
   readonly scopes?: readonly string[];
   /** Resolved workspace id (the admitted org). */
   readonly orgId: string | undefined;
-  /** Requester id for approval attribution; falls back from the actor. */
+  /** Requester id for approval attribution (typically the bound actor's id). */
   readonly requesterId?: string;
   /** Requester email stamped on the approval request, when known. */
   readonly requesterEmail?: string | null;
@@ -166,39 +166,12 @@ async function runApprovalGate(
   destructive: NonNullable<McpDispatchGateRequirements["destructive"]>,
   deps: McpDispatchGateDeps,
 ): Promise<CallToolResult | null> {
-  const load = deps.loadApprovalGate ?? loadApprovalGate;
-
-  let gate: ApprovalGateShape;
-  try {
-    gate = await load();
-  } catch (err) {
-    log.error(
-      {
-        err: err instanceof Error ? err.message : String(err),
-        ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
-      },
-      "Approval gate unavailable — blocking destructive MCP action (fail-closed)",
-    );
-    return toEnvelopeResult(
-      envelope(
-        "internal_error",
-        "Approval system unavailable — action blocked. Contact your administrator.",
-        ctx.requestId ? { request_id: ctx.requestId } : undefined,
-      ),
-    );
-  }
-
-  const tablesAccessed = [destructive.resource];
-  const match = await Effect.runPromise(
-    gate.checkApprovalRequired(ctx.orgId, tablesAccessed, [], {
-      ...(ctx.requesterId ? { requesterId: ctx.requesterId } : {}),
-      origin: "mcp",
-    }),
-  );
-  if (!match.required) return null;
-
-  // Identity is guaranteed by gate 3 (a bound admin), but guard anyway —
-  // a destructive action with no requester must not silently proceed.
+  // Identity guard FIRST (before consulting the gate): a destructive action
+  // with no bound requester/workspace must deny, not fall through. Gate 3
+  // already requires a bound admin, but checking here keeps the guard
+  // load-bearing for any future caller that derives identity differently —
+  // and must precede `checkApprovalRequired`, which returns `required:false`
+  // for an undefined org (so an absent org would otherwise skip approval).
   if (!ctx.orgId || !ctx.requesterId) {
     return toEnvelopeResult(
       envelope(
@@ -207,23 +180,42 @@ async function runApprovalGate(
       ),
     );
   }
+  const orgId = ctx.orgId;
+  const requesterId = ctx.requesterId;
 
-  // Don't re-queue a request the requester has already had approved for the
-  // same action (parity with executeSQL — avoids duplicate approvals on retry).
-  const alreadyApproved = await Effect.runPromise(
-    gate.hasApprovedRequest(ctx.orgId, ctx.requesterId, destructive.description),
-  );
-  if (alreadyApproved) return null;
-
-  const firstRule = match.matchedRules[0];
-  let approvalRequestId: string;
+  // One fail-closed boundary around EVERY approval-gate interaction. The EE
+  // impl runs its reads via `Effect.promise` (DB rejection → defect →
+  // `runPromise` throws), so checkApprovalRequired / hasApprovedRequest can
+  // throw despite their `never` error channel — a DB blip during the *check*
+  // must block the destructive action, not escape as an unhandled rejection.
+  // Mirrors executeSQL's single tryPromise around the whole approval block.
   try {
+    const load = deps.loadApprovalGate ?? loadApprovalGate;
+    const gate = await load();
+
+    const tablesAccessed = [destructive.resource];
+    const match = await Effect.runPromise(
+      gate.checkApprovalRequired(orgId, tablesAccessed, [], {
+        requesterId,
+        origin: "mcp",
+      }),
+    );
+    if (!match.required) return null;
+
+    // Don't re-queue a request the requester has already had approved for the
+    // same action (parity with executeSQL — avoids duplicate approvals on retry).
+    const alreadyApproved = await Effect.runPromise(
+      gate.hasApprovedRequest(orgId, requesterId, destructive.description),
+    );
+    if (alreadyApproved) return null;
+
+    const firstRule = match.matchedRules[0];
     const req = await Effect.runPromise(
       gate.createApprovalRequest({
-        orgId: ctx.orgId,
+        orgId,
         ruleId: firstRule.id,
         ruleName: firstRule.name,
-        requesterId: ctx.requesterId,
+        requesterId,
         requesterEmail: ctx.requesterEmail ?? null,
         querySql: destructive.description,
         explanation: destructive.description,
@@ -233,41 +225,40 @@ async function runApprovalGate(
         origin: "mcp",
       }),
     );
-    approvalRequestId = req.id;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              approval_required: true,
+              approval_request_id: req.id,
+              matched_rules: match.matchedRules.map((r) => r.name),
+              message:
+                `This action requires approval before execution. Rule: "${firstRule.name}". ` +
+                `An approval request has been submitted (ID: ${req.id}).`,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   } catch (err) {
     log.error(
       {
         err: err instanceof Error ? err.message : String(err),
         ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
       },
-      "Failed to queue MCP approval request — blocking action (fail-closed)",
+      "Approval gate unavailable / errored — blocking destructive MCP action (fail-closed)",
     );
     return toEnvelopeResult(
       envelope(
         "internal_error",
-        "Could not submit the approval request — action blocked. Contact your administrator.",
+        "Approval system unavailable — action blocked. Contact your administrator.",
         ctx.requestId ? { request_id: ctx.requestId } : undefined,
       ),
     );
   }
-
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(
-          {
-            approval_required: true,
-            approval_request_id: approvalRequestId,
-            matched_rules: match.matchedRules.map((r) => r.name),
-            message:
-              `This action requires approval before execution. Rule: "${firstRule.name}". ` +
-              `An approval request has been submitted (ID: ${approvalRequestId}).`,
-          },
-          null,
-          2,
-        ),
-      },
-    ],
-  };
 }

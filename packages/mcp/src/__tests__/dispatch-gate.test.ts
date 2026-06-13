@@ -80,16 +80,25 @@ function stubApprovalGate(opts: {
   alreadyApproved?: boolean;
   matchedRules?: { id: string; name: string }[];
   onCreate?: () => void;
+  /** Simulate a DB defect (Effect.promise rejection) during the check read. */
+  checkThrows?: boolean;
+  /** Simulate a DB defect during the already-approved read. */
+  hasApprovedThrows?: boolean;
 }): ApprovalGateShape {
   const unused = () => Effect.die(new Error("approval gate method not used in this test"));
   return {
     available: true,
     checkApprovalRequired: () =>
-      Effect.succeed({
-        required: opts.required,
-        matchedRules: (opts.matchedRules ?? [{ id: "rule_1", name: "MCP destructive" }]) as never,
-      }),
-    hasApprovedRequest: () => Effect.succeed(opts.alreadyApproved ?? false),
+      opts.checkThrows
+        ? Effect.die(new Error("member-table read failed"))
+        : Effect.succeed({
+            required: opts.required,
+            matchedRules: (opts.matchedRules ?? [{ id: "rule_1", name: "MCP destructive" }]) as never,
+          }),
+    hasApprovedRequest: () =>
+      opts.hasApprovedThrows
+        ? Effect.die(new Error("approval_queue read failed"))
+        : Effect.succeed(opts.alreadyApproved ?? false),
     createApprovalRequest: () => {
       opts.onCreate?.();
       return Effect.succeed(pendingRequest("req_stub"));
@@ -211,6 +220,38 @@ describe("runMcpDispatchGate — gate order + branches (#3508)", () => {
     );
     expect(res?.isError).toBe(true);
     expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("internal_error");
+  });
+
+  it("gate 4: fails closed when checkApprovalRequired throws (DB defect, not just gate-load)", async () => {
+    const res = await runMcpDispatchGate(
+      baseCtx(),
+      { ...adminReqs, destructive: { resource: "datasource:prod", description: "delete datasource prod" } },
+      { loadApprovalGate: async () => stubApprovalGate({ required: true, checkThrows: true }) },
+    );
+    expect(res?.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("internal_error");
+  });
+
+  it("gate 4: fails closed when hasApprovedRequest throws (DB defect)", async () => {
+    const res = await runMcpDispatchGate(
+      baseCtx(),
+      { ...adminReqs, destructive: { resource: "datasource:prod", description: "delete datasource prod" } },
+      { loadApprovalGate: async () => stubApprovalGate({ required: true, hasApprovedThrows: true }) },
+    );
+    expect(res?.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("internal_error");
+  });
+
+  it("gate 4: denies a destructive action with no bound identity (guard runs before the approval check)", async () => {
+    let checked = false;
+    const res = await runMcpDispatchGate(
+      baseCtx({ orgId: undefined }),
+      { ...adminReqs, destructive: { resource: "datasource:prod", description: "delete datasource prod" } },
+      { loadApprovalGate: async () => stubApprovalGate({ required: false, onCreate: () => { checked = true; } }) },
+    );
+    expect(res?.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("forbidden");
+    expect(checked).toBe(false); // never reached the gate
   });
 });
 

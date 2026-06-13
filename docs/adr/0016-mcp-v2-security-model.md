@@ -29,9 +29,23 @@ Gate capability through runtime, per-identity / per-action mechanisms (scope, RB
 
 Atlas already runs Better Auth's `@better-auth/oauth-provider` — the path Better Auth now recommends (its standalone `mcp` plugin is deprecated) — and `mcp:write` is already a declared scope, so V2 *flips an existing gate* rather than adding auth infrastructure. Verification stays on JWKS-based `verifyMcpBearer` (topology-independent, revocation-immediate via the grants table), not `withMcpAuth` (same-process only).
 
+## `platform_admin` (user-level role) over hosted MCP — member/org-only by design
+
+**Decision (#3522, follow-up from #3505): the hosted MCP edge resolves the *org* role only; a cross-tenant `platform_admin` is NOT auto-applied over a hosted OAuth MCP session.**
+
+`#3505` resolves the hosted actor's effective **org** role LIVE from the `member` table at `bindFactoryContext` (`packages/mcp/src/hosted.ts`) and deliberately passes `undefined` for the user-level role to `resolveEffectiveRole`. So a hosted OAuth session acts with the caller's `member` role for the *admitted* workspace — never cross-tenant god-mode — even if the bound user is a `platform_admin`.
+
+This diverges from **stdio**, where `loadActorUser` resolves the user-level role too (a `platform_admin` over stdio MCP gets `platform_admin`). The divergence is intentional and is the right boundary:
+
+- **stdio** is the operator's own trusted local process, bound by env vars (`ATLAS_MCP_USER_ID`/`ATLAS_MCP_ORG_ID`) — the operator already controls the host.
+- **hosted** is customer-facing OAuth. Auto-escalating a `platform_admin` to god-mode over a *customer's* workspace through an OAuth client would be a privilege-escalation surface: a third-party client granted `mcp:*` scopes by one workspace could act cross-tenant if the bound human happened to be Atlas staff. The transport must not widen authority beyond the admitted workspace.
+
+This is a specialization of the **"RBAC is the only source of authority"** invariant: the *org* membership is the authority for a hosted session, resolved live (revocation-immediate). Should a future requirement genuinely need `platform_admin` to operate over hosted MCP, it must resolve the user-level role **LIVE from the `user` table** (never a token claim, per #3505) and pass it to `resolveEffectiveRole` with explicit fail-closed handling — not stamp it onto the bearer. **No code change ships with this decision** — it records the current (safer) boundary so it isn't re-litigated.
+
 ## Considered and rejected
 
 - **Authority from the transport** (hosted-can-admin / stdio-cannot) — rejected; authority is RBAC, full stop.
+- **Auto-applying `platform_admin` cross-tenant over hosted MCP** (#3522) — rejected; a hosted OAuth session acts with the caller's `member`/org role for the admitted workspace only. Auto-escalation to god-mode over a customer workspace via an OAuth client is a privilege-escalation surface. stdio (operator's own env-bound process) keeps the user-level role; hosted does not. See the section above.
 - **Operator env flag to enable admin tools** (`ATLAS_MCP_ADMIN_TOOLS`) — rejected as a SaaS-seam leak; admin tools always register and are gated at dispatch.
 - **Role stamped into the JWT** — rejected; goes stale until refresh. Live DB lookup instead.
 - **Loopback HTTP proxy to the admin REST API** — rejected; credential-laundering surface + token-audience mismatch. Call the lib layer directly.

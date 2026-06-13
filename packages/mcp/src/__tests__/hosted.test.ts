@@ -406,6 +406,39 @@ function bindTokensAB(): void {
   });
 }
 
+/**
+ * Initialize a hosted MCP session via a raw POST (no SDK client), returning
+ * the Response. Unlike an SDK client — which holds its standalone GET
+ * notification stream open for the life of the connection — this keeps no
+ * stream open, so the resulting session has `activeStreams === 0` and can age
+ * out of the idle window: the shape of a genuinely-abandoned session (a client
+ * that vanished without sending DELETE).
+ */
+async function rawHostedInit(
+  handle: { url: string },
+  org: string,
+  token: string,
+): Promise<Response> {
+  return fetch(`${handle.url}/mcp/${org}/sse`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "raw", version: "0.0.1" },
+      },
+      id: 1,
+    }),
+  });
+}
+
 // ── Bearer / authorization ────────────────────────────────────────────
 
 describe("hosted MCP — bearer enforcement", () => {
@@ -1631,13 +1664,12 @@ describe("hosted MCP — capacity", () => {
     process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS = "60000"; // 1 min — at the floor
     const handle = await startServer();
     try {
-      // Open one session — fills the cap.
-      const first = new Client({ name: "client-stale", version: "0.0.1" });
-      const firstTransport = new StreamableHTTPClientTransport(
-        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
-        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
-      );
-      await first.connect(firstTransport);
+      // Fill the cap with a genuinely-abandoned session: a raw init that
+      // holds no notification stream, so `activeStreams` stays 0 and it can
+      // be swept. (An SDK client would keep its GET stream open and correctly
+      // resist eviction — see the live-stream test below.)
+      const leaked = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await leaked.body?.cancel().catch(() => {});
       expect(_hostedSessionCount()).toBe(1);
 
       // Without the sweep this would 503. The sweep with a clock far
@@ -1649,10 +1681,9 @@ describe("hosted MCP — capacity", () => {
       expect(evicted).toBe(1);
       expect(_hostedSessionCount()).toBe(0);
 
-      // The originally-leaked client object is now orphaned; the
-      // server-side transport+server were closed by the sweep. A new
-      // connection can land cleanly because the cap is no longer
-      // saturated.
+      // The abandoned session's server-side transport+server were closed by
+      // the sweep. A new connection can land cleanly because the cap is no
+      // longer saturated.
       const second = new Client({ name: "client-fresh", version: "0.0.1" });
       const secondTransport = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
@@ -1728,20 +1759,17 @@ describe("hosted MCP — capacity", () => {
     _setIdleTimeoutForTests(50); // 50 ms
     const handle = await startServer();
     try {
-      // Step 1 — open the session that occupies the cap.
-      const leaker = new Client({ name: "client-leaker", version: "0.0.1" });
-      const leakerTransport = new StreamableHTTPClientTransport(
-        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
-        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
-      );
-      await leaker.connect(leakerTransport);
+      // Step 1 — occupy the cap with an abandoned (no-stream) session via a
+      // raw init, so it can age out and be swept.
+      const leaked = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await leaked.body?.cancel().catch(() => {});
       expect(_hostedSessionCount()).toBe(1);
 
-      // Step 2 — wait past the idle window so the leaker is sweepable.
+      // Step 2 — wait past the idle window so it is sweepable.
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       // Step 3 — a fresh init should now succeed because the route's
-      // cap-check sweep evicts the stale leaker.
+      // cap-check sweep evicts the stale abandoned session.
       const fresh = new Client({ name: "client-fresh", version: "0.0.1" });
       const freshTransport = new StreamableHTTPClientTransport(
         new URL(`${handle.url}/mcp/${ORG_A}/sse`),
@@ -1749,14 +1777,105 @@ describe("hosted MCP — capacity", () => {
       );
       await fresh.connect(freshTransport);
 
-      // Final state: only the fresh session remains; the leaker was
-      // swept. The assertion is on count so a future bug that
-      // double-counts during the eviction transition would fail it.
+      // Final state: only the fresh session remains; the abandoned one was
+      // swept. The assertion is on count so a future bug that double-counts
+      // during the eviction transition would fail it.
       expect(_hostedSessionCount()).toBe(1);
 
       await fresh.close();
     } finally {
       _setIdleTimeoutForTests(null);
+      handle.close();
+    }
+  });
+
+  it("does not sweep a session whose client still holds a live notification stream", async () => {
+    // The mirror of the abandoned-session test: an SDK client keeps its
+    // standalone GET notification stream open, so `activeStreams > 0` and the
+    // cap-pressure sweep must NOT reclaim it even though `lastSeenAt` has aged
+    // out — otherwise a busy region would evict live listeners.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    _setIdleTimeoutForTests(50); // 50 ms — age lastSeenAt out aggressively
+    const handle = await startServer();
+    try {
+      const connected = new Client({ name: "client-connected", version: "0.0.1" });
+      const connectedTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await connected.connect(connectedTransport);
+      expect(_hostedSessionCount()).toBe(1);
+
+      // Let lastSeenAt age well past the 50ms window while the client listens.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // A second connection hits the cap. The live-stream session must not be
+      // swept, so the new init is rejected rather than stealing its slot.
+      const blocked = new Client({ name: "client-blocked", version: "0.0.1" });
+      const blockedTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await expect(blocked.connect(blockedTransport)).rejects.toThrow();
+      expect(_hostedSessionCount()).toBe(1);
+
+      await connected.close();
+    } finally {
+      _setIdleTimeoutForTests(null);
+      handle.close();
+    }
+  });
+
+  it("sweeps multiple idle sessions in one pass while preserving a live-stream session", async () => {
+    // The sweep loop must be SELECTIVE within a mixed population, not
+    // all-or-nothing: evict every aged no-stream session while skipping any
+    // with `activeStreams > 0`. Prior tests only ever drove a lone session.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "5";
+    const handle = await startServer();
+    try {
+      // Two abandoned sessions (raw init, body drained → no live stream).
+      const a = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await a.body?.cancel().catch(() => {});
+      const b = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await b.body?.cancel().catch(() => {});
+
+      // One connected session holding a live GET notification stream.
+      const connected = new Client({ name: "client-live", version: "0.0.1" });
+      const connectedTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await connected.connect(connectedTransport);
+
+      expect(_hostedSessionCount()).toBe(3);
+
+      // The SDK client's standalone GET notification stream opens asynchronously
+      // after connect() resolves; give it a beat to establish so `activeStreams`
+      // is > 0 before the sweep (mirrors the lone live-stream test above).
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // A far-future sweep ages every session past the idle window. Both
+      // abandoned sessions must be evicted in the SAME pass while the
+      // live-stream one is skipped.
+      const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000);
+      expect(evicted).toBe(2);
+      expect(_hostedSessionCount()).toBe(1);
+
+      await connected.close();
+    } finally {
       handle.close();
     }
   });

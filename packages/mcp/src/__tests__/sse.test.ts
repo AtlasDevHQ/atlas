@@ -59,7 +59,7 @@ mock.module("@atlas/api/lib/tools/sql", () => ({
 
 // Import after mocks
 const { createAtlasMcpServer } = await import("../server.js");
-const { startSseServer } = await import("../sse.js");
+const { startSseServer, _setIdleTimeoutForTests } = await import("../sse.js");
 
 type SseHandle = Awaited<ReturnType<typeof startSseServer>>;
 let handle: SseHandle | null = null;
@@ -69,6 +69,11 @@ afterEach(async () => {
     await handle.close();
     handle = null;
   }
+  // Reset session-hardening knobs so one test's env/override can't bleed
+  // into the next (the in-process Bun runner shares module state).
+  delete process.env.ATLAS_MCP_MAX_SESSIONS;
+  delete process.env.ATLAS_MCP_SESSION_IDLE_TIMEOUT_MS;
+  _setIdleTimeoutForTests(null);
 });
 
 describe("SSE server — lifecycle", () => {
@@ -317,5 +322,315 @@ describe("SSE server — MCP client integration", () => {
     // Server is still healthy after the bad request
     const health = await fetch(`http://localhost:${handle.server.port}/health`);
     expect(health.status).toBe(200);
+  });
+});
+
+// ── Session hardening (#3492) — idle sweep + TOCTOU cap parity ───────
+//
+// Backport of the hosted.ts session lifecycle: an idle-session sweep, a
+// `pendingReservations` cap guard, and `ATLAS_MCP_MAX_SESSIONS` honored via
+// the env-profile. Without these, a self-hosted `--transport sse` deploy
+// permanently exhausts its session pool once enough clients vanish without
+// sending DELETE.
+
+function rawInitRequest(port: number): Promise<Response> {
+  return fetch(`http://localhost:${port}/mcp`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      method: "initialize",
+      id: 1,
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "raw", version: "0.0.1" },
+      },
+    }),
+  });
+}
+
+describe("SSE server — session hardening (#3492)", () => {
+  it("evicts idle sessions on a far-future sweep", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 1,
+    });
+
+    const client = new Client({ name: "client-stale", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await client.connect(transport);
+    expect(handle._sessionCount()).toBe(1);
+
+    // Drive the sweep with a clock far enough in the future that the
+    // freshly-created session is past the idle window. The assertion is
+    // unambiguous: sweep evicts, count drops to zero. The leaked client is
+    // intentionally left un-closed — its server-side transport+server were
+    // already torn down by the sweep.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000);
+    expect(evicted).toBe(1);
+    expect(handle._sessionCount()).toBe(0);
+  });
+
+  it("preserves recently-active sessions across a sweep", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 5,
+    });
+
+    const client = new Client({ name: "client-active", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await client.connect(transport);
+    expect(handle._sessionCount()).toBe(1);
+
+    // Sweep with the current clock — the session was created moments ago,
+    // so lastSeenAt is fresh and eviction must be a no-op.
+    const evicted = handle._sweepIdleSessionsForTests(Date.now(), 60_000);
+    expect(evicted).toBe(0);
+    expect(handle._sessionCount()).toBe(1);
+
+    // The preserved session must still function — listTools is the cheapest
+    // dispatch that hits the existing-session path.
+    const tools = await client.listTools();
+    expect(tools.tools.length).toBeGreaterThan(0);
+
+    await client.close();
+  });
+
+  it("honors ATLAS_MCP_MAX_SESSIONS on the SSE path", async () => {
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    // No explicit `maxSessions` opt — the cap must resolve from the env via
+    // resolveMcpMaxSessions, proving the SSE path honors the override.
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+    });
+
+    const client = new Client({ name: "client-cap", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await client.connect(transport);
+    expect(handle._sessionCount()).toBe(1);
+
+    const res = await rawInitRequest(handle.server.port);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("too_many_sessions");
+
+    await client.close();
+  });
+
+  it("rejects concurrent inits over the cap via the reservation counter", async () => {
+    // The TOCTOU the reservation counter closes: with cap=1 and two inits
+    // in flight, both pass a naïve `sessions.size >= cap` check before
+    // either registers. The factory parks inside `createServer` so the
+    // first init holds a reservation (pendingReservations=1, sessions.size=0)
+    // while the second arrives — the second must be rejected by the
+    // reservation guard, before any McpServer is even allocated.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered = 0;
+
+    handle = await startSseServer(
+      async () => {
+        entered++;
+        await gate;
+        return createAtlasMcpServer({ actor: SSE_ACTOR });
+      },
+      { port: 0, maxSessions: 1 },
+    );
+    const port = handle.server.port;
+
+    // Fire the first init and wait until it is parked inside the factory.
+    const p1 = rawInitRequest(port);
+    while (entered < 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // Second concurrent init — must be rejected by the reservation guard.
+    const res2 = await rawInitRequest(port);
+    expect(res2.status).toBe(503);
+    const body2 = (await res2.json()) as { error: string };
+    expect(body2.error).toBe("too_many_sessions");
+    // The guard short-circuited before the factory ran a second time.
+    expect(entered).toBe(1);
+
+    // Release the first init so it registers its session cleanly.
+    release();
+    const res1 = await p1;
+    expect(res1.status).not.toBe(503);
+    expect(handle._sessionCount()).toBe(1);
+  });
+
+  it("auto-sweeps an abandoned (no-stream) session on cap-pressure (regression for the pool-exhaustion bug)", async () => {
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    // Bypass the production 1-min idle floor so the age-out path can be
+    // driven with a sub-second sleep instead of a 60s wait.
+    _setIdleTimeoutForTests(50); // 50 ms
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+    });
+
+    // A genuinely-abandoned session: initialized via a raw POST, then the
+    // response drained and nothing kept open — no live notification stream,
+    // so `activeStreams` stays 0 and it can age out of the idle window. (An
+    // SDK client would instead hold its GET notification stream open, which
+    // correctly keeps the session unsweepable — covered by the next test.)
+    const leaked = await rawInitRequest(handle.server.port);
+    await leaked.body?.cancel().catch(() => {});
+    expect(handle._sessionCount()).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A fresh init should now succeed: the new-session path's cap-check
+    // sweep evicts the aged-out abandoned session first, freeing the slot.
+    // Without the sweep this would 503 forever until process restart.
+    const fresh = new Client({ name: "client-fresh", version: "0.0.1" });
+    const freshTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await fresh.connect(freshTransport);
+    // Only the fresh session remains; the abandoned one was swept.
+    expect(handle._sessionCount()).toBe(1);
+
+    await fresh.close();
+  });
+
+  it("does not sweep a session whose client still holds a live notification stream", async () => {
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    // Age lastSeenAt out aggressively — the live stream, not the timestamp,
+    // is what must keep the session alive here.
+    _setIdleTimeoutForTests(50); // 50 ms
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+    });
+
+    // An SDK client holds its standalone GET notification stream open for the
+    // life of the connection, so `activeStreams > 0`.
+    const connected = new Client({ name: "client-connected", version: "0.0.1" });
+    const connectedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await connected.connect(connectedTransport);
+    expect(handle._sessionCount()).toBe(1);
+
+    // Let lastSeenAt age well past the 50ms idle window while the client
+    // keeps listening.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A second connection hits the cap. The cap-pressure sweep must NOT
+    // reclaim the first session — its client is still listening — so the new
+    // init is rejected rather than stealing a live client's slot.
+    const blocked = new Client({ name: "client-blocked", version: "0.0.1" });
+    const blockedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await expect(blocked.connect(blockedTransport)).rejects.toThrow();
+    expect(handle._sessionCount()).toBe(1);
+
+    await connected.close();
+  });
+
+  it("tears down an unregistered session (non-initialize first frame) without leaking a server", async () => {
+    // This guards the shared `!registered` teardown logic, which hosted.ts
+    // mirrors line-for-line. The close-spy assertion is only achievable here
+    // because startSseServer takes the server factory as a param; hosted.ts
+    // builds its per-session server internally, so this test stands in for
+    // both transports.
+    let created = 0;
+    let closed = 0;
+    handle = await startSseServer(
+      async () => {
+        created++;
+        const server = await createAtlasMcpServer({ actor: SSE_ACTOR });
+        const origClose = server.close.bind(server);
+        // Spy on close() so we can prove the orphaned server is torn down.
+        server.close = async () => {
+          closed++;
+          return origClose();
+        };
+        return server;
+      },
+      { port: 0, maxSessions: 1 },
+    );
+
+    // A well-formed but non-initialize first frame with no session id: the SDK
+    // allocates a transport + server, then rejects the frame without firing
+    // `onsessioninitialized`, so the session never registers. Without the
+    // `!registered` teardown this leaks one McpServer per request.
+    const res = await fetch(`http://localhost:${handle.server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    await res.body?.cancel().catch(() => {});
+
+    // Nothing registered, and the orphaned server was closed rather than leaked.
+    expect(handle._sessionCount()).toBe(0);
+    expect(created).toBe(1);
+    expect(closed).toBe(1);
+
+    // The cap slot was never consumed — a real init still succeeds under cap=1.
+    const client = new Client({ name: "client-after", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await client.connect(transport);
+    expect(handle._sessionCount()).toBe(1);
+
+    await client.close();
+  });
+
+  it("sweeps multiple idle sessions in one pass while preserving a live-stream session", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 5,
+    });
+    const port = handle.server.port;
+
+    // Two abandoned sessions (raw init, body drained → no live stream).
+    const a = await rawInitRequest(port);
+    await a.body?.cancel().catch(() => {});
+    const c = await rawInitRequest(port);
+    await c.body?.cancel().catch(() => {});
+
+    // One connected session holding a live GET notification stream.
+    const connected = new Client({ name: "client-live", version: "0.0.1" });
+    const connectedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await connected.connect(connectedTransport);
+
+    expect(handle._sessionCount()).toBe(3);
+
+    // The SDK client's standalone GET notification stream opens asynchronously
+    // after connect() resolves; give it a beat to establish so `activeStreams`
+    // is > 0 before the sweep (mirrors the lone live-stream test above).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A far-future sweep ages every session past the idle window. The loop must
+    // evict BOTH abandoned sessions (selective, not all-or-nothing) and skip the
+    // one with `activeStreams > 0` — proving the live-stream guard holds within a
+    // mixed population, not just for a lone session.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000);
+    expect(evicted).toBe(2);
+    expect(handle._sessionCount()).toBe(1);
+
+    await connected.close();
   });
 });

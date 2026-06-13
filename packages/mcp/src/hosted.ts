@@ -80,6 +80,7 @@ import {
   userIsWorkspaceMember,
 } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { createAtlasMcpServer } from "./server.js";
+import { trackResponseStreamLifetime } from "./stream-liveness.js";
 
 const log = createLogger("mcp-hosted");
 
@@ -99,6 +100,13 @@ interface SessionEntry {
    * property of the on-hot-path activity refresh.
    */
   lastSeenAt: number;
+  /**
+   * Count of live GET SSE notification streams held open by this session.
+   * A session with `activeStreams > 0` has a client actively listening and
+   * is never idle, so the sweep skips it even when `lastSeenAt` has aged
+   * out — see {@link sweepIdleSessions} and `trackResponseStreamLifetime`.
+   */
+  activeStreams: number;
 }
 
 const sessions = new Map<string, SessionEntry>();
@@ -220,6 +228,9 @@ function sweepIdleSessions(now: number, idleTimeoutMs: number): number {
   let evicted = 0;
   const cutoff = now - idleTimeoutMs;
   for (const [id, entry] of sessions) {
+    // A session with a live notification stream has a client actively
+    // listening — never idle, regardless of how stale `lastSeenAt` looks.
+    if (entry.activeStreams > 0) continue;
     if (entry.lastSeenAt > cutoff) continue;
     sessions.delete(id);
     // intentionally ignored: best-effort teardown of an already-
@@ -1214,7 +1225,34 @@ async function dispatchExistingSession(
   // a long-running tool call (executeSQL on a large query) doesn't
   // race with a concurrent sweep observing a stale `lastSeenAt`.
   entry.lastSeenAt = Date.now();
-  return entry.transport.handleRequest(req);
+  const response = await entry.transport.handleRequest(req);
+  // A GET opens the standalone SSE notification stream, which stays open
+  // for the life of the connection. Track its liveness so the idle sweep
+  // never evicts a session that still has a client listening — `lastSeenAt`
+  // alone would age out a connected-but-quiet client mid-stream. A POST/DELETE
+  // is actively producing and closes when done (and `lastSeenAt` was just
+  // refreshed), so it's never the eviction target and needs no tracking.
+  if (req.method === "GET") {
+    return trackResponseStreamLifetime(response, {
+      onOpen: () => {
+        entry.activeStreams++;
+      },
+      onClose: () => {
+        entry.activeStreams = Math.max(0, entry.activeStreams - 1);
+        // Reset the idle clock from the moment the client actually
+        // disconnected, not from when the stream opened.
+        entry.lastSeenAt = Date.now();
+      },
+      onError: (err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        log.debug(
+          { sessionId: entry.transport.sessionId, err: detail },
+          "SSE notification stream errored",
+        );
+      },
+    });
+  }
+  return response;
 }
 
 async function dispatchNewSession(
@@ -1257,7 +1295,12 @@ async function dispatchNewSession(
         // Stamp `lastSeenAt: Date.now()` at registration so the sweep
         // doesn't immediately evict a freshly-created session that
         // hasn't yet received a follow-up frame.
-        sessions.set(id, { transport, server: mcpServer, lastSeenAt: Date.now() });
+        sessions.set(id, {
+          transport,
+          server: mcpServer,
+          lastSeenAt: Date.now(),
+          activeStreams: 0,
+        });
         registered = true;
         emitSessionStartAudit(
           {

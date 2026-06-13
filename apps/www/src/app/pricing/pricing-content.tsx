@@ -152,7 +152,7 @@ const COMPARISON_SECTIONS: ComparisonSection[] = [
       { feature: "Seats", selfHosted: "Unlimited", starter: "Up to 10", pro: "Up to 25", business: "Unlimited" },
       { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
       { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
-      { feature: "Overage rate", selfHosted: false, starter: "$1 / 1M tokens", pro: "$1 / 1M tokens", business: "$1 / 1M tokens" },
+      { feature: "When you hit the budget", selfHosted: "No limit (BYOK)", starter: "Warn → 10% grace → pause", pro: "Warn → 10% grace → pause", business: "Warn → 10% grace → pause" },
     ],
   },
   {
@@ -198,12 +198,12 @@ const FAQS: FAQ[] = [
   {
     question: "Can I switch models?",
     answer:
-      "Yes. Every plan lets you choose any supported model (Claude, GPT, etc.). On paid plans, your per-seat query budget adjusts automatically based on the model's cost — a more expensive model uses more budget per query, a cheaper one uses less.",
+      "Yes. Every plan lets you choose any supported model (Claude, GPT, etc.). Your per-seat budget is a flat token count — every token counts the same regardless of which model produced it, so a more capable model simply consumes the shared budget faster. Switch to BYOK to remove token limits entirely.",
   },
   {
-    question: "What happens when I hit my query limit?",
+    question: "What happens when I hit my token budget?",
     answer:
-      "You'll get warnings as you approach your limit. You have a 10% grace buffer beyond your included token budget; usage past that is billed at $1 per 1M output-equivalent tokens (roughly $0.10 per typical query, depending on the model). To avoid overages entirely, switch to BYOK at any time — your own API key means unlimited queries.",
+      "Each paid plan includes a per-seat monthly token budget that scales with your seat count. As you approach it you'll get a usage warning (from ~80%), and you keep working through a 10% grace buffer past 100%. At 110% new requests are paused until you upgrade, add seats, or your billing period resets. There is no metered per-token overage charge — it's a hard cap with a grace buffer, not pay-as-you-go. To remove token limits entirely, switch to BYOK at any time and use your own API key.",
   },
   {
     question: "Is there a free option?",

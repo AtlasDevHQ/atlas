@@ -9,6 +9,11 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+// Mock ALL db/internal exports (docs/development/testing.md): a partial mock
+// makes a sibling test that imports a different db/internal symbol crash. The
+// defaults builder gives the full surface; we override only the two the dunning
+// dispatcher actually drives (internalQuery + hasInternalDB).
+import { buildInternalDbMockDefaults } from "@atlas/api/testing/api-test-mocks";
 
 // --- Mock internal DB ---
 
@@ -36,13 +41,10 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasDB,
-  internalQuery: mockInternalQuery,
-  internalExecute: mock(() => {}),
-  getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
-  setWorkspaceRegion: mock(async () => {}),
-  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
-  getPendingAmendmentCount: mock(async () => 0),
+  ...buildInternalDbMockDefaults({
+    internalQuery: mockInternalQuery,
+    hasInternalDB: () => mockHasDB,
+  }),
 }));
 
 // --- Mock email delivery ---

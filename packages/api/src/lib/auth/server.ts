@@ -1502,8 +1502,15 @@ async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string
 // (reusing the existing `suspended` workspace_status as the block, which
 // avoids a new status enum + migration and is already enforced by
 // `checkWorkspaceStatus`). The 3-attempt suspension is the same block, kept
-// for parity with the prior behavior as the final rung. Recovery clears the
-// block regardless of which rung set it.
+// for parity with the prior behavior as the final rung.
+//
+// Recovery is SCOPED BY SUSPENSION SOURCE (#3424). Because billing reuses the
+// shared `suspended` status, an unscoped recovery would also clear a
+// suspension an OPERATOR set for a different reason (e.g. ToS abuse). Every
+// billing-induced suspension is therefore stamped `suspension_source =
+// 'billing'` (operator/admin routes stamp `'operator'`), and recovery clears
+// ONLY `'billing'` suspensions. An operator suspension survives a billing
+// recovery; the customer's restored payment merely clears the dunning state.
 // ─────────────────────────────────────────────────────────────────────
 
 /** Resolve the Atlas orgId for a Stripe subscription id via the plugin's subscription table. */
@@ -1556,7 +1563,7 @@ async function handlePaymentFailure(invoice: Stripe.Invoice): Promise<void> {
     // After 3+ failed attempts, suspend (final rung). Stripe typically
     // retries 3 times over ~3 weeks with Smart Retries.
     if (attemptCount >= 3) {
-      const suspended = await updateWorkspaceStatus(orgId, "suspended");
+      const suspended = await updateWorkspaceStatus(orgId, "suspended", "billing");
       if (suspended) {
         invalidatePlanCache(orgId);
         billingLog.warn(
@@ -1600,12 +1607,28 @@ async function handlePaymentRecovery(orgId: string, source: string): Promise<voi
       billingLog.warn({ orgId, source }, "Payment recovery for an org that no longer exists — skipping");
       return;
     }
-    if (workspace.workspace_status !== "suspended") {
-      // Nothing to unblock. A `past_due → active` recovery with no suspension
-      // is the common path — just clear any pending dunning state.
+    // Only a billing-induced suspension may be auto-cleared by a payment
+    // recovery. An operator/manual suspension (e.g. ToS abuse) is left
+    // untouched — clearing it here would silently undo a deliberate operator
+    // action just because the customer's card later went through (#3424).
+    // Either way the billing-side dunning state is stale once payment lands,
+    // so clear the dunning steps regardless of the suspension source.
+    const isBillingSuspension =
+      workspace.workspace_status === "suspended" && workspace.suspension_source === "billing";
+    if (!isBillingSuspension) {
       const { clearDunningSteps } = await import("@atlas/api/lib/email/dunning");
       await clearDunningSteps(orgId);
-      billingLog.info({ orgId, source, status: workspace.workspace_status }, "Payment recovered — workspace was not suspended, dunning state cleared");
+      if (workspace.workspace_status === "suspended") {
+        billingLog.warn(
+          { orgId, source, suspensionSource: workspace.suspension_source },
+          "Payment recovered but workspace is suspended by a non-billing source — leaving suspension in place, dunning state cleared",
+        );
+      } else {
+        billingLog.info(
+          { orgId, source, status: workspace.workspace_status },
+          "Payment recovered — workspace was not suspended, dunning state cleared",
+        );
+      }
       return;
     }
 
@@ -1687,9 +1710,10 @@ async function handleSubscriptionStatusPolicy(subscription: Stripe.Subscription)
     }
 
     // status === "unpaid": Stripe has stopped auto-retrying this cycle —
-    // stop serving paid product. Reuse the `suspended` block (no new status
-    // enum / migration); recovery clears it.
-    const blocked = await updateWorkspaceStatus(orgId, "suspended");
+    // stop serving paid product. Reuse the `suspended` block, sourced
+    // `'billing'` so recovery clears it (an operator suspension is NOT
+    // cleared by a billing recovery, #3424).
+    const blocked = await updateWorkspaceStatus(orgId, "suspended", "billing");
     if (blocked) {
       invalidatePlanCache(orgId);
       billingLog.warn({ orgId, subscriptionId: subscription.id }, "Subscription unpaid — workspace blocked until payment is fixed");

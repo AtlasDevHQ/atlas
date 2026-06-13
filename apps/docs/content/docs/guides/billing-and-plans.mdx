@@ -182,7 +182,7 @@ Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe pl
 | Subscription `past_due` | First failed payment — **entitlements are retained** (grace window while Stripe retries a recoverable card). A dunning email is sent; the workspace keeps working |
 | Subscription `unpaid` | Stripe has stopped auto-retrying for this cycle — chat and queries are **blocked** (the workspace is soft-suspended) and a dunning email is sent, until payment is fixed |
 | `invoice.payment_failed` | Logs the failure and sends a dunning email at each attempt; auto-suspends the workspace after 3+ consecutive failures (final-notice email) |
-| `invoice.payment_succeeded` / `invoice.paid` | **Automatically un-suspends** a workspace blocked or suspended by a payment failure, restores access, and sends a recovery-confirmation email |
+| `invoice.payment_succeeded` / `invoice.paid` | **Automatically un-suspends** a workspace that was blocked or suspended **by a payment failure**, restores access, and sends a recovery-confirmation email. A workspace an operator suspended manually (e.g. for a ToS violation) is **not** un-suspended — only billing-induced suspensions are auto-cleared |
 
 Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
 
@@ -191,9 +191,11 @@ Plan tier changes take effect immediately — the plan cache is invalidated on w
 Atlas degrades access progressively as a subscription falls behind, and recovers automatically when the customer fixes their payment method — no manual platform-admin action is needed:
 
 1. **`past_due`** (first failed invoice) → in-app access is unchanged; a "your payment didn't go through" email is sent. The customer keeps working while Stripe retries.
-2. **`unpaid`** → chat and queries are blocked with a "fix your payment" message; an email is sent. (This reuses the same `suspended` workspace state as step 3 — there is no separate billing-block status.)
-3. **3+ failed retries** → the workspace is suspended and a final-notice email is sent.
-4. **Payment succeeds** (`invoice.payment_succeeded` / `invoice.paid`, or the subscription returns to `active`) → the workspace is automatically un-suspended and a recovery-confirmation email is sent.
+2. **`unpaid`** → chat and queries are blocked with a "fix your payment" message; an email is sent. (This reuses the same `suspended` workspace state as step 3 — there is no separate billing-block status. The suspension is tagged with a `billing` source so it can be distinguished from a manual operator suspension.)
+3. **3+ failed retries** → the workspace is suspended (source `billing`) and a final-notice email is sent.
+4. **Payment succeeds** (`invoice.payment_succeeded` / `invoice.paid`, or the subscription returns to `active`) → a **billing-suspended** workspace is automatically un-suspended and a recovery-confirmation email is sent.
+
+Recovery is **scoped to billing-induced suspensions**: a workspace an operator suspended manually (e.g. for a ToS violation) keeps its suspension even if a delinquent invoice is later paid — recovery never silently undoes a deliberate operator action. Internally, suspensions carry a `suspension_source` (`billing` vs `operator`); recovery only clears `billing` ones.
 
 The recovery signal is handled belt-and-braces: both the paid-invoice event and the `→ active` status transition trigger un-suspension, since webhook delivery order isn't guaranteed. Whichever arrives first restores access; the other is a no-op.
 

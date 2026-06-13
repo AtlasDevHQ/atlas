@@ -629,7 +629,9 @@ adminOrgs.openapi(suspendOrgRoute, async (c) => {
     if (workspace.workspace_status === "deleted") return c.json({ error: "conflict", message: "Cannot suspend a deleted workspace." }, 409);
     if (workspace.workspace_status === "suspended") return c.json({ error: "conflict", message: "Workspace is already suspended." }, 409);
 
-    yield* Effect.promise(() => updateWorkspaceStatus(orgId, "suspended"));
+    // Operator/manual suspension (#3424): a billing recovery must NOT clear
+    // this — only suspensions sourced 'billing' are auto-recovered.
+    yield* Effect.promise(() => updateWorkspaceStatus(orgId, "suspended", "operator"));
     // Drop the cached `getCachedWorkspace` entry so the next user-side
     // request sees the new status within its TTL window (#2165).
     invalidatePlanCache(orgId);

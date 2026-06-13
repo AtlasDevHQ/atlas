@@ -16,8 +16,13 @@
  *   - checkout.session.completed → `updateWorkspacePlanTier(orgId, plan)`
  *   - customer.subscription.deleted → locked write for the same orgId,
  *     plus the stale-deletion guard (another active sub → skip)
- *   - invoice.payment_failed (attempt 3) → workspace suspended via the
- *     subscription-table referenceId lookup
+ *   - invoice.payment_failed (attempt 3) → workspace suspended (source
+ *     'billing') via the subscription-table referenceId lookup
+ *   - delinquency ladder recovery (#3424): a billing-suspended workspace is
+ *     un-suspended on invoice.paid / status→active, the full
+ *     past_due→unpaid→invoice.paid chain reaches the right end state, an
+ *     out-of-order unpaid delivery still blocks (state-correctness), and an
+ *     OPERATOR-suspended workspace is NEVER cleared by a billing recovery
  *   - event ledger (#3423): replays skipped, out-of-order deliveries for
  *     the same subscription skipped, failed sync → 400 + NOT recorded so
  *     Stripe's redelivery re-runs the sync (record-last protocol)
@@ -1002,7 +1007,8 @@ describe("invoice.payment_failed", () => {
     const res = await postWebhook(auth, paymentFailedEvent(3));
 
     expect(res.status).toBe(200);
-    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended");
+    // Sourced 'billing' so a later recovery is allowed to clear it (#3424).
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended", "billing");
   });
 
   it("does not suspend before the third attempt", async () => {
@@ -1038,11 +1044,11 @@ describe("invoice payment recovery (#3424)", () => {
     return sql.includes(`"stripeSubscriptionId" = $1`) ? [{ referenceId: "org-1" }] : null;
   }
 
-  it("unsuspends a suspended workspace when the failed invoice is paid", async () => {
+  it("unsuspends a billing-suspended workspace when the failed invoice is paid", async () => {
     mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
-    // The workspace is currently suspended (set by an earlier 3-attempt failure).
+    // The workspace was suspended by the billing ladder (earlier 3-attempt failure).
     mockGetWorkspaceDetails.mockImplementation(() =>
-      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "billing" }),
     );
     const auth = makeAuth(emptyDB());
 
@@ -1055,7 +1061,7 @@ describe("invoice payment recovery (#3424)", () => {
   it("treats invoice.paid the same as invoice.payment_succeeded", async () => {
     mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
     mockGetWorkspaceDetails.mockImplementation(() =>
-      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "billing" }),
     );
     const auth = makeAuth(emptyDB());
 
@@ -1063,6 +1069,23 @@ describe("invoice payment recovery (#3424)", () => {
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "active");
+  });
+
+  it("does NOT unsuspend an OPERATOR-suspended workspace on a billing recovery (#3424 blocker)", async () => {
+    // The workspace is suspended for a non-billing reason (e.g. ToS abuse) —
+    // an operator set it. A delinquent invoice later being paid must NOT
+    // silently clear the operator's deliberate suspension.
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "operator" }),
+    );
+    const auth = makeAuth(emptyDB());
+
+    const res = await postWebhook(auth, invoicePaidEvent("invoice.paid"));
+
+    expect(res.status).toBe(200);
+    // The operator suspension is untouched — no status write of any kind.
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
   });
 
   it("does NOT change status when the workspace is already active (idempotent recovery)", async () => {
@@ -1078,11 +1101,11 @@ describe("invoice payment recovery (#3424)", () => {
     expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
   });
 
-  it("end-to-end: fail→suspend→pay→unsuspend", async () => {
+  it("end-to-end: fail→suspend→pay→unsuspend (billing-sourced)", async () => {
     mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
     const auth = makeAuth(emptyDB());
 
-    // 1. Third failed attempt suspends the workspace.
+    // 1. Third failed attempt suspends the workspace, sourced 'billing'.
     const failed = await postWebhook(auth, {
       id: "evt_pf_3_e2e",
       type: "invoice.payment_failed",
@@ -1097,15 +1120,59 @@ describe("invoice payment recovery (#3424)", () => {
       },
     });
     expect(failed.status).toBe(200);
-    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended");
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended", "billing");
 
     // 2. The customer fixes their card and the invoice is paid. The
-    //    workspace is suspended, so recovery flips it back to active.
+    //    workspace is billing-suspended, so recovery flips it back to active.
     mockGetWorkspaceDetails.mockImplementation(() =>
-      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "billing" }),
     );
     const recovered = await postWebhook(auth, invoicePaidEvent("invoice.payment_succeeded"));
     expect(recovered.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenLastCalledWith("org-1", "active");
+  });
+
+  it("end-to-end full chain: past_due → unpaid → invoice.paid → unsuspend", async () => {
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    // 1. past_due — entitlements retained, no suspension.
+    const pastDue = await postWebhook(auth, {
+      id: "evt_chain_past_due",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "past_due" }) },
+    });
+    expect(pastDue.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+
+    // 2. unpaid — Stripe stopped retrying this cycle; block, sourced 'billing'.
+    const unpaid = await postWebhook(auth, {
+      id: "evt_chain_unpaid",
+      type: "customer.subscription.updated",
+      created: EPOCH + 10,
+      data: { object: stripeSubscription({ status: "unpaid" }) },
+    });
+    expect(unpaid.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended", "billing");
+
+    // 3. The invoice is paid — the billing suspension is auto-cleared.
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "billing" }),
+    );
+    const paid = await postWebhook(auth, invoicePaidEvent("invoice.paid"));
+    expect(paid.status).toBe(200);
     expect(mockUpdateWorkspaceStatus).toHaveBeenLastCalledWith("org-1", "active");
   });
 });
@@ -1113,11 +1180,11 @@ describe("invoice payment recovery (#3424)", () => {
 // ── customer.subscription.updated → status-aware policy (#3424) ─────
 
 describe("subscription status policy (#3424)", () => {
-  function statusUpdatedEvent(status: string, id = `evt_status_${status}`) {
+  function statusUpdatedEvent(status: string, id = `evt_status_${status}`, created = EPOCH) {
     return {
       id,
       type: "customer.subscription.updated",
-      created: EPOCH,
+      created,
       data: { object: stripeSubscription({ status }) },
     };
   }
@@ -1148,20 +1215,20 @@ describe("subscription status policy (#3424)", () => {
     expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
   });
 
-  it("blocks the workspace on unpaid (soft-suspend)", async () => {
+  it("blocks the workspace on unpaid (soft-suspend, sourced 'billing')", async () => {
     const auth = makeAuth(seededDB());
 
     const res = await postWebhook(auth, statusUpdatedEvent("unpaid"));
 
     expect(res.status).toBe(200);
-    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended");
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended", "billing");
   });
 
-  it("auto-recovers a suspended workspace when the subscription returns to active", async () => {
+  it("auto-recovers a billing-suspended workspace when the subscription returns to active", async () => {
     // Belt-and-braces: even if the invoice.paid signal is dropped, the
     // status transition back to active unsuspends the workspace.
     mockGetWorkspaceDetails.mockImplementation(() =>
-      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "billing" }),
     );
     const auth = makeAuth(seededDB());
 
@@ -1169,6 +1236,42 @@ describe("subscription status policy (#3424)", () => {
 
     expect(res.status).toBe(200);
     expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "active");
+  });
+
+  it("does NOT auto-recover an operator-suspended workspace on a status→active transition", async () => {
+    // The belt-and-braces `active` recovery path must respect the suspension
+    // source too — an operator suspension survives a status→active.
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended", suspension_source: "operator" }),
+    );
+    const auth = makeAuth(seededDB());
+
+    const res = await postWebhook(auth, statusUpdatedEvent("active"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+  });
+
+  it("blocks on a delayed unpaid even after an earlier active recovery (out-of-order delivery, state-correctness)", async () => {
+    // Webhook ordering is not guaranteed (#3423). The status policy is
+    // state-driven off each event's own status, so a late `unpaid` delivery
+    // still produces the correct end state (blocked + sourced 'billing')
+    // rather than depending on arrival order.
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "active", suspension_source: null }),
+    );
+    const auth = makeAuth(seededDB());
+
+    // An `active` update lands first (no suspension to clear).
+    const active = await postWebhook(auth, statusUpdatedEvent("active", "evt_ooo_active", EPOCH));
+    expect(active.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+
+    // A delayed `unpaid` update arrives afterwards (later Stripe `created`) —
+    // it must still block.
+    const unpaid = await postWebhook(auth, statusUpdatedEvent("unpaid", "evt_ooo_unpaid", EPOCH + 50));
+    expect(unpaid.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended", "billing");
   });
 
   it("does nothing to status for an active subscription on an already-active workspace", async () => {

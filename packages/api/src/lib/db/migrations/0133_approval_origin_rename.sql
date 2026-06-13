@@ -12,20 +12,27 @@
 -- overlap to protect and no data to backfill — RENAME COLUMN is in-place
 -- and preserves every existing row's value.
 --
--- Idempotent: each rename is guarded so a re-run (or a deploy that
--- partially applied) is a no-op rather than an error. Postgres has no
--- `ALTER ... RENAME ... IF EXISTS` for columns/constraints, so we gate on
--- the catalog. `ALTER INDEX ... RENAME` does support `IF EXISTS`.
+-- Idempotent AND schema-scoped: each rename is guarded so a re-run (or a
+-- deploy that partially applied) is a no-op rather than an error. Every
+-- existence check is pinned to `current_schema()` — the migrate-pg /
+-- rotate-encryption-key tests run migrations under per-test schemas, and
+-- an unscoped `information_schema`/`pg_constraint` probe would see another
+-- schema's already-renamed `origin` column, skip the rename here, then
+-- trip the unconditional COMMENT with "column origin does not exist".
+-- Postgres has no `ALTER ... RENAME ... IF EXISTS` for columns/constraints,
+-- hence the DO-block guards; `ALTER INDEX ... RENAME` does support IF EXISTS.
 
 -- ── approval_rules.surface → origin ──────────────────────────────────
 
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'approval_rules' AND column_name = 'surface'
+    WHERE table_schema = current_schema()
+      AND table_name = 'approval_rules' AND column_name = 'surface'
   ) AND NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'approval_rules' AND column_name = 'origin'
+    WHERE table_schema = current_schema()
+      AND table_name = 'approval_rules' AND column_name = 'origin'
   ) THEN
     ALTER TABLE approval_rules RENAME COLUMN surface TO origin;
   END IF;
@@ -36,7 +43,9 @@ END $$;
 -- identifier so it reads `chk_approval_rule_origin` to match.
 DO $$ BEGIN
   IF EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'chk_approval_rule_surface'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'chk_approval_rule_surface'
+      AND connamespace = current_schema()::regnamespace
   ) THEN
     ALTER TABLE approval_rules
       RENAME CONSTRAINT chk_approval_rule_surface TO chk_approval_rule_origin;
@@ -54,10 +63,12 @@ COMMENT ON COLUMN approval_rules.origin IS
 DO $$ BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'approval_queue' AND column_name = 'surface'
+    WHERE table_schema = current_schema()
+      AND table_name = 'approval_queue' AND column_name = 'surface'
   ) AND NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'approval_queue' AND column_name = 'origin'
+    WHERE table_schema = current_schema()
+      AND table_name = 'approval_queue' AND column_name = 'origin'
   ) THEN
     ALTER TABLE approval_queue RENAME COLUMN surface TO origin;
   END IF;
@@ -65,7 +76,9 @@ END $$;
 
 DO $$ BEGIN
   IF EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'chk_approval_request_surface'
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'chk_approval_request_surface'
+      AND connamespace = current_schema()::regnamespace
   ) THEN
     ALTER TABLE approval_queue
       RENAME CONSTRAINT chk_approval_request_surface TO chk_approval_request_origin;

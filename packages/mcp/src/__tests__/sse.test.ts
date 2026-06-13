@@ -472,7 +472,7 @@ describe("SSE server — session hardening (#3492)", () => {
     expect(handle._sessionCount()).toBe(1);
   });
 
-  it("auto-sweeps a leaked session on cap-pressure (regression for the pool-exhaustion bug)", async () => {
+  it("auto-sweeps an abandoned (no-stream) session on cap-pressure (regression for the pool-exhaustion bug)", async () => {
     process.env.ATLAS_MCP_MAX_SESSIONS = "1";
     // Bypass the production 1-min idle floor so the age-out path can be
     // driven with a sub-second sleep instead of a 60s wait.
@@ -481,29 +481,63 @@ describe("SSE server — session hardening (#3492)", () => {
       port: 0,
     });
 
-    // Open the session that occupies the cap, then let it go idle past the
-    // window so it becomes sweepable — simulating a client that vanished
-    // without sending DELETE.
-    const leaker = new Client({ name: "client-leaker", version: "0.0.1" });
-    const leakerTransport = new StreamableHTTPClientTransport(
-      new URL(`http://localhost:${handle.server.port}/mcp`),
-    );
-    await leaker.connect(leakerTransport);
+    // A genuinely-abandoned session: initialized via a raw POST, then the
+    // response drained and nothing kept open — no live notification stream,
+    // so `activeStreams` stays 0 and it can age out of the idle window. (An
+    // SDK client would instead hold its GET notification stream open, which
+    // correctly keeps the session unsweepable — covered by the next test.)
+    const leaked = await rawInitRequest(handle.server.port);
+    await leaked.body?.cancel().catch(() => {});
     expect(handle._sessionCount()).toBe(1);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     // A fresh init should now succeed: the new-session path's cap-check
-    // sweep evicts the stale leaker first, freeing the slot. Without the
-    // sweep this would 503 forever until process restart.
+    // sweep evicts the aged-out abandoned session first, freeing the slot.
+    // Without the sweep this would 503 forever until process restart.
     const fresh = new Client({ name: "client-fresh", version: "0.0.1" });
     const freshTransport = new StreamableHTTPClientTransport(
       new URL(`http://localhost:${handle.server.port}/mcp`),
     );
     await fresh.connect(freshTransport);
-    // Only the fresh session remains; the leaker was swept.
+    // Only the fresh session remains; the abandoned one was swept.
     expect(handle._sessionCount()).toBe(1);
 
     await fresh.close();
+  });
+
+  it("does not sweep a session whose client still holds a live notification stream", async () => {
+    process.env.ATLAS_MCP_MAX_SESSIONS = "1";
+    // Age lastSeenAt out aggressively — the live stream, not the timestamp,
+    // is what must keep the session alive here.
+    _setIdleTimeoutForTests(50); // 50 ms
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+    });
+
+    // An SDK client holds its standalone GET notification stream open for the
+    // life of the connection, so `activeStreams > 0`.
+    const connected = new Client({ name: "client-connected", version: "0.0.1" });
+    const connectedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await connected.connect(connectedTransport);
+    expect(handle._sessionCount()).toBe(1);
+
+    // Let lastSeenAt age well past the 50ms idle window while the client
+    // keeps listening.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A second connection hits the cap. The cap-pressure sweep must NOT
+    // reclaim the first session — its client is still listening — so the new
+    // init is rejected rather than stealing a live client's slot.
+    const blocked = new Client({ name: "client-blocked", version: "0.0.1" });
+    const blockedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await expect(blocked.connect(blockedTransport)).rejects.toThrow();
+    expect(handle._sessionCount()).toBe(1);
+
+    await connected.close();
   });
 });

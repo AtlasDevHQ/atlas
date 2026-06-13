@@ -44,6 +44,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { createLogger } from "@atlas/api/lib/logger";
+import { trackResponseStreamLifetime } from "./stream-liveness.js";
 
 const log = createLogger("mcp-sse");
 
@@ -102,6 +103,13 @@ interface SessionEntry {
    * every dispatch, defeating the cheap on-hot-path activity refresh.
    */
   lastSeenAt: number;
+  /**
+   * Count of live GET SSE notification streams held open by this session.
+   * A session with `activeStreams > 0` has a client actively listening and
+   * is never idle, so the sweep skips it even when `lastSeenAt` has aged
+   * out — see {@link sweepIdleSessions} and `trackResponseStreamLifetime`.
+   */
+  activeStreams: number;
 }
 type SessionMap = Map<string, SessionEntry>;
 
@@ -206,6 +214,9 @@ function sweepIdleSessions(
   let evicted = 0;
   const cutoff = now - idleTimeoutMs;
   for (const [id, entry] of sessions) {
+    // A session with a live notification stream has a client actively
+    // listening — never idle, regardless of how stale `lastSeenAt` looks.
+    if (entry.activeStreams > 0) continue;
     if (entry.lastSeenAt > cutoff) continue;
     sessions.delete(id);
     // intentionally ignored: best-effort teardown of an already-orphaned
@@ -279,7 +290,27 @@ export async function startSseServer(
     // long-running tool call (executeSQL on a large query) doesn't race
     // with a concurrent sweep observing a stale `lastSeenAt`.
     entry.lastSeenAt = Date.now();
-    return entry.transport.handleRequest(req);
+    const response = await entry.transport.handleRequest(req);
+    // A GET opens the standalone SSE notification stream, which stays open
+    // for the life of the connection. Track its liveness so the idle sweep
+    // never evicts a session that still has a client listening — `lastSeenAt`
+    // alone would age out a connected-but-quiet client mid-stream. POST/DELETE
+    // responses are short-lived and tied to the just-refreshed `lastSeenAt`,
+    // so they need no tracking.
+    if (req.method === "GET") {
+      return trackResponseStreamLifetime(response, {
+        onOpen: () => {
+          entry.activeStreams++;
+        },
+        onClose: () => {
+          entry.activeStreams = Math.max(0, entry.activeStreams - 1);
+          // Reset the idle clock from the moment the client actually
+          // disconnected, not from when the stream opened.
+          entry.lastSeenAt = Date.now();
+        },
+      });
+    }
+    return response;
   }
 
   async function dispatchNewSession(req: Request): Promise<Response> {
@@ -316,7 +347,12 @@ export async function startSseServer(
           // Stamp `lastSeenAt: Date.now()` at registration so the sweep
           // doesn't immediately evict a freshly-created session that hasn't
           // yet received a follow-up frame.
-          sessions.set(id, { transport, server: mcpServer, lastSeenAt: Date.now() });
+          sessions.set(id, {
+            transport,
+            server: mcpServer,
+            lastSeenAt: Date.now(),
+            activeStreams: 0,
+          });
           registered = true;
           log.info({ sessionId: id }, "Session created");
         },

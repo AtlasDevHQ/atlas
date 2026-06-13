@@ -101,6 +101,14 @@ mock.module("@atlas/api/lib/billing/workspace-teardown", () => ({
   purgeStripeBillingForWorkspace: mockPurgeBilling,
   pauseStripeCollectionForWorkspace: mockPause,
   resumeStripeCollectionForWorkspace: mockResume,
+  // Shared response/audit helpers (#3459) — mirror the real implementations
+  // so the warnings/audit assertions below exercise the same shapes.
+  stripeAuditMetadata: (billing: StripeTeardownOutcome) =>
+    billing.attempted
+      ? { stripe: { actions: billing.actions, warnings: billing.warnings } }
+      : {},
+  withWarnings: (billing: StripeTeardownOutcome) =>
+    billing.warnings.length > 0 ? { warnings: billing.warnings } : {},
 }));
 
 // ── Audit capture ───────────────────────────────────────────────────

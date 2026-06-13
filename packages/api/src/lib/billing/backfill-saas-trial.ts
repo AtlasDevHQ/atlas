@@ -22,15 +22,22 @@
  * workspaces get a fresh window rather than landing pre-expired the
  * moment this code deploys.
  *
- * Two statements, lock-first: orgs with a trial-consumed owner are
+ * Three statements, lock-first: orgs with a trial-consumed owner are
  * demoted to 'locked' before the promote statement runs, so the promote
  * (`plan_tier = 'free'` guard) can never see them. The eligibility
- * predicate mirrors `userHasConsumedTrial` but keys on ANY owner — the
- * creator isn't recorded, so we fail toward no-second-trial. Two free
- * orgs sharing a never-trialed owner both promote in the same pass
- * (neither has `trial_ends_at` when the statement snapshots) — that
- * matches the pre-#3426 behaviour for legacy rows and is not reachable
- * by farming (the signup hook serializes new orgs).
+ * predicate mirrors `userHasConsumedTrial` — the durable
+ * `user_trial_grants` marker (#3470, a grant for a DIFFERENT org)
+ * OR-joined with the legacy any-owner-of-a-trialed-org proxy — so we
+ * fail toward no-second-trial. A grant pointing AT the org itself does
+ * NOT lock it: that's the crash-heal shape (#3469 claimed the grant but
+ * the tier write failed), and the promote arm finishes the job. After
+ * promoting, owners of the promoted orgs are stamped into
+ * `user_trial_grants` (ON CONFLICT DO NOTHING) so the heal records
+ * consumption through the same marker the hook reads. Two free orgs
+ * sharing a never-trialed owner both promote in the same pass (neither
+ * has `trial_ends_at` when the statement snapshots) — that matches the
+ * pre-#3426 behaviour for legacy rows and is not reachable by farming
+ * (the signup hook claims atomically per user).
  *
  * Wired through `BackfillSaasTrialLive` in
  * `packages/api/src/lib/effect/layers.ts`, which depends on `Migration`
@@ -72,7 +79,10 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
   try {
     // 1) One-trial-per-user arm (#3426): free orgs with an owner who
     //    already consumed a trial land on 'locked', trial stamped as
-    //    consumed-now. Must run BEFORE the promote arm.
+    //    consumed-now. Must run BEFORE the promote arm. "Consumed" =
+    //    the durable grant marker for a DIFFERENT org (#3470) or the
+    //    legacy owner-of-a-trialed-org proxy — mirror of
+    //    `userHasConsumedTrial`.
     const lockedRows = await internalQuery<{ id: string }>(
       `UPDATE organization o
           SET plan_tier = 'locked',
@@ -82,13 +92,24 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
           AND EXISTS (
             SELECT 1
               FROM member m_new
-              JOIN member m_prior ON m_prior."userId" = m_new."userId"
-              JOIN organization o_prior ON o_prior.id = m_prior."organizationId"
              WHERE m_new."organizationId" = o.id
                AND m_new.role = 'owner'
-               AND m_prior.role = 'owner'
-               AND o_prior.id <> o.id
-               AND o_prior.trial_ends_at IS NOT NULL
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM user_trial_grants g
+                    WHERE g.user_id = m_new."userId"
+                      AND g.org_id <> o.id
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                     FROM member m_prior
+                     JOIN organization o_prior ON o_prior.id = m_prior."organizationId"
+                    WHERE m_prior."userId" = m_new."userId"
+                      AND m_prior.role = 'owner'
+                      AND o_prior.id <> o.id
+                      AND o_prior.trial_ends_at IS NOT NULL
+                 )
+               )
           )
         RETURNING id`,
     );
@@ -105,6 +126,22 @@ export async function backfillSaasTrial(): Promise<BackfillResult> {
       [trialEndsAt.toISOString()],
     );
     const orgIds = rows.map((r) => r.id);
+
+    // 3) Record consumption for the healed grants through the same
+    //    durable marker the signup hook claims (#3469/#3470), so a
+    //    later owner demotion can't reopen eligibility. ON CONFLICT
+    //    keeps a crash-healed org's existing claim intact.
+    if (orgIds.length > 0) {
+      await internalQuery(
+        `INSERT INTO user_trial_grants (user_id, org_id)
+         SELECT m."userId", m."organizationId"
+           FROM member m
+          WHERE m."organizationId" = ANY($1)
+            AND m.role = 'owner'
+         ON CONFLICT (user_id) DO NOTHING`,
+        [orgIds],
+      );
+    }
     log.info(
       { updatedCount: orgIds.length, orgIds, lockedOrgIds, trialEndsAt: trialEndsAt.toISOString() },
       orgIds.length === 0 && lockedOrgIds.length === 0

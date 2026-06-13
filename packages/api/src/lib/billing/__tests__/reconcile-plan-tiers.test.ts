@@ -58,6 +58,7 @@ describe("reconcilePlanTiers", () => {
       healed: 0,
       flagged: 0,
       prunedLedger: 0,
+      prunedTombstones: 0,
     });
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
@@ -105,6 +106,7 @@ describe("reconcilePlanTiers", () => {
       healed: 0,
       flagged: 0,
       prunedLedger: 0,
+      prunedTombstones: 0,
     });
     expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
   });
@@ -178,6 +180,18 @@ describe("reconcilePlanTiers", () => {
 
     const result = await reconcilePlanTiers();
     expect(result.prunedLedger).toBe(2);
+  });
+
+  it("prunes GDPR purge tombstones past retention and reports the count (#3468)", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("FROM organization o")) return Promise.resolve([]);
+      if (sql.includes("DELETE FROM stripe_purged_subscriptions"))
+        return Promise.resolve([{ stripe_subscription_id: "sub_purged_old" }]);
+      return Promise.resolve([]);
+    });
+
+    const result = await reconcilePlanTiers();
+    expect(result.prunedTombstones).toBe(1);
   });
 
   it("propagates internal-DB failures so the scheduler tick logs and retries", async () => {

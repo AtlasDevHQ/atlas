@@ -50,7 +50,8 @@ import {
   purgeStripeBillingForWorkspace,
   pauseStripeCollectionForWorkspace,
   resumeStripeCollectionForWorkspace,
-  type StripeTeardownOutcome,
+  stripeAuditMetadata,
+  withWarnings,
 } from "@atlas/api/lib/billing/workspace-teardown";
 import { getLoadTestAllowlist } from "@atlas/api/lib/auth/load-test-allowlist";
 import {
@@ -77,25 +78,6 @@ import {
 const log = createLogger("platform-admin");
 
 const VALID_PLAN_TIERS = new Set<string>(PLAN_TIERS);
-
-/**
- * Audit metadata for a Stripe teardown outcome (#3425) — empty when the
- * teardown was a no-op (Stripe not configured), so self-hosted audit rows
- * don't grow a misleading `stripe` key.
- */
-function stripeAuditMetadata(billing: StripeTeardownOutcome): Record<string, unknown> {
-  return billing.attempted
-    ? { stripe: { actions: billing.actions, warnings: billing.warnings } }
-    : {};
-}
-
-/**
- * Response fragment surfacing Stripe teardown failures to the operator —
- * a Stripe API failure must never strand the operation silently (#3425).
- */
-function withWarnings(billing: StripeTeardownOutcome): { warnings?: string[] } {
-  return billing.warnings.length > 0 ? { warnings: billing.warnings } : {};
-}
 
 // ---------------------------------------------------------------------------
 // Schemas

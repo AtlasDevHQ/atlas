@@ -60,7 +60,7 @@ import { blockNativeMemberRoleUpdate, blockNativeMemberRemoval } from "@atlas/ap
 import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { enforceBanOnSessionCreate } from "@atlas/api/lib/auth/admin-user-ops";
 import { getStripePlans, resolvePlanTierFromPriceId, TRIAL_DAYS } from "@atlas/api/lib/billing/plans";
-import { userHasConsumedTrial } from "@atlas/api/lib/billing/trial-eligibility";
+import { userHasConsumedTrial, claimTrialGrant } from "@atlas/api/lib/billing/trial-eligibility";
 import { getStripeClient } from "@atlas/api/lib/billing/stripe-client";
 import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import {
@@ -224,8 +224,8 @@ export async function assignSaasTrial(args: {
     );
     if (existing[0]?.plan_tier !== "free") return;
 
-    // One trial per user (#3426): a creator who already owns a trialed
-    // workspace gets NO fresh trial — the new org lands directly on the
+    // One trial per user (#3426): a creator who already consumed a trial
+    // gets NO fresh one — the new org lands directly on the
     // zero-entitlement 'locked' churn tier (#3421), where enforcement
     // blocks gated actions exactly like an ended subscription and the
     // billing page offers the upgrade path. The org IS still created (no
@@ -233,15 +233,37 @@ export async function assignSaasTrial(args: {
     // customers). `trial_ends_at = NOW()` stamps the trial as consumed so
     // `getCheckoutSessionParams`' double-trial suppression also withholds
     // the Stripe-side trial at first checkout.
-    if (await userHasConsumedTrial(user.id, org.id)) {
+    //
+    // Two gates, both in trial-eligibility.ts:
+    //  1. userHasConsumedTrial — durable per-user grant marker (#3470)
+    //     OR the legacy owner-of-a-trialed-org proxy (received-ownership
+    //     posture: fail toward no-second-trial).
+    //  2. claimTrialGrant — the ATOMIC claim (#3469): two concurrent
+    //     first-workspace creations both pass gate 1, but the
+    //     `ON CONFLICT (user_id) DO NOTHING` insert lets exactly one
+    //     win; the loser lands on the locked arm with consumed-now.
+    //
+    // The claim runs UNCONDITIONALLY (not short-circuited on `consumed`)
+    // so the locked path also leaves a durable marker (#3470): when
+    // `consumed` matched only via the legacy owner-of-a-trialed-org proxy
+    // there is no `user_trial_grants` row yet, and a later demotion or
+    // deletion of that proxy org would otherwise reopen eligibility.
+    // `ON CONFLICT DO NOTHING` preserves any existing grant, so a user
+    // whose marker already points at an earlier org keeps it. The grant
+    // gets the trial only when the user hadn't consumed one AND this org
+    // won the claim.
+    const consumed = await userHasConsumedTrial(user.id, org.id);
+    const claimedThisOrg = await claimTrialGrant(user.id, org.id);
+    const grantTrial = !consumed && claimedThisOrg;
+    if (!grantTrial) {
       await internalQuery(
         `UPDATE organization SET plan_tier = 'locked', trial_ends_at = $1
          WHERE id = $2 AND plan_tier = 'free'`,
         [new Date().toISOString(), org.id],
       );
       log.info(
-        { userId: user.id, orgId: org.id },
-        "Workspace creator already consumed a SaaS trial — new workspace starts locked (one trial per user, #3426)",
+        { userId: user.id, orgId: org.id, lostConcurrentClaim: !consumed && !claimedThisOrg },
+        "Workspace creator already consumed a SaaS trial — new workspace starts locked (one trial per user, #3426/#3469)",
       );
       return;
     }

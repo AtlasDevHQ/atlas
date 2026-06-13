@@ -999,6 +999,62 @@ describe("hardDeleteWorkspace()", () => {
     expect(result.stripeWebhookEvents).toBe(2);
   });
 
+  it("tombstones the purged subscription ids BEFORE deleting their ledger rows (#3468)", async () => {
+    // The purge's own Stripe cancellation generates
+    // customer.subscription.deleted webhooks that arrive after this
+    // transaction — without a tombstone the webhook path regrows
+    // stripe_webhook_events rows for the purged workspace. The stamp must
+    // run inside the transaction, before the rows it protects are gone,
+    // and be idempotent (ON CONFLICT DO NOTHING).
+    const { pool: basePool } = createMockPool();
+    const queries: string[] = [];
+    const client = {
+      async query(sql: string) {
+        queries.push(sql);
+        const upper = sql.trim().toUpperCase();
+        if (upper.startsWith("SELECT WORKSPACE_STATUS")) {
+          return { rows: [{ workspace_status: "deleted" }] };
+        }
+        if (sql.includes("to_regclass")) {
+          return { rows: [{ table_exists: true }] };
+        }
+        if (sql.includes("FROM member m")) return { rows: [] };
+        if (upper.startsWith("DELETE")) return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const pool = {
+      ...basePool,
+      async connect() {
+        return client;
+      },
+    };
+    _resetPool(pool);
+
+    await hardDeleteWorkspace("org-1");
+
+    const tombstoneIdx = queries.findIndex((q) =>
+      q.includes("INSERT INTO stripe_purged_subscriptions"),
+    );
+    const ledgerDeleteIdx = queries.findIndex((q) =>
+      q.includes("DELETE FROM stripe_webhook_events"),
+    );
+    // Pin the insert before BOTH the ledger delete and the subscription
+    // delete — otherwise the tombstone SELECT (which reads the subscription
+    // table) could be reordered after the subscription rows are gone and
+    // silently stamp zero tombstones (CodeRabbit on #3475).
+    const subscriptionDeleteIdx = queries.findIndex((q) =>
+      /DELETE FROM subscription WHERE "referenceId"/.test(q),
+    );
+    expect(tombstoneIdx).toBeGreaterThan(-1);
+    expect(ledgerDeleteIdx).toBeGreaterThan(-1);
+    expect(subscriptionDeleteIdx).toBeGreaterThan(-1);
+    expect(tombstoneIdx).toBeLessThan(ledgerDeleteIdx);
+    expect(tombstoneIdx).toBeLessThan(subscriptionDeleteIdx);
+    expect(queries[tombstoneIdx]).toContain("ON CONFLICT (stripe_subscription_id) DO NOTHING");
+  });
+
   it("skips Stripe linkage deletes when the plugin's subscription table is absent (self-hosted)", async () => {
     // The @better-auth/stripe plugin's table only exists on Stripe-enabled
     // deployments — the to_regclass probe must keep non-Stripe purges from

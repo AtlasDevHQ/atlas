@@ -2368,3 +2368,40 @@ export const stripeWebhookEvents = pgTable(
     index("idx_stripe_webhook_events_processed").on(t.processedAt),
   ],
 );
+
+/**
+ * Tombstones for Stripe subscription ids erased by GDPR purge (#3468) —
+ * the purge's own cancellation generates `customer.subscription.deleted`
+ * webhooks that arrive AFTER the purge transaction; without the
+ * tombstone, recording them regrows `stripe_webhook_events` rows for a
+ * purged workspace. Stamped inside the `hardDeleteWorkspace`
+ * transaction; consulted by `classifyStripeEvent`; pruned by the
+ * reconciliation sweep after 30 days (past Stripe's ~3-week retry
+ * horizon). Mirrors `migrations/0129_stripe_purged_subscriptions.sql`.
+ */
+export const stripePurgedSubscriptions = pgTable(
+  "stripe_purged_subscriptions",
+  {
+    stripeSubscriptionId: text("stripe_subscription_id").primaryKey(),
+    purgedAt: timestamp("purged_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("idx_stripe_purged_subscriptions_purged_at").on(t.purgedAt)],
+);
+
+/**
+ * Durable + atomic one-trial-per-user marker (#3469/#3470) — one row per
+ * user, stamped at grant time. The PRIMARY KEY makes
+ * `INSERT ... ON CONFLICT (user_id) DO NOTHING` an atomic claim under
+ * concurrent workspace creation; the row survives owner demotion and org
+ * deletion (org_id is deliberately NOT an FK). Mirrors
+ * `migrations/0130_user_trial_grants.sql`.
+ */
+export const userTrialGrants = pgTable("user_trial_grants", {
+  // FK to Better Auth's "user"(id) ON DELETE CASCADE is enforced in the
+  // migration — Drizzle's `references()` would require the Better Auth
+  // `user` table in this schema, which it isn't. Plain text() matches
+  // (same pattern as trusted_device above).
+  userId: text("user_id").primaryKey(),
+  orgId: text("org_id").notNull(),
+  grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+});

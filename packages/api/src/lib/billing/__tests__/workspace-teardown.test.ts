@@ -70,11 +70,27 @@ const customersDel: Mock<(id: string) => Promise<unknown>> = mock(async (id: str
   return { id, deleted: true };
 });
 
+/** Open invoices returned by `invoices.list` per subscription id (#3467). */
+let openInvoices: Record<string, string[]> = {};
+
+const invoicesList: Mock<(params: Record<string, unknown>) => Promise<unknown>> = mock(
+  async (params: Record<string, unknown>) => {
+    callOrder.push(`invoices.list:${String(params.subscription)}`);
+    const ids = openInvoices[String(params.subscription)] ?? [];
+    return { data: ids.map((id) => ({ id, status: "open" })) };
+  },
+);
+const invoicesVoid: Mock<(id: string) => Promise<unknown>> = mock(async (id: string) => {
+  callOrder.push(`invoices.void:${id}`);
+  return { id, status: "void" };
+});
+
 let stripeAvailable = true;
 function makeStripeStub() {
   return {
     subscriptions: { cancel: subscriptionsCancel, update: subscriptionsUpdate },
     customers: { del: customersDel },
+    invoices: { list: invoicesList, voidInvoice: invoicesVoid },
   };
 }
 
@@ -121,11 +137,14 @@ beforeEach(() => {
   hasDB = true;
   stripeAvailable = true;
   callOrder = [];
+  openInvoices = {};
   mockInternalQuery.mockReset();
   mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   subscriptionsCancel.mockClear();
   subscriptionsUpdate.mockClear();
   customersDel.mockClear();
+  invoicesList.mockClear();
+  invoicesVoid.mockClear();
   mockLogError.mockClear();
   // Restore default success implementations after failure-path tests.
   subscriptionsCancel.mockImplementation(async (id: string) => {
@@ -139,6 +158,15 @@ beforeEach(() => {
   customersDel.mockImplementation(async (id: string) => {
     callOrder.push(`customer.del:${id}`);
     return { id, deleted: true };
+  });
+  invoicesList.mockImplementation(async (params: Record<string, unknown>) => {
+    callOrder.push(`invoices.list:${String(params.subscription)}`);
+    const ids = openInvoices[String(params.subscription)] ?? [];
+    return { data: ids.map((id) => ({ id, status: "open" })) };
+  });
+  invoicesVoid.mockImplementation(async (id: string) => {
+    callOrder.push(`invoices.void:${id}`);
+    return { id, status: "void" };
   });
 });
 
@@ -381,5 +409,113 @@ describe("pause/resumeStripeCollectionForWorkspace (suspend policy)", () => {
 
     expect(outcome).toEqual({ attempted: false, actions: [], warnings: [] });
     expect(subscriptionsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// ── Suspend: void invoices already open at pause time (#3467) ───────
+
+describe("pauseStripeCollectionForWorkspace — voids open invoices (#3467)", () => {
+  it("voids every open invoice on the paused subscription, after the pause", async () => {
+    mockSubscriptionRows([subRow("sub_1", "past_due")]);
+    openInvoices = { sub_1: ["in_1", "in_2"] };
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(invoicesVoid.mock.calls.map((c) => c[0])).toEqual(["in_1", "in_2"]);
+    // Pause lands before the invoice sweep for the same subscription.
+    expect(callOrder.indexOf("update:sub_1")).toBeLessThan(callOrder.indexOf("invoices.void:in_1"));
+    expect(outcome.actions.filter((a) => a.includes("voided open invoice"))).toHaveLength(2);
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it("pages through ALL open invoices, not just the first page (#3475 review)", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    // Two pages: the first reports has_more, the second closes it out.
+    let call = 0;
+    invoicesList.mockImplementation(async (params: Record<string, unknown>) => {
+      callOrder.push(`invoices.list:${String(params.subscription)}`);
+      call += 1;
+      if (call === 1) {
+        return {
+          data: [{ id: "in_p1a", status: "open" }, { id: "in_p1b", status: "open" }],
+          has_more: true,
+        };
+      }
+      return { data: [{ id: "in_p2a", status: "open" }], has_more: false };
+    });
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(invoicesList).toHaveBeenCalledTimes(2);
+    // Second page request is anchored on the last id of the first page.
+    expect((invoicesList.mock.calls[1][0] as Record<string, unknown>).starting_after).toBe("in_p1b");
+    expect(invoicesVoid.mock.calls.map((c) => c[0])).toEqual(["in_p1a", "in_p1b", "in_p2a"]);
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it("resume never touches invoices — voiding is terminal, next cycle bills fresh", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    openInvoices = { sub_1: ["in_1"] };
+
+    await resumeStripeCollectionForWorkspace(ORG);
+
+    expect(invoicesList).not.toHaveBeenCalled();
+    expect(invoicesVoid).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a warning (and logs) when the invoice list fails — pause stands", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    invoicesList.mockImplementation(async () => {
+      throw new FakeStripeError("api_error");
+    });
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(outcome.actions.some((a) => a.includes("paused collection"))).toBe(true);
+    expect(outcome.warnings).toHaveLength(1);
+    expect(outcome.warnings[0]).toContain("list open invoices");
+    expect(mockLogError).toHaveBeenCalled();
+  });
+
+  it("surfaces a per-invoice warning when a void fails — other invoices still voided", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    openInvoices = { sub_1: ["in_bad", "in_ok"] };
+    invoicesVoid.mockImplementation(async (id: string) => {
+      if (id === "in_bad") throw new FakeStripeError("invoice_locked");
+      callOrder.push(`invoices.void:${id}`);
+      return { id, status: "void" };
+    });
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(outcome.warnings).toHaveLength(1);
+    expect(outcome.warnings[0]).toContain("in_bad");
+    expect(outcome.actions.some((a) => a.includes("in_ok"))).toBe(true);
+    expect(mockLogError).toHaveBeenCalled();
+  });
+
+  it("treats a resource_missing invoice as already-gone (action, not warning)", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    openInvoices = { sub_1: ["in_gone"] };
+    invoicesVoid.mockImplementation(async () => {
+      throw new FakeStripeError("No such invoice", "resource_missing");
+    });
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(outcome.warnings).toEqual([]);
+    expect(outcome.actions.some((a) => a.includes("already absent"))).toBe(true);
+  });
+
+  it("skips the invoice sweep when the pause itself failed", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    subscriptionsUpdate.mockImplementation(async () => {
+      throw new FakeStripeError("rate_limited");
+    });
+
+    await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(invoicesList).not.toHaveBeenCalled();
+    expect(invoicesVoid).not.toHaveBeenCalled();
   });
 });

@@ -195,8 +195,8 @@ Platform-admin workspace lifecycle actions keep Stripe in sync automatically:
 
 | Action | Stripe behavior |
 |--------|-----------------|
-| Suspend | Payment collection is **paused** (`pause_collection: void`) — a suspended workspace can't use the product, so it isn't invoiced or dunned while suspended. The subscription stays alive |
-| Unsuspend | Payment collection resumes — normal invoicing restarts on the existing subscription |
+| Suspend | Payment collection is **paused** (`pause_collection: void`) and any invoices already open (including past-due invoices mid-dunning) are **voided** — a suspended workspace can't use the product, so it isn't invoiced, dunned, or charged while suspended. The subscription stays alive |
+| Unsuspend | Payment collection resumes — normal invoicing restarts on the existing subscription. Invoices voided at suspension time are not resurrected; the next billing cycle bills normally |
 | Delete | The Stripe subscription is **canceled** before the data cascade runs — a deleted workspace never keeps invoicing |
 | Purge (GDPR) | Any remaining subscriptions are canceled and the **Stripe customer is permanently deleted** — no billable Stripe linkage survives a purge |
 

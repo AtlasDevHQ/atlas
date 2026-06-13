@@ -47,17 +47,41 @@ function makeMockPool(opts: {
   selectTier?: string | null;
   selectThrows?: boolean;
   updateThrows?: boolean;
+  /** Atomic-claim INSERT throws (separate from updateThrows so the
+   * UPDATE-failure path is testable independently — CodeRabbit on #3475). */
+  claimThrows?: boolean;
   /** Eligibility lookup (#3426): creator already owns a trialed org. */
   trialConsumedElsewhere?: boolean;
   /** Eligibility lookup throws (DB blip mid-hook). */
   eligibilityThrows?: boolean;
+  /**
+   * Atomic claim (#3469): the `ON CONFLICT DO NOTHING` insert returns no
+   * row and the user's existing grant points at this org id (or a
+   * different one — the lost-race shape).
+   */
+  claimExistingOrgId?: string;
 }): MockPool {
   const queries: Array<{ sql: string; params?: unknown[] }> = [];
   const pool = {
     query: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params });
-      // The #3426 eligibility lookup joins member → organization on the
-      // trial-consumed stamp. Dispatch it before the generic SELECT arm.
+      // #3469 atomic claim — dispatch before the eligibility arm (both
+      // mention user_trial_grants).
+      if (/INSERT INTO user_trial_grants/i.test(sql)) {
+        if (opts.claimThrows) throw new Error("INSERT failed");
+        return opts.claimExistingOrgId !== undefined
+          ? { rows: [], rowCount: 0 } // conflict — someone holds the grant
+          : { rows: [{ user_id: params?.[0] }], rowCount: 1 };
+      }
+      if (/SELECT org_id FROM user_trial_grants/i.test(sql)) {
+        return {
+          rows: opts.claimExistingOrgId !== undefined ? [{ org_id: opts.claimExistingOrgId }] : [],
+          rowCount: opts.claimExistingOrgId !== undefined ? 1 : 0,
+        };
+      }
+      // The #3426 eligibility lookup ORs the durable grant marker with
+      // the member → organization trial-consumed stamp. Dispatch it
+      // before the generic SELECT arm.
       if (/FROM\s+member/i.test(sql)) {
         if (opts.eligibilityThrows) throw new Error("eligibility lookup failed");
         return {
@@ -120,21 +144,28 @@ describe("assignSaasTrial — body", () => {
     await assignSaasTrial({ user: USER, organization: ORG });
     const after = Date.now();
 
-    expect(queries).toHaveLength(3);
+    expect(queries).toHaveLength(4);
     expect(queries[0].sql).toMatch(/SELECT plan_tier FROM organization/);
     // #3426 eligibility lookup: keyed on the CREATING user, excluding the
     // just-created org (its owner-member row already exists when the
-    // afterCreateOrganization hook fires).
+    // afterCreateOrganization hook fires). Durable grant marker (#3470)
+    // OR-joined with the legacy owner-membership proxy.
+    expect(queries[1].sql).toMatch(/user_trial_grants/);
     expect(queries[1].sql).toMatch(/FROM member/);
     expect(queries[1].sql).toMatch(/trial_ends_at IS NOT NULL/);
     expect(queries[1].params).toEqual([USER.id, ORG.id]);
-    expect(queries[2].sql).toMatch(
+    // #3469 atomic claim: ON CONFLICT (user_id) DO NOTHING — exactly one
+    // concurrent creation can win.
+    expect(queries[2].sql).toMatch(/INSERT INTO user_trial_grants/);
+    expect(queries[2].sql).toMatch(/ON CONFLICT \(user_id\) DO NOTHING/);
+    expect(queries[2].params).toEqual([USER.id, ORG.id]);
+    expect(queries[3].sql).toMatch(
       /UPDATE organization SET plan_tier = 'trial', trial_ends_at/,
     );
     // Belt-and-suspenders: the UPDATE re-asserts the free guard.
-    expect(queries[2].sql).toMatch(/AND plan_tier = 'free'/);
+    expect(queries[3].sql).toMatch(/AND plan_tier = 'free'/);
 
-    const [trialEndsAtParam, orgIdParam] = queries[2].params ?? [];
+    const [trialEndsAtParam, orgIdParam] = queries[3].params ?? [];
     expect(orgIdParam).toBe(ORG.id);
     const trialEndsAt = new Date(String(trialEndsAtParam)).getTime();
     const target = before + TRIAL_DAYS * DAY_MS;
@@ -168,6 +199,76 @@ describe("assignSaasTrial — body", () => {
     expect(
       queries.some((q) => /plan_tier = 'trial'/i.test(q.sql) && /^\s*UPDATE/i.test(q.sql)),
       "a trial-consumed creator must never receive a second trial",
+    ).toBe(false);
+  });
+
+  it("locks the loser of a concurrent claim race (#3469) — exactly one trial is minted", async () => {
+    // Both concurrent creations passed the read-side eligibility check
+    // (trialConsumedElsewhere: false), but this request's atomic claim
+    // hit the conflict: the user's grant already points at the SIBLING
+    // org. The loser must land on 'locked' with the consumed-now stamp.
+    const { pool, queries } = makeMockPool({
+      selectTier: "free",
+      trialConsumedElsewhere: false,
+      claimExistingOrgId: "org_sibling_race_winner",
+    });
+    _resetPool(pool);
+
+    await assignSaasTrial({ user: USER, organization: ORG });
+
+    expect(
+      queries.some((q) => /UPDATE organization SET plan_tier = 'locked'/i.test(q.sql)),
+      "the claim-race loser must land on 'locked'",
+    ).toBe(true);
+    expect(
+      queries.some((q) => /plan_tier = 'trial'/i.test(q.sql) && /^\s*UPDATE/i.test(q.sql)),
+      "the claim-race loser must never receive a trial",
+    ).toBe(false);
+  });
+
+  it("proceeds with the trial when the existing grant already points at THIS org (crash-heal retry)", async () => {
+    // A previous attempt claimed the grant but crashed before the tier
+    // write. The retry's insert conflicts, but the grant belongs to this
+    // very org — idempotent re-run, not a lost race.
+    const { pool, queries } = makeMockPool({
+      selectTier: "free",
+      trialConsumedElsewhere: false,
+      claimExistingOrgId: ORG.id,
+    });
+    _resetPool(pool);
+
+    await assignSaasTrial({ user: USER, organization: ORG });
+
+    expect(
+      queries.some((q) => /UPDATE organization SET plan_tier = 'trial'/i.test(q.sql)),
+      "a retry holding its own grant must still receive the trial",
+    ).toBe(true);
+    expect(
+      queries.some((q) => /plan_tier = 'locked'/i.test(q.sql) && /^\s*UPDATE/i.test(q.sql)),
+    ).toBe(false);
+  });
+
+  it("stamps a durable marker on the locked path when consumed only via the legacy proxy (#3470)", async () => {
+    // A user made owner of a trialed org after migration 0130 has no
+    // user_trial_grants row, so `consumed` is true only via the legacy
+    // proxy. The locked path must still claim a durable marker (idempotent,
+    // ON CONFLICT DO NOTHING) — otherwise a later owner demotion would
+    // erase the proxy match and reopen trial eligibility (#3470 hole).
+    const { pool, queries } = makeMockPool({ selectTier: "free", trialConsumedElsewhere: true });
+    _resetPool(pool);
+
+    await assignSaasTrial({ user: USER, organization: ORG });
+
+    expect(
+      queries.some((q) => /INSERT INTO user_trial_grants/i.test(q.sql)),
+      "the locked path must durably record consumption so demotion can't reopen eligibility",
+    ).toBe(true);
+    // Still locked, never a second trial.
+    expect(
+      queries.some((q) => /UPDATE organization SET plan_tier = 'locked'/i.test(q.sql)),
+    ).toBe(true);
+    expect(
+      queries.some((q) => /plan_tier = 'trial'/i.test(q.sql) && /^\s*UPDATE/i.test(q.sql)),
     ).toBe(false);
   });
 
@@ -268,7 +369,21 @@ describe("assignSaasTrial — body", () => {
   });
 
   it("does not throw when the UPDATE fails", async () => {
-    const { pool } = makeMockPool({ selectTier: "free", updateThrows: true });
+    const { pool, queries } = makeMockPool({ selectTier: "free", updateThrows: true });
+    _resetPool(pool);
+
+    await expect(
+      assignSaasTrial({ user: USER, organization: ORG }),
+    ).resolves.toBeUndefined();
+
+    // The claim INSERT must have run (and not thrown) so the UPDATE arm is
+    // the one that failed — proves updateThrows isolates the UPDATE path.
+    expect(queries.some((q) => /INSERT INTO user_trial_grants/i.test(q.sql))).toBe(true);
+    expect(queries.some((q) => /^\s*UPDATE/i.test(q.sql))).toBe(true);
+  });
+
+  it("does not throw when the atomic claim INSERT fails", async () => {
+    const { pool } = makeMockPool({ selectTier: "free", claimThrows: true });
     _resetPool(pool);
 
     await expect(

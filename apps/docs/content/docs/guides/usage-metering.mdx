@@ -47,6 +47,15 @@ Usage endpoints are mounted at `/api/v1/admin/usage`. All require the `admin` ro
 
 Returns real-time counts from raw usage events for the current billing period.
 
+The metering window is the workspace's **Stripe subscription period** (the
+invoice cycle's `current_period_start` … `current_period_end`) when an active
+subscription exists, so the token budget resets in lockstep with the invoice —
+a workspace that subscribed on the 25th resets on the 25th, not the 1st.
+Workspaces without an active subscription (trialing, past-due, or unsubscribed)
+fall back to the **UTC calendar month**, matching the proactive-chat quota
+window. The `periodSource` field reports which window applies (`"stripe"` or
+`"utc-month"`).
+
 ```bash
 curl https://your-atlas.example.com/api/v1/admin/usage \
   -H "Authorization: Bearer <admin-token>"
@@ -60,8 +69,9 @@ Response:
   "queryCount": 1842,
   "tokenCount": 245000,
   "activeUsers": 12,
-  "periodStart": "2026-03-01T00:00:00.000Z",
-  "periodEnd": "2026-04-01T00:00:00.000Z"
+  "periodStart": "2026-03-25T00:00:00.000Z",
+  "periodEnd": "2026-04-25T00:00:00.000Z",
+  "periodSource": "stripe"
 }
 ```
 

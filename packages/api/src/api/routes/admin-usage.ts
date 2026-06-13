@@ -42,6 +42,9 @@ const CurrentPeriodUsageResponseSchema = z.object({
   activeUsers: z.number(),
   periodStart: z.string(),
   periodEnd: z.string(),
+  // #3431: "stripe" when the window is anchored on the org's active
+  // subscription period, "utc-month" for the calendar-month fallback.
+  periodSource: z.enum(["stripe", "utc-month"]),
 });
 
 const UsageSummaryRowSchema = z.object({
@@ -71,6 +74,7 @@ const SummaryResponseSchema = z.object({
     activeUsers: z.number(),
     periodStart: z.string(),
     periodEnd: z.string(),
+    periodSource: z.enum(["stripe", "utc-month"]),
   }),
   plan: z.object({
     tier: z.string(),
@@ -254,6 +258,7 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
         activeUsers: usage.activeUsers,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
+        periodSource: usage.periodSource,
       },
       plan: {
         tier: planTier,

@@ -38,6 +38,7 @@
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getCachedWorkspace } from "@atlas/api/lib/billing/enforcement";
 import { getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { startOfMonthUTC } from "@atlas/api/lib/billing/period";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { ProactiveQuotaStatus } from "@useatlas/types";
 
@@ -56,22 +57,15 @@ export type WorkspaceQuotaStatus = ProactiveQuotaStatus;
 // ---------------------------------------------------------------------------
 
 /**
- * Return the UTC `Date` for the start of the calendar month containing
- * `now`. Caller passes `now` (rather than us reading `Date.now()`) so
- * unit tests can pin the rollover boundary deterministically — bug
- * fixed in flight: the alternative "compute on call" version made
- * the month-rollover test impossible to write without faking
- * `Date.now()` globally.
+ * UTC start-of-calendar-month — re-exported from the shared billing-period
+ * helper (#3431) so the proactive cap and the token meter
+ * (`metering.ts` → `billing/period.ts`) can never drift on where a month
+ * starts. The canonical definition + rationale live in `billing/period.ts`.
  *
- * UTC by design: a workspace-local timezone column lives in a future
- * 1.5.x slice. For 1.5.0 we ship UTC so the cap is well-defined the
- * second the meter is wired across SaaS regions; the visible drift
- * (an admin in PST sees the cap reset at 16:00 local on the last day
- * of the month) is fine for a quota-not-billing surface.
+ * Preserved as a named export here for back-compat: the admin proactive
+ * route and the quota unit tests import `startOfMonthUTC` from this module.
  */
-export function startOfMonthUTC(now: Date): Date {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
-}
+export { startOfMonthUTC };
 
 /**
  * Pure cap check.

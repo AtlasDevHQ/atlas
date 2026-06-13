@@ -94,6 +94,13 @@ export interface BillingUsage {
   tokenOverageStatus: OverageStatus;
   periodStart: string;
   periodEnd: string;
+  /**
+   * #3431: where the metering window came from — `"stripe"` when anchored
+   * on the org's active subscription period, `"utc-month"` for the UTC
+   * calendar-month fallback (trial / unsubscribed). Lets the billing page
+   * label "Current period" honestly. Optional for older-bundle tolerance.
+   */
+  periodSource?: "stripe" | "utc-month";
 }
 
 /** Seat limit / current count. */
@@ -202,6 +209,7 @@ export const BillingUsageSchema = z.object({
   tokenOverageStatus: OverageStatusEnum,
   periodStart: z.string(),
   periodEnd: z.string(),
+  periodSource: z.enum(["stripe", "utc-month"]).optional(),
 }) satisfies z.ZodType<BillingUsage>;
 
 export const BillingSeatCountSchema = z.object({

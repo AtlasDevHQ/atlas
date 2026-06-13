@@ -63,6 +63,38 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
+/**
+ * Label the metering window under the Usage section (#3431).
+ *
+ * `periodEnd` is the **exclusive** upper bound, so the displayed range ends
+ * the day before. UTC-month windows render in UTC so a browser west of UTC
+ * doesn't slip the boundary back a day; Stripe-anchored windows are real
+ * invoice-clock instants and render in local time. The leading label says
+ * "Billing period" only when actually anchored on the subscription —
+ * otherwise "Current period", so the copy never implies invoice alignment
+ * the meter isn't honoring.
+ */
+function formatBillingPeriod(
+  start: string,
+  end: string,
+  source: "stripe" | "utc-month" | undefined,
+): string {
+  if (!start || !end) return "Current period";
+  const s = new Date(start);
+  const e = new Date(end);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return "Current period";
+  const lastDay = new Date(e.getTime() - 1);
+  const tz = source === "stripe" ? undefined : "UTC";
+  const opts: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: tz,
+  };
+  const label = source === "stripe" ? "Billing period" : "Current period";
+  return `${label} · ${s.toLocaleDateString(undefined, opts)} – ${lastDay.toLocaleDateString(undefined, opts)}`;
+}
+
 function tierVariant(tier: string): "default" | "secondary" | "outline" | "destructive" {
   switch (tier) {
     case "business":
@@ -239,7 +271,7 @@ export default function BillingPage() {
               <section>
                 <SectionHeading
                   title="Usage"
-                  description={`Current period · ${formatDate(data.usage.periodStart)} – ${formatDate(data.usage.periodEnd)}`}
+                  description={formatBillingPeriod(data.usage.periodStart, data.usage.periodEnd, data.usage.periodSource)}
                 />
                 <UsageShell data={data} />
               </section>

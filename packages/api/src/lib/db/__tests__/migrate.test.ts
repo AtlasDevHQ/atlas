@@ -150,7 +150,8 @@ describe("runMigrations", () => {
     //   Plus 0128 (stripe_webhook_events ledger, #3423) = 129.
     //   Plus 0129 (stripe_purged_subscriptions tombstones, #3468) = 130.
     //   Plus 0130 (user_trial_grants one-trial marker, #3469/#3470) = 131.
-    expect(count).toBe(131);
+    //   Plus 0131 (organization.suspension_source billing/operator, #3424) = 132.
+    expect(count).toBe(132);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -310,6 +311,7 @@ describe("runMigrations", () => {
         "0128_stripe_webhook_event_ledger.sql",
         "0129_stripe_purged_subscriptions.sql",
         "0130_user_trial_grants.sql",
+        "0131_org_suspension_source.sql",
       ],
     });
 

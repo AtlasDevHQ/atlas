@@ -968,6 +968,10 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // FK to Better Auth's "user" + backfill against "member"/"organization"
   // (#3469/#3470 one-trial-per-user durable marker).
   "0130_user_trial_grants.sql",
+  // Adds suspension_source to Better Auth's "organization" table so billing
+  // recovery only unsuspends billing-induced suspensions, never operator
+  // ones (#3424).
+  "0131_org_suspension_source.sql",
 ];
 
 /**
@@ -1831,6 +1835,15 @@ export async function getAuditLogQueries(
 export type WorkspaceStatus = "active" | "suspended" | "deleted";
 export type PlanTier = "free" | "trial" | "starter" | "pro" | "business" | "locked";
 
+/**
+ * Why a workspace is suspended (#3424). NULL when not suspended.
+ * - `billing` — the delinquency ladder suspended it (unpaid / 3+ failed
+ *   payment attempts). The Stripe recovery handler may clear ONLY these.
+ * - `operator` — an admin / platform operator suspended it manually (e.g.
+ *   ToS abuse). A billing recovery must NEVER clear these.
+ */
+export type SuspensionSource = "billing" | "operator";
+
 export interface WorkspaceRow {
   id: string;
   name: string;
@@ -1849,6 +1862,12 @@ export interface WorkspaceRow {
   stripe_customer_id: string | null;
   trial_ends_at: string | null;
   suspended_at: string | null;
+  /**
+   * Why the workspace is suspended (#3424). NULL when not suspended. The
+   * Stripe recovery handler unsuspends ONLY when this is `'billing'`, so an
+   * operator suspension survives a billing recovery.
+   */
+  suspension_source: SuspensionSource | null;
   deleted_at: string | null;
   region: string | null;
   region_assigned_at: string | null;
@@ -1898,7 +1917,7 @@ export async function getWorkspaceNamesByIds(
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<WorkspaceRow>(
-    `SELECT id, name, slug, workspace_status, plan_tier, byot, "stripeCustomerId" AS stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
+    `SELECT id, name, slug, workspace_status, plan_tier, byot, "stripeCustomerId" AS stripe_customer_id, trial_ends_at, suspended_at, suspension_source, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
     [orgId],
   );
@@ -1908,22 +1927,36 @@ export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow |
 /**
  * Update workspace status. Returns true if the org was found and updated,
  * false if no row matched the given orgId.
+ *
+ * `suspensionSource` (#3424) records WHY a workspace is suspended so the Stripe
+ * recovery handler can scope itself to billing-induced suspensions and never
+ * clear an operator/manual one. It is required when suspending (callers state
+ * the cause explicitly — `'billing'` from the delinquency ladder, `'operator'`
+ * from admin/platform routes) and ignored otherwise. Activating or deleting
+ * always clears `suspension_source` back to NULL.
  */
 export async function updateWorkspaceStatus(
   orgId: string,
   status: WorkspaceStatus,
+  suspensionSource?: SuspensionSource,
 ): Promise<boolean> {
-  const timestampCol = status === "suspended" ? "suspended_at" : status === "deleted" ? "deleted_at" : null;
-
   let sqlStr: string;
-  if (timestampCol) {
-    sqlStr = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2 RETURNING id`;
+  let params: unknown[];
+  if (status === "suspended") {
+    // Default to 'operator' so an unsourced suspend fails safe — recovery
+    // refuses to clear it (only an explicit 'billing' suspension is cleared).
+    sqlStr = `UPDATE organization SET workspace_status = $1, suspended_at = now(), suspension_source = $3 WHERE id = $2 RETURNING id`;
+    params = [status, orgId, suspensionSource ?? "operator"];
+  } else if (status === "deleted") {
+    sqlStr = `UPDATE organization SET workspace_status = $1, deleted_at = now(), suspension_source = NULL WHERE id = $2 RETURNING id`;
+    params = [status, orgId];
   } else {
-    // Activating: clear both timestamps
-    sqlStr = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2 RETURNING id`;
+    // Activating: clear both timestamps and the suspension source.
+    sqlStr = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL, suspension_source = NULL WHERE id = $2 RETURNING id`;
+    params = [status, orgId];
   }
 
-  const rows = await internalQuery<{ id: string }>(sqlStr, [status, orgId]);
+  const rows = await internalQuery<{ id: string }>(sqlStr, params);
   return rows.length > 0;
 }
 

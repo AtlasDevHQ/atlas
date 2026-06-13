@@ -53,6 +53,7 @@ import {
   recordInvitationCreated,
 } from "@atlas/api/lib/auth/invitations";
 import { errorMessage } from "@atlas/api/lib/audit/error-scrub";
+import type { DunningEmailStep } from "@atlas/api/lib/email/dunning-sequence";
 import { onVerificationCreated } from "@atlas/api/lib/auth/trusted-device-hook";
 import { isEnterpriseEnabled } from "@atlas/api/lib/effect/enterprise-config";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
@@ -1428,7 +1429,14 @@ export function stripeEventSubscriptionId(event: Stripe.Event): string | null {
     case "customer.subscription.updated":
     case "customer.subscription.deleted":
       return (event.data.object as Stripe.Subscription).id ?? null;
-    case "invoice.payment_failed": {
+    case "invoice.payment_failed":
+    case "invoice.payment_succeeded":
+    case "invoice.paid": {
+      // Recovery events (#3424) are keyed on the same subscription as the
+      // failures they reverse, so they serialize under the same advisory
+      // lock — a stale failure and its recovery can't race. They are NOT
+      // tier-lifecycle types, so they never make a delayed `updated`/
+      // `deleted` sync look stale (same carve-out as payment_failed).
       const invoice = event.data.object as Stripe.Invoice;
       const parentSub = invoice.parent?.subscription_details?.subscription;
       return typeof parentSub === "string" ? parentSub : parentSub?.id ?? null;
@@ -1470,6 +1478,255 @@ async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string
   invalidatePlanCache(orgId);
   billingLog.info({ orgId, tier }, "%s — plan tier synced", context);
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Delinquency ladder (#3424)
+//
+// The payment-failure recovery story is a four-rung ladder driven by the
+// Stripe webhook. ALL rungs are best-effort side branches of `onEvent`:
+// the must-not-be-lost tier sync (`syncStripeEventToWorkspace`) and the
+// event ledger have already run by the time these fire, so a throw here
+// would only force Stripe to redeliver an already-applied event. Every
+// helper therefore swallows + logs and never re-throws.
+//
+//   1. `past_due` (first failed invoice)  → warn email; entitlements RETAINED.
+//   2. `unpaid`                            → soft-suspend (block chat/query) + email.
+//   3. 3+ failed retries                   → suspend + final-notice email.
+//   4. invoice paid / status → active      → auto-unsuspend + recovery email.
+//
+// Policy rationale (revenue-protecting, least-surprise): `past_due` is the
+// grace window — Stripe is still retrying a recoverable card, so we keep the
+// customer working and merely nudge. `unpaid` means Stripe has given up the
+// automatic retry on this billing cycle, so we stop serving paid product
+// (reusing the existing `suspended` workspace_status as the block, which
+// avoids a new status enum + migration and is already enforced by
+// `checkWorkspaceStatus`). The 3-attempt suspension is the same block, kept
+// for parity with the prior behavior as the final rung.
+//
+// Recovery is SCOPED BY SUSPENSION SOURCE (#3424). Because billing reuses the
+// shared `suspended` status, an unscoped recovery would also clear a
+// suspension an OPERATOR set for a different reason (e.g. ToS abuse). Every
+// billing-induced suspension is therefore stamped `suspension_source =
+// 'billing'` (operator/admin routes stamp `'operator'`), and recovery clears
+// ONLY `'billing'` suspensions. An operator suspension survives a billing
+// recovery; the customer's restored payment merely clears the dunning state.
+// ─────────────────────────────────────────────────────────────────────
+
+/** Resolve the Atlas orgId for a Stripe subscription id via the plugin's subscription table. */
+async function resolveOrgIdBySubscriptionId(subscriptionId: string): Promise<string | null> {
+  const rows = await internalQuery<{ referenceId: string }>(
+    `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
+    [subscriptionId],
+  );
+  return rows[0]?.referenceId ?? null;
+}
+
+/** Fire a single dunning rung, isolated so an email failure never breaks the webhook. */
+async function sendDunning(orgId: string, step: DunningEmailStep): Promise<void> {
+  try {
+    const { dispatchDunningEmail } = await import("@atlas/api/lib/email/dunning");
+    await dispatchDunningEmail(orgId, step);
+  } catch (err) {
+    billingLog.error(
+      { err: errorMessage(err), orgId, step },
+      "Failed to dispatch dunning email — payment sync already recorded, not re-throwing",
+    );
+  }
+}
+
+/**
+ * `invoice.payment_failed` rung. Sends the failure dunning email and, on the
+ * 3rd+ attempt, suspends the workspace. Best-effort: logs, never throws.
+ */
+async function handlePaymentFailure(invoice: Stripe.Invoice): Promise<void> {
+  const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+  const parentSub = invoice.parent?.subscription_details?.subscription;
+  const subscriptionId = typeof parentSub === "string" ? parentSub : parentSub?.id;
+  const attemptCount = invoice.attempt_count ?? 0;
+
+  billingLog.warn(
+    { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
+    "Invoice payment failed (attempt %d)",
+    attemptCount,
+  );
+
+  if (!subscriptionId) return;
+
+  try {
+    const orgId = await resolveOrgIdBySubscriptionId(subscriptionId);
+    if (!orgId) {
+      billingLog.warn({ subscriptionId }, "Payment failed but no subscription row resolves an org — skipping ladder");
+      return;
+    }
+
+    // After 3+ failed attempts, suspend (final rung). Stripe typically
+    // retries 3 times over ~3 weeks with Smart Retries.
+    if (attemptCount >= 3) {
+      const suspended = await updateWorkspaceStatus(orgId, "suspended", "billing");
+      if (suspended) {
+        invalidatePlanCache(orgId);
+        billingLog.warn(
+          { orgId, subscriptionId, attemptCount },
+          "Workspace suspended after %d failed payment attempts",
+          attemptCount,
+        );
+        await sendDunning(orgId, "dunning_suspended");
+      } else {
+        billingLog.error(
+          { orgId, subscriptionId },
+          "Cannot suspend workspace — subscription row references an organization that does not exist",
+        );
+      }
+    } else {
+      // Earlier attempts: warn the customer (entitlements retained). The
+      // `past_due` rung is once-per-customer (dunning step index), so
+      // attempts 1 and 2 collapse to a single warning email.
+      await sendDunning(orgId, "dunning_past_due");
+    }
+  } catch (err) {
+    billingLog.error(
+      { err: errorMessage(err), subscriptionId, attemptCount },
+      "Failed to process payment-failure ladder — payment already recorded by Stripe, not re-throwing",
+    );
+  }
+}
+
+/**
+ * Recovery rung — shared by `invoice.payment_succeeded`/`invoice.paid` and the
+ * `unpaid/past_due → active` status transition. If the workspace is currently
+ * suspended (by either delinquency rung), restore it, invalidate the plan
+ * cache, clear the dunning steps so a future cycle re-sends the ladder, and
+ * send the recovery confirmation. Idempotent: an already-active workspace is a
+ * no-op except for the email-step bookkeeping. Best-effort: logs, never throws.
+ */
+async function handlePaymentRecovery(orgId: string, source: string): Promise<void> {
+  try {
+    const workspace = await getWorkspaceDetails(orgId);
+    if (!workspace) {
+      billingLog.warn({ orgId, source }, "Payment recovery for an org that no longer exists — skipping");
+      return;
+    }
+    // Only a billing-induced suspension may be auto-cleared by a payment
+    // recovery. An operator/manual suspension (e.g. ToS abuse) is left
+    // untouched — clearing it here would silently undo a deliberate operator
+    // action just because the customer's card later went through (#3424).
+    // Either way the billing-side dunning state is stale once payment lands,
+    // so clear the dunning steps regardless of the suspension source.
+    const isBillingSuspension =
+      workspace.workspace_status === "suspended" && workspace.suspension_source === "billing";
+    if (!isBillingSuspension) {
+      const { clearDunningSteps } = await import("@atlas/api/lib/email/dunning");
+      await clearDunningSteps(orgId);
+      if (workspace.workspace_status === "suspended") {
+        billingLog.warn(
+          { orgId, source, suspensionSource: workspace.suspension_source },
+          "Payment recovered but workspace is suspended by a non-billing source — leaving suspension in place, dunning state cleared",
+        );
+      } else {
+        billingLog.info(
+          { orgId, source, status: workspace.workspace_status },
+          "Payment recovered — workspace was not suspended, dunning state cleared",
+        );
+      }
+      return;
+    }
+
+    const reactivated = await updateWorkspaceStatus(orgId, "active");
+    if (!reactivated) {
+      billingLog.error({ orgId, source }, "Cannot unsuspend workspace — organization row not found");
+      return;
+    }
+    invalidatePlanCache(orgId);
+    const { clearDunningSteps } = await import("@atlas/api/lib/email/dunning");
+    await clearDunningSteps(orgId);
+    billingLog.info({ orgId, source }, "Workspace unsuspended after payment recovery");
+    await sendDunning(orgId, "dunning_recovered");
+  } catch (err) {
+    billingLog.error(
+      { err: errorMessage(err), orgId, source },
+      "Failed to process payment recovery — not re-throwing (best-effort branch)",
+    );
+  }
+}
+
+/**
+ * `invoice.payment_succeeded`/`invoice.paid` rung. Resolves the org from the
+ * invoice's subscription and runs the recovery path. Best-effort.
+ */
+async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+  // A paid invoice with no subscription (e.g. one-off) carries no delinquency
+  // to reverse — skip silently.
+  const parentSub = invoice.parent?.subscription_details?.subscription;
+  const subscriptionId = typeof parentSub === "string" ? parentSub : parentSub?.id;
+  if (!subscriptionId) return;
+  try {
+    const orgId = await resolveOrgIdBySubscriptionId(subscriptionId);
+    if (!orgId) {
+      billingLog.warn({ subscriptionId, invoiceId: invoice.id }, "Invoice paid but no subscription row resolves an org — skipping recovery");
+      return;
+    }
+    await handlePaymentRecovery(orgId, "invoice.paid");
+  } catch (err) {
+    billingLog.error(
+      { err: errorMessage(err), subscriptionId, invoiceId: invoice.id },
+      "Failed to resolve org for paid invoice — not re-throwing (best-effort branch)",
+    );
+  }
+}
+
+/**
+ * Status-aware entitlement policy for `customer.subscription.updated`
+ * (#3424). The plugin persists `subscription.status` verbatim, so the
+ * delinquency state is readable straight off the event:
+ *   - `past_due` → warn (entitlements retained).
+ *   - `unpaid`   → soft-suspend (block chat/query) + email.
+ *   - `active`   → belt-and-braces recovery (in case the `invoice.paid`
+ *     signal is delayed/dropped — webhook ordering isn't guaranteed, #3423).
+ * Other statuses (`canceled`, `incomplete`, …) are handled by the tier sync /
+ * deletion path and need no ladder action here. Best-effort: never throws.
+ */
+async function handleSubscriptionStatusPolicy(subscription: Stripe.Subscription): Promise<void> {
+  const status = subscription.status;
+  if (status !== "past_due" && status !== "unpaid" && status !== "active") return;
+
+  try {
+    const orgId = await resolveOrgIdForStripeSubscription(subscription);
+    if (!orgId) {
+      billingLog.warn({ subscriptionId: subscription.id, status }, "Subscription status change with no resolvable org — skipping ladder");
+      return;
+    }
+
+    if (status === "active") {
+      await handlePaymentRecovery(orgId, "subscription.updated:active");
+      return;
+    }
+
+    if (status === "past_due") {
+      // Grace window — keep the customer working, just nudge.
+      billingLog.warn({ orgId, subscriptionId: subscription.id }, "Subscription past_due — entitlements retained, sending warning");
+      await sendDunning(orgId, "dunning_past_due");
+      return;
+    }
+
+    // status === "unpaid": Stripe has stopped auto-retrying this cycle —
+    // stop serving paid product. Reuse the `suspended` block, sourced
+    // `'billing'` so recovery clears it (an operator suspension is NOT
+    // cleared by a billing recovery, #3424).
+    const blocked = await updateWorkspaceStatus(orgId, "suspended", "billing");
+    if (blocked) {
+      invalidatePlanCache(orgId);
+      billingLog.warn({ orgId, subscriptionId: subscription.id }, "Subscription unpaid — workspace blocked until payment is fixed");
+      await sendDunning(orgId, "dunning_unpaid");
+    } else {
+      billingLog.error({ orgId, subscriptionId: subscription.id }, "Cannot block unpaid workspace — organization row not found");
+    }
+  } catch (err) {
+    billingLog.error(
+      { err: errorMessage(err), subscriptionId: subscription.id, status },
+      "Failed to apply subscription status policy — not re-throwing (best-effort branch)",
+    );
+  }
 }
 
 /**
@@ -1865,66 +2122,23 @@ export function buildStripePluginOptions(deps: {
 
         const appliedTier = await syncStripeEventToWorkspace(event, stripeClient);
 
-        if (event.type === "invoice.payment_failed") {
-          const invoice = event.data.object as Stripe.Invoice;
-          const customerId = typeof invoice.customer === "string"
-            ? invoice.customer
-            : invoice.customer?.id;
-          // In Stripe API 2025+, subscription lives under parent.subscription_details
-          const parentSub = invoice.parent?.subscription_details?.subscription;
-          const subscriptionId = typeof parentSub === "string"
-            ? parentSub
-            : parentSub?.id;
-          const attemptCount = invoice.attempt_count ?? 0;
-
-          billingLog.warn(
-            { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
-            "Invoice payment failed (attempt %d)",
-            attemptCount,
-          );
-
-          // After 3+ failed attempts, suspend the workspace.
-          // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
-          if (attemptCount >= 3 && subscriptionId) {
-            try {
-              // Look up the org by subscription's referenceId in Better Auth's subscription table
-              const rows = await internalQuery<{ referenceId: string }>(
-                `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
-                [subscriptionId],
-              );
-              const orgId = rows[0]?.referenceId;
-              if (orgId) {
-                const suspended = await updateWorkspaceStatus(orgId, "suspended");
-                if (suspended) {
-                  invalidatePlanCache(orgId);
-                  billingLog.warn(
-                    { orgId, subscriptionId, attemptCount },
-                    "Workspace suspended after %d failed payment attempts",
-                    attemptCount,
-                  );
-                } else {
-                  billingLog.error(
-                    { orgId, subscriptionId },
-                    "Cannot suspend workspace — subscription row references an organization that does not exist",
-                  );
-                }
-              } else {
-                billingLog.warn(
-                  { subscriptionId },
-                  "Cannot suspend workspace — no subscription found for Stripe subscription ID",
-                );
-              }
-            } catch (err) {
-              billingLog.error(
-                { err: errorMessage(err), subscriptionId, attemptCount },
-                "Failed to suspend workspace after repeated payment failures",
-              );
-              // Do not re-throw — suspension is the best-effort branch
-              // (#3424 owns the ladder); the payment failure is already
-              // recorded by Stripe, and a throw here would force a
-              // redelivery of an already-synced event.
-            }
-          }
+        // Delinquency ladder (#3424). All branches are best-effort side
+        // effects of the durable sync above — each helper swallows + logs
+        // and never throws, so it cannot force a redelivery of an
+        // already-applied event.
+        switch (event.type) {
+          case "invoice.payment_failed":
+            await handlePaymentFailure(event.data.object as Stripe.Invoice);
+            break;
+          case "invoice.payment_succeeded":
+          case "invoice.paid":
+            await handleInvoicePaid(event.data.object as Stripe.Invoice);
+            break;
+          case "customer.subscription.updated":
+            await handleSubscriptionStatusPolicy(event.data.object as Stripe.Subscription);
+            break;
+          default:
+            break;
         }
 
         await recordStripeEvent(ledgerEvent, appliedTier);

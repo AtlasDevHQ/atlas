@@ -433,6 +433,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       stripe_customer_id: string | null;
       trial_ends_at: string | null;
       suspended_at: string | null;
+      suspension_source: "billing" | "operator" | null;
       deleted_at: string | null;
       region: string | null;
       region_assigned_at: string | null;
@@ -445,7 +446,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
     }>(
       `SELECT
          o.id, o.name, o.slug, o.workspace_status, o.plan_tier, o.byot,
-         o."stripeCustomerId" AS stripe_customer_id, o.trial_ends_at, o.suspended_at, o.deleted_at,
+         o."stripeCustomerId" AS stripe_customer_id, o.trial_ends_at, o.suspended_at, o.suspension_source, o.deleted_at,
          o.region, o.region_assigned_at, o."createdAt",
          COALESCE(m.cnt, 0)::int AS members,
          COALESCE(cv.cnt, 0)::int AS conversations,
@@ -479,6 +480,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
           stripe_customer_id: row.stripe_customer_id,
           trial_ends_at: row.trial_ends_at,
           suspended_at: row.suspended_at,
+          suspension_source: row.suspension_source,
           deleted_at: row.deleted_at,
           region: row.region,
           region_assigned_at: row.region_assigned_at,
@@ -596,7 +598,9 @@ platformAdmin.openapi(suspendWorkspaceRoute, async (c) => {
       return c.json({ error: "conflict", message: "Cannot suspend a deleted workspace.", requestId }, 409);
     }
 
-    yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "suspended"));
+    // Operator/manual suspension (#3424): a billing recovery must NOT clear
+    // this — only suspensions sourced 'billing' are auto-recovered.
+    yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "suspended", "operator"));
     // Drop the cached `getCachedWorkspace` entry so the next user-side
     // request sees the new status within its TTL window (#2165).
     invalidatePlanCache(workspaceId);

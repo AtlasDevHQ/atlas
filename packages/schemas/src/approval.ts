@@ -27,16 +27,16 @@ import { z } from "zod";
 import {
   APPROVAL_RULE_TYPES,
   APPROVAL_STATUSES,
-  APPROVAL_RULE_SURFACES,
-  APPROVAL_REQUEST_SURFACES,
+  APPROVAL_RULE_ORIGINS,
+  APPROVAL_REQUEST_ORIGINS,
   type ApprovalRule,
   type ApprovalRequest,
 } from "@useatlas/types";
 
 const RuleTypeEnum = z.enum(APPROVAL_RULE_TYPES);
 const StatusEnum = z.enum(APPROVAL_STATUSES);
-const RuleSurfaceEnum = z.enum(APPROVAL_RULE_SURFACES);
-const RequestSurfaceEnum = z.enum(APPROVAL_REQUEST_SURFACES);
+const RuleOriginEnum = z.enum(APPROVAL_RULE_ORIGINS);
+const RequestOriginEnum = z.enum(APPROVAL_REQUEST_ORIGINS);
 
 // ---------------------------------------------------------------------------
 // ApprovalRule — discriminated on `ruleType`
@@ -47,7 +47,7 @@ const ApprovalRuleBaseShape = {
   orgId: z.string(),
   name: z.string(),
   enabled: z.boolean(),
-  surface: RuleSurfaceEnum,
+  origin: RuleOriginEnum,
   createdAt: z.string(),
   updatedAt: z.string(),
 };
@@ -101,7 +101,7 @@ const ApprovalRequestBaseShape = {
   connectionGroupId: z.string().nullable(),
   tablesAccessed: z.array(z.string()),
   columnsAccessed: z.array(z.string()),
-  surface: RequestSurfaceEnum.nullable(),
+  origin: RequestOriginEnum.nullable(),
   createdAt: z.string(),
   expiresAt: z.string(),
 };
@@ -149,4 +149,4 @@ export const ApprovalRequestSchema = z.discriminatedUnion("status", [
   ExpiredRequestSchema,
 ]) satisfies z.ZodType<ApprovalRequest>;
 
-export { StatusEnum, RuleSurfaceEnum, RequestSurfaceEnum };
+export { StatusEnum, RuleOriginEnum, RequestOriginEnum };

@@ -30,17 +30,17 @@ import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ApprovalRule,
   ApprovalRuleType,
-  ApprovalRuleSurface,
+  ApprovalRuleOrigin,
   ApprovalRequest,
-  ApprovalRequestSurface,
+  ApprovalRequestOrigin,
   ApprovalStatus,
   CreateApprovalRuleRequest,
   UpdateApprovalRuleRequest,
 } from "@useatlas/types";
 import {
   APPROVAL_RULE_TYPES,
-  APPROVAL_RULE_SURFACES,
-  APPROVAL_REQUEST_SURFACES,
+  APPROVAL_RULE_ORIGINS,
+  APPROVAL_REQUEST_ORIGINS,
   APPROVAL_STATUSES,
 } from "@useatlas/types";
 import {
@@ -74,8 +74,8 @@ interface ApprovalRuleRow {
   pattern: string;
   threshold: number | null;
   enabled: boolean;
-  /** #2072 — surface scope. Defaults to 'any' via the migration. */
-  surface: string;
+  /** #2072 — origin scope. Defaults to 'any' via the migration. */
+  origin: string;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
@@ -99,8 +99,8 @@ interface ApprovalQueueRow {
   reviewer_email: string | null;
   review_comment: string | null;
   reviewed_at: string | null;
-  /** #2072 — origin surface stamped at request creation. NULL for legacy. */
-  surface: string | null;
+  /** #2072 — agent origin stamped at request creation. NULL for legacy. */
+  origin: string | null;
   created_at: string;
   expires_at: string;
   [key: string]: unknown;
@@ -116,12 +116,12 @@ function isValidStatus(status: string): status is ApprovalStatus {
   return (APPROVAL_STATUSES as readonly string[]).includes(status);
 }
 
-function isValidRuleSurface(surface: string): surface is ApprovalRuleSurface {
-  return (APPROVAL_RULE_SURFACES as readonly string[]).includes(surface);
+function isValidRuleOrigin(origin: string): origin is ApprovalRuleOrigin {
+  return (APPROVAL_RULE_ORIGINS as readonly string[]).includes(origin);
 }
 
-function isValidRequestSurface(surface: string): surface is ApprovalRequestSurface {
-  return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(surface);
+function isValidRequestOrigin(origin: string): origin is ApprovalRequestOrigin {
+  return (APPROVAL_REQUEST_ORIGINS as readonly string[]).includes(origin);
 }
 
 // Post-0096 cutover (#2744 / ADR-0007 pure-collapse): the legacy
@@ -137,28 +137,28 @@ function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
     log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
     return null;
   }
-  // #2072: fail-closed-strict on surface drift. The column is NOT NULL
+  // #2072: fail-closed-strict on origin drift. The column is NOT NULL
   // with DEFAULT 'any' post-0052, so a NULL/missing read indicates
   // schema drift (partial restore, hand-rolled migration, ORM
-  // misbehavior). Coercing to 'any' would silently broaden a surface-
+  // misbehavior). Coercing to 'any' would silently broaden an origin-
   // scoped rule that an admin authored to ALL surfaces — exactly the
   // governance bypass shape this column exists to prevent. Drop the
   // row instead so the operator sees the warning and the missing rule.
-  if (typeof row.surface !== "string") {
-    log.warn({ ruleId: row.id }, "Approval rule has missing/null surface in database — schema drift, skipping rule");
+  if (typeof row.origin !== "string") {
+    log.warn({ ruleId: row.id }, "Approval rule has missing/null origin in database — schema drift, skipping rule");
     return null;
   }
-  if (!isValidRuleSurface(row.surface)) {
-    log.warn({ ruleId: row.id, surface: row.surface }, "Approval rule has unexpected surface in database — skipping rule");
+  if (!isValidRuleOrigin(row.origin)) {
+    log.warn({ ruleId: row.id, origin: row.origin }, "Approval rule has unexpected origin in database — skipping rule");
     return null;
   }
-  const surfaceValue = row.surface;
+  const originValue = row.origin;
   const base = {
     id: row.id,
     orgId: row.org_id,
     name: row.name,
     enabled: row.enabled,
-    surface: surfaceValue,
+    origin: originValue,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -195,16 +195,16 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     log.warn({ requestId: row.id, status: row.status }, "Approval request has unexpected status in database — skipping request");
     return null;
   }
-  // #2072: surface on a queued row is request-side (no 'any'). Drop on
-  // unknown values rather than coerce — a corrupt surface column means
+  // #2072: origin on a queued row is request-side (no 'any'). Drop on
+  // unknown values rather than coerce — a corrupt origin column means
   // the audit dimension would silently mis-bucket reports.
-  let surface: ApprovalRequestSurface | null = null;
-  if (row.surface !== null && row.surface !== undefined) {
-    if (!isValidRequestSurface(row.surface)) {
-      log.warn({ requestId: row.id, surface: row.surface }, "Approval request has unexpected surface in database — skipping request");
+  let origin: ApprovalRequestOrigin | null = null;
+  if (row.origin !== null && row.origin !== undefined) {
+    if (!isValidRequestOrigin(row.origin)) {
+      log.warn({ requestId: row.id, origin: row.origin }, "Approval request has unexpected origin in database — skipping request");
       return null;
     }
-    surface = row.surface;
+    origin = row.origin;
   }
   const base = {
     id: row.id,
@@ -223,7 +223,7 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
     connectionGroupId: row.connection_group_id ?? null,
     tablesAccessed: parseJsonArray(row.tables_accessed),
     columnsAccessed: parseJsonArray(row.columns_accessed),
-    surface,
+    origin,
     createdAt: String(row.created_at),
     expiresAt: String(row.expires_at),
   };
@@ -276,12 +276,12 @@ function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void
   if (!isValidRuleType(input.ruleType as string)) {
     return Effect.fail(new ApprovalError({ message: `Invalid rule type "${input.ruleType as string}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`, code: "validation" }));
   }
-  // #2072 — surface is optional on create (defaults to 'any'). When
+  // #2072 — origin is optional on create (defaults to 'any'). When
   // present, validate against the canonical enum so a typo can't reach
   // the DB CHECK constraint as a 500.
-  if (input.surface !== undefined && !isValidRuleSurface(input.surface as string)) {
+  if (input.origin !== undefined && !isValidRuleOrigin(input.origin as string)) {
     return Effect.fail(new ApprovalError({
-      message: `Invalid surface "${input.surface as string}". Supported: ${APPROVAL_RULE_SURFACES.join(", ")}`,
+      message: `Invalid origin "${input.origin as string}". Supported: ${APPROVAL_RULE_ORIGINS.join(", ")}`,
       code: "validation",
     }));
   }
@@ -301,11 +301,11 @@ function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void
 // SELECT, RETURNING (insert), and RETURNING (update) all carry the
 // new `connection_group_id` column without drifting from each other.
 // Drift was the exact #2191-class regression PR review caught on the
-// surface column rollout; centralizing here keeps the three sites in
+// origin column rollout; centralizing here keeps the three sites in
 // lockstep.
 const APPROVAL_QUEUE_COLUMNS = `id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
   explanation, connection_group_id, tables_accessed, columns_accessed, status,
-  reviewer_id, reviewer_email, review_comment, reviewed_at, surface, created_at, expires_at`;
+  reviewer_id, reviewer_email, review_comment, reviewed_at, origin, created_at, expires_at`;
 
 // ── Default expiry ──────────────────────────────────────────────────
 
@@ -330,7 +330,7 @@ export const listApprovalRules = (orgId: string): Effect.Effect<ApprovalRule[], 
     if (!hasInternalDB()) return [];
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
-      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, surface, created_at, updated_at
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at
        FROM approval_rules
        WHERE org_id = $1
        ORDER BY created_at ASC`,
@@ -346,7 +346,7 @@ export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<Ap
     if (!hasInternalDB()) return null;
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
-      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, surface, created_at, updated_at
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at
        FROM approval_rules
        WHERE org_id = $1 AND id = $2
        LIMIT 1`,
@@ -373,9 +373,9 @@ export const createApprovalRule = (
     yield* validateRuleInput(input);
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
-      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled, surface)
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled, origin)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, surface, created_at, updated_at`,
+       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at`,
       [
         orgId,
         input.name.trim(),
@@ -385,7 +385,7 @@ export const createApprovalRule = (
         input.ruleType === "cost" ? input.threshold : null,
         input.enabled ?? true,
         // #2072 — default 'any' preserves pre-2072 fires-everywhere behavior.
-        input.surface ?? "any",
+        input.origin ?? "any",
       ],
     ));
 
@@ -442,17 +442,17 @@ export const updateApprovalRule = (
       params.push(input.enabled);
       idx++;
     }
-    if (input.surface !== undefined) {
+    if (input.origin !== undefined) {
       // #2072 — validate before writing so a typo doesn't reach the DB
       // CHECK as a 500 with no diagnostic for the admin.
-      if (!isValidRuleSurface(input.surface as string)) {
+      if (!isValidRuleOrigin(input.origin as string)) {
         return yield* Effect.fail(new ApprovalError({
-          message: `Invalid surface "${input.surface as string}". Supported: ${APPROVAL_RULE_SURFACES.join(", ")}`,
+          message: `Invalid origin "${input.origin as string}". Supported: ${APPROVAL_RULE_ORIGINS.join(", ")}`,
           code: "validation",
         }));
       }
-      sets.push(`surface = $${idx}`);
-      params.push(input.surface);
+      sets.push(`origin = $${idx}`);
+      params.push(input.origin);
     }
 
     if (sets.length === 0) {
@@ -463,7 +463,7 @@ export const updateApprovalRule = (
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
       `UPDATE approval_rules SET ${sets.join(", ")} WHERE org_id = $1 AND id = $2
-       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, surface, created_at, updated_at`,
+       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at`,
       [orgId, ruleId, ...params],
     ));
 
@@ -526,8 +526,8 @@ const IDENTITY_MISSING_RULE: ApprovalRule = {
   threshold: null,
   enabled: true,
   // 'any' on the sentinel — this is the fail-closed shape and must fire
-  // regardless of which surface the unidentified caller came from.
-  surface: "any",
+  // regardless of which origin the unidentified caller came from.
+  origin: "any",
   createdAt: new Date(0).toISOString(),
   updatedAt: new Date(0).toISOString(),
 };
@@ -588,13 +588,13 @@ export const checkApprovalRequired = (
   options?: {
     requesterId?: string | undefined;
     /**
-     * #2072 — origin surface stamped by the calling route. The SQL filter
-     * applies `surface = $surface OR surface = 'any'`; passing `undefined`
+     * #2072 — agent origin stamped by the calling route. The SQL filter
+     * applies `origin = $origin OR origin = 'any'`; passing `undefined`
      * (legacy / unstamped routes) only fires `'any'` rules, which is the
-     * fail-closed shape — a route that forgets to stamp surface can't
-     * accidentally trip surface-scoped rules.
+     * fail-closed shape — a route that forgets to stamp origin can't
+     * accidentally trip origin-scoped rules.
      */
-    surface?: ApprovalRequestSurface | undefined;
+    origin?: ApprovalRequestOrigin | undefined;
   },
 ): Effect.Effect<ApprovalMatchResult, never> =>
   Effect.gen(function* () {
@@ -631,18 +631,18 @@ export const checkApprovalRequired = (
 
     yield* requireEnterpriseEffect("approval-workflows");
 
-    // #2072 — surface filter pushed into the SQL: rules pinned to a
-    // specific surface only fetch when the request stamped that surface.
-    // `surface = $2 OR surface = 'any'` with `$2 IS NULL` still fires
+    // #2072 — origin filter pushed into the SQL: rules pinned to a
+    // specific origin only fetch when the request stamped that origin.
+    // `origin = $2 OR origin = 'any'` with `$2 IS NULL` still fires
     // 'any' rules (NULL = 'any' is false in three-valued logic) — that's
     // the desired pre-2072 backwards-compat shape. The
     // `idx_approval_rules_org_surface` index covers both branches.
-    const requestSurface: string | null = options?.surface ?? null;
+    const requestOrigin: string | null = options?.origin ?? null;
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
-      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, surface, created_at, updated_at
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, origin, created_at, updated_at
        FROM approval_rules
-       WHERE org_id = $1 AND enabled = true AND (surface = 'any' OR surface = $2)`,
-      [orgId, requestSurface],
+       WHERE org_id = $1 AND enabled = true AND (origin = 'any' OR origin = $2)`,
+      [orgId, requestOrigin],
     ));
 
     if (rows.length === 0) {
@@ -718,12 +718,12 @@ export const createApprovalRequest = (opts: {
   tablesAccessed: string[];
   columnsAccessed: string[];
   /**
-   * #2072 — origin surface stamped on the queued row for audit. Optional
+   * #2072 — agent origin stamped on the queued row for audit. Optional
    * because legacy callers (and tests pinned to the old shape) don't
-   * stamp it; missing surface stores NULL and renders as "unknown
+   * stamp it; missing origin stores NULL and renders as "unknown
    * origin" in admin reports.
    */
-  surface?: ApprovalRequestSurface | null;
+  origin?: ApprovalRequestOrigin | null;
 }): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
@@ -754,9 +754,9 @@ export const createApprovalRequest = (opts: {
     // #2072 — defensive validation. The DB CHECK enforces this too, but
     // surfacing the bad input as a typed ApprovalError beats a 500 from
     // the SQL layer with no diagnostic for the caller.
-    if (opts.surface != null && !isValidRequestSurface(opts.surface as string)) {
+    if (opts.origin != null && !isValidRequestOrigin(opts.origin as string)) {
       return yield* Effect.fail(new ApprovalError({
-        message: `Invalid request surface "${opts.surface as string}". Supported: ${APPROVAL_REQUEST_SURFACES.join(", ")}`,
+        message: `Invalid request origin "${opts.origin as string}". Supported: ${APPROVAL_REQUEST_ORIGINS.join(", ")}`,
         code: "validation",
       }));
     }
@@ -797,7 +797,7 @@ export const createApprovalRequest = (opts: {
     // the scalar subquery.
     const insertSql = `INSERT INTO approval_queue
          (org_id, rule_id, rule_name, requester_id, requester_email, query_sql, explanation,
-          connection_group_id, tables_accessed, columns_accessed, surface, expires_at)
+          connection_group_id, tables_accessed, columns_accessed, origin, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, ${groupExpression}, $9, $10, $11, now() + make_interval(hours => $12))
        RETURNING ${APPROVAL_QUEUE_COLUMNS}`;
 
@@ -814,7 +814,7 @@ export const createApprovalRequest = (opts: {
         groupParam,
         JSON.stringify(opts.tablesAccessed),
         JSON.stringify(opts.columnsAccessed),
-        opts.surface ?? null,
+        opts.origin ?? null,
         expiryHours,
       ],
     ));

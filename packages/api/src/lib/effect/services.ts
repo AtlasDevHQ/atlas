@@ -1260,7 +1260,7 @@ export const NoopComplianceReportsLayer: Layer.Layer<ComplianceReports> =
 type ApprovalRule = import("@useatlas/types").ApprovalRule;
 type ApprovalRequest = import("@useatlas/types").ApprovalRequest;
 type ApprovalStatus = import("@useatlas/types").ApprovalStatus;
-type ApprovalRequestSurface = import("@useatlas/types").ApprovalRequestSurface;
+type ApprovalRequestOrigin = import("@useatlas/types").ApprovalRequestOrigin;
 type CreateApprovalRuleRequest = import("@useatlas/types").CreateApprovalRuleRequest;
 type UpdateApprovalRuleRequest = import("@useatlas/types").UpdateApprovalRuleRequest;
 type ApprovalError = import("@atlas/api/lib/governance/errors").ApprovalError;
@@ -1284,7 +1284,7 @@ export interface CreateApprovalRequestInput {
   readonly connectionGroupId?: string | null;
   readonly tablesAccessed: string[];
   readonly columnsAccessed: string[];
-  readonly surface?: ApprovalRequestSurface | null;
+  readonly origin?: ApprovalRequestOrigin | null;
 }
 
 export interface ApprovalGateShape {
@@ -1304,7 +1304,7 @@ export interface ApprovalGateShape {
     columnsAccessed: string[],
     options?: {
       requesterId?: string | undefined;
-      surface?: ApprovalRequestSurface | undefined;
+      origin?: ApprovalRequestOrigin | undefined;
     },
   ) => Effect.Effect<ApprovalMatchResult, never>;
   /** Has the requester already had an identical query approved? */

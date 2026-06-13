@@ -982,21 +982,22 @@ export const approvalRules = pgTable(
     pattern: text("pattern").notNull().default(""),
     threshold: integer("threshold"),
     enabled: boolean("enabled").notNull().default(true),
-    // #2072 — surface scoping. 'any' preserves pre-2072 fires-everywhere
-    // semantics; the other values pin a rule to a single transport.
-    surface: text("surface").notNull().default("any"),
+    // #2072 — agent-origin scoping (renamed from "surface" in ADR-0015).
+    // 'any' preserves pre-2072 fires-everywhere semantics; the other
+    // values pin a rule to a single transport.
+    origin: text("origin").notNull().default("any"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     check("chk_approval_rule_type", sql`rule_type IN ('table', 'column', 'cost')`),
     check(
-      "chk_approval_rule_surface",
-      sql`surface IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
+      "chk_approval_rule_origin",
+      sql`origin IN ('any', 'chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
     ),
     index("idx_approval_rules_org").on(t.orgId),
     index("idx_approval_rules_org_enabled").on(t.orgId).where(sql`enabled = true`),
-    index("idx_approval_rules_org_surface").on(t.orgId, t.surface),
+    index("idx_approval_rules_org_origin").on(t.orgId, t.origin),
   ],
 );
 
@@ -1025,18 +1026,19 @@ export const approvalQueue = pgTable(
     reviewerEmail: text("reviewer_email"),
     reviewComment: text("review_comment"),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
-    // #2072 — origin surface stamped at request creation. NULL for legacy
-    // rows / callers that didn't bind a surface; only chat / mcp / scheduler
-    // / slack / teams / webhook for new rows.
-    surface: text("surface"),
+    // #2072 — agent origin stamped at request creation (renamed from
+    // "surface" in ADR-0015). NULL for legacy rows / callers that didn't
+    // bind an origin; only chat / mcp / scheduler / slack / teams /
+    // webhook for new rows.
+    origin: text("origin"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull().default(sql`now() + interval '24 hours'`),
   },
   (t) => [
     check("chk_approval_status", sql`status IN ('pending', 'approved', 'denied', 'expired')`),
     check(
-      "chk_approval_request_surface",
-      sql`surface IS NULL OR surface IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
+      "chk_approval_request_origin",
+      sql`origin IS NULL OR origin IN ('chat', 'mcp', 'scheduler', 'slack', 'teams', 'telegram', 'discord', 'whatsapp', 'gchat', 'webhook')`,
     ),
     // 0094 / #2744 — composite FK to `connection_groups (id, org_id)`
     // dropped with the table. `connection_group_id` stays as a

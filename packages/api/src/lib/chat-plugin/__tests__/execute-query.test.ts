@@ -4,12 +4,12 @@
  * Feeds a synthetic Slack `app_mention` payload (the same shape Slack's
  * Events API delivers) through `runExecuteQuery` and asserts the agent
  * sees the legacy slack.ts envelope: `orgId` via `botActorUser`,
- * `approvalSurface: "slack"`, conversation persistence by
+ * `agentOrigin: "slack"`, conversation persistence by
  * (channel, thread_ts), and rate-limit key `slack:${teamId}`.
  *
  * The agent + Slack store + conversation persistence are mocked at the
  * module boundary. `executeAgentQuery` is captured so its `actor` /
- * `approvalSurface` arguments are asserted directly — that's the F-55
+ * `agentOrigin` arguments are asserted directly — that's the F-55
  * gate this slice has to preserve.
  */
 
@@ -29,7 +29,7 @@ interface CapturedAgentCall {
   requestId?: string;
   options?: {
     actor?: { id: string; activeOrganizationId?: string };
-    approvalSurface?: string;
+    agentOrigin?: string;
     conversationId?: string;
     priorMessages?: Array<{ role: string; content: string }>;
   };
@@ -42,7 +42,7 @@ const mockExecuteAgentQuery: Mock<
     requestId?: string,
     options?: {
       actor?: { id: string; activeOrganizationId?: string };
-      approvalSurface?: string;
+      agentOrigin?: string;
       conversationId?: string;
       priorMessages?: Array<{ role: string; content: string }>;
     },
@@ -219,7 +219,7 @@ describe("chat-plugin executeQuery host helper", () => {
     expect(actor!.activeOrganizationId).toBe("org-xyz");
   });
 
-  it("stamps approvalSurface='slack' on every agent invocation", async () => {
+  it("stamps agentOrigin='slack' on every agent invocation", async () => {
     const { runExecuteQuery } = await import("../executeQuery");
 
     await runExecuteQuery("test question", {
@@ -233,7 +233,7 @@ describe("chat-plugin executeQuery host helper", () => {
       },
     });
 
-    expect(capturedAgentCalls[0]!.options?.approvalSurface).toBe("slack");
+    expect(capturedAgentCalls[0]!.options?.agentOrigin).toBe("slack");
   });
 
   it("rate-limit key for thread follow-up is team-wide `slack:<teamId>` — matches slack.ts:491", async () => {
@@ -658,7 +658,7 @@ describe("chat-plugin executeQuery host helper", () => {
   // Discord branch — 1.5.3 #2749 (Phase D)
   // -------------------------------------------------------------------------
 
-  it("Discord happy path: resolves guild_id → workspace + binds discord actor + stamps approvalSurface='discord'", async () => {
+  it("Discord happy path: resolves guild_id → workspace + binds discord actor + stamps agentOrigin='discord'", async () => {
     mockInternalQuery.mockImplementation((sql: string) => {
       if (sql.includes("workspace_plugins")) {
         return Promise.resolve([{ workspace_id: "org-discord-tenant" }]);
@@ -683,7 +683,7 @@ describe("chat-plugin executeQuery host helper", () => {
     const call = capturedAgentCalls[0]!;
     expect(call.options?.actor?.id).toBe("discord-bot:123456789012345678:U_DC");
     expect(call.options?.actor?.activeOrganizationId).toBe("org-discord-tenant");
-    expect(call.options?.approvalSurface).toBe("discord");
+    expect(call.options?.agentOrigin).toBe("discord");
     // Rate-limit key shape is `discord:${guildId}` (per-server bucket).
     expect(observedRateLimitKeys).toContain("discord:123456789012345678");
   });
@@ -797,7 +797,7 @@ describe("chat-plugin executeQuery host helper", () => {
   // hand the host callback in production.
   // ---------------------------------------------------------------------------
 
-  it("WhatsApp happy path: resolves phone_number_id → workspace + binds whatsapp actor + stamps approvalSurface='whatsapp'", async () => {
+  it("WhatsApp happy path: resolves phone_number_id → workspace + binds whatsapp actor + stamps agentOrigin='whatsapp'", async () => {
     mockInternalQuery.mockImplementation((sql: string) => {
       if (sql.includes("workspace_plugins")) {
         return Promise.resolve([{ workspace_id: "org-whatsapp-tenant" }]);
@@ -825,7 +825,7 @@ describe("chat-plugin executeQuery host helper", () => {
     const call = capturedAgentCalls[0];
     expect(call.options?.actor?.id).toBe("whatsapp-bot:1098765432109876:16315551234");
     expect(call.options?.actor?.activeOrganizationId).toBe("org-whatsapp-tenant");
-    expect(call.options?.approvalSurface).toBe("whatsapp");
+    expect(call.options?.agentOrigin).toBe("whatsapp");
     // Rate-limit key shape is `whatsapp:${phoneNumberId}` (per-number bucket).
     expect(observedRateLimitKeys).toContain("whatsapp:1098765432109876");
     // DB lookup against the catalog row's stable id with config->>'phone_number_id'.
@@ -949,7 +949,7 @@ describe("chat-plugin executeQuery host helper", () => {
   // Google Chat branch — 1.5.3 #2754 (Phase D)
   // -------------------------------------------------------------------------
 
-  it("Google Chat happy path: resolves workspace_id → workspace + binds gchat actor + stamps approvalSurface='gchat'", async () => {
+  it("Google Chat happy path: resolves workspace_id → workspace + binds gchat actor + stamps agentOrigin='gchat'", async () => {
     mockInternalQuery.mockImplementation((sql: string) => {
       if (sql.includes("workspace_plugins")) {
         return Promise.resolve([{ workspace_id: "org-gchat-tenant" }]);
@@ -977,7 +977,7 @@ describe("chat-plugin executeQuery host helper", () => {
     const call = capturedAgentCalls[0]!;
     expect(call.options?.actor?.id).toBe("gchat-bot:C01abc234:users/12345");
     expect(call.options?.actor?.activeOrganizationId).toBe("org-gchat-tenant");
-    expect(call.options?.approvalSurface).toBe("gchat");
+    expect(call.options?.agentOrigin).toBe("gchat");
     // Rate-limit key shape is `gchat:${workspaceId}` (per-Workspace bucket).
     expect(observedRateLimitKeys).toContain("gchat:C01abc234");
   });
@@ -1121,7 +1121,7 @@ describe("chat-plugin executeQuery host helper", () => {
 
   const TEAMS_TENANT = "72f988bf-86f1-41af-91ab-2d7cd011db47";
 
-  it("Teams happy path: resolves tenant_id → workspace + binds teams actor + stamps approvalSurface='teams'", async () => {
+  it("Teams happy path: resolves tenant_id → workspace + binds teams actor + stamps agentOrigin='teams'", async () => {
     mockInternalQuery.mockImplementation((sql: string) => {
       if (sql.includes("workspace_plugins")) {
         return Promise.resolve([{ workspace_id: "org-teams-tenant" }]);
@@ -1146,7 +1146,7 @@ describe("chat-plugin executeQuery host helper", () => {
     // externalId is the tenant GUID; externalUserId prefers the AAD object id.
     expect(call.options?.actor?.id).toBe(`teams-bot:${TEAMS_TENANT}:aad-obj-1`);
     expect(call.options?.actor?.activeOrganizationId).toBe("org-teams-tenant");
-    expect(call.options?.approvalSurface).toBe("teams");
+    expect(call.options?.agentOrigin).toBe("teams");
     // Rate-limit key shape is `teams:${tenantId}` (per-tenant bucket).
     expect(observedRateLimitKeys).toContain(`teams:${TEAMS_TENANT}`);
     // DB lookup against the catalog row's stable id with config->>'tenant_id'.

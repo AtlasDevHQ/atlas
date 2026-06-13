@@ -685,8 +685,8 @@ chat.openapi(chatRoute, async (c) => {
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
-    // #2072 — stamp 'chat' on the surface so chat-only approval rules
-    // fire here but mcp/scheduler/slack-only rules do not.
+    // #2072 — stamp 'chat' as the agent origin so chat-only approval
+    // rules fire here but mcp/scheduler/slack-only rules do not.
     //
     // #2345 — the routing fields are resolved INSIDE this callback
     // because they depend on the parsed body + the persisted
@@ -694,7 +694,7 @@ chat.openapi(chatRoute, async (c) => {
     // known so plugin tools / agent helpers see them in AsyncLocalStorage
     // without a second middleware pass.
     return withRequestContext(
-      { requestId, user: authResult.user, atlasMode, approvalSurface: "chat" },
+      { requestId, user: authResult.user, atlasMode, agentOrigin: "chat" },
       async () => {
         // Startup diagnostics — fast-fail with actionable errors
         const diagnostics = await validateEnvironment();
@@ -1343,7 +1343,7 @@ chat.openapi(chatRoute, async (c) => {
               requestId,
               user: authResult.user,
               atlasMode,
-              approvalSurface: "chat",
+              agentOrigin: "chat",
               ...(effectiveConnectionId !== undefined && {
                 connectionId: effectiveConnectionId,
               }),

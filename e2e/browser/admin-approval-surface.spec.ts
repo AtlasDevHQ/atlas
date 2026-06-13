@@ -1,25 +1,25 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 
 /**
- * Admin approval rules — surface scoping (#2072) @llm
+ * Admin approval rules — origin scoping (#2072) @llm
  *
  * The rule-evaluation behavior (MCP-only rule fires for MCP queries but
  * not chat queries against the same shape) is exercised end-to-end by
  * `ee/src/governance/approval.test.ts` (DB-side filter + acceptance-
  * criteria scenarios) and `packages/api/src/lib/approvals/__tests__/
- * evaluate.test.ts` (pure surface-matching predicate). A true browser-
+ * evaluate.test.ts` (pure origin-matching predicate). A true browser-
  * driven "MCP transport queues a request, chat doesn't" path would
  * require a live MCP SDK with DCR-bootstrapping, which we cannot drive
  * headlessly.
  *
  * What this spec covers:
- *   1. The admin sees a Surface column on the rules list.
- *   2. Opening the editor shows the Surface dropdown defaulted to 'any'.
+ *   1. The admin sees an Origin column on the rules list.
+ *   2. Opening the editor shows the Origin dropdown defaulted to 'any'.
  *   3. Selecting "MCP only" and saving emits a POST whose body includes
- *      `surface: "mcp"` — pinning the wire-layer contract the rule
+ *      `origin: "mcp"` — pinning the wire-layer contract the rule
  *      evaluator's SQL filter relies on.
  *   4. The new row renders with the `mcp` badge so the admin can see at
- *      a glance which rules are surface-scoped.
+ *      a glance which rules are origin-scoped.
  *
  * The `@llm` tag opts this spec into the serial worker so the route
  * mocks aren't raced by other specs that also touch admin endpoints.
@@ -33,7 +33,7 @@ interface MockApprovalRule {
   pattern: string;
   threshold: number | null;
   enabled: boolean;
-  surface: "any" | "chat" | "mcp" | "scheduler" | "slack" | "teams" | "webhook";
+  origin: "any" | "chat" | "mcp" | "scheduler" | "slack" | "teams" | "webhook";
   createdAt: string;
   updatedAt: string;
 }
@@ -49,7 +49,7 @@ function buildFixture(): MockApprovalRule[] {
       threshold: null,
       enabled: true,
       // 'any' is the migration default — preserves the pre-2072 shape.
-      surface: "any",
+      origin: "any",
       createdAt: "2026-04-01T10:00:00.000Z",
       updatedAt: "2026-04-01T10:00:00.000Z",
     },
@@ -84,7 +84,7 @@ async function installMocks(
           pattern: typeof body.pattern === "string" ? body.pattern : "",
           threshold: typeof body.threshold === "number" ? body.threshold : null,
           enabled: body.enabled !== false,
-          surface: (body.surface as MockApprovalRule["surface"]) ?? "any",
+          origin: (body.origin as MockApprovalRule["origin"]) ?? "any",
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
@@ -128,10 +128,10 @@ async function installMocks(
   return { state, postCalls };
 }
 
-test.describe("Admin approval — surface scoping (#2072) @llm", () => {
+test.describe("Admin approval — origin scoping (#2072) @llm", () => {
   test.describe.configure({ timeout: 45_000 });
 
-  test("Surface column renders in the rules list", async ({ page }) => {
+  test("Origin column renders in the rules list", async ({ page }) => {
     await installMocks(page, buildFixture());
     await page.goto("/admin/approval");
 
@@ -139,13 +139,13 @@ test.describe("Admin approval — surface scoping (#2072) @llm", () => {
       timeout: 15_000,
     });
     // The new column header.
-    await expect(page.getByRole("columnheader", { name: "Surface" })).toBeVisible();
-    // The seeded `any` rule renders its surface badge — exact 'any'
+    await expect(page.getByRole("columnheader", { name: "Origin" })).toBeVisible();
+    // The seeded `any` rule renders its origin badge — exact 'any'
     // text confirms the lower-case enum value reaches the table cell.
     await expect(page.getByRole("cell", { name: "any" }).first()).toBeVisible();
   });
 
-  test("admin creates an MCP-only rule and the wire body carries surface: 'mcp'", async ({
+  test("admin creates an MCP-only rule and the wire body carries origin: 'mcp'", async ({
     page,
   }) => {
     const { postCalls } = await installMocks(page, buildFixture());
@@ -161,8 +161,8 @@ test.describe("Admin approval — surface scoping (#2072) @llm", () => {
     // Fill the basics.
     await page.getByLabel("Rule Name").fill("MCP-only PII gate");
 
-    // Surface dropdown — pick MCP only.
-    await page.getByRole("combobox", { name: "Approval rule surface" }).click();
+    // Origin dropdown — pick MCP only.
+    await page.getByRole("combobox", { name: "Approval rule origin" }).click();
     await page.getByRole("option", { name: /MCP only/ }).click();
 
     // Pattern (table rule type is the default — keep it).
@@ -178,7 +178,7 @@ test.describe("Admin approval — surface scoping (#2072) @llm", () => {
       name: "MCP-only PII gate",
       ruleType: "table",
       pattern: "customers",
-      surface: "mcp",
+      origin: "mcp",
     });
 
     // The new row should render with the mcp badge.

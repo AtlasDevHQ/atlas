@@ -39,7 +39,7 @@ interface ObservedRunAgentCall {
   question: string;
   userId?: string;
   orgId?: string | null;
-  approvalSurface?: string;
+  agentOrigin?: string;
   requestId?: string;
   hasCustomToolRegistry: boolean;
 }
@@ -77,7 +77,7 @@ mock.module("@atlas/api/lib/agent", () => ({
       getRequestContext: () => {
         requestId: string;
         user?: { id: string; activeOrganizationId?: string };
-        approvalSurface?: string;
+        agentOrigin?: string;
       } | undefined;
     };
     const ctx = getRequestContext();
@@ -86,7 +86,7 @@ mock.module("@atlas/api/lib/agent", () => ({
       question,
       userId: ctx?.user?.id,
       orgId: ctx?.user?.activeOrganizationId ?? null,
-      approvalSurface: ctx?.approvalSurface,
+      agentOrigin: ctx?.agentOrigin,
       requestId: ctx?.requestId,
       // Non-null when the adapter built a restricted registry for the
       // unlinked-asker path. The unlinked path test asserts truthy;
@@ -227,7 +227,7 @@ describe("createProactiveAnswerAdapter — linked path", () => {
     expect(observedRunAgentCalls).toHaveLength(1);
     expect(observedRunAgentCalls[0].userId).toBe("user-linked");
     expect(observedRunAgentCalls[0].orgId).toBe("org-linked");
-    expect(observedRunAgentCalls[0].approvalSurface).toBe("slack");
+    expect(observedRunAgentCalls[0].agentOrigin).toBe("slack");
     expect(observedRunAgentCalls[0].question).toBe("how many customers?");
     // Linked askers get the default ToolRegistry — no `tools` arg
     // passed through to runAgent.

@@ -1,58 +1,59 @@
 /**
- * Surface-scoping match predicate for approval rules (#2072).
+ * Origin-scoping match predicate for approval rules (#2072; "surface"
+ * renamed to "origin" in ADR-0015).
  *
  * The DB-side filter in `ee/governance/approval.ts` uses
- *   WHERE org_id = $1 AND enabled = true AND (surface = 'any' OR surface = $2)
- * with `$2` set to the request's surface (or NULL when unknown). This file
+ *   WHERE org_id = $1 AND enabled = true AND (origin = 'any' OR origin = $2)
+ * with `$2` set to the request's origin (or NULL when unknown). This file
  * exists so the same matching contract lives in code we can unit-test
  * directly without a DB mock — and so post-fetch filtering (defense in
  * depth) shares one source of truth with the SQL filter.
  *
  * Semantics:
- *   - `surface = 'any'` rule  →  fires for every request (preserves
+ *   - `origin = 'any'` rule  →  fires for every request (preserves
  *     pre-2072 behavior; this is the migration default).
- *   - `surface = '<value>'` rule  →  fires only when the request stamped
- *     that exact surface on its RequestContext.
- *   - Unknown request surface  →  only `'any'` rules match. A rule pinned
- *     to a specific surface (e.g. `'mcp'`) does NOT match an unknown-
- *     surface request. This is *scope isolation*, not the F-54/F-55
- *     governance fail-closed: if a route forgets to stamp surface, an
+ *   - `origin = '<value>'` rule  →  fires only when the request stamped
+ *     that exact origin on its RequestContext.
+ *   - Unknown request origin  →  only `'any'` rules match. A rule pinned
+ *     to a specific origin (e.g. `'mcp'`) does NOT match an unknown-
+ *     origin request. This is *scope isolation*, not the F-54/F-55
+ *     governance fail-closed: if a route forgets to stamp an origin, an
  *     `'any'` rule still fires (so governance is preserved); only the
- *     surface-scoped rules become dormant for that caller. The true
+ *     origin-scoped rules become dormant for that caller. The true
  *     governance fail-closed lives in `checkApprovalRequired`'s
  *     `identityMissing` path.
  */
 
 import {
-  APPROVAL_RULE_SURFACES,
-  REQUEST_SURFACES,
-  type ApprovalRuleSurface,
-  type RequestSurface,
+  APPROVAL_RULE_ORIGINS,
+  REQUEST_ORIGINS,
+  type ApprovalRuleOrigin,
+  type RequestOrigin,
 } from "./types";
 
-export { APPROVAL_RULE_SURFACES, REQUEST_SURFACES };
-export type { ApprovalRuleSurface, RequestSurface };
+export { APPROVAL_RULE_ORIGINS, REQUEST_ORIGINS };
+export type { ApprovalRuleOrigin, RequestOrigin };
 
 /**
- * True when a rule with `ruleSurface` matches a request originating from
- * `requestSurface`. See module-level comment for the matching contract.
+ * True when a rule with `ruleOrigin` matches a request originating from
+ * `requestOrigin`. See module-level comment for the matching contract.
  */
-export function surfaceMatchesRule(
-  ruleSurface: ApprovalRuleSurface,
-  requestSurface: RequestSurface | undefined,
+export function originMatchesRule(
+  ruleOrigin: ApprovalRuleOrigin,
+  requestOrigin: RequestOrigin | undefined,
 ): boolean {
-  if (ruleSurface === "any") return true;
-  return ruleSurface === requestSurface;
+  if (ruleOrigin === "any") return true;
+  return ruleOrigin === requestOrigin;
 }
 
 /**
- * Filter an in-memory rule array by surface. Mirrors the SQL-side filter
+ * Filter an in-memory rule array by origin. Mirrors the SQL-side filter
  * exactly so callers can post-verify or test the matching without
  * round-tripping the DB.
  */
-export function selectMatchingRulesBySurface<T extends { surface: ApprovalRuleSurface }>(
+export function selectMatchingRulesByOrigin<T extends { origin: ApprovalRuleOrigin }>(
   rules: readonly T[],
-  requestSurface: RequestSurface | undefined,
+  requestOrigin: RequestOrigin | undefined,
 ): T[] {
-  return rules.filter((rule) => surfaceMatchesRule(rule.surface, requestSurface));
+  return rules.filter((rule) => originMatchesRule(rule.origin, requestOrigin));
 }

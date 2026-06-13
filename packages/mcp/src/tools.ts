@@ -157,7 +157,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "explore", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-explore");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore"), agentOrigin: "mcp" }, async () => {
             try {
               // Rate-limit gate (#2071) lives INSIDE the try so any throw
               // from the limiter (loader rejection, audit-emission
@@ -233,7 +233,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "executeSQL", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-executeSQL");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL"), agentOrigin: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,

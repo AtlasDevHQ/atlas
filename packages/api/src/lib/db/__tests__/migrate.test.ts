@@ -152,7 +152,8 @@ describe("runMigrations", () => {
     //   Plus 0130 (user_trial_grants one-trial marker, #3469/#3470) = 131.
     //   Plus 0131 (organization.suspension_source billing/operator, #3424) = 132.
     //   Plus 0132 (organization.plan_override_until operator precedence, #3427) = 133.
-    expect(count).toBe(133);
+    //   Plus 0133 (approval surface→origin rename, #3491) = 134.
+    expect(count).toBe(134);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -314,6 +315,7 @@ describe("runMigrations", () => {
         "0130_user_trial_grants.sql",
         "0131_org_suspension_source.sql",
         "0132_org_plan_override.sql",
+        "0133_approval_origin_rename.sql",
       ],
     });
 

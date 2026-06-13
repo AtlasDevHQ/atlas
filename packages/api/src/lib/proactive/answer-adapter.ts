@@ -297,7 +297,7 @@ export function createProactiveAnswerAdapter(
         {
           requestId,
           user: actor,
-          approvalSurface: "slack",
+          agentOrigin: "slack",
         },
         () =>
           runAgent({

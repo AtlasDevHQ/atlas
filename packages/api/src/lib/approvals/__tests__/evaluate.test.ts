@@ -1,75 +1,75 @@
 /**
- * Surface-scoping predicate tests (#2072).
+ * Origin-scoping predicate tests (#2072).
  *
- * Pins the matching semantics for `surfaceMatchesRule`: a rule fires for a
- * request when the rule's surface is `'any'` OR equals the request's
- * surface. Unknown request surface (route forgot to stamp) fails-closed for
- * non-`any` rules so a rule with `surface = 'mcp'` never matches a request
+ * Pins the matching semantics for `originMatchesRule`: a rule fires for a
+ * request when the rule's origin is `'any'` OR equals the request's
+ * origin. Unknown request origin (route forgot to stamp) fails-closed for
+ * non-`any` rules so a rule with `origin = 'mcp'` never matches a request
  * whose origin we couldn't identify.
  */
 
 import { describe, it, expect } from "bun:test";
-import { surfaceMatchesRule, REQUEST_SURFACES, APPROVAL_RULE_SURFACES } from "../evaluate";
-import type { RequestSurface } from "../types";
+import { originMatchesRule, REQUEST_ORIGINS, APPROVAL_RULE_ORIGINS } from "../evaluate";
+import type { RequestOrigin } from "../types";
 
-describe("surfaceMatchesRule (#2072)", () => {
-  describe("rule.surface = 'any' — preserves pre-2072 behavior", () => {
-    it("matches every defined request surface", () => {
-      for (const reqSurface of REQUEST_SURFACES) {
+describe("originMatchesRule (#2072)", () => {
+  describe("rule.origin = 'any' — preserves pre-2072 behavior", () => {
+    it("matches every defined request origin", () => {
+      for (const reqOrigin of REQUEST_ORIGINS) {
         expect(
-          surfaceMatchesRule("any", reqSurface),
-          `'any' rule must match request surface "${reqSurface}"`,
+          originMatchesRule("any", reqOrigin),
+          `'any' rule must match request origin "${reqOrigin}"`,
         ).toBe(true);
       }
     });
 
-    it("matches when the request surface is unknown (legacy / unstamped routes)", () => {
-      // Pre-2072 callers don't stamp surface. An 'any' rule must still
+    it("matches when the request origin is unknown (legacy / unstamped routes)", () => {
+      // Pre-2072 callers don't stamp origin. An 'any' rule must still
       // fire for them — that's the migration's "non-destructive" promise.
-      expect(surfaceMatchesRule("any", undefined)).toBe(true);
+      expect(originMatchesRule("any", undefined)).toBe(true);
     });
   });
 
-  describe("rule.surface = 'mcp' — surface isolation", () => {
+  describe("rule.origin = 'mcp' — origin isolation", () => {
     it("fires for an MCP-bound request", () => {
-      expect(surfaceMatchesRule("mcp", "mcp")).toBe(true);
+      expect(originMatchesRule("mcp", "mcp")).toBe(true);
     });
 
     it("does not fire for chat-bound requests with the same query shape", () => {
       // Acceptance criterion from #2072: 'MCP-only rule that fires for MCP
       // queries but not chat queries against the same query shape'.
-      expect(surfaceMatchesRule("mcp", "chat")).toBe(false);
+      expect(originMatchesRule("mcp", "chat")).toBe(false);
     });
 
-    it("does not fire for any other surface", () => {
-      const others = REQUEST_SURFACES.filter((s) => s !== "mcp");
-      for (const reqSurface of others) {
+    it("does not fire for any other origin", () => {
+      const others = REQUEST_ORIGINS.filter((s) => s !== "mcp");
+      for (const reqOrigin of others) {
         expect(
-          surfaceMatchesRule("mcp", reqSurface),
-          `'mcp' rule must NOT match request surface "${reqSurface}"`,
+          originMatchesRule("mcp", reqOrigin),
+          `'mcp' rule must NOT match request origin "${reqOrigin}"`,
         ).toBe(false);
       }
     });
 
-    it("does not fire when request surface is unknown (fail-closed)", () => {
-      // Non-'any' rules require an identified surface. Unknown surface
-      // means the route forgot to stamp; we don't want surface-scoped
+    it("does not fire when request origin is unknown (fail-closed)", () => {
+      // Non-'any' rules require an identified origin. Unknown origin
+      // means the route forgot to stamp; we don't want origin-scoped
       // rules accidentally firing because the binding was missed.
-      expect(surfaceMatchesRule("mcp", undefined)).toBe(false);
+      expect(originMatchesRule("mcp", undefined)).toBe(false);
     });
   });
 
-  describe("rule.surface = 'chat' — symmetric isolation", () => {
+  describe("rule.origin = 'chat' — symmetric isolation", () => {
     it("fires for a chat-bound request", () => {
-      expect(surfaceMatchesRule("chat", "chat")).toBe(true);
+      expect(originMatchesRule("chat", "chat")).toBe(true);
     });
 
     it("does not fire for an MCP-bound request with the same query shape", () => {
-      expect(surfaceMatchesRule("chat", "mcp")).toBe(false);
+      expect(originMatchesRule("chat", "mcp")).toBe(false);
     });
 
-    it("does not fire when request surface is unknown", () => {
-      expect(surfaceMatchesRule("chat", undefined)).toBe(false);
+    it("does not fire when request origin is unknown", () => {
+      expect(originMatchesRule("chat", undefined)).toBe(false);
     });
   });
 
@@ -77,7 +77,7 @@ describe("surfaceMatchesRule (#2072)", () => {
     // Defensive enumeration — a future refactor that drops one of the
     // surfaces from the union must surface as a compile error in this
     // exhaustive list, not as a silent runtime gap.
-    const cases: { rule: typeof APPROVAL_RULE_SURFACES[number]; req: RequestSurface }[] = [
+    const cases: { rule: typeof APPROVAL_RULE_ORIGINS[number]; req: RequestOrigin }[] = [
       { rule: "scheduler", req: "scheduler" },
       { rule: "slack", req: "slack" },
       { rule: "teams", req: "teams" },
@@ -86,29 +86,29 @@ describe("surfaceMatchesRule (#2072)", () => {
 
     for (const { rule, req } of cases) {
       it(`'${rule}' rule fires for '${req}' request`, () => {
-        expect(surfaceMatchesRule(rule, req)).toBe(true);
+        expect(originMatchesRule(rule, req)).toBe(true);
       });
 
       it(`'${rule}' rule does not fire for 'mcp' request`, () => {
-        expect(surfaceMatchesRule(rule, "mcp")).toBe(false);
+        expect(originMatchesRule(rule, "mcp")).toBe(false);
       });
 
       it(`'${rule}' rule does not fire for 'chat' request`, () => {
-        expect(surfaceMatchesRule(rule, "chat")).toBe(false);
+        expect(originMatchesRule(rule, "chat")).toBe(false);
       });
     }
   });
 
   describe("enum exhaustiveness (catches enum drift)", () => {
-    it("APPROVAL_RULE_SURFACES contains 'any' plus every REQUEST_SURFACES value", () => {
+    it("APPROVAL_RULE_ORIGINS contains 'any' plus every REQUEST_ORIGINS value", () => {
       // The rule enum is the request enum + 'any'. If a new request
-      // surface lands without a matching rule entry, surface-scoped rules
+      // origin lands without a matching rule entry, origin-scoped rules
       // for it cannot be authored — this assertion fails so the schema /
       // migration / type drift is caught at the test layer.
-      for (const reqSurface of REQUEST_SURFACES) {
-        expect(APPROVAL_RULE_SURFACES).toContain(reqSurface);
+      for (const reqOrigin of REQUEST_ORIGINS) {
+        expect(APPROVAL_RULE_ORIGINS).toContain(reqOrigin);
       }
-      expect(APPROVAL_RULE_SURFACES).toContain("any");
+      expect(APPROVAL_RULE_ORIGINS).toContain("any");
     });
   });
 });

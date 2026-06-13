@@ -529,7 +529,7 @@ demo.openapi(demoChatRoute, async (c) => {
   // #2072 — demo runs the same flow as chat from the user's POV.
   const demoUser = createAtlasUser(userId, "simple-key", `demo:${email}`);
   return withRequestContext(
-    { requestId, user: demoUser, approvalSurface: "chat" },
+    { requestId, user: demoUser, agentOrigin: "chat" },
     async () => {
       // Startup diagnostics
       const diagnostics = await validateEnvironment();

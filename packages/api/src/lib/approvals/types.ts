@@ -1,5 +1,6 @@
 /**
- * Surface-scoping helpers for approval rules (#2072).
+ * Origin-scoping helpers for approval rules (#2072; "surface" renamed to
+ * "origin" in ADR-0015).
  *
  * The canonical enums live in `@useatlas/types/approval` so the SQL
  * route layer, the wire schemas, the web admin types, and this module
@@ -12,17 +13,17 @@
  */
 
 import {
-  APPROVAL_RULE_SURFACES,
-  APPROVAL_REQUEST_SURFACES,
-  type ApprovalRuleSurface,
-  type ApprovalRequestSurface,
+  APPROVAL_RULE_ORIGINS,
+  APPROVAL_REQUEST_ORIGINS,
+  type ApprovalRuleOrigin,
+  type ApprovalRequestOrigin,
 } from "@useatlas/types";
 
 export {
-  APPROVAL_RULE_SURFACES,
-  APPROVAL_REQUEST_SURFACES,
-  type ApprovalRuleSurface,
-  type ApprovalRequestSurface,
+  APPROVAL_RULE_ORIGINS,
+  APPROVAL_REQUEST_ORIGINS,
+  type ApprovalRuleOrigin,
+  type ApprovalRequestOrigin,
 };
 
 /**
@@ -30,13 +31,13 @@ export {
  * shorter names. Anyone reading `evaluate.ts` is already inside the
  * approval-rules namespace; the prefix is redundant noise there.
  */
-export const REQUEST_SURFACES = APPROVAL_REQUEST_SURFACES;
-export type RequestSurface = ApprovalRequestSurface;
+export const REQUEST_ORIGINS = APPROVAL_REQUEST_ORIGINS;
+export type RequestOrigin = ApprovalRequestOrigin;
 
-export function isApprovalRuleSurface(value: string): value is ApprovalRuleSurface {
-  return (APPROVAL_RULE_SURFACES as readonly string[]).includes(value);
+export function isApprovalRuleOrigin(value: string): value is ApprovalRuleOrigin {
+  return (APPROVAL_RULE_ORIGINS as readonly string[]).includes(value);
 }
 
-export function isRequestSurface(value: string): value is ApprovalRequestSurface {
-  return (APPROVAL_REQUEST_SURFACES as readonly string[]).includes(value);
+export function isRequestOrigin(value: string): value is ApprovalRequestOrigin {
+  return (APPROVAL_REQUEST_ORIGINS as readonly string[]).includes(value);
 }

@@ -188,10 +188,10 @@ export async function executeScheduledTask(
     // fire only on scheduled runs, leaving chat / mcp queries against
     // the same tables unaffected. (Approval rules are additive; they
     // can only require approval, never waive it — to exempt the
-    // scheduler from a broad rule, narrow that rule's surface.)
+    // scheduler from a broad rule, narrow that rule's origin.)
     agentQueryEffect(task.question, requestId, taskId, timeoutMs, {
       actor,
-      approvalSurface: "scheduler",
+      agentOrigin: "scheduler",
       ...(resolvedConnectionId ? { connectionId: resolvedConnectionId } : {}),
       ...(task.connectionGroupId ? { connectionGroupId: task.connectionGroupId } : {}),
     }),

@@ -28,6 +28,9 @@ import type { AdminActionEntry } from "@atlas/api/lib/audit";
 // Import the same constant the production code reads — keeps the
 // fixture from drifting out of sync with the issuer's claim key.
 import { ATLAS_OAUTH_WORKSPACE_CLAIM as WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
+import { createAtlasUser } from "@atlas/api/lib/auth/types";
+import type { AtlasRole } from "@atlas/api/lib/auth/types";
+import type { VerifiedBearer } from "../hosted.js";
 
 // ── Module-scope mocks ────────────────────────────────────────────────
 //
@@ -181,6 +184,19 @@ mock.module("@atlas/api/lib/auth/oauth-workspace-grants", () => ({
   revokeWorkspaceGrant: async () => 0,
 }));
 
+// #3505 — live effective-role resolution at the MCP edge. Default is a
+// pass-through (returns the user-level role unchanged) so existing tests,
+// which build actors with no role, keep seeing no role. The role-resolution
+// tests below override the resolved value per-case. Mocking here also
+// avoids the real resolver hitting the throw-on-call `internalQuery` mock.
+const mockResolveEffectiveRole: Mock<
+  (userRole: unknown, userId: string, orgId: string | undefined) => Promise<unknown>
+> = mock(async (userRole: unknown) => userRole);
+mock.module("@atlas/api/lib/auth/effective-role", () => ({
+  resolveEffectiveRole: (userRole: unknown, userId: string, orgId: string | undefined) =>
+    mockResolveEffectiveRole(userRole, userId, orgId),
+}));
+
 // #3345 — forced-password-change gate at the MCP edge. Defaults to
 // "not flagged" so existing tests pass; the gate tests flip it.
 const mockIsPasswordChangeRequired: Mock<(userId: string) => Promise<boolean>> =
@@ -288,7 +304,7 @@ mock.module("@atlas/api/lib/billing/agent-gate", () => ({
 }));
 
 const { Hono } = await import("hono");
-const { createHostedMcpRouter, _resetHostedSessions, _hostedSessionCount, _sweepIdleSessionsForTests, _setIdleTimeoutForTests } =
+const { createHostedMcpRouter, bindFactoryContext, _resetHostedSessions, _hostedSessionCount, _sweepIdleSessionsForTests, _setIdleTimeoutForTests } =
   await import("../hosted.js");
 
 // ── Test fixtures ─────────────────────────────────────────────────────
@@ -1775,5 +1791,68 @@ describe("hosted MCP — audit failure", () => {
     } finally {
       handle.close();
     }
+  });
+});
+
+// ── #3505 — live effective-role resolution at the MCP edge ────────────
+//
+// bindFactoryContext re-binds the actor for the RESOLVED workspace and
+// stamps the effective org role from a LIVE resolveEffectiveRole lookup
+// (mocked here; the lookup's member-table/fail-closed semantics are
+// covered by packages/api/.../effective-role.test.ts). These pin the
+// wiring: the role is resolved per-call against the resolved workspace,
+// so a demoted admin loses the role on the next dispatch without a token
+// refresh.
+describe("bindFactoryContext live role resolution (#3505)", () => {
+  beforeEach(() => {
+    mockResolveEffectiveRole.mockClear();
+  });
+
+  function makeBearer(role?: AtlasRole): VerifiedBearer {
+    return {
+      kind: "ok",
+      user: createAtlasUser(SUB_A, "managed", SUB_A, {
+        ...(role !== undefined ? { role } : {}),
+        activeOrganizationId: ORG_A,
+        claims: { [WORKSPACE_CLAIM]: ORG_A },
+      }),
+      orgId: ORG_A,
+      clientId: CLIENT_A,
+      tokenJti: null,
+      scopes: ["mcp:read"],
+    };
+  }
+
+  it("stamps the live-resolved effective role onto the bound actor", async () => {
+    mockResolveEffectiveRole.mockResolvedValueOnce("admin");
+    const ctx = await bindFactoryContext(makeBearer(), ORG_A);
+    expect(ctx.user.role).toBe("admin");
+    // Resolved against (user-level role, userId, RESOLVED orgId).
+    expect(mockResolveEffectiveRole).toHaveBeenCalledWith(undefined, SUB_A, ORG_A);
+  });
+
+  it("resolves against the RESOLVED workspace, not the bearer's claim (cross-workspace)", async () => {
+    mockResolveEffectiveRole.mockResolvedValueOnce("owner");
+    // Bearer claims ORG_A but the admitted workspace is ORG_B.
+    const ctx = await bindFactoryContext(makeBearer(), ORG_B);
+    expect(mockResolveEffectiveRole).toHaveBeenCalledWith(undefined, SUB_A, ORG_B);
+    expect(ctx.user.activeOrganizationId).toBe(ORG_B);
+    expect(ctx.user.role).toBe("owner");
+  });
+
+  it("re-resolves per call — a mid-session demotion takes effect without a token refresh", async () => {
+    const bearer = makeBearer();
+    mockResolveEffectiveRole.mockResolvedValueOnce("admin").mockResolvedValueOnce("member");
+    const first = await bindFactoryContext(bearer, ORG_A);
+    const second = await bindFactoryContext(bearer, ORG_A);
+    expect(first.user.role).toBe("admin");
+    expect(second.user.role).toBe("member"); // same bearer, role changed live
+    expect(mockResolveEffectiveRole).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the role unset when the resolver yields none (fail-closed least privilege)", async () => {
+    mockResolveEffectiveRole.mockResolvedValueOnce(undefined);
+    const ctx = await bindFactoryContext(makeBearer(), ORG_A);
+    expect(ctx.user.role).toBeUndefined();
   });
 });

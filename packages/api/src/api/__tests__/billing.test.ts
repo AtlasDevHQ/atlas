@@ -164,6 +164,7 @@ import { billing } from "../routes/billing";
 // loop share. Tests assert the endpoint reports exactly what this resolves so
 // the picker default can't drift from the billed default (#3098).
 import { resolveModelId } from "@atlas/api/lib/providers";
+import { _resetSeatCountCache } from "@atlas/api/lib/billing/seat-count";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 const app = new OpenAPIHono();
@@ -189,6 +190,10 @@ describe("billing routes", () => {
     mockGetWorkspaceDetails.mockImplementation(() => Promise.resolve({ ...mockWorkspace }));
     mockUpdateWorkspaceByot.mockImplementation(() => Promise.resolve(true));
     mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    // The shared seat-count source (#3430) keeps a module-level last-known
+    // cache. Reset it so one test's member count can't leak into the next as a
+    // last-known fallback.
+    _resetSeatCountCache();
   });
 
   // ── GET /billing ──────────────────────────────────────────────────
@@ -286,7 +291,10 @@ describe("billing routes", () => {
       expect(body.plan.trialEndsAtEffective).toBe("2026-01-15T00:00:00.000Z");
     });
 
-    it("defaults seat count to 1 when member query fails", async () => {
+    it("degrades seat count to 1 when the member query fails and nothing is known (#3430)", async () => {
+      // No prior successful read this run (cache reset in beforeEach), so the
+      // shared source has no last-known value to serve. A read page degrades to
+      // 1 rather than failing the whole response.
       mockInternalQuery.mockImplementation((...args: unknown[]) => {
         const sql = args[0];
         if (typeof sql === "string" && sql.includes("member")) {
@@ -302,6 +310,37 @@ describe("billing routes", () => {
       expect(body.seats.count).toBe(1);
       // Budget should be tokenBudgetPerSeat * 1 = 2M
       expect(body.limits.totalTokenBudget).toBe(2_000_000);
+    });
+
+    it("serves the last-known seat count when the member query fails after a prior success (#3430)", async () => {
+      // First read succeeds with 5 members — caches the last-known value.
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 5 }]);
+        }
+        return Promise.resolve([]);
+      });
+      const first = await (await request("/api/v1/billing")).json() as { seats: { count: number } };
+      expect(first.seats.count).toBe(5);
+
+      // The member query now fails transiently — the budget must NOT collapse to
+      // 1 seat (which would 5× shrink it and disagree with enforcement). It
+      // serves the last-known 5.
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.reject(new Error("relation does not exist"));
+        }
+        return Promise.resolve([]);
+      });
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.seats.count).toBe(5);
+      // Budget holds at tokenBudgetPerSeat * 5 = 10M, not the 1-seat 2M.
+      expect(body.limits.totalTokenBudget).toBe(10_000_000);
     });
 
     it("defaults connection count to 0 when connections query fails", async () => {

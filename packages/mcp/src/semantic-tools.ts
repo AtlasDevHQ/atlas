@@ -173,7 +173,7 @@ export function registerSemanticTools(
         { toolName: "listEntities", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-listEntities");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), agentOrigin: "mcp" }, async () => {
             try {
               // Rate-limit gate (#2071) lives INSIDE the try so any
               // limiter throw lands in the same catch as a tool throw
@@ -230,7 +230,7 @@ export function registerSemanticTools(
         { toolName: "describeEntity", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-describeEntity");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), agentOrigin: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -288,7 +288,7 @@ export function registerSemanticTools(
         { toolName: "searchGlossary", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), agentOrigin: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -402,7 +402,7 @@ export function registerSemanticTools(
         },
         () => {
           const requestId = dispatchId("mcp-runMetric");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), approvalSurface: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), agentOrigin: "mcp" }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,

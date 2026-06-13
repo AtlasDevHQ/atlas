@@ -1487,12 +1487,12 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
             const checkReqCtx = getRequestContext();
             const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
             const checkUserId = checkReqCtx?.user?.id;
-            const checkSurface = checkReqCtx?.approvalSurface;
+            const checkOrigin = checkReqCtx?.agentOrigin;
             approvalMatch = await Effect.runPromise(approvalGate.checkApprovalRequired(
               checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
               {
                 ...(checkUserId ? { requesterId: checkUserId } : {}),
-                ...(checkSurface ? { surface: checkSurface } : {}),
+                ...(checkOrigin ? { origin: checkOrigin } : {}),
               },
             ));
           } catch (err) {
@@ -1537,7 +1537,7 @@ export function runUserQueryPipeline(opts: RunUserQueryOpts): Promise<UserQueryO
                 connectionId: connId,
                 tablesAccessed: classification.tablesAccessed,
                 columnsAccessed: classification.columnsAccessed,
-                surface: reqCtxForApproval?.approvalSurface ?? null,
+                origin: reqCtxForApproval?.agentOrigin ?? null,
               }));
               logQueryAudit({
                 sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
@@ -1811,14 +1811,14 @@ async function executeSqlForConnection({
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
               const checkUserId = checkReqCtx?.user?.id;
-              // #2072 — propagate the request's origin surface so
-              // surface-scoped rules only fire on the matching transport.
+              // #2072 — propagate the request's agent origin so
+              // origin-scoped rules only fire on the matching transport.
               // Routes stamp this on `withRequestContext`; an unstamped
               // route (or a legacy caller) reaches checkApprovalRequired
-              // with `surface: undefined` and only triggers `'any'`
+              // with `origin: undefined` and only triggers `'any'`
               // rules — scope isolation rather than governance bypass,
               // since the `'any'` migration default still fires.
-              const checkSurface = checkReqCtx?.approvalSurface;
+              const checkOrigin = checkReqCtx?.agentOrigin;
               // Pass requesterId so the defensive identity-missing check
               // distinguishes "scheduler/Slack/MCP forgot to bind anything"
               // (fail-closed) from "demo / single-user mode bound a user
@@ -1827,7 +1827,7 @@ async function executeSqlForConnection({
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
                 {
                   ...(checkUserId ? { requesterId: checkUserId } : {}),
-                  ...(checkSurface ? { surface: checkSurface } : {}),
+                  ...(checkOrigin ? { origin: checkOrigin } : {}),
                 },
               ));
             } catch (err) {
@@ -1875,10 +1875,10 @@ async function executeSqlForConnection({
                   connectionId: connId,
                   tablesAccessed: classification.tablesAccessed,
                   columnsAccessed: classification.columnsAccessed,
-                  // #2072 — stamp the origin surface on the queue row
+                  // #2072 — stamp the agent origin on the queue row
                   // for the audit dimension (queryable via direct SQL
-                  // until a surface filter ships in /admin/audit).
-                  surface: reqCtxForApproval?.approvalSurface ?? null,
+                  // until an origin filter ships in /admin/audit).
+                  origin: reqCtxForApproval?.agentOrigin ?? null,
                 }));
                 logQueryAudit({
                   sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,

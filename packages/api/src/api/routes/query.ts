@@ -212,10 +212,10 @@ query.openapi(
       const { authResult } = preamble;
 
       // Bind user identity into AsyncLocalStorage for downstream logging/audit.
-      // #2072 — `/api/v1/query` is the API form of chat; surface-scoped
+      // #2072 — `/api/v1/query` is the API form of chat; origin-scoped
       // approval rules treat it identically to the chat UI.
       return withRequestContext(
-        { requestId, user: authResult.user, approvalSurface: "chat" },
+        { requestId, user: authResult.user, agentOrigin: "chat" },
         async () => {
 
         // #3419/#3420 — workspace status, abuse, and plan-limit

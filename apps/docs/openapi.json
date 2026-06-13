@@ -37048,7 +37048,7 @@
                               "enabled": {
                                 "type": "boolean"
                               },
-                              "surface": {
+                              "origin": {
                                 "type": "string",
                                 "enum": [
                                   "any",
@@ -37091,7 +37091,7 @@
                               "orgId",
                               "name",
                               "enabled",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -37114,7 +37114,7 @@
                               "enabled": {
                                 "type": "boolean"
                               },
-                              "surface": {
+                              "origin": {
                                 "type": "string",
                                 "enum": [
                                   "any",
@@ -37154,7 +37154,7 @@
                               "orgId",
                               "name",
                               "enabled",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -37177,7 +37177,7 @@
                               "enabled": {
                                 "type": "boolean"
                               },
-                              "surface": {
+                              "origin": {
                                 "type": "string",
                                 "enum": [
                                   "any",
@@ -37217,7 +37217,7 @@
                               "orgId",
                               "name",
                               "enabled",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "updatedAt",
                               "ruleType",
@@ -37383,7 +37383,7 @@
                         "description": "Whether the rule is active. Defaults to true.",
                         "example": true
                       },
-                      "surface": {
+                      "origin": {
                         "type": "string",
                         "enum": [
                           "any",
@@ -37398,7 +37398,7 @@
                           "gchat",
                           "webhook"
                         ],
-                        "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                        "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                         "example": "any"
                       }
                     },
@@ -37442,7 +37442,7 @@
                         "description": "Whether the rule is active. Defaults to true.",
                         "example": true
                       },
-                      "surface": {
+                      "origin": {
                         "type": "string",
                         "enum": [
                           "any",
@@ -37457,7 +37457,7 @@
                           "gchat",
                           "webhook"
                         ],
-                        "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                        "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                         "example": "any"
                       }
                     },
@@ -37497,7 +37497,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -37540,7 +37540,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -37563,7 +37563,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -37603,7 +37603,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -37626,7 +37626,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -37666,7 +37666,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -37815,7 +37815,7 @@
                   "enabled": {
                     "type": "boolean"
                   },
-                  "surface": {
+                  "origin": {
                     "type": "string",
                     "enum": [
                       "any",
@@ -37830,7 +37830,7 @@
                       "gchat",
                       "webhook"
                     ],
-                    "description": "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+                    "description": "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
                     "example": "any"
                   }
                 }
@@ -37863,7 +37863,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -37906,7 +37906,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -37929,7 +37929,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -37969,7 +37969,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -37992,7 +37992,7 @@
                             "enabled": {
                               "type": "boolean"
                             },
-                            "surface": {
+                            "origin": {
                               "type": "string",
                               "enum": [
                                 "any",
@@ -38032,7 +38032,7 @@
                             "orgId",
                             "name",
                             "enabled",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "updatedAt",
                             "ruleType",
@@ -38365,7 +38365,7 @@
                                   "type": "string"
                                 }
                               },
-                              "surface": {
+                              "origin": {
                                 "type": [
                                   "string",
                                   "null"
@@ -38421,7 +38421,7 @@
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -38482,7 +38482,7 @@
                                   "type": "string"
                                 }
                               },
-                              "surface": {
+                              "origin": {
                                 "type": [
                                   "string",
                                   "null"
@@ -38544,7 +38544,7 @@
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -38605,7 +38605,7 @@
                                   "type": "string"
                                 }
                               },
-                              "surface": {
+                              "origin": {
                                 "type": [
                                   "string",
                                   "null"
@@ -38667,7 +38667,7 @@
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -38728,7 +38728,7 @@
                                   "type": "string"
                                 }
                               },
-                              "surface": {
+                              "origin": {
                                 "type": [
                                   "string",
                                   "null"
@@ -38784,7 +38784,7 @@
                               "connectionGroupId",
                               "tablesAccessed",
                               "columnsAccessed",
-                              "surface",
+                              "origin",
                               "createdAt",
                               "expiresAt",
                               "status",
@@ -38999,7 +38999,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39055,7 +39055,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39116,7 +39116,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39178,7 +39178,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39239,7 +39239,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39301,7 +39301,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39362,7 +39362,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39418,7 +39418,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39634,7 +39634,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39690,7 +39690,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39751,7 +39751,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39813,7 +39813,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39874,7 +39874,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -39936,7 +39936,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",
@@ -39997,7 +39997,7 @@
                                 "type": "string"
                               }
                             },
-                            "surface": {
+                            "origin": {
                               "type": [
                                 "string",
                                 "null"
@@ -40053,7 +40053,7 @@
                             "connectionGroupId",
                             "tablesAccessed",
                             "columnsAccessed",
-                            "surface",
+                            "origin",
                             "createdAt",
                             "expiresAt",
                             "status",

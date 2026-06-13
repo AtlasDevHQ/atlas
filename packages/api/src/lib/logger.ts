@@ -51,14 +51,15 @@ interface RequestContext {
   /** #2067 — request-shape discriminator persisted to `audit_log.{actor_kind, client_id, tool_name}`. */
   actor?: RequestActor;
   /**
-   * #2072 — origin surface for surface-scoped approval rule matching.
-   * Stamped by every agent-facing route (chat / query / slack / teams /
-   * webhook / mcp / scheduler) so `checkApprovalRequired` can apply
-   * `WHERE surface = $req OR surface = 'any'`. Distinct from
-   * `actor.kind` (which is the audit-log discriminator and uses a
-   * different value space — `human` / `agent` / `mcp` / `scheduler`).
+   * #2072 — agent origin for origin-scoped approval rule matching
+   * (renamed from "surface" in ADR-0015). Stamped by every agent-facing
+   * route (chat / query / slack / teams / webhook / mcp / scheduler) so
+   * `checkApprovalRequired` can apply `WHERE origin = $req OR origin =
+   * 'any'`. Distinct from `actor.kind` (which is the audit-log
+   * discriminator and uses a different value space — `human` / `agent` /
+   * `mcp` / `scheduler`).
    */
-  approvalSurface?: import("@useatlas/types").ApprovalRequestSurface;
+  agentOrigin?: import("@useatlas/types").ApprovalRequestOrigin;
   /**
    * #2345 — group-aware chat routing.
    *

@@ -11,7 +11,7 @@ import { createLogger, getRequestContext, withRequestContext } from "@atlas/api/
 import { checkAgentBillingGate, BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import type { PlanLimitWarning } from "@atlas/api/lib/billing/enforcement";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
-import type { ApprovalRequestSurface } from "@useatlas/types";
+import type { ApprovalRequestOrigin } from "@useatlas/types";
 
 const log = createLogger("agent-query");
 
@@ -79,14 +79,14 @@ export interface ExecuteAgentQueryOptions {
    */
   actor?: AtlasUser;
   /**
-   * #2072 — origin surface for surface-scoped approval rules. System
+   * #2072 — agent origin for origin-scoped approval rules. System
    * callers (scheduler, chat-platform receivers) MUST pass this so an
    * "MCP-only" or "scheduler-only" rule fires for the correct transport.
-   * When omitted, falls back to whatever surface the parent
+   * When omitted, falls back to whatever origin the parent
    * RequestContext stamped (or undefined if neither is set, in which
    * case only `'any'` rules match — fail-closed).
    */
-  approvalSurface?: ApprovalRequestSurface;
+  agentOrigin?: ApprovalRequestOrigin;
   /** Execution target for this agent run. */
   connectionId?: string;
   /** Content scope for group-aware semantic overlays. */
@@ -133,7 +133,7 @@ export async function executeAgentQuery(
   // parent RequestContext stamped. System-initiated callers (scheduler,
   // Slack, Teams) pass this explicitly because they don't run inside a
   // route-level `withRequestContext` that would have set it.
-  const surface = options?.approvalSurface ?? inheritedCtx?.approvalSurface;
+  const origin = options?.agentOrigin ?? inheritedCtx?.agentOrigin;
   const connectionId = options?.connectionId ?? inheritedCtx?.connectionId;
   const connectionGroupId = options?.connectionGroupId ?? inheritedCtx?.connectionGroupId;
 
@@ -150,7 +150,7 @@ export async function executeAgentQuery(
       requestId: id,
       ...(boundUser ? { user: boundUser } : {}),
       ...(inheritedMode ? { atlasMode: inheritedMode } : {}),
-      ...(surface ? { approvalSurface: surface } : {}),
+      ...(origin ? { agentOrigin: origin } : {}),
       ...(connectionId ? { connectionId } : {}),
       ...(connectionGroupId ? { connectionGroupId } : {}),
     },
@@ -158,7 +158,7 @@ export async function executeAgentQuery(
     // #3419/#3420 — the single billing-enforcement seam for agent runs.
     // Blocks before any tool registry / LLM work so a suspended,
     // trial-expired, hard-capped, or abuse-flagged workspace consumes
-    // zero platform-paid tokens regardless of which surface called.
+    // zero platform-paid tokens regardless of which origin called.
     const gateOrgId = boundUser?.activeOrganizationId;
     const gate = await checkAgentBillingGate(gateOrgId);
     if (!gate.allowed) {
@@ -168,7 +168,7 @@ export async function executeAgentQuery(
           orgId: gateOrgId,
           errorCode: gate.errorCode,
           httpStatus: gate.httpStatus,
-          ...(surface ? { surface } : {}),
+          ...(origin ? { agentOrigin: origin } : {}),
         },
         "Agent run blocked by billing enforcement",
       );

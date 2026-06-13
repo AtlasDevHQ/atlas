@@ -885,7 +885,7 @@ export default defineConfig({
       ],
       state: { backend: "pg" },
       // Host-side executeQuery — preserves the F-55 actor binding,
-      // approvalSurface stamp, conversation persistence, rate-limit
+      // agentOrigin stamp, conversation persistence, rate-limit
       // key shape, and :lock: pending-approval flow that slack.ts's
       // legacy app_mention / thread-followup branches used to own.
       executeQuery: createChatPluginExecuteQuery(),

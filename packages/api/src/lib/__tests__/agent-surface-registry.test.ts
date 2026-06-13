@@ -53,7 +53,7 @@ const KNOWN_AGENT_CALLERS: AgentCallerSpec[] = [
   {
     file: "packages/api/src/lib/scheduler/executor.ts",
     // F-54: resolves the task creator and passes as actor.
-    // #2072: also stamps approvalSurface for surface-scoped rules — the
+    // #2072: also stamps agentOrigin for origin-scoped rules — the
     // regex covers either the bare `{ actor }` shape OR an options bag
     // that includes both fields, so future option additions don't trip
     // this guardrail.
@@ -93,33 +93,33 @@ async function readRepoFile(relPath: string): Promise<string> {
 }
 
 /**
- * #2072 surface-stamp registry — symmetric guardrail to the F-54/F-55
+ * #2072 origin-stamp registry — symmetric guardrail to the F-54/F-55
  * binding registry above. Every agent caller (or its parent transport
- * frame) must stamp the request's origin on `RequestContext.approvalSurface`,
- * either inline via `withRequestContext({ ..., approvalSurface: "..." })` or
- * by passing `approvalSurface` to `executeAgentQuery`. A route that omits
- * the stamp silently degrades surface-scoped approval rules to no-op for
+ * frame) must stamp the request's origin on `RequestContext.agentOrigin`,
+ * either inline via `withRequestContext({ ..., agentOrigin: "..." })` or
+ * by passing `agentOrigin` to `executeAgentQuery`. A route that omits
+ * the stamp silently degrades origin-scoped approval rules to no-op for
  * that transport — the same class of silent governance regression F-54/F-55
  * closed for the actor binding.
  */
-interface SurfaceStamperSpec {
+interface OriginStamperSpec {
   file: string;
   /** Regex that must appear in the file. Use `\b<value>\b` to pin the literal. */
-  surfaceProof: RegExp;
+  originProof: RegExp;
 }
 
-const KNOWN_SURFACE_STAMPERS: SurfaceStamperSpec[] = [
+const KNOWN_ORIGIN_STAMPERS: OriginStamperSpec[] = [
   // Web chat surface — chat / query / demo / API form all stamp 'chat'.
-  { file: "packages/api/src/api/routes/chat.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
-  { file: "packages/api/src/api/routes/query.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
-  { file: "packages/api/src/api/routes/demo.ts", surfaceProof: /approvalSurface:\s*"chat"/ },
+  { file: "packages/api/src/api/routes/chat.ts", originProof: /agentOrigin:\s*"chat"/ },
+  { file: "packages/api/src/api/routes/query.ts", originProof: /agentOrigin:\s*"chat"/ },
+  { file: "packages/api/src/api/routes/demo.ts", originProof: /agentOrigin:\s*"chat"/ },
   // Scheduler executor stamps 'scheduler' on every scheduled run.
-  { file: "packages/api/src/lib/scheduler/executor.ts", surfaceProof: /approvalSurface:\s*"scheduler"/ },
+  { file: "packages/api/src/lib/scheduler/executor.ts", originProof: /agentOrigin:\s*"scheduler"/ },
   // MCP — both the per-tool dispatch frames and the outer hosted-MCP
   // session frame stamp 'mcp'.
-  { file: "packages/mcp/src/tools.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
-  { file: "packages/mcp/src/semantic-tools.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
-  { file: "packages/mcp/src/hosted.ts", surfaceProof: /approvalSurface:\s*"mcp"/ },
+  { file: "packages/mcp/src/tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
+  { file: "packages/mcp/src/semantic-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
+  { file: "packages/mcp/src/hosted.ts", originProof: /agentOrigin:\s*"mcp"/ },
 ];
 
 describe("F-54/F-55 agent-surface registry", () => {
@@ -131,13 +131,13 @@ describe("F-54/F-55 agent-surface registry", () => {
     }
   });
 
-  it("#2072: every known surface-stamping caller writes approvalSurface with the expected value", async () => {
-    for (const spec of KNOWN_SURFACE_STAMPERS) {
+  it("#2072: every known surface-stamping caller writes agentOrigin with the expected value", async () => {
+    for (const spec of KNOWN_ORIGIN_STAMPERS) {
       const source = await readRepoFile(spec.file);
       expect(
         source,
-        `${spec.file} must stamp approvalSurface (regex ${spec.surfaceProof}). A route that skips this silently downgrades surface-scoped approval rules for that transport.`,
-      ).toMatch(spec.surfaceProof);
+        `${spec.file} must stamp agentOrigin (regex ${spec.originProof}). A route that skips this silently downgrades origin-scoped approval rules for that transport.`,
+      ).toMatch(spec.originProof);
     }
   });
 

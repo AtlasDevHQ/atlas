@@ -32,7 +32,7 @@
  *   - `getBotToken(teamId)` / `getInstallation(teamId)` for tenancy (Slack)
  *   - `workspace_plugins.config->>'chat_id'` lookup (Telegram)
  *   - `botActorUser({ platform, externalId, orgId, ... })` for F-55 identity
- *   - `executeAgentQuery(question, undefined, { actor, approvalSurface, priorMessages })`
+ *   - `executeAgentQuery(question, undefined, { actor, agentOrigin, priorMessages })`
  *   - `getConversationId` / `setConversationId` for thread → conversation mapping
  *   - `createConversation` / `addMessage` for multi-turn persistence
  *   - `checkRateLimit("&lt;platform&gt;:${tenantKey}")` for per-tenant rate limiting
@@ -60,7 +60,7 @@ import type {
   ChatQueryResult,
   ChatPluginConfig,
 } from "@useatlas/chat";
-import type { ApprovalRequestSurface } from "@useatlas/types";
+import type { ApprovalRequestOrigin } from "@useatlas/types";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
 import { BillingBlockedError } from "@atlas/api/lib/billing/agent-gate";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -363,7 +363,7 @@ function extractTeamsTenantId(raw: TeamsRawEvent): string | undefined {
  *
  * Multi-platform dispatch lives inside `runExecuteQuery`. Each chat
  * Platform gets its own tenant resolver, rate-limit key shape, and
- * approval-surface stamp. The `unsupported platform` branch throws a
+ * agent-origin stamp. The `unsupported platform` branch throws a
  * user-safe error so the plugin's `buildErrorCard` path stays graceful.
  *
  * The returned callback is plain async — no `Effect` / `ManagedRuntime`
@@ -533,7 +533,7 @@ async function runSlackExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "slack",
+    agentOrigin: "slack",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
@@ -639,7 +639,7 @@ async function runTelegramExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "telegram",
+    agentOrigin: "telegram",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
@@ -834,7 +834,7 @@ async function runDiscordExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "discord",
+    agentOrigin: "discord",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
@@ -1005,7 +1005,7 @@ async function runGchatExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "gchat",
+    agentOrigin: "gchat",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
@@ -1181,7 +1181,7 @@ async function runTeamsExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "teams",
+    agentOrigin: "teams",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,
@@ -1328,7 +1328,7 @@ interface RunAgentArgs {
   readonly question: string;
   readonly requestId: string;
   readonly actor: ReturnType<typeof botActorUser>;
-  readonly approvalSurface: ApprovalRequestSurface;
+  readonly agentOrigin: ApprovalRequestOrigin;
   readonly conversationId: string | null;
   readonly priorMessages: ChatExecuteQueryContext["priorMessages"] | null;
   readonly presentationMode: ChatExecuteQueryContext["presentationMode"];
@@ -1349,7 +1349,7 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
     question,
     requestId,
     actor,
-    approvalSurface,
+    agentOrigin,
     conversationId,
     priorMessages,
     presentationMode,
@@ -1393,7 +1393,7 @@ async function runAgentAndMap(args: RunAgentArgs): Promise<ChatQueryResult> {
     queryResult = await executeAgentQuery(question, requestId, {
       ...(history ? { priorMessages: history } : {}),
       actor,
-      approvalSurface,
+      agentOrigin,
       ...(conversationId ? { conversationId } : {}),
       // #2705 — propagate the bridge's presentation-mode signal so the
       // chat path produces the conversational shape. Default to
@@ -1623,7 +1623,7 @@ async function runWhatsAppExecuteQuery(
     question,
     requestId,
     actor,
-    approvalSurface: "whatsapp",
+    agentOrigin: "whatsapp",
     conversationId,
     priorMessages: priorMessages ?? null,
     presentationMode: ctx.presentationMode,

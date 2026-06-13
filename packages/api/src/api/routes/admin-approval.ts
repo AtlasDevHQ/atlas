@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { APPROVAL_STATUSES, APPROVAL_RULE_SURFACES } from "@useatlas/types";
+import { APPROVAL_STATUSES, APPROVAL_RULE_ORIGINS } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -37,15 +37,15 @@ const approvalDomainError = domainError(ApprovalError, { validation: 400, not_fo
 // Request body schemas — response shapes live in @useatlas/schemas.
 // ---------------------------------------------------------------------------
 
-// #2072 — surface scope is shared across rule types. `'any'` (default)
+// #2072 — agent origin scope is shared across rule types. `'any'` (default)
 // preserves pre-2072 fires-everywhere semantics; the others pin a rule
 // to a single transport. The field is `.optional()` because the EE
 // layer applies the `'any'` default — the strict `z.enum(...)` on the
 // inner type still rejects typos at the route boundary as a 400
 // rather than letting them land in `validateRuleInput` as a 500.
-const SurfaceField = z.enum(APPROVAL_RULE_SURFACES).optional().openapi({
+const OriginField = z.enum(APPROVAL_RULE_ORIGINS).optional().openapi({
   description:
-    "Origin surface this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072.",
+    "Agent origin this rule applies to. 'any' (default) fires for every request; the others pin to a single transport. See #2072 / ADR-0015.",
   example: "any",
 });
 
@@ -71,7 +71,7 @@ const CostRuleBodySchema = z.object({
     description: "Whether the rule is active. Defaults to true.",
     example: true,
   }),
-  surface: SurfaceField,
+  origin: OriginField,
 });
 
 const NamedRuleBodySchema = z.object({
@@ -95,7 +95,7 @@ const NamedRuleBodySchema = z.object({
     description: "Whether the rule is active. Defaults to true.",
     example: true,
   }),
-  surface: SurfaceField,
+  origin: OriginField,
 });
 
 const CreateRuleBodySchema = z.discriminatedUnion("ruleType", [
@@ -108,7 +108,7 @@ const UpdateRuleBodySchema = z.object({
   pattern: z.string().optional(),
   threshold: z.number().nullable().optional(),
   enabled: z.boolean().optional(),
-  surface: SurfaceField,
+  origin: OriginField,
 });
 
 const ReviewBodySchema = z.object({
@@ -364,10 +364,10 @@ adminApproval.openapi(createRuleRoute, async (c) => {
 
     // `body` is narrowed by the discriminated union (#1660); pass it
     // through as the matching CreateApprovalRuleRequest variant.
-    // #2072 — surface (optional) flows on every variant.
+    // #2072 — origin (optional) flows on every variant.
     const input = body.ruleType === "cost"
-      ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled, surface: body.surface }
-      : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled, surface: body.surface };
+      ? { ruleType: "cost" as const, name: body.name, threshold: body.threshold, enabled: body.enabled, origin: body.origin }
+      : { ruleType: body.ruleType, name: body.name, pattern: body.pattern, enabled: body.enabled, origin: body.origin };
 
     const rule = yield* (yield* ApprovalGate).createApprovalRule(orgId!, input);
 
@@ -381,9 +381,9 @@ adminApproval.openapi(createRuleRoute, async (c) => {
       targetType: "approval",
       targetId: rule.id,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      // #2072 — surface stamped in admin-action metadata so /admin/audit
+      // #2072 — origin stamped in admin-action metadata so /admin/audit
       // shows the new dimension on rule-creation events.
-      metadata: { name: body.name, ruleType: body.ruleType, surface: rule.surface },
+      metadata: { name: body.name, ruleType: body.ruleType, origin: rule.origin },
     });
 
     return c.json({ rule }, 201);
@@ -403,17 +403,17 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     // semantic-diff signal — records WHICH fields the admin touched
     // without recording the values, since pattern/threshold may
     // themselves be sensitive shape data for a compromised admin
-    // mapping the approval surface.
+    // mapping the approval gate.
     logAdminAction({
       actionType: ADMIN_ACTIONS.approval.ruleUpdate,
       targetType: "approval",
       targetId: ruleId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      // #2072 — record the post-update surface alongside the keysChanged
+      // #2072 — record the post-update origin alongside the keysChanged
       // diff so a compliance reviewer can see when a rule was rescoped
       // (e.g. mcp-only → any) without having to cross-reference the rule
       // table at the timestamp.
-      metadata: { keysChanged: Object.keys(body), surface: rule.surface },
+      metadata: { keysChanged: Object.keys(body), origin: rule.origin },
     });
 
     return c.json({ rule }, 200);
@@ -498,13 +498,13 @@ adminApproval.openapi(reviewRoute, async (c) => {
       targetType: "approval",
       targetId: itemId,
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
-      // #2072 — surface comes from the queued row (stamped at request
+      // #2072 — origin comes from the queued row (stamped at request
       // creation by lib/tools/sql.ts). NULL on the queue row means
       // either a legacy pre-2072 request or a route that didn't stamp
-      // surface; surface those distinctly as "unknown_origin" rather
+      // an origin; record those distinctly as "unknown_origin" rather
       // than a literal null so compliance reviewers can tell them
       // apart from a forensics query that explicitly wrote null.
-      metadata: { requestId: itemId, surface: result.surface ?? "unknown_origin" },
+      metadata: { requestId: itemId, origin: result.origin ?? "unknown_origin" },
     });
 
     return c.json({ request: result }, 200);

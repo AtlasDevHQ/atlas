@@ -10,9 +10,9 @@ const validTableRule = {
   threshold: null,
   enabled: true,
   // #2072 — 'any' is the migration default and preserves pre-2072
-  // fires-everywhere semantics. Surface-scoped variants are exercised
+  // fires-everywhere semantics. Origin-scoped variants are exercised
   // in the dedicated describe block below.
-  surface: "any" as const,
+  origin: "any" as const,
   createdAt: "2026-04-19T12:00:00.000Z",
   updatedAt: "2026-04-19T12:00:00.000Z",
 };
@@ -48,9 +48,9 @@ const pendingRequest = {
   connectionGroupId: "g_prod",
   tablesAccessed: ["users"],
   columnsAccessed: ["users.email"],
-  // #2072 — null is the legacy / unstamped default. A specific surface
-  // ("chat" / "mcp" / etc.) is asserted in the new surface block below.
-  surface: null,
+  // #2072 — null is the legacy / unstamped default. A specific origin
+  // ("chat" / "mcp" / etc.) is asserted in the new origin block below.
+  origin: null,
   status: "pending" as const,
   reviewerId: null,
   reviewerEmail: null,
@@ -204,41 +204,41 @@ describe("enum strict rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Surface enum (#2072) — admin can pin a rule to a single transport, and
+// Origin enum (#2072) — admin can pin a rule to a single transport, and
 // the request row records its origin. The schemas reject typos before
 // they reach the rule evaluator (which would silently mismatch every
 // request and leave the operator wondering why the rule didn't fire).
 // ---------------------------------------------------------------------------
 
-describe("surface enum (#2072)", () => {
-  test("ApprovalRuleSchema parses every documented rule surface", () => {
-    for (const surface of ["any", "chat", "mcp", "scheduler", "slack", "teams", "webhook"] as const) {
-      const rule = { ...validTableRule, surface };
-      expect(ApprovalRuleSchema.parse(rule).surface).toBe(surface);
+describe("origin enum (#2072)", () => {
+  test("ApprovalRuleSchema parses every documented rule origin", () => {
+    for (const origin of ["any", "chat", "mcp", "scheduler", "slack", "teams", "webhook"] as const) {
+      const rule = { ...validTableRule, origin };
+      expect(ApprovalRuleSchema.parse(rule).origin).toBe(origin);
     }
   });
 
-  test("ApprovalRuleSchema rejects unknown rule surface", () => {
-    const drifted = { ...validTableRule, surface: "msc" };
+  test("ApprovalRuleSchema rejects unknown rule origin", () => {
+    const drifted = { ...validTableRule, origin: "msc" };
     expect(ApprovalRuleSchema.safeParse(drifted).success).toBe(false);
   });
 
-  test("ApprovalRuleSchema rejects null rule surface (rules must always pin a value)", () => {
-    const drifted = { ...validTableRule, surface: null };
+  test("ApprovalRuleSchema rejects null rule origin (rules must always pin a value)", () => {
+    const drifted = { ...validTableRule, origin: null };
     expect(ApprovalRuleSchema.safeParse(drifted).success).toBe(false);
   });
 
-  test("ApprovalRequestSchema parses every documented request surface plus null", () => {
-    for (const surface of ["chat", "mcp", "scheduler", "slack", "teams", "webhook", null] as const) {
-      const req = { ...pendingRequest, surface };
-      expect(ApprovalRequestSchema.parse(req).surface).toBe(surface);
+  test("ApprovalRequestSchema parses every documented request origin plus null", () => {
+    for (const origin of ["chat", "mcp", "scheduler", "slack", "teams", "webhook", null] as const) {
+      const req = { ...pendingRequest, origin };
+      expect(ApprovalRequestSchema.parse(req).origin).toBe(origin);
     }
   });
 
   test("ApprovalRequestSchema rejects 'any' on a request row (rule-only value)", () => {
     // 'any' is the rule-side wildcard. A REQUEST always originated from
-    // a single surface — emitting 'any' here would be a writer bug.
-    const drifted = { ...pendingRequest, surface: "any" };
+    // a single origin — emitting 'any' here would be a writer bug.
+    const drifted = { ...pendingRequest, origin: "any" };
     expect(ApprovalRequestSchema.safeParse(drifted).success).toBe(false);
   });
 });

@@ -1445,11 +1445,11 @@ export function createHostedMcpRouter(): Hono {
 
     try {
       return await withRequestContext(
-        // #2072 — outermost MCP transport frame stamps the surface so
+        // #2072 — outermost MCP transport frame stamps the origin so
         // that any code that reads RequestContext before the per-tool
         // frame is entered (e.g. session bootstrap auditing) sees the
         // correct origin.
-        { requestId, user: factoryCtx.user, atlasMode: "published", approvalSurface: "mcp" },
+        { requestId, user: factoryCtx.user, atlasMode: "published", agentOrigin: "mcp" },
         async () => {
           if (sessionId) {
             return dispatchExistingSession(c.req.raw, sessionId, requestId);

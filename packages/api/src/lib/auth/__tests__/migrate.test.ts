@@ -373,10 +373,11 @@ describe("migrateAuthTables", () => {
             { name: "0123_elasticsearch_datasource_catalog.sql" },
             { name: "0124_duckdb_not_saas_eligible.sql" },
             { name: "0125_elasticsearch_auth_modes_config_schema.sql" },
-            // 0126/0127/0130 are MANAGED_AUTH_MIGRATIONS (skipped outside
-            // managed mode), so they don't need to appear here.
+            // 0126/0127/0130/0131/0132 are MANAGED_AUTH_MIGRATIONS (skipped
+            // outside managed mode), so they don't need to appear here.
             { name: "0128_stripe_webhook_event_ledger.sql" },
             { name: "0129_stripe_purged_subscriptions.sql" },
+            { name: "0133_approval_origin_rename.sql" },
           ],
         };
       }

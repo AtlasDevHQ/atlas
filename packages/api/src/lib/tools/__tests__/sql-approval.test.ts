@@ -116,8 +116,8 @@ mock.module("@atlas/api/lib/rls", () => ({
 let requestContextValue: {
   requestId: string;
   user?: { id: string; activeOrganizationId?: string; label?: string; claims?: Record<string, unknown> };
-  // #2072 — surface stamped by route-level withRequestContext frames.
-  approvalSurface?: "chat" | "mcp" | "scheduler" | "slack" | "teams" | "webhook";
+  // #2072 — origin stamped by route-level withRequestContext frames.
+  agentOrigin?: "chat" | "mcp" | "scheduler" | "slack" | "teams" | "webhook";
 } = {
   requestId: "test-approval",
   user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
@@ -148,7 +148,7 @@ const mockCheckApprovalRequired = mock<
 >(() => Effect.succeed({ required: false, matchedRules: [] }));
 const mockCreateApprovalRequest = mock<
   // #2072 — typed signature so per-test `mockImplementation((opts) => ...)`
-  // can assert the surface field on the payload without a `(opts: unknown)`
+  // can assert the origin field on the payload without a `(opts: unknown)`
   // cast that TypeScript narrows away from the original mock factory.
   (opts: unknown) => import("effect").Effect.Effect<{ id: string; status: string }, never, never>
 >(() => Effect.succeed({ id: "req-test", status: "pending" }));
@@ -347,24 +347,24 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(mockCheckApprovalRequired).toHaveBeenCalled();
   });
 
-  // ── #2072 surface forwarding ─────────────────────────────────────────
-  // Pin the wire from RequestContext.approvalSurface into
+  // ── #2072 origin forwarding ─────────────────────────────────────────
+  // Pin the wire from RequestContext.agentOrigin into
   // checkApprovalRequired's options bag and through to the createApprovalRequest
   // payload. The DB-side filter is unit-tested in
   // ee/src/governance/approval.test.ts, but a refactor that drops the
-  // `surface: checkSurface` spread in lib/tools/sql.ts would silently
-  // degrade every surface-scoped rule to no-op against the corresponding
+  // `origin: checkOrigin` spread in lib/tools/sql.ts would silently
+  // degrade every origin-scoped rule to no-op against the corresponding
   // transport without those tests failing.
 
-  it("#2072: forwards approvalSurface from RequestContext into checkApprovalRequired", async () => {
+  it("#2072: forwards agentOrigin from RequestContext into checkApprovalRequired", async () => {
     requestContextValue = {
       requestId: "test-approval",
       user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
-      approvalSurface: "mcp",
+      agentOrigin: "mcp",
     };
     mockCheckApprovalRequired.mockImplementation((_orgId: unknown, _t: unknown, _c: unknown, options?: unknown) => {
-      const opts = options as { surface?: string } | undefined;
-      expect(opts?.surface).toBe("mcp");
+      const opts = options as { origin?: string } | undefined;
+      expect(opts?.origin).toBe("mcp");
       return Effect.succeed({ required: false, matchedRules: [] });
     });
 
@@ -376,15 +376,15 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(mockCheckApprovalRequired).toHaveBeenCalled();
   });
 
-  it("#2072: omits surface from checkApprovalRequired options when RequestContext doesn't stamp one", async () => {
+  it("#2072: omits origin from checkApprovalRequired options when RequestContext doesn't stamp one", async () => {
     requestContextValue = {
       requestId: "test-approval",
       user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
-      // approvalSurface deliberately absent — legacy / unstamped path.
+      // agentOrigin deliberately absent — legacy / unstamped path.
     };
     mockCheckApprovalRequired.mockImplementation((_orgId: unknown, _t: unknown, _c: unknown, options?: unknown) => {
-      const opts = options as { surface?: string } | undefined;
-      expect(opts?.surface).toBeUndefined();
+      const opts = options as { origin?: string } | undefined;
+      expect(opts?.origin).toBeUndefined();
       return Effect.succeed({ required: false, matchedRules: [] });
     });
 
@@ -395,11 +395,11 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(result.success).toBe(true);
   });
 
-  it("#2072: stamps approvalSurface on the createApprovalRequest payload when a rule matches", async () => {
+  it("#2072: stamps agentOrigin on the createApprovalRequest payload when a rule matches", async () => {
     requestContextValue = {
       requestId: "test-approval",
       user: { id: "user-1", activeOrganizationId: "org-1", label: "user-1@example.com" },
-      approvalSurface: "slack",
+      agentOrigin: "slack",
     };
     mockCheckApprovalRequired.mockImplementation(() =>
       Effect.succeed({
@@ -408,8 +408,8 @@ describe("F-54/F-55 executeSQL approval gate", () => {
       }),
     );
     mockCreateApprovalRequest.mockImplementation((opts: unknown) => {
-      const p = opts as { surface?: string | null };
-      expect(p.surface).toBe("slack");
+      const p = opts as { origin?: string | null };
+      expect(p.origin).toBe("slack");
       return Effect.succeed({ id: "req-test", status: "pending" });
     });
 
@@ -422,7 +422,7 @@ describe("F-54/F-55 executeSQL approval gate", () => {
     expect(mockCreateApprovalRequest).toHaveBeenCalled();
   });
 
-  it("#2072: stamps null surface on the createApprovalRequest payload when caller didn't stamp one", async () => {
+  it("#2072: stamps null origin on the createApprovalRequest payload when caller didn't stamp one", async () => {
     // Legacy / unstamped path — the queue row records null which renders
     // as "unknown_origin" in admin-action metadata. Pinning this keeps
     // the audit-dimension contract intact for callers that haven't been
@@ -438,8 +438,8 @@ describe("F-54/F-55 executeSQL approval gate", () => {
       }),
     );
     mockCreateApprovalRequest.mockImplementation((opts: unknown) => {
-      const p = opts as { surface?: string | null };
-      expect(p.surface).toBeNull();
+      const p = opts as { origin?: string | null };
+      expect(p.origin).toBeNull();
       return Effect.succeed({ id: "req-test", status: "pending" });
     });
 

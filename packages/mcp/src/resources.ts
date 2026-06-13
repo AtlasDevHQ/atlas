@@ -71,6 +71,21 @@ function listYamlFiles(subdir: string): string[] {
   }
 }
 
+/**
+ * Completion candidates for a resource-template `{name}` variable (#3503):
+ * YAML basenames in `subdir` whose name starts with the typed `value`
+ * (case-insensitive), capped at 100. The SDK also caps at 100 and sets
+ * `hasMore`; capping here keeps the contract explicit and bounds the work.
+ * Sourced from the same `listYamlFiles` the template's `list` callback uses,
+ * so completions never offer a name that isn't a listable resource.
+ */
+export function completeSemanticName(subdir: string, value: string): string[] {
+  const prefix = value.toLowerCase();
+  return listYamlFiles(subdir)
+    .filter((name) => name.toLowerCase().startsWith(prefix))
+    .slice(0, 100);
+}
+
 /** Read a YAML file from the semantic directory. Returns null on failure. */
 function readSemanticFile(relativePath: string): string | null {
   const filePath = safePath(relativePath);
@@ -189,6 +204,10 @@ export function registerResources(server: McpServer): ResourceSubscriptionHandle
           name: `${name} entity`,
         })),
       }),
+      // #3503 — IDE-quality autocompletion of the `{name}` variable.
+      complete: {
+        name: (value) => completeSemanticName("entities", value),
+      },
     }),
     {
       title: "Entity Schema",
@@ -238,6 +257,10 @@ export function registerResources(server: McpServer): ResourceSubscriptionHandle
           name: `${name} metrics`,
         })),
       }),
+      // #3503 — autocompletion of metric ids for the `{name}` variable.
+      complete: {
+        name: (value) => completeSemanticName("metrics", value),
+      },
     }),
     {
       title: "Metric Definitions",

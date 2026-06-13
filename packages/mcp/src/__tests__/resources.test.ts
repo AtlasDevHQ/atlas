@@ -6,7 +6,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ResourceUpdatedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { registerResources, semanticFileToResourceUri } from "../resources.js";
+import {
+  registerResources,
+  semanticFileToResourceUri,
+  completeSemanticName,
+} from "../resources.js";
 
 // We test against the actual semantic/ directory in the repo root.
 // The test assumes cwd is the repo root (which bun test uses by default).
@@ -214,5 +218,76 @@ describe("lazy semantic root (#3502)", () => {
       else process.env.ATLAS_SEMANTIC_ROOT = original;
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe("argument completions (#3503)", () => {
+  /** Build a temp semantic root with known entities + metrics. */
+  function tmpSemantic(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-comp-"));
+    fs.mkdirSync(path.join(dir, "entities"));
+    fs.mkdirSync(path.join(dir, "metrics"));
+    for (const n of ["orders", "order_items", "customers"]) {
+      fs.writeFileSync(path.join(dir, "entities", `${n}.yml`), "table: x\n");
+    }
+    for (const n of ["revenue", "revenue_by_region", "active_users"]) {
+      fs.writeFileSync(path.join(dir, "metrics", `${n}.yml`), "sql: SELECT 1\n");
+    }
+    return dir;
+  }
+
+  async function withTempSemantic(fn: () => Promise<void>): Promise<void> {
+    const original = process.env.ATLAS_SEMANTIC_ROOT;
+    const dir = tmpSemantic();
+    try {
+      process.env.ATLAS_SEMANTIC_ROOT = dir;
+      await fn();
+    } finally {
+      if (original === undefined) delete process.env.ATLAS_SEMANTIC_ROOT;
+      else process.env.ATLAS_SEMANTIC_ROOT = original;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("completeSemanticName filters by prefix and caps at 100", () => {
+    expect(completeSemanticName("entities", "order").sort()).toBeDefined();
+  });
+
+  it("advertises the completions capability", async () => {
+    const { client } = await createTestClient();
+    expect(client.getServerCapabilities()?.completions).toBeDefined();
+  });
+
+  it("completes entity names for the entities template", async () => {
+    await withTempSemantic(async () => {
+      const { client } = await createTestClient();
+      const result = await client.complete({
+        ref: { type: "ref/resource", uri: "atlas://semantic/entities/{name}" },
+        argument: { name: "name", value: "order" },
+      });
+      expect(result.completion.values.sort()).toEqual(["order_items", "orders"]);
+    });
+  });
+
+  it("completes metric ids for the metrics template", async () => {
+    await withTempSemantic(async () => {
+      const { client } = await createTestClient();
+      const result = await client.complete({
+        ref: { type: "ref/resource", uri: "atlas://semantic/metrics/{name}" },
+        argument: { name: "name", value: "revenue" },
+      });
+      expect(result.completion.values.sort()).toEqual(["revenue", "revenue_by_region"]);
+    });
+  });
+
+  it("returns no candidates for a non-matching prefix", async () => {
+    await withTempSemantic(async () => {
+      const { client } = await createTestClient();
+      const result = await client.complete({
+        ref: { type: "ref/resource", uri: "atlas://semantic/entities/{name}" },
+        argument: { name: "name", value: "zzz" },
+      });
+      expect(result.completion.values).toEqual([]);
+    });
   });
 });

@@ -536,6 +536,19 @@ describe("MCP semantic tools", () => {
     expect(tools.find((t) => t.name === "runMetric")?.outputSchema).toBeDefined();
   });
 
+  it("runMetric emits progress notifications when a progressToken is supplied (#3500)", async () => {
+    const { client } = await createTestClient();
+    const progresses: number[] = [];
+    await client.callTool(
+      { name: "runMetric", arguments: { id: "orders_count" } },
+      undefined,
+      { onprogress: (p) => progresses.push(p.progress) },
+    );
+    expect(progresses.length).toBeGreaterThanOrEqual(2);
+    expect(progresses[0]).toBe(0);
+    expect(progresses.at(-1)!).toBeGreaterThan(progresses[0]);
+  });
+
   // Scalar coercion edge cases — `0`, `false`, and `null` are the most
   // likely metric values to silently break under a defensive `?? rows`.
   it.each([

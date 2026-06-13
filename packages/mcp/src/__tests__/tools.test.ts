@@ -267,6 +267,38 @@ describe("MCP tools", () => {
     expect(tools.find((t) => t.name === "executeSQL")?.outputSchema).toBeDefined();
   });
 
+  it("emits progress notifications when a progressToken is supplied (#3500)", async () => {
+    const { client } = await createTestClient();
+    const progresses: number[] = [];
+    await client.callTool(
+      { name: "executeSQL", arguments: { sql: "SELECT 1", explanation: "x" } },
+      undefined,
+      { onprogress: (p) => progresses.push(p.progress) },
+    );
+    // Start (0) + completion (>0), monotonically increasing.
+    expect(progresses.length).toBeGreaterThanOrEqual(2);
+    expect(progresses[0]).toBe(0);
+    expect(progresses.at(-1)!).toBeGreaterThan(progresses[0]);
+  });
+
+  it("aborts the dispatch when the client cancels (#3500)", async () => {
+    const { client } = await createTestClient();
+    // A query that never resolves on its own — only cancellation ends it.
+    mockExecuteSQLExecute.mockImplementationOnce(() => new Promise<never>(() => {}));
+
+    const ac = new AbortController();
+    const pending = client.callTool(
+      { name: "executeSQL", arguments: { sql: "SELECT pg_sleep(60)", explanation: "slow" } },
+      undefined,
+      { signal: ac.signal },
+    );
+    // Let the request reach the server, then cancel.
+    await new Promise((r) => setTimeout(r, 20));
+    ac.abort();
+
+    await expect(pending).rejects.toThrow();
+  });
+
   // Each test below uses the LITERAL upstream message string emitted by the
   // upstream constructor (sql.ts / rls.ts / source-rate-limit.ts /
   // connection.ts) — NOT a synthetic stand-in. If the upstream rewords its

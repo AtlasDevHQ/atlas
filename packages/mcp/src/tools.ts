@@ -51,6 +51,7 @@ import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import { createMcpLogger } from "./logger.js";
 import { executeSqlOutputShape } from "./structured-output.js";
+import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 
 const log = createMcpLogger("mcp:tools");
 
@@ -293,7 +294,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
       // re-parsing the text block (which is retained below).
       outputSchema: executeSqlOutputShape,
     },
-    async ({ sql, explanation, connectionId }): Promise<CallToolResult> =>
+    async ({ sql, explanation, connectionId }, extra): Promise<CallToolResult> =>
       traceMcpToolCall(
         { toolName: "executeSQL", workspaceId, transport, deployMode },
         () => {
@@ -319,9 +320,19 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 requestId,
               });
               if (blocked) return blocked;
-              const result = await executeSQL.execute!(
-                { sql, explanation, connectionId },
-                { toolCallId: "mcp-executeSQL", messages: [] },
+              // #3500 — progress + cancellation around the query work. The
+              // signal is threaded into the execute ctx so a future
+              // signal-honoring path aborts end to end; today a cancel cuts
+              // the dispatch loose at the MCP boundary (statement timeout
+              // caps the datasource side).
+              const result = await withProgressAndCancellation(
+                extra,
+                { startMessage: "Running query", endMessage: "Query complete" },
+                async (_reporter, signal) =>
+                  executeSQL.execute!(
+                    { sql, explanation, connectionId },
+                    { toolCallId: "mcp-executeSQL", messages: [], abortSignal: signal },
+                  ),
               );
 
               // executeSQL collapses every PipelineError (8 tagged variants
@@ -388,6 +399,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 structuredContent: structured,
               };
             } catch (err) {
+              // Client cancellation (#3500): the SDK suppresses the response,
+              // so re-throw without logging an error — it's expected, not a
+              // failure.
+              if (err instanceof OperationCancelledError) throw err;
               const message = err instanceof Error ? err.message : String(err);
               log.error(
                 { err: err instanceof Error ? err : new Error(String(err)) },

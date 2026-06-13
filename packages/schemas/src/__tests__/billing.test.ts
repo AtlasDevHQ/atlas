@@ -40,6 +40,8 @@ const validStatus = {
     stripeSubscriptionId: "sub_123",
     plan: "starter_monthly",
     status: "active",
+    cancelAtPeriodEnd: false,
+    periodEnd: "2026-05-01T00:00:00.000Z",
   },
 };
 
@@ -147,6 +149,64 @@ describe("enum strict rejection", () => {
 
   test("canonical tuples match expected values", () => {
     expect(OVERAGE_STATUSES).toEqual(["ok", "warning", "soft_limit", "hard_limit"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Subscription visibility (#3429) — the wire shape must carry delinquent /
+// pending-cancel states, not just active/trialing, and expose the
+// cancel-at-period-end fields the UI needs to render an end-date notice.
+// ---------------------------------------------------------------------------
+
+describe("subscription visibility (#3429)", () => {
+  const DELINQUENT_STATES = ["past_due", "unpaid", "canceled", "incomplete"];
+
+  test.each(DELINQUENT_STATES)(
+    "parses a %s subscription (not filtered to active/trialing)",
+    (status) => {
+      const parsed = BillingStatusSchema.parse({
+        ...validStatus,
+        subscription: { ...validStatus.subscription, status },
+      });
+      expect(parsed.subscription?.status).toBe(status);
+    },
+  );
+
+  test("parses trialing as a healthy subscription", () => {
+    const parsed = BillingStatusSchema.parse({
+      ...validStatus,
+      subscription: { ...validStatus.subscription, status: "trialing" },
+    });
+    expect(parsed.subscription?.status).toBe("trialing");
+  });
+
+  test("carries cancelAtPeriodEnd + periodEnd for a pending-cancel subscription", () => {
+    const parsed = BillingStatusSchema.parse({
+      ...validStatus,
+      subscription: {
+        ...validStatus.subscription,
+        status: "active",
+        cancelAtPeriodEnd: true,
+        periodEnd: "2026-07-15T00:00:00.000Z",
+      },
+    });
+    expect(parsed.subscription?.cancelAtPeriodEnd).toBe(true);
+    expect(parsed.subscription?.periodEnd).toBe("2026-07-15T00:00:00.000Z");
+  });
+
+  test("accepts a null periodEnd (plugin hasn't recorded one yet)", () => {
+    const parsed = BillingStatusSchema.parse({
+      ...validStatus,
+      subscription: { ...validStatus.subscription, periodEnd: null },
+    });
+    expect(parsed.subscription?.periodEnd).toBeNull();
+  });
+
+  test("tolerates an older bundle that omits cancelAtPeriodEnd / periodEnd", () => {
+    const { cancelAtPeriodEnd: _c, periodEnd: _p, ...legacySub } = validStatus.subscription;
+    const parsed = BillingStatusSchema.parse({ ...validStatus, subscription: legacySub });
+    expect(parsed.subscription?.cancelAtPeriodEnd).toBeUndefined();
+    expect(parsed.subscription?.periodEnd).toBeUndefined();
   });
 });
 

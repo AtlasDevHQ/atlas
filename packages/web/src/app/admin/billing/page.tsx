@@ -40,6 +40,11 @@ import { ModelProviderSection } from "@/ui/components/admin/model-provider-secti
 import { formatDate, formatNumber } from "@/lib/format";
 import { consumePlanIntent, PAID_TIERS } from "@/lib/billing/plan-intent";
 import { effectiveTrialEnd, isTrialEndPast } from "@/lib/billing/trial-copy";
+import {
+  cancelAtPeriodEndNotice,
+  hasActiveSubscription,
+  subscriptionPresentation,
+} from "@/lib/billing/subscription-status";
 import { cn } from "@/lib/utils";
 import { billingSearchParams } from "./search-params";
 import type { BillingStatus } from "@useatlas/schemas";
@@ -221,9 +226,9 @@ export default function BillingPage() {
 
               <section>
                 <SectionHeading
-                  title={data.subscription ? "Change plan" : "Choose a plan"}
+                  title={hasActiveSubscription(data.subscription) ? "Change plan" : "Choose a plan"}
                   description={
-                    data.subscription
+                    hasActiveSubscription(data.subscription)
                       ? "Upgrades apply immediately (prorated); downgrades take effect at the end of the billing period"
                       : "Subscribe to keep using Atlas after your trial"
                   }
@@ -333,7 +338,23 @@ function PlanShell({ data }: { data: BillingStatus }) {
   // endpoint, so a plain ErrorBanner suffices.
   const { openPortal, opening, error: portalError } = useBillingPortal();
 
-  const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
+  // #3429 — present the subscription state instead of treating anything
+  // that isn't "active" as broken/hidden. past_due / unpaid → "Fix payment"
+  // CTA via the portal; canceled stays visible; trialing reads as healthy.
+  // `null` only when the workspace has never subscribed.
+  const sub = subscription ? subscriptionPresentation(subscription) : null;
+  const cancelNotice = subscription
+    ? cancelAtPeriodEndNotice(subscription, formatDate)
+    : null;
+
+  // The plan-card status dot: prefer the subscription's derived state; with
+  // no subscription, fall back to "connected" for a self-hosted/free tier so
+  // the card doesn't read as disconnected when nothing is wrong.
+  const status: StatusKind = sub
+    ? sub.statusKind
+    : plan.pricePerSeat > 0
+      ? "disconnected"
+      : "connected";
 
   // Trial gets its own description (#3434) — the pricePerSeat === 0 copy
   // ("No charges — all features included") is true for the self-hosted free
@@ -359,10 +380,15 @@ function PlanShell({ data }: { data: BillingStatus }) {
       description={planDescription}
       status={status}
       actions={
-        subscription ? (
-          <Button onClick={openPortal} disabled={opening} size="sm">
+        sub?.showPortal ? (
+          <Button
+            onClick={openPortal}
+            disabled={opening}
+            size="sm"
+            variant={sub.isDelinquent ? "destructive" : "default"}
+          >
             <CreditCard className="mr-1.5 size-3.5" />
-            {opening ? "Opening…" : "Open billing portal"}
+            {opening ? "Opening…" : sub.portalLabel}
             <ExternalLink className="ml-1.5 size-3" />
           </Button>
         ) : undefined
@@ -404,18 +430,18 @@ function PlanShell({ data }: { data: BillingStatus }) {
             value={formatDate(trialEnds)}
           />
         )}
-        {subscription && (
+        {subscription && sub && (
           <DetailRow
             label="Subscription"
             value={
-              <Badge
-                variant={subscription.status === "active" ? "secondary" : "outline"}
-                className="text-[10px]"
-              >
+              <Badge variant={sub.badgeVariant} className="text-[10px]">
                 {subscription.status}
               </Badge>
             }
           />
+        )}
+        {cancelNotice && (
+          <DetailRow label="Scheduled" value={cancelNotice} />
         )}
         {overage > 0 && (
           <DetailRow
@@ -430,6 +456,23 @@ function PlanShell({ data }: { data: BillingStatus }) {
         )}
       </DetailList>
 
+      {/* #3429 — a delinquent subscription must shout: the customer has to
+          reach the portal to fix payment, and the old UI hid it. */}
+      {sub?.isDelinquent && (
+        <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <CreditCard className="size-3.5 shrink-0" aria-hidden />
+          <span>
+            Payment failed — your subscription is {subscription?.status}. Open the
+            billing portal to update your payment method and restore access.
+          </span>
+        </div>
+      )}
+      {sub?.isEnded && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          Your subscription has ended. Choose a plan below to resubscribe, or
+          open the billing portal to view past invoices.
+        </p>
+      )}
       {portalError && <ErrorBanner message={portalError} />}
       {!subscription && plan.pricePerSeat > 0 && (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -608,7 +651,10 @@ function PlanPicker({
   if (plans.length === 0) return null;
 
   const currentTier = data.plan.tier;
-  const hasSubscription = data.subscription != null;
+  // A canceled / expired subscription is visible (#3429) but isn't a live
+  // plan to change — treat it as "no subscription" so the picker offers
+  // Subscribe rather than Upgrade/Downgrade against a dead plan.
+  const hasSubscription = hasActiveSubscription(data.subscription);
   const currentRank = TIER_RANK[currentTier] ?? 0;
 
   return (

@@ -47,13 +47,13 @@ import {
   outputDirForGroup,
 } from "@atlas/api/lib/profiler";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
-// so the wizard and the CLI emit identical YAML.
+// so the wizard and the CLI emit identical YAML. The catalog/glossary/metric
+// assembly delegates to `generateSemanticLayer` — the same shared core the CLI
+// and the `SemanticGenerator` service use (#3506) — so the three can't drift.
 import {
   analyzeTableProfiles,
   generateEntityYAML,
-  generateCatalogYAML,
-  generateGlossaryYAML,
-  generateMetricYAML,
+  generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
 // Phase-2 enrichment is the same shared engine (issue #3236, § D); the in-memory
 // variant lets the wizard enrich a YAML string per table without touching disk.
@@ -1079,25 +1079,31 @@ wizard.openapi(saveRoute, async (c) => {
         // pass dbType explicitly.
         const resolvedDbType = bodyDbType ?? "postgres";
 
-        const catalogYaml = generateCatalogYAML(profiles);
+        // Assemble through the shared engine (#3506) so the wizard, the CLI,
+        // and the SemanticGenerator service can't drift. Entities are supplied
+        // by the frontend, so only the catalog/glossary/metric artifacts are
+        // consumed here. The metric write keeps the wizard's path-traversal
+        // guard for untrusted HTTP profiles: unsafe table names are skipped and
+        // the filename is re-sanitized with `path.basename`.
+        const generated = generateSemanticLayer(profiles, {
+          dbType: resolvedDbType,
+          schema: resolvedSchema,
+        });
+
         const catalogPath = path.join(outputBase, "catalog.yml");
-        fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
+        fs.writeFileSync(catalogPath, generated.catalog, "utf-8");
         savedFiles.push("catalog.yml");
 
-        const glossaryYaml = generateGlossaryYAML(profiles);
         const glossaryPath = path.join(outputBase, "glossary.yml");
-        fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
+        fs.writeFileSync(glossaryPath, generated.glossary, "utf-8");
         savedFiles.push("glossary.yml");
 
-        for (const profile of profiles) {
-          if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
-          const metricYaml = generateMetricYAML(profile, resolvedSchema, resolvedDbType);
-          if (metricYaml) {
-            const safeMetricName = path.basename(profile.table_name);
-            const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
-            fs.writeFileSync(filePath, metricYaml, "utf-8");
-            savedFiles.push(`metrics/${safeMetricName}.yml`);
-          }
+        for (const metric of generated.metrics) {
+          if (!metric.table || !SAFE_TABLE_NAME.test(metric.table)) continue;
+          const safeMetricName = path.basename(metric.table);
+          const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
+          fs.writeFileSync(filePath, metric.yaml, "utf-8");
+          savedFiles.push(`metrics/${safeMetricName}.yml`);
         }
       }
 

@@ -19,6 +19,10 @@ let mockHasInternalDB = true;
 let mockWorkspace: Record<string, unknown> | null = null;
 let mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
 let mockWorkspaceDetailsShouldThrow = false;
+/** Count of `getWorkspaceDetails` invocations — i.e. internal-DB plan reads
+ *  that the per-replica planCache did NOT absorb. Used by the #3432
+ *  per-replica staleness-contract test. */
+let mockWorkspaceReadCount = 0;
 let mockUsageShouldThrow = false;
 /** Rows returned by the `internalQuery` mock (chat-integration count query). */
 let mockInternalQueryResult: unknown[] = [];
@@ -38,6 +42,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   getWorkspaceDetails: async (orgId: string) => {
     if (mockWorkspaceDetailsShouldThrow) throw new Error("db error");
+    mockWorkspaceReadCount++;
     return orgId ? mockWorkspace : null;
   },
   getWorkspaceStatus: async () => mockWorkspace?.workspace_status ?? null,
@@ -219,6 +224,7 @@ describe("billing/enforcement", () => {
     mockUsageShouldThrow = false;
     mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     mockWorkspace = null;
+    mockWorkspaceReadCount = 0;
     invalidatePlanCache();
   });
 
@@ -532,6 +538,53 @@ describe("billing/enforcement", () => {
     const result = await checkPlanLimits("org-1", SEATS);
     expect(result.allowed).toBe(true);
     // After invalidation, it should have re-fetched and gotten "free" tier
+  });
+
+  // ── Per-replica staleness contract (#3432) ────────────────────────
+  //
+  // The planCache is in-memory PER PROCESS: invalidatePlanCache only clears
+  // the calling replica's Map. A Stripe webhook on "replica A" cannot reach
+  // "replica B"'s cache, so B serves the stale tier until its own TTL lapses.
+  // These tests pin that documented contract via the internal-DB read count
+  // (a re-read == a cache miss).
+
+  it("serves the cached tier within TTL without re-reading the internal DB (warm cache)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockUsage = { queryCount: 0, tokenCount: 500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+
+    // First call populates the cache — one internal-DB read.
+    await checkPlanLimits("org-1", SEATS);
+    expect(mockWorkspaceReadCount).toBe(1);
+
+    // Tier flips at the source (as a Stripe webhook on ANOTHER replica would
+    // land it), but THIS process was not invalidated.
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+
+    // Second call within TTL is served from the warm cache — no re-read, so
+    // the stale "starter" tier is still enforced. This IS the ≤60s window.
+    await checkPlanLimits("org-1", SEATS);
+    expect(mockWorkspaceReadCount).toBe(1);
+  });
+
+  it("invalidatePlanCache only clears the LOCAL process cache — proven by the re-read", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "starter" });
+    mockUsage = { queryCount: 0, tokenCount: 500_000, activeUsers: 0, periodStart: "", periodEnd: "" };
+
+    // Warm the cache for two distinct orgs — one DB read each.
+    await checkPlanLimits("org-1", SEATS);
+    await checkPlanLimits("org-2", SEATS);
+    expect(mockWorkspaceReadCount).toBe(2);
+
+    // Local invalidation models the webhook firing on THIS replica for org-1.
+    invalidatePlanCache("org-1");
+
+    // org-1 re-reads (cache cleared locally → DB hit); org-2 stays warm. There
+    // is no shared store, so a sibling replica's cache would be untouched by
+    // this call — exactly the cross-replica staleness #3432 accepts.
+    await checkPlanLimits("org-1", SEATS);
+    expect(mockWorkspaceReadCount).toBe(3);
+    await checkPlanLimits("org-2", SEATS);
+    expect(mockWorkspaceReadCount).toBe(3);
   });
 });
 

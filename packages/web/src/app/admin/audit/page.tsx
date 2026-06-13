@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useQueryStates } from "nuqs";
+import { useEffect, useMemo, useState } from "react";
+import { useQueryStates, useQueryState, parseAsInteger } from "nuqs";
+import { getSortingStateParser } from "@/lib/parsers";
 import { auditSearchParams } from "./search-params";
 import { AnalyticsPanel } from "./analytics-panel";
 import { getAuditColumns, type AuditRow } from "./columns";
@@ -29,11 +30,12 @@ import { AdminActionsTab } from "../action-log/tab";
 import { RetentionPanel } from "./retention-panel";
 import { AdminActionRetentionPanel } from "./admin-action-retention-panel";
 import { Separator } from "@/components/ui/separator";
-import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 import {
   AuditStatsSchema,
   AuditFacetsSchema,
+  AuditRowsResponseSchema,
   ConnectionsResponseSchema,
   AuditOAuthClientsSchema,
 } from "@/ui/lib/admin-schemas";
@@ -89,10 +91,6 @@ export default function AuditPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  const [rows, setRows] = useState<AuditRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
@@ -156,9 +154,47 @@ export default function AuditPage() {
 
   // Column definitions
   const columns = getAuditColumns();
+  const columnIds = useMemo(
+    () => new Set(columns.map((c) => c.id).filter(Boolean) as string[]),
+    [columns],
+  );
+
+  // `useDataTable` writes pagination to `?page=` (1-indexed) + `?perPage=` and
+  // sorting to `?sort=`. Read them here so `useAdminFetch` can key the rows
+  // path off the same URL state WITHOUT a circular dependency on the table
+  // instance (mirrors the sessions/users admin pages). The sort parser is the
+  // exact one `useDataTable` uses, so page and table share one source of truth.
+  const [page] = useQueryState("page", parseAsInteger.withDefault(1));
+  const [perPage] = useQueryState("perPage", parseAsInteger.withDefault(LIMIT));
+  const [sorting] = useQueryState(
+    "sort",
+    getSortingStateParser<AuditRow>(columnIds).withDefault([{ id: "timestamp", desc: true }]),
+  );
+  const offset = (page - 1) * perPage;
+  const sortId = sorting[0]?.id;
+  const sortDesc = sorting[0]?.desc;
+
+  const queryParams: AuditQueryParams = {
+    pageSize: perPage, offset, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc,
+  };
+
+  // Rows — paginated, Zod-validated, off `useAdminFetch` so wire drift is a TS
+  // error (#3496). Disabled on the analytics tab (no rows needed there).
+  const rowsPath = `/api/v1/admin/audit?${buildQueryString(queryParams).toString()}`;
+  const {
+    data: rowsData,
+    loading,
+    error,
+    refetch: refetchRows,
+  } = useAdminFetch(rowsPath, {
+    schema: AuditRowsResponseSchema,
+    enabled: tab !== "analytics",
+  });
+  const rows = (rowsData?.rows ?? []) as AuditRow[];
+  const total = rowsData?.total ?? 0;
 
   // Data table with nuqs-managed pagination, sorting, column visibility
-  const pageCount = Math.max(1, Math.ceil(total / LIMIT));
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
   const { table } = useDataTable({
     data: rows,
     columns,
@@ -176,59 +212,11 @@ export default function AuditPage() {
     { schema: AuditStatsSchema },
   );
 
-  // Clear stale errors when switching tabs
+  // Clear the export error when switching tabs (the rows error is owned by
+  // useAdminFetch and resets itself on refetch).
   useEffect(() => {
-    setError(null);
     setExportError(null);
   }, [tab]);
-
-  // Read pagination from table state for fetching
-  const { pageIndex, pageSize } = table.getState().pagination;
-  const offset = pageIndex * pageSize;
-
-  // Read sorting from table state
-  const sorting = table.getState().sorting;
-  const sortId = sorting[0]?.id;
-  const sortDesc = sorting[0]?.desc;
-
-  const queryParams: AuditQueryParams = {
-    pageSize, offset, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc,
-  };
-
-  // Fetch rows on mount and when table state changes (only for log tab)
-  useEffect(() => {
-    if (tab === "analytics") return;
-    let cancelled = false;
-    async function fetchRows() {
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = buildQueryString(queryParams);
-        const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
-        if (!res.ok) {
-          if (!cancelled) {
-            setError(await extractFetchError(res));
-          }
-          return;
-        }
-        const data = await res.json();
-        if (!cancelled) {
-          setRows(data.rows ?? []);
-          setTotal(data.total ?? 0);
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError({
-            message: err instanceof Error ? err.message : "Failed to load audit log",
-          });
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    fetchRows();
-    return () => { cancelled = true; };
-  }, [apiUrl, offset, pageSize, search, connection, tableFilter, columnFilter, status, from, to, actorKind, clientId, tool, sortId, sortDesc, tab, credentials]);
 
   async function handleExport() {
     setExporting(true);
@@ -536,7 +524,7 @@ export default function AuditPage() {
             loading={loading}
             error={error}
             feature="Audit Log"
-            onRetry={() => { table.setPageIndex(0); }}
+            onRetry={() => { refetchRows(); }}
             loadingMessage="Loading audit log..."
             emptyIcon={ScrollText}
             emptyTitle="No query activity recorded yet"

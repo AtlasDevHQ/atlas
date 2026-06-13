@@ -4,7 +4,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { RelativeTimestamp } from "@/ui/components/admin/queue";
-import { Clock, User, Code, Timer, Rows3, CheckCircle, Table2 } from "lucide-react";
+import { Clock, User, Code, Timer, Rows3, CheckCircle, Table2, Bot } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -21,6 +21,11 @@ export interface AuditRow {
   source_id?: string | null;
   tables_accessed: string[] | null;
   columns_accessed: string[] | null;
+  // MCP attribution (migration 0049). NULL for non-MCP rows; populated by the
+  // MCP transport with the actor kind, OAuth client id, and dispatched tool.
+  actor_kind?: string | null;
+  client_id?: string | null;
+  tool_name?: string | null;
 }
 
 // ── Columns ───────────────────────────────────────────────────────
@@ -64,6 +69,43 @@ export function getAuditColumns(): ColumnDef<AuditRow>[] {
       enableColumnFilter: true,
       enableSorting: false,
       size: 128,
+    },
+    {
+      id: "source",
+      accessorFn: (row) => row.actor_kind ?? "",
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Source" />
+      ),
+      // Surfaces the MCP attribution the row already carries (actor kind /
+      // OAuth client / dispatched tool) so an admin can tell an agent/MCP
+      // query from a human one — and which tool produced it — without raw SQL.
+      cell: ({ row }) => {
+        const { actor_kind, client_id, tool_name } = row.original;
+        if (!actor_kind) return <span className="text-xs text-muted-foreground">—</span>;
+        return (
+          <div className="flex flex-col gap-0.5 max-w-[160px]">
+            <Badge variant="secondary" className="w-fit text-[10px] px-1.5 py-0 capitalize">
+              {actor_kind}
+            </Badge>
+            {client_id && (
+              <span className="truncate text-[10px] text-muted-foreground" title={client_id}>
+                {client_id}
+              </span>
+            )}
+            {tool_name && (
+              <span className="truncate font-mono text-[10px] text-muted-foreground" title={tool_name}>
+                {tool_name}
+              </span>
+            )}
+          </div>
+        );
+      },
+      meta: {
+        label: "Source",
+        icon: Bot,
+      },
+      enableSorting: false,
+      size: 160,
     },
     {
       id: "sql",

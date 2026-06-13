@@ -50,6 +50,7 @@ export type {
   AtlasPlugin,
   $InferServerPlugin,
   AtlasMcpTool,
+  McpToolAnnotations,
   McpToolContext,
   McpToolAuditEntry,
   PluginZodSchema,

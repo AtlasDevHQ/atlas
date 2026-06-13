@@ -598,6 +598,30 @@ export interface McpToolAuditEntry {
  * envelope carrying the dispatch's `request_id` so an LLM agent can
  * correlate the failure with server logs.
  */
+/**
+ * MCP tool annotations (spec 2025-11-25 `ToolAnnotations`). Declare a tool's
+ * read/write nature so the host can gate it and clients can render the right
+ * confirmation affordance.
+ *
+ * The read/write hints are load-bearing for governance: a tool that mutates
+ * data MUST set `readOnlyHint: false` (or `destructiveHint: true`) so the host
+ * enforces the `mcp:write` scope on hosted dispatches (#3520). A tool with no
+ * annotations is treated as read-only and is NOT write-gated — annotate any
+ * mutating tool explicitly.
+ */
+export interface McpToolAnnotations {
+  /** Human-readable tool title for display. */
+  readonly title?: string;
+  /** `true` ⇒ the tool does not mutate its environment (read-only). */
+  readonly readOnlyHint?: boolean;
+  /** `true` ⇒ the tool may perform destructive (mutating) updates. */
+  readonly destructiveHint?: boolean;
+  /** `true` ⇒ repeated calls with the same args have no additional effect. */
+  readonly idempotentHint?: boolean;
+  /** `true` ⇒ the tool interacts with an open/external world (e.g. the web). */
+  readonly openWorldHint?: boolean;
+}
+
 export interface AtlasMcpTool<
   TInput = unknown,
   TOutput = unknown,
@@ -617,6 +641,12 @@ export interface AtlasMcpTool<
   readonly inputSchema: PluginZodSchema<TInput>;
   /** Optional Zod schema describing the structured response shape. */
   readonly outputSchema?: PluginZodSchema<TOutput>;
+  /**
+   * MCP annotations. A mutating tool MUST declare `readOnlyHint: false` (or
+   * `destructiveHint: true`) so the host enforces `mcp:write` on hosted
+   * dispatches (#3520). Omit (or set `readOnlyHint: true`) for read-only tools.
+   */
+  readonly annotations?: McpToolAnnotations;
   /** Tool handler. Receives the parsed args and a per-dispatch context. */
   handler(args: TInput, context: McpToolContext): Promise<TOutput>;
 }

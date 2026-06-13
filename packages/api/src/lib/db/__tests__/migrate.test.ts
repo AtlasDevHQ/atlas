@@ -151,7 +151,8 @@ describe("runMigrations", () => {
     //   Plus 0129 (stripe_purged_subscriptions tombstones, #3468) = 130.
     //   Plus 0130 (user_trial_grants one-trial marker, #3469/#3470) = 131.
     //   Plus 0131 (organization.suspension_source billing/operator, #3424) = 132.
-    expect(count).toBe(132);
+    //   Plus 0132 (organization.plan_override_until operator precedence, #3427) = 133.
+    expect(count).toBe(133);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -312,6 +313,7 @@ describe("runMigrations", () => {
         "0129_stripe_purged_subscriptions.sql",
         "0130_user_trial_grants.sql",
         "0131_org_suspension_source.sql",
+        "0132_org_plan_override.sql",
       ],
     });
 

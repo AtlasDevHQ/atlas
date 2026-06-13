@@ -147,6 +147,15 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
         continue;
       }
       if (expectedTier !== currentTier) {
+        // #3427 precedence — the operator plan-override window landed on the
+        // org row as `plan_override_until` (see `isPlanOverrideActive` and
+        // `applyWorkspaceTier` in lib/auth/server.ts). When #3423 finishes this
+        // sweep it MUST honor the SAME precedence the webhook path now does:
+        // add `o.plan_override_until` to the SELECT above and skip this heal
+        // (`if (isPlanOverrideActive(row.plan_override_until)) continue;`) so a
+        // background reconcile can't clobber an active operator grant any more
+        // than a stray webhook can. Intentionally NOT wired here to keep this
+        // change scoped to the webhook path (#3427); this is the marker.
         const updated = await updateWorkspacePlanTier(row.org_id, expectedTier);
         if (updated) {
           invalidatePlanCache(row.org_id);

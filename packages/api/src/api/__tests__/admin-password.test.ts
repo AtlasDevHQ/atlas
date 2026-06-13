@@ -115,6 +115,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceNamesByIds: mock(async () => new Map<string, string | null>()),
   updateWorkspaceStatus: mock(async () => true),
   updateWorkspacePlanTier: mock(async () => true),
+  setWorkspaceTrialEndsAt: mock(async () => true),
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
   getWorkspaceHealthSummary: mock(async () => null),
   getWorkspaceRegion: mock(async () => null),

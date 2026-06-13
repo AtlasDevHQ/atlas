@@ -64,6 +64,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceDetails: async () => null,
   updateWorkspaceStatus: async () => true,
   updateWorkspacePlanTier: async () => true,
+  // #3427 — imported by lib/auth/server.ts (applyWorkspaceTier override check).
+  isPlanOverrideActive: () => false,
   cascadeWorkspaceDelete: async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 }),
   getWorkspaceHealthSummary: async () => null,
   getWorkspaceRegion: async () => null,

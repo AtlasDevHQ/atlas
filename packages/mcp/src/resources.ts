@@ -16,21 +16,36 @@ import * as fs from "fs";
 import * as path from "path";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import {
+  type ReadResourceResult,
+  SubscribeRequestSchema,
+  UnsubscribeRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import { createMcpLogger } from "./logger.js";
 
 const log = createMcpLogger("mcp:resources");
 
-const SEMANTIC_ROOT = getSemanticRoot();
+/**
+ * Resolve the semantic root lazily, per read (#3502). The previous
+ * module-load `const SEMANTIC_ROOT = getSemanticRoot()` captured the value
+ * before `initializeConfig()` could set `ATLAS_SEMANTIC_ROOT`, so a non-
+ * default root (or a root configured after import) was silently ignored.
+ * Resolving on each call closes that ordering hole and lets the resource
+ * watcher track the live root.
+ */
+function semanticRoot(): string {
+  return getSemanticRoot();
+}
 
 /**
  * Resolve a path within the semantic directory, rejecting path traversal.
- * Returns null if the resolved path escapes SEMANTIC_ROOT.
+ * Returns null if the resolved path escapes the semantic root.
  */
 function safePath(relativePath: string): string | null {
-  const resolved = path.resolve(SEMANTIC_ROOT, relativePath);
-  if (!resolved.startsWith(SEMANTIC_ROOT + path.sep) && resolved !== SEMANTIC_ROOT) {
+  const root = semanticRoot();
+  const resolved = path.resolve(root, relativePath);
+  if (!resolved.startsWith(root + path.sep) && resolved !== root) {
     return null;
   }
   return resolved;
@@ -72,7 +87,40 @@ function readSemanticFile(relativePath: string): string | null {
   }
 }
 
-export function registerResources(server: McpServer): void {
+/**
+ * Map a semantic file path (relative to the semantic root, POSIX-style) to
+ * the `atlas://semantic/...` resource URI it backs, or `null` if the file
+ * isn't an exposed resource. Used by the change watcher to fan a file change
+ * out to the subscribed resource URI. Exported for testing.
+ */
+export function semanticFileToResourceUri(relPath: string): string | null {
+  const normalized = relPath.split(path.sep).join("/");
+  if (normalized === "catalog.yml") return "atlas://semantic/catalog";
+  if (normalized === "glossary.yml") return "atlas://semantic/glossary";
+  const entity = /^entities\/([^/]+)\.yml$/.exec(normalized);
+  if (entity) return `atlas://semantic/entities/${entity[1]}`;
+  const metric = /^metrics\/([^/]+)\.yml$/.exec(normalized);
+  if (metric) return `atlas://semantic/metrics/${metric[1]}`;
+  return null;
+}
+
+/**
+ * Handle returned by {@link registerResources} for the resource-subscription
+ * seam (#3502). `notifyResourceUpdated` is the single place a
+ * `notifications/resources/updated` is emitted — the change hook a
+ * semantic-layer regeneration (the datasource/profiling tool) calls, and the
+ * file watcher's sink. Keeping it behind this seam means the 2026-07-28
+ * `subscriptions/listen` delivery change is a contained edit. `close` stops
+ * the watcher (call on server shutdown).
+ */
+export interface ResourceSubscriptionHandle {
+  notifyResourceUpdated(uri: string): Promise<void>;
+  /** Test-only/operational: current subscription set size. */
+  readonly subscriptionCount: () => number;
+  close(): void;
+}
+
+export function registerResources(server: McpServer): ResourceSubscriptionHandle {
   // --- Static: catalog.yml ---
   server.registerResource(
     "catalog",
@@ -227,4 +275,83 @@ export function registerResources(server: McpServer): void {
       };
     },
   );
+
+  // --- Resource subscriptions (#3502) ---------------------------------------
+  // Declare the capability alongside the listChanged the SDK already set when
+  // resources were registered, then handle subscribe/unsubscribe. A semantic
+  // resource changes when the layer is regenerated (the datasource/profiling
+  // tool calls `notifyResourceUpdated`) or when a file on disk changes (the
+  // lazy fs watcher below) — both funnel through the one seam.
+  server.server.registerCapabilities({ resources: { subscribe: true } });
+
+  const subscriptions = new Set<string>();
+  let watcher: fs.FSWatcher | undefined;
+
+  const notifyResourceUpdated = async (uri: string): Promise<void> => {
+    if (!subscriptions.has(uri)) return;
+    // Best-effort: a failed notify must not crash the watcher / caller.
+    await server.server.sendResourceUpdated({ uri }).catch((err: unknown) => {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)), uri },
+        "failed to send resources/updated notification",
+      );
+    });
+  };
+
+  const stopWatching = (): void => {
+    if (watcher) {
+      watcher.close();
+      watcher = undefined;
+    }
+  };
+
+  // Start watching lazily on the first subscription, and only watch while at
+  // least one subscription is live — so an idle server holds no FS watcher.
+  const ensureWatching = (): void => {
+    if (watcher) return;
+    const root = semanticRoot();
+    if (!fs.existsSync(root)) return;
+    try {
+      watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
+        if (!filename) return;
+        const uri = semanticFileToResourceUri(filename.toString());
+        if (uri) void notifyResourceUpdated(uri);
+      });
+      // A watcher must never take down the process — log and degrade to the
+      // explicit-notify path (regeneration still emits updates).
+      watcher.on("error", (err) => {
+        log.warn(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "semantic resource watcher errored — file-change notifications disabled",
+        );
+        stopWatching();
+      });
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "could not start semantic resource watcher — file-change notifications disabled",
+      );
+    }
+  };
+
+  server.server.setRequestHandler(SubscribeRequestSchema, async ({ params }) => {
+    subscriptions.add(params.uri);
+    ensureWatching();
+    return {};
+  });
+
+  server.server.setRequestHandler(UnsubscribeRequestSchema, async ({ params }) => {
+    subscriptions.delete(params.uri);
+    if (subscriptions.size === 0) stopWatching();
+    return {};
+  });
+
+  return {
+    notifyResourceUpdated,
+    subscriptionCount: () => subscriptions.size,
+    close: () => {
+      stopWatching();
+      subscriptions.clear();
+    },
+  };
 }

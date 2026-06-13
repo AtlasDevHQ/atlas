@@ -151,9 +151,22 @@ export async function recordStripeEvent(
   appliedPlanTier: PlanTier | null,
 ): Promise<void> {
   if (!hasInternalDB()) return;
+  // The `WHERE NOT EXISTS (... stripe_purged_subscriptions ...)` guard
+  // closes the in-flight race the classify-time check can't (#3468
+  // review): a GDPR purge cancels the subscription remotely BEFORE it
+  // stamps the tombstone, so a `customer.subscription.deleted` delivery
+  // can classify `fresh` (pre-tombstone) and reach this record step
+  // AFTER the purge transaction commits the tombstone. Re-checking at
+  // record time means the row is never reinserted once the tombstone
+  // exists. NULL subscription ids match no tombstone, so non-subscription
+  // events still record. `ON CONFLICT DO NOTHING` keeps the idempotent
+  // record-last protocol intact.
   await internalQuery(
     `INSERT INTO stripe_webhook_events (event_id, event_type, event_created, stripe_subscription_id, applied_plan_tier)
-     VALUES ($1, $2, $3, $4, $5)
+     SELECT $1, $2, $3, $4, $5
+      WHERE NOT EXISTS (
+        SELECT 1 FROM stripe_purged_subscriptions WHERE stripe_subscription_id = $4
+      )
      ON CONFLICT (event_id) DO NOTHING`,
     [
       event.id,

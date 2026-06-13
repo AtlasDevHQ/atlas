@@ -428,6 +428,31 @@ describe("pauseStripeCollectionForWorkspace — voids open invoices (#3467)", ()
     expect(outcome.warnings).toEqual([]);
   });
 
+  it("pages through ALL open invoices, not just the first page (#3475 review)", async () => {
+    mockSubscriptionRows([subRow("sub_1", "active")]);
+    // Two pages: the first reports has_more, the second closes it out.
+    let call = 0;
+    invoicesList.mockImplementation(async (params: Record<string, unknown>) => {
+      callOrder.push(`invoices.list:${String(params.subscription)}`);
+      call += 1;
+      if (call === 1) {
+        return {
+          data: [{ id: "in_p1a", status: "open" }, { id: "in_p1b", status: "open" }],
+          has_more: true,
+        };
+      }
+      return { data: [{ id: "in_p2a", status: "open" }], has_more: false };
+    });
+
+    const outcome = await pauseStripeCollectionForWorkspace(ORG);
+
+    expect(invoicesList).toHaveBeenCalledTimes(2);
+    // Second page request is anchored on the last id of the first page.
+    expect((invoicesList.mock.calls[1][0] as Record<string, unknown>).starting_after).toBe("in_p1b");
+    expect(invoicesVoid.mock.calls.map((c) => c[0])).toEqual(["in_p1a", "in_p1b", "in_p2a"]);
+    expect(outcome.warnings).toEqual([]);
+  });
+
   it("resume never touches invoices — voiding is terminal, next cycle bills fresh", async () => {
     mockSubscriptionRows([subRow("sub_1", "active")]);
     openInvoices = { sub_1: ["in_1"] };

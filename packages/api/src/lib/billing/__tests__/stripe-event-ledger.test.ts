@@ -138,6 +138,10 @@ describe("recordStripeEvent", () => {
     expect(sql).toContain("INSERT INTO stripe_webhook_events");
     expect(sql).toContain("applied_plan_tier");
     expect(sql).toContain("ON CONFLICT (event_id) DO NOTHING");
+    // Record-time tombstone guard (#3468): the insert is skipped if the
+    // subscription was purged after classify but before record.
+    expect(sql).toContain("NOT EXISTS");
+    expect(sql).toContain("stripe_purged_subscriptions");
     expect(params).toEqual([
       "evt_1",
       "customer.subscription.updated",

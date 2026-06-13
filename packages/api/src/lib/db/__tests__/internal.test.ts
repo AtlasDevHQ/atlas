@@ -1040,9 +1040,18 @@ describe("hardDeleteWorkspace()", () => {
     const ledgerDeleteIdx = queries.findIndex((q) =>
       q.includes("DELETE FROM stripe_webhook_events"),
     );
+    // Pin the insert before BOTH the ledger delete and the subscription
+    // delete — otherwise the tombstone SELECT (which reads the subscription
+    // table) could be reordered after the subscription rows are gone and
+    // silently stamp zero tombstones (CodeRabbit on #3475).
+    const subscriptionDeleteIdx = queries.findIndex((q) =>
+      /DELETE FROM subscription WHERE "referenceId"/.test(q),
+    );
     expect(tombstoneIdx).toBeGreaterThan(-1);
     expect(ledgerDeleteIdx).toBeGreaterThan(-1);
+    expect(subscriptionDeleteIdx).toBeGreaterThan(-1);
     expect(tombstoneIdx).toBeLessThan(ledgerDeleteIdx);
+    expect(tombstoneIdx).toBeLessThan(subscriptionDeleteIdx);
     expect(queries[tombstoneIdx]).toContain("ON CONFLICT (stripe_subscription_id) DO NOTHING");
   });
 

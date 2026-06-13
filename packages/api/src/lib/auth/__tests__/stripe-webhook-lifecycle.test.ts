@@ -132,7 +132,9 @@ function ledgerAwareQuery(
     if (sql.includes("FROM stripe_webhook_events WHERE event_id")) {
       return Promise.resolve(ledgerRows.filter((r) => r.event_id === params?.[0]));
     }
-    if (sql.includes("FROM stripe_purged_subscriptions")) {
+    // classify-time tombstone probe (#3468) — match the SELECT shape only,
+    // NOT the record INSERT's `NOT EXISTS (SELECT 1 FROM ...)` guard below.
+    if (sql.includes("SELECT stripe_subscription_id FROM stripe_purged_subscriptions")) {
       return Promise.resolve(
         purgedSubscriptionIds.has(String(params?.[0]))
           ? [{ stripe_subscription_id: params?.[0] }]
@@ -161,6 +163,11 @@ function ledgerAwareQuery(
         string | null,
         string | null,
       ];
+      // Model the record-time `WHERE NOT EXISTS (... stripe_purged_subscriptions ...)`
+      // guard (#3468): a tombstoned subscription's event is never recorded.
+      if (subId !== null && purgedSubscriptionIds.has(subId)) {
+        return Promise.resolve([]);
+      }
       if (!ledgerRows.some((r) => r.event_id === id)) {
         ledgerRows.push({
           event_id: id,

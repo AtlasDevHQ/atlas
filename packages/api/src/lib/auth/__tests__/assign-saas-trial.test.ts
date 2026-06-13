@@ -47,6 +47,9 @@ function makeMockPool(opts: {
   selectTier?: string | null;
   selectThrows?: boolean;
   updateThrows?: boolean;
+  /** Atomic-claim INSERT throws (separate from updateThrows so the
+   * UPDATE-failure path is testable independently — CodeRabbit on #3475). */
+  claimThrows?: boolean;
   /** Eligibility lookup (#3426): creator already owns a trialed org. */
   trialConsumedElsewhere?: boolean;
   /** Eligibility lookup throws (DB blip mid-hook). */
@@ -65,7 +68,7 @@ function makeMockPool(opts: {
       // #3469 atomic claim — dispatch before the eligibility arm (both
       // mention user_trial_grants).
       if (/INSERT INTO user_trial_grants/i.test(sql)) {
-        if (opts.updateThrows) throw new Error("INSERT failed");
+        if (opts.claimThrows) throw new Error("INSERT failed");
         return opts.claimExistingOrgId !== undefined
           ? { rows: [], rowCount: 0 } // conflict — someone holds the grant
           : { rows: [{ user_id: params?.[0] }], rowCount: 1 };
@@ -245,7 +248,12 @@ describe("assignSaasTrial — body", () => {
     ).toBe(false);
   });
 
-  it("skips the claim entirely when eligibility already says consumed — no grant row is written", async () => {
+  it("stamps a durable marker on the locked path when consumed only via the legacy proxy (#3470)", async () => {
+    // A user made owner of a trialed org after migration 0130 has no
+    // user_trial_grants row, so `consumed` is true only via the legacy
+    // proxy. The locked path must still claim a durable marker (idempotent,
+    // ON CONFLICT DO NOTHING) — otherwise a later owner demotion would
+    // erase the proxy match and reopen trial eligibility (#3470 hole).
     const { pool, queries } = makeMockPool({ selectTier: "free", trialConsumedElsewhere: true });
     _resetPool(pool);
 
@@ -253,7 +261,14 @@ describe("assignSaasTrial — body", () => {
 
     expect(
       queries.some((q) => /INSERT INTO user_trial_grants/i.test(q.sql)),
-      "grant rows record actual grants — a consumed-elsewhere creator writes none",
+      "the locked path must durably record consumption so demotion can't reopen eligibility",
+    ).toBe(true);
+    // Still locked, never a second trial.
+    expect(
+      queries.some((q) => /UPDATE organization SET plan_tier = 'locked'/i.test(q.sql)),
+    ).toBe(true);
+    expect(
+      queries.some((q) => /plan_tier = 'trial'/i.test(q.sql) && /^\s*UPDATE/i.test(q.sql)),
     ).toBe(false);
   });
 
@@ -354,7 +369,21 @@ describe("assignSaasTrial — body", () => {
   });
 
   it("does not throw when the UPDATE fails", async () => {
-    const { pool } = makeMockPool({ selectTier: "free", updateThrows: true });
+    const { pool, queries } = makeMockPool({ selectTier: "free", updateThrows: true });
+    _resetPool(pool);
+
+    await expect(
+      assignSaasTrial({ user: USER, organization: ORG }),
+    ).resolves.toBeUndefined();
+
+    // The claim INSERT must have run (and not thrown) so the UPDATE arm is
+    // the one that failed — proves updateThrows isolates the UPDATE path.
+    expect(queries.some((q) => /INSERT INTO user_trial_grants/i.test(q.sql))).toBe(true);
+    expect(queries.some((q) => /^\s*UPDATE/i.test(q.sql))).toBe(true);
+  });
+
+  it("does not throw when the atomic claim INSERT fails", async () => {
+    const { pool } = makeMockPool({ selectTier: "free", claimThrows: true });
     _resetPool(pool);
 
     await expect(

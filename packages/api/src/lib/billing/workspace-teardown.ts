@@ -299,18 +299,29 @@ async function voidOpenInvoicesForSubscription(
   const stripe = getStripeClient();
   if (!stripe) return; // callers gate before reaching here
 
-  let openInvoiceIds: string[];
+  const openInvoiceIds: string[] = [];
   try {
-    // One page of 100 — a single subscription cannot accumulate more
-    // open invoices than that within Stripe's ~3-week dunning horizon.
-    const invoices = await stripe.invoices.list({
-      subscription: stripeSubscriptionId,
-      status: "open",
-      limit: 100,
-    });
-    openInvoiceIds = invoices.data
-      .map((inv) => inv.id)
-      .filter((id): id is string => typeof id === "string");
+    // Page through ALL open invoices, not just the first 100 — a
+    // long-delinquent or manually-invoiced subscription can carry more
+    // than one page, and any unvoided page keeps dunning the suspended
+    // workspace (#3467 review). Cap the page walk defensively so a
+    // mis-paging Stripe response can't spin forever.
+    let startingAfter: string | undefined;
+    for (let page = 0; page < 1000; page++) {
+      const invoices = await stripe.invoices.list({
+        subscription: stripeSubscriptionId,
+        status: "open",
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+      });
+      for (const inv of invoices.data) {
+        if (typeof inv.id === "string") openInvoiceIds.push(inv.id);
+      }
+      if (!invoices.has_more || invoices.data.length === 0) break;
+      const lastId = invoices.data[invoices.data.length - 1]?.id;
+      if (typeof lastId !== "string") break;
+      startingAfter = lastId;
+    }
   } catch (err) {
     const msg = errMessage(err);
     log.error(

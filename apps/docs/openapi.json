@@ -20824,7 +20824,13 @@
                     "message": {
                       "type": "string"
                     },
-                    "organization": {}
+                    "organization": {},
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
                   },
                   "required": [
                     "message"
@@ -20998,7 +21004,13 @@
                     "message": {
                       "type": "string"
                     },
-                    "organization": {}
+                    "organization": {},
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
                   },
                   "required": [
                     "message"
@@ -21389,7 +21401,13 @@
                     "message": {
                       "type": "string"
                     },
-                    "organization": {}
+                    "organization": {},
+                    "warnings": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
                   },
                   "required": [
                     "message"

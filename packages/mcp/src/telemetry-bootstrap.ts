@@ -42,12 +42,16 @@ export async function startMcpTelemetry(): Promise<
     return await initTelemetry({ serviceName: MCP_OTEL_SERVICE_NAME });
   } catch (err) {
     // Telemetry is best-effort — a failed exporter import or SDK start must
-    // not stop the MCP server from serving. Log to stderr (the MCP package's
-    // logging convention — stdout carries JSON-RPC on the stdio transport).
-    process.stderr.write(
-      `[atlas-mcp] Failed to initialize OpenTelemetry: ${
-        err instanceof Error ? err.message : String(err)
-      }\n`,
+    // not stop the MCP server from serving. The logger import is dynamic so
+    // this module's STATIC graph stays minimal: `bin/serve.ts` imports it
+    // before `startMcpTelemetry()` runs, and the #3199 ordering contract
+    // requires no `atlas.mcp.*` instrument module load onto the static path.
+    // `createMcpLogger` (→ `@atlas/api/lib/logger`) creates no OTel
+    // instruments, and on this branch the SDK failed to start anyway.
+    const { createMcpLogger } = await import("./logger.js");
+    createMcpLogger("mcp:telemetry-bootstrap").error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to initialize OpenTelemetry",
     );
     return null;
   }

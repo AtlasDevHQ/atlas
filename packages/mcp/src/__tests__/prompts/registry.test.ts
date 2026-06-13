@@ -51,8 +51,11 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSettingAuto: (key: string, _orgId?: string) => mockSettings[key],
 }));
 
-mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
+// The prompts chain (registry → gating / listing / canonical) logs via the
+// MCP stderr logger (#3494). Stub it so the suite stays quiet and never
+// pulls the real pino-to-fd-2 sink into the test process.
+mock.module("../../logger", () => ({
+  createMcpLogger: () => ({
     info: () => {},
     warn: () => {},
     error: () => {},

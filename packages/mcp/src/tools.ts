@@ -49,6 +49,9 @@ import {
 } from "./error-envelope.js";
 import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
+import { createMcpLogger } from "./logger.js";
+
+const log = createMcpLogger("mcp:tools");
 
 export interface RegisterToolsOptions {
   /**
@@ -238,7 +241,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               };
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[atlas-mcp] explore tool threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "explore tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message || "explore tool failed", {
                   request_id: requestId,
@@ -370,7 +376,10 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
               };
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
-              process.stderr.write(`[atlas-mcp] executeSQL tool threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "executeSQL tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message || "executeSQL tool failed", {
                   request_id: requestId,

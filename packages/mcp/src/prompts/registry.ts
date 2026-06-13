@@ -100,6 +100,9 @@ function substituteArgs(
 
 import type { PromptSource } from "./listing.js";
 export type { PromptSource };
+import { createMcpLogger } from "../logger.js";
+
+const log = createMcpLogger("mcp:prompts:registry");
 
 /**
  * Synthetic source label used by `prompts/list` telemetry — the dispatch
@@ -197,8 +200,9 @@ function recordPromptCounter(
       "deploy.mode": ctx.deployMode,
     });
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] prompt counter failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), method, prompt: name },
+      "prompt counter failed",
     );
   }
 }
@@ -245,8 +249,9 @@ function writePromptAudit(
       ],
     );
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] prompt audit insert failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), method, prompt: name },
+      "prompt audit insert failed",
     );
   }
 }

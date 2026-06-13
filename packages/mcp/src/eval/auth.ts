@@ -33,19 +33,17 @@
  *   schema reasons unrelated to OAuth; the eval pares the plugin set down
  *   to the OAuth surface.
  *
- * ── Resource-indicator workaround ────────────────────────────────────
+ * ── Resource-indicator (RFC 8707) ────────────────────────────────────
  *
  * `@better-auth/oauth-provider` only issues JWT-formatted access tokens
- * when the token request carries a `resource` parameter (RFC 8707). The
- * upstream `runHostedAuthFlow` in `@useatlas/mcp/init` does not include
- * `resource` today — #2124 is closed (Gap 2 fixed in commit 70e262c1)
- * but Gap 1 (the resource-indicator parameter on `runHostedAuthFlow`)
- * is still open at the time of writing; verify by grepping
- * `plugins/mcp/src/init/hosted.ts` for `resource`. For the eval we
- * wrap the test seam's `fetchImpl` to inject `resource=${apiUrl}/mcp`
- * into the token-exchange POST body so the issued token is JWT-formatted
- * and carries the `aud` claim the MCP route's verifier requires. When
- * Gap 1 lands the `fetchImpl` body-patch can be removed.
+ * when the token request carries a `resource` parameter (RFC 8707), and
+ * the MCP route's verifier requires that JWT shape with the matching
+ * `aud` claim. `runHostedAuthFlow` now threads `resource=${apiUrl}/mcp`
+ * into the token exchange itself (#3493), so the eval exercises the same
+ * wire request production sends — no `fetchImpl` body-patch needed. This
+ * is what makes the eval a valid regression test for the production path:
+ * if the real flow stopped sending `resource`, the issued token would be
+ * opaque and this eval would fail at bearer verification.
  */
 
 import { betterAuth } from "better-auth";
@@ -494,9 +492,9 @@ interface RunFlowInput {
  * The seams:
  *
  *   - `fetchImpl` — dispatches discovery, DCR, and the token exchange
- *     directly through `app.fetch`. We also inject `resource=${apiUrl}/mcp`
- *     into the token-exchange body so Better Auth issues a JWT (RFC 8707
- *     workaround for #2124).
+ *     directly through `app.fetch`. The token request already carries
+ *     `resource=${apiUrl}/mcp` because `runHostedAuthFlow` sends it (#3493),
+ *     so Better Auth issues a JWT without any body-patch here.
  *   - `serveImpl` — captures the loopback handler. The "browser" calls it
  *     directly with the redirect params; no real port is bound.
  *   - `openBrowserImpl` — drives the authorize endpoint with the session
@@ -505,8 +503,6 @@ interface RunFlowInput {
  *     `code` + `state` from the redirect URL.
  */
 async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
-  const resourceIndicator = `${input.apiUrl.replace(/\/+$/, "")}/mcp`;
-
   // ── fetchImpl ────────────────────────────────────────────────────
   const fetchImpl: typeof fetch = (async (
     rawInput: string | URL | Request,
@@ -523,25 +519,16 @@ async function runEvalAuthFlow(input: RunFlowInput): Promise<HostedFlowResult> {
     // CLI loopback flow does not currently thread cookies, but the
     // eval needs to so the issued token actually exercises the
     // workspace-claim path the MCP edge verifies.
+    //
+    // The token request's `resource=${apiUrl}/mcp` (RFC 8707) is sent by
+    // `runHostedAuthFlow` itself (#3493) — no body-patch here — so this
+    // eval exercises the exact wire request production sends. If the real
+    // flow regressed and dropped `resource`, Better Auth would mint an
+    // opaque token and the MCP route's verifier would reject it, failing
+    // this eval.
     const headersWithCookie = new Headers(req.headers);
     if (!headersWithCookie.has("Cookie")) {
       headersWithCookie.set("Cookie", input.sessionCookie);
-    }
-    if (req.method === "POST" && req.url.includes("/oauth2/token")) {
-      // Patch the body to include `resource=${resourceIndicator}`.
-      // Without this Better Auth issues an opaque token and the MCP
-      // route's verifier (which expects JWT) rejects with
-      // invalid_bearer. See the module docstring's resource-indicator
-      // workaround note (#2124 Gap 1, still open).
-      const body = await req.text();
-      const params = new URLSearchParams(body);
-      if (!params.has("resource")) params.set("resource", resourceIndicator);
-      const patched = new Request(req.url, {
-        method: req.method,
-        headers: headersWithCookie,
-        body: params.toString(),
-      });
-      return input.app.fetch(patched);
     }
     const withCookie = new Request(req.url, {
       method: req.method,

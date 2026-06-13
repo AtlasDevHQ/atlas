@@ -316,6 +316,11 @@ describe("runHostedAuthFlow — wire format (pins acceptance criteria from #2024
     expect(tokenForm!.get("redirect_uri")).toBe(expectedRedirect);
     expect(tokenForm!.get("client_id")).toBe("test-client-id");
     expect(tokenForm!.get("code_verifier")).toBe(EXPECTED_VERIFIER);
+    // RFC 8707 resource indicator (#3493) — bound to `${apiUrl}/mcp` so
+    // Better Auth mints a JWT (not an opaque token) that `verifyMcpBearer`
+    // accepts. Without this the real hosted install fails bearer
+    // verification; the eval used to body-patch it in, masking the gap.
+    expect(tokenForm!.get("resource")).toBe(`${FAKE_API}/mcp`);
   });
 });
 

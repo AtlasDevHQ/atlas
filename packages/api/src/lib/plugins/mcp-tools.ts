@@ -428,11 +428,13 @@ function defaultLogger(pluginId: string, qualifiedName: string): McpToolContextS
  *
  * 1. Generates a per-call `request_id` (`mcp-plugin-<uuid>`).
  * 2. Wraps everything below in `withRequestContext({ user: actor,
- *    actor: { kind: "mcp", clientId, toolName: qualifiedName } })` so
- *    any nested `executeSQL` audit_log row inherits the plugin tool's
- *    `tool_name`, `client_id`, and `actor_kind` consistently with
- *    native tools. The wrap is the OUTERMOST step — every subsequent
- *    step runs inside the actor binding.
+ *    agentOrigin: "mcp", actor: { kind: "mcp", clientId, toolName:
+ *    qualifiedName } })` so any nested `executeSQL` audit_log row inherits
+ *    the plugin tool's `tool_name`, `client_id`, and `actor_kind`
+ *    consistently with native tools, AND so origin-scoped approval rules
+ *    (#3507 / ADR-0016) match plugin-tool calls — without the `mcp` origin
+ *    stamp, an `origin='mcp'` rule would silently skip them. The wrap is
+ *    the OUTERMOST step — every subsequent step runs inside the binding.
  * 3. Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
  *    `clientId`; stdio MCP leaves it undefined and is exempt.
  *    A denied bucket short-circuits with the limiter's `rate_limited`
@@ -477,7 +479,10 @@ export function registerPluginMcpTools(
       };
 
       return withRequestContext(
-        { requestId, user: actor, actor: mcpActor },
+        // #3507 — stamp `mcp` as the agent origin so origin-scoped approval
+        // rules (ADR-0016) match plugin-tool dispatches, parity with the
+        // built-in MCP tools in packages/mcp/src/{tools,semantic-tools}.ts.
+        { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor },
         async () => {
           // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
           // `clientId`; stdio MCP leaves it undefined and is intentionally

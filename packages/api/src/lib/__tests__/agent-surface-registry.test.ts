@@ -120,6 +120,9 @@ const KNOWN_ORIGIN_STAMPERS: OriginStamperSpec[] = [
   { file: "packages/mcp/src/tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
   { file: "packages/mcp/src/semantic-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
   { file: "packages/mcp/src/hosted.ts", originProof: /agentOrigin:\s*"mcp"/ },
+  // #3507 — plugin-contributed MCP tools dispatch through this wrapper;
+  // it must stamp 'mcp' too or origin-scoped approval rules skip them.
+  { file: "packages/api/src/lib/plugins/mcp-tools.ts", originProof: /agentOrigin:\s*"mcp"/ },
 ];
 
 describe("F-54/F-55 agent-surface registry", () => {

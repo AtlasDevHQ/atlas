@@ -34,10 +34,16 @@ describe("plugin MCP dispatch binding registry (#2078)", () => {
     // call must appear before the handler invocation lexically — a
     // refactor that lifted the limiter or input parse out of the
     // wrap would land here.
+    // #3507 — the wrap also stamps `agentOrigin: "mcp"` so origin-scoped
+    // approval rules match plugin-tool dispatches; pin that here too (a
+    // comment line may precede the object literal, hence the optional
+    // `//…` prefix matcher).
     expect(
       source,
-      "dispatch handler must call withRequestContext({ actor: { kind: 'mcp', ... } })",
-    ).toMatch(/withRequestContext\s*\(\s*\{\s*requestId\s*,\s*user:\s*actor\s*,\s*actor:\s*mcpActor/);
+      "dispatch handler must call withRequestContext({ requestId, user: actor, agentOrigin: 'mcp', actor: mcpActor })",
+    ).toMatch(
+      /withRequestContext\(\s*(?:\/\/[^\n]*\n\s*)*\{\s*requestId\s*,\s*user:\s*actor\s*,\s*agentOrigin:\s*"mcp"\s*,\s*actor:\s*mcpActor/,
+    );
   });
 
   it("rate-limit gate runs INSIDE the withRequestContext callback", async () => {

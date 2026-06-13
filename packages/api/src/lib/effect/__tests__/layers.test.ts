@@ -889,6 +889,59 @@ describe("buildAppLayer", () => {
   // to it. Per-#1988-guard end-to-end tests would force the same
   // real-DB-URL workaround for marginal additional coverage beyond the
   // existing unit-level guard tests.
+
+  // #3435 — canary that `billingConfigGuardLayer` is actually wired into
+  // `Layer.mergeAll(...)`. Uses the PURE fail-fast path (missing monthly
+  // price ID) so it never reaches the network price-resolution branch — no
+  // Stripe SDK / mock needed. STRIPE_SECRET_KEY must be set (the guard gates
+  // on it) with at least one tier's price ID absent.
+  test("buildAppLayer wires BillingConfigGuardLive — missing price ID fails the layer in SaaS", async () => {
+    const savedDb = process.env.DATABASE_URL;
+    const savedKeys = process.env.ATLAS_ENCRYPTION_KEYS;
+    const savedRpm = process.env.ATLAS_RATE_LIMIT_RPM;
+    const savedProvider = process.env.ATLAS_PROVIDER;
+    const savedStripeKey = process.env.STRIPE_SECRET_KEY;
+    const savedStarter = process.env.STRIPE_STARTER_PRICE_ID;
+    const savedPro = process.env.STRIPE_PRO_PRICE_ID;
+    const savedBusiness = process.env.STRIPE_BUSINESS_PRICE_ID;
+    // Satisfy the sibling SaaS guards so the cause carries exclusively the
+    // billing error.
+    process.env.DATABASE_URL = "postgresql://localhost:5432/wiring-test";
+    process.env.ATLAS_ENCRYPTION_KEYS = "v1:wiring-regression-test-key-32-bytes-long-aaa";
+    process.env.ATLAS_RATE_LIMIT_RPM = "300";
+    process.env.ATLAS_PROVIDER = "ollama"; // keyless provider
+    process.env.STRIPE_SECRET_KEY = "sk_test_wiring";
+    // All price IDs absent → fail-fast before any network call.
+    delete process.env.STRIPE_STARTER_PRICE_ID;
+    delete process.env.STRIPE_PRO_PRICE_ID;
+    delete process.env.STRIPE_BUSINESS_PRICE_ID;
+
+    try {
+      const config = { deployMode: "saas" } as Parameters<typeof buildAppLayer>[0];
+      const layer = buildAppLayer(config);
+
+      const exit = await Effect.runPromiseExit(
+        Effect.void.pipe(Effect.provide(layer)),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      const text = String(Exit.isFailure(exit) ? exit.cause : "");
+      expect(text).toContain("BillingConfigInvalidError");
+    } finally {
+      const restore = (key: string, val: string | undefined) => {
+        if (val !== undefined) process.env[key] = val;
+        else delete process.env[key];
+      };
+      restore("DATABASE_URL", savedDb);
+      restore("ATLAS_ENCRYPTION_KEYS", savedKeys);
+      restore("ATLAS_RATE_LIMIT_RPM", savedRpm);
+      restore("ATLAS_PROVIDER", savedProvider);
+      restore("STRIPE_SECRET_KEY", savedStripeKey);
+      restore("STRIPE_STARTER_PRICE_ID", savedStarter);
+      restore("STRIPE_PRO_PRICE_ID", savedPro);
+      restore("STRIPE_BUSINESS_PRICE_ID", savedBusiness);
+    }
+  });
 });
 
 // ── ImplementationStatusOverrideLive (#2747 — 1.5.3 slice 9) ──────────

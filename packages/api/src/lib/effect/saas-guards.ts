@@ -97,6 +97,7 @@ const RATE_LIMIT_ISSUE_REF = "#1983";
 const ISSUE_REF_1988 = "#1988";
 const CHAT_ADAPTER_ISSUE_REF = "#2672";
 const PROVIDER_KEY_ISSUE_REF = "#3178";
+const BILLING_CONFIG_ISSUE_REF = "#3435";
 
 // ══════════════════════════════════════════════════════════════════════
 // ██  Tagged errors
@@ -326,6 +327,32 @@ export class ChatAdapterEnvMissingError extends Data.TaggedError("ChatAdapterEnv
 export class MigrationsRequiredError extends Data.TaggedError("MigrationsRequiredError")<{
   readonly message: string;
   readonly cause?: string;
+}> {}
+
+/**
+ * SaaS region booted with `STRIPE_SECRET_KEY` set but one or more paid-tier
+ * monthly `STRIPE_{STARTER,PRO,BUSINESS}_PRICE_ID` env vars unset/empty, OR a
+ * secret key whose mode prefix isn't a standard `sk_test_` / `sk_live_`
+ * (#3435). Both are pure, network-free misconfigs caught at boot:
+ *
+ *   - A missing monthly price ID silently omits that tier from
+ *     `getStripePlans()` — the plan never appears in checkout, the region looks
+ *     healthy, and a customer who wanted that tier simply can't buy it.
+ *   - A non-standard key shape (`rk_…` restricted, `pk_…` publishable paste, a
+ *     typo) means we can't pin the test/live mode the price-resolution warn
+ *     path compares against, and a restricted key may lack `prices.retrieve`
+ *     scope outright.
+ *
+ * `missingPriceIdEnvVars` lists the absent monthly vars (empty when the failure
+ * is solely the key shape) and `keyMode` carries the detected mode so the
+ * boot-failure log is operator-actionable without re-parsing `message`. The key
+ * itself is NEVER placed on the error or in the message — only its mode
+ * classification. Self-hosted, and SaaS-without-Stripe, never construct this.
+ */
+export class BillingConfigInvalidError extends Data.TaggedError("BillingConfigInvalidError")<{
+  readonly message: string;
+  readonly missingPriceIdEnvVars: readonly string[];
+  readonly keyMode: "test" | "live" | "unknown";
 }> {}
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1076,6 +1103,198 @@ export const ChatAdapterEnvGuardLive: Layer.Layer<never, ChatAdapterEnvMissingEr
           }),
         );
       }
+    }
+  }),
+);
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  BillingConfigGuardLive (#3435)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Fail boot in SaaS when Stripe billing is configured (`STRIPE_SECRET_KEY`
+ * set) but the price-ID / key-mode config is internally inconsistent — and
+ * loudly WARN (never crash) when the configured price IDs can't be resolved in
+ * the live Stripe account, or a resolved price's `livemode` doesn't match the
+ * key mode.
+ *
+ * Three ways a misconfigured prod looked healthy before this guard (#3435):
+ *
+ *   1. A missing monthly `STRIPE_{STARTER,PRO,BUSINESS}_PRICE_ID` silently
+ *      omits that plan from `getStripePlans()` — no warning, the tier just
+ *      vanishes from checkout.
+ *   2. A test-mode price ID configured against a live key (or vice-versa)
+ *      produces valid-signature webhooks whose plan sync silently no-ops
+ *      (`resolvePlanTierFromPriceId` returns null in `auth/server.ts`).
+ *   3. (Companion fix, not here) `GET /api/v1/billing` reporting a missing
+ *      `subscription` table as `subscription: null` — addressed in `billing.ts`.
+ *
+ * **warn vs fail-fast decision (#3435).** Two pure, network-free checks
+ * FAIL-FAST (CLAUDE.md "prefer errors over silent fallbacks"):
+ *   - any missing monthly price ID, and
+ *   - a secret key whose mode prefix isn't a standard `sk_test_` / `sk_live_`.
+ * The "do these price IDs exist in the account, and does each price's
+ * `livemode` match the key mode?" check is a network call, so it is a loud
+ * `log.error` (with a per-price breakdown) but NEVER fails boot — a transient
+ * Stripe outage or rate-limit at deploy time must not wedge a region. The
+ * mismatch it detects is still operator-actionable from the log, and the
+ * webhook-sync no-op it guards against is itself retryable.
+ *
+ * Gate: `deployMode === "saas"` AND `STRIPE_SECRET_KEY` present. Self-hosted is
+ * untouched (no Stripe), and a SaaS region that hasn't turned on billing yet
+ * (no `STRIPE_SECRET_KEY`) boots silently — matching the existing conditional
+ * mount of the billing routes and the `@better-auth/stripe` plugin.
+ *
+ * The Stripe SDK + `config-validation` SSOT are lazy-imported (same wall-off
+ * pattern as `EncryptionKeyGuardLive`) so this module stays free of the `stripe`
+ * static graph. The network resolution is wrapped so an SDK/import rejection
+ * becomes a warn, not a boot-killing defect.
+ */
+export const BillingConfigGuardLive: Layer.Layer<never, BillingConfigInvalidError, Config> = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { config } = yield* Config;
+    if (config.deployMode !== "saas") return;
+
+    // Gate on Stripe being configured at all. A SaaS region can legitimately
+    // run pre-billing (no STRIPE_SECRET_KEY) — the billing routes and the
+    // Stripe auth plugin are themselves conditionally mounted on this var.
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) return;
+
+    const {
+      findMissingMonthlyPriceIdEnvVars,
+      detectStripeKeyMode,
+      isPriceModeConsistent,
+      MONTHLY_PRICE_ID_ENV_VARS,
+      ANNUAL_PRICE_ID_ENV_VARS,
+    } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/billing/config-validation"),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }).pipe(Effect.orDie);
+
+    // ── Pure check 1: monthly price-ID presence (fail-fast) ──────────────
+    const missingPriceIdEnvVars = findMissingMonthlyPriceIdEnvVars();
+    const keyMode = detectStripeKeyMode(secretKey);
+
+    // ── Pure check 2: secret-key mode shape (fail-fast) ──────────────────
+    // Collected with the price-ID result so a region missing both gets one
+    // boot-failure log naming both, rather than fixing one then re-failing.
+    if (missingPriceIdEnvVars.length > 0 || keyMode === "unknown") {
+      const parts: string[] = [];
+      if (missingPriceIdEnvVars.length > 0) {
+        parts.push(
+          `missing required monthly price ID env var(s): [${missingPriceIdEnvVars.join(", ")}] — ` +
+            `getStripePlans() silently omits each absent tier from checkout`,
+        );
+      }
+      if (keyMode === "unknown") {
+        parts.push(
+          `STRIPE_SECRET_KEY is not a standard secret key (expected an sk_test_… or sk_live_… ` +
+            `prefix) — restricted (rk_…) or publishable (pk_…) keys can't be mode-checked against ` +
+            `the configured prices and may lack prices.retrieve scope`,
+        );
+      }
+      return yield* Effect.fail(
+        new BillingConfigInvalidError({
+          missingPriceIdEnvVars,
+          keyMode,
+          message:
+            `SaaS region booted with STRIPE_SECRET_KEY set but the billing config is invalid: ` +
+            `${parts.join("; ")}. Fix the env var(s) on every region's api service before booting. ` +
+            `See ${BILLING_CONFIG_ISSUE_REF}.`,
+        }),
+      );
+    }
+
+    // ── Network check: price existence + livemode↔key-mode (loud WARN) ───
+    // A transient Stripe error here must NOT crash boot, so everything below
+    // resolves to a logged warning. We resolve every CONFIGURED price ID
+    // (monthly — guaranteed present by the fail-fast above — plus any annual
+    // vars the operator set) and check each price's livemode against keyMode.
+    const configuredPriceVars = [
+      ...MONTHLY_PRICE_ID_ENV_VARS,
+      ...ANNUAL_PRICE_ID_ENV_VARS,
+    ]
+      .map((envVar): { envVar: string; priceId: string | undefined } => ({
+        envVar,
+        priceId: process.env[envVar],
+      }))
+      .filter((p): p is { envVar: string; priceId: string } => Boolean(p.priceId));
+
+    const resolution = yield* Effect.promise(
+      async (): Promise<
+        | { ok: true; mismatches: string[]; unresolved: string[] }
+        | { ok: false; error: string }
+      > => {
+        try {
+          const { getStripeClient } = await import(
+            "@atlas/api/lib/billing/stripe-client"
+          );
+          const stripe = getStripeClient();
+          // Unreachable: STRIPE_SECRET_KEY was non-empty above. Guard anyway so
+          // a future refactor of getStripeClient() can't turn this into a throw.
+          if (!stripe) return { ok: true, mismatches: [], unresolved: [] };
+
+          const mismatches: string[] = [];
+          const unresolved: string[] = [];
+          for (const { envVar, priceId } of configuredPriceVars) {
+            try {
+              const price = await stripe.prices.retrieve(priceId);
+              if (!isPriceModeConsistent(keyMode, price.livemode)) {
+                mismatches.push(
+                  `${envVar} (${priceId}) is livemode=${price.livemode} but the key is ${keyMode}-mode`,
+                );
+              }
+            } catch (priceErr) {
+              // Most commonly a "No such price" — the price doesn't exist in
+              // THIS account/mode (the classic test-price-in-prod mixup).
+              unresolved.push(
+                `${envVar} (${priceId}): ${priceErr instanceof Error ? priceErr.message : String(priceErr)}`,
+              );
+            }
+          }
+          return { ok: true, mismatches, unresolved };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+    );
+
+    if (!resolution.ok) {
+      log.error(
+        { err: new Error(resolution.error), event: "billing_config.resolution_failed" },
+        `Could not verify Stripe price IDs against the configured account at boot ` +
+          `(network/SDK error) — proceeding, but a test/live price mixup would stay undetected ` +
+          `until a checkout no-ops. See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
+      return;
+    }
+
+    if (resolution.unresolved.length > 0) {
+      log.error(
+        {
+          unresolved: resolution.unresolved,
+          keyMode,
+          event: "billing_config.price_unresolved",
+        },
+        `One or more configured Stripe price IDs do not exist in the ${keyMode}-mode account — ` +
+          `a webhook carrying one of these prices would pass signature verification then no-op the ` +
+          `plan sync (resolvePlanTierFromPriceId → null). This is the classic test-price-in-prod ` +
+          `mixup. Fix the STRIPE_*_PRICE_ID values for the ${keyMode} account. See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
+    }
+
+    if (resolution.mismatches.length > 0) {
+      log.error(
+        {
+          mismatches: resolution.mismatches,
+          keyMode,
+          event: "billing_config.mode_mismatch",
+        },
+        `One or more configured Stripe prices resolved with a livemode inconsistent with the ` +
+          `secret key's ${keyMode} mode — checkout / webhook plan sync will silently no-op for the ` +
+          `affected tier(s). See ${BILLING_CONFIG_ISSUE_REF}.`,
+      );
     }
   }),
 );

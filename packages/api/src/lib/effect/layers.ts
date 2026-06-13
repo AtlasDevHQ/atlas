@@ -56,6 +56,7 @@ import {
   RegionGuardLive,
   PluginConfigGuardLive,
   ChatAdapterEnvGuardLive,
+  BillingConfigGuardLive,
   MigrationsRequiredError,
 } from "./saas-guards";
 import { readSaasEnv } from "./saas-env";
@@ -2944,6 +2945,14 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
   // only on `Config` and reads env directly, so it runs in parallel with
   // the migration + sync layers alongside the other env-checking guards.
   const chatAdapterEnvGuardLayer = ChatAdapterEnvGuardLive.pipe(Layer.provide(configLayer));
+  // #3435 — billing config validation. Gated on `deployMode === "saas"` AND
+  // `STRIPE_SECRET_KEY` present, so self-hosted and pre-billing SaaS are inert.
+  // Fails boot on the two pure misconfigs (missing monthly price ID, non-standard
+  // key mode) and loudly warns (never crashes) on the network price-resolution /
+  // livemode-mismatch check. `Config`-only; lazy-imports the Stripe SDK + the
+  // config-validation SSOT inside its Effect body so it runs as an env-checking
+  // peer of the migration + sync layers.
+  const billingConfigGuardLayer = BillingConfigGuardLive.pipe(Layer.provide(configLayer));
   // #1988 C7 + C8 — region routing claim and stale plugin config checks.
   // Both depend only on `Config`. PluginConfigGuardLive lazy-imports the
   // plugin registry + InternalDB inside its Effect body so it can run as
@@ -2988,6 +2997,7 @@ export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
     regionGuardLayer,
     pluginConfigGuardLayer,
     chatAdapterEnvGuardLayer,
+    billingConfigGuardLayer,
     migrationGuardLayer,
     EnterpriseLayer,
   );

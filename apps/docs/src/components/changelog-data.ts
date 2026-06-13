@@ -20,6 +20,22 @@ export interface Release {
  */
 export const releases: Release[] = [
   {
+    version: "v0.0.14",
+    title: "Billing Hardening & Enforcement Perimeter",
+    date: "2026-06-13",
+    summary:
+      "This release makes billing reliable and honest now that real payments flow through the v0.0.13 checkout. A failed payment is no longer a one-way door — it triggers a recovery sequence with dunning emails and a graduated grace period instead of an abrupt lockout, and past-due or canceled subscriptions stay visible with one-click access to the billing portal to fix them. Token budgets and seat counts now line up exactly across the usage page, the billing page, and live enforcement, and your billing window tracks your actual Stripe subscription cycle rather than the calendar month. Behind the scenes, every way of reaching the agent — chat-platform webhooks, scheduled tasks, the MCP server, admin tools — now honors your plan limits and workspace status through one shared enforcement seam, and deleting, suspending, or purging a workspace correctly tears down its Stripe subscription so deleted orgs are never invoiced again.",
+    highlights: [
+      "Payment-failure recovery — a failed charge starts a dunning email sequence and a graduated grace period instead of an immediate hard lockout (#3424)",
+      "Past-due visibility — past_due and canceled subscriptions are surfaced in the UI with direct billing-portal access, exactly when you need to act (#3429)",
+      "Accurate usage accounting — token budgets and seat counts are now consistent across the usage page, billing page, and enforcement, anchored to your Stripe billing period (#3430, #3431)",
+      "Honest plan limits — overage copy now describes the real hard cap rather than advertising metered overage that wasn't implemented (#3422)",
+      "Closed enforcement perimeter — chat webhooks, scheduled tasks, MCP executeSQL, and admin tools all respect plan limits and suspension through one shared seam (#3419, #3420, #3437)",
+      "Stripe teardown on workspace lifecycle — delete, suspend, and GDPR-purge now cancel or pause the Stripe subscription, so removed workspaces stop being billed (#3425)",
+      "Durable webhook processing — per-subscription serialization, boot-order safety, and one-trial-per-user guards harden the Stripe sync against races and abuse (#3426, #3445)",
+    ],
+  },
+  {
     version: "v0.0.13",
     title: "Billing Checkout & Elasticsearch Datasource",
     date: "2026-06-12",

@@ -2407,3 +2407,32 @@ export const userTrialGrants = pgTable("user_trial_grants", {
   orgId: text("org_id").notNull(),
   grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------------
+// MCP action policy — per-workspace kill-switch (#3509, ADR-0016 gate 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-workspace, customer-admin allow/deny over MCP action *categories* —
+ * gate 1 of the MCP dispatch order (`packages/mcp/src/dispatch-gate.ts`),
+ * short-circuiting a blocked category before scope / RBAC / approval. The
+ * default posture is `allowed` (the ABSENCE of a row); a category is blocked
+ * iff a row exists with `status = 'blocked'`. `org_id` is the Better-Auth
+ * organization id (TEXT, no FK — `organization` is not a Drizzle table).
+ * Mirrors `migrations/0134_mcp_action_policy.sql`.
+ */
+export const mcpActionPolicy = pgTable(
+  "mcp_action_policy",
+  {
+    orgId: text("org_id").notNull(),
+    category: text("category").notNull(),
+    status: text("status").notNull().default("blocked"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: text("updated_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.orgId, t.category] }),
+    check("chk_mcp_action_policy_status", sql`status IN ('allowed', 'blocked')`),
+  ],
+);

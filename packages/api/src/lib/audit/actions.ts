@@ -838,6 +838,17 @@ export const ADMIN_ACTIONS = {
     retry: "crm_outbox.retry",
     markDead: "crm_outbox.mark_dead",
   },
+  /**
+   * MCP action policy — the per-workspace customer-admin kill-switch (#3509,
+   * ADR-0016 gate 1). `update` is emitted when a workspace admin toggles a
+   * category between `allowed` / `blocked`. Workspace scope, target id is the
+   * org. Metadata carries `{ category, status, previousStatus }` so a reviewer
+   * sees the delta — the threat is silently re-enabling a category a prior
+   * admin disabled.
+   */
+  mcpActionPolicy: {
+    update: "mcp_action_policy.update",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

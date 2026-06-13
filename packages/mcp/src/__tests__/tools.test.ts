@@ -6,6 +6,7 @@ import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext } from "@atlas/api/lib/logger";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
 import { registerTools } from "../tools.js";
+import { executeSqlOutputSchema } from "../structured-output.js";
 
 const TEST_ACTOR = createAtlasUser("u_test", "managed", "test@example.com", {
   role: "admin",
@@ -241,6 +242,29 @@ describe("MCP tools", () => {
     expect(parsed.row_count).toBe(1);
     expect(parsed.rows).toEqual([{ count: 42 }]);
     expect(result.isError).toBeFalsy();
+  });
+
+  it("executeSQL returns structuredContent conforming to the declared outputSchema (#3498)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT count(*) FROM users", explanation: "Count users" },
+    });
+
+    // Structured output present and schema-valid.
+    expect(result.structuredContent).toBeDefined();
+    const validated = executeSqlOutputSchema.parse(result.structuredContent);
+    expect(validated.row_count).toBe(1);
+    expect(validated.columns).toEqual(["count"]);
+    expect(validated.rows).toEqual([{ count: 42 }]);
+
+    // The text block is retained and mirrors the structured payload (#3498
+    // requires backward-compat).
+    expect(JSON.parse(getContentText(result.content))).toEqual(result.structuredContent);
+
+    // The SDK advertises the outputSchema on the tool definition.
+    const { tools } = await client.listTools();
+    expect(tools.find((t) => t.name === "executeSQL")?.outputSchema).toBeDefined();
   });
 
   // Each test below uses the LITERAL upstream message string emitted by the

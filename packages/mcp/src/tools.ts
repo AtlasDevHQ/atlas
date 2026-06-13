@@ -50,6 +50,7 @@ import {
 import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import { createMcpLogger } from "./logger.js";
+import { executeSqlOutputShape } from "./structured-output.js";
 
 const log = createMcpLogger("mcp:tools");
 
@@ -288,6 +289,9 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         readOnlyHint: true,
         openWorldHint: true,
       },
+      // #3498 — typed result so agents parse columns/rows instead of
+      // re-parsing the text block (which is retained below).
+      outputSchema: executeSqlOutputShape,
     },
     async ({ sql, explanation, connectionId }): Promise<CallToolResult> =>
       traceMcpToolCall(
@@ -334,22 +338,20 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 // duplicate approval requests. Pass it through as a non-error
                 // JSON body so the agent + user see the full payload.
                 if (obj.approval_required === true) {
+                  // Non-error governance branch — still carries
+                  // structuredContent (#3498) since the declared outputSchema
+                  // makes the SDK require it on every non-error result.
+                  const approval: Record<string, unknown> = {
+                    approval_required: true,
+                    approval_request_id: obj.approval_request_id,
+                    matched_rules: obj.matched_rules,
+                    message: obj.message,
+                  };
                   return {
                     content: [
-                      {
-                        type: "text" as const,
-                        text: JSON.stringify(
-                          {
-                            approval_required: true,
-                            approval_request_id: obj.approval_request_id,
-                            matched_rules: obj.matched_rules,
-                            message: obj.message,
-                          },
-                          null,
-                          2,
-                        ),
-                      },
+                      { type: "text" as const, text: JSON.stringify(approval, null, 2) },
                     ],
+                    structuredContent: approval,
                   };
                 }
 
@@ -370,23 +372,20 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
                 );
               }
 
+              // #3498 — typed result + retained text block. Both are built
+              // from the same object so they can never drift.
+              const structured: Record<string, unknown> = {
+                explanation: obj.explanation,
+                row_count: obj.row_count,
+                columns: obj.columns,
+                rows: obj.rows,
+                truncated: obj.truncated,
+              };
               return {
                 content: [
-                  {
-                    type: "text" as const,
-                    text: JSON.stringify(
-                      {
-                        explanation: obj.explanation,
-                        row_count: obj.row_count,
-                        columns: obj.columns,
-                        rows: obj.rows,
-                        truncated: obj.truncated,
-                      },
-                      null,
-                      2,
-                    ),
-                  },
+                  { type: "text" as const, text: JSON.stringify(structured, null, 2) },
                 ],
+                structuredContent: structured,
               };
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);

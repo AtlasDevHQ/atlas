@@ -9,6 +9,7 @@ import {
   describe,
   it,
   expect,
+  beforeAll,
   beforeEach,
   mock,
 } from "bun:test";
@@ -37,6 +38,8 @@ let mockInternalQueryShouldThrow = false;
 let mockTxnClient: ReturnType<typeof makeFakeTxnClient> | null = null;
 /** Count of `getInternalDB().connect()` calls — asserts no transaction opened. */
 let mockConnectCount = 0;
+/** Structured `log.error` calls captured for the #3428 bypass-alert assertions. */
+let errorLogs: Array<{ ctx: unknown; msg: unknown }> = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -84,20 +87,58 @@ mock.module("@atlas/api/lib/metering", () => ({
   getUsageBreakdown: async () => [],
 }));
 
+const captureLogger = {
+  info: () => {},
+  warn: () => {},
+  error: (ctx: unknown, msg?: unknown) => {
+    errorLogs.push({ ctx, msg });
+  },
+  debug: () => {},
+  trace: () => {},
+  fatal: () => {},
+  child: () => captureLogger,
+  level: "info",
+};
+
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
+  createLogger: () => captureLogger,
+  getLogger: () => captureLogger,
   getRequestContext: () => null,
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
 // --- Import under test ---
+//
+// Value exports are loaded via a dynamic import in `beforeAll` (not a top-level
+// static import) so enforcement.ts evaluates AFTER the `mock.module` calls above
+// register. enforcement.ts captures its logger once at module scope
+// (`const log = createLogger("billing:enforcement")`); a top-level static import
+// would bind it to the REAL logger before the mock applied, leaving the #3428
+// bypass-alert assertion unable to observe `log.error`. Types are erased at
+// compile time, so they stay as a static `import type`.
+import type {
+  ChatIntegrationInstallResult,
+  PlanCheckResult,
+  ResourceLimitResult,
+} from "@atlas/api/lib/billing/enforcement";
 
-import { checkChatIntegrationLimit, checkChatIntegrationLimitAndInstall, CHAT_INTEGRATION_COUNT_SQL, checkPlanLimits, checkResourceLimit, invalidatePlanCache, type ChatIntegrationInstallResult, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
+let checkChatIntegrationLimit: typeof import("@atlas/api/lib/billing/enforcement").checkChatIntegrationLimit;
+let checkChatIntegrationLimitAndInstall: typeof import("@atlas/api/lib/billing/enforcement").checkChatIntegrationLimitAndInstall;
+let CHAT_INTEGRATION_COUNT_SQL: typeof import("@atlas/api/lib/billing/enforcement").CHAT_INTEGRATION_COUNT_SQL;
+let checkPlanLimits: typeof import("@atlas/api/lib/billing/enforcement").checkPlanLimits;
+let checkResourceLimit: typeof import("@atlas/api/lib/billing/enforcement").checkResourceLimit;
+let invalidatePlanCache: typeof import("@atlas/api/lib/billing/enforcement").invalidatePlanCache;
+
+beforeAll(async () => {
+  ({
+    checkChatIntegrationLimit,
+    checkChatIntegrationLimitAndInstall,
+    CHAT_INTEGRATION_COUNT_SQL,
+    checkPlanLimits,
+    checkResourceLimit,
+    invalidatePlanCache,
+  } = await import("@atlas/api/lib/billing/enforcement"));
+});
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
@@ -225,6 +266,7 @@ describe("billing/enforcement", () => {
     mockUsage = { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
     mockWorkspace = null;
     mockWorkspaceReadCount = 0;
+    errorLogs = [];
     invalidatePlanCache();
   });
 
@@ -502,6 +544,33 @@ describe("billing/enforcement", () => {
     expect(result.warning).toBeDefined();
     expect(result.warning!.message).toContain("metering is temporarily unavailable");
     expect(result.warning!.metrics).toEqual([]);
+  });
+
+  // ── Bypass operator alert (#3428) ─────────────────────────────────
+  // The metering-read fail-open is deliberate (availability over revenue), but
+  // the triage decision (2026-06-12) requires the token-budget BYPASS to be
+  // OPERATOR-VISIBLE: a structured `log.error` carrying the orgId + reason so
+  // an operator paging on metering failures can scope the unmetered window.
+
+  it("emits an operator-visible bypass alert when the usage read fails (#3428)", async () => {
+    mockWorkspace = makeWorkspace();
+    mockUsageShouldThrow = true;
+
+    const result = expectAllowed(await checkPlanLimits("org-1", SEATS));
+    // The request is still ALLOWED — fail-open is preserved.
+    expect(result.warning).toBeDefined();
+
+    // …AND the bypass was surfaced loudly with actionable context.
+    const bypassAlert = errorLogs.find(
+      (e) =>
+        typeof e.ctx === "object" &&
+        e.ctx !== null &&
+        (e.ctx as Record<string, unknown>).reason === "metering_read_failed",
+    );
+    expect(bypassAlert).toBeDefined();
+    expect(bypassAlert!.ctx).toMatchObject({ orgId: "org-1", reason: "metering_read_failed" });
+    expect(String(bypassAlert!.msg)).toContain("#3428");
+    expect(String(bypassAlert!.msg)).toContain("BYPASSED");
   });
 
   // ── Caching ───────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import {
   hasInternalDB,
   internalExecute,
   internalQuery,
+  isInternalCircuitOpen,
 } from "@atlas/api/lib/db/internal";
 import { resolveBillingPeriod } from "@atlas/api/lib/billing/period";
 
@@ -45,9 +46,39 @@ export interface UsageEvent {
 /**
  * Log a usage event. Fire-and-forget — async errors are handled by
  * internalExecute's circuit-breaker. No-op if internal DB is not configured.
+ *
+ * DROPPED-EVENT POLICY (#3428): when the internal-DB circuit breaker is open,
+ * `internalExecute` silently increments a drop counter and returns — the usage
+ * row is lost, and the workspace's period SUM is **permanently under-counted**
+ * (no queue/replay in v1). The triage decision (2026-06-12) ACCEPTS that
+ * under-count exposure for availability, but requires the degradation to be
+ * OPERATOR-VISIBLE rather than silent. So before delegating to
+ * `internalExecute` we read {@link isInternalCircuitOpen} and emit a loud,
+ * structured `log.error` per dropped event — with workspace/user/event context
+ * an operator can act on — because the breaker itself only logs ONCE on open
+ * and a per-write debug line thereafter. If alert volume shows this happening
+ * in practice, revisit with a bounded fail-open / local buffer + replay.
  */
 export function logUsageEvent(event: UsageEvent): void {
   if (!hasInternalDB()) return;
+
+  // Operator-visible drop alert (#3428). The circuit being open means this
+  // write is about to be dropped on the floor by internalExecute and the
+  // event is gone for good — surface it loudly with enough context (workspace,
+  // user, event type, quantity) to scope the under-count, then still call
+  // internalExecute so the drop counter advances and recovery is re-triggered.
+  if (isInternalCircuitOpen()) {
+    log.error(
+      {
+        workspaceId: event.workspaceId,
+        userId: event.userId,
+        eventType: event.eventType,
+        quantity: event.quantity,
+        reason: "circuit_open",
+      },
+      "Usage event dropped — internal DB circuit breaker open; period usage will be permanently under-counted (#3428, no replay in v1)",
+    );
+  }
 
   // Error handling is delegated to internalExecute's .catch handler,
   // which logs failures with SQL context and trips the circuit breaker

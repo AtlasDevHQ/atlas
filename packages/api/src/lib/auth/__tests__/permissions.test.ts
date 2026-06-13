@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { canApprove, getUserRole, parseRole } from "../permissions";
+import { canApprove, getUserRole, parseRole, meetsRoleRequirement } from "../permissions";
 import { createAtlasUser } from "../types";
 import type { AtlasRole } from "../types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
@@ -220,4 +220,30 @@ describe("full permission matrix", () => {
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// meetsRoleRequirement() — #3508 MCP dispatch RBAC gate primitive
+// ---------------------------------------------------------------------------
+
+describe("meetsRoleRequirement()", () => {
+  it("fails closed for an undefined user (no bound identity)", () => {
+    expect(meetsRoleRequirement(undefined, "member")).toBe(false);
+    expect(meetsRoleRequirement(undefined, "admin")).toBe(false);
+  });
+
+  it("allows at-or-above the threshold and denies below it (managed roles)", () => {
+    expect(meetsRoleRequirement(makeUser("managed", "member"), "admin")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed", "admin"), "admin")).toBe(true);
+    expect(meetsRoleRequirement(makeUser("managed", "owner"), "admin")).toBe(true);
+    expect(meetsRoleRequirement(makeUser("managed", "platform_admin"), "admin")).toBe(true);
+    // owner threshold: admin is below, owner/platform_admin at-or-above.
+    expect(meetsRoleRequirement(makeUser("managed", "admin"), "owner")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed", "owner"), "owner")).toBe(true);
+  });
+
+  it("uses the auth-mode default role when none is set (managed → member fails admin gate)", () => {
+    expect(meetsRoleRequirement(makeUser("managed"), "admin")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed"), "member")).toBe(true);
+  });
 });

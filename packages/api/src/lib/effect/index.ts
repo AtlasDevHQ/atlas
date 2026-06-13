@@ -178,6 +178,20 @@ export {
   type AtlasToolkitShape,
 } from "./toolkit";
 
+// ── SemanticGenerator Service (#3506 — MCP V2 Blocker #1) ───────────
+
+export {
+  SemanticGenerator,
+  SemanticGeneratorLive,
+  createSemanticGeneratorTestLayer,
+  type SemanticGeneratorShape,
+  type DatasourceProfiler,
+  type ProfileConnectionOptions,
+  type ProfileConnectionResult,
+  type ProfileAndGenerateOptions,
+  type ProfileAndGenerateResult,
+} from "./semantic-generator";
+
 // ── SQL Client Service (native @effect/sql) ─────────────────────────
 
 export {

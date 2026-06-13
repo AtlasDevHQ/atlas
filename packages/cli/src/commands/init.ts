@@ -27,13 +27,13 @@ import {
   listMySQLObjects,
 } from "@atlas/api/lib/profiler";
 // Mechanical generation runs through the shared semantic engine (issue #3233)
-// so the CLI and the web wizard emit identical YAML.
+// so the CLI and the web wizard emit identical YAML. The full entity / catalog /
+// glossary / metric assembly is delegated to `generateSemanticLayer` — the same
+// shared core the `SemanticGenerator` service uses (Blocker #1, #3506) — so the
+// CLI and a future MCP datasource tool can never drift.
 import {
   analyzeTableProfiles,
-  generateEntityYAML,
-  generateCatalogYAML,
-  generateMetricYAML,
-  generateGlossaryYAML,
+  generateSemanticLayer,
 } from "@atlas/api/lib/semantic/generate";
 import {
   createProgressTracker,
@@ -746,48 +746,39 @@ async function profileDatasource(
     }
   }
 
-  // Generate entity YAMLs
+  // Generate the full semantic layer through the shared engine, then write
+  // the in-memory artifacts to disk. The CLI owns the file I/O and console UX;
+  // `generateSemanticLayer` owns the YAML assembly (same engine as the
+  // SemanticGenerator service — #3506).
   console.log(`\nGenerating semantic layer...\n`);
 
-  for (const profile of profiles) {
-    const filePath = path.join(
-      entitiesOutDir,
-      `${profile.table_name}.yml`,
-    );
-    fs.writeFileSync(
-      filePath,
-      generateEntityYAML(
-        profile,
-        profiles,
-        dbType,
-        schemaArg,
-        sourceId,
-      ),
-    );
+  const generated = generateSemanticLayer(profiles, {
+    dbType,
+    schema: schemaArg,
+    sourceId,
+  });
+
+  for (const entity of generated.entities) {
+    const filePath = path.join(entitiesOutDir, entity.fileName);
+    fs.writeFileSync(filePath, entity.yaml);
     console.log(`  wrote ${filePath}`);
   }
 
   // Generate catalog
   const catalogPath = path.join(outputBase, "catalog.yml");
-  fs.writeFileSync(catalogPath, generateCatalogYAML(profiles));
+  fs.writeFileSync(catalogPath, generated.catalog);
   console.log(`  wrote ${catalogPath}`);
 
   // Generate glossary
   const glossaryPath = path.join(outputBase, "glossary.yml");
-  fs.writeFileSync(glossaryPath, generateGlossaryYAML(profiles));
+  fs.writeFileSync(glossaryPath, generated.glossary);
   console.log(`  wrote ${glossaryPath}`);
 
   // Generate metric files per table
-  for (const profile of profiles) {
-    const metricYaml = generateMetricYAML(profile, schemaArg, dbType);
-    if (metricYaml) {
-      const filePath = path.join(
-        metricsOutDir,
-        `${profile.table_name}.yml`,
-      );
-      fs.writeFileSync(filePath, metricYaml);
-      console.log(`  wrote ${filePath}`);
-    }
+  for (const metric of generated.metrics) {
+    const filePath = path.join(metricsOutDir, metric.fileName);
+    fs.writeFileSync(filePath, metric.yaml);
+    console.log(`  wrote ${filePath}`);
   }
 
   // Overlay hand-crafted semantic files with richer descriptions for the demo dataset
@@ -1060,42 +1051,30 @@ export async function handleInit(args: string[]): Promise<void> {
 
     // DuckDB uses PostgreSQL-compatible SQL — "public" schema is not meaningful
     const duckSchema = "main";
-    for (const profile of profiles) {
-      const filePath = path.join(
-        entitiesOutDir,
-        `${profile.table_name}.yml`,
-      );
-      fs.writeFileSync(
-        filePath,
-        generateEntityYAML(
-          profile,
-          profiles,
-          "duckdb" as DBType,
-          duckSchema,
-          sourceArg,
-        ),
-      );
+    const generated = generateSemanticLayer(profiles, {
+      dbType: "duckdb" as DBType,
+      schema: duckSchema,
+      sourceId: sourceArg,
+    });
+
+    for (const entity of generated.entities) {
+      const filePath = path.join(entitiesOutDir, entity.fileName);
+      fs.writeFileSync(filePath, entity.yaml);
       console.log(`  wrote ${filePath}`);
     }
 
     const catalogPath = path.join(outputBase, "catalog.yml");
-    fs.writeFileSync(catalogPath, generateCatalogYAML(profiles));
+    fs.writeFileSync(catalogPath, generated.catalog);
     console.log(`  wrote ${catalogPath}`);
 
     const glossaryPath = path.join(outputBase, "glossary.yml");
-    fs.writeFileSync(glossaryPath, generateGlossaryYAML(profiles));
+    fs.writeFileSync(glossaryPath, generated.glossary);
     console.log(`  wrote ${glossaryPath}`);
 
-    for (const profile of profiles) {
-      const metricYaml = generateMetricYAML(profile, duckSchema, "duckdb" as DBType);
-      if (metricYaml) {
-        const filePath = path.join(
-          metricsOutDir,
-          `${profile.table_name}.yml`,
-        );
-        fs.writeFileSync(filePath, metricYaml);
-        console.log(`  wrote ${filePath}`);
-      }
+    for (const metric of generated.metrics) {
+      const filePath = path.join(metricsOutDir, metric.fileName);
+      fs.writeFileSync(filePath, metric.yaml);
+      console.log(`  wrote ${filePath}`);
     }
 
     const duckDbUrl = `duckdb://${dbPath}`;

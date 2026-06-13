@@ -203,6 +203,11 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
     await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`);
     await runMigrations(pool, { skip: MANAGED_AUTH_MIGRATIONS });
     // Minimal `organization` — only the columns getWorkspaceDetails reads.
+    // `suspension_source` mirrors migration 0131 (a MANAGED_AUTH_MIGRATION,
+    // so it's skipped by `runMigrations` above and never created here): the
+    // reader's SELECT lists it, so the fixture must carry it or every
+    // `getWorkspaceDetails` call fails with `column "suspension_source"
+    // does not exist`. Nullable TEXT, matching the migration's column.
     await pool.query(
       `CREATE TABLE organization (
          id text PRIMARY KEY,
@@ -214,6 +219,7 @@ describeIfPg("checkChatIntegrationLimitAndInstall (real Postgres)", () => {
          "stripeCustomerId" text,
          trial_ends_at timestamptz,
          suspended_at timestamptz,
+         suspension_source text,
          deleted_at timestamptz,
          region text,
          region_assigned_at timestamptz,

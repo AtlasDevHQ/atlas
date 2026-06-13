@@ -110,9 +110,12 @@ function tierVariant(tier: string): "default" | "secondary" | "outline" | "destr
   }
 }
 
-function overageColor(status: string): string {
+// Param is typed to the wire enum (not bare `string`) so an OverageStatus
+// member added in @useatlas/schemas surfaces here as a missing case rather
+// than silently falling through to the muted default. The dead "exceeded"
+// arm — never a member of OverageStatus — was removed in #3438.
+function overageColor(status: BillingStatus["usage"]["tokenOverageStatus"]): string {
   switch (status) {
-    case "exceeded":
     case "hard_limit":
       return "text-destructive";
     case "warning":
@@ -845,9 +848,27 @@ function UsageShell({ data }: { data: BillingStatus }) {
           label="Connections"
           value={<ResourceValue count={connections.count} max={connections.max} />}
         />
+        {/* Chat-integration cap (#3438). The wire shape carries only the cap
+            (`limits.maxChatIntegrations`), not a current count — the install
+            gate enforces it server-side — so render the limit alone rather
+            than a count/max ratio. */}
+        <DetailRow label="Chat integrations" value={<CapValue max={limits.maxChatIntegrations} />} />
       </DetailList>
     </Shell>
   );
+}
+
+/**
+ * Render a plan cap that has no current-count companion in the wire shape
+ * (e.g. chat integrations, #3438): "Unlimited" when null, otherwise the
+ * bare limit. Unlike {@link ResourceValue} there is no count/max ratio or
+ * near-limit warning — enforcement happens server-side at install time.
+ */
+function CapValue({ max }: { max: number | null }) {
+  if (max === null) {
+    return <span className="text-muted-foreground">Unlimited</span>;
+  }
+  return <span className="font-mono tabular-nums">{max}</span>;
 }
 
 function ResourceValue({ count, max }: { count: number; max: number | null }) {

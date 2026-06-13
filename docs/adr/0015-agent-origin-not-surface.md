@@ -1,0 +1,5 @@
+# Agent invocation origin is named "origin", not "surface"
+
+The channel an agent query/mutation arrives through — `chat` / `mcp` / `scheduler` / `slack`, which approval rules match on and the audit log records — was historically called the "approval surface" (`approvalSurface` in code, the `surface` column on `approval_rules` / `approval_queue`, migrations 0049/0052). But "surface" is already the canonical glossary term for a pillar's user-facing admin page ("one surface per pillar"), so the two collided in prose and would have collided harder once MCP added config tools ("configuration surface"). We renamed the invocation-channel concept to **agent origin** (`origin` column, `agentOrigin` in code) and reserved "surface" for the pillar page.
+
+Done as a one-shot breaking rename during the pre-customer clean-break window (see CONTEXT.md "Deployment posture") — no expand-contract migration needed. "channel" and "source" were rejected as themselves overloaded (Slack/proactive channels; "source" is the deprecated alias for Connection group being unified away).

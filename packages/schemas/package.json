@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/schemas",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Shared Zod schemas for Atlas wire format — single source of truth for API route validation and web response parsing",
   "type": "module",
   "private": true,

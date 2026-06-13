@@ -83,6 +83,13 @@ export interface BillingLimits {
   totalTokenBudget: number | null;
   maxSeats: number | null;
   maxConnections: number | null;
+  /**
+   * Max distinct chat-pillar integrations the workspace may install (null =
+   * unlimited). Enforced server-side by `checkChatIntegrationLimitAndInstall`
+   * via `PlanLimits.maxChatIntegrations` (#2953, #3001); surfaced here so the
+   * billing page can display the cap alongside seats / connections (#3438).
+   */
+  maxChatIntegrations: number | null;
 }
 
 /** Current-period usage counters. */
@@ -199,6 +206,7 @@ export const BillingLimitsSchema = z.object({
   totalTokenBudget: z.number().nullable(),
   maxSeats: z.number().nullable(),
   maxConnections: z.number().nullable(),
+  maxChatIntegrations: z.number().nullable(),
 }) satisfies z.ZodType<BillingLimits>;
 
 export const BillingUsageSchema = z.object({

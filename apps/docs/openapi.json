@@ -73315,13 +73315,20 @@
                             "number",
                             "null"
                           ]
+                        },
+                        "maxChatIntegrations": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
                         }
                       },
                       "required": [
                         "tokenBudgetPerSeat",
                         "totalTokenBudget",
                         "maxSeats",
-                        "maxConnections"
+                        "maxConnections",
+                        "maxChatIntegrations"
                       ]
                     },
                     "usage": {

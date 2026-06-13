@@ -221,6 +221,23 @@ describe("billing/plans", () => {
       expect(plans.map((p) => p.name)).toEqual(["starter", "pro", "business"]);
     });
 
+    it("business plan limits reference PLANS.business.limits, not hardcoded UNLIMITED (#3438)", () => {
+      // Drift trap: the business stripe-plan limits previously hardcoded
+      // seats/connections/chatIntegrations: -1 instead of reading from the
+      // canonical PLANS definition like starter/pro do. Assert they track
+      // the source of truth so a future cap change in PLANS.business can't
+      // silently diverge from what Stripe advertises.
+      process.env.STRIPE_BUSINESS_PRICE_ID = "price_biz_789";
+      const business = getStripePlans().find((p) => p.name === "business");
+      const limits = getPlanLimits("business");
+      expect(business?.limits).toEqual({
+        tokenBudgetPerSeat: limits.tokenBudgetPerSeat,
+        seats: limits.maxSeats,
+        connections: limits.maxConnections,
+        chatIntegrations: limits.maxChatIntegrations,
+      });
+    });
+
     it("sets seatPriceId === priceId on every plan (seat-only auto-managed seats, #3418)", () => {
       // seatPriceId === priceId is the plugin's "seat-only plan" shape:
       // checkout emits a single per-seat line item with quantity = member

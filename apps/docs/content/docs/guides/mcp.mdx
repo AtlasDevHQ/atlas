@@ -108,8 +108,8 @@ Claude Desktop also supports DCR natively — point it at the URL alone and it w
 The CLI ships an `mcp add` subcommand that writes to the right scope automatically:
 
 ```bash
-claude mcp add atlas --scope user \
-  --url https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse \
+claude mcp add atlas --scope user --transport sse \
+  https://mcp.useatlas.dev/mcp/<your_workspace_id>/sse \
   --header "Authorization: Bearer <jwt>"
 ```
 
@@ -222,10 +222,10 @@ The CLI knows how to launch a stdio server by command + args:
 
 ```bash
 claude mcp add atlas --scope user \
-  -- bun run mcp \
   --env ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db \
   --env ATLAS_PROVIDER=anthropic \
-  --env ANTHROPIC_API_KEY=sk-ant-...
+  --env ANTHROPIC_API_KEY=sk-ant-... \
+  -- bun run mcp
 ```
 
 Run from inside your Atlas project root so the implicit `cwd` resolves the `mcp` script. `--scope user` makes Atlas available across every project; `--scope project` scopes to the current repo.
@@ -573,7 +573,7 @@ Canonical prompts are **gated by workspace** so real-data deployments don't see 
 | `always` | Always expose, regardless of dataset |
 | `never` | Always hide |
 
-Flip the toggle from **Admin → Settings → MCP**. Same-instance writes propagate immediately (the in-process settings cache updates synchronously on save); cross-replica SaaS propagation is bounded by the periodic settings refresh (`ATLAS_SETTINGS_REFRESH_INTERVAL`, default 30s). No MCP process restart required either way.
+Flip the toggle from **Admin → Settings**, in the `ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS` row (the legacy `/admin/settings/mcp` path now redirects to that anchor on the consolidated settings page). Same-instance writes propagate immediately (the in-process settings cache updates synchronously on save); cross-replica SaaS propagation is bounded by the periodic settings refresh (`ATLAS_SETTINGS_REFRESH_INTERVAL`, default 30s). No MCP process restart required either way.
 
 ### Semantic layer patterns
 

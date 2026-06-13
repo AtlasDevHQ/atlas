@@ -1831,6 +1831,54 @@ describe("hosted MCP — capacity", () => {
       handle.close();
     }
   });
+
+  it("sweeps multiple idle sessions in one pass while preserving a live-stream session", async () => {
+    // The sweep loop must be SELECTIVE within a mixed population, not
+    // all-or-nothing: evict every aged no-stream session while skipping any
+    // with `activeStreams > 0`. Prior tests only ever drove a lone session.
+    bindToken(TOKEN_A, {
+      sub: SUB_A,
+      azp: CLIENT_A,
+      scope: "openid mcp:read",
+      [WORKSPACE_CLAIM]: ORG_A,
+    });
+    process.env.ATLAS_MCP_MAX_SESSIONS = "5";
+    const handle = await startServer();
+    try {
+      // Two abandoned sessions (raw init, body drained → no live stream).
+      const a = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await a.body?.cancel().catch(() => {});
+      const b = await rawHostedInit(handle, ORG_A, TOKEN_A);
+      await b.body?.cancel().catch(() => {});
+
+      // One connected session holding a live GET notification stream.
+      const connected = new Client({ name: "client-live", version: "0.0.1" });
+      const connectedTransport = new StreamableHTTPClientTransport(
+        new URL(`${handle.url}/mcp/${ORG_A}/sse`),
+        { requestInit: { headers: { Authorization: `Bearer ${TOKEN_A}` } } },
+      );
+      await connected.connect(connectedTransport);
+
+      expect(_hostedSessionCount()).toBe(3);
+
+      // The SDK client's standalone GET notification stream opens asynchronously
+      // after connect() resolves; give it a beat to establish so `activeStreams`
+      // is > 0 before the sweep (mirrors the lone live-stream test above).
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // A far-future sweep ages every session past the idle window. Both
+      // abandoned sessions must be evicted in the SAME pass while the
+      // live-stream one is skipped.
+      const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+      const evicted = _sweepIdleSessionsForTests(farFuture, 60_000);
+      expect(evicted).toBe(2);
+      expect(_hostedSessionCount()).toBe(1);
+
+      await connected.close();
+    } finally {
+      handle.close();
+    }
+  });
 });
 
 describe("hosted MCP — audit failure", () => {

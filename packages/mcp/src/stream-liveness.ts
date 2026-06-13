@@ -20,9 +20,13 @@
  * the sweep skips it; when it closes we release the mark and reset the idle
  * clock from the moment the client actually disconnected.
  *
- * Only the GET notification stream is wrapped — POST tool-call responses are
- * short-lived and tied to a just-refreshed `lastSeenAt`, so wrapping them
- * would add per-chunk overhead on the hot path for no idle-eviction benefit.
+ * Only the GET notification stream is wrapped: it's the one stream that can
+ * stay open while *quiet*, so it's the only one a `lastSeenAt`-based sweep can
+ * wrongly age out. A POST response can also be `text/event-stream` (a
+ * long-running tool call streams its result), but it's actively producing and
+ * closes once the result is sent — and `lastSeenAt` was just refreshed at
+ * dispatch — so it's never the eviction target. Wrapping POSTs would add
+ * per-chunk overhead on the hot path for no idle-eviction benefit.
  */
 
 export interface StreamLifetimeHooks {
@@ -30,6 +34,15 @@ export interface StreamLifetimeHooks {
   readonly onOpen: () => void;
   /** Fires once when that stream ends — client disconnect, server end, or error. */
   readonly onClose: () => void;
+  /**
+   * Fires if the underlying source stream throws mid-flight, just before the
+   * error is propagated to the client via `controller.error`. The wrapper is
+   * transport-agnostic and has no logger of its own, so this is the seam a
+   * caller uses to log the failure server-side — `controller.error` only ever
+   * reaches the client, which on a disconnecting SSE socket is often already
+   * gone, so without this the fault would be operator-invisible.
+   */
+  readonly onError?: (err: unknown) => void;
 }
 
 /**
@@ -72,8 +85,11 @@ export function trackResponseStreamLifetime(
         }
         controller.enqueue(value);
       } catch (err) {
-        // The source stream errored — propagate to the client and release
-        // the liveness mark. Normalize per the repo's caught-error rule.
+        // The source stream errored. Surface it to the caller for server-side
+        // logging (controller.error only reaches the client), release the
+        // liveness mark, then propagate. Normalize per the repo's caught-error
+        // rule.
+        hooks.onError?.(err);
         finish();
         controller.error(err instanceof Error ? err : new Error(String(err)));
       }

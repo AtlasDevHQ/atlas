@@ -53,6 +53,54 @@ describe("trackResponseStreamLifetime", () => {
     expect(closes).toBe(1);
   });
 
+  it("fires onError then onClose and propagates when the source errors mid-stream", async () => {
+    let closes = 0;
+    let onErrorArg: unknown = null;
+    const boom = new Error("source exploded");
+    const src = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        // Error on the first pull so the wrapper's catch branch runs.
+        controller.error(boom);
+      },
+    });
+
+    const tracked = trackResponseStreamLifetime(sseResponse(src), {
+      onOpen: () => {},
+      onClose: () => closes++,
+      onError: (err) => {
+        onErrorArg = err;
+      },
+    });
+
+    const reader = tracked.body!.getReader();
+    // The error must propagate to the consumer (not be swallowed)...
+    await expect(reader.read()).rejects.toThrow("source exploded");
+    // ...and the caller must be notified for server-side logging, exactly once,
+    // with the original error, alongside the single onClose.
+    expect(onErrorArg).toBe(boom);
+    expect(closes).toBe(1);
+  });
+
+  it("normalizes a non-Error rejection before propagating", async () => {
+    const errors: unknown[] = [];
+    const src = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error("plain string failure");
+      },
+    });
+
+    const tracked = trackResponseStreamLifetime(sseResponse(src), {
+      onOpen: () => {},
+      onClose: () => {},
+      onError: (err) => errors.push(err),
+    });
+
+    const reader = tracked.body!.getReader();
+    await expect(reader.read()).rejects.toThrow("plain string failure");
+    // onError sees the raw value; the propagated error is wrapped in an Error.
+    expect(errors).toEqual(["plain string failure"]);
+  });
+
   it("passes a byte-for-byte copy of the source through", async () => {
     const payload = "event: message\ndata: {\"x\":1}\n\nevent: ping\ndata: {}\n\n";
     const src = new ReadableStream<Uint8Array>({

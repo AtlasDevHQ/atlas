@@ -540,4 +540,97 @@ describe("SSE server — session hardening (#3492)", () => {
 
     await connected.close();
   });
+
+  it("tears down an unregistered session (non-initialize first frame) without leaking a server", async () => {
+    // This guards the shared `!registered` teardown logic, which hosted.ts
+    // mirrors line-for-line. The close-spy assertion is only achievable here
+    // because startSseServer takes the server factory as a param; hosted.ts
+    // builds its per-session server internally, so this test stands in for
+    // both transports.
+    let created = 0;
+    let closed = 0;
+    handle = await startSseServer(
+      async () => {
+        created++;
+        const server = await createAtlasMcpServer({ actor: SSE_ACTOR });
+        const origClose = server.close.bind(server);
+        // Spy on close() so we can prove the orphaned server is torn down.
+        server.close = async () => {
+          closed++;
+          return origClose();
+        };
+        return server;
+      },
+      { port: 0, maxSessions: 1 },
+    );
+
+    // A well-formed but non-initialize first frame with no session id: the SDK
+    // allocates a transport + server, then rejects the frame without firing
+    // `onsessioninitialized`, so the session never registers. Without the
+    // `!registered` teardown this leaks one McpServer per request.
+    const res = await fetch(`http://localhost:${handle.server.port}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "ping", id: 1 }),
+    });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    await res.body?.cancel().catch(() => {});
+
+    // Nothing registered, and the orphaned server was closed rather than leaked.
+    expect(handle._sessionCount()).toBe(0);
+    expect(created).toBe(1);
+    expect(closed).toBe(1);
+
+    // The cap slot was never consumed — a real init still succeeds under cap=1.
+    const client = new Client({ name: "client-after", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${handle.server.port}/mcp`),
+    );
+    await client.connect(transport);
+    expect(handle._sessionCount()).toBe(1);
+
+    await client.close();
+  });
+
+  it("sweeps multiple idle sessions in one pass while preserving a live-stream session", async () => {
+    handle = await startSseServer(() => createAtlasMcpServer({ actor: SSE_ACTOR }), {
+      port: 0,
+      maxSessions: 5,
+    });
+    const port = handle.server.port;
+
+    // Two abandoned sessions (raw init, body drained → no live stream).
+    const a = await rawInitRequest(port);
+    await a.body?.cancel().catch(() => {});
+    const c = await rawInitRequest(port);
+    await c.body?.cancel().catch(() => {});
+
+    // One connected session holding a live GET notification stream.
+    const connected = new Client({ name: "client-live", version: "0.0.1" });
+    const connectedTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${port}/mcp`),
+    );
+    await connected.connect(connectedTransport);
+
+    expect(handle._sessionCount()).toBe(3);
+
+    // The SDK client's standalone GET notification stream opens asynchronously
+    // after connect() resolves; give it a beat to establish so `activeStreams`
+    // is > 0 before the sweep (mirrors the lone live-stream test above).
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // A far-future sweep ages every session past the idle window. The loop must
+    // evict BOTH abandoned sessions (selective, not all-or-nothing) and skip the
+    // one with `activeStreams > 0` — proving the live-stream guard holds within a
+    // mixed population, not just for a lone session.
+    const farFuture = Date.now() + 24 * 60 * 60 * 1000; // +1 day
+    const evicted = handle._sweepIdleSessionsForTests(farFuture, 60_000);
+    expect(evicted).toBe(2);
+    expect(handle._sessionCount()).toBe(1);
+
+    await connected.close();
+  });
 });

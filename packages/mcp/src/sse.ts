@@ -294,9 +294,9 @@ export async function startSseServer(
     // A GET opens the standalone SSE notification stream, which stays open
     // for the life of the connection. Track its liveness so the idle sweep
     // never evicts a session that still has a client listening — `lastSeenAt`
-    // alone would age out a connected-but-quiet client mid-stream. POST/DELETE
-    // responses are short-lived and tied to the just-refreshed `lastSeenAt`,
-    // so they need no tracking.
+    // alone would age out a connected-but-quiet client mid-stream. A POST/DELETE
+    // is actively producing and closes when done (and `lastSeenAt` was just
+    // refreshed), so it's never the eviction target and needs no tracking.
     if (req.method === "GET") {
       return trackResponseStreamLifetime(response, {
         onOpen: () => {
@@ -307,6 +307,13 @@ export async function startSseServer(
           // Reset the idle clock from the moment the client actually
           // disconnected, not from when the stream opened.
           entry.lastSeenAt = Date.now();
+        },
+        onError: (err) => {
+          const detail = err instanceof Error ? err.message : String(err);
+          log.debug(
+            { sessionId: entry.transport.sessionId, err: detail },
+            "SSE notification stream errored",
+          );
         },
       });
     }

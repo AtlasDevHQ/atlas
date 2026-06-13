@@ -61,6 +61,7 @@ import {
 import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import { createMcpLogger } from "./logger.js";
+import { runMetricOutputShape } from "./structured-output.js";
 
 const log = createMcpLogger("mcp:semantic-tools");
 
@@ -130,6 +131,21 @@ async function rateLimitOrNull(args: {
 function toJsonContent(value: unknown): CallToolResult {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+/**
+ * Like {@link toJsonContent} but also attaches `structuredContent` (#3498).
+ * Used by tools that declare an `outputSchema` (runMetric): the MCP SDK
+ * requires `structuredContent` on every non-error result once an output
+ * schema is present. The text block is retained for clients that don't
+ * consume structured output; both are built from the same object so they
+ * can't drift.
+ */
+function toStructuredContent(value: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    structuredContent: value,
   };
 }
 
@@ -426,6 +442,9 @@ export function registerSemanticTools(
         readOnlyHint: true,
         openWorldHint: true,
       },
+      // #3498 — typed result so agents parse value/columns/rows instead of
+      // re-parsing the text block (which is retained below).
+      outputSchema: runMetricOutputShape,
     },
     async ({ id, filters, connectionId }): Promise<CallToolResult> =>
       traceMcpToolCall(
@@ -550,7 +569,7 @@ export function registerSemanticTools(
                 // agent doesn't retry and silently duplicate the request.
                 // Mirrors the same branch in tools.ts:executeSQL.
                 if (result.approval_required === true) {
-                  return toJsonContent({
+                  return toStructuredContent({
                     id: metric.id,
                     approval_required: true,
                     approval_request_id: result.approval_request_id,
@@ -594,7 +613,7 @@ export function registerSemanticTools(
                   ? rows[0][columns[0]]
                   : rows;
 
-              return toJsonContent({
+              return toStructuredContent({
                 id: metric.id,
                 label: metric.label,
                 value,

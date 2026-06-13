@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { getRequestContext } from "@atlas/api/lib/logger";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
+import { runMetricOutputSchema } from "../structured-output.js";
 
 const TEST_ACTOR = createAtlasUser("u_sem", "managed", "sem@test", {
   role: "admin",
@@ -512,6 +513,27 @@ describe("MCP semantic tools", () => {
     // would silently break MCP clients that parse this as a Date. Pin
     // the format with a regex.
     expect(parsed.executed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  it("runMetric returns structuredContent conforming to the declared outputSchema (#3498)", async () => {
+    const { client } = await createTestClient();
+    const result = await client.callTool({
+      name: "runMetric",
+      arguments: { id: "orders_count" },
+    });
+
+    expect(result.structuredContent).toBeDefined();
+    const validated = runMetricOutputSchema.parse(result.structuredContent);
+    expect(validated.id).toBe("orders_count");
+    expect(validated.value).toBe(42);
+    expect(validated.row_count).toBe(1);
+
+    // Text block retained and mirrors the structured payload (#3498).
+    expect(JSON.parse(getContentText(result.content))).toEqual(result.structuredContent);
+
+    // The SDK advertises the outputSchema on the tool definition.
+    const { tools } = await client.listTools();
+    expect(tools.find((t) => t.name === "runMetric")?.outputSchema).toBeDefined();
   });
 
   // Scalar coercion edge cases — `0`, `false`, and `null` are the most

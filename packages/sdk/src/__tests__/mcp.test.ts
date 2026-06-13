@@ -284,6 +284,42 @@ describe("completeConnect", () => {
     expect(params.get("redirect_uri")).toBe(REDIRECT_URI);
   });
 
+  // #3526 — without the RFC 8707 `resource` indicator Better Auth's
+  // oauth-provider mints an opaque token, and the immediate
+  // `decodeJwtPayload` below throws `malformed_jwt`. Assert the default
+  // `${apiUrl}/mcp` resource rides the token request, mirroring the CLI
+  // regression (#3493) covered in `plugins/mcp/__tests__/init/hosted.test.ts`.
+  test("sends RFC 8707 resource (${apiUrl}/mcp) on the token exchange", async () => {
+    const { fetchImpl, calls } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: VALID_TOKEN, expires_in: 3600 }),
+    });
+
+    await completeConnect({
+      ...baseComplete,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const params = new URLSearchParams(calls[0].body);
+    expect(params.get("resource")).toBe(`${API_URL}/mcp`);
+  });
+
+  test("honours an explicit resource override on the token exchange", async () => {
+    const { fetchImpl, calls } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: VALID_TOKEN, expires_in: 3600 }),
+    });
+
+    await completeConnect({
+      ...baseComplete,
+      resource: `${API_URL}/mcp/custom`,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    const params = new URLSearchParams(calls[0].body);
+    expect(params.get("resource")).toBe(`${API_URL}/mcp/custom`);
+  });
+
   test("state mismatch → callback_state_mismatch", async () => {
     await expect(
       completeConnect({

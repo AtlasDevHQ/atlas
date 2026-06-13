@@ -232,6 +232,21 @@ export interface CompleteConnectOptions {
    * Pass alongside `tokenEndpoint`.
    */
   issuer?: string;
+  /**
+   * RFC 8707 resource indicator bound to the issued token. Defaults to
+   * `${apiUrl}/mcp` — the hosted MCP endpoint this token authenticates
+   * against. Better Auth's `@better-auth/oauth-provider` only mints a
+   * **signed JWT** access token (vs an opaque one) when the token
+   * request carries a `resource`; this `completeConnect` flow immediately
+   * `decodeJwtPayload`s the token to read the workspace claim, so without
+   * the indicator a real hosted exchange yields an opaque token and fails
+   * with `malformed_jwt` (#3526 — same bug class as the CLI's #3493).
+   *
+   * Pass an explicit value only when the hosted MCP endpoint is mounted
+   * somewhere other than `${apiUrl}/mcp`; otherwise leave it unset and
+   * the default applies.
+   */
+  resource?: string;
   /** Test seam. */
   fetchImpl?: typeof fetch;
 }
@@ -461,6 +476,12 @@ export async function completeConnect(
         redirectUri: options.redirectUri,
         code: options.code,
         codeVerifier: options.codeVerifier,
+        // RFC 8707 — bind the issued token to the hosted MCP endpoint so
+        // the oauth-provider mints a signed JWT (not an opaque token) that
+        // `decodeJwtPayload` below can read. Defaults to `${apiUrl}/mcp`,
+        // matching the CLI's hosted flow (#3493). See `resource` on
+        // `CompleteConnectOptions`.
+        resource: options.resource ?? `${apiUrl}/mcp`,
       },
       { fetchImpl },
     );

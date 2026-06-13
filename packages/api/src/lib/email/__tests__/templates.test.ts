@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { renderOnboardingEmail, renderInvitationEmail, renderTrialExpiryEmail } from "../templates";
+import { renderOnboardingEmail, renderInvitationEmail, renderTrialExpiryEmail, renderDunningEmail } from "../templates";
 import type { OnboardingEmailStep } from "@useatlas/types";
 
 const BASE_URL = "https://app.useatlas.dev";
@@ -194,6 +194,55 @@ describe("renderTrialExpiryEmail", () => {
       },
     });
     expect(result.subject).toBe("Your Acme Corp trial has expired");
+    expect(result.html).toContain("Acme Corp");
+  });
+});
+
+describe("renderDunningEmail", () => {
+  it("renders the past_due warning with the billing CTA, entitlements-retained copy", () => {
+    const result = renderDunningEmail("dunning_past_due", { baseUrl: BASE_URL });
+    expect(result.subject).toBe("Action needed: your Atlas payment didn't go through");
+    expect(result.html).toContain(`${BASE_URL}/admin/billing`);
+    expect(result.html).toContain("still fully active");
+    expect(result.html).toContain("Update payment method");
+  });
+
+  it("renders the unpaid notice as a workspace-paused block", () => {
+    const result = renderDunningEmail("dunning_unpaid", { baseUrl: BASE_URL });
+    expect(result.subject).toBe("Your Atlas workspace is paused — update your payment method");
+    expect(result.html).toContain("paused for your workspace");
+  });
+
+  it("renders the suspended final notice", () => {
+    const result = renderDunningEmail("dunning_suspended", { baseUrl: BASE_URL });
+    expect(result.subject).toBe("Final notice: your Atlas workspace has been suspended");
+    expect(result.html).toContain("suspended");
+  });
+
+  it("renders the recovery confirmation", () => {
+    const result = renderDunningEmail("dunning_recovered", { baseUrl: BASE_URL });
+    expect(result.subject).toBe("You're all set — Atlas access restored");
+    expect(result.html).toContain("fully active again");
+  });
+
+  it("is transactional — carries no unsubscribe link", () => {
+    const result = renderDunningEmail("dunning_past_due", { baseUrl: BASE_URL });
+    expect(result.html).toContain("billing notice");
+    expect(result.html).not.toContain("Unsubscribe");
+  });
+
+  it("applies workspace branding to subject and body", () => {
+    const result = renderDunningEmail("dunning_unpaid", {
+      baseUrl: BASE_URL,
+      branding: {
+        logoUrl: null,
+        logoText: "Acme Corp",
+        primaryColor: "#FF5500",
+        faviconUrl: null,
+        hideAtlasBranding: true,
+      },
+    });
+    expect(result.subject).toBe("Your Acme Corp workspace is paused — update your payment method");
     expect(result.html).toContain("Acme Corp");
   });
 });

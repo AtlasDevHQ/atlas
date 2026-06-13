@@ -1014,3 +1014,172 @@ describe("invoice.payment_failed", () => {
     expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
   });
 });
+
+// ── invoice.payment_succeeded / paid → recovery (#3424) ─────────────
+
+describe("invoice payment recovery (#3424)", () => {
+  function invoicePaidEvent(type: "invoice.payment_succeeded" | "invoice.paid") {
+    return {
+      id: `evt_${type.replace(/\./g, "_")}`,
+      type,
+      created: EPOCH,
+      data: {
+        object: {
+          id: "in_paid_1",
+          customer: "cus_1",
+          parent: { subscription_details: { subscription: "sub_stripe_1" } },
+        },
+      },
+    };
+  }
+
+  /** The subscription-table lookup resolves the org for the paid invoice. */
+  function resolveOrgQuery(sql: string) {
+    return sql.includes(`"stripeSubscriptionId" = $1`) ? [{ referenceId: "org-1" }] : null;
+  }
+
+  it("unsuspends a suspended workspace when the failed invoice is paid", async () => {
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    // The workspace is currently suspended (set by an earlier 3-attempt failure).
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+    );
+    const auth = makeAuth(emptyDB());
+
+    const res = await postWebhook(auth, invoicePaidEvent("invoice.payment_succeeded"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "active");
+  });
+
+  it("treats invoice.paid the same as invoice.payment_succeeded", async () => {
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+    );
+    const auth = makeAuth(emptyDB());
+
+    const res = await postWebhook(auth, invoicePaidEvent("invoice.paid"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "active");
+  });
+
+  it("does NOT change status when the workspace is already active (idempotent recovery)", async () => {
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "active" }),
+    );
+    const auth = makeAuth(emptyDB());
+
+    const res = await postWebhook(auth, invoicePaidEvent("invoice.paid"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+  });
+
+  it("end-to-end: fail→suspend→pay→unsuspend", async () => {
+    mockInternalQuery.mockImplementation(ledgerAwareQuery(resolveOrgQuery));
+    const auth = makeAuth(emptyDB());
+
+    // 1. Third failed attempt suspends the workspace.
+    const failed = await postWebhook(auth, {
+      id: "evt_pf_3_e2e",
+      type: "invoice.payment_failed",
+      created: EPOCH,
+      data: {
+        object: {
+          id: "in_e2e",
+          customer: "cus_1",
+          attempt_count: 3,
+          parent: { subscription_details: { subscription: "sub_stripe_1" } },
+        },
+      },
+    });
+    expect(failed.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended");
+
+    // 2. The customer fixes their card and the invoice is paid. The
+    //    workspace is suspended, so recovery flips it back to active.
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+    );
+    const recovered = await postWebhook(auth, invoicePaidEvent("invoice.payment_succeeded"));
+    expect(recovered.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenLastCalledWith("org-1", "active");
+  });
+});
+
+// ── customer.subscription.updated → status-aware policy (#3424) ─────
+
+describe("subscription status policy (#3424)", () => {
+  function statusUpdatedEvent(status: string, id = `evt_status_${status}`) {
+    return {
+      id,
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status }) },
+    };
+  }
+
+  /** A live subscription row so the plugin's own row-update handler finds it. */
+  function seededDB() {
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return db;
+  }
+
+  it("retains entitlements on past_due (warn only, no suspension)", async () => {
+    const auth = makeAuth(seededDB());
+
+    const res = await postWebhook(auth, statusUpdatedEvent("past_due"));
+
+    expect(res.status).toBe(200);
+    // past_due never touches workspace_status — the customer keeps working.
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+  });
+
+  it("blocks the workspace on unpaid (soft-suspend)", async () => {
+    const auth = makeAuth(seededDB());
+
+    const res = await postWebhook(auth, statusUpdatedEvent("unpaid"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "suspended");
+  });
+
+  it("auto-recovers a suspended workspace when the subscription returns to active", async () => {
+    // Belt-and-braces: even if the invoice.paid signal is dropped, the
+    // status transition back to active unsuspends the workspace.
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "suspended" }),
+    );
+    const auth = makeAuth(seededDB());
+
+    const res = await postWebhook(auth, statusUpdatedEvent("active"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith("org-1", "active");
+  });
+
+  it("does nothing to status for an active subscription on an already-active workspace", async () => {
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", workspace_status: "active" }),
+    );
+    const auth = makeAuth(seededDB());
+
+    const res = await postWebhook(auth, statusUpdatedEvent("active"));
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspaceStatus).not.toHaveBeenCalled();
+  });
+});

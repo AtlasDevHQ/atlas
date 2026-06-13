@@ -179,9 +179,23 @@ Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe pl
 | Subscription updated | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
 | Subscription cancellation scheduled | No tier change — paid entitlements are retained until the end of the billing period (cancel anytime via the Customer Portal, restore before period end to keep the plan) |
 | Subscription deleted (period end) | Locks the workspace — chat and queries are blocked with a resubscribe message until a new plan is purchased |
-| `invoice.payment_failed` | Logs the failure; auto-suspends the workspace after 3+ consecutive failures |
+| Subscription `past_due` | First failed payment — **entitlements are retained** (grace window while Stripe retries a recoverable card). A dunning email is sent; the workspace keeps working |
+| Subscription `unpaid` | Stripe has stopped auto-retrying for this cycle — chat and queries are **blocked** (the workspace is soft-suspended) and a dunning email is sent, until payment is fixed |
+| `invoice.payment_failed` | Logs the failure and sends a dunning email at each attempt; auto-suspends the workspace after 3+ consecutive failures (final-notice email) |
+| `invoice.payment_succeeded` / `invoice.paid` | **Automatically un-suspends** a workspace blocked or suspended by a payment failure, restores access, and sends a recovery-confirmation email |
 
 Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
+
+### Payment-failure recovery ladder
+
+Atlas degrades access progressively as a subscription falls behind, and recovers automatically when the customer fixes their payment method — no manual platform-admin action is needed:
+
+1. **`past_due`** (first failed invoice) → in-app access is unchanged; a "your payment didn't go through" email is sent. The customer keeps working while Stripe retries.
+2. **`unpaid`** → chat and queries are blocked with a "fix your payment" message; an email is sent. (This reuses the same `suspended` workspace state as step 3 — there is no separate billing-block status.)
+3. **3+ failed retries** → the workspace is suspended and a final-notice email is sent.
+4. **Payment succeeds** (`invoice.payment_succeeded` / `invoice.paid`, or the subscription returns to `active`) → the workspace is automatically un-suspended and a recovery-confirmation email is sent.
+
+The recovery signal is handled belt-and-braces: both the paid-invoice event and the `→ active` status transition trigger un-suspension, since webhook delivery order isn't guaranteed. Whichever arrives first restores access; the other is a no-op.
 
 ### Delivery reliability
 
@@ -277,8 +291,9 @@ To run Atlas without any billing:
 
 ### Workspace suspended after payment failure
 
-- After 3+ consecutive `invoice.payment_failed` events, the workspace is auto-suspended
-- Update the payment method in the Stripe Customer Portal, then contact support to reactivate
+- After 3+ consecutive `invoice.payment_failed` events, the workspace is auto-suspended (a workspace whose subscription went `unpaid` is blocked earlier — see the payment-failure recovery ladder above)
+- Update the payment method in the Stripe Customer Portal — once the outstanding invoice is paid, the workspace **un-suspends automatically** on the `invoice.payment_succeeded` / `invoice.paid` webhook; no support contact is required
+- Dunning emails are sent to workspace owners/admins at each failed attempt and on recovery
 
 ### Usage not updating
 

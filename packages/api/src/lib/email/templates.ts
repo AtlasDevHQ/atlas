@@ -9,6 +9,7 @@ import type { OnboardingEmailStep } from "@useatlas/types";
 import type { WorkspaceBrandingPublic } from "@useatlas/types";
 import { ONBOARDING_SEQUENCE } from "./sequence";
 import { getTrialStepDef, type TrialEmailStep } from "./trial-sequence";
+import { getDunningStepDef, type DunningEmailStep } from "./dunning-sequence";
 
 // ── Branding defaults ───────────────────────────────────────────────
 
@@ -394,4 +395,113 @@ export function renderTrialExpiryEmail(
   );
 
   return { subject, html: wrapTrial(ctx, content) };
+}
+
+// ── Dunning (payment-failure) emails (#3424) ────────────────────────
+
+/**
+ * Billing-notice footer for dunning emails — transactional account
+ * communications, NOT marketing drip, so no onboarding-unsubscribe link
+ * (mirrors {@link trialFooter}).
+ */
+function dunningFooter(ctx: BrandingContext): string {
+  return `
+    <div style="padding:20px 32px;border-top:1px solid #e5e5e5;color:#737373;font-size:12px;line-height:1.5;">
+      <p style="margin:0;">You're receiving this billing notice because you're an admin of a ${escapeHtml(ctx.appName)} workspace with a payment issue.</p>
+    </div>`;
+}
+
+function wrapDunning(ctx: BrandingContext, content: string): string {
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;">
+  <div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e5e5;">
+    ${header(ctx)}
+    <div style="padding:32px;">
+      ${content}
+    </div>
+    ${dunningFooter(ctx)}
+  </div>
+</body>
+</html>`;
+}
+
+/** Static per-step copy. Each entry returns the inner HTML for the step. */
+const DUNNING_CONTENT: Record<
+  DunningEmailStep,
+  (ctx: BrandingContext, billingUrl: string) => string
+> = {
+  dunning_past_due: (ctx, billingUrl) => `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Your payment didn't go through</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      We couldn't process the latest payment for your ${escapeHtml(ctx.appName)} subscription. Your workspace is
+      <strong>still fully active</strong> — but we'll keep retrying the charge, and access will be paused if it keeps failing.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;color:#404040;line-height:1.6;">
+      Update your payment method now to avoid any interruption.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Update payment method", billingUrl, ctx.accentColor)}
+    </div>`,
+  dunning_unpaid: (ctx, billingUrl) => `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Your workspace is paused</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      Repeated payment attempts for your ${escapeHtml(ctx.appName)} subscription have failed, so chat and queries are
+      <strong>paused for your workspace</strong>. Nothing has been deleted — your connections, semantic layer, and history are intact.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;color:#404040;line-height:1.6;">
+      Update your payment method to restore access immediately.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Update payment method", billingUrl, ctx.accentColor)}
+    </div>`,
+  dunning_suspended: (ctx, billingUrl) => `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">Final notice — workspace suspended</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      After several failed payment attempts, your ${escapeHtml(ctx.appName)} workspace has been
+      <strong>suspended</strong>. This is the final notice before we stop retrying the charge. Your data is safe and nothing has been deleted.
+    </p>
+    <p style="margin:0 0 16px;font-size:14px;color:#404040;line-height:1.6;">
+      Update your payment method to reactivate your workspace and pick up exactly where your team left off.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Update payment method", billingUrl, ctx.accentColor)}
+    </div>`,
+  dunning_recovered: (ctx, billingUrl) => `
+    <h1 style="margin:0 0 16px;font-size:24px;color:${ctx.primaryColor};">You're all set — access restored</h1>
+    <p style="margin:0 0 16px;font-size:15px;color:#404040;line-height:1.6;">
+      Thanks — your payment went through and your ${escapeHtml(ctx.appName)} workspace is
+      <strong>fully active again</strong>. Chat and queries are back on for everyone.
+    </p>
+    <div style="text-align:center;margin:24px 0;">
+      ${button("Open billing", billingUrl, ctx.accentColor)}
+    </div>`,
+};
+
+/**
+ * Render a dunning (payment-failure) notice. The CTA points at the
+ * self-serve billing page (`/admin/billing`), where the customer can open
+ * the Stripe Customer Portal and update their card.
+ *
+ * @param step - Which rung of the dunning ladder to render.
+ */
+export function renderDunningEmail(
+  step: DunningEmailStep,
+  args: {
+    baseUrl: string;
+    branding?: WorkspaceBrandingPublic | null;
+  },
+): RenderedEmail {
+  const ctx = buildBrandingContext(args.branding);
+  const billingUrl = `${args.baseUrl}/admin/billing`;
+  const content = DUNNING_CONTENT[step](ctx, billingUrl);
+
+  const stepDef = getDunningStepDef(step);
+  const subject = (stepDef?.subject ?? `${ctx.appName} billing notice`).replace(
+    /\{\{appName\}\}/g,
+    ctx.appName,
+  );
+
+  return { subject, html: wrapDunning(ctx, content) };
 }

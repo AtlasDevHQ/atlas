@@ -2621,3 +2621,11 @@ The implementation survey narrowed the candidate's "16 pages" to the surfaces th
 - Publish discipline held: SDK bumped to 0.0.9 with zero ref bumps in-PR (exact-pin sequencing), no new value exports for scaffold-bound code.
 
 **Category:** A lifecycle gap closed with one deep host-side module — optional contract extension, two call sites behind one invoker, and a reference implementation whose review cycle (bulk-delete → workspace-param-only → path+param fail-closed attribution) is itself the documentation of why the attribution rule exists.
+
+## 93. One MCP dispatch gate-order pipeline behind every mutating tool — scope/RBAC/approval stated once, not re-derived per tool (#3508)
+
+- ADR-0016 fixes a single gate order for config mutations over MCP (scope → RBAC → approval → confirm). Rather than let each future mutating tool (#3511–#3514) re-implement that sequence, `runMcpDispatchGate` (`packages/mcp/src/dispatch-gate.ts`) is the one composer they all call — the gate order lives in exactly one place, so a tool that forgets a gate is impossible by construction.
+- Authority is RBAC on the bound actor via a new lib-layer primitive `meetsRoleRequirement` (`packages/api/src/lib/auth/permissions.ts`) — no loopback HTTP proxy to the admin API (the credential-laundering / audience-mismatch shape ADR-0016 rejects). It composes the already-built gate 2 (`writeScopeOrNull`, #3504) and gate 4 (the existing approval gate, keyed on `origin=mcp` via #3491's rename), so the three gates are wired, not rebuilt.
+- Fail-closed is the invariant, and the review cycle is itself the documentation of why: the first cut left `checkApprovalRequired`/`hasApprovedRequest` outside the try/catch, where the EE layer's `Effect.promise` turns a DB rejection into a defect that escapes uncaught — two independent reviewers caught it, and the fix put all four gate calls behind one boundary that denies on any throw, mirroring executeSQL's single-tryPromise shape.
+
+**Category:** New cross-cutting infrastructure collapsed to a single reusable seam — the gate order has one home and one RBAC primitive, so the datasource flagship tools inherit governance for free instead of each re-deriving (and risking drift on) the security model.

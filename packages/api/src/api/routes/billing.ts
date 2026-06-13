@@ -253,13 +253,38 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         );
         return [{ count: 0 }] as Array<{ count: number }>;
       }),
-      // Active subscription from Better Auth's subscription table
+      // Subscription from Better Auth's subscription table.
+      //
+      // #3429: do NOT filter to status IN ('active','trialing'). A
+      // past_due / unpaid / canceled subscription is exactly when the user
+      // must reach the billing portal to fix payment — filtering it out
+      // serialized `subscription: null` and the UI hid the portal. Return
+      // whatever row exists and let the web present the state.
+      //
+      // A workspace can carry more than one row (an old canceled sub plus a
+      // fresh active one after resubscribe). Prefer a live row over a dead
+      // one so a stale canceled record doesn't shadow the real subscription:
+      // order healthy statuses first, then most-recently-updated. We also
+      // surface cancelAtPeriodEnd / periodEnd so the UI can show a
+      // pending-cancel end-date notice.
       internalQuery<{
         stripeSubscriptionId: string;
         plan: string;
         status: string;
+        cancelAtPeriodEnd: boolean | null;
+        periodEnd: Date | string | null;
       }>(
-        `SELECT "stripeSubscriptionId", plan, status FROM subscription WHERE "referenceId" = $1 AND status IN ('active', 'trialing') LIMIT 1`,
+        `SELECT "stripeSubscriptionId", plan, status, "cancelAtPeriodEnd", "periodEnd"
+           FROM subscription
+          WHERE "referenceId" = $1
+          ORDER BY
+            CASE
+              WHEN status IN ('active', 'trialing') THEN 0
+              WHEN status IN ('past_due', 'unpaid', 'incomplete') THEN 1
+              ELSE 2
+            END,
+            "updatedAt" DESC NULLS LAST
+          LIMIT 1`,
         [orgId],
       ).catch((err) => {
         // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
@@ -267,7 +292,13 @@ billing.openapi(getBillingStatusRoute, async (c) => {
           { err: err instanceof Error ? err.message : String(err), orgId },
           "Failed to query subscription table — may not exist yet",
         );
-        return [] as Array<{ stripeSubscriptionId: string; plan: string; status: string }>;
+        return [] as Array<{
+          stripeSubscriptionId: string;
+          plan: string;
+          status: string;
+          cancelAtPeriodEnd: boolean | null;
+          periodEnd: Date | string | null;
+        }>;
       }),
       // Current model setting (live read for accuracy)
       getSettingLive("ATLAS_MODEL", orgId).catch((err) => {
@@ -366,6 +397,16 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         stripeSubscriptionId: subscription.stripeSubscriptionId,
         plan: subscription.plan,
         status: subscription.status,
+        // Coerce to a plain boolean — pg returns true/false, but a legacy
+        // NULL column reads as a pending-cancel of "no".
+        cancelAtPeriodEnd: subscription.cancelAtPeriodEnd === true,
+        // pg hands back a Date for timestamptz; the metering reads use
+        // .toISOString() likewise. Normalize so the wire is always an ISO
+        // string (or null), never a serialized Date object.
+        periodEnd:
+          subscription.periodEnd instanceof Date
+            ? subscription.periodEnd.toISOString()
+            : subscription.periodEnd ?? null,
       } : null,
       availablePlans: buildAvailablePlans(),
     }, 200);

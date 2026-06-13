@@ -109,14 +109,33 @@ export interface BillingConnectionCount {
 }
 
 /**
- * Active Stripe subscription summary, or `null` when the workspace has no
- * active or trialing subscription. `plan` and `status` come directly from
- * Stripe / Better Auth and are intentionally free-form strings.
+ * Stripe subscription summary, or `null` only when the workspace has never
+ * had a subscription row at all. Critically this is NOT gated on status:
+ * `past_due`, `unpaid`, and `canceled` subscriptions are returned too
+ * (#3429) — those are exactly the states where the user must reach the
+ * billing portal to fix payment, so hiding them strands a delinquent
+ * customer. `plan` and `status` come directly from Stripe / Better Auth
+ * and are intentionally free-form strings (a new Stripe status must not
+ * fail parse).
  */
 export interface BillingSubscription {
   stripeSubscriptionId: string;
   plan: string;
   status: string;
+  /**
+   * True when the subscription is set to cancel at the end of the current
+   * period — still active/paid until then. The UI surfaces an end-date
+   * notice instead of a plain "active" badge (#3429). Optional for
+   * older-bundle tolerance; the API always sends it (default `false`).
+   */
+  cancelAtPeriodEnd?: boolean;
+  /**
+   * ISO end of the current billing period (the Better Auth Stripe plugin's
+   * persisted `periodEnd`). Drives the cancel-at-period-end "ends on" copy.
+   * Null when the plugin hasn't recorded one yet; optional for older-bundle
+   * tolerance.
+   */
+  periodEnd?: string | null;
 }
 
 /**
@@ -199,6 +218,8 @@ export const BillingSubscriptionSchema = z.object({
   stripeSubscriptionId: z.string(),
   plan: z.string(),
   status: z.string(),
+  cancelAtPeriodEnd: z.boolean().optional(),
+  periodEnd: z.string().nullable().optional(),
 }) satisfies z.ZodType<BillingSubscription>;
 
 export const BillingAvailablePlanSchema = z.object({

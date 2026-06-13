@@ -371,6 +371,100 @@ describe("billing routes", () => {
       expect(body.currentModel).toBe("anthropic/claude-opus-4.8");
     });
 
+    // ── Subscription visibility (#3429) ────────────────────────────
+    //
+    // The subscription select must NOT filter to status IN
+    // ('active','trialing'): a delinquent customer needs the row (and thus
+    // the portal CTA) precisely when their sub is past_due / canceled.
+
+    function mockSubscriptionRow(row: Record<string, unknown> | null) {
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 1 }]);
+        }
+        if (typeof sql === "string" && sql.includes("FROM subscription")) {
+          return Promise.resolve(row ? [row] : []);
+        }
+        return Promise.resolve([]);
+      });
+    }
+
+    it("does NOT filter the subscription query to active/trialing (#3429)", async () => {
+      mockSubscriptionRow(null);
+      await request("/api/v1/billing");
+      const subCall = mockInternalQuery.mock.calls.find(
+        (call) => typeof call[0] === "string" && (call[0] as string).includes("FROM subscription"),
+      );
+      expect(subCall).toBeDefined();
+      const sql = subCall?.[0] as string;
+      // The bug was an `AND status IN ('active', 'trialing')` WHERE filter.
+      // The ORDER BY CASE may still reference those states for prioritization,
+      // so assert specifically that there is no `AND status IN (...)` filter.
+      expect(sql).not.toMatch(/AND\s+status\s+IN/);
+    });
+
+    it.each([
+      ["past_due"],
+      ["unpaid"],
+      ["canceled"],
+    ])("surfaces a %s subscription instead of null (#3429)", async (status) => {
+      mockSubscriptionRow({
+        stripeSubscriptionId: "sub_delinquent",
+        plan: "starter",
+        status,
+        cancelAtPeriodEnd: false,
+        periodEnd: null,
+      });
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.subscription).not.toBeNull();
+      expect(body.subscription.status).toBe(status);
+      expect(body.subscription.stripeSubscriptionId).toBe("sub_delinquent");
+    });
+
+    it("serializes cancelAtPeriodEnd + periodEnd for a pending-cancel sub (#3429)", async () => {
+      mockSubscriptionRow({
+        stripeSubscriptionId: "sub_pending",
+        plan: "pro",
+        status: "active",
+        cancelAtPeriodEnd: true,
+        periodEnd: new Date("2026-07-15T00:00:00.000Z"),
+      });
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.subscription.cancelAtPeriodEnd).toBe(true);
+      // pg Date is normalized to an ISO string on the wire.
+      expect(body.subscription.periodEnd).toBe("2026-07-15T00:00:00.000Z");
+    });
+
+    it("normalizes a NULL cancelAtPeriodEnd column to false (#3429)", async () => {
+      mockSubscriptionRow({
+        stripeSubscriptionId: "sub_legacy",
+        plan: "starter",
+        status: "active",
+        cancelAtPeriodEnd: null,
+        periodEnd: null,
+      });
+      const res = await request("/api/v1/billing");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.subscription.cancelAtPeriodEnd).toBe(false);
+      expect(body.subscription.periodEnd).toBeNull();
+    });
+
+    it("returns null subscription only when no row exists at all (#3429)", async () => {
+      mockSubscriptionRow(null);
+      const res = await request("/api/v1/billing");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.subscription).toBeNull();
+    });
+
     it("returns 401 when unauthenticated", async () => {
       mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({ authenticated: false, error: "No credentials", status: 401 }),

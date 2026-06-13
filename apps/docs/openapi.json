@@ -73360,6 +73360,15 @@
                         },
                         "status": {
                           "type": "string"
+                        },
+                        "cancelAtPeriodEnd": {
+                          "type": "boolean"
+                        },
+                        "periodEnd": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         }
                       },
                       "required": [

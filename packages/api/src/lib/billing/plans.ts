@@ -316,9 +316,9 @@ export function getStripePlans(): Array<{
       annualDiscountPriceId: process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID,
       limits: {
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,
-        seats: UNLIMITED,
-        connections: UNLIMITED,
-        chatIntegrations: UNLIMITED,
+        seats: PLANS.business.limits.maxSeats,
+        connections: PLANS.business.limits.maxConnections,
+        chatIntegrations: PLANS.business.limits.maxChatIntegrations,
       },
       freeTrial: { days: TRIAL_DAYS },
     });

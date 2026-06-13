@@ -223,6 +223,9 @@ describe("billing routes", () => {
       expect(body.plan.byot).toBe(false);
       expect(body.plan.pricePerSeat).toBe(29);
       expect(body.limits.tokenBudgetPerSeat).toBeGreaterThan(0);
+      // #3438 — the chat-integration cap the install gate enforces must reach
+      // the wire so the billing page can display it (Starter = 1).
+      expect(body.limits.maxChatIntegrations).toBe(1);
       expect(body.usage.queryCount).toBe(500);
       // Per-seat pricing fields
       expect(body.seats).toEqual({ count: 3, max: 10 });

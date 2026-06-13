@@ -255,6 +255,14 @@ export function computeTokenBudget(tier: PlanTier, seatCount: number): number {
  * member-count basis enforcement uses for token budgets. The pairing is
  * pinned by plans.test.ts — a drift would re-add a base line item on top
  * of the seat item (double billing).
+ *
+ * NOTE (#3435): each tier below is conditionally pushed only when its monthly
+ * `STRIPE_*_PRICE_ID` is set, so a missing one SILENTLY OMITS that tier from
+ * checkout. This function deliberately stays silent (it has many legitimate
+ * callers that don't want boot noise); the loud check lives at boot in
+ * `BillingConfigGuardLive` (`lib/effect/saas-guards.ts`), which fails a SaaS
+ * boot when any required monthly price ID is absent. The required-var SSOT
+ * is `MONTHLY_PRICE_ID_ENV_VARS` in `lib/billing/config-validation.ts`.
  */
 export function getStripePlans(): Array<{
   name: string;

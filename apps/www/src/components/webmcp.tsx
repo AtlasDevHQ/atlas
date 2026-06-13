@@ -51,7 +51,7 @@ const TOOLS: ModelContextTool[] = [
       const url = "https://app.useatlas.dev/signup";
       return openAndReport(
         url,
-        `Opened the Atlas signup page: ${url}. New workspaces include a 14-day Team-tier trial; no credit card required.`,
+        `Opened the Atlas signup page: ${url}. New workspaces include a 14-day free trial (Starter-tier limits); no credit card required.`,
       );
     },
   },

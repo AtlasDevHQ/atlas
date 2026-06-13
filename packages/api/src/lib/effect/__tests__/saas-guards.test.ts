@@ -71,7 +71,33 @@ import type {
   ProviderUnsupportedError as TProviderUnsupportedError,
   RegionMisconfiguredError as TRegionMisconfiguredError,
   ChatAdapterEnvMissingError as TChatAdapterEnvMissingError,
+  BillingConfigInvalidError as TBillingConfigInvalidError,
 } from "../saas-guards";
+
+// ── Stripe client mock for BillingConfigGuardLive (#3435) ────────────
+// The guard lazy-imports `getStripeClient()` and calls `prices.retrieve`.
+// Drive both from these module-level controls so no test touches a real
+// Stripe account. `mockStripePrices` maps priceId → { livemode } (a
+// resolvable price); any priceId absent from the map throws "No such
+// price" (the unresolved path). `mockStripeClientNull` forces
+// getStripeClient() → null. Reset in each test's setup.
+let mockStripePrices: Record<string, { livemode: boolean }> = {};
+let mockStripeClientNull = false;
+mock.module("@atlas/api/lib/billing/stripe-client", () => ({
+  getStripeClient: () =>
+    mockStripeClientNull
+      ? null
+      : {
+          prices: {
+            retrieve: async (id: string) => {
+              const price = mockStripePrices[id];
+              if (!price) throw new Error(`No such price: '${id}'`);
+              return { id, livemode: price.livemode };
+            },
+          },
+        },
+  _resetStripeClientCache: () => {},
+}));
 
 const {
   EnterpriseGuardLive,
@@ -91,6 +117,8 @@ const {
   RegionMisconfiguredError,
   ChatAdapterEnvGuardLive,
   ChatAdapterEnvMissingError,
+  BillingConfigGuardLive,
+  BillingConfigInvalidError,
 } = await import("../saas-guards");
 const { Config, Settings } = await import("../layers");
 const { _resetEncryptionKeyCache } = await import("@atlas/api/lib/db/encryption-keys");
@@ -1502,5 +1530,184 @@ describe("ChatAdapterEnvGuardLive", () => {
       );
       expect(Exit.isSuccess(exit)).toBe(true);
     });
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  BillingConfigGuardLive (#3435)
+// ══════════════════════════════════════════════════════════════════════
+
+// STRIPE_SECRET_KEY + the price-ID env vars are NOT in SAAS_ENV_KEYS (they
+// gate the conditional billing mount, not the SaaS boot contract), so
+// `withCleanEnv` doesn't manage them. Save/clear/restore them here.
+const BILLING_ENV_KEYS = [
+  "STRIPE_SECRET_KEY",
+  "STRIPE_STARTER_PRICE_ID",
+  "STRIPE_PRO_PRICE_ID",
+  "STRIPE_BUSINESS_PRICE_ID",
+  "STRIPE_STARTER_ANNUAL_PRICE_ID",
+  "STRIPE_PRO_ANNUAL_PRICE_ID",
+  "STRIPE_BUSINESS_ANNUAL_PRICE_ID",
+] as const;
+
+function withBillingEnv<T>(
+  vars: Partial<Record<(typeof BILLING_ENV_KEYS)[number], string>>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of BILLING_ENV_KEYS) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  mockStripePrices = {};
+  mockStripeClientNull = false;
+  for (const [k, v] of Object.entries(vars)) process.env[k] = v;
+  return run().finally(() => {
+    for (const key of BILLING_ENV_KEYS) {
+      if (saved[key] !== undefined) process.env[key] = saved[key];
+      else delete process.env[key];
+    }
+  });
+}
+
+function runBillingGuard(deployMode: string) {
+  return Effect.runPromiseExit(
+    Effect.void.pipe(
+      Effect.provide(
+        BillingConfigGuardLive.pipe(
+          Layer.provide(makeTestConfigLayer({ deployMode })),
+        ),
+      ),
+    ),
+  );
+}
+
+describe("BillingConfigGuardLive", () => {
+  const ALL_PRICES = {
+    STRIPE_STARTER_PRICE_ID: "price_starter",
+    STRIPE_PRO_PRICE_ID: "price_pro",
+    STRIPE_BUSINESS_PRICE_ID: "price_business",
+  };
+
+  test("self-hosted is inert even with a broken billing config", async () => {
+    await withBillingEnv({ STRIPE_SECRET_KEY: "rk_broken" }, async () => {
+      const exit = await runBillingGuard("self-hosted");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("SaaS without STRIPE_SECRET_KEY boots silently (pre-billing)", async () => {
+    await withBillingEnv({}, async () => {
+      const exit = await runBillingGuard("saas");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  test("fails boot in SaaS when a monthly price ID is missing", async () => {
+    await withBillingEnv(
+      {
+        STRIPE_SECRET_KEY: "sk_test_abc",
+        STRIPE_STARTER_PRICE_ID: "price_starter",
+        STRIPE_BUSINESS_PRICE_ID: "price_business",
+        // STRIPE_PRO_PRICE_ID deliberately absent
+      },
+      async () => {
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(BillingConfigInvalidError);
+        const e = failure as TBillingConfigInvalidError;
+        expect(e._tag).toBe("BillingConfigInvalidError");
+        expect(e.missingPriceIdEnvVars).toEqual(["STRIPE_PRO_PRICE_ID"]);
+        expect(e.keyMode).toBe("test");
+        expect(e.message).toContain("#3435");
+      },
+    );
+  });
+
+  test("fails boot in SaaS on a non-standard secret-key mode", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "rk_live_restricted", ...ALL_PRICES },
+      async () => {
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        expect(failure).toBeInstanceOf(BillingConfigInvalidError);
+        const e = failure as TBillingConfigInvalidError;
+        expect(e.keyMode).toBe("unknown");
+        expect(e.missingPriceIdEnvVars).toEqual([]);
+      },
+    );
+  });
+
+  test("never leaks the secret key on the error", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_super_secret_value", STRIPE_STARTER_PRICE_ID: "price_x" },
+      async () => {
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isFailure(exit)).toBe(true);
+        const failure = Exit.isFailure(exit) && exit.cause._tag === "Fail" ? exit.cause.error : null;
+        const e = failure as TBillingConfigInvalidError;
+        expect(e.message).not.toContain("sk_test_super_secret_value");
+      },
+    );
+  });
+
+  test("boots (warn-only) when all prices resolve consistently with the key mode", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      async () => {
+        // All three prices are test-mode (livemode false) — consistent with sk_test_.
+        mockStripePrices = {
+          price_starter: { livemode: false },
+          price_pro: { livemode: false },
+          price_business: { livemode: false },
+        };
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isSuccess(exit)).toBe(true);
+      },
+    );
+  });
+
+  test("does NOT fail boot when a configured price can't be resolved (warn, not crash)", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      async () => {
+        // price_pro absent from the mock → "No such price" → unresolved warn path.
+        mockStripePrices = {
+          price_starter: { livemode: false },
+          price_business: { livemode: false },
+        };
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isSuccess(exit)).toBe(true);
+      },
+    );
+  });
+
+  test("does NOT fail boot on a livemode↔key-mode mismatch (warn, not crash)", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      async () => {
+        // A live-mode price configured under a test key — the classic mixup.
+        mockStripePrices = {
+          price_starter: { livemode: true },
+          price_pro: { livemode: false },
+          price_business: { livemode: false },
+        };
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isSuccess(exit)).toBe(true);
+      },
+    );
+  });
+
+  test("does NOT fail boot when getStripeClient() returns null", async () => {
+    await withBillingEnv(
+      { STRIPE_SECRET_KEY: "sk_test_abc", ...ALL_PRICES },
+      async () => {
+        mockStripeClientNull = true;
+        const exit = await runBillingGuard("saas");
+        expect(Exit.isSuccess(exit)).toBe(true);
+      },
+    );
   });
 });

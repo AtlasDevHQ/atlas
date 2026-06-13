@@ -81,6 +81,7 @@ export const navGroups: NavGroup[] = [
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
       { href: "/admin/approval", label: "Approval Workflows" },
+      { href: "/admin/mcp-action-policy", label: "MCP Action Policy" },
       { href: "/admin/compliance", label: "PII Compliance" },
     ],
   },

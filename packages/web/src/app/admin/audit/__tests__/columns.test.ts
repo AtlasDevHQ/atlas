@@ -12,6 +12,7 @@ describe("getAuditColumns", () => {
     expect(ids).toEqual([
       "timestamp",
       "user",
+      "source",
       "sql",
       "tables_accessed",
       "duration_ms",

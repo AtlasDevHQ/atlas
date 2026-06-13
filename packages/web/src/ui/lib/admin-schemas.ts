@@ -152,6 +152,38 @@ export const AuditFacetsSchema = z.object({
   columns: z.array(z.string()),
 });
 
+/**
+ * One audit-log row as returned by `GET /api/v1/admin/audit` (the route
+ * selects `a.*`, so every audit_log column is present). Validating here turns
+ * a wire-shape drift into a TS/runtime error instead of a silent `undefined`.
+ * `.passthrough()` keeps forward-compat columns the table doesn't render yet.
+ */
+export const AuditRowSchema = z
+  .object({
+    id: z.string(),
+    user_id: z.string().nullable(),
+    sql: z.string(),
+    success: z.boolean(),
+    duration_ms: z.number(),
+    row_count: z.number().nullable(),
+    timestamp: z.string(),
+    user_email: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+    source_id: z.string().nullable().optional(),
+    tables_accessed: z.array(z.string()).nullable(),
+    columns_accessed: z.array(z.string()).nullable(),
+    // MCP attribution (migration 0049) — NULL for non-MCP rows.
+    actor_kind: z.string().nullable().optional(),
+    client_id: z.string().nullable().optional(),
+    tool_name: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const AuditRowsResponseSchema = z.object({
+  rows: z.array(AuditRowSchema),
+  total: z.number(),
+});
+
 // `AuditConnectionMetaSchema` removed in #2444 — the audit page now reuses
 // the canonical `ConnectionsResponseSchema` so every consumer of
 // `/api/v1/admin/connections` shares the same TanStack Query cache shape

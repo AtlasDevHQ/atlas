@@ -190,3 +190,6 @@ The MCP server runs the same agent tools as the chat app, so the same governance
 
 - **MCP admin tool** — an MCP tool that *configures* Atlas (creates a Datasource, connects an integration, raises a policy) rather than reading data — as opposed to the read-only query tools (`executeSQL`, `explore`, the semantic-layer tools).
   _Avoid_: "configuration surface" (bare "surface" is the pillar admin page).
+
+- **MCP action policy** — the per-workspace, customer-admin allow/deny over MCP action *categories* (e.g. "no datasource creation via MCP at all"). Evaluated first in the dispatch gate order and short-circuits before scope / RBAC / approval. Distinct from the **origin ceiling** — the non-configurable product invariant that MCP may never *lower* governance (disable RLS, the table whitelist, an approval rule, etc.). See [ADR-0016](./docs/adr/0016-mcp-v2-security-model.md).
+  _Avoid_: conflating it with the origin ceiling — the action policy is customer-configurable; the ceiling is not.

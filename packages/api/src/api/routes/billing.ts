@@ -33,6 +33,7 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, getStripePlans, computeTokenBudget, isUnlimited, type PaidPlanTier } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { effectiveTrialEndsAt } from "@atlas/api/lib/billing/trial-expiry";
 import { getSettingLive } from "@atlas/api/lib/settings";
 import { resolveModelId } from "@atlas/api/lib/providers";
@@ -226,17 +227,18 @@ billing.openapi(getBillingStatusRoute, async (c) => {
 
     // Fetch seat count, connection count, subscription, and the saved model +
     // provider settings in parallel
-    const [seatCountResult, connectionCountResult, subResult, currentModelSetting, providerSetting] = yield* Effect.promise(() => Promise.all([
-      // Actual member count from Better Auth's member table
-      internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1`,
-        [orgId],
-      ).catch((err) => {
+    const [seatCount, connectionCountResult, subResult, currentModelSetting, providerSetting] = yield* Effect.promise(() => Promise.all([
+      // Seat count from the SHARED source (#3430) — the same `member` count
+      // enforcement and /admin/usage read, so the budget shown here matches the
+      // actual 429 threshold. getSeatCount serves the last-known value on a
+      // transient blip; only when nothing is known does it throw, and a read
+      // page degrades to 1 (logged) rather than failing the whole response.
+      getSeatCount(orgId).catch((err) => {
         log.warn(
           { err: err instanceof Error ? err.message : String(err), orgId },
-          "Failed to query member table for seat count — defaulting to 1",
+          "Failed to resolve seat count for billing page — defaulting to 1",
         );
-        return [{ count: 1 }] as Array<{ count: number }>;
+        return 1;
       }),
       // Connection count for this workspace. Exclude per-workspace
       // archive tombstones so a hidden demo install doesn't inflate the
@@ -289,7 +291,6 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       }),
     ]));
 
-    const seatCount = Math.max(1, seatCountResult[0]?.count ?? 1);
     const connectionCount = connectionCountResult[0]?.count ?? 0;
     const subscription = subResult.length > 0 ? subResult[0] : null;
     // SSOT (#3098): currentModel is exactly what the agent loop resolves for

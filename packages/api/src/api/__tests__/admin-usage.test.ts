@@ -98,6 +98,8 @@ mock.module("@atlas/api/lib/metering", () => ({
 
 let mockHasInternalDB = true;
 const mockInternalQueryUsage: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(() => Promise.resolve([]));
+/** Workspace row for the summary route (defaults to free tier → null row). */
+const mockGetWorkspaceDetailsUsage: Mock<(orgId: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   InternalDB: MockInternalDB,
@@ -137,7 +139,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   deleteSuggestion: mock(() => Promise.resolve(false)),
   getAuditLogQueries: mock(() => Promise.resolve([])),
   getWorkspaceStatus: mock(() => Promise.resolve(null)),
-  getWorkspaceDetails: mock(() => Promise.resolve(null)),
+  getWorkspaceDetails: mockGetWorkspaceDetailsUsage,
   getWorkspaceNamesByIds: mock(() => Promise.resolve(new Map<string, string | null>())),
   updateWorkspaceStatus: mock(() => Promise.resolve(false)),
   updateWorkspacePlanTier: mock(() => Promise.resolve(false)),
@@ -259,6 +261,7 @@ mock.module("@atlas/api/lib/semantic/diff", () => ({
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
+const { _resetSeatCountCache } = await import("@atlas/api/lib/billing/seat-count");
 
 // --- Helper ---
 
@@ -287,6 +290,11 @@ describe("Admin Usage API", () => {
     mockGetUsageHistory.mockImplementation(() => Promise.resolve([...mockHistorySummaries]));
     mockGetUsageBreakdown.mockImplementation(() => Promise.resolve([...mockBreakdownUsers]));
     mockAggregateUsageSummary.mockImplementation(() => Promise.resolve());
+    mockGetWorkspaceDetailsUsage.mockImplementation(() => Promise.resolve(null));
+    mockInternalQueryUsage.mockImplementation(() => Promise.resolve([]));
+    // Shared seat-count source (#3430) — clear its module-level last-known cache
+    // between tests so one test's member count can't leak into the next.
+    _resetSeatCountCache();
   });
 
   // --- GET /api/v1/admin/usage ---
@@ -339,6 +347,62 @@ describe("Admin Usage API", () => {
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBe("internal_error");
       expect(body.requestId).toBeTruthy();
+    });
+  });
+
+  // --- GET /api/v1/admin/usage/summary ---
+
+  describe("GET /api/v1/admin/usage/summary", () => {
+    it("computes the token budget from the member count, not activeUsers (#3430)", async () => {
+      // Starter workspace with 10 members but only 2 active logins this month.
+      mockGetWorkspaceDetailsUsage.mockImplementation(() =>
+        Promise.resolve({
+          id: "org-1",
+          plan_tier: "starter",
+          byot: false,
+          trial_ends_at: null,
+          stripe_customer_id: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
+      );
+      mockGetCurrentPeriodUsage.mockImplementation(() =>
+        Promise.resolve({ ...mockCurrentUsage, activeUsers: 2 }),
+      );
+      mockInternalQueryUsage.mockImplementation((sql: string) =>
+        typeof sql === "string" && sql.includes("member")
+          ? Promise.resolve([{ count: 10 }])
+          : Promise.resolve([]),
+      );
+
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/summary"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { limits: { totalTokenBudget: number }; current: { activeUsers: number } };
+      // 2M/seat * 10 members = 20M — NOT 2M/seat * 2 active logins = 4M.
+      expect(body.limits.totalTokenBudget).toBe(20_000_000);
+      expect(body.current.activeUsers).toBe(2);
+    });
+
+    it("degrades to a 1-seat budget when the member query fails with nothing known (#3430)", async () => {
+      mockGetWorkspaceDetailsUsage.mockImplementation(() =>
+        Promise.resolve({
+          id: "org-1",
+          plan_tier: "starter",
+          byot: false,
+          trial_ends_at: null,
+          stripe_customer_id: null,
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
+      );
+      mockInternalQueryUsage.mockImplementation((sql: string) =>
+        typeof sql === "string" && sql.includes("member")
+          ? Promise.reject(new Error("relation does not exist"))
+          : Promise.resolve([]),
+      );
+
+      const res = await app.fetch(adminRequest("GET", "/api/v1/admin/usage/summary"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as { limits: { totalTokenBudget: number } };
+      expect(body.limits.totalTokenBudget).toBe(2_000_000);
     });
   });
 

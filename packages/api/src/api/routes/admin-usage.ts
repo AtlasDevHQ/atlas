@@ -19,6 +19,7 @@ import {
   aggregateUsageSummary,
 } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { getSeatCount } from "@atlas/api/lib/billing/seat-count";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -216,11 +217,25 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
     // 30 days ago
     const thirtyDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
 
-    const [usage, workspace, history, users] = yield* Effect.promise(() => Promise.all([
+    const [usage, workspace, history, users, seatCount] = yield* Effect.promise(() => Promise.all([
       getCurrentPeriodUsage(orgId!),
       getWorkspaceDetails(orgId!),
       getUsageHistory(orgId!, "daily", thirtyDaysAgo.toISOString(), undefined, 31),
       getUsageBreakdown(orgId!, undefined, undefined, 50),
+      // Seat count from the SHARED source (#3430) — the same `member` count
+      // enforcement and /billing read. The budget used to come from
+      // Math.max(1, usage.activeUsers) (distinct logins this month), which a
+      // 10-member/2-login workspace under-reported 5×, disagreeing with the
+      // actual 429 threshold. getSeatCount serves the last-known value on a
+      // transient blip; only when nothing is known does it throw, and this read
+      // page degrades to 1 (logged) rather than failing the whole response.
+      getSeatCount(orgId!).catch((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId, requestId },
+          "Failed to resolve seat count for usage summary — defaulting to 1",
+        );
+        return 1;
+      }),
     ]));
 
     if (!workspace) {
@@ -229,7 +244,6 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
     const planTier = workspace?.plan_tier ?? "free";
     const plan = getPlanDefinition(planTier);
     const limits = getPlanLimits(planTier);
-    const seatCount = Math.max(1, usage.activeUsers);
     const totalTokenBudget = computeTokenBudget(planTier, seatCount);
 
     return c.json({

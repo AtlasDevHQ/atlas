@@ -31,6 +31,7 @@ import {
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
+import { getSeatCount, SeatCountUnavailableError } from "./seat-count";
 import { computeTokenBudget, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
 import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
 
@@ -118,7 +119,11 @@ export function invalidatePlanCache(orgId?: string): void {
  * Check if the workspace's current usage is within its plan limits.
  *
  * @param orgId - The organization/workspace ID.
- * @param seatCount - Number of seats (members) in the org. Defaults to 1.
+ * @param seatCount - Number of seats (members) in the org. When omitted it is
+ *   resolved via the shared {@link getSeatCount} source — the SAME `member`
+ *   count the billing and usage pages read — so the enforced budget can never
+ *   diverge from the advertised one (#3430). A seat-count lookup failure with
+ *   no last-known value fails the check closed (503), never silently 1 seat.
  *
  * Returns `{ allowed: true }` (with optional `warning`) when the request
  * may proceed. Returns `{ allowed: false, ... }` when the workspace has
@@ -131,23 +136,6 @@ export async function checkPlanLimits(
   // Self-hosted / no org — no enforcement
   if (!orgId || !hasInternalDB()) {
     return { allowed: true };
-  }
-
-  // Fetch seat count from member table if not provided
-  if (seatCount === undefined) {
-    try {
-      const rows = await internalQuery<{ count: number }>(
-        `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
-        [orgId],
-      );
-      seatCount = rows[0]?.count ?? 1;
-    } catch (err) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to query member count for plan enforcement — defaulting to 1 seat",
-      );
-      seatCount = 1;
-    }
   }
 
   let workspace: WorkspaceRow | null;
@@ -211,8 +199,35 @@ export async function checkPlanLimits(
     }
   }
 
+  // Resolve the seat count the budget scales with — the SAME shared source the
+  // billing and usage pages read, so the advertised budget and the actual 429
+  // threshold can never disagree (#3430). A seat-count blip does NOT collapse
+  // the budget to 1 seat: getSeatCount serves the last-known value when it has
+  // one, and throws SeatCountUnavailableError only when it has nothing. In that
+  // case we fail the check closed (503 "try again") rather than understate the
+  // budget 10× and fire a spurious 429.
+  if (seatCount === undefined) {
+    try {
+      seatCount = await getSeatCount(orgId);
+    } catch (err) {
+      if (err instanceof SeatCountUnavailableError) {
+        log.error(
+          { orgId },
+          "Seat count unavailable for plan enforcement and no last-known value — blocking as precaution",
+        );
+        return {
+          allowed: false,
+          errorCode: "billing_check_failed",
+          errorMessage: "Unable to verify billing status. Please try again.",
+          httpStatus: 503,
+        };
+      }
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
   // Token budget check — budget scales with seat count
-  const totalBudget = computeTokenBudget(tier, seatCount ?? 1);
+  const totalBudget = computeTokenBudget(tier, seatCount);
   if (!isUnlimited(totalBudget)) {
     try {
       const usage = await getCurrentPeriodUsage(orgId);

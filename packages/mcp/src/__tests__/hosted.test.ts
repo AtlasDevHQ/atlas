@@ -1797,12 +1797,14 @@ describe("hosted MCP — audit failure", () => {
 // ── #3505 — live effective-role resolution at the MCP edge ────────────
 //
 // bindFactoryContext re-binds the actor for the RESOLVED workspace and
-// stamps the effective org role from a LIVE resolveEffectiveRole lookup
+// stamps the effective ORG role from a LIVE resolveEffectiveRole lookup
 // (mocked here; the lookup's member-table/fail-closed semantics are
 // covered by packages/api/.../effective-role.test.ts). These pin the
 // wiring: the role is resolved per-call against the resolved workspace,
-// so a demoted admin loses the role on the next dispatch without a token
-// refresh.
+// so a demoted member loses the role on the next dispatch without a token
+// refresh. The user-level role is passed as `undefined` (never a token
+// claim; cross-tenant platform_admin is intentionally not applied over
+// hosted MCP — see #3522), which the call-args assertions below encode.
 describe("bindFactoryContext live role resolution (#3505)", () => {
   beforeEach(() => {
     mockResolveEffectiveRole.mockClear();

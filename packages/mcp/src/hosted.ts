@@ -1129,15 +1129,22 @@ export async function bindFactoryContext(
   bearer: VerifiedBearer,
   resolvedOrgId: string,
 ): Promise<InitialFactoryContext> {
-  // #3505 — resolve the actor's EFFECTIVE org role LIVE from the `member`
-  // table for the RESOLVED workspace (never from a token claim), so RBAC
-  // gates see the current role and a demoted/revoked admin loses
-  // admin-gated tools immediately — no token refresh, no TTL. Mirrors the
-  // authoritative-grants pattern already used for workspace admission.
-  // `resolveEffectiveRole` fails closed: a member-table read error
-  // down-privileges to the user-level role (a non-admin default), never
-  // escalates; `platform_admin` short-circuits before the lookup.
-  const role = await resolveEffectiveRole(bearer.user.role, bearer.user.id, resolvedOrgId);
+  // #3505 — resolve the actor's effective ORG role LIVE from the `member`
+  // table for the RESOLVED workspace, so RBAC gates see the current role
+  // and a demoted/revoked member loses elevated tools immediately — no
+  // token refresh, no TTL. Mirrors the authoritative-grants pattern used
+  // for workspace admission.
+  //
+  // We pass `undefined` for the user-level role, NEVER a token claim
+  // (#3505 mandates a live DB lookup), and deliberately do NOT apply a
+  // cross-tenant `platform_admin` over customer-facing hosted MCP: a hosted
+  // OAuth session acts with the caller's member role for the admitted
+  // workspace, not god-mode. (stdio's `loadActorUser` resolves the
+  // user-level role too; the hosted trust boundary is intentionally
+  // narrower — decision tracked in #3522.) `resolveEffectiveRole` fails
+  // closed: a member-table read error yields no role → downstream defaults
+  // to least privilege (`member`), never escalates.
+  const role = await resolveEffectiveRole(undefined, bearer.user.id, resolvedOrgId);
 
   // Re-bind the actor so RLS / audit / approval surfaces downstream see
   // the RESOLVED workspace as `activeOrganizationId`. Without this, the

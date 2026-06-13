@@ -11,6 +11,7 @@ SKIP_SYNCPACK=1 bash scripts/check-template-drift.sh  # Template drift
 bash scripts/check-security-headers-drift.sh  # Scaffold next.config.ts security-header parity
 bash scripts/check-railway-watch.sh  # Railway watchPatterns cover Dockerfile COPY sources
 bash scripts/check-schema-drift.sh   # Drizzle schema.ts ↔ migrations parity
+bash scripts/check-openapi-drift.sh  # apps/docs/openapi.json + api-reference MDX ↔ live route schemas
 bash scripts/check-oauth-helper-drift.sh  # plugins/mcp/src/_oauth-helper ↔ packages/oauth-helper/src parity
 bash scripts/check-test-discipline.sh  # No new top-level env/chdir mutations in test files
 bash scripts/check-twenty-resolver-imports.sh  # Twenty operator resolver confined to ee/saas-crm (#2850)
@@ -19,6 +20,8 @@ bun run scripts/check-published-symbols.ts  # @useatlas/* imports in scaffold-bo
 ```
 
 Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration loop. For iteration, use `cd packages/api && bun run scripts/test-isolated.ts --affected` (only tests whose source graph your branch touched — typical 10–60s vs 225s full).
+
+**Real-Postgres tests (`*-pg.test.ts`) are SILENTLY SKIPPED without a database.** They run only when `TEST_DATABASE_URL` is set; locally unset, `bun run test` passes without exercising them, but CI's `api-tests (1/4)`–`(4/4)` shards always run them against a real Postgres. Any change to a DB-reader SELECT (e.g. `getWorkspaceDetails`) or a migration must update the hand-built table fixtures inside the `-pg` tests too, or CI fails with `column "X" does not exist` even though local gates were green (this is how #3481 first failed CI). To exercise them locally before pushing: `bun run db:up && export TEST_DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas && bun run test`.
 
 **Evaluate results:**
 
@@ -31,6 +34,7 @@ Use the full `bun run test` here — `/ci` is the pre-PR check, not an iteration
 | Template drift | `Template drift check passed` |
 | Railway watch | `all deploy Dockerfile COPY sources are covered` |
 | Schema drift | `Schema drift check passed` (every migration table is in `packages/api/src/lib/db/schema.ts`) |
+| OpenAPI drift | `OpenAPI drift check passed — spec and api-reference are in sync with routes.` Any change to a route's request/response schema (a new field, enum, status) drifts `apps/docs/openapi.json` + the api-reference MDX. **Local `bun run type`/`test` do NOT catch this** — the script regenerates and `git diff`s. Fix: `bun run --filter '@atlas/api' openapi:extract && bun run --filter '@atlas/docs' generate:api`, then commit `apps/docs/openapi.json` + `apps/docs/content/docs/api-reference`. (Both #3480 and #3481 failed CI here.) |
 | OAuth helper drift | `vendored _oauth-helper matches canonical packages/oauth-helper/src` |
 | Test discipline | `Test discipline check passed — env: N allowlisted, chdir: N allowlisted.` New offenders fail; new allowlist entries need justifying comment (see #2796). `mock.module()` is NOT gated — slice 5a verdict (#2801) proved bun's `--isolate` resets module mocks between files |
 | Settings readers | `Settings reader check passed — …` Every key in `packages/api/src/lib/settings.ts` has a non-test runtime reader: a literal/const-indirected `getSetting`/`getSettingAuto`/`getSettingLive` call, or (platform-scoped keys only) a `process.env.<ENVVAR>` read. Fix by adding the reader, allowlisting with a justification comment in the script, or removing the setting (parity contract Rule 1, #3382) |

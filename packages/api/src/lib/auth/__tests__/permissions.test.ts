@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { canApprove, getUserRole, parseRole } from "../permissions";
+import { canApprove, getUserRole, parseRole, meetsRoleRequirement } from "../permissions";
 import { createAtlasUser } from "../types";
 import type { AtlasRole } from "../types";
 import type { ActionApprovalMode } from "@atlas/api/lib/action-types";
@@ -220,4 +220,46 @@ describe("full permission matrix", () => {
       }
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// meetsRoleRequirement() — #3508 MCP dispatch RBAC gate primitive
+// ---------------------------------------------------------------------------
+
+describe("meetsRoleRequirement()", () => {
+  it("fails closed for an undefined user (no bound identity)", () => {
+    expect(meetsRoleRequirement(undefined, "member")).toBe(false);
+    expect(meetsRoleRequirement(undefined, "admin")).toBe(false);
+  });
+
+  it("allows at-or-above the threshold and denies below it (managed roles)", () => {
+    expect(meetsRoleRequirement(makeUser("managed", "member"), "admin")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed", "admin"), "admin")).toBe(true);
+    expect(meetsRoleRequirement(makeUser("managed", "owner"), "admin")).toBe(true);
+    expect(meetsRoleRequirement(makeUser("managed", "platform_admin"), "admin")).toBe(true);
+    // owner threshold: admin is below, owner/platform_admin at-or-above.
+    expect(meetsRoleRequirement(makeUser("managed", "admin"), "owner")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed", "owner"), "owner")).toBe(true);
+  });
+
+  it("uses the auth-mode default role when none is set (managed → member fails admin gate)", () => {
+    expect(meetsRoleRequirement(makeUser("managed"), "admin")).toBe(false);
+    expect(meetsRoleRequirement(makeUser("managed"), "member")).toBe(true);
+  });
+});
+
+describe("meetsRoleRequirement() — simple-key default-role documentation (#3508)", () => {
+  it("a ROLELESS simple-key user defaults to admin — so MCP safety MUST live in the actor model", () => {
+    // getUserRole defaults simple-key → admin. meetsRoleRequirement honors
+    // that, so a roleless simple-key actor would clear an admin gate. This is
+    // intentional for first-party API keys, but it means the MCP dispatch
+    // RBAC gate's safety relies on MCP actors NEVER being a roleless
+    // simple-key: hosted/stdio bound actors are `mode: "managed"`, and the
+    // only simple-key MCP actor (system:mcp) is explicitly pinned to
+    // `role: "member"`. If this assertion ever needs changing, re-audit MCP
+    // actor construction (packages/mcp/src/actor.ts, hosted.ts) first.
+    expect(meetsRoleRequirement(makeUser("simple-key"), "admin")).toBe(true);
+    // An explicit member role on a simple-key user is honored (not defaulted).
+    expect(meetsRoleRequirement(makeUser("simple-key", "member"), "admin")).toBe(false);
+  });
 });

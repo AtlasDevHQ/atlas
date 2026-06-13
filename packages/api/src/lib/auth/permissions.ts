@@ -200,3 +200,26 @@ export function canApprove(
 
   return allowed;
 }
+
+/**
+ * Does the user's effective role meet a minimum-role threshold?
+ *
+ * The role primitive behind the MCP dispatch RBAC gate (#3508 / ADR-0016
+ * gate 3): authority is the bound actor's role, live-resolved at the MCP
+ * edge (#3505), compared on the `member < admin < owner < platform_admin`
+ * hierarchy. Distinct from {@link canApprove}, which is the action-approval
+ * decision keyed on an approval *mode*; this is a plain "is this actor at
+ * least <role>" check for gating admin/config tools.
+ *
+ * Fail-closed: an absent user (no bound identity — e.g. the stdio
+ * `system:mcp` trusted actor) returns `false`, so admin tools always
+ * register but only a real bound identity at/above `minRole` clears the
+ * gate (ADR-0016: "RBAC is the only source of authority").
+ */
+export function meetsRoleRequirement(
+  user: AtlasUser | undefined,
+  minRole: AtlasRole,
+): boolean {
+  if (!user) return false;
+  return ROLE_LEVEL[getUserRole(user)] >= ROLE_LEVEL[minRole];
+}

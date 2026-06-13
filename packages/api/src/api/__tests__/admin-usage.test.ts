@@ -59,6 +59,7 @@ const mockCurrentUsage = {
   activeUsers: 3,
   periodStart: "2026-03-01T00:00:00.000Z",
   periodEnd: "2026-04-01T00:00:00.000Z",
+  periodSource: "utc-month" as const,
 };
 
 const mockHistorySummaries: unknown[] = [

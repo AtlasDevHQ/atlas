@@ -246,6 +246,10 @@ export const UsageSummarySchema = z.object({
     activeUsers: z.number(),
     periodStart: IsoTimestampSchema,
     periodEnd: IsoTimestampSchema,
+    // #3431: "stripe" when the metering window is anchored on the org's
+    // active subscription period, "utc-month" for the calendar-month
+    // fallback. Optional for older-bundle tolerance — the API always sends it.
+    periodSource: z.enum(["stripe", "utc-month"]).optional(),
   }),
   plan: z.object({
     tier: z.string(),

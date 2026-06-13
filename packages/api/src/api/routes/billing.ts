@@ -383,6 +383,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         tokenOverageStatus: tokenOverage.status,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
+        periodSource: usage.periodSource,
       },
       seats: {
         count: seatCount,

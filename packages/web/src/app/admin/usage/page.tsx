@@ -55,10 +55,34 @@ function pct(used: number, limit: number | null): number | null {
   return Math.min(Math.round((used / limit) * 100), 100);
 }
 
-function formatPeriod(start: string, end: string): string {
+/**
+ * Render the metering window (#3431).
+ *
+ * The `end` we receive is the **exclusive** upper bound of the window, so
+ * the human-facing range ends the day before (the last day usage counts).
+ *
+ * UTC-month windows are formatted in **UTC** — the boundary is defined in
+ * UTC, so rendering `2026-06-01T00:00:00Z` in a browser west of UTC must
+ * not slip the label back to "May 31". Stripe-anchored windows are real
+ * instants tied to the customer's invoice clock, so they render in the
+ * viewer's local timezone, matching the rest of the billing UI.
+ */
+function formatPeriod(
+  start: string,
+  end: string,
+  source: "stripe" | "utc-month" | undefined,
+): string {
+  if (!start || !end) return "Current period";
   const s = new Date(start);
   const e = new Date(end);
-  return `${s.toLocaleDateString(undefined, { month: "long", year: "numeric" })} (${s.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${e.toLocaleDateString(undefined, { month: "short", day: "numeric" })})`;
+  // Inclusive last day = exclusive end − 1ms.
+  const lastDay = new Date(e.getTime() - 1);
+  const tz = source === "stripe" ? undefined : "UTC";
+  const monthYear = s.toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: tz });
+  const from = s.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: tz });
+  const to = lastDay.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: tz });
+  const label = source === "stripe" ? "Billing period" : monthYear;
+  return `${label} (${from} – ${to})`;
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -101,7 +125,7 @@ export default function UsageDashboardPage() {
           <h1 className="text-2xl font-bold tracking-tight">Usage</h1>
           <p className="text-sm text-muted-foreground">
             {data
-              ? `${data.plan.displayName} plan — ${formatPeriod(data.current.periodStart, data.current.periodEnd)}`
+              ? `${data.plan.displayName} plan — ${formatPeriod(data.current.periodStart, data.current.periodEnd, data.current.periodSource)}`
               : "Monitor workspace consumption relative to plan limits."}
           </p>
         </div>

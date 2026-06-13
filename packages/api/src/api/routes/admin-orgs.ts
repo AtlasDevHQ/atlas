@@ -498,7 +498,7 @@ const updatePlanRoute = createRoute({
   tags: ["Admin — Organizations"],
   summary: "Update organization plan",
   description:
-    "Updates the plan tier for a workspace. Valid tiers: free, trial, team, enterprise.",
+    "Updates the plan tier for a workspace. Valid tiers: free, trial, starter, pro, business (plus the internal 'locked' tier for a lapsed subscription).",
   request: {
     params: OrgIdParamSchema,
     body: {

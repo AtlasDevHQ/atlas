@@ -94,7 +94,7 @@ Schema requirements, mode-resolution middleware, the atomic publish endpoint, an
 
 ### Enterprise & SaaS Gating (`/ee`)
 Full rationale, enforcement mechanics, and the drift-checked `Tag.available` membership list: [docs/development/enterprise-gating.md](docs/development/enterprise-gating.md).
-- [ ] **SaaS-specific features go in `/ee`** — Anything that exists specifically to make Atlas a hosted SaaS (deploy-mode detection, marketplace, billing, residency, masking, SSO/SCIM, approvals, backups, white-labeling) lives in `ee/src/` under the commercial license
+- [ ] **SaaS-specific features go in `/ee`** — Anything that exists specifically to make Atlas a hosted SaaS (deploy-mode detection, marketplace, residency, masking, SSO/SCIM, approvals, backups, white-labeling) lives in `ee/src/` under the commercial license
 - [ ] **Self-hosted is always free; the inversion is enforced** — Core AGPL never depends on `/ee`. Exactly one file (`lib/effect/enterprise-layer.ts`) may import `@atlas/ee`; `scripts/check-ee-imports.sh` + `ee-stub-build` enforce it. Every subsystem is reachable via a `Context.Tag` in `lib/effect/services.ts`
 - [ ] **Read the enterprise flag through a Tag** — `yield* TheTag` and let the `NoopXxxLayer` short-circuit. Never import `isEnterpriseEnabled` from `@atlas/ee` in core; value-level checks use the core mirror in `lib/effect/enterprise-config.ts`
 - [ ] **Enterprise errors use `EnterpriseError`** — from `@atlas/api/lib/effect/errors`. Use `instanceof`, never string matching. Routes map it to 403

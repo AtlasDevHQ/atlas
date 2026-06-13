@@ -76,9 +76,17 @@ function getContentText(content: unknown): string {
   return arr[0]?.text ?? "";
 }
 
-async function createTestClient(actor = TEST_ACTOR, clientId?: string) {
+async function createTestClient(
+  actor = TEST_ACTOR,
+  clientId?: string,
+  scopes?: readonly string[],
+) {
   const server = new McpServer({ name: "test", version: "0.0.1" });
-  registerTools(server, { actor, ...(clientId ? { clientId } : {}) });
+  registerTools(server, {
+    actor,
+    ...(clientId ? { clientId } : {}),
+    ...(scopes ? { scopes } : {}),
+  });
 
   const client = new Client({ name: "test-client", version: "0.0.1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -600,6 +608,42 @@ describe("MCP tools", () => {
       clientId: "claude-desktop",
       toolName: "executeSQL",
     });
+  });
+
+  it("#3504: threads OAuth token scopes through registerTools into RequestContext.scopes", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "noop", row_count: 0, columns: [], rows: [] };
+    });
+
+    const { client } = await createTestClient(TEST_ACTOR, "claude-desktop", [
+      "mcp:read",
+      "mcp:write",
+    ]);
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "scope probe" },
+    });
+
+    expect(observed!.scopes).toEqual(["mcp:read", "mcp:write"]);
+  });
+
+  it("#3504: leaves RequestContext.scopes undefined for stdio dispatch (no bearer)", async () => {
+    let observed: ReturnType<typeof getRequestContext>;
+    mockExecuteSQLExecute.mockImplementationOnce(async () => {
+      observed = getRequestContext();
+      return { success: true, explanation: "noop", row_count: 0, columns: [], rows: [] };
+    });
+
+    // stdio: createTestClient with no clientId / no scopes.
+    const { client } = await createTestClient();
+    await client.callTool({
+      name: "executeSQL",
+      arguments: { sql: "SELECT 1", explanation: "stdio probe" },
+    });
+
+    expect(observed!.scopes).toBeUndefined();
   });
 
   // #3437 — billing enforcement on the MCP datasource-query perimeter.

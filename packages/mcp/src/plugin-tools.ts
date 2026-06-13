@@ -43,6 +43,8 @@ export interface RegisterPluginToolsOptions {
   clientId?: string;
   workspaceId: string;
   deployMode: McpDeployMode;
+  /** #3504 — OAuth token scopes, threaded onto the dispatch RequestContext. */
+  scopes?: readonly string[];
   /** Override the registry (test seam). */
   registry?: PluginMcpToolRegistry;
 }
@@ -64,6 +66,7 @@ export function registerPluginTools(
       workspaceId: opts.workspaceId,
       deployMode: opts.deployMode,
       ...(opts.clientId && { clientId: opts.clientId }),
+      ...(opts.scopes && { scopes: opts.scopes }),
       // The api-side dispatch always resolves the wrapper with an
       // `McpCallToolResult` (structurally a `CallToolResult`). Cast
       // to/from `Promise<CallToolResult>` so `traceMcpToolCall` (which

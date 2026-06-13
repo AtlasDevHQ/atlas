@@ -49,6 +49,11 @@
  *   directly from the typed billing-gate verdict in
  *   `packages/mcp/src/billing-gate.ts` — it never flows through the
  *   string classifiers in `error-envelope.ts`, so no regex branch exists.
+ * - `forbidden` — the bound MCP actor lacks the authority for this tool:
+ *   a missing OAuth scope (e.g. `mcp:write`, #3504), or insufficient RBAC
+ *   role (#3505/#3508). Retrying won't help; the workspace admin must
+ *   grant the scope/role. Distinct from `rls_denied` (row-level data
+ *   policy) and `billing_blocked` (account standing).
  * - `internal_error` — unexpected failure. Includes `request_id` so the
  *   user can quote it when filing a support ticket.
  *
@@ -75,6 +80,7 @@ export type AtlasMcpToolErrorCode =
   | "ambiguous_term"
   | "rate_limited"
   | "billing_blocked"
+  | "forbidden"
   | "internal_error";
 
 /**
@@ -105,6 +111,7 @@ export const ATLAS_MCP_TOOL_ERROR_CODES = [
   "ambiguous_term",
   "rate_limited",
   "billing_blocked",
+  "forbidden",
   "internal_error",
 ] as const satisfies readonly AtlasMcpToolErrorCode[];
 

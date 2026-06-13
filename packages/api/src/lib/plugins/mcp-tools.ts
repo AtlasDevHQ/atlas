@@ -358,6 +358,12 @@ export interface RegisterPluginMcpToolsOptions {
   workspaceId: string;
   deployMode: "self-hosted" | "saas";
   clientId?: string;
+  /**
+   * #3504 — OAuth token scopes, threaded onto the dispatch RequestContext
+   * so a write-gated plugin tool can enforce `mcp:write`. Undefined for
+   * stdio MCP (exempt).
+   */
+  scopes?: readonly string[];
   /** OTel wrapper. Default is passthrough. */
   traceWrap?: <T>(
     spanCtx: {
@@ -460,6 +466,7 @@ export function registerPluginMcpTools(
     workspaceId,
     deployMode,
     clientId,
+    scopes,
     traceWrap,
     loggerFor = defaultLogger,
   } = opts;
@@ -482,7 +489,7 @@ export function registerPluginMcpTools(
         // #3507 — stamp `mcp` as the agent origin so origin-scoped approval
         // rules (ADR-0016) match plugin-tool dispatches, parity with the
         // built-in MCP tools in packages/mcp/src/{tools,semantic-tools}.ts.
-        { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor },
+        { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor, ...(scopes ? { scopes } : {}) },
         async () => {
           // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
           // `clientId`; stdio MCP leaves it undefined and is intentionally

@@ -73,6 +73,14 @@ export interface RegisterToolsOptions {
    * by registered OAuth client (#2067). Stdio MCP leaves this undefined.
    */
   clientId?: string;
+  /**
+   * #3504 — OAuth token scopes for this hosted-MCP session (from the JWT
+   * `scope` claim, extracted by `verifyMcpBearer`). Threaded onto every
+   * dispatch's `RequestContext` so write-gated tools can enforce
+   * `mcp:write` via {@link writeScopeOrNull}. Undefined for stdio MCP,
+   * which is exempt (trusted local operator).
+   */
+  scopes?: readonly string[];
 }
 
 function dispatchId(prefix: string): string {
@@ -111,6 +119,39 @@ async function rateLimitOrNull(args: {
 }
 
 /**
+ * `mcp:write` enforcement gate (#3504 / ADR-0016). Mutating MCP tools call
+ * this at the top of their handler; read tools never do.
+ *
+ * - **stdio MCP** (`clientId` undefined) is exempt — it runs in-process in
+ *   the operator's own deployment, not behind OAuth. Mirrors the
+ *   `rateLimitOrNull` stdio carve-out so a single signal (`clientId`)
+ *   distinguishes hosted from local.
+ * - **hosted MCP** must present a bearer carrying the `mcp:write` scope.
+ *   Fails CLOSED: a hosted dispatch whose `scopes` weren't threaded (or
+ *   that lacks `mcp:write`) is denied with a `forbidden` envelope rather
+ *   than silently allowed.
+ *
+ * Returns `null` when the dispatch may proceed; a `forbidden` tool-result
+ * envelope when it must be blocked.
+ */
+export function writeScopeOrNull(args: {
+  clientId: string | undefined;
+  scopes: readonly string[] | undefined;
+}): CallToolResult | null {
+  if (!args.clientId) return null;
+  if (args.scopes?.includes("mcp:write")) return null;
+  return toEnvelopeResult(
+    envelope(
+      "forbidden",
+      "This tool mutates data and requires the 'mcp:write' OAuth scope, which this token does not carry.",
+      {
+        hint: "Re-authorize the MCP client with the mcp:write scope (the workspace admin controls which scopes a client may request).",
+      },
+    ),
+  );
+}
+
+/**
  * Resolve the workspace id for OTel span / counter attribution. In
  * trusted-transport mode the actor is `system:mcp` with no
  * `activeOrganizationId`; falling back to the actor id keeps the
@@ -126,7 +167,7 @@ function deployModeOf(): McpDeployMode {
 }
 
 export function registerTools(server: McpServer, opts: RegisterToolsOptions): void {
-  const { actor, transport = "stdio", clientId } = opts;
+  const { actor, transport = "stdio", clientId, scopes } = opts;
   const workspaceId = workspaceIdOf(actor);
   const deployMode = deployModeOf();
   // #2067 — every MCP tool dispatch wraps in the same `actor` shape so
@@ -157,7 +198,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "explore", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-explore");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("explore"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               // Rate-limit gate (#2071) lives INSIDE the try so any throw
               // from the limiter (loader rejection, audit-emission
@@ -233,7 +274,7 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
         { toolName: "executeSQL", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-executeSQL");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("executeSQL"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -342,5 +383,5 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
   );
 
   // --- typed semantic-layer tools ---
-  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, clientId });
+  registerSemanticTools(server, { actor, transport, workspaceId, deployMode, clientId, scopes });
 }

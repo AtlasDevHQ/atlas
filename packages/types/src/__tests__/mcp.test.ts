@@ -10,10 +10,10 @@ import {
 describe("AtlasMcpToolErrorCode catalog", () => {
   test("union and runtime list stay in lockstep", () => {
     // satisfies + readonly array force the union to match the literal at
-    // compile time; the test pins the size at 9 so accidentally widening
+    // compile time; the test pins the size at 10 so accidentally widening
     // the union (e.g. adding "auth_failed" without updating consumers) is
     // caught here too.
-    expect(ATLAS_MCP_TOOL_ERROR_CODES).toHaveLength(9);
+    expect(ATLAS_MCP_TOOL_ERROR_CODES).toHaveLength(10);
     const set = new Set<AtlasMcpToolErrorCode>(ATLAS_MCP_TOOL_ERROR_CODES);
     expect(set.size).toBe(ATLAS_MCP_TOOL_ERROR_CODES.length);
   });

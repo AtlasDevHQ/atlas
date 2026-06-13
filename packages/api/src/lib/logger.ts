@@ -61,6 +61,14 @@ interface RequestContext {
    */
   agentOrigin?: import("@useatlas/types").ApprovalRequestOrigin;
   /**
+   * #3504 — OAuth token scopes (from the JWT `scope` claim) on hosted MCP
+   * requests, threaded by `verifyMcpBearer` through the dispatch frame.
+   * The dispatch seam gates write tools on `mcp:write` (see
+   * `writeScopeOrNull` in packages/mcp/src/tools.ts). Undefined for stdio
+   * MCP and non-MCP requests, which carry no OAuth bearer.
+   */
+  scopes?: readonly string[];
+  /**
    * #2345 — group-aware chat routing.
    *
    * `connectionId` is the *execution target* for SQL on this request —

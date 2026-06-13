@@ -18,6 +18,7 @@ import {
   internalExecute,
   internalQuery,
 } from "@atlas/api/lib/db/internal";
+import { resolveBillingPeriod } from "@atlas/api/lib/billing/period";
 
 const log = createLogger("metering");
 
@@ -193,24 +194,49 @@ export interface UsageCurrentPeriod {
   queryCount: number;
   tokenCount: number;
   activeUsers: number;
+  /** Inclusive ISO start of the metering window. */
   periodStart: string;
+  /** Exclusive ISO end of the window — the moment usage resets. */
   periodEnd: string;
+  /**
+   * Where the window came from (#3431):
+   *   - `"stripe"`    — anchored on the org's active Stripe subscription
+   *                     period (`current_period_start`/`_end`).
+   *   - `"utc-month"` — UTC calendar-month fallback (trial / unsubscribed
+   *                     / no internal DB). Agrees with `proactive/quota.ts`.
+   * Lets the billing/usage UI and the 429 copy label the reset accurately.
+   */
+  periodSource: "stripe" | "utc-month";
 }
 
 /**
  * Get the current period summary for a workspace by querying usage_events
  * directly (real-time, not from pre-aggregated summaries).
+ *
+ * The window is the org's Stripe billing period when an active
+ * subscription exists, else the UTC calendar month (#3431) — resolved by
+ * {@link resolveBillingPeriod}. This replaced a server-local-timezone
+ * calendar month that drifted from the invoice anchor and from the
+ * proactive subsystem's UTC month.
+ *
+ * @param now - Current time; injected so tests can pin the boundary.
  */
 export async function getCurrentPeriodUsage(
   workspaceId: string,
+  now: Date = new Date(),
 ): Promise<UsageCurrentPeriod> {
   if (!hasInternalDB()) {
-    return { queryCount: 0, tokenCount: 0, activeUsers: 0, periodStart: "", periodEnd: "" };
+    return {
+      queryCount: 0,
+      tokenCount: 0,
+      activeUsers: 0,
+      periodStart: "",
+      periodEnd: "",
+      periodSource: "utc-month",
+    };
   }
 
-  const now = new Date();
-  const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const period = await resolveBillingPeriod(workspaceId, now);
 
   const rows = await internalQuery<{
     query_count: number;
@@ -225,7 +251,7 @@ export async function getCurrentPeriodUsage(
      WHERE workspace_id = $1
        AND created_at >= $2
        AND created_at < $3`,
-    [workspaceId, periodStart.toISOString(), periodEnd.toISOString()],
+    [workspaceId, period.start.toISOString(), period.end.toISOString()],
   );
 
   const row = rows[0];
@@ -233,8 +259,9 @@ export async function getCurrentPeriodUsage(
     queryCount: row?.query_count ?? 0,
     tokenCount: row?.token_count ?? 0,
     activeUsers: row?.active_users ?? 0,
-    periodStart: periodStart.toISOString(),
-    periodEnd: periodEnd.toISOString(),
+    periodStart: period.start.toISOString(),
+    periodEnd: period.end.toISOString(),
+    periodSource: period.source,
   };
 }
 

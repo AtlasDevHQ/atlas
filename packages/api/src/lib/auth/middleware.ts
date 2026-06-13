@@ -28,10 +28,29 @@ const log = createLogger("auth");
 // ---------------------------------------------------------------------------
 // Rate limiting — in-memory sliding window
 // ---------------------------------------------------------------------------
+//
+// PER-REPLICA / IN-MEMORY (#3432). `windows` lives in this process only; it is
+// NOT a shared store. Under a multi-replica SaaS deployment the effective
+// ceiling is N × the nominal limit: each of N replicas independently admits up
+// to `limit` requests per WINDOW_MS for the same caller, and a load balancer
+// can spread a caller's burst across all of them. So `ATLAS_RATE_LIMIT_RPM=120`
+// across 3 replicas tolerates up to ~360 rpm/caller in the worst case.
+//
+// Recorded decision (#3432 triage): documented as per-replica for v1 rather
+// than moved to a shared store (e.g. Redis). The limiter is an abuse/cost
+// backstop, not a hard quota — plan/token budgets (checkPlanLimits) are the
+// real spend ceiling and ARE globally consistent (they read the internal DB).
+// Revisit (shared store) only if a single caller's cross-replica burst proves
+// to be a real abuse vector.
 
 const WINDOW_MS = 60_000; // 60 seconds
 
-/** Map of rate-limit key → array of request timestamps (ms). */
+/**
+ * Map of rate-limit key → array of request timestamps (ms).
+ *
+ * PER-REPLICA (#3432): in-memory to THIS process. See the block comment above —
+ * with N replicas the real ceiling is N × the configured per-bucket limit.
+ */
 const windows = new Map<string, number[]>();
 
 let lastWarnedRpmValue: string | undefined;
@@ -199,6 +218,10 @@ export function getClientIP(req: Request): string | null {
  *
  * Note: this still limits API *requests*, not agent steps. Per-conversation
  * step accounting (F-77) is enforced separately on the chat handler.
+ *
+ * PER-REPLICA (#3432): the sliding window is in-memory to the calling process,
+ * so under N replicas the effective ceiling is N × the per-bucket limit — see
+ * the block comment on `windows`. This is the accepted v1 contract.
  */
 export function checkRateLimit(
   key: string,

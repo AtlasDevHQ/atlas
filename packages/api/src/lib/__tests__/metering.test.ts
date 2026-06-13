@@ -125,8 +125,14 @@ describe("metering", () => {
   });
 
   describe("getCurrentPeriodUsage", () => {
-    it("returns current period aggregates", async () => {
+    // #3431: getCurrentPeriodUsage now issues TWO queries — first the
+    // active-subscription period lookup (billing/period.ts), then the
+    // usage aggregate. The first queryResults entry feeds the subscription
+    // lookup; an empty array there means "no active subscription → UTC
+    // calendar-month fallback".
+    it("returns current period aggregates (UTC-month fallback, no subscription)", async () => {
       queryResults = [
+        [], // no active subscription row → UTC month
         [{ query_count: 42, token_count: 10000, active_users: 3 }],
       ];
 
@@ -137,10 +143,35 @@ describe("metering", () => {
       expect(result.activeUsers).toBe(3);
       expect(result.periodStart).toBeTruthy();
       expect(result.periodEnd).toBeTruthy();
+      expect(result.periodSource).toBe("utc-month");
+    });
+
+    it("anchors on the Stripe period when an active subscription exists", async () => {
+      const start = "2026-05-25T00:00:00.000Z";
+      const end = "2026-06-25T00:00:00.000Z";
+      queryResults = [
+        [{ periodStart: start, periodEnd: end }], // active subscription
+        [{ query_count: 7, token_count: 700, active_users: 1 }],
+      ];
+
+      const result = await getCurrentPeriodUsage(
+        "org-sub",
+        new Date("2026-06-10T12:00:00.000Z"),
+      );
+
+      expect(result.periodSource).toBe("stripe");
+      expect(result.periodStart).toBe(start);
+      expect(result.periodEnd).toBe(end);
+      // The usage aggregate must be windowed on the Stripe bounds.
+      const usageCall = queryCalls.find((c) => c.sql.includes("usage_events"));
+      expect(usageCall?.params).toEqual(["org-sub", start, end]);
     });
 
     it("returns zeros when no data", async () => {
-      queryResults = [[{ query_count: 0, token_count: 0, active_users: 0 }]];
+      queryResults = [
+        [], // no active subscription
+        [{ query_count: 0, token_count: 0, active_users: 0 }],
+      ];
 
       const result = await getCurrentPeriodUsage("org-empty");
 
@@ -153,11 +184,15 @@ describe("metering", () => {
       mockHasInternalDB = false;
       const result = await getCurrentPeriodUsage("org-1");
       expect(result.queryCount).toBe(0);
+      expect(result.periodSource).toBe("utc-month");
       expect(queryCalls).toHaveLength(0);
     });
 
     it("returns zeros when query returns empty result set", async () => {
-      queryResults = [[]]; // empty array — rows[0] is undefined
+      queryResults = [
+        [], // no active subscription
+        [], // empty aggregate — rows[0] is undefined
+      ];
 
       const result = await getCurrentPeriodUsage("org-1");
 

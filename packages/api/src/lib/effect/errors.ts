@@ -884,6 +884,26 @@ export class DeliveryError extends Data.TaggedError("DeliveryError")<{
   readonly permanent: boolean;
 }> {}
 
+// ── Profiling / semantic generation ─────────────────────────────────
+
+/**
+ * Profiling a datasource (or generating its semantic layer) failed.
+ *
+ * Raised by the `SemanticGenerator` service (Blocker #1 of the MCP V2
+ * datasource flagship, #3506) when a connection cannot be profiled into a
+ * queryable semantic layer: the connection yielded no tables, too many tables
+ * failed to profile (over the failure threshold, no `force`), or no profiler is
+ * registered for the requested `dbType`. `reason` is the machine-readable
+ * cause; `failedCount`/`totalCount` are forensic context for the
+ * threshold-breach case.
+ */
+export class ProfilingFailedError extends Data.TaggedError("ProfilingFailedError")<{
+  readonly message: string;
+  readonly reason: "no_tables" | "threshold_exceeded" | "unsupported_db_type" | "profiler_error";
+  readonly failedCount?: number;
+  readonly totalCount?: number;
+}> {}
+
 // ── Union type ──────────────────────────────────────────────────────
 
 /** Union of all known Atlas error types for exhaustive matching. */
@@ -939,6 +959,7 @@ export type AtlasError =
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
   | DeliveryError
+  | ProfilingFailedError
   | PublishPhaseError
   | UnknownTableError
   | ExoticReadFilterUnavailableError
@@ -1017,6 +1038,7 @@ export const ATLAS_ERROR_TAG_LIST = [
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",
+  "ProfilingFailedError",
   "PublishPhaseError",
   "UnknownTableError",
   "ExoticReadFilterUnavailableError",

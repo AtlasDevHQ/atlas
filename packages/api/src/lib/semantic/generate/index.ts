@@ -28,3 +28,10 @@ export {
   generateMetricYAML,
   generateGlossaryYAML,
 } from "./yaml";
+
+export {
+  generateSemanticLayer,
+  type GeneratedArtifact,
+  type GeneratedSemanticLayer,
+  type GenerateSemanticLayerOptions,
+} from "./layer";

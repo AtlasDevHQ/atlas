@@ -481,6 +481,16 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
         code: "upstream_error",
         message: `Unknown content-mode table "${error.table}"`,
       };
+    // #3506 — a datasource could not be profiled into a queryable semantic
+    // layer (no tables, threshold breach, or unsupported dbType). The caller
+    // (CLI today, an MCP datasource tool in the flagship) supplied a
+    // connection that can't be made queryable, so 422 is the right surface.
+    case "ProfilingFailedError":
+      return {
+        status: 422,
+        code: "unprocessable_entity",
+        message: error.message,
+      };
     case "ExoticReadFilterUnavailableError":
       return {
         status: 500,

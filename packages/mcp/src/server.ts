@@ -116,10 +116,26 @@ export async function createAtlasMcpServer(
   const clientId = opts?.clientId;
   const scopes = opts?.scopes;
 
-  const server = new McpServer({
-    name: "atlas",
-    version: VERSION,
-  });
+  // Declare the capabilities Atlas actually serves today (#3497, spec
+  // 2025-11-25). The high-level `McpServer` also auto-registers these as
+  // tools/resources/prompts are added, but stating them explicitly makes
+  // the supported surface the source of truth and is where later protocol
+  // work (resource `subscribe`, `completions`) hangs its flags. We
+  // deliberately omit `logging`, `sampling`, and `roots` — deprecated in
+  // the 2026-07-28 draft (PRD #3483).
+  const server = new McpServer(
+    {
+      name: "atlas",
+      version: VERSION,
+    },
+    {
+      capabilities: {
+        tools: {},
+        resources: {},
+        prompts: {},
+      },
+    },
+  );
 
   registerTools(server, { actor, transport, clientId, ...(scopes && { scopes }) });
 

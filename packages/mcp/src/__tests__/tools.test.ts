@@ -119,6 +119,44 @@ describe("MCP tools", () => {
     ]);
   });
 
+  it("declares read-only annotations on every native tool (#3497)", async () => {
+    const { client } = await createTestClient();
+    const { tools } = await client.listTools();
+    const annotationsByName = new Map(
+      tools.map((t) => [t.name, t.annotations]),
+    );
+
+    // All six native tools are read-only: explore + the semantic-layer
+    // tools read YAML, executeSQL / runMetric are SELECT-only (validated).
+    // A client must NOT prompt for confirmation on any of them.
+    for (const name of [
+      "explore",
+      "executeSQL",
+      "listEntities",
+      "describeEntity",
+      "searchGlossary",
+      "runMetric",
+    ]) {
+      expect(annotationsByName.get(name)?.readOnlyHint).toBe(true);
+    }
+
+    // Semantic-layer tools operate on a closed, local domain (the semantic
+    // directory) → openWorldHint false.
+    for (const name of [
+      "explore",
+      "listEntities",
+      "describeEntity",
+      "searchGlossary",
+    ]) {
+      expect(annotationsByName.get(name)?.openWorldHint).toBe(false);
+    }
+
+    // Datasource-query tools reach an external database → openWorldHint true.
+    for (const name of ["executeSQL", "runMetric"]) {
+      expect(annotationsByName.get(name)?.openWorldHint).toBe(true);
+    }
+  });
+
   it("tool descriptions document the error contract (#2030)", async () => {
     const { client } = await createTestClient();
     const result = await client.listTools();

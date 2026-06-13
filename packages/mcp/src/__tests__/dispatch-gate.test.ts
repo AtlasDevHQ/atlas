@@ -25,6 +25,8 @@ import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import type { ApprovalGateShape } from "@atlas/api/lib/effect/services";
 import type { ApprovalRequest } from "@useatlas/types";
 import { parseAtlasMcpToolError } from "@useatlas/types/mcp";
+import type { McpActionCategory } from "@useatlas/types/mcp";
+import type { McpActionPolicy } from "@atlas/api/lib/mcp/action-policy";
 import {
   runMcpDispatchGate,
   type McpDispatchGateContext,
@@ -129,6 +131,19 @@ const adminReqs: McpDispatchGateRequirements = {
   toolName: "stub_admin",
   requiresWrite: true,
   minRole: "admin",
+};
+
+/** Stub gate-1 policy: blocks exactly the listed categories. */
+function stubActionPolicy(blocked: McpActionCategory[]): McpActionPolicy {
+  const set = new Set<string>(blocked);
+  return { isBlocked: (c) => set.has(c) };
+}
+
+/** Admin reqs that also carry a gate-1 action category. */
+const datasourceReqs: McpDispatchGateRequirements = {
+  ...adminReqs,
+  toolName: "createDatasource",
+  actionCategory: "datasource",
 };
 
 describe("runMcpDispatchGate — gate order + branches (#3508)", () => {
@@ -252,6 +267,94 @@ describe("runMcpDispatchGate — gate order + branches (#3508)", () => {
     expect(res?.isError).toBe(true);
     expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("forbidden");
     expect(checked).toBe(false); // never reached the gate
+  });
+});
+
+describe("runMcpDispatchGate — gate 1: MCP action policy kill-switch (#3509)", () => {
+  it("blocks a tool whose action category is disabled for the workspace (forbidden)", async () => {
+    const res = await runMcpDispatchGate(baseCtx(), datasourceReqs, {
+      loadActionPolicy: async () => stubActionPolicy(["datasource"]),
+    });
+    expect(res?.isError).toBe(true);
+    const env = parseAtlasMcpToolError(getContentText(res?.content));
+    expect(env?.code).toBe("forbidden");
+    expect(env?.message).toContain("datasource");
+    expect(env?.message).toContain("disabled");
+  });
+
+  it("short-circuits BEFORE scope: a blocked category denies even a no-scope caller without a mcp:write message", async () => {
+    // A hosted mcp:read-only caller would normally fail gate 2 (scope) with a
+    // message mentioning mcp:write. With the category blocked, the gate-1
+    // denial fires first — proving order. The message must NOT mention
+    // mcp:write (that would mean gate 2 ran first).
+    const res = await runMcpDispatchGate(
+      baseCtx({ scopes: ["mcp:read"] }),
+      datasourceReqs,
+      { loadActionPolicy: async () => stubActionPolicy(["datasource"]) },
+    );
+    const env = parseAtlasMcpToolError(getContentText(res?.content));
+    expect(env?.code).toBe("forbidden");
+    expect(env?.message).not.toContain("mcp:write");
+    expect(env?.message).toContain("datasource");
+  });
+
+  it("proceeds to the next gates when the category is NOT blocked (admin + write → null)", async () => {
+    const res = await runMcpDispatchGate(baseCtx(), datasourceReqs, {
+      loadActionPolicy: async () => stubActionPolicy(["integration"]),
+    });
+    expect(res).toBeNull();
+  });
+
+  it("lets a downstream gate still deny an unblocked category (gate 1 isn't the only gate)", async () => {
+    // Category allowed, but a member fails gate 3 — gate 1 passing doesn't
+    // shadow the RBAC denial.
+    const res = await runMcpDispatchGate(
+      baseCtx({ actor: actor("member") }),
+      datasourceReqs,
+      { loadActionPolicy: async () => stubActionPolicy([]) },
+    );
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("forbidden");
+    expect(getContentText(res?.content)).toContain("admin");
+  });
+
+  it("fails closed (internal_error) when the policy lookup throws", async () => {
+    const res = await runMcpDispatchGate(baseCtx(), datasourceReqs, {
+      loadActionPolicy: async () => {
+        throw new Error("policy table read failed");
+      },
+    });
+    expect(res?.isError).toBe(true);
+    expect(parseAtlasMcpToolError(getContentText(res?.content))?.code).toBe("internal_error");
+  });
+
+  it("is a no-op for tools that declare no action category (existing tools unaffected)", async () => {
+    let consulted = false;
+    const res = await runMcpDispatchGate(baseCtx(), adminReqs, {
+      loadActionPolicy: async () => {
+        consulted = true;
+        return stubActionPolicy(["datasource"]);
+      },
+    });
+    expect(res).toBeNull();
+    expect(consulted).toBe(false); // no category ⇒ gate 1 skipped entirely
+  });
+
+  it("is a no-op (skipped) when there is no bound workspace (orgId undefined)", async () => {
+    // No workspace ⇒ no per-workspace policy to consult; later gates enforce
+    // identity. With an admin + write + non-destructive reqs, the call proceeds.
+    let consulted = false;
+    const res = await runMcpDispatchGate(
+      baseCtx({ orgId: undefined }),
+      datasourceReqs,
+      {
+        loadActionPolicy: async () => {
+          consulted = true;
+          return stubActionPolicy(["datasource"]);
+        },
+      },
+    );
+    expect(consulted).toBe(false);
+    expect(res).toBeNull();
   });
 });
 

@@ -204,3 +204,59 @@ export function parseAtlasMcpToolError(value: unknown): AtlasMcpToolError | null
  * tuple in callers if you need the values at runtime.
  */
 export type CanonicalToggle = "auto" | "always" | "never";
+
+// ---------------------------------------------------------------------------
+// MCP action policy — per-workspace kill-switch (#3509, ADR-0016 gate 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Closed set of MCP action *categories* a customer admin can allow/deny for
+ * their workspace. Gate 1 of the dispatch order (ADR-0016) consults the
+ * per-workspace policy and short-circuits a blocked category *before* scope /
+ * RBAC / approval — distinct from the non-configurable **origin ceiling**.
+ *
+ * Categories map to the MCP admin tool tiers in PRD #3483:
+ *   - `datasource`  — datasource create / test / profile / delete (Tier-2 flagship)
+ *   - `integration` — BYOT integration connections (Slack/GitHub/Linear/Email, Phase 4)
+ *   - `policy`      — governance-*raising* tools (approval rules, PII classes, Phase 4)
+ *
+ * Type-only here (no value tuple) so `@atlas/web` shares the union without
+ * reaching into `@atlas/api`; the runtime tuple + per-category labels live in
+ * `packages/api/src/lib/mcp/action-policy.ts`, and the dashboard renders the
+ * categories straight off the policy API response — same no-value-export
+ * discipline as `CanonicalToggle` above.
+ */
+export type McpActionCategory = "datasource" | "integration" | "policy";
+
+/**
+ * Stored state of one category for a workspace. The default posture is
+ * `allowed` (no stored row); a customer admin opts a category into `blocked`.
+ */
+export type McpActionPolicyStatus = "allowed" | "blocked";
+
+/**
+ * One category's policy state, as surfaced to the customer-admin dashboard
+ * (`GET /api/v1/admin/mcp/action-policy`). `label`/`description` are
+ * server-authoritative so the web UI never hardcodes the category set.
+ */
+export interface McpActionPolicyEntry {
+  readonly category: McpActionCategory;
+  readonly label: string;
+  readonly description: string;
+  readonly status: McpActionPolicyStatus;
+  /** ISO timestamp of the last explicit toggle; null when never set (default). */
+  readonly updatedAt: string | null;
+  /** Actor id that last toggled this category; null for the default state. */
+  readonly updatedBy: string | null;
+}
+
+/** `GET /api/v1/admin/mcp/action-policy` response — every category + status. */
+export interface McpActionPolicyResponse {
+  readonly entries: readonly McpActionPolicyEntry[];
+}
+
+/** `PUT /api/v1/admin/mcp/action-policy` request — set one category's status. */
+export interface McpActionPolicyUpdateRequest {
+  readonly category: McpActionCategory;
+  readonly status: McpActionPolicyStatus;
+}

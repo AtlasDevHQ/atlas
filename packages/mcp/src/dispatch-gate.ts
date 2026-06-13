@@ -3,9 +3,16 @@
  *
  * Every MUTATING MCP tool routes its dispatch through this composer before
  * doing any work. The gate order is fixed by ADR-0016; this module wires
- * gates 2–4 (gate 1, the per-workspace MCP action policy, lands in #3509;
- * gate 5, inline confirm via destructiveHint + elicitation, in #3497/#3499):
+ * gates 1–4 (gate 5, inline confirm via destructiveHint + elicitation, lands
+ * in #3497/#3499):
  *
+ *   1. MCP action policy  — the per-workspace customer-admin kill-switch
+ *      (#3509). A tool that declares an `actionCategory` is short-circuited
+ *      when that category is BLOCKED for the workspace — BEFORE scope / RBAC /
+ *      approval, since the customer's "no datasource creation via MCP at all"
+ *      decision overrides everything downstream. Consulted via the lib-layer
+ *      {@link loadMcpActionPolicy} (NEVER loopback HTTP). Fails closed: a DB
+ *      error reading the policy blocks rather than proceeds.
  *   2. `mcp:write` scope  — hosted only; stdio is exempt (no third-party
  *      client). Reuses {@link writeScopeOrNull} (#3504).
  *   3. RBAC role          — authority is the bound MCP actor's role,
@@ -32,8 +39,13 @@
 
 import { Effect } from "effect";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { McpActionCategory } from "@useatlas/types/mcp";
 import type { AtlasUser, AtlasRole } from "@atlas/api/lib/auth/types";
 import { meetsRoleRequirement, getUserRole } from "@atlas/api/lib/auth/permissions";
+import {
+  loadMcpActionPolicy,
+  type McpActionPolicy,
+} from "@atlas/api/lib/mcp/action-policy";
 import {
   ApprovalGate,
   type ApprovalGateShape,
@@ -91,6 +103,14 @@ export interface McpDispatchGateContext {
 export interface McpDispatchGateRequirements {
   /** Tool name for logs / envelopes. */
   readonly toolName: string;
+  /**
+   * Gate 1: the MCP action *category* this tool belongs to (e.g.
+   * `"datasource"`). When set AND the workspace blocks that category, the
+   * dispatch short-circuits before any other gate. Omit for tools not subject
+   * to the per-workspace kill-switch (there is no category to block, so gate 1
+   * is a no-op for them).
+   */
+  readonly actionCategory?: McpActionCategory;
   /** Gate 2: the tool mutates data → require the `mcp:write` scope (hosted). */
   readonly requiresWrite: boolean;
   /** Gate 3: minimum RBAC role on the bound actor (e.g. `"admin"`). */
@@ -114,6 +134,12 @@ export interface McpDispatchGateDeps {
    * {@link ApprovalGateShape}). Defaults to the fail-closed EE loader.
    */
   readonly loadApprovalGate?: () => Promise<ApprovalGateShape>;
+  /**
+   * Override the gate-1 action-policy loader (tests inject a stub
+   * {@link McpActionPolicy}). Defaults to the lib-layer
+   * {@link loadMcpActionPolicy} (DB-backed, never loopback HTTP).
+   */
+  readonly loadActionPolicy?: (orgId: string) => Promise<McpActionPolicy>;
 }
 
 /**
@@ -125,6 +151,17 @@ export async function runMcpDispatchGate(
   reqs: McpDispatchGateRequirements,
   deps: McpDispatchGateDeps = {},
 ): Promise<CallToolResult | null> {
+  // ── Gate 1: per-workspace MCP action policy kill-switch (#3509) ──
+  // Short-circuits BEFORE scope/RBAC/approval: the customer admin's "disable
+  // this whole category via MCP" decision overrides everything downstream.
+  // Needs a workspace to look up — with no orgId there is no per-workspace
+  // policy, so gate 1 is a no-op and the later gates (RBAC, approval identity
+  // guard) enforce the missing-identity case.
+  if (reqs.actionCategory && ctx.orgId) {
+    const policyBlock = await runActionPolicyGate(ctx, reqs.actionCategory, reqs.toolName, deps);
+    if (policyBlock) return policyBlock;
+  }
+
   // ── Gate 2: mcp:write scope (hosted only; stdio exempt via clientId) ──
   if (reqs.requiresWrite) {
     const scopeBlock = writeScopeOrNull({ clientId: ctx.clientId, scopes: ctx.scopes });
@@ -159,6 +196,63 @@ export async function runMcpDispatchGate(
   }
 
   return null;
+}
+
+/**
+ * Gate 1 — the per-workspace MCP action policy kill-switch. Returns a
+ * `forbidden` envelope when the category is blocked, `null` to proceed, and an
+ * `internal_error` envelope (fail closed) when the policy can't be read. The
+ * lib-layer loader (`loadMcpActionPolicy`) returns all-allowed when no internal
+ * DB is configured, so self-hosted-without-a-DB proceeds; only a genuine read
+ * error blocks.
+ */
+async function runActionPolicyGate(
+  ctx: McpDispatchGateContext,
+  actionCategory: McpActionCategory,
+  toolName: string,
+  deps: McpDispatchGateDeps,
+): Promise<CallToolResult | null> {
+  try {
+    const load = deps.loadActionPolicy ?? loadMcpActionPolicy;
+    const policy = await load(ctx.orgId!);
+    if (!policy.isBlocked(actionCategory)) return null;
+
+    log.warn(
+      {
+        toolName,
+        actionCategory,
+        orgId: ctx.orgId,
+        ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
+      },
+      "MCP tool denied at gate 1 — action category blocked by workspace policy",
+    );
+    return toEnvelopeResult(
+      envelope(
+        "forbidden",
+        `MCP '${actionCategory}' actions are disabled for this workspace by an administrator.`,
+        {
+          hint: "A workspace admin can re-enable this category under Admin → MCP action policy.",
+        },
+      ),
+    );
+  } catch (err) {
+    log.error(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        toolName,
+        actionCategory,
+        ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
+      },
+      "MCP action policy unavailable / errored — blocking action (fail-closed)",
+    );
+    return toEnvelopeResult(
+      envelope(
+        "internal_error",
+        "MCP action policy unavailable — action blocked. Contact your administrator.",
+        ctx.requestId ? { request_id: ctx.requestId } : undefined,
+      ),
+    );
+  }
 }
 
 async function runApprovalGate(

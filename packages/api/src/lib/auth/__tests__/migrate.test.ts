@@ -378,6 +378,7 @@ describe("migrateAuthTables", () => {
             { name: "0128_stripe_webhook_event_ledger.sql" },
             { name: "0129_stripe_purged_subscriptions.sql" },
             { name: "0133_approval_origin_rename.sql" },
+            { name: "0134_mcp_action_policy.sql" },
           ],
         };
       }

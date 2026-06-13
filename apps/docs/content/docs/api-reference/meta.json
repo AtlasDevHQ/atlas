@@ -24,6 +24,7 @@
     "admin-ip-allowlist",
     "admin-integrations",
     "admin-learned-patterns",
+    "admin-mcp-action-policy",
     "admin-migration",
     "admin-mode",
     "admin-model-config",

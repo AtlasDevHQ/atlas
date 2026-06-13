@@ -5,7 +5,7 @@ you need to get started.
 
 ## Prerequisites
 
-- **[bun](https://bun.sh/)** >= 1.3.14 — package manager and runtime
+- **[bun](https://bun.sh/)** 1.3.13 — package manager and runtime (pinned `>=1.3.13 <1.3.14`; 1.3.14 is banned for the `--isolate` TLA regression, see #2811)
 - **[Docker](https://www.docker.com/)** — for the local Postgres database and sandbox sidecar
 
 ## Dev Setup

@@ -30,6 +30,9 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { checkAgentBillingGate } from "@atlas/api/lib/billing/agent-gate";
 import { envelope, toEnvelopeResult } from "./error-envelope.js";
+import { createMcpLogger } from "./logger.js";
+
+const log = createMcpLogger("mcp:billing-gate");
 
 const BILLING_BLOCKED_HINT =
   "Retrying will not help. The workspace owner must resolve the workspace's billing or suspension status in Atlas before queries can run.";
@@ -52,8 +55,16 @@ export async function billingGateOrNull(args: {
   const gate = await checkAgentBillingGate(args.orgId);
   if (gate.allowed) return null;
 
-  process.stderr.write(
-    `[atlas-mcp] dispatch blocked by billing enforcement [${gate.errorCode}] (request ${args.requestId})\n`,
+  // Carry orgId / requestId / errorCode explicitly so a billing-block line
+  // is self-describing in the aggregator even though the mixin would also
+  // stamp requestId from the dispatch context (#3494).
+  log.warn(
+    {
+      orgId: args.orgId,
+      requestId: args.requestId,
+      errorCode: gate.errorCode,
+    },
+    "dispatch blocked by billing enforcement",
   );
 
   if (gate.errorCode === "workspace_throttled") {

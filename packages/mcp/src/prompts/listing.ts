@@ -34,6 +34,9 @@ import {
   evaluateCanonicalGate,
   type CanonicalGateResult,
 } from "./gating.js";
+import { createMcpLogger } from "../logger.js";
+
+const log = createMcpLogger("mcp:prompts:listing");
 // Wire-shape types come from `@useatlas/schemas/mcp-prompts` so the
 // listing pipeline, the route layer, and the web client all derive
 // from one Zod source. See the schemas module header for the
@@ -166,8 +169,9 @@ export function loadSemanticPrompts(): SemanticPrompt[] {
   try {
     root = getSemanticRoot();
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] Semantic root not available, skipping semantic prompts: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Semantic root not available, skipping semantic prompts",
     );
     return prompts;
   }
@@ -176,8 +180,9 @@ export function loadSemanticPrompts(): SemanticPrompt[] {
   try {
     ({ entities } = scanEntities(root));
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] Failed to scan entities for prompts: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to scan entities for prompts",
     );
     return prompts;
   }
@@ -246,8 +251,9 @@ export async function loadLibraryPrompts(): Promise<LibraryPrompt[]> {
       question: row.question,
     }));
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] Failed to load prompt library: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load prompt library",
     );
     return [];
   }

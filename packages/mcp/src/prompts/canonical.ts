@@ -34,6 +34,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { createMcpLogger } from "../logger.js";
+
+const log = createMcpLogger("mcp:prompts:canonical");
 
 export const CANONICAL_PROMPT_PREFIX = "canonical-";
 
@@ -149,8 +152,9 @@ export function loadCanonicalPrompts(
   const filePath = opts?.path ?? getCanonicalQuestionsPath();
 
   if (!fs.existsSync(filePath)) {
-    process.stderr.write(
-      `[atlas-mcp] canonical questions file not found at ${filePath} — skipping canonical prompts\n`,
+    log.warn(
+      { filePath },
+      "canonical questions file not found — skipping canonical prompts",
     );
     return [];
   }
@@ -159,8 +163,9 @@ export function loadCanonicalPrompts(
   try {
     content = fs.readFileSync(filePath, "utf8");
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] Failed to read canonical questions: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), filePath },
+      "Failed to read canonical questions",
     );
     return [];
   }
@@ -169,22 +174,25 @@ export function loadCanonicalPrompts(
   try {
     parsed = yaml.load(content);
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] Failed to parse canonical questions YAML: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), filePath },
+      "Failed to parse canonical questions YAML",
     );
     return [];
   }
 
   if (!parsed || typeof parsed !== "object") {
-    process.stderr.write(
-      `[atlas-mcp] canonical questions YAML did not parse to an object at ${filePath} — skipping\n`,
+    log.warn(
+      { filePath },
+      "canonical questions YAML did not parse to an object — skipping",
     );
     return [];
   }
   const root = parsed as QuestionsRoot;
   if (!Array.isArray(root.questions)) {
-    process.stderr.write(
-      `[atlas-mcp] canonical questions YAML at ${filePath} has no top-level "questions:" array — skipping\n`,
+    log.warn(
+      { filePath },
+      'canonical questions YAML has no top-level "questions:" array — skipping',
     );
     return [];
   }

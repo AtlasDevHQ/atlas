@@ -60,6 +60,9 @@ import {
 } from "./error-envelope.js";
 import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
+import { createMcpLogger } from "./logger.js";
+
+const log = createMcpLogger("mcp:semantic-tools");
 
 // Modest input bounds — MCP clients (including hostile ones in BYOC
 // SaaS) shouldn't be able to drive megabyte strings into the catalog
@@ -200,7 +203,10 @@ export function registerSemanticTools(
               return toJsonContent({ count: entities.length, entities });
             } catch (err) {
               const message = errorMessage(err, "listEntities tool failed");
-              process.stderr.write(`[atlas-mcp] listEntities threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "listEntities tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );
@@ -259,7 +265,10 @@ export function registerSemanticTools(
               return toJsonContent({ found: true, entity });
             } catch (err) {
               const message = errorMessage(err, "describeEntity tool failed");
-              process.stderr.write(`[atlas-mcp] describeEntity threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "describeEntity tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );
@@ -342,7 +351,10 @@ export function registerSemanticTools(
               });
             } catch (err) {
               const message = errorMessage(err, "searchGlossary tool failed");
-              process.stderr.write(`[atlas-mcp] searchGlossary threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "searchGlossary tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );
@@ -573,7 +585,10 @@ export function registerSemanticTools(
               });
             } catch (err) {
               const message = errorMessage(err, "runMetric tool failed");
-              process.stderr.write(`[atlas-mcp] runMetric threw: ${err}\n`);
+              log.error(
+                { err: err instanceof Error ? err : new Error(String(err)) },
+                "runMetric tool threw",
+              );
               return toEnvelopeResult(
                 envelope("internal_error", message, { request_id: requestId }),
               );

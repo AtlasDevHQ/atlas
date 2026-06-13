@@ -28,6 +28,9 @@ import type { CanonicalToggle } from "@useatlas/types/mcp";
 import type { CanonicalGateReason } from "@useatlas/schemas/mcp-prompts";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createMcpLogger } from "../logger.js";
+
+const log = createMcpLogger("mcp:prompts:gating");
 
 export const EXPOSE_CANONICAL_SETTING = "ATLAS_MCP_EXPOSE_CANONICAL_PROMPTS";
 
@@ -116,8 +119,9 @@ async function probeDemoConnection(
     );
     return rows[0]?.active === true ? "active" : "inactive";
   } catch (err) {
-    process.stderr.write(
-      `[atlas-mcp] canonical gating: workspace_plugins query failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), workspaceId },
+      "canonical gating: workspace_plugins query failed",
     );
     return "error";
   }

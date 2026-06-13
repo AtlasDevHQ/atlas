@@ -12,7 +12,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { initializeConfig, getConfig } from "@atlas/api/lib/config";
-import { createLogger } from "@atlas/api/lib/logger";
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { loadSettings } from "@atlas/api/lib/settings";
@@ -23,8 +22,11 @@ import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { resolveMcpActor } from "./actor.js";
 import type { McpTransport } from "./telemetry.js";
+import { createMcpLogger } from "./logger.js";
 
-const log = createLogger("mcp:boot");
+// Boot diagnostics go to stderr (JSON), not the api logger's stdout — stdout
+// carries the JSON-RPC stream on the stdio transport (#3494).
+const log = createMcpLogger("mcp:boot");
 // `serverInfo.version` is what MCP clients (Claude Desktop, Cursor) show
 // in their server picker. Reading from package.json keeps the value in
 // sync without a hand-edit on every bump.

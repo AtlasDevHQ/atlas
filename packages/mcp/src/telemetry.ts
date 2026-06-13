@@ -32,6 +32,9 @@ import {
   mcpActivations,
 } from "@atlas/api/lib/metrics";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { createMcpLogger } from "./logger.js";
+
+const log = createMcpLogger("mcp:telemetry");
 
 export type McpTransport = "stdio" | "sse";
 
@@ -90,8 +93,9 @@ function emitActivationOnce(
     });
   } catch (err) {
     seenWorkspaces.delete(workspaceId);
-    process.stderr.write(
-      `[atlas-mcp] activation counter failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)), workspaceId },
+      "activation counter failed",
     );
   }
 }

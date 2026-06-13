@@ -18,6 +18,9 @@ import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
+import { createMcpLogger } from "./logger.js";
+
+const log = createMcpLogger("mcp:resources");
 
 const SEMANTIC_ROOT = getSemanticRoot();
 
@@ -45,7 +48,10 @@ function listYamlFiles(subdir: string): string[] {
       .sort();
   } catch (err) {
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return [];
-    process.stderr.write(`[atlas-mcp] Failed to list YAML files in "${subdir}": ${err instanceof Error ? err.message : String(err)}\n`);
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), subdir },
+      "Failed to list YAML files in semantic subdirectory",
+    );
     throw err;
   }
 }
@@ -58,7 +64,10 @@ function readSemanticFile(relativePath: string): string | null {
     return fs.readFileSync(filePath, "utf-8");
   } catch (err) {
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    process.stderr.write(`[atlas-mcp] Failed to read "${relativePath}": ${err instanceof Error ? err.message : String(err)}\n`);
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)), relativePath },
+      "Failed to read semantic file",
+    );
     throw err;
   }
 }

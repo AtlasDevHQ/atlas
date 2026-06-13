@@ -27608,6 +27608,13 @@
                     },
                     "periodEnd": {
                       "type": "string"
+                    },
+                    "periodSource": {
+                      "type": "string",
+                      "enum": [
+                        "stripe",
+                        "utc-month"
+                      ]
                     }
                   },
                   "required": [
@@ -27616,7 +27623,8 @@
                     "tokenCount",
                     "activeUsers",
                     "periodStart",
-                    "periodEnd"
+                    "periodEnd",
+                    "periodSource"
                   ]
                 }
               }
@@ -27769,6 +27777,13 @@
                         },
                         "periodEnd": {
                           "type": "string"
+                        },
+                        "periodSource": {
+                          "type": "string",
+                          "enum": [
+                            "stripe",
+                            "utc-month"
+                          ]
                         }
                       },
                       "required": [
@@ -27776,7 +27791,8 @@
                         "tokenCount",
                         "activeUsers",
                         "periodStart",
-                        "periodEnd"
+                        "periodEnd",
+                        "periodSource"
                       ]
                     },
                     "plan": {
@@ -73292,6 +73308,13 @@
                         },
                         "periodEnd": {
                           "type": "string"
+                        },
+                        "periodSource": {
+                          "type": "string",
+                          "enum": [
+                            "stripe",
+                            "utc-month"
+                          ]
                         }
                       },
                       "required": [

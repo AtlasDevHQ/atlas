@@ -92,6 +92,8 @@ export interface RegisterSemanticToolsOptions {
   deployMode: McpDeployMode;
   /** Hosted-MCP OAuth client_id, surfaced into `audit_log.client_id` (#2067). */
   clientId?: string;
+  /** #3504 — OAuth token scopes, threaded onto each dispatch's RequestContext. */
+  scopes?: readonly string[];
 }
 
 function dispatchId(prefix: string): string {
@@ -142,7 +144,7 @@ export function registerSemanticTools(
   server: McpServer,
   opts: RegisterSemanticToolsOptions,
 ): void {
-  const { actor, transport, workspaceId, deployMode, clientId } = opts;
+  const { actor, transport, workspaceId, deployMode, clientId, scopes } = opts;
   // #2067 — wrap each dispatch with the same actor shape as tools.ts. The
   // `mcp` actor_kind / clientId / toolName trail through `logQueryAudit`
   // so admins can scope `audit_log` rows to a specific MCP tool/client.
@@ -173,7 +175,7 @@ export function registerSemanticTools(
         { toolName: "listEntities", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-listEntities");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("listEntities"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               // Rate-limit gate (#2071) lives INSIDE the try so any
               // limiter throw lands in the same catch as a tool throw
@@ -230,7 +232,7 @@ export function registerSemanticTools(
         { toolName: "describeEntity", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-describeEntity");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("describeEntity"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -288,7 +290,7 @@ export function registerSemanticTools(
         { toolName: "searchGlossary", workspaceId, transport, deployMode },
         () => {
           const requestId = dispatchId("mcp-searchGlossary");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("searchGlossary"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,
@@ -402,7 +404,7 @@ export function registerSemanticTools(
         },
         () => {
           const requestId = dispatchId("mcp-runMetric");
-          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), agentOrigin: "mcp" }, async () => {
+          return withRequestContext({ requestId, user: actor, actor: mcpActor("runMetric"), agentOrigin: "mcp", ...(scopes ? { scopes } : {}) }, async () => {
             try {
               const limited = await rateLimitOrNull({
                 clientId,

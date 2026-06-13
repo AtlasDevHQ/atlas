@@ -1158,6 +1158,8 @@ async function createBoundMcpServer(
     actor: ctx.user,
     transport: "sse",
     skipConfig: true,
+    // #3504 — thread the bearer's OAuth scopes so write tools enforce mcp:write.
+    scopes: ctx.scopes,
     // #2067 — surface the registered OAuth client_id into
     // `audit_log.client_id` so the admin filter can scope to "rows from
     // claude-desktop" without joining on token tables.

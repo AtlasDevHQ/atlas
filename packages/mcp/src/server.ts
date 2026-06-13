@@ -52,6 +52,12 @@ interface CreateMcpServerOptions {
    * `RequestContext.actor.clientId` (#2067). Stdio MCP leaves this unset.
    */
   clientId?: string;
+  /**
+   * #3504 — OAuth token scopes for this hosted-MCP session, threaded from
+   * `verifyMcpBearer` onto every dispatch's `RequestContext` so write tools
+   * can enforce `mcp:write`. Stdio MCP leaves this unset (exempt).
+   */
+  scopes?: readonly string[];
 }
 
 /**
@@ -106,13 +112,14 @@ export async function createAtlasMcpServer(
   const actor = opts?.actor ?? (await resolveMcpActor());
   const transport: McpTransport = opts?.transport ?? "stdio";
   const clientId = opts?.clientId;
+  const scopes = opts?.scopes;
 
   const server = new McpServer({
     name: "atlas",
     version: VERSION,
   });
 
-  registerTools(server, { actor, transport, clientId });
+  registerTools(server, { actor, transport, clientId, ...(scopes && { scopes }) });
 
   // #2078 — plugins contribute additional MCP tools via `mcpTools()`.
   // Boot the plugin lifecycle so factory functions can run, then walk
@@ -138,6 +145,7 @@ export async function createAtlasMcpServer(
       actor,
       transport,
       ...(clientId && { clientId }),
+      ...(scopes && { scopes }),
       workspaceId: actor.activeOrganizationId ?? actor.id,
       deployMode: getConfig()?.deployMode ?? "self-hosted",
     });

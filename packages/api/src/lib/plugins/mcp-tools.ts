@@ -358,6 +358,12 @@ export interface RegisterPluginMcpToolsOptions {
   workspaceId: string;
   deployMode: "self-hosted" | "saas";
   clientId?: string;
+  /**
+   * #3504 — OAuth token scopes, threaded onto the dispatch RequestContext
+   * so a write-gated plugin tool can enforce `mcp:write`. Undefined for
+   * stdio MCP (exempt).
+   */
+  scopes?: readonly string[];
   /** OTel wrapper. Default is passthrough. */
   traceWrap?: <T>(
     spanCtx: {
@@ -460,6 +466,7 @@ export function registerPluginMcpTools(
     workspaceId,
     deployMode,
     clientId,
+    scopes,
     traceWrap,
     loggerFor = defaultLogger,
   } = opts;
@@ -482,7 +489,15 @@ export function registerPluginMcpTools(
         // #3507 — stamp `mcp` as the agent origin so origin-scoped approval
         // rules (ADR-0016) match plugin-tool dispatches, parity with the
         // built-in MCP tools in packages/mcp/src/{tools,semantic-tools}.ts.
-        { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor },
+        // #3504 — `scopes` is threaded onto the context here so a future
+        // write-gated plugin tool can read it, BUT no `mcp:write` gate runs
+        // on this path yet: unlike built-in tools (which call
+        // `writeScopeOrNull` per-tool), plugin tools carry no read/write
+        // signal until tool annotations land (#3497), so the host can't tell
+        // which plugin tools mutate. Generic enforcement here is deferred to
+        // the gate-order pipeline (#3508). Until then, a mutating plugin MCP
+        // tool is NOT scope-gated — tracked in #3520.
+        { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor, ...(scopes ? { scopes } : {}) },
         async () => {
           // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
           // `clientId`; stdio MCP leaves it undefined and is intentionally

@@ -22,6 +22,7 @@ const validStatus = {
     totalTokenBudget: 20_000_000,
     maxSeats: 10,
     maxConnections: 1,
+    maxChatIntegrations: 1,
   },
   usage: {
     queryCount: 423,
@@ -53,6 +54,7 @@ const selfHostedStatus = {
     totalTokenBudget: null,
     maxSeats: null,
     maxConnections: null,
+    maxChatIntegrations: null,
   },
   seats: { count: 1, max: null },
   connections: { count: 0, max: null },
@@ -207,6 +209,30 @@ describe("subscription visibility (#3429)", () => {
     const parsed = BillingStatusSchema.parse({ ...validStatus, subscription: legacySub });
     expect(parsed.subscription?.cancelAtPeriodEnd).toBeUndefined();
     expect(parsed.subscription?.periodEnd).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Chat-integration cap (#3438) — BillingLimitsSchema must carry
+// maxChatIntegrations so the billing page can display the cap the install
+// gate already enforces (PlanLimits.maxChatIntegrations).
+// ---------------------------------------------------------------------------
+
+describe("chat-integration cap (#3438)", () => {
+  test("parses a numeric maxChatIntegrations cap", () => {
+    const parsed = BillingStatusSchema.parse(validStatus);
+    expect(parsed.limits.maxChatIntegrations).toBe(1);
+  });
+
+  test("parses a null maxChatIntegrations (unlimited)", () => {
+    const parsed = BillingStatusSchema.parse(selfHostedStatus);
+    expect(parsed.limits.maxChatIntegrations).toBeNull();
+  });
+
+  test("rejects a status whose limits omit maxChatIntegrations", () => {
+    const { maxChatIntegrations: _m, ...partialLimits } = validStatus.limits;
+    const drifted = { ...validStatus, limits: partialLimits };
+    expect(BillingStatusSchema.safeParse(drifted).success).toBe(false);
   });
 });
 

@@ -80,6 +80,23 @@ describe("MCP server integration", () => {
     ]);
   });
 
+  it("advertises tools/resources/prompts capabilities and not logging (#3497)", async () => {
+    const server = await createAtlasMcpServer({ actor: TEST_ACTOR });
+    const client = new Client({ name: "test-client", version: "0.0.1" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    const caps = client.getServerCapabilities();
+    expect(caps?.tools).toBeDefined();
+    expect(caps?.resources).toBeDefined();
+    expect(caps?.prompts).toBeDefined();
+    // `logging`/`sampling`/`roots` are intentionally not adopted (deprecated
+    // in the 2026-07-28 draft) — PRD #3483.
+    expect(caps?.logging).toBeUndefined();
+  });
+
   it("creates a server and lists resources", async () => {
     const server = await createAtlasMcpServer({ actor: TEST_ACTOR });
     const client = new Client({ name: "test-client", version: "0.0.1" });

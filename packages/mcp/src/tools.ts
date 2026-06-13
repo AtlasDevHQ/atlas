@@ -195,6 +195,13 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
             'A bash command to run against the semantic layer, e.g. \'cat catalog.yml\', \'grep -r revenue entities/\'',
           ),
       },
+      // Read-only over a closed, local domain: explore only ever runs
+      // read commands (ls/cat/grep/find) against the semantic directory —
+      // no datasource, no mutations. A client must not prompt for a confirm.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ command }): Promise<CallToolResult> =>
       traceMcpToolCall(
@@ -273,6 +280,13 @@ export function registerTools(server: McpServer, opts: RegisterToolsOptions): vo
           .describe(
             "Target connection ID. Omit for the default connection.",
           ),
+      },
+      // SELECT-only (DML/DDL is rejected by the 4-layer SQL validator), so
+      // the query never modifies the datasource — read-only. It does reach
+      // an external database, so the world is open (openWorldHint true).
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
       },
     },
     async ({ sql, explanation, connectionId }): Promise<CallToolResult> =>

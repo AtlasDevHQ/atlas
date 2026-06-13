@@ -172,6 +172,11 @@ export function registerSemanticTools(
             "Optional case-insensitive substring matched against name, table, and description.",
           ),
       },
+      // Read-only over the local semantic catalog (closed world).
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
     },
     async ({ filter }): Promise<CallToolResult> =>
       traceMcpToolCall(
@@ -231,6 +236,11 @@ export function registerSemanticTools(
           .describe(
             "Entity name (`name` field) or table name. Alphanumerics, `_`, `-`, `.` only — no path separators.",
           ),
+      },
+      // Read-only over the local semantic catalog (closed world).
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
       },
     },
     async ({ name }): Promise<CallToolResult> =>
@@ -292,6 +302,11 @@ export function registerSemanticTools(
           .describe(
             "Term, phrase, or substring to search across glossary entries.",
           ),
+      },
+      // Read-only over the local business glossary (closed world).
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
       },
     },
     async ({ term }): Promise<CallToolResult> =>
@@ -403,6 +418,13 @@ export function registerSemanticTools(
           .describe(
             "Target connection id. Omit to run the metric against its own group — a metric defined under `groups/<group>/` runs against `<group>`, an ungrouped metric against the default connection. Passing a connection id that does not match the metric's group is rejected.",
           ),
+      },
+      // Runs the metric's authoritative SELECT through the same validated
+      // executeSQL path — read-only, but against an external database
+      // (openWorldHint true), like executeSQL.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: true,
       },
     },
     async ({ id, filters, connectionId }): Promise<CallToolResult> =>

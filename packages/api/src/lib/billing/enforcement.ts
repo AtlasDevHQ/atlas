@@ -67,6 +67,35 @@ export type PlanCheckResult =
 // ---------------------------------------------------------------------------
 // Plan limit cache
 // ---------------------------------------------------------------------------
+//
+// PER-REPLICA / IN-MEMORY — documented staleness contract (#3432).
+//
+// `planCache` is a plain in-process Map: each API replica holds its OWN copy.
+// A Stripe webhook handled on replica A calls invalidatePlanCache(orgId) on A
+// ONLY — replicas B..N keep serving their cached WorkspaceRow until their own
+// PLAN_CACHE_TTL_MS entry expires. So after a tier change (upgrade/downgrade)
+// OR a suspension/status flip (checkWorkspaceStatus in lib/workspace.ts reads
+// the SAME cache via getCachedWorkspace), replicas that didn't handle the
+// webhook can be stale for up to PLAN_CACHE_TTL_MS (60s).
+//
+// Recorded decision (#3432 triage): we ACCEPT this 60s window as the v1
+// staleness SLA rather than build cross-replica pub/sub. Two things make that
+// safe:
+//   1. The post-checkout UI (#3418, CheckoutReturnBanner in
+//      packages/web/src/app/admin/billing/page.tsx) polls /api/v1/billing for
+//      25 × 3s = 75s — deliberately longer than this TTL — so a webhook landing
+//      against a warm cache on whichever replica the user hits is guaranteed to
+//      clear (TTL expiry) before the poll gives up. That closes the
+//      user-visible "I paid and it's still blocked" gap: the staleness never
+//      outlives the poll window.
+//   2. The window is bounded and self-healing (TTL expiry); for a brand-new
+//      subscriber the stale direction is fail-OPEN at worst, and only for <60s.
+//
+// Revisit trigger: if the 60s window ever proves user-visible BEYOND the
+// post-checkout poll (e.g. a mid-session suspension that must take effect
+// cross-replica in <60s), replace this with Postgres LISTEN/NOTIFY pub-sub
+// invalidation (broadcast invalidatePlanCache over a `plan_cache_invalidate`
+// channel) rather than shortening the TTL globally.
 
 interface CachedPlanData {
   workspace: WorkspaceRow;
@@ -84,6 +113,10 @@ const PLAN_CACHE_TTL_MS = 60_000;
  *
  * Exported so that workspace status checks can reuse the same cache
  * instead of making a separate DB query per request.
+ *
+ * NOTE (#3432): this cache is per-replica/in-memory — see the block comment
+ * above. A value read here can be up to PLAN_CACHE_TTL_MS (60s) behind a tier
+ * or suspension change applied via a Stripe webhook on a DIFFERENT replica.
  */
 export async function getCachedWorkspace(
   orgId: string,
@@ -102,7 +135,15 @@ export async function getCachedWorkspace(
   return workspace;
 }
 
-/** Clear cached workspace data. Called after plan tier changes (e.g. Stripe webhook) to force a fresh DB read. */
+/**
+ * Clear cached workspace data. Called after plan tier changes (e.g. Stripe
+ * webhook) to force a fresh DB read.
+ *
+ * PER-REPLICA (#3432): this clears ONLY the calling process's `planCache`. The
+ * webhook fires on one replica, so the other replicas are NOT invalidated here
+ * — they self-heal on TTL expiry (≤60s). See the block comment on `planCache`
+ * for the accepted staleness contract and the PG LISTEN/NOTIFY revisit trigger.
+ */
 export function invalidatePlanCache(orgId?: string): void {
   if (orgId) {
     planCache.delete(orgId);

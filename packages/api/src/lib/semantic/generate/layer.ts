@@ -22,6 +22,7 @@
  * re-run them.
  */
 
+import path from "node:path";
 import type { TableProfile } from "@useatlas/types";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import {
@@ -31,11 +32,28 @@ import {
   generateMetricYAML,
 } from "./yaml";
 
+/**
+ * Derive the on-disk filename for a table's artifact, stripping any path
+ * components a table name might smuggle in. Callers write `fileName` straight
+ * into `path.join(dir, fileName)`, so sanitizing here makes the field
+ * traversal-safe by construction for *every* caller (the CLI profiles a trusted
+ * local DB; a future MCP datasource tool profiles caller-supplied connections).
+ * `path.basename` leaves ordinary identifiers — including dotted ones like
+ * `public.orders` — untouched.
+ */
+function artifactFileName(tableName: string): string {
+  return `${path.basename(tableName)}.yml`;
+}
+
 /** A single generated YAML artifact and the filename callers should write it to. */
 export interface GeneratedArtifact {
   /** Logical table name the artifact describes (e.g. `orders`, `public.orders`). */
   table: string;
-  /** Suggested filename, e.g. `orders.yml`. */
+  /**
+   * Filename to write the artifact to, e.g. `orders.yml`. Path-component-safe
+   * by construction (`path.basename`), so callers can `path.join` it directly
+   * without re-sanitizing.
+   */
   fileName: string;
   /** Rendered YAML content. */
   yaml: string;
@@ -85,7 +103,7 @@ export function generateSemanticLayer(
 
   const entities: GeneratedArtifact[] = profiles.map((profile) => ({
     table: profile.table_name,
-    fileName: `${profile.table_name}.yml`,
+    fileName: artifactFileName(profile.table_name),
     yaml: generateEntityYAML(profile, profiles, opts.dbType, schema, opts.sourceId),
   }));
 
@@ -98,7 +116,7 @@ export function generateSemanticLayer(
     if (metricYaml) {
       metrics.push({
         table: profile.table_name,
-        fileName: `${profile.table_name}.yml`,
+        fileName: artifactFileName(profile.table_name),
         yaml: metricYaml,
       });
     }

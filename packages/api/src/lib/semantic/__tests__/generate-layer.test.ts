@@ -102,6 +102,27 @@ describe("generateSemanticLayer", () => {
     expect(() => yaml.load(result.glossary)).not.toThrow();
   });
 
+  it("derives traversal-safe filenames (basename) for entity and metric artifacts", () => {
+    // A profiler that yields a path-laden table name must not let the artifact
+    // filename escape the output directory when a caller path.joins it.
+    const evil = profile({
+      table_name: "../../etc/orders",
+      primary_key_columns: ["id"],
+      columns: [
+        col({ name: "id", type: "integer", is_primary_key: true }),
+        col({ name: "total", type: "numeric" }),
+      ],
+    });
+    const result = generateSemanticLayer([evil], { dbType: "postgres" });
+
+    // table: keeps the logical name; fileName: is sanitized to a bare basename.
+    expect(result.entities[0].table).toBe("../../etc/orders");
+    expect(result.entities[0].fileName).toBe("orders.yml");
+    expect(result.entities[0].fileName).not.toContain("/");
+    expect(result.metrics[0].fileName).toBe("orders.yml");
+    expect(result.metrics[0].fileName).not.toContain("/");
+  });
+
   it("emits a metric only for measure-bearing tables (views/measureless omitted)", () => {
     // `orders` has a numeric non-key column → measure; `customers` has none;
     // a view yields no metric.

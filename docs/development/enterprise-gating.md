@@ -4,7 +4,9 @@ Long-form reference for the `/ee` rules summarized in [CLAUDE.md](../../CLAUDE.m
 
 ## What goes in `/ee`
 
-Any feature that exists specifically to make Atlas work as a hosted SaaS product (app.useatlas.dev) lives in `ee/src/` under the commercial license: deploy-mode detection, SaaS admin UX branching, plugin marketplace, multi-tenant billing, platform admin tools, data-residency routing, SLA monitoring, automated backups, PII masking, SSO/SCIM, approval workflows, abuse prevention, white-labeling.
+Any feature that exists specifically to make Atlas work as a hosted SaaS product (app.useatlas.dev) lives in `ee/src/` under the commercial license: deploy-mode detection, SaaS admin UX branching, plugin marketplace, platform admin tools, data-residency routing, SLA monitoring, automated backups, PII masking, SSO/SCIM, approval workflows, abuse prevention, white-labeling.
+
+Billing is a deliberate exception: it lives entirely in **core** (`packages/api/src/lib/billing/`, `packages/api/src/api/routes/billing.ts`, the Stripe plugin in `packages/api/src/lib/auth/server.ts`), gated only by `STRIPE_SECRET_KEY` and deploy mode — not by `/ee`. A self-hosted operator who sets `STRIPE_SECRET_KEY` gets the full Stripe billing pipeline. The SaaS-specific gating around billing (residency, masking, approvals, etc.) is the part that lives in `/ee`; the metering, plan tiers, checkout, webhooks, and dunning do not.
 
 The commercial license (`ee/LICENSE`) prohibits using `/ee` in a competing product. This is the business model: self-hosted is free (AGPL); the hosted SaaS and enterprise features are the commercial offering.
 

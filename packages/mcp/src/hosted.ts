@@ -71,6 +71,7 @@ import { resolveMcpMaxSessions } from "@atlas/api/lib/env-profile";
 import { withRequestContext, createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { createAtlasUser, type AtlasUser } from "@atlas/api/lib/auth/types";
+import { resolveEffectiveRole } from "@atlas/api/lib/auth/effective-role";
 import { isPasswordChangeRequired } from "@atlas/api/lib/auth/password-gate";
 import { ATLAS_OAUTH_WORKSPACE_CLAIM } from "@atlas/api/lib/auth/oauth-claims";
 import {
@@ -389,7 +390,7 @@ function jwksUrl(req: Request): string {
   return `${tokenIssuer(req)}/jwks`;
 }
 
-interface VerifiedBearer {
+export interface VerifiedBearer {
   readonly kind: "ok";
   readonly user: AtlasUser;
   readonly orgId: string;
@@ -1122,17 +1123,36 @@ interface InitialFactoryContext {
   readonly scopes: ReadonlyArray<string>;
 }
 
-function bindFactoryContext(
+// Exported for unit testing (#3505) — asserts the live-role-resolution
+// wiring without standing up a full hosted session.
+export async function bindFactoryContext(
   bearer: VerifiedBearer,
   resolvedOrgId: string,
-): InitialFactoryContext {
+): Promise<InitialFactoryContext> {
+  // #3505 — resolve the actor's effective ORG role LIVE from the `member`
+  // table for the RESOLVED workspace, so RBAC gates see the current role
+  // and a demoted/revoked member loses elevated tools immediately — no
+  // token refresh, no TTL. Mirrors the authoritative-grants pattern used
+  // for workspace admission.
+  //
+  // We pass `undefined` for the user-level role, NEVER a token claim
+  // (#3505 mandates a live DB lookup), and deliberately do NOT apply a
+  // cross-tenant `platform_admin` over customer-facing hosted MCP: a hosted
+  // OAuth session acts with the caller's member role for the admitted
+  // workspace, not god-mode. (stdio's `loadActorUser` resolves the
+  // user-level role too; the hosted trust boundary is intentionally
+  // narrower — decision tracked in #3522.) `resolveEffectiveRole` fails
+  // closed: a member-table read error yields no role → downstream defaults
+  // to least privilege (`member`), never escalates.
+  const role = await resolveEffectiveRole(undefined, bearer.user.id, resolvedOrgId);
+
   // Re-bind the actor so RLS / audit / approval surfaces downstream see
   // the RESOLVED workspace as `activeOrganizationId`. Without this, the
   // per-tool frame would inherit the JWT's singular claim and any code
   // reading `actor.activeOrganizationId` would silently route to the
   // wrong workspace under the cross-workspace path.
   const user = createAtlasUser(bearer.user.id, bearer.user.mode, bearer.user.label, {
-    ...(bearer.user.role !== undefined ? { role: bearer.user.role } : {}),
+    ...(role !== undefined ? { role } : {}),
     activeOrganizationId: resolvedOrgId,
     claims:
       bearer.user.claims !== undefined
@@ -1442,7 +1462,7 @@ export function createHostedMcpRouter(): Hono {
       return c.json(residency.body, residency.status);
     }
 
-    const factoryCtx = bindFactoryContext(verified, resolvedOrgId);
+    const factoryCtx = await bindFactoryContext(verified, resolvedOrgId);
     const sessionId = c.req.raw.headers.get("mcp-session-id");
 
     try {

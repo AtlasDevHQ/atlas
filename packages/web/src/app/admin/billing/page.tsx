@@ -53,7 +53,6 @@ import {
   CheckCircle2,
   Coins,
   CreditCard,
-  DollarSign,
   ExternalLink,
   Loader2,
   Plus,
@@ -364,7 +363,6 @@ function PlanShell({ data }: { data: BillingStatus }) {
   const { plan, usage, subscription } = data;
   const seatCount = data.seats?.count ?? usage.seatCount;
   const totalMonthly = plan.pricePerSeat * seatCount;
-  const overage = data.overagePerMillionTokens ?? 0;
 
   // #3417 — the portal goes through the Better Auth Stripe plugin
   // (authClient.subscription.billingPortal), not an Atlas route. The
@@ -478,17 +476,15 @@ function PlanShell({ data }: { data: BillingStatus }) {
         {cancelNotice && (
           <DetailRow label="Scheduled" value={cancelNotice} />
         )}
-        {overage > 0 && (
-          <DetailRow
-            label="Overage"
-            value={
-              <span className="inline-flex items-center gap-1">
-                <DollarSign className="size-3 text-muted-foreground" />
-                {overage.toFixed(2)}/M tokens
-              </span>
-            }
-          />
-        )}
+        {/*
+         * #3422 — `overagePerMillionTokens` is a display-only wire field that
+         * is NOT charged: enforcement is a hard cap with a 10% grace buffer,
+         * not metered pay-as-you-go billing. Rendering it as "$X/M tokens"
+         * implied an active per-token charge that does not exist, so the row
+         * is intentionally not surfaced. The field stays in the wire schema
+         * (removal has publish-sequencing implications); real metered billing
+         * is parked in #3515.
+         */}
       </DetailList>
 
       {/* #3429 — a delinquent subscription must shout: the customer has to

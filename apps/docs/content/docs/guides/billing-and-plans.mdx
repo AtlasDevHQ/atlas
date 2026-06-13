@@ -1,12 +1,12 @@
 ---
 title: Billing & Plans
-description: Per-seat pricing tiers, query budgets, overage handling, Stripe setup, and the billing dashboard.
+description: Per-seat pricing tiers, token budgets, the warn → grace → pause hard cap, Stripe setup, and the billing dashboard.
 icon: CreditCard
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses per-seat billing. On [app.useatlas.dev](https://app.useatlas.dev), the first workspace you create starts with a 14-day trial (one trial per user), then requires a paid plan; additional workspaces you create start locked until they're subscribed. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat query budgets, and graceful overage handling.
+Atlas uses per-seat billing. On [app.useatlas.dev](https://app.useatlas.dev), the first workspace you create starts with a 14-day trial (one trial per user), then requires a paid plan; additional workspaces you create start locked until they're subscribed. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat token budgets, and a graceful warn → grace → pause hard cap (there is no metered pay-as-you-go overage charge).
 
 <Callout type="info" title="SaaS">
 On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
@@ -28,7 +28,7 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 | **AI queries / seat / mo** | ~100 | ~250 | ~750 | Unlimited |
 | **Max seats** | 10 | 25 | Unlimited | Unlimited |
 | **Datasource connections** | 1 | 3 | Unlimited | Unlimited |
-| **Extra connections** | +$10/mo each | +$10/mo each | Included | N/A |
+| **Extra connections** | Upgrade plan | Upgrade plan | Included | N/A |
 | **Default model** | claude-haiku-4-5 | claude-sonnet-4-6 | claude-sonnet-4-6 | BYOK |
 | **Custom domain** | — | ✓ | ✓ | N/A |
 | **SSO / SCIM** | — | — | ✓ | N/A |
@@ -86,7 +86,7 @@ The admin billing dashboard is available at **Admin > Billing** (`/admin/billing
 - **Query usage** — AI queries consumed vs. computed budget, with progress bar
 - **Seat usage** — actual member count vs. tier maximum
 - **Connection usage** — datasource connections vs. tier limit
-- **Overage status** — current enforcement tier (ok / warning / soft limit / hard limit)
+- **Budget status** — current enforcement tier (ok / warning / grace / paused)
 - **Default model** — current LLM model with override capability
 - **BYOT toggle** — enable/disable bring-your-own-token (admin/owner only)
 - **Stripe portal link** — self-service plan changes, payment methods, invoices
@@ -97,24 +97,20 @@ Usage data is also available programmatically via the admin API. See [Usage Mete
 
 ---
 
-## Overage Handling
+## Token Budget & the Warn → Grace → Pause Hard Cap
 
-Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking query usage against the workspace's computed budget.
+Each paid plan includes a per-seat monthly **token budget** that scales with the workspace's seat count. Enforcement runs before every agent execution, checking usage against that computed budget and degrading through four tiers rather than cutting off abruptly:
 
 | Tier | Usage | Behavior |
 |------|-------|----------|
 | **OK** | 0–79% | No warning. Request proceeds normally |
 | **Warning** | 80–99% | Request proceeds. Warning metadata attached to the response |
-| **Soft limit** | 100–109% | 10% grace buffer. Request allowed with overage warning |
-| **Hard limit** | 110%+ | Request blocked with HTTP 429. Upgrade or add-seats CTA in error message |
+| **Grace** | 100–109% | 10% grace buffer. Request still allowed, with a usage warning |
+| **Paused (hard cap)** | 110%+ | Request blocked with HTTP 429. Upgrade or add-seats CTA in error message |
 
-When usage exceeds the included token budget, overage charges apply at a flat rate across all paid plans:
+This is a **hard cap with a grace buffer, not pay-as-you-go**. There is no metered per-token overage charge — Atlas does not bill for usage beyond the included budget. Once a workspace crosses 110%, new agent requests are paused until you upgrade your plan, add seats, or the billing period resets. Every token counts the same toward the budget regardless of which model produced it; there is no model-weighted or "output-equivalent" normalization.
 
-| Rate | Description |
-|------|-------------|
-| **$1.00 / 1M tokens** | Applies to Starter, Pro, and Business plans equally |
-
-To avoid overages entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
+To remove token limits entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 
 ### Enforcement Skipped
 

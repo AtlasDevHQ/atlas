@@ -92,12 +92,52 @@ export interface McpToolContextShape {
   audit(entry: McpToolAuditEntry): void;
 }
 
+/**
+ * Structural mirror of MCP's standard `ToolAnnotations` (spec 2025-11-25).
+ * Only the read/write hints are load-bearing for the host today — the
+ * `mcp:write` dispatch gate (#3520) keys on them. `idempotentHint` /
+ * `openWorldHint` / `title` are accepted and carried for forward-compat with
+ * the annotation-surfacing work (#3497) but unused by enforcement.
+ *
+ * Why annotations, not a bespoke `mutates` flag (#3520): MCP already defines
+ * `readOnlyHint` / `destructiveHint`, so a plugin author declares mutation in
+ * the protocol's own vocabulary and a future MCP client reads the same hint.
+ */
+export interface McpToolAnnotationsShape {
+  readonly title?: string;
+  /** `true` ⇒ the tool does not mutate its environment (read-only). */
+  readonly readOnlyHint?: boolean;
+  /** `true` ⇒ the tool may perform destructive (mutating) updates. */
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
+}
+
+/**
+ * Does this plugin tool MUTATE (and therefore require `mcp:write` on a hosted
+ * dispatch)? Opt-in by design (#3520): a tool with no annotations is treated
+ * as read-only, so existing read-only plugin tools are unaffected for
+ * `mcp:read` clients. A tool opts into the gate by declaring `readOnlyHint:
+ * false` or `destructiveHint: true`. `readOnlyHint: true` always wins (a tool
+ * can't be both read-only and destructive).
+ */
+export function pluginToolMutates(annotations?: McpToolAnnotationsShape): boolean {
+  if (!annotations) return false;
+  if (annotations.readOnlyHint === true) return false;
+  return annotations.destructiveHint === true || annotations.readOnlyHint === false;
+}
+
 export interface AtlasMcpToolLike<TInput = unknown, TOutput = unknown> {
   readonly name: string;
   readonly description: string;
   readonly errorCodes?: ReadonlyArray<string>;
   readonly inputSchema: ZodSchemaLike;
   readonly outputSchema?: ZodSchemaLike;
+  /**
+   * MCP tool annotations (#3520 keys on `readOnlyHint`/`destructiveHint` for
+   * the `mcp:write` gate). Optional — absence means "read-only" for gating.
+   */
+  readonly annotations?: McpToolAnnotationsShape;
   handler(args: TInput, ctx: McpToolContextShape): Promise<TOutput>;
 }
 
@@ -120,6 +160,8 @@ export interface RegisteredPluginMcpTool {
   readonly errorCodes?: ReadonlyArray<string>;
   readonly inputSchema: ZodSchemaLike;
   readonly outputSchema?: ZodSchemaLike;
+  /** MCP annotations carried from the authored tool — see {@link pluginToolMutates}. */
+  readonly annotations?: McpToolAnnotationsShape;
   handler(args: unknown, ctx: McpToolContextShape): Promise<unknown>;
 }
 
@@ -195,6 +237,9 @@ export class PluginMcpToolRegistry {
       errorCodes: tool.errorCodes,
       inputSchema: tool.inputSchema,
       outputSchema: tool.outputSchema,
+      // #3520 — carry the read/write annotation through so the dispatch
+      // wrapper can decide whether a hosted call needs `mcp:write`.
+      ...(tool.annotations && { annotations: tool.annotations }),
       handler: tool.handler as RegisteredPluginMcpTool["handler"],
     };
     this.tools.set(qualifiedName, entry);
@@ -489,16 +534,35 @@ export function registerPluginMcpTools(
         // #3507 — stamp `mcp` as the agent origin so origin-scoped approval
         // rules (ADR-0016) match plugin-tool dispatches, parity with the
         // built-in MCP tools in packages/mcp/src/{tools,semantic-tools}.ts.
-        // #3504 — `scopes` is threaded onto the context here so a future
-        // write-gated plugin tool can read it, BUT no `mcp:write` gate runs
-        // on this path yet: unlike built-in tools (which call
-        // `writeScopeOrNull` per-tool), plugin tools carry no read/write
-        // signal until tool annotations land (#3497), so the host can't tell
-        // which plugin tools mutate. Generic enforcement here is deferred to
-        // the gate-order pipeline (#3508). Until then, a mutating plugin MCP
-        // tool is NOT scope-gated — tracked in #3520.
+        // #3504 — `scopes` is threaded onto the context here; #3520 enforces
+        // the `mcp:write` gate (gate 2 of the ADR-0016 order) on it for
+        // *mutating* plugin tools, keyed on the MCP `readOnlyHint` /
+        // `destructiveHint` annotation (see {@link pluginToolMutates}).
         { requestId, user: actor, agentOrigin: "mcp", actor: mcpActor, ...(scopes ? { scopes } : {}) },
         async () => {
+          // ── mcp:write gate (#3520, ADR-0016 gate 2) ──
+          // A mutating plugin tool requires the `mcp:write` scope on a HOSTED
+          // dispatch (clientId set). stdio MCP carries no third-party client,
+          // so no scope term applies (exempt) — parity with the built-in
+          // `writeScopeOrNull` gate, which `dispatch-gate.ts` can't be reused
+          // here because packages/mcp depends on packages/api, not the
+          // reverse. Read-only / un-annotated tools are unaffected. Runs
+          // BEFORE the rate-limit gate so a forbidden call doesn't consume
+          // the client's rate budget.
+          if (clientId && pluginToolMutates(tool.annotations) && !scopes?.includes("mcp:write")) {
+            log.warn(
+              { qualifiedName: tool.qualifiedName, clientId, requestId },
+              "Mutating plugin MCP tool denied — token lacks mcp:write",
+            );
+            return envelopeResult(
+              "forbidden",
+              "This tool mutates data and requires the 'mcp:write' OAuth scope, which this token does not carry.",
+              {
+                hint: "Re-authorize the MCP client with the mcp:write scope (the workspace admin controls which scopes a client may request).",
+              },
+            );
+          }
+
           // Per-OAuth-client rate-limit gate (#2071). Hosted MCP threads
           // `clientId`; stdio MCP leaves it undefined and is intentionally
           // exempt — the limiter scopes hosted-tenant abuse, not local

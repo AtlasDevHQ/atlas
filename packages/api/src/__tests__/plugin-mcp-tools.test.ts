@@ -41,6 +41,7 @@ import {
   PluginMcpToolRegistry,
   wireMcpToolPlugins,
   registerPluginMcpTools,
+  pluginToolMutates,
   type AtlasMcpToolLike,
   type McpServerLike,
   type McpCallToolResult,
@@ -703,5 +704,132 @@ describe("registerPluginMcpTools (MCP server registration)", () => {
       ]);
       expect(JSON.parse(result.content[0].text)).toEqual({ ok: true });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3520 — mcp:write gate for mutating plugin-contributed MCP tools.
+// ---------------------------------------------------------------------------
+
+describe("pluginToolMutates (annotation → mutation signal)", () => {
+  it("is read-only (false) with no annotations — opt-in gate", () => {
+    expect(pluginToolMutates(undefined)).toBe(false);
+    expect(pluginToolMutates({})).toBe(false);
+  });
+  it("readOnlyHint:true wins even alongside destructiveHint:true", () => {
+    expect(pluginToolMutates({ readOnlyHint: true, destructiveHint: true })).toBe(false);
+  });
+  it("mutates when readOnlyHint:false or destructiveHint:true", () => {
+    expect(pluginToolMutates({ readOnlyHint: false })).toBe(true);
+    expect(pluginToolMutates({ destructiveHint: true })).toBe(true);
+  });
+});
+
+describe("registerPluginMcpTools — mcp:write gate for mutating plugin tools (#3520)", () => {
+  let registry: PluginMcpToolRegistry;
+  let server: FakeMcpServer;
+
+  beforeEach(() => {
+    registry = new PluginMcpToolRegistry();
+    server = new FakeMcpServer();
+    rateLimitState.outcome = { kind: "ok" };
+    rateLimitState.calls = [];
+  });
+
+  function actor() {
+    return { id: "user-1", label: "user-1", mode: "simple-key" as const, activeOrganizationId: "org-1" };
+  }
+
+  /** A mutating tool (explicitly not read-only). */
+  function mutatingTool(over: Partial<AtlasMcpToolLike> = {}): AtlasMcpToolLike {
+    return makeTool({ name: "createThing", annotations: { readOnlyHint: false }, ...over });
+  }
+
+  function hostedOpts(scopes: readonly string[]) {
+    return {
+      registry,
+      actor: actor(),
+      transport: "sse" as const,
+      workspaceId: "org-1",
+      deployMode: "saas" as const,
+      clientId: "claude-desktop",
+      scopes,
+    };
+  }
+
+  it("registry carries the annotation through to the registered tool", () => {
+    const entry = registry.register("infra", mutatingTool());
+    expect(entry.annotations).toEqual({ readOnlyHint: false });
+  });
+
+  it("denies a mutating tool when a hosted mcp:read-only token lacks mcp:write", async () => {
+    registry.register("infra", mutatingTool());
+    registerPluginMcpTools(server, hostedOpts(["mcp:read"]));
+    const handler = server.registered.get("infra.createThing")!.handler;
+    const res = await handler({ value: "x" });
+    expect(res.isError).toBe(true);
+    const env = JSON.parse(res.content[0].text);
+    expect(env.code).toBe("forbidden");
+    expect(env.message).toContain("mcp:write");
+    // The gate runs BEFORE the rate-limit gate — a forbidden call must not
+    // consume the client's rate budget.
+    expect(rateLimitState.calls).toHaveLength(0);
+  });
+
+  it("allows a mutating tool when the hosted token carries mcp:write", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      mutatingTool({ handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, hostedOpts(["mcp:read", "mcp:write"]));
+    const handler = server.registered.get("infra.createThing")!.handler;
+    const res = await handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
+  });
+
+  it("leaves a read-only plugin tool unaffected for a mcp:read-only client", async () => {
+    registry.register("infra", makeTool({ name: "listThings", annotations: { readOnlyHint: true } }));
+    registerPluginMcpTools(server, hostedOpts(["mcp:read"]));
+    const handler = server.registered.get("infra.listThings")!.handler;
+    const res = await handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("leaves an un-annotated plugin tool unaffected (opt-in gate)", async () => {
+    registry.register("infra", makeTool({ name: "legacy" }));
+    registerPluginMcpTools(server, hostedOpts(["mcp:read"]));
+    const handler = server.registered.get("infra.legacy")!.handler;
+    const res = await handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+  });
+
+  it("treats destructiveHint:true as mutating (denied without mcp:write)", async () => {
+    registry.register("infra", makeTool({ name: "deleteThing", annotations: { destructiveHint: true } }));
+    registerPluginMcpTools(server, hostedOpts(["mcp:read"]));
+    const handler = server.registered.get("infra.deleteThing")!.handler;
+    const res = await handler({ value: "x" });
+    expect(JSON.parse(res.content[0].text).code).toBe("forbidden");
+  });
+
+  it("exempts stdio (no clientId) even for a mutating tool", async () => {
+    let called = false;
+    registry.register(
+      "infra",
+      mutatingTool({ handler: async () => { called = true; return { ok: true }; } }),
+    );
+    registerPluginMcpTools(server, {
+      registry,
+      actor: actor(),
+      transport: "stdio",
+      workspaceId: "org-1",
+      deployMode: "self-hosted",
+      // no clientId, no scopes — stdio
+    });
+    const handler = server.registered.get("infra.createThing")!.handler;
+    const res = await handler({ value: "x" });
+    expect(res.isError).toBeFalsy();
+    expect(called).toBe(true);
   });
 });

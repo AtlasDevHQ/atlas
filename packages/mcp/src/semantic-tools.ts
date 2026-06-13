@@ -62,6 +62,7 @@ import { billingGateOrNull } from "./billing-gate.js";
 import { enforceClientRateLimit } from "@atlas/api/lib/rate-limit/middleware";
 import { createMcpLogger } from "./logger.js";
 import { runMetricOutputShape } from "./structured-output.js";
+import { withProgressAndCancellation, OperationCancelledError } from "./progress.js";
 
 const log = createMcpLogger("mcp:semantic-tools");
 
@@ -446,7 +447,7 @@ export function registerSemanticTools(
       // re-parsing the text block (which is retained below).
       outputSchema: runMetricOutputShape,
     },
-    async ({ id, filters, connectionId }): Promise<CallToolResult> =>
+    async ({ id, filters, connectionId }, extra): Promise<CallToolResult> =>
       traceMcpToolCall(
         {
           toolName: "runMetric",
@@ -558,9 +559,15 @@ export function registerSemanticTools(
                 ? `MCP runMetric ${metric.id}: ${metric.description}`
                 : `MCP runMetric ${metric.id}`;
 
-              const result = (await executeSQL.execute!(
-                { sql: metric.sql, explanation, connectionId: targetConnectionId },
-                { toolCallId: "mcp-runMetric", messages: [] },
+              // #3500 — progress + cancellation around the metric query.
+              const result = (await withProgressAndCancellation(
+                extra,
+                { startMessage: "Running metric", endMessage: "Metric complete" },
+                async (_reporter, signal) =>
+                  executeSQL.execute!(
+                    { sql: metric.sql, explanation, connectionId: targetConnectionId },
+                    { toolCallId: "mcp-runMetric", messages: [], abortSignal: signal },
+                  ),
               )) as Record<string, unknown>;
 
               if (result.success === false) {
@@ -625,6 +632,9 @@ export function registerSemanticTools(
                 executed_at: new Date().toISOString(),
               });
             } catch (err) {
+              // Client cancellation (#3500): re-throw so the SDK suppresses
+              // the response; not an error worth logging.
+              if (err instanceof OperationCancelledError) throw err;
               const message = errorMessage(err, "runMetric tool failed");
               log.error(
                 { err: err instanceof Error ? err : new Error(String(err)) },

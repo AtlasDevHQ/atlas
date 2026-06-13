@@ -9,6 +9,7 @@ import {
   describe,
   it,
   expect,
+  beforeAll,
   beforeEach,
   mock,
 } from "bun:test";
@@ -19,6 +20,11 @@ let mockHasInternalDB = true;
 let mockQueryShouldThrow = false;
 let queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
 let queryResults: unknown[] = [];
+/** Drives the {@link isInternalCircuitOpen} mock — when true, the
+ *  fire-and-forget drop path is exercised (#3428). */
+let mockCircuitOpen = false;
+/** Structured `log.error` calls captured for the #3428 drop-alert assertions. */
+let errorLogs: Array<{ ctx: unknown; msg: unknown }> = [];
 
 const mockPool = {
   query: mock((sql: string, params?: unknown[]) => {
@@ -41,6 +47,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     const result = queryResults.shift();
     return result ?? [];
   },
+  isInternalCircuitOpen: () => mockCircuitOpen,
   getInternalDB: () => mockPool,
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
@@ -49,33 +56,60 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getPendingAmendmentCount: mock(async () => 0),
 }));
 
+const captureLogger = {
+  info: () => {},
+  warn: () => {},
+  error: (ctx: unknown, msg?: unknown) => {
+    errorLogs.push({ ctx, msg });
+  },
+  debug: () => {},
+  trace: () => {},
+  fatal: () => {},
+  child: () => captureLogger,
+  level: "info",
+};
+
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
+  createLogger: () => captureLogger,
+  getLogger: () => captureLogger,
   getRequestContext: () => null,
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
 // --- Now import the module under test ---
+//
+// Loaded via a dynamic import in `beforeAll` (not a top-level static import) so
+// the module evaluates AFTER the `mock.module` calls above are registered. This
+// matters for the #3428 drop-alert assertions: metering.ts captures its logger
+// once at module scope (`const log = createLogger("metering")`), and a top-level
+// static import would evaluate that line against the REAL logger before the
+// mock applied, leaving `errorLogs` empty. Resolving the module at call time
+// binds `log` to the captured logger above so the alert is observable.
 
-import {
-  logUsageEvent,
-  aggregateUsageSummary,
-  getCurrentPeriodUsage,
-  getUsageHistory,
-  getUsageBreakdown,
-} from "@atlas/api/lib/metering";
+let logUsageEvent: typeof import("@atlas/api/lib/metering").logUsageEvent;
+let aggregateUsageSummary: typeof import("@atlas/api/lib/metering").aggregateUsageSummary;
+let getCurrentPeriodUsage: typeof import("@atlas/api/lib/metering").getCurrentPeriodUsage;
+let getUsageHistory: typeof import("@atlas/api/lib/metering").getUsageHistory;
+let getUsageBreakdown: typeof import("@atlas/api/lib/metering").getUsageBreakdown;
 
 describe("metering", () => {
+  beforeAll(async () => {
+    ({
+      logUsageEvent,
+      aggregateUsageSummary,
+      getCurrentPeriodUsage,
+      getUsageHistory,
+      getUsageBreakdown,
+    } = await import("@atlas/api/lib/metering"));
+  });
+
   beforeEach(() => {
     queryCalls = [];
     queryResults = [];
     mockHasInternalDB = true;
     mockQueryShouldThrow = false;
+    mockCircuitOpen = false;
+    errorLogs = [];
   });
 
   describe("logUsageEvent", () => {
@@ -121,6 +155,56 @@ describe("metering", () => {
       });
 
       expect(queryCalls).toHaveLength(0);
+    });
+
+    // ── Dropped-event operator alert (#3428) ──────────────────────────
+    // When the internal-DB circuit breaker is open the row is about to be
+    // dropped by internalExecute and lost for good (no replay in v1). The
+    // triage decision (2026-06-12) keeps the fail-open but requires the drop
+    // to be OPERATOR-VISIBLE: a loud structured `log.error` per dropped event
+    // carrying workspace/user/event context to scope the permanent under-count.
+
+    it("emits a structured drop alert when the circuit breaker is open", () => {
+      mockCircuitOpen = true;
+
+      logUsageEvent({
+        workspaceId: "org-1",
+        userId: "user-1",
+        eventType: "token",
+        quantity: 1234,
+      });
+
+      // Still delegates to internalExecute so the drop counter advances and
+      // recovery is re-triggered — the event isn't withheld, it's surfaced.
+      expect(queryCalls).toHaveLength(1);
+      expect(queryCalls[0].sql).toContain("INSERT INTO usage_events");
+
+      // The alert fired with enough context for an operator to act on.
+      expect(errorLogs).toHaveLength(1);
+      const { ctx, msg } = errorLogs[0];
+      expect(ctx).toMatchObject({
+        workspaceId: "org-1",
+        userId: "user-1",
+        eventType: "token",
+        quantity: 1234,
+        reason: "circuit_open",
+      });
+      expect(String(msg)).toContain("#3428");
+      expect(String(msg)).toContain("under-counted");
+    });
+
+    it("does NOT emit a drop alert when the circuit breaker is closed", () => {
+      mockCircuitOpen = false;
+
+      logUsageEvent({
+        workspaceId: "org-1",
+        userId: "user-1",
+        eventType: "query",
+        quantity: 1,
+      });
+
+      expect(queryCalls).toHaveLength(1);
+      expect(errorLogs).toHaveLength(0);
     });
   });
 

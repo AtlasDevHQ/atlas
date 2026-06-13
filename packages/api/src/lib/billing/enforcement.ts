@@ -274,11 +274,24 @@ export async function checkPlanLimits(
       const usage = await getCurrentPeriodUsage(orgId);
       return evaluateUsage(orgId, usage.tokenCount, totalBudget);
     } catch (err) {
-      // If we can't read usage, allow the request — metering is best-effort.
-      // Surface the degradation as a warning so clients know enforcement is impaired.
+      // DELIBERATE FAIL-OPEN (#3428): if we can't read usage, ALLOW the request
+      // — metering is best-effort and we prioritise availability over revenue
+      // during an internal-DB degradation. This is intentionally ASYMMETRIC with
+      // the fail-CLOSED workspace lookup above (a workspace-lookup error → 503):
+      // a missing plan tier means we can't even decide *whether* to enforce,
+      // whereas a usage-read failure only means we can't decide *how much* has
+      // been spent, so the safer-for-the-customer default is to let them through.
+      //
+      // The cost is a token-budget bypass: a sustained outage means unmetered
+      // usage for the duration. The triage decision (2026-06-12) ACCEPTS that
+      // exposure but requires it to be OPERATOR-VISIBLE — hence the structured
+      // `log.error` alert below carries the orgId + the underlying reason so an
+      // operator paging on metering failures can scope the bypass. Revisit with
+      // a bounded fail-open (allow N requests, then block) if alert volume shows
+      // this happening in practice.
       log.error(
-        { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to read usage for plan enforcement — allowing request (metering unavailable)",
+        { err: err instanceof Error ? err.message : String(err), orgId, reason: "metering_read_failed" },
+        "Token-budget check BYPASSED — usage read failed; allowing request (metering unavailable, enforcement impaired) (#3428)",
       );
       return {
         allowed: true,

@@ -115,6 +115,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   ) => fn({ query: (sql: string, params?: unknown[]) => mockInternalQuery(sql, params) }),
   queryEffect: makeQueryEffectMock(mockInternalQuery),
   internalExecute: mock(() => {}),
+  isInternalCircuitOpen: () => false,
   getInternalDB: mock(() => ({})),
   closeInternalDB: mock(async () => {}),
   migrateInternalDB: mock(async () => {}),

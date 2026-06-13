@@ -27,6 +27,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceDetails: async () => null,
   internalQuery: async () => [],
   internalExecute: () => {},
+  isInternalCircuitOpen: () => false,
   getInternalDB: () => ({}),
   closeInternalDB: async () => {},
   migrateInternalDB: async () => {},

@@ -216,6 +216,14 @@ export function buildInternalDbMockDefaults(deps: {
     setWorkspaceRegion: mock(async () => ({ assigned: true })),
     updateWorkspaceByot: mock(async () => true),
     setWorkspaceTrialEndsAt: mock(async () => true),
+    // #3427 — pure predicate; default mock mirrors the real semantics
+    // (active when plan_override_until is set and in the future) so callers
+    // that don't override it still behave correctly.
+    isPlanOverrideActive: mock((until?: string | null, now: Date = new Date()) => {
+      if (!until) return false;
+      const t = new Date(until);
+      return !Number.isNaN(t.getTime()) && t.getTime() > now.getTime();
+    }),
     getAutoApproveThreshold: mock(() => 2),
     getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
     insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),

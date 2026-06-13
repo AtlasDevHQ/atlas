@@ -536,6 +536,112 @@ describe("customer.subscription.updated → pending cancel (#3421)", () => {
   });
 });
 
+// ── operator plan-override precedence (#3427) ───────────────────────
+
+describe("operator plan-override precedence (#3427)", () => {
+  it("does NOT clobber the plan_tier when an operator override is active", async () => {
+    // A platform admin comped this org to `pro` (override window in the
+    // future). The plugin's subscription row still says `starter`, so a
+    // stray customer.subscription.updated would normally re-sync the org
+    // to starter — the override must block that write.
+    const overrideUntil = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", plan_tier: "pro", plan_override_until: overrideUntil }),
+    );
+
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    const res = await postWebhook(auth, {
+      id: "evt_override_active",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+
+    expect(res.status).toBe(200);
+    // The operator grant survives — NO Stripe-driven tier write happened.
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalled();
+    // The event is still recorded (handled, deliberately a no-op) so Stripe
+    // doesn't redeliver it forever. The tier the sync WOULD have written is
+    // banked so the reconcile sweep stays consistent.
+    expect(ledgerRows.map((r) => [r.event_id, r.applied_plan_tier])).toEqual([
+      ["evt_override_active", "starter"],
+    ]);
+  });
+
+  it("applies the Stripe tier normally once the override window has lapsed", async () => {
+    // Same shape, but the override is in the PAST → Stripe is authoritative
+    // again and the sync proceeds.
+    const overrideUntil = new Date(Date.now() - 86_400_000).toISOString();
+    mockGetWorkspaceDetails.mockImplementation(() =>
+      Promise.resolve({ id: "org-1", plan_tier: "pro", plan_override_until: overrideUntil }),
+    );
+
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    const res = await postWebhook(auth, {
+      id: "evt_override_lapsed",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
+  });
+
+  it("falls toward Stripe authority when the override lookup fails", async () => {
+    // A DB blip reading plan_override_until must NOT silently skip the sync
+    // (that would strand the org on a stale tier) — fall through to the write.
+    mockGetWorkspaceDetails.mockImplementation(() => Promise.reject(new Error("pg blip")));
+
+    const db = emptyDB();
+    db.subscription.push({
+      id: "subrow_1",
+      plan: "starter",
+      referenceId: "org-1",
+      stripeCustomerId: "cus_1",
+      stripeSubscriptionId: "sub_stripe_1",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const auth = makeAuth(db);
+
+    const res = await postWebhook(auth, {
+      id: "evt_override_readfail",
+      type: "customer.subscription.updated",
+      created: EPOCH,
+      data: { object: stripeSubscription({ status: "active" }) },
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-1", "starter");
+  });
+});
+
 describe("customer.subscription.deleted", () => {
   it("locks the org when the subscription actually ends — never free (#3421)", async () => {
     const db = emptyDB();

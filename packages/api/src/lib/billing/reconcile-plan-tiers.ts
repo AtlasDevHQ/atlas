@@ -34,6 +34,7 @@
 import {
   hasInternalDB,
   internalQuery,
+  isPlanOverrideActive,
   updateWorkspacePlanTier,
 } from "@atlas/api/lib/db/internal";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
@@ -70,6 +71,9 @@ type ReconcileRow = {
   subscription_plan: string | null;
   /** Newest non-null `applied_plan_tier` from the webhook ledger. */
   ledger_tier: string | null;
+  /** Operator plan-override window (#3427); when in the future, the sweep
+   *  must not heal over the operator's grant. */
+  plan_override_until: string | null;
 };
 
 /**
@@ -105,7 +109,7 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
   //    then Stripe's own ~3-week retry/redelivery window has closed, so
   //    a stale delivery storm can no longer be in flight).
   const rows = await internalQuery<ReconcileRow>(
-    `SELECT o.id AS org_id, o.plan_tier, sub.plan AS subscription_plan,
+    `SELECT o.id AS org_id, o.plan_tier, o.plan_override_until, sub.plan AS subscription_plan,
             led.applied_plan_tier AS ledger_tier
        FROM organization o
        LEFT JOIN LATERAL (
@@ -147,6 +151,21 @@ export async function reconcilePlanTiers(): Promise<PlanTierReconcileResult> {
         continue;
       }
       if (expectedTier !== currentTier) {
+        // #3427 precedence — honor the operator plan-override window here too.
+        // The webhook path (`applyWorkspaceTier` in lib/auth/server.ts) already
+        // skips a tier write while `plan_override_until` is in the future; this
+        // background sweep is the OTHER Stripe-derived tier-write path, so it
+        // must obey the same rule or it would silently revert an operator grant
+        // within one interval (~6h) — defeating the guarantee. Skip the heal
+        // while the override is active; the org is left on the operator's tier
+        // and re-converges naturally once the window lapses.
+        if (isPlanOverrideActive(row.plan_override_until)) {
+          log.info(
+            { orgId: row.org_id, planTier: currentTier, expectedTier, planOverrideUntil: row.plan_override_until },
+            "Skipping plan-tier heal — operator override window is active (#3427)",
+          );
+          continue;
+        }
         const updated = await updateWorkspacePlanTier(row.org_id, expectedTier);
         if (updated) {
           invalidatePlanCache(row.org_id);

@@ -83,6 +83,17 @@ const UNLIMITED = -1;
 /** Trial duration in days. Single source of truth — used in plan definitions, Stripe config, and enforcement. */
 export const TRIAL_DAYS = 14;
 
+/**
+ * Default duration (days) of a platform-admin plan-override window (#3427).
+ *
+ * When an operator sets `plan_tier` directly, the Stripe webhook tier sync
+ * skips its write until `plan_override_until` lapses. A bounded default means
+ * an operator grant auto-heals back to Stripe authority instead of pinning the
+ * tier forever — long enough (90 days) to cover a comp / dispute / manual
+ * support grant, short enough that a forgotten override eventually re-syncs.
+ */
+export const PLAN_OVERRIDE_DAYS = 90;
+
 /** The tiers self-serve checkout can move a workspace to (#3418). */
 export type PaidPlanTier = "starter" | "pro" | "business";
 

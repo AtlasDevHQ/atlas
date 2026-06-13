@@ -33,7 +33,7 @@ import {
 import { listUserWorkspaceIds } from "@atlas/api/lib/auth/oauth-workspace-grants";
 import { recordOAuthTokenRefresh } from "@atlas/api/lib/auth/oauth-refresh-audit";
 import Stripe from "stripe";
-import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, getWorkspaceDetails, hasInternalDB, internalQuery, isPlanOverrideActive, updateWorkspacePlanTier, updateWorkspaceStatus, withStripeSubscriptionLock, type InternalPool, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   resolveRequireEmailVerification as envProfileResolveRequireEmailVerification,
@@ -1469,8 +1469,48 @@ async function resolveOrgIdForStripeSubscription(
  * Returns whether the write matched an organization row — callers use
  * it to skip follow-on side effects (e.g. the CRM conversion stamp)
  * for orgs that no longer exist.
+ *
+ * Operator-override precedence (#3427): a platform admin can set
+ * `plan_tier` directly with NO Stripe interaction (platform-admin.ts /
+ * admin-orgs.ts), stamping `plan_override_until`. While that window is
+ * active this Stripe-driven write is SKIPPED — a stray
+ * `customer.subscription.updated` / cancel must not silently clobber an
+ * operator grant. We return `true` on a skip so the caller still records
+ * the event in the ledger (it was handled, just deliberately a no-op) and
+ * still runs follow-on side effects keyed on "the org exists". The
+ * override read is a single getWorkspaceDetails; on a read error we FALL
+ * THROUGH to the write (fail toward Stripe authority) so a transient DB
+ * blip can't strand an org on a stale operator tier — logged either way.
+ *
+ * #3423 — the reconciliation sweep MUST honor the same precedence: before
+ * it heals `plan_tier` from the ledger's ordering-correct source, it has
+ * to skip orgs whose `plan_override_until` is still in the future, exactly
+ * as this function does. The check lives here so the webhook path is
+ * covered; the sweep needs its own guard at its write site.
  */
 async function applyWorkspaceTier(orgId: string, tier: PlanTier, context: string): Promise<boolean> {
+  try {
+    const workspace = await getWorkspaceDetails(orgId);
+    if (workspace && isPlanOverrideActive(workspace.plan_override_until)) {
+      billingLog.info(
+        { orgId, tier, currentTier: workspace.plan_tier, planOverrideUntil: workspace.plan_override_until, context },
+        "Plan-override active — skipping Stripe-driven tier write to preserve operator grant (#3427)",
+      );
+      // Treated as handled: the org exists and the event was processed
+      // (deliberately a no-op), so the ledger records it and follow-on
+      // side effects that only gate on "org exists" still run.
+      return true;
+    }
+  } catch (err) {
+    // Fail toward Stripe authority: if we can't read the override window,
+    // do NOT silently skip the sync — fall through to the write below so
+    // a transient DB blip can't pin an org on a stale operator tier.
+    billingLog.warn(
+      { err: errorMessage(err), orgId, tier, context },
+      "Plan-override check failed — proceeding with Stripe tier write (fail toward Stripe authority)",
+    );
+  }
+
   // false = no organization row matched (helper logs the contract
   // violation). Do NOT throw — Stripe redelivering won't create the org.
   const updated = await updateWorkspacePlanTier(orgId, tier);

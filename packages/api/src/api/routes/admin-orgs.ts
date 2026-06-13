@@ -17,6 +17,7 @@ import {
   getWorkspaceDetails,
   updateWorkspaceStatus,
   updateWorkspacePlanTier,
+  setWorkspaceTrialEndsAt,
   cascadeWorkspaceDelete,
   getWorkspaceHealthSummary,
   type PlanTier,
@@ -24,6 +25,7 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { PLAN_OVERRIDE_DAYS } from "@atlas/api/lib/billing/plans";
 import {
   cancelStripeSubscriptionsForWorkspace,
   pauseStripeCollectionForWorkspace,
@@ -157,6 +159,19 @@ const ConflictErrorSchema = z.object({
 
 const UpdatePlanBodySchema = z.object({
   planTier: z.string().openapi({ example: "starter" }),
+  // #3427 — an operator plan change overrides Stripe for a bounded window so
+  // the next webhook can't clobber the grant. Pass 0 to clear the override.
+  overrideDays: z.number().int().min(0).max(365).optional().openapi({
+    description:
+      "Days the operator grant takes precedence over Stripe before auto-healing. Defaults to 90. Pass 0 to clear the override.",
+    example: 90,
+  }),
+  // #3427 — setting `trial` requires an explicit future end date (a stale
+  // trial_ends_at expires instantly). Also the trial-extension surface.
+  trialEndsAt: z.string().datetime().optional().openapi({
+    description: "Required when planTier is 'trial' — new trial end date (ISO 8601). Ignored otherwise.",
+    example: "2026-08-01T00:00:00.000Z",
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -810,26 +825,83 @@ adminOrgs.openapi(updatePlanRoute, async (c) => {
     if (!body.planTier || !VALID_PLAN_TIERS.has(body.planTier as PlanTier)) {
       return c.json({ error: "bad_request", message: `Invalid plan tier. Must be one of: ${[...VALID_PLAN_TIERS].join(", ")}` }, 400);
     }
+    const planTier = body.planTier as PlanTier;
+
+    // #3427 — setting `trial` requires an explicit, future end date (a stale
+    // trial_ends_at would expire instantly). Doubles as the trial-extension
+    // surface: set planTier="trial" with a future date to extend a trial.
+    let parsedTrialEndsAt: Date | null = null;
+    if (planTier === "trial") {
+      if (!body.trialEndsAt) {
+        return c.json({ error: "bad_request", message: "Setting the 'trial' tier requires an explicit trialEndsAt (ISO 8601) — a stale trial_ends_at would expire instantly." }, 400);
+      }
+      parsedTrialEndsAt = new Date(body.trialEndsAt);
+      if (Number.isNaN(parsedTrialEndsAt.getTime())) {
+        return c.json({ error: "bad_request", message: `Invalid trialEndsAt: ${body.trialEndsAt}` }, 400);
+      }
+      if (parsedTrialEndsAt.getTime() <= Date.now()) {
+        return c.json({ error: "bad_request", message: "trialEndsAt must be in the future." }, 400);
+      }
+    }
 
     const workspace = yield* Effect.promise(() => getWorkspaceDetails(orgId));
     if (!workspace) return c.json({ error: "not_found", message: "Organization not found." }, 404);
     if (workspace.workspace_status === "deleted") return c.json({ error: "conflict", message: "Cannot update plan for a deleted workspace." }, 409);
 
     const previousPlan = workspace.plan_tier;
-    yield* Effect.promise(() => updateWorkspacePlanTier(orgId, body.planTier as PlanTier));
+
+    // #3427 — operator plan change OVERRIDES Stripe for a bounded window so the
+    // next webhook can't clobber the grant. `overrideDays === 0` clears it.
+    // EXCEPTION (#3427 review): a `trial` grant must NOT stamp an override — a
+    // trialing org has no competing subscription, so an override would only
+    // block the customer's own paid conversion (charged by Stripe, stranded on
+    // trial). Trial protection is the trial_ends_at window; clear it for trial.
+    const days = planTier === "trial" ? 0 : (body.overrideDays ?? PLAN_OVERRIDE_DAYS);
+    const overrideUntil: Date | null = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    const override = days === 0 ? ("clear" as const) : { until: overrideUntil as Date };
+
+    yield* Effect.promise(() => updateWorkspacePlanTier(orgId, planTier, override));
+
+    if (parsedTrialEndsAt) {
+      const stamped = yield* Effect.promise(() => setWorkspaceTrialEndsAt(orgId, parsedTrialEndsAt));
+      if (!stamped) {
+        log.warn({ orgId, requestId }, "Plan set to trial but trial_ends_at write matched 0 rows — workspace vanished mid-request?");
+      }
+    }
+
+    // #3427 — downgrading a paying org to free/locked must STOP Stripe
+    // invoicing. Best-effort: Stripe failures surface as operator warnings;
+    // the plan change always proceeds (same pattern as suspend/delete teardown).
+    let warnings: string[] = [];
+    let stripeMeta: Record<string, unknown> = {};
+    if (planTier === "free" || planTier === "locked") {
+      const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(orgId));
+      warnings = withWarnings(billing).warnings ?? [];
+      stripeMeta = stripeAuditMetadata(billing);
+    }
+
     invalidatePlanCache(orgId);
-    log.info({ orgId, requestId, admin: user?.id, planTier: body.planTier }, "Workspace plan tier updated");
+    log.info(
+      { orgId, requestId, admin: user?.id, planTier, planOverrideUntil: overrideUntil?.toISOString() ?? null },
+      "Workspace plan tier updated",
+    );
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.changePlan,
       targetType: "workspace",
       targetId: orgId,
       scope: "platform",
-      metadata: { previousPlan, newPlan: body.planTier },
+      metadata: {
+        previousPlan,
+        newPlan: planTier,
+        planOverrideUntil: overrideUntil?.toISOString() ?? null,
+        ...(parsedTrialEndsAt ? { trialEndsAt: parsedTrialEndsAt.toISOString() } : {}),
+        ...stripeMeta,
+      },
       ipAddress: clientIpFor(c),
     });
 
     const updated = yield* Effect.promise(() => getWorkspaceDetails(orgId));
-    return c.json({ message: `Plan tier updated to ${body.planTier}.`, organization: updated }, 200);
+    return c.json({ message: `Plan tier updated to ${planTier}.`, organization: updated, ...(warnings.length > 0 ? { warnings } : {}) }, 200);
   }), { label: "update plan tier" });
 });
 

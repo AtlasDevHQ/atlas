@@ -66,12 +66,18 @@ const mockHardDelete = mock(async () => {
   return { conversations: 3, subscriptions: 1, organization: 1 };
 });
 
+// #3427 — spies for the plan-override + trial-extension behavior.
+const mockUpdatePlanTier = mock(async (_orgId: string, _tier: string, _override?: unknown) => true);
+const mockSetTrialEndsAt = mock(async (_orgId: string, _date: Date) => true);
+
 const mocks = createApiTestMocks({
   internal: {
     getWorkspaceDetails: mockGetWorkspaceDetails,
     updateWorkspaceStatus: mockUpdateWorkspaceStatus,
     cascadeWorkspaceDelete: mockCascade,
     hardDeleteWorkspace: mockHardDelete,
+    updateWorkspacePlanTier: mockUpdatePlanTier,
+    setWorkspaceTrialEndsAt: mockSetTrialEndsAt,
   },
 });
 
@@ -142,11 +148,13 @@ const { app } = await import("../index");
 
 afterAll(() => mocks.cleanup());
 
-function platformRequest(method: string, path: string): Request {
-  return new Request(`http://localhost${path}`, {
+function platformRequest(method: string, path: string, body?: unknown): Request {
+  const init: RequestInit = {
     method,
     headers: { "Content-Type": "application/json", "x-api-key": "test-key" },
-  });
+  };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return new Request(`http://localhost${path}`, init);
 }
 
 beforeEach(() => {
@@ -162,6 +170,8 @@ beforeEach(() => {
   mockCascade.mockClear();
   mockHardDelete.mockClear();
   mockUpdateWorkspaceStatus.mockClear();
+  mockUpdatePlanTier.mockClear();
+  mockSetTrialEndsAt.mockClear();
 });
 
 // ── Delete ──────────────────────────────────────────────────────────
@@ -283,5 +293,108 @@ describe("POST /api/v1/platform/workspaces/:id/suspend|unsuspend — pause/resum
     expect(res.status).toBe(200);
     expect(body.warnings).toHaveLength(1);
     expect(mockUpdateWorkspaceStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Plan change: operator override + trial extension + free→cancel (#3427) ──
+
+describe("PATCH /api/v1/platform/workspaces/:id/plan — operator override precedence (#3427)", () => {
+  it("stamps a plan-override window (default 90d) so the next webhook can't clobber the grant", async () => {
+    const before = Date.now();
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", { planTier: "pro" }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { planOverrideUntil: string | null };
+    expect(mockUpdatePlanTier).toHaveBeenCalledTimes(1);
+    const [orgId, tier, override] = mockUpdatePlanTier.mock.calls[0] as [string, string, { until: Date }];
+    expect(orgId).toBe("org-1");
+    expect(tier).toBe("pro");
+    expect(override).toHaveProperty("until");
+    const ms = override.until.getTime() - before;
+    expect(ms).toBeGreaterThan(89 * 86_400_000);
+    expect(ms).toBeLessThan(91 * 86_400_000);
+    expect(body.planOverrideUntil).toBe(override.until.toISOString());
+  });
+
+  it("clears the override (releases control to Stripe) when overrideDays is 0", async () => {
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", { planTier: "starter", overrideDays: 0 }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { planOverrideUntil: string | null };
+    const [, , override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(override).toBe("clear");
+    expect(body.planOverrideUntil).toBeNull();
+  });
+
+  it("rejects setting the 'trial' tier with no trialEndsAt (no stale reuse)", async () => {
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", { planTier: "trial" }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { message: string };
+    expect(body.message).toContain("trialEndsAt");
+    expect(mockUpdatePlanTier).not.toHaveBeenCalled();
+  });
+
+  it("extends a trial: wires setWorkspaceTrialEndsAt with an explicit future date", async () => {
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", {
+        planTier: "trial",
+        trialEndsAt: future,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    // #3427 review: a trial grant must CLEAR the override, never stamp a comp
+    // window. A trialing org has no competing subscription, so an override would
+    // only block the customer's own paid conversion (charged by Stripe, stranded
+    // on trial). Pin that the directive is "clear", not a future `until`.
+    const [, tier, override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(tier).toBe("trial");
+    expect(override).toBe("clear");
+    expect(mockSetTrialEndsAt).toHaveBeenCalledTimes(1);
+    const [orgId, date] = mockSetTrialEndsAt.mock.calls[0] as [string, Date];
+    expect(orgId).toBe("org-1");
+    expect(date.toISOString()).toBe(future);
+  });
+
+  it("clears the override even when overrideDays is explicitly passed for a trial", async () => {
+    const future = new Date(Date.now() + 7 * 86_400_000).toISOString();
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", {
+        planTier: "trial",
+        trialEndsAt: future,
+        overrideDays: 90,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const [, , override] = mockUpdatePlanTier.mock.calls[0] as [string, string, unknown];
+    expect(override).toBe("clear");
+  });
+
+  it("cancels Stripe subscriptions when downgrading a paying org to free", async () => {
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", { planTier: "free" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockCancelSubs).toHaveBeenCalledTimes(1);
+    expect(mockCancelSubs.mock.calls[0][0]).toBe("org-1");
+  });
+
+  it("does NOT touch Stripe when moving to a paid tier", async () => {
+    const res = await app.fetch(
+      platformRequest("PATCH", "/api/v1/platform/workspaces/org-1/plan", { planTier: "pro" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockCancelSubs).not.toHaveBeenCalled();
   });
 });

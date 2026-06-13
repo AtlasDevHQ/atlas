@@ -17,6 +17,8 @@ import {
   loadSavedConnections,
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
+  updateWorkspacePlanTier,
+  isPlanOverrideActive,
   _resetPool,
   _resetCircuitBreaker,
   _hasRecoveryFiber,
@@ -1589,6 +1591,70 @@ describe("connection URL encryption", () => {
       await new Promise((r) => setTimeout(r, 10));
       // Circuit is open — call was dropped, not dispatched (still 5)
       expect(calls.length).toBe(5);
+    });
+  });
+
+  // ── #3427 operator plan-override precedence ──────────────────────────
+
+  describe("isPlanOverrideActive()", () => {
+    const now = new Date("2026-06-13T00:00:00.000Z");
+
+    it("is false for null/undefined/empty", () => {
+      expect(isPlanOverrideActive(null, now)).toBe(false);
+      expect(isPlanOverrideActive(undefined, now)).toBe(false);
+      expect(isPlanOverrideActive("", now)).toBe(false);
+    });
+
+    it("is false for an unparseable timestamp (Stripe stays authoritative)", () => {
+      expect(isPlanOverrideActive("not-a-date", now)).toBe(false);
+    });
+
+    it("is false for a past timestamp", () => {
+      expect(isPlanOverrideActive("2026-06-12T23:59:59.000Z", now)).toBe(false);
+    });
+
+    it("is true for a future timestamp", () => {
+      expect(isPlanOverrideActive("2026-06-14T00:00:00.000Z", now)).toBe(true);
+    });
+  });
+
+  describe("updateWorkspacePlanTier() override directive", () => {
+    it("leaves plan_override_until untouched when no directive is passed (Stripe path)", async () => {
+      const { pool, calls } = createMockPool();
+      pool._setResult({ rows: [{ id: "org-1" }] });
+      _resetPool(pool);
+
+      await updateWorkspacePlanTier("org-1", "starter");
+
+      const q = calls.queries.at(-1)!;
+      expect(q.sql).toContain("SET plan_tier = $1");
+      expect(q.sql).not.toContain("plan_override_until");
+      expect(q.params).toEqual(["starter", "org-1"]);
+    });
+
+    it("stamps plan_override_until when given an until directive (operator path)", async () => {
+      const { pool, calls } = createMockPool();
+      pool._setResult({ rows: [{ id: "org-1" }] });
+      _resetPool(pool);
+
+      const until = new Date("2026-09-01T00:00:00.000Z");
+      await updateWorkspacePlanTier("org-1", "pro", { until });
+
+      const q = calls.queries.at(-1)!;
+      expect(q.sql).toContain("plan_override_until = $3");
+      expect(q.params).toEqual(["pro", "org-1", until.toISOString()]);
+    });
+
+    it("nulls plan_override_until when given the 'clear' directive", async () => {
+      const { pool, calls } = createMockPool();
+      pool._setResult({ rows: [{ id: "org-1" }] });
+      _resetPool(pool);
+
+      await updateWorkspacePlanTier("org-1", "starter", "clear");
+
+      const q = calls.queries.at(-1)!;
+      expect(q.sql).toContain("plan_override_until = NULL");
+      expect(q.params).toEqual(["starter", "org-1"]);
     });
   });
 });

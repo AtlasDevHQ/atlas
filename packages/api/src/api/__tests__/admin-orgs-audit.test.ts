@@ -373,8 +373,10 @@ describe("admin-orgs PATCH /:id/plan — audit emission (F-31)", () => {
       targetId: "org-parity",
     });
     // Metadata shape mirrors platform-admin.ts:
-    //   { previousPlan: <old tier>, newPlan: <new tier> }
-    expect(entry.metadata).toEqual({ previousPlan: "starter", newPlan: "pro" });
+    //   { previousPlan, newPlan, planOverrideUntil } (#3427 — an operator
+    //   plan change stamps a precedence window the next Stripe webhook honors).
+    expect(entry.metadata).toMatchObject({ previousPlan: "starter", newPlan: "pro" });
+    expect(typeof entry.metadata?.planOverrideUntil).toBe("string");
   });
 
   it("does not emit on invalid plan tier (400)", async () => {

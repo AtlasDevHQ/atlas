@@ -31,13 +31,15 @@ interface OrgRow {
   subscription_plan: string | null;
   /** Newest applied tier from the webhook ledger (defaulted to null). */
   ledger_tier?: string | null;
+  /** Operator override window (#3427); defaulted to null = no override. */
+  plan_override_until?: string | null;
 }
 
 /** Route the org scan and the ledger prune through one mock. */
 function installQueryFixture(orgs: OrgRow[], pruned: { event_id: string }[] = []) {
   mockInternalQuery.mockImplementation((sql: string) => {
     if (sql.includes("FROM organization o"))
-      return Promise.resolve(orgs.map((o) => ({ ledger_tier: null, ...o })));
+      return Promise.resolve(orgs.map((o) => ({ ledger_tier: null, plan_override_until: null, ...o })));
     if (sql.includes("DELETE FROM stripe_webhook_events")) return Promise.resolve(pruned);
     return Promise.resolve([]);
   });
@@ -80,6 +82,37 @@ describe("reconcilePlanTiers", () => {
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(2);
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-locked", "starter");
     expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-upgrade", "pro");
+  });
+
+  it("does NOT heal an org while its operator override window is active (#3427)", async () => {
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    installQueryFixture([
+      // Operator comped this org to pro; the subscription says starter. The
+      // webhook path already preserves the grant — the 6-hour sweep must too,
+      // or it silently reverts the operator within one interval.
+      { org_id: "org-comped", plan_tier: "pro", subscription_plan: "starter", plan_override_until: future },
+      // Control: identical drift with NO override still heals.
+      { org_id: "org-normal", plan_tier: "starter", subscription_plan: "pro" },
+    ]);
+
+    const result = await reconcilePlanTiers();
+
+    expect(result.healed).toBe(1);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledTimes(1);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-normal", "pro");
+    expect(mockUpdateWorkspacePlanTier).not.toHaveBeenCalledWith("org-comped", "starter");
+  });
+
+  it("resumes healing once the override window has lapsed (#3427)", async () => {
+    const past = new Date(Date.now() - 1000).toISOString();
+    installQueryFixture([
+      { org_id: "org-expired", plan_tier: "pro", subscription_plan: "starter", plan_override_until: past },
+    ]);
+
+    const result = await reconcilePlanTiers();
+
+    expect(result.healed).toBe(1);
+    expect(mockUpdateWorkspacePlanTier).toHaveBeenCalledWith("org-expired", "starter");
   });
 
   it("flags but never rewrites a paid-tier org with no live subscription (#3427 pending)", async () => {

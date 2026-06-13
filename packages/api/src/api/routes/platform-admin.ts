@@ -33,6 +33,7 @@ import {
   getWorkspaceDetails,
   updateWorkspaceStatus,
   updateWorkspacePlanTier,
+  setWorkspaceTrialEndsAt,
   cascadeWorkspaceDelete,
   hardDeleteWorkspace,
   type WorkspaceRow,
@@ -43,7 +44,7 @@ import {
   PLAN_TIERS,
   type PlatformWorkspace,
 } from "@useatlas/types";
-import { getPlanDefinition } from "@atlas/api/lib/billing/plans";
+import { getPlanDefinition, PLAN_OVERRIDE_DAYS } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import {
   cancelStripeSubscriptionsForWorkspace,
@@ -92,7 +93,28 @@ const ChangePlanBodySchema = z.object({
     description: "The new plan tier for the workspace.",
     example: "starter",
   }),
+  // #3427 — an operator plan change is an OVERRIDE that takes precedence over
+  // Stripe for a bounded window (default PLAN_OVERRIDE_DAYS). The Stripe webhook
+  // tier sync skips its write while the window is active. Pass `0` to release
+  // control back to Stripe immediately (re-sync to the Stripe-derived tier).
+  overrideDays: z.number().int().min(0).max(365).optional().openapi({
+    description:
+      "Days the operator grant takes precedence over Stripe before auto-healing. Defaults to 90. Pass 0 to clear the override and let Stripe reassert control immediately.",
+    example: 90,
+  }),
+  // #3427 — setting the `trial` tier MUST carry an explicit end date: reusing a
+  // stale `trial_ends_at` would stamp an instantly-expired trial. Required when
+  // planTier === "trial"; ignored otherwise. Also doubles as the trial-extension
+  // surface (set planTier="trial" with a future date to extend).
+  trialEndsAt: z.string().datetime().optional().openapi({
+    description:
+      "Required when planTier is 'trial' — the new trial end date (ISO 8601). Ignored for other tiers.",
+    example: "2026-08-01T00:00:00.000Z",
+  }),
 });
+
+/** Tiers an operator downgrade-to-free/locked must stop Stripe invoicing for (#3427). */
+const STRIPE_CANCEL_ON_TIER = new Set<PlanTier>(["free", "locked"]);
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -264,9 +286,22 @@ const changePlanRoute = createRoute({
   responses: {
     200: {
       description: "Plan updated",
-      content: { "application/json": { schema: z.object({ message: z.string(), workspaceId: z.string(), planTier: z.string() }) } },
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            workspaceId: z.string(),
+            planTier: z.string(),
+            // #3427 — when the operator grant takes precedence over Stripe.
+            // null when the override was cleared (overrideDays === 0).
+            planOverrideUntil: z.string().nullable(),
+            trialEndsAt: z.string().nullable().optional(),
+            warnings: z.array(z.string()).optional(),
+          }),
+        },
+      },
     },
-    400: { description: "Invalid plan tier", content: { "application/json": { schema: ErrorSchema } } },
+    400: { description: "Invalid plan tier or missing trialEndsAt", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Workspace not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -434,6 +469,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       trial_ends_at: string | null;
       suspended_at: string | null;
       suspension_source: "billing" | "operator" | null;
+      plan_override_until: string | null;
       deleted_at: string | null;
       region: string | null;
       region_assigned_at: string | null;
@@ -446,7 +482,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
     }>(
       `SELECT
          o.id, o.name, o.slug, o.workspace_status, o.plan_tier, o.byot,
-         o."stripeCustomerId" AS stripe_customer_id, o.trial_ends_at, o.suspended_at, o.suspension_source, o.deleted_at,
+         o."stripeCustomerId" AS stripe_customer_id, o.trial_ends_at, o.suspended_at, o.suspension_source, o.plan_override_until, o.deleted_at,
          o.region, o.region_assigned_at, o."createdAt",
          COALESCE(m.cnt, 0)::int AS members,
          COALESCE(cv.cnt, 0)::int AS conversations,
@@ -481,6 +517,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
           trial_ends_at: row.trial_ends_at,
           suspended_at: row.suspended_at,
           suspension_source: row.suspension_source,
+          plan_override_until: row.plan_override_until,
           deleted_at: row.deleted_at,
           region: row.region,
           region_assigned_at: row.region_assigned_at,
@@ -806,10 +843,32 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
 
     const workspaceId = c.req.param("id");
     const body = c.req.valid("json");
-    const { planTier } = body;
+    const { planTier, overrideDays, trialEndsAt } = body;
 
     if (!VALID_PLAN_TIERS.has(planTier)) {
       return c.json({ error: "validation_error", message: `Invalid plan tier: ${planTier}`, requestId }, 400);
+    }
+
+    // #3427 — setting `trial` must carry an explicit, future end date.
+    // Without this the org reuses a stale `trial_ends_at` and the trial is
+    // instantly expired. This also IS the trial-extension surface: set
+    // planTier="trial" with a future date to extend an active/lapsed trial.
+    let parsedTrialEndsAt: Date | null = null;
+    if (planTier === "trial") {
+      if (!trialEndsAt) {
+        return c.json({
+          error: "validation_error",
+          message: "Setting the 'trial' tier requires an explicit trialEndsAt (ISO 8601) — a stale trial_ends_at would expire instantly.",
+          requestId,
+        }, 400);
+      }
+      parsedTrialEndsAt = new Date(trialEndsAt);
+      if (Number.isNaN(parsedTrialEndsAt.getTime())) {
+        return c.json({ error: "validation_error", message: `Invalid trialEndsAt: ${trialEndsAt}`, requestId }, 400);
+      }
+      if (parsedTrialEndsAt.getTime() <= Date.now()) {
+        return c.json({ error: "validation_error", message: "trialEndsAt must be in the future.", requestId }, 400);
+      }
     }
 
     const workspace = yield* Effect.promise(() => getWorkspaceDetails(workspaceId));
@@ -817,25 +876,80 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
       return c.json({ error: "not_found", message: "Workspace not found.", requestId }, 404);
     }
 
-    const updated = yield* Effect.promise(() => updateWorkspacePlanTier(workspaceId, planTier as PlanTier));
+    // #3427 — an operator plan change OVERRIDES Stripe for a bounded window so
+    // the next webhook can't clobber the grant. `overrideDays === 0` clears the
+    // override (release control back to Stripe immediately); omit it for the
+    // PLAN_OVERRIDE_DAYS default. The directive is passed atomically with the
+    // tier write so the row never sits at "new tier, no override".
+    //
+    // EXCEPTION (#3427 review) — a `trial` grant must NOT stamp an override. A
+    // trialing org has no competing active subscription, so the override would
+    // only block the customer's OWN paid conversion (checkout →
+    // applyWorkspaceTier) for the window's length — Stripe charges them while
+    // they stay stranded on the trial tier. Trial protection is the
+    // trial_ends_at window, not the override, so we clear it for trial.
+    const days = planTier === "trial" ? 0 : (overrideDays ?? PLAN_OVERRIDE_DAYS);
+    const overrideUntil: Date | null = days === 0 ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    const override = days === 0 ? ("clear" as const) : { until: overrideUntil as Date };
+
+    const updated = yield* Effect.promise(() => updateWorkspacePlanTier(workspaceId, planTier as PlanTier, override));
     if (!updated) {
       return c.json({ error: "not_found", message: "Workspace not found.", requestId }, 404);
     }
 
+    // Trial end date: set AFTER the tier write so the two land for the same
+    // row. setWorkspaceTrialEndsAt returning false here would be a
+    // get-then-write race (org deleted mid-request) — log, don't fail the op.
+    if (parsedTrialEndsAt) {
+      const stamped = yield* Effect.promise(() => setWorkspaceTrialEndsAt(workspaceId, parsedTrialEndsAt));
+      if (!stamped) {
+        log.warn({ workspaceId, requestId }, "Plan set to trial but trial_ends_at write matched 0 rows — workspace vanished mid-request?");
+      }
+    }
+
+    // #3427 — downgrading a paying org to free/locked must STOP Stripe
+    // invoicing; otherwise the customer keeps being charged for entitlements
+    // the DB no longer grants. Best-effort: Stripe failures surface as
+    // operator warnings (same pattern as the delete/purge teardown), the plan
+    // change itself always proceeds.
+    let warnings: string[] = [];
+    let stripeMeta: Record<string, unknown> = {};
+    if (STRIPE_CANCEL_ON_TIER.has(planTier as PlanTier)) {
+      const billing = yield* Effect.promise(() => cancelStripeSubscriptionsForWorkspace(workspaceId));
+      warnings = withWarnings(billing).warnings ?? [];
+      stripeMeta = stripeAuditMetadata(billing);
+    }
+
     invalidatePlanCache(workspaceId); // #2165 — see suspend handler above
 
-    log.info({ workspaceId, planTier, previousTier: workspace.plan_tier, requestId }, "Workspace plan changed by platform admin");
+    log.info(
+      { workspaceId, planTier, previousTier: workspace.plan_tier, planOverrideUntil: overrideUntil?.toISOString() ?? null, requestId },
+      "Workspace plan changed by platform admin",
+    );
 
     logAdminAction({
       actionType: ADMIN_ACTIONS.workspace.changePlan,
       targetType: "workspace",
       targetId: workspaceId,
       scope: "platform",
-      metadata: { previousPlan: workspace.plan_tier, newPlan: planTier },
+      metadata: {
+        previousPlan: workspace.plan_tier,
+        newPlan: planTier,
+        planOverrideUntil: overrideUntil?.toISOString() ?? null,
+        ...(parsedTrialEndsAt ? { trialEndsAt: parsedTrialEndsAt.toISOString() } : {}),
+        ...stripeMeta,
+      },
       ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
     });
 
-    return c.json({ message: "Plan updated.", workspaceId, planTier }, 200);
+    return c.json({
+      message: "Plan updated.",
+      workspaceId,
+      planTier,
+      planOverrideUntil: overrideUntil?.toISOString() ?? null,
+      ...(parsedTrialEndsAt ? { trialEndsAt: parsedTrialEndsAt.toISOString() } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }, 200);
   }), { label: "change workspace plan" });
 });
 

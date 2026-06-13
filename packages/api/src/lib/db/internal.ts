@@ -972,6 +972,10 @@ export const MANAGED_AUTH_MIGRATIONS = [
   // recovery only unsuspends billing-induced suspensions, never operator
   // ones (#3424).
   "0131_org_suspension_source.sql",
+  // Adds plan_override_until to Better Auth's "organization" table so the
+  // Stripe webhook tier sync respects an active platform-admin plan grant
+  // instead of clobbering it (#3427).
+  "0132_org_plan_override.sql",
 ];
 
 /**
@@ -1868,6 +1872,14 @@ export interface WorkspaceRow {
    * operator suspension survives a billing recovery.
    */
   suspension_source: SuspensionSource | null;
+  /**
+   * Operator plan-override window (#3427). NULL (or a past timestamp) means
+   * Stripe is authoritative for `plan_tier`. A future timestamp means a
+   * platform admin set `plan_tier` directly and the Stripe-webhook tier sync
+   * (`applyWorkspaceTier` in lib/auth/server.ts) must NOT overwrite it until
+   * the window lapses. Stamped/cleared via {@link updateWorkspacePlanTier}.
+   */
+  plan_override_until: string | null;
   deleted_at: string | null;
   region: string | null;
   region_assigned_at: string | null;
@@ -1917,7 +1929,7 @@ export async function getWorkspaceNamesByIds(
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
   const rows = await internalQuery<WorkspaceRow>(
-    `SELECT id, name, slug, workspace_status, plan_tier, byot, "stripeCustomerId" AS stripe_customer_id, trial_ends_at, suspended_at, suspension_source, deleted_at, region, region_assigned_at, "createdAt"
+    `SELECT id, name, slug, workspace_status, plan_tier, byot, "stripeCustomerId" AS stripe_customer_id, trial_ends_at, suspended_at, suspension_source, plan_override_until, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
     [orgId],
   );
@@ -1961,8 +1973,47 @@ export async function updateWorkspaceStatus(
 }
 
 /**
+ * Operator plan-override directive for {@link updateWorkspacePlanTier} (#3427).
+ *
+ * Stripe-driven writes (the webhook tier sync) pass NO `override` and leave
+ * `plan_override_until` untouched — a future operator window keeps protecting
+ * the grant, and once it lapses Stripe writes flow through normally.
+ *
+ * Operator-driven writes (platform-admin / admin-orgs plan changes) pass an
+ * explicit directive:
+ *  - `{ until: Date }` — stamp the precedence window so the next Stripe webhook
+ *    skips its tier write until `until`.
+ *  - `"clear"` — release control back to Stripe immediately (NULL the column),
+ *    e.g. when an operator deliberately re-syncs an org to its Stripe state.
+ */
+export type PlanOverrideDirective = { readonly until: Date } | "clear";
+
+/**
+ * Whether a workspace's operator plan-override window is currently active
+ * (#3427) — i.e. `plan_override_until` is set and in the future. When true,
+ * the Stripe-webhook tier sync must NOT overwrite `plan_tier`. A NULL,
+ * unparseable, or past timestamp returns false (Stripe is authoritative).
+ *
+ * @param planOverrideUntil the org row's `plan_override_until` value
+ * @param now injectable clock for testing (defaults to wall-clock)
+ */
+export function isPlanOverrideActive(
+  planOverrideUntil: string | null | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (!planOverrideUntil) return false;
+  const until = new Date(planOverrideUntil);
+  if (Number.isNaN(until.getTime())) return false;
+  return until.getTime() > now.getTime();
+}
+
+/**
  * Update workspace plan tier. Returns true if the org was found and updated,
  * false if no row matched the given orgId.
+ *
+ * `override` (#3427) controls the operator precedence window. Omit it on the
+ * Stripe-webhook path (`plan_override_until` is left as-is); pass a directive on
+ * operator paths to stamp or clear the window. See {@link PlanOverrideDirective}.
  *
  * The 0-row arm logs at error level: every caller passes an orgId that is
  * supposed to exist (Stripe webhook `referenceId`, platform-admin override),
@@ -1972,11 +2023,21 @@ export async function updateWorkspaceStatus(
 export async function updateWorkspacePlanTier(
   orgId: string,
   planTier: PlanTier,
+  override?: PlanOverrideDirective,
 ): Promise<boolean> {
-  const rows = await internalQuery<{ id: string }>(
-    `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
-    [planTier, orgId],
-  );
+  let sqlStr: string;
+  let params: unknown[];
+  if (override === undefined) {
+    sqlStr = `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`;
+    params = [planTier, orgId];
+  } else if (override === "clear") {
+    sqlStr = `UPDATE organization SET plan_tier = $1, plan_override_until = NULL WHERE id = $2 RETURNING id`;
+    params = [planTier, orgId];
+  } else {
+    sqlStr = `UPDATE organization SET plan_tier = $1, plan_override_until = $3 WHERE id = $2 RETURNING id`;
+    params = [planTier, orgId, override.until.toISOString()];
+  }
+  const rows = await internalQuery<{ id: string }>(sqlStr, params);
   if (rows.length === 0) {
     log.error(
       { orgId, planTier },

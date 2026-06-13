@@ -287,9 +287,12 @@ describe("admin-orgs PATCH /:id/suspend — audit emission (F-31)", () => {
     expect(res.status).toBe(500);
     expect(mockLogAdminAction.mock.calls.length).toBe(1);
     expect(lastAuditCall().actionType).toBe("workspace.suspend");
+    // Operator/manual suspension is tagged 'operator' so a later billing
+    // recovery never auto-clears it (#3424).
     expect(mockUpdateWorkspaceStatus).toHaveBeenCalledWith(
       "org-parity",
       "suspended",
+      "operator",
     );
   });
 });

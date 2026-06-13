@@ -50,6 +50,38 @@ describe("exchangeCode", () => {
     expect(params.get("redirect_uri")).toBe(BASE_PARAMS.redirectUri);
     expect(params.get("client_id")).toBe(BASE_PARAMS.clientId);
     expect(params.get("code_verifier")).toBe(BASE_PARAMS.codeVerifier);
+    // No resource indicator supplied → none sent on the wire.
+    expect(params.has("resource")).toBe(false);
+  });
+
+  test("threads the RFC 8707 resource indicator onto the token request (#3493)", async () => {
+    const { fetchImpl, calls } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: "at-jwt", expires_in: 3600 }),
+    });
+
+    await exchangeCode(
+      { ...BASE_PARAMS, resource: "https://api.useatlas.dev/mcp" },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+
+    const params = new URLSearchParams(calls[0].body);
+    expect(params.get("resource")).toBe("https://api.useatlas.dev/mcp");
+  });
+
+  test("omits an empty resource indicator", async () => {
+    const { fetchImpl, calls } = captureFetch({
+      "/oauth2/token": () =>
+        jsonResponse({ access_token: "at-3", expires_in: 3600 }),
+    });
+
+    await exchangeCode(
+      { ...BASE_PARAMS, resource: "" },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+
+    const params = new URLSearchParams(calls[0].body);
+    expect(params.has("resource")).toBe(false);
   });
 
   test("rejects http:// (non-loopback) tokenEndpoint with invalid_token_endpoint (#2198)", async () => {

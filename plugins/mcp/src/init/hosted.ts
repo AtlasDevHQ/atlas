@@ -357,6 +357,14 @@ export async function runHostedAuthFlow(
     // response advertising `token_endpoint: "http://evil/token"` cannot
     // smuggle the auth code over plaintext — the guard lives in the
     // helper, so both consumers (SDK + CLI) are covered identically.
+    //
+    // `resource` (RFC 8707) binds the issued token to the MCP endpoint
+    // (`${apiUrl}/mcp`). Better Auth's oauth-provider only mints a
+    // JWT-formatted access token when the token request carries it; the
+    // hosted MCP route's `verifyMcpBearer` requires that JWT shape, so
+    // without `resource` real hosted installs receive an opaque token and
+    // fail bearer verification. This is the production counterpart to the
+    // resource-indicator the eval previously body-patched in (#3493).
     const tokenResponse = await liftHelper(() =>
       exchangeCode(
         {
@@ -365,6 +373,7 @@ export async function runHostedAuthFlow(
           redirectUri,
           code,
           codeVerifier,
+          resource: `${apiUrl}/mcp`,
         },
         { fetchImpl },
       ),

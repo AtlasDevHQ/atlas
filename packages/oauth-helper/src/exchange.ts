@@ -9,6 +9,17 @@ export interface ExchangeCodeParams {
   redirectUri: string;
   code: string;
   codeVerifier: string;
+  /**
+   * RFC 8707 resource indicator — the protected resource the issued token
+   * is bound to (e.g. `${apiUrl}/mcp`). When present it's sent as the
+   * `resource` form field on the token request. Better Auth's
+   * `@better-auth/oauth-provider` only mints a JWT-formatted access token
+   * (vs an opaque one) when the token request carries a `resource`; the
+   * MCP route's `verifyMcpBearer` requires the JWT shape. Omit it for
+   * consumers that don't bind to a specific resource — the field is simply
+   * not sent and the server falls back to its default token format.
+   */
+  resource?: string;
 }
 
 export interface ExchangeCodeOptions {
@@ -55,6 +66,12 @@ export async function exchangeCode(
     client_id: params.clientId,
     code_verifier: params.codeVerifier,
   });
+  // RFC 8707 — bind the issued token to the requested resource. Appended
+  // only when the caller supplies it so consumers that don't need
+  // resource-scoped tokens keep the original request shape.
+  if (params.resource !== undefined && params.resource.length > 0) {
+    body.set("resource", params.resource);
+  }
   let res: Response;
   try {
     res = await fetchImpl(params.tokenEndpoint, {
